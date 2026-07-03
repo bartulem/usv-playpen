@@ -1156,3 +1156,278 @@ def bootstrap_vs_null_stats(
     p_val = float((np.sum(null_data >= boot_mean) + 1) / (n_null + 1))
     z = (boot_mean - null_mean) / null_std if null_std > 0 else 0.0
     return boot_mean, null_mean, p_val, z
+
+
+def pool_group_count_matrices(
+    sessions: list[dict[str, Any]],
+    window_s: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Pools the per-session spike-count matrices of both vocalization groups across a
+    list of sessions into two trial-concatenated matrices. For every session the
+    group-A and group-B onset times (the ``start`` column of ``group_a_df`` /
+    ``group_b_df``) are turned into ``Neurons x Trials`` count matrices via
+    :func:`extract_snippet_matrix`, and the per-session matrices are concatenated along
+    the trial axis. All sessions share the same filtered unit set (guaranteed by
+    :func:`load_animal_sessions`), so the row dimension is constant and the horizontal
+    stack is valid. Sessions contributing zero trials add zero columns and are
+    therefore harmless.
+
+    Parameters
+    ----------
+    sessions : list[dict[str, Any]]
+        Session records as returned by :func:`load_animal_sessions`; each must carry
+        ``group_a_df`` / ``group_b_df`` (each with a ``start`` column), ``neural_data``
+        and a common unit set.
+    window_s : float
+        Post-onset window (seconds) over which spikes are counted.
+
+    Returns
+    -------
+    pooled_a, pooled_b : tuple[np.ndarray, np.ndarray]
+        Two ``Neurons x Trials`` matrices holding, respectively, every group-A and
+        group-B trial pooled across ``sessions``. An empty ``sessions`` list yields
+        two ``(0, 0)`` arrays.
+    """
+
+    group_a_mats, group_b_mats = [], []
+    for session in sessions:
+        group_a_mats.append(extract_snippet_matrix(
+            session["group_a_df"]["start"].to_numpy(), session["neural_data"], window_s,
+        ))
+        group_b_mats.append(extract_snippet_matrix(
+            session["group_b_df"]["start"].to_numpy(), session["neural_data"], window_s,
+        ))
+    pooled_a = np.hstack(group_a_mats) if group_a_mats else np.empty((0, 0))
+    pooled_b = np.hstack(group_b_mats) if group_b_mats else np.empty((0, 0))
+    return pooled_a, pooled_b
+
+
+def compare_groups(
+    pooled_a: np.ndarray,
+    pooled_b: np.ndarray,
+    *,
+    bootstrap_n: int,
+    n_boot: int = 1000,
+    n_permutations: int = 1000,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """
+    Description
+    -----------
+    Matched-N comparison of the coactivity of two already-pooled trial groups.
+    Bootstraps ``pooled_a`` and ``pooled_b`` to the same ``bootstrap_n`` trials
+    (equalising statistical power) via :func:`bootstrap_coactivity_distribution`, and
+    runs a direct trial-label permutation test between them via
+    :func:`perform_label_permutation_test`. This is the shared core of the notebook's
+    single-animal, cross-animal and amplitude-stratified analyses; the caller supplies
+    the already-pooled matrices and the resolved ``bootstrap_n`` (e.g. a fixed target,
+    or ``min(target, n_a, n_b)``).
+
+    The three stochastic sub-routines draw independent, reproducible streams seeded
+    ``seed`` (group-A bootstrap), ``seed + 1`` (group-B bootstrap) and ``seed + 2``
+    (permutation test); pass a distinct base ``seed`` per invocation to keep repeated
+    calls independent. When ``seed`` is ``None`` all three seed randomly and
+    independently.
+
+    Parameters
+    ----------
+    pooled_a, pooled_b : np.ndarray
+        ``Neurons x Trials`` count matrices for the two groups (same row dimension).
+    bootstrap_n : int
+        Number of trials each group is bootstrap-resampled to.
+    n_boot : int
+        Bootstrap iterations per group (default 1000).
+    n_permutations : int
+        Label-permutation iterations (default 1000).
+    seed : int | None
+        Base RNG seed; sub-routines use ``seed``, ``seed + 1``, ``seed + 2``.
+
+    Returns
+    -------
+    dict[str, Any]
+        ``{"boot_a", "boot_b", "perm", "bootstrap_n"}`` where ``boot_a`` / ``boot_b``
+        are the per-metric bootstrap-distribution dicts, ``perm`` is the
+        :func:`perform_label_permutation_test` result, and ``bootstrap_n`` echoes the
+        matched trial count used.
+    """
+
+    seed_a = None if seed is None else seed
+    seed_b = None if seed is None else seed + 1
+    seed_perm = None if seed is None else seed + 2
+    boot_a = bootstrap_coactivity_distribution(pooled_a, bootstrap_n, n_boot, seed=seed_a)
+    boot_b = bootstrap_coactivity_distribution(pooled_b, bootstrap_n, n_boot, seed=seed_b)
+    perm = perform_label_permutation_test(
+        counts_a=pooled_a, counts_b=pooled_b, n_permutations=n_permutations, seed=seed_perm,
+    )
+    return {"boot_a": boot_a, "boot_b": boot_b, "perm": perm, "bootstrap_n": bootstrap_n}
+
+
+def per_session_group_metrics(
+    sessions: list[dict[str, Any]],
+    window_s: float,
+    *,
+    min_trials: int = 2,
+    n_shuffles: int | None = None,
+    seed: int | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Description
+    -----------
+    Computes per-session observed coactivity for both groups, one row per session that
+    holds at least ``min_trials`` trials in EACH group. For every retained session the
+    group-A and group-B ``Neurons x Trials`` matrices are built with
+    :func:`extract_snippet_matrix` and reduced to the three scalar metrics with
+    :func:`compute_coactivity_metrics`; the row also carries the per-metric A-minus-B
+    deltas. When ``n_shuffles`` is set, a within-session circular-shuffle null (both
+    groups' onsets pooled, so the null reflects neural-timing shifts rather than
+    category-specific timing) is added via :func:`perform_circular_shuffle`, seeded
+    ``seed + session_index`` so each session draws an independent, reproducible stream
+    (the session index counts every session, skipped or not, so seeds stay stable when
+    the trial filter changes).
+
+    Parameters
+    ----------
+    sessions : list[dict[str, Any]]
+        Session records (see :func:`load_animal_sessions`).
+    window_s : float
+        Post-onset spike-count window (seconds).
+    min_trials : int
+        Minimum trials required in EACH group for a session to be kept (default 2;
+        below it a metric is undefined).
+    n_shuffles : int | None
+        If set, number of circular shuffles for the per-session null; ``None`` skips
+        the null (only observed metrics + deltas).
+    seed : int | None
+        Base RNG seed for the per-session nulls; session ``i`` uses ``seed + i``.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        One row per retained session with ``session_id``, ``n_a``, ``n_b``,
+        ``metrics_a`` / ``metrics_b`` (per-metric dicts), ``deltas`` (A minus B per
+        metric) and, when ``n_shuffles`` is set, ``null`` (the per-metric
+        null-distribution dict).
+    """
+
+    rows: list[dict[str, Any]] = []
+    for session_index, session in enumerate(sessions):
+        a_starts = session["group_a_df"]["start"].to_numpy()
+        b_starts = session["group_b_df"]["start"].to_numpy()
+        if len(a_starts) < min_trials or len(b_starts) < min_trials:
+            continue
+        a_matrix = extract_snippet_matrix(a_starts, session["neural_data"], window_s)
+        b_matrix = extract_snippet_matrix(b_starts, session["neural_data"], window_s)
+        metrics_a = compute_coactivity_metrics(a_matrix)
+        metrics_b = compute_coactivity_metrics(b_matrix)
+        row: dict[str, Any] = {
+            "session_id": session["session_id"],
+            "n_a": int(a_matrix.shape[1]),
+            "n_b": int(b_matrix.shape[1]),
+            "metrics_a": metrics_a,
+            "metrics_b": metrics_b,
+            "deltas": {metric: metrics_a[metric] - metrics_b[metric] for metric in metrics_a},
+        }
+        if n_shuffles is not None:
+            row["null"] = perform_circular_shuffle(
+                onsets=np.concatenate([a_starts, b_starts]),
+                neural_data=session["neural_data"],
+                total_duration=session["total_duration"],
+                window_s=window_s,
+                n_shuffles=n_shuffles,
+                seed=None if seed is None else seed + session_index,
+            )
+        rows.append(row)
+    return rows
+
+
+def run_group_comparison(
+    sessions: list[dict[str, Any]],
+    *,
+    window_s: float,
+    bootstrap_n: int,
+    n_boot: int = 1000,
+    n_shuffles: int = 1000,
+    n_permutations: int = 1000,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """
+    Description
+    -----------
+    Runs the full single-animal group-comparison pipeline used by the coactivity
+    notebook and returns every result object the downstream plots and summaries
+    consume. In order:
+
+    1. pool the per-session count matrices for both groups
+       (:func:`pool_group_count_matrices`);
+    2. matched-N pooled bootstrap of each group + a direct label permutation test
+       (:func:`compare_groups`);
+    3. a chained circular-shuffle null per group, drawn at the same matched
+       ``bootstrap_n`` onsets across sessions (:func:`sample_onsets_across_sessions`
+       + :func:`perform_chained_circular_shuffle`);
+    4. the per-session observed-metric breakdown (:func:`per_session_group_metrics`).
+
+    All stochastic steps derive independent, reproducible streams from ``seed`` (the
+    offsets are fixed internally: ``+0/+1`` bootstraps, ``+2`` permutation, ``+3/+4``
+    onset sampling, ``+5/+6`` chained nulls), so a single ``seed`` makes the whole
+    pipeline reproducible.
+
+    Parameters
+    ----------
+    sessions : list[dict[str, Any]]
+        Session records (see :func:`load_animal_sessions`).
+    window_s : float
+        Post-onset spike-count window (seconds).
+    bootstrap_n : int
+        Matched trial count for the pooled bootstrap and the chained null.
+    n_boot : int
+        Bootstrap iterations per group (default 1000).
+    n_shuffles : int
+        Chained-shuffle iterations per group (default 1000).
+    n_permutations : int
+        Label-permutation iterations (default 1000).
+    seed : int | None
+        Base RNG seed for the whole pipeline.
+
+    Returns
+    -------
+    dict[str, Any]
+        ``{"pooled_a", "pooled_b", "boot_a", "boot_b", "perm", "chained_null_a",
+        "chained_null_b", "per_session", "bootstrap_n"}``.
+    """
+
+    pooled_a, pooled_b = pool_group_count_matrices(sessions, window_s)
+    comparison = compare_groups(
+        pooled_a, pooled_b,
+        bootstrap_n=bootstrap_n, n_boot=n_boot, n_permutations=n_permutations, seed=seed,
+    )
+    onsets_a = sample_onsets_across_sessions(
+        sessions, "group_a_df", bootstrap_n, seed=None if seed is None else seed + 3,
+    )
+    onsets_b = sample_onsets_across_sessions(
+        sessions, "group_b_df", bootstrap_n, seed=None if seed is None else seed + 4,
+    )
+    neural = [session["neural_data"] for session in sessions]
+    durations = [session["total_duration"] for session in sessions]
+    chained_null_a = perform_chained_circular_shuffle(
+        session_onsets=onsets_a, session_neural_data=neural, session_durations=durations,
+        window_s=window_s, n_shuffles=n_shuffles, seed=None if seed is None else seed + 5,
+    )
+    chained_null_b = perform_chained_circular_shuffle(
+        session_onsets=onsets_b, session_neural_data=neural, session_durations=durations,
+        window_s=window_s, n_shuffles=n_shuffles, seed=None if seed is None else seed + 6,
+    )
+    per_session = per_session_group_metrics(sessions, window_s)
+    return {
+        "pooled_a": pooled_a,
+        "pooled_b": pooled_b,
+        "boot_a": comparison["boot_a"],
+        "boot_b": comparison["boot_b"],
+        "perm": comparison["perm"],
+        "chained_null_a": chained_null_a,
+        "chained_null_b": chained_null_b,
+        "per_session": per_session,
+        "bootstrap_n": bootstrap_n,
+    }

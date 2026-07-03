@@ -41,8 +41,10 @@ Architecture
   as a base64 PNG. The brushed rows are recovered with
   ``chart_widget.apply_selection`` (``.value`` fails on the layered chart).
 
-All paths are run through ``os_utils.configure_path`` so ``/mnt/...`` strings
-from cross-OS session lists resolve correctly on macOS / Linux.
+The shipped ``/mnt/falkner/Bartul/...`` paths are re-keyed to the experimenter in
+use and OS-resolved via ``os_utils.resolve_experimenter_path`` (set the
+``EXPERIMENTER_ID`` env var to override the host config's experimenter), so the
+app follows whoever launches it and resolves correctly on macOS / Linux.
 """
 
 import marimo
@@ -69,7 +71,7 @@ def _imports():
 
     alt.data_transformers.disable_max_rows()
 
-    from usv_playpen.os_utils import configure_path, resolve_consolidated_h5_path
+    from usv_playpen.os_utils import resolve_consolidated_h5_path, resolve_experimenter_path
     from usv_playpen.visualizations.make_usv_spectrograms import (
         _knn_boundary_grid as knn_boundary_grid,
         build_pooled_embeddings_df,
@@ -81,7 +83,6 @@ def _imports():
         alt,
         base64,
         build_pooled_embeddings_df,
-        configure_path,
         h5py,
         hashlib,
         json,
@@ -92,11 +93,12 @@ def _imports():
         pls,
         plt,
         resolve_consolidated_h5_path,
+        resolve_experimenter_path,
     )
 
 
 @app.cell
-def _settings(Path, configure_path, json, resolve_consolidated_h5_path):
+def _settings(Path, json, resolve_consolidated_h5_path, resolve_experimenter_path):
     # Cell 2 = ALL settings/config (imports are all in cell 1). Reads
     # visualizations_settings.json once and exposes everything downstream cells
     # need: the colormap, sex colors, the consolidated store path, the available
@@ -133,9 +135,11 @@ def _settings(Path, configure_path, json, resolve_consolidated_h5_path):
     # resolved to the host mount). Glob every *.txt list into {label -> absolute
     # path}; playback sessions have no emitter/embedding structure here, so drop them.
     try:
-        _input_dir = configure_path(_viz["shared_resources"]["input_files_directory"])
-        consolidated_h5_path = resolve_consolidated_h5_path(_viz["shared_resources"]["spectrograms_dir"])
-    except (KeyError, FileNotFoundError):
+        _input_dir = resolve_experimenter_path(_viz["shared_resources"]["input_files_directory"])
+        consolidated_h5_path = resolve_consolidated_h5_path(
+            resolve_experimenter_path(_viz["shared_resources"]["spectrograms_dir"])
+        )
+    except (KeyError, FileNotFoundError, RuntimeError):
         _input_dir, consolidated_h5_path = None, None
     if _input_dir is not None and Path(_input_dir).is_dir():
         available_lists = {

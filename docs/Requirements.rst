@@ -3,7 +3,7 @@
 Requirements
 ============
 
-This page lists the **recording-rig hardware** -- the exact components used in the PNI Falkner/Murthy setup -- and the **recording software** to install per machine, before running *usv-playpen* for behavioral recordings. Hardware is grouped by modality (audio, video, e-phys); software by machine (audio, video, e-phys PCs), followed by *usv-playpen*'s own credential setup. The data-processing, analysis, and visualization stages are platform-independent and need none of this recording hardware.
+This page lists the **recording-rig hardware** -- the exact components used in the Princeton Neuroscience Institute (PNI) Falkner/Murthy setup -- and the **recording software** to install per machine, before running *usv-playpen* for behavioral recordings. Hardware is grouped by modality (audio, video, e-phys [electrophysiology]); software by machine (audio, video, e-phys PCs), followed by *usv-playpen*'s own credential setup. The data-processing, analysis, and visualization stages are platform-independent and need none of this recording hardware.
 
 Recording hardware
 ------------------
@@ -101,7 +101,7 @@ Recording software
 Audio PC
 ~~~~~~~~
 
-Whatever operating system you are using, you will need to ensure the existence of the following software *prior to* using *usv-playpen*: (1) `git <https://git-scm.com/downloads>`_ (and add PATH to USER VARIABLES on Windows), (2) `uv <https://docs.astral.sh/uv/getting-started/installation/>`_ (and add PATH to USER VARIABLES on Windows).
+Whatever operating system you are using, you will need to ensure the existence of the following software *prior to* using *usv-playpen*: (1) `git <https://git-scm.com/downloads>`_ (and add PATH to USER VARIABLES on Windows), (2) `uv <https://docs.astral.sh/uv/getting-started/installation/>`_, the uv Python package manager (and add PATH to USER VARIABLES on Windows).
 
 You can verify that the installation was successful by running the following commands in the terminal:
 
@@ -170,7 +170,7 @@ The video data is saved in /mnt/DATA of each computer.
 E-phys PC
 ~~~~~~~~~
 
-On the firmware/software side, install the following (note that SpikeGLX only works on Windows!):
+On the firmware/software side, install the following (note that the SpikeGLX acquisition software only works on Windows!):
 
 * `SpikeGLX <https://billkarsh.github.io/SpikeGLX/>`_ (data acquisition software), unpack it in "C:\SpikeGLX"
 * `PXI Enclustra Drivers <https://billkarsh.github.io/SpikeGLX/>`_ for your specific OS version (scroll down to locate the appropriate file)
@@ -210,10 +210,10 @@ You do this by selecting a *Save directory* and filling out the form loaded in t
 Linux / Wayland (COSMIC)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-On Linux desktops running a **Wayland** compositor -- notably Pop!_OS **COSMIC**
+On Linux desktops running a **Wayland** (the Wayland display-server protocol) compositor -- notably Pop!_OS **COSMIC** (the Pop!_OS COSMIC desktop)
 -- the GUI's native-Wayland window handling can misbehave: the fixed-size
 windows shrink when refocused, and the terminal prints harmless
-``qt.accessibility.atspi`` warnings. Run the GUI through **XWayland** instead,
+``qt.accessibility.atspi`` warnings. Run the GUI through **XWayland** (the XWayland X11-compatibility layer) instead,
 which restores the traditional fixed-size window behaviour and silences those
 warnings, by exporting before launch:
 
@@ -274,7 +274,7 @@ touch. Grouped by role:
 
 **Tracking skeletons**
 
-- ``mouse_skeleton.json`` / ``playpen_skeleton.json`` — the SLEAP / Anipose
+- ``mouse_skeleton.json`` / ``playpen_skeleton.json`` — the SLEAP (the SLEAP pose-tracking framework) / Anipose (the Anipose 3-D triangulation library)
   node-and-edge skeletons for the mouse body and the arena calibration board, consumed by
   the 3D triangulation. Only edit these if you change the tracked keypoints or the arena.
 
@@ -282,5 +282,5 @@ touch. Grouped by role:
 
 - ``spike.wav`` — the short spike-sound clip mixed into behavioral videos when the
   spike-sound option is enabled.
-- ``usv_latent_embedding_segmentation.npz`` — the precomputed QLVM latent-embedding
-  watershed segmentation used to render the neuronal-tuning figures.
+- ``usv_latent_embedding_segmentation.npz`` — the precomputed QLVM (the in-house quasi-Monte Carlo latent variable model) latent-embedding
+  watershed segmentation (the watershed segmentation algorithm) used to render the neuronal-tuning figures.

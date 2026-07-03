@@ -44,10 +44,12 @@ def test_compute_acoustic_features_peak_frequency():
     specs[0, 4, 2] = 1.0  # bright pixel at freq-row 4, time 2 (inside window)
     freq_axis = np.linspace(30000.0, 120000.0, n_f)
     feats = compute_acoustic_features(specs, np.array([8]), freq_axis, 0.05, 0.95)
-    assert set(feats) == set(FEATURE_COLUMNS)
+    # ``compute_acoustic_features`` returns the spectral descriptors only;
+    # ``mask_number`` is injected downstream from the per-USV mask counts.
+    assert set(feats) == set(FEATURE_COLUMNS) - {"mask_number"}
     assert feats["peak_freq_hz"][0] == freq_axis[4]
     assert feats["max_amplitude"][0] == 1.0
-    assert np.all(np.isfinite(np.concatenate([feats[c] for c in FEATURE_COLUMNS])))
+    assert np.all(np.isfinite(np.concatenate([feats[c] for c in feats])))
 
 
 def test_compute_acoustic_features_rejects_negative_spectrograms():
@@ -77,7 +79,7 @@ def test_build_mask_region_masks_unions_and_falls_back():
     segmentations = np.stack([seg0, seg1], axis=0)
     spectrogram_index = np.array([0, 0], dtype=np.int64)
 
-    region, fallback = build_mask_region_masks(
+    region, mask_counts, fallback = build_mask_region_masks(
         durations=durations,
         usv_indices=usv_indices,
         segmentations=segmentations,
@@ -88,6 +90,8 @@ def test_build_mask_region_masks_unions_and_falls_back():
     assert region.shape == (2, n_f, n_t)
     assert region.dtype == np.float32
     assert fallback == 1
+    # Row 0 owns two masks; row 3 owns none (-> mask_number 2 and 0).
+    assert mask_counts.tolist() == [2, 0]
     # Row 0 == union of the two masks.
     assert np.array_equal(region[0].astype(bool), seg0 | seg1)
     # Row 3 fell back to the [0, 4) time-window over all frequencies.

@@ -66,7 +66,7 @@ For **combined processing**, the order of processing steps is as follows:
     #. Export YOLO dataset (CLI only)
     #. Train (spectrogram) masks (CLI only)
 
-The last four run only when (re)training the spectrogram-pipeline models: they aggregate a cohort of sessions and produce the QLVM decoder and YOLO weights that the per-session *Infer QLVM latents* / *Generate (spectrogram) masks* steps reload (see the *Render spectrograms and latents* section below).
+The last four run only when (re)training the spectrogram-pipeline models: they aggregate a cohort of sessions and produce the QLVM (the in-house quasi-Monte Carlo latent variable model) decoder and You Only Look Once (YOLO) object detector weights that the per-session *Infer QLVM latents* / *Generate (spectrogram) masks* steps reload (see the *Render spectrograms and latents* section below).
 
 On the other hand, for **processing sessions separately**, the order of processing steps is as follows:
 
@@ -465,7 +465,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
 
 Prepare SLEAP cluster job
 ~~~~~~~~~~~~~~~~~~~~~~~~~
-The *usv-playpen* GUI assumes usage of `SLEAP <https://sleap.ai/>`_ for animal pose tracking. To do this, one first needs to train one or multiple models on the data of interest (*i.e.*, social interactions). Explaining how to do this is beyond the scope of this text, so we will assume you already have a *top-down centroid and centered instance model* ready for running inference.
+The *usv-playpen* GUI assumes usage of the SLEAP pose-tracking framework (`SLEAP <https://sleap.ai/>`_) for animal pose tracking. To do this, one first needs to train one or multiple models on the data of interest (*i.e.*, social interactions). Explaining how to do this is beyond the scope of this text, so we will assume you already have a *top-down centroid and centered instance model* ready for running inference.
 
 Since the average office PC does not necessarily have GPU-capabilities, it is advised to run SLEAP inference on a high-performance computing cluster, as these usually have GPU-capabilities and allow for the parallelization of the inference process. The *usv-playpen* GUI helps you prepare the SLEAP cluster job, but you will need to run the job on the cluster yourself.
 
@@ -785,7 +785,7 @@ The *Convert to single-ch files* step populates the *original* directory with si
     │   └── video
     │       ...
 
-The *Crop AUDIO (to VIDEO)* step will also result in the creation of a *audio_triggerbox_sync_info.json* file, which contains the sample number of first and last recorded video frame and the break duration detected prior to recording. It will also contain information about the total duration of the audio recording and its discrepancy with the duration of the video recording. In the *sync* subdirectory, the *m_video_frames_in_audio_samples* and *s_video_frames_in_audio_samples* files will be created, which contain the sample numbers of video frame starts in the audio recording. These files are useful should troubleshooting sync issues arise. In case, NIDQ data was recorded, the *nidq_ipi_data.npy* file will be created, which contains the IPI durations (first row) and IPI start samples (second row).
+The *Crop AUDIO (to VIDEO)* step will also result in the creation of a *audio_triggerbox_sync_info.json* file, which contains the sample number of first and last recorded video frame and the break duration detected prior to recording. It will also contain information about the total duration of the audio recording and its discrepancy with the duration of the video recording. In the *sync* subdirectory, the *m_video_frames_in_audio_samples* and *s_video_frames_in_audio_samples* files will be created, which contain the sample numbers of video frame starts in the audio recording. These files are useful should troubleshooting sync issues arise. In case, National Instruments data acquisition (NIDQ) data was recorded, the *nidq_ipi_data.npy* file will be created, which contains the inter-pulse interval (IPI) durations (first row) and IPI start samples (second row).
 
 .. code-block:: json
 
@@ -815,7 +815,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 
 Run HPSS
 ~~~~~~~~
-You have the option to denoise audio data using harmonic-percussive source separation (implemented with `librosa <https://librosa.org/doc/main/auto_examples/plot_hprss.html>`_). You can find materials that allow you to run this analysis on the cluster in: */usv-playpen/other/cluster/HPSS*. Alternatively, to run HPSS locally, you need to list the root directories of interest, select *Run HPSS*, click *Next* and then *Process*:
+You have the option to denoise audio data using harmonic-percussive source separation (HPSS; implemented with `librosa <https://librosa.org/doc/main/auto_examples/plot_hprss.html>`_). You can find materials that allow you to run this analysis on the cluster in: */usv-playpen/other/cluster/HPSS*. Alternatively, to run HPSS locally, you need to list the root directories of interest, select *Run HPSS*, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_10.png
    :align: center
@@ -955,7 +955,7 @@ The *Concatenate to MEMMAP* step takes its parameters from the adjacent ``concat
 
 Run DAS inference
 ~~~~~~~~~~~~~~~~~
-The *usv-playpen* GUI assumes usage of `DAS <https://janclemenslab.org/das/>`_ for identifying vocalizations in audio recordings. To do this, one first needs to train a model on the data of interest (*i.e.*, social interactions with vocal output). Explaining how to do this is beyond the scope of this text, so we will assume you already have a *model* ready for running inference.
+The *usv-playpen* GUI assumes usage of the Deep Audio Segmenter (`DAS <https://janclemenslab.org/das/>`_) for identifying vocalizations in audio recordings. To do this, one first needs to train a model on the data of interest (*i.e.*, social interactions with vocal output). Explaining how to do this is beyond the scope of this text, so we will assume you already have a *model* ready for running inference.
 
 Since the average office PC does not necessarily have GPU-capabilities, it is advised to run DAS inference on a high-performance computing cluster, as these usually have GPU-capabilities and allow for the parallelization of the inference process. The *usv-playpen* GUI allows you to run the process locally (which can be time consuming), and it provides you with a shell script you can modify for cluster usage (*/usv-playpen/other/cluster/DAS/das_inference_global.sh*).
 
@@ -1188,7 +1188,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 Render spectrograms and latents
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Once the curated *usv_summary.csv* exists (see *Curate DAS outputs* above), an in-house, self-contained pipeline turns every detected USV into a spectrogram, a USV mask, interpretable acoustic features, and toroidal **QLVM** latents. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run them together, you need to list the root directories of interest, set the *Spectrogram models directory* (the single root from which the SAM2, YOLO, and QLVM model paths are derived), select *Generate spectrograms*, *Generate masks*, *Compute USV features* and *Infer QLVM latents*, click *Next* and then *Process* (GPU is required):
+Once the curated *usv_summary.csv* exists (see *Curate DAS outputs* above), an in-house, self-contained pipeline turns every detected ultrasonic vocalization (USV) into a spectrogram, a USV mask, interpretable acoustic features, and toroidal **QLVM** latents. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run them together, you need to list the root directories of interest, set the *Spectrogram models directory* (the single root from which the Segment Anything Model 2 (SAM2), YOLO, and QLVM model paths are derived), select *Generate spectrograms*, *Generate masks*, *Compute USV features* and *Infer QLVM latents*, click *Next* and then *Process* (GPU is required):
 
 .. raw:: html
 
@@ -1427,7 +1427,7 @@ Box labels are set by ``--label-source`` (or ``export_yolo_dataset.label_source`
 
 A/V synchronization
 -------------------
-To run A/V synchronization, you need to list the root directories of interest, select *A/V Synchronization*, click *Next* and then *Process*:
+To run audio/video (A/V) synchronization, you need to list the root directories of interest, select *A/V Synchronization*, click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_15.png
    :align: center
@@ -1457,7 +1457,7 @@ The A/V synchronization procedure will first create a *sync_px* file for each in
 
 An example output of the A/V synchronization procedure is shown below.
 
-Notice that the plot contains two columns, one for each USGH device (which can operate in NO SYNC mode). In the first row, you can observe the distribution of A-V IPI discrepancies, which is the difference between the IPI onsets detected in the video and audio data. In the example, you can see the discrepancy goes rarely beyond one camera frame, which is ~6 ms, an acceptable amount of jitter. One might also be interested in viewing how this discrepancy evolves over time. One thing we would want to avoid are drastic changes in sampling rates on any of the devices over time. In the second row, you can see the relationship between IPI onsets time (earlier-later in the session) and the A-V IPI discrepancy. Ideally, we would want to observe a *flat cloud* of points, which would indicate that the A/V IPI discrepancy is stable over time. If you observe a trend that goes beyond 2 tracking frames, it might be worth investigating further.
+Notice that the plot contains two columns, one for each Avisoft UltraSoundGate hardware (USGH) device (which can operate in NO SYNC mode). In the first row, you can observe the distribution of A-V IPI discrepancies, which is the difference between the IPI onsets detected in the video and audio data. In the example, you can see the discrepancy goes rarely beyond one camera frame, which is ~6 ms, an acceptable amount of jitter. One might also be interested in viewing how this discrepancy evolves over time. One thing we would want to avoid are drastic changes in sampling rates on any of the devices over time. In the second row, you can see the relationship between IPI onsets time (earlier-later in the session) and the A-V IPI discrepancy. Ideally, we would want to observe a *flat cloud* of points, which would indicate that the A/V IPI discrepancy is stable over time. If you observe a trend that goes beyond 2 tracking frames, it might be worth investigating further.
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/sync_summary_example_noNIDQ.png
    :align: center

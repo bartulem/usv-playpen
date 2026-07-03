@@ -40,7 +40,7 @@ Process
 -------
 
 ``concatenate-ephys-files``
-``concatenate-ephys-files`` is the command-line interface for concatenating ephys binary files across multiple sessions.
+``concatenate-ephys-files`` is the command-line interface for concatenating electrophysiology (ephys) binary files across multiple sessions.
 
 .. code-block:: text
 
@@ -245,7 +245,7 @@ Process
       --dirs                Directory/ies to search for files to concatenate.
 
 ``sleap-to-h5``
-``sleap-to-h5`` is the command-line interface for converting SLEAP (.slp) files to HDF5 (.h5) files.
+``sleap-to-h5`` is the command-line interface for converting SLEAP (the SLEAP pose-tracking framework) ``.slp`` files to hierarchical data format (HDF5) ``.h5`` files.
 
 .. code-block:: text
 
@@ -386,7 +386,7 @@ Process
       --var-cutoff          Maximum noise variance cutoff.
 
 ``prepare-vcl-assign``
-``prepare-vcl-assign`` is the command-line interface for preparing data for vocalization assignment using Vocalocator.
+``prepare-vcl-assign`` is the command-line interface for preparing data for vocalization assignment using the Vocalocator sound-source localizer.
 
 .. code-block:: text
 
@@ -417,20 +417,189 @@ Process
       --env-name            Name of the Vocalocator conda environment.
       --model-dir           Directory of the Vocalocator model.
 
-Neuropixels
------------
+.. _usv-pipeline-cli:
 
-``npx-meta-to-coords``
-``npx-meta-to-coords`` launches a small Qt GUI that converts a SpikeGLX ``*.ap.meta`` file into a probe-geometry artifact: a Kilosort ``chanMap.mat``, plain-text or ``.npy`` site coordinates, JRClust ``.prm`` strings, or an in-place upgrade of a legacy (pre-SpikeGLX 032623) meta file. It takes no command-line flags — every choice is made through three dialogs. The related ``python -m usv_playpen.neuropixels.anatomy_converter`` utility, and the programmatic API, are documented on the :ref:`Neuropixels` page.
+These commands form the in-house, self-contained pipeline that turns segmented USVs into spectrograms, call masks, interpretable acoustic features, and toroidal QLVM latents — and that trains the two models the pipeline relies on (the Segment Anything Model 2 (SAM2) box-prompt **You Only Look Once (YOLO) object detector** and the **QLVM decoder**). Every step is a `click <https://click.palletsprojects.com>`_ CLI whose full option set lives under its block in */usv-playpen/_parameter_settings/processing_settings.json*; the flags below are the common overrides. The per-session steps read/write each session's ``audio/spectrograms/<session>_spectrograms.h5``; the cross-session steps aggregate a list of those files.
+
+Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-masks`` → ``generate-usv-acoustic-features`` and/or ``infer-qlvm-latents``. Training flow (cross-session, run once on a cohort): build a dataset, then train. The YOLO detector and QLVM decoder are trained in-house; **SAM2 is used pretrained** (it is not fine-tuned here).
+
+``generate-usv-spectrograms``
+``generate-usv-spectrograms`` computes the variance-weighted, multi-channel average spectrogram of every USV in a session and writes the consolidated ``spectrogram/<session>`` group (``spectrograms`` (N, 128, 128), ``durations`` (N,)) into ``audio/spectrograms/<session>_spectrograms.h5``. Rows are 1:1 with ``usv_summary.csv``.
 
 .. code-block:: text
 
-    usage: npx-meta-to-coords
+    usage: generate-usv-spectrograms [-h] --root-directory PATH
+                            [--num-freq-bins INTEGER] [--num-time-bins INTEGER]
+                            [--nperseg INTEGER] [--min-freq FLOAT] [--max-freq FLOAT]
 
-    A Qt GUI; takes no command-line arguments. Three dialogs run in sequence:
-      1. select a SpikeGLX *.ap.meta file;
-      2. choose the output format (defaults to the Kilosort chanMap);
-      3. confirm the destination, optionally showing the probe-layout plot.
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      (full parameters under processing_settings.json -> "generate_spectrograms")
+
+``generate-usv-masks``
+``generate-usv-masks`` segments each USV's calls with the box-prompt detector → SAM2 path (default ``detector=yolo``; ``cc`` connected-component fallback) and writes the instance masks back into the SAME spectrogram H5 under a ``mask/<session>`` group (``segmentations`` (M, 128, 128) bool, ``spectrogram_index`` (M,) int). Requires a pretrained SAM2 checkpoint and trained YOLO weights configured in settings (a missing path raises a clear error). GPU recommended.
+
+.. code-block:: text
+
+    usage: generate-usv-masks [-h] --root-directory PATH
+                            [--detector {yolo,cc}]
+                            [--sam2-model-dir PATH] [--sam2-model-cfg TEXT] [--sam2-model-path PATH]
+                            [--yolo-weights PATH] [--yolo-conf FLOAT] [--yolo-iou FLOAT]
+
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --detector            Box detector backend (yolo learned detector or cc baseline).
+      --sam2-model-dir      SAM2 model directory (config/checkpoint resolve against it).
+      --sam2-model-cfg      SAM2 model config name/path (resolvable from sam2_model_dir).
+      --sam2-model-path     SAM2 checkpoint path.
+      --yolo-weights        Trained YOLO best.pt weights path.
+      (full parameters under processing_settings.json -> "generate_masks")
+
+``generate-usv-acoustic-features``
+``generate-usv-acoustic-features`` computes interpretable per-USV spectral/amplitude features and merges them into the session's ``usv_summary.csv``. When a ``mask/<session>`` group is present it restricts each feature to the true SAM mask region (``np.any`` union of the call's segmentations); otherwise it falls back to the signal time-window.
+
+.. code-block:: text
+
+    usage: generate-usv-acoustic-features [-h] --root-directory PATH
+                            [--low-energy-frac FLOAT] [--high-energy-frac FLOAT]
+
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      (full parameters under processing_settings.json -> "compute_usv_acoustic_features")
+
+``build-qlvm-training-set``
+``build-qlvm-training-set`` aggregates a list of session root directories into a single curated ``.npz`` training set (``train_data.npz`` + ``val_data.npz``, or ``full_data.npz``) for the QLVM. With ``--masking-type sam`` (default), each kept spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group (background zeroed; a call with no detected mask keeps an all-ones mask); ``--masking-type none`` keeps raw spectrograms.
+
+.. code-block:: text
+
+    usage: build-qlvm-training-set [-h] --root-directories TEXT,TEXT,... --output-directory PATH
+                            [--length-threshold FLOAT] [--validation-split FLOAT]
+                            [--full-dataset | --no-full-dataset]
+                            [--time-stretch | --no-time-stretch]
+                            [--masking-type {sam,none}]
+
+    required arguments:
+      --root-directories      Comma-separated string of session root directory paths.
+      --output-directory      Directory to write the .npz training set.
+
+    optional arguments:
+      -h, --help              Show this help message and exit.
+      --masking-type          Apply SAM mask regions ("sam") or keep raw spectrograms ("none").
+      settings (processing_settings.json -> "build_qlvm_training_set"), overridden by any flag above:
+      length_threshold         Minimum USV duration in ms to keep a call (default 50.0).
+      dataset_size_constraint  Optional cap on the number of spectrograms; null = no cap (default null).
+      validation_split         Fraction held out as val_data.npz (default 0.2).
+      random_state             Seed for the train/val split (default 42).
+      full_dataset             Write a single full_data.npz instead of a train/val split (default false).
+      target_shape             (H, W) each spectrogram is resized to (default [128, 128]).
+      time_stretch             Augment with random time-stretching (default false).
+      masking_type             Apply SAM mask regions ("sam") or keep raw spectrograms ("none") (default "sam").
+
+``train-qlvm``
+``train-qlvm`` trains the QLVM decoder on a ``build-qlvm-training-set`` ``.npz`` set (fixed quasi-random torus lattice + ConvTranspose decoder, Bernoulli evidence objective) and writes ``qmc_train_qlvm.tar`` (full checkpoint) plus ``qmc_decoder_weights.npz``. That ``.npz`` is the train→inference bridge: point ``infer-qlvm-latents``' ``weights_npz_path`` at it (the torch-free JAX (the JAX numerical-computing library) inference reloads exactly these decoder weights). GPU recommended.
+
+.. code-block:: text
+
+    usage: train-qlvm [-h] --dataset-directory PATH --output-directory PATH
+                            [--n-epochs INTEGER] [--latent-dim INTEGER]
+                            [--lattice-type {korobov,roberts,fibonacci}] [--korobov-a INTEGER]
+                            [--batch-size INTEGER] [--learning-rate FLOAT]
+
+    required arguments:
+      --dataset-directory   Directory holding the .npz training set (build-qlvm-training-set output).
+      --output-directory    Directory to write the checkpoint + decoder-weights .npz.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      settings (processing_settings.json -> "train_qlvm"), overridden by any flag above:
+      n_epochs        Number of training epochs (default 300).
+      latent_dim      Torus latent dimensionality (default 2).
+      lattice_type    Quasi-random lattice generator: korobov / roberts / fibonacci (default korobov).
+      korobov_a       Korobov generating integer, used when lattice_type=korobov (default 76).
+      train_n_points  Lattice points used during training (default 1021).
+      test_n_points   Lattice points used at evaluation (default 2039).
+      fib_m           Fibonacci lattice order, used when lattice_type=fibonacci (default 15).
+      batch_size      Training batch size (default 64).
+      learning_rate   Adam learning rate (default 0.001).
+      val_freq        Run validation every N epochs (default 10).
+      seed            Global RNG seed (default 42).
+      num_workers     DataLoader worker processes; 0 = main process (default 0).
+
+``infer-qlvm-latents``
+``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm_dim1`` / ``qlvm_dim2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``.
+
+.. code-block:: text
+
+    usage: infer-qlvm-latents [-h] --root-directory PATH
+                            [--weights-npz-path PATH]
+                            [--reference-arrays-fine-npz-path PATH]
+                            [--reference-arrays-coarse-npz-path PATH]
+
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --weights-npz-path    Path to the converted decoder weights .npz (train-qlvm output).
+      --reference-arrays-fine-npz-path    FINE reference arrays.npz (ws_labels_periodic -> qlvm_category).
+      --reference-arrays-coarse-npz-path  COARSE reference arrays.npz (ws_labels_periodic -> qlvm_supercategory).
+      (full parameters under processing_settings.json -> "infer_qlvm_latents")
+
+``export-yolo-dataset``
+``export-yolo-dataset`` renders USV spectrograms to images (exactly as the detector renders them at inference) and writes an Ultralytics-format YOLO dataset (``images/{train,val}``, ``labels/{train,val}``, ``data.yaml``). ``--label-source cc`` (default) pseudo-labels boxes with the unlearned connected-component detector (no annotation needed); ``manual`` ingests hand-verified ``{spec_id}.txt`` labels; ``merge`` uses cc overridden by manual where present.
+
+.. code-block:: text
+
+    usage: export-yolo-dataset [-h] --root-directories TEXT,TEXT,... --output-directory PATH
+                            [--label-source {cc,manual,merge}] [--validation-split FLOAT]
+                            [--manual-labels-directory PATH]
+
+    required arguments:
+      --root-directories      Comma-separated string of session root directory paths.
+      --output-directory      Directory to write the YOLO dataset.
+
+    optional arguments:
+      -h, --help              Show this help message and exit.
+      --label-source          Box label source: cc pseudo-labels, manual files, or merge.
+      --manual-labels-directory  Directory of hand-verified {spec_id}.txt YOLO labels.
+      settings (processing_settings.json -> "export_yolo_dataset"), overridden by any flag above:
+      label_source             Box-label source: "cc" pseudo-labels / "manual" / "merge" (default "cc").
+      validation_split         Fraction of images held out for val (default 0.2).
+      random_state             Seed for the train/val split (default 42).
+      colormap                 Matplotlib colormap the spectrogram images are rendered with (default viridis).
+      manual_labels_directory  Directory of hand-verified {spec_id}.txt labels, for "manual"/"merge" (default "").
+
+``train-masks``
+``train-masks`` fine-tunes the Ultralytics YOLO box detector on an ``export-yolo-dataset`` dataset (from a COCO-pretrained ``yolo11n.pt`` by default) and copies the resulting ``best.pt`` to ``<output-directory>/best.pt`` — the path to set as ``generate-usv-masks``' ``yolo_weights``. GPU recommended.
+
+.. code-block:: text
+
+    usage: train-masks [-h] --dataset-directory PATH --output-directory PATH
+                            [--base-weights TEXT] [--n-epochs INTEGER] [--batch-size INTEGER]
+
+    required arguments:
+      --dataset-directory   YOLO dataset directory (export-yolo-dataset output, with data.yaml).
+      --output-directory    Directory for the Ultralytics run + copied best.pt.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --base-weights        Base YOLO checkpoint to fine-tune from (e.g. yolo11n.pt).
+      settings (processing_settings.json -> "train_masks"), overridden by any flag above:
+      base_weights  COCO-pretrained YOLO checkpoint to fine-tune from (default yolo11n.pt).
+      n_epochs      Number of training epochs (default 100).
+      imgsz         Square image size in px the detector trains at (default 128).
+      batch_size    Training batch size (default 16).
+      device        CUDA device; null = auto-select, e.g. 0 or "cpu" (default null).
+      run_name      Ultralytics run name (subdir under the output directory) (default usv_yolo_detector).
 
 Analyze
 -------
@@ -458,7 +627,7 @@ Analyze
 
 
 ``generate-usv-playback``
-``generate-usv-playback`` is the command-line interface for generating artificial USV playback files.
+``generate-usv-playback`` is the command-line interface for generating artificial ultrasonic vocalization (USV) playback files.
 
 .. code-block:: text
 
@@ -767,7 +936,7 @@ Visualize
       --usv-segments-lw                Line width for USV segment markers.
 
 ``qlvm-torus-traversal-video``
-``qlvm-torus-traversal-video`` renders a demo video that traverses the toroidal QLVM latent space.
+``qlvm-torus-traversal-video`` renders a demo video that traverses the toroidal QLVM (the in-house quasi-Monte Carlo latent variable model) latent space.
 
 .. code-block:: text
 
@@ -781,7 +950,7 @@ Visualize
       --fps                 Video frames per second.
 
 ``build-vae-density``
-``build-vae-density`` builds the pooled VAE-UMAP density / category-label maps (coarse + fine) used as the embedding-space background for the USV spectrogram figures.
+``build-vae-density`` builds the pooled variational autoencoder (VAE)-Uniform Manifold Approximation and Projection (UMAP) density / category-label maps (coarse + fine) used as the embedding-space background for the USV spectrogram figures.
 
 .. code-block:: text
 
@@ -801,195 +970,55 @@ Visualize
       --smooth-sigma        Gaussian sigma in grid cells; 0 = raw histogram (default 1.5).
       --knn                 Neighbours for the grid label classifier (default 15).
 
-.. _usv-pipeline-cli:
+Neuropixels
+-----------
 
-USV vocalization & model-training pipeline
---------------------------------------------
-
-These commands form the in-house, self-contained pipeline that turns segmented USVs into spectrograms, call masks, interpretable acoustic features, and toroidal QLVM latents — and that trains the two models the pipeline relies on (the SAM2 box-prompt **YOLO detector** and the **QLVM decoder**). Every step is a `click <https://click.palletsprojects.com>`_ CLI whose full option set lives under its block in */usv-playpen/_parameter_settings/processing_settings.json*; the flags below are the common overrides. The per-session steps read/write each session's ``audio/spectrograms/<session>_spectrograms.h5``; the cross-session steps aggregate a list of those files.
-
-Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-masks`` → ``generate-usv-acoustic-features`` and/or ``infer-qlvm-latents``. Training flow (cross-session, run once on a cohort): build a dataset, then train. The YOLO detector and QLVM decoder are trained in-house; **SAM2 is used pretrained** (it is not fine-tuned here).
-
-``generate-usv-spectrograms``
-``generate-usv-spectrograms`` computes the variance-weighted, multi-channel average spectrogram of every USV in a session and writes the consolidated ``spectrogram/<session>`` group (``spectrograms`` (N, 128, 128), ``durations`` (N,)) into ``audio/spectrograms/<session>_spectrograms.h5``. Rows are 1:1 with ``usv_summary.csv``.
+``npx-meta-to-coords``
+``npx-meta-to-coords`` converts a SpikeGLX (the SpikeGLX acquisition software) ``*.ap.meta`` file into a probe-geometry artifact: a Kilosort (the Kilosort spike-sorter) ``chanMap.mat``, plain-text or ``.npy`` site coordinates, JRClust (the JRClust spike sorter) ``.prm`` strings, or an in-place upgrade of a legacy (pre-SpikeGLX 032623) meta file. Pass ``--meta-file`` to run **headless** (no GUI, so the conversion can be scripted next to the spike-sorting step); with **no arguments** it launches an interactive Qt GUI whose three dialogs pick the meta file, the output format, and the destination / optional probe-layout plot. The related ``python -m usv_playpen.neuropixels.anatomy_converter`` utility (below) and the programmatic API are documented on the :ref:`Neuropixels` page.
 
 .. code-block:: text
 
-    usage: generate-usv-spectrograms [-h] --root-directory PATH
-                            [--num-freq-bins INTEGER] [--num-time-bins INTEGER]
-                            [--nperseg INTEGER] [--min-freq FLOAT] [--max-freq FLOAT]
+    usage: npx-meta-to-coords [-h] [--meta-file META_FILE]
+                              [--output-format {text,kilosort_mat,jrclust_strings,npy,legacy_meta_augment}]
+                              [--plot] [--save-plot SAVE_PLOT]
 
-    required arguments:
-      --root-directory      Session root directory path.
+    optional arguments:
+      -h, --help          Show this help message and exit.
+      --meta-file         Path to the SpikeGLX *.ap.meta file. When given, runs headlessly (no GUI).
+      --output-format     Output artefact format (headless mode; default: kilosort_mat).
+      --plot              After a headless conversion, show the probe-layout plot interactively.
+      --save-plot         After a headless conversion, write the probe-layout plot to this path.
+
+    With no --meta-file, an interactive Qt GUI runs three dialogs instead:
+      1. select a SpikeGLX *.ap.meta file;
+      2. choose the output format (defaults to the Kilosort chanMap);
+      3. confirm the destination, optionally showing the probe-layout plot.
+
+``python -m usv_playpen.neuropixels.anatomy_converter``
+Unlike ``npx-meta-to-coords``, the channel-brain area converter runs fully headless. It updates ``neuropixels_sites_to_anatomy_converter.json`` with Kilosort-row-keyed per-region channel ranges: pass ``--regenerate-all`` to rewrite every triple already in the file, or ``--mouse`` / ``--session`` / ``--probe`` to add just one; with no action it prints help and writes nothing (the full workflow is on the :ref:`Neuropixels` page).
+
+.. code-block:: text
+
+    usage: python -m usv_playpen.neuropixels.anatomy_converter [-h]
+             [--converter-path PATH] [--ephys-root PATH] [--histology-root PATH]
+             [--regenerate-all] [--mouse TEXT] [--session TEXT] [--probe TEXT]
+             [--force] [--dry-run]
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      (full parameters under processing_settings.json -> "generate_spectrograms")
+      --converter-path      Path to the converter JSON to update.
+      --ephys-root          Root directory containing per-probe Kilosort outputs.
+      --histology-root      Root directory containing per-mouse IBL histology output.
+      --regenerate-all      Bulk-regenerate EVERY triple already in the converter
+                            (mutually exclusive with --mouse/--session/--probe).
+      --mouse               Mouse id for single-triple mode (requires --session/--probe).
+      --session             Session id (YYYYMMDD...) for single-triple mode.
+      --probe               Probe id ('imec0'/'imec1') for single-triple mode.
+      --force               Re-regenerate the single triple even if already present.
+      --dry-run             Print the summary without writing the converter to disk.
 
-``generate-usv-masks``
-``generate-usv-masks`` segments each USV's calls with the box-prompt detector → SAM2 path (default ``detector=yolo``; ``cc`` connected-component fallback) and writes the instance masks back into the SAME spectrogram H5 under a ``mask/<session>`` group (``segmentations`` (M, 128, 128) bool, ``spectrogram_index`` (M,) int). Requires a pretrained SAM2 checkpoint and trained YOLO weights configured in settings (a missing path raises a clear error). GPU recommended.
-
-.. code-block:: text
-
-    usage: generate-usv-masks [-h] --root-directory PATH
-                            [--detector {yolo,cc}]
-                            [--sam2-model-dir PATH] [--sam2-model-cfg TEXT] [--sam2-model-path PATH]
-                            [--yolo-weights PATH] [--yolo-conf FLOAT] [--yolo-iou FLOAT]
-
-    required arguments:
-      --root-directory      Session root directory path.
-
-    optional arguments:
-      -h, --help            Show this help message and exit.
-      --detector            Box detector backend (yolo learned detector or cc baseline).
-      --sam2-model-dir      SAM2 model directory (config/checkpoint resolve against it).
-      --sam2-model-cfg      SAM2 model config name/path (resolvable from sam2_model_dir).
-      --sam2-model-path     SAM2 checkpoint path.
-      --yolo-weights        Trained YOLO best.pt weights path.
-      (full parameters under processing_settings.json -> "generate_masks")
-
-``generate-usv-acoustic-features``
-``generate-usv-acoustic-features`` computes interpretable per-USV spectral/amplitude features and merges them into the session's ``usv_summary.csv``. When a ``mask/<session>`` group is present it restricts each feature to the true SAM mask region (``np.any`` union of the call's segmentations); otherwise it falls back to the signal time-window.
-
-.. code-block:: text
-
-    usage: generate-usv-acoustic-features [-h] --root-directory PATH
-                            [--low-energy-frac FLOAT] [--high-energy-frac FLOAT]
-
-    required arguments:
-      --root-directory      Session root directory path.
-
-    optional arguments:
-      -h, --help            Show this help message and exit.
-      (full parameters under processing_settings.json -> "compute_usv_acoustic_features")
-
-``build-qlvm-training-set``
-``build-qlvm-training-set`` aggregates a list of session root directories into a single curated ``.npz`` training set (``train_data.npz`` + ``val_data.npz``, or ``full_data.npz``) for the QLVM. With ``--masking-type sam`` (default), each kept spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group (background zeroed; a call with no detected mask keeps an all-ones mask); ``--masking-type none`` keeps raw spectrograms.
-
-.. code-block:: text
-
-    usage: build-qlvm-training-set [-h] --root-directories TEXT,TEXT,... --output-directory PATH
-                            [--length-threshold FLOAT] [--validation-split FLOAT]
-                            [--full-dataset | --no-full-dataset]
-                            [--time-stretch | --no-time-stretch]
-                            [--masking-type {sam,none}]
-
-    required arguments:
-      --root-directories      Comma-separated string of session root directory paths.
-      --output-directory      Directory to write the .npz training set.
-
-    optional arguments:
-      -h, --help              Show this help message and exit.
-      --masking-type          Apply SAM mask regions ("sam") or keep raw spectrograms ("none").
-      settings (processing_settings.json -> "build_qlvm_training_set"), overridden by any flag above:
-      length_threshold         Minimum USV duration in ms to keep a call (default 50.0).
-      dataset_size_constraint  Optional cap on the number of spectrograms; null = no cap (default null).
-      validation_split         Fraction held out as val_data.npz (default 0.2).
-      random_state             Seed for the train/val split (default 42).
-      full_dataset             Write a single full_data.npz instead of a train/val split (default false).
-      target_shape             (H, W) each spectrogram is resized to (default [128, 128]).
-      time_stretch             Augment with random time-stretching (default false).
-      masking_type             Apply SAM mask regions ("sam") or keep raw spectrograms ("none") (default "sam").
-
-``train-qlvm``
-``train-qlvm`` trains the QLVM decoder on a ``build-qlvm-training-set`` ``.npz`` set (fixed quasi-random torus lattice + ConvTranspose decoder, Bernoulli evidence objective) and writes ``qmc_train_qlvm.tar`` (full checkpoint) plus ``qmc_decoder_weights.npz``. That ``.npz`` is the train→inference bridge: point ``infer-qlvm-latents``' ``weights_npz_path`` at it (the torch-free JAX inference reloads exactly these decoder weights). GPU recommended.
-
-.. code-block:: text
-
-    usage: train-qlvm [-h] --dataset-directory PATH --output-directory PATH
-                            [--n-epochs INTEGER] [--latent-dim INTEGER]
-                            [--lattice-type {korobov,roberts,fibonacci}] [--korobov-a INTEGER]
-                            [--batch-size INTEGER] [--learning-rate FLOAT]
-
-    required arguments:
-      --dataset-directory   Directory holding the .npz training set (build-qlvm-training-set output).
-      --output-directory    Directory to write the checkpoint + decoder-weights .npz.
-
-    optional arguments:
-      -h, --help            Show this help message and exit.
-      settings (processing_settings.json -> "train_qlvm"), overridden by any flag above:
-      n_epochs        Number of training epochs (default 300).
-      latent_dim      Torus latent dimensionality (default 2).
-      lattice_type    Quasi-random lattice generator: korobov / roberts / fibonacci (default korobov).
-      korobov_a       Korobov generating integer, used when lattice_type=korobov (default 76).
-      train_n_points  Lattice points used during training (default 1021).
-      test_n_points   Lattice points used at evaluation (default 2039).
-      fib_m           Fibonacci lattice order, used when lattice_type=fibonacci (default 15).
-      batch_size      Training batch size (default 64).
-      learning_rate   Adam learning rate (default 0.001).
-      val_freq        Run validation every N epochs (default 10).
-      seed            Global RNG seed (default 42).
-      num_workers     DataLoader worker processes; 0 = main process (default 0).
-
-``infer-qlvm-latents``
-``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm_dim1`` / ``qlvm_dim2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``.
-
-.. code-block:: text
-
-    usage: infer-qlvm-latents [-h] --root-directory PATH
-                            [--weights-npz-path PATH]
-                            [--reference-arrays-fine-npz-path PATH]
-                            [--reference-arrays-coarse-npz-path PATH]
-
-    required arguments:
-      --root-directory      Session root directory path.
-
-    optional arguments:
-      -h, --help            Show this help message and exit.
-      --weights-npz-path    Path to the converted decoder weights .npz (train-qlvm output).
-      --reference-arrays-fine-npz-path    FINE reference arrays.npz (ws_labels_periodic -> qlvm_category).
-      --reference-arrays-coarse-npz-path  COARSE reference arrays.npz (ws_labels_periodic -> qlvm_supercategory).
-      (full parameters under processing_settings.json -> "infer_qlvm_latents")
-
-``export-yolo-dataset``
-``export-yolo-dataset`` renders USV spectrograms to images (exactly as the detector renders them at inference) and writes an Ultralytics-format YOLO dataset (``images/{train,val}``, ``labels/{train,val}``, ``data.yaml``). ``--label-source cc`` (default) pseudo-labels boxes with the unlearned connected-component detector (no annotation needed); ``manual`` ingests hand-verified ``{spec_id}.txt`` labels; ``merge`` uses cc overridden by manual where present.
-
-.. code-block:: text
-
-    usage: export-yolo-dataset [-h] --root-directories TEXT,TEXT,... --output-directory PATH
-                            [--label-source {cc,manual,merge}] [--validation-split FLOAT]
-                            [--manual-labels-directory PATH]
-
-    required arguments:
-      --root-directories      Comma-separated string of session root directory paths.
-      --output-directory      Directory to write the YOLO dataset.
-
-    optional arguments:
-      -h, --help              Show this help message and exit.
-      --label-source          Box label source: cc pseudo-labels, manual files, or merge.
-      --manual-labels-directory  Directory of hand-verified {spec_id}.txt YOLO labels.
-      settings (processing_settings.json -> "export_yolo_dataset"), overridden by any flag above:
-      label_source             Box-label source: "cc" pseudo-labels / "manual" / "merge" (default "cc").
-      validation_split         Fraction of images held out for val (default 0.2).
-      random_state             Seed for the train/val split (default 42).
-      colormap                 Matplotlib colormap the spectrogram images are rendered with (default viridis).
-      manual_labels_directory  Directory of hand-verified {spec_id}.txt labels, for "manual"/"merge" (default "").
-
-``train-masks``
-``train-masks`` fine-tunes the Ultralytics YOLO box detector on an ``export-yolo-dataset`` dataset (from a COCO-pretrained ``yolo11n.pt`` by default) and copies the resulting ``best.pt`` to ``<output-directory>/best.pt`` — the path to set as ``generate-usv-masks``' ``yolo_weights``. GPU recommended.
-
-.. code-block:: text
-
-    usage: train-masks [-h] --dataset-directory PATH --output-directory PATH
-                            [--base-weights TEXT] [--n-epochs INTEGER] [--batch-size INTEGER]
-
-    required arguments:
-      --dataset-directory   YOLO dataset directory (export-yolo-dataset output, with data.yaml).
-      --output-directory    Directory for the Ultralytics run + copied best.pt.
-
-    optional arguments:
-      -h, --help            Show this help message and exit.
-      --base-weights        Base YOLO checkpoint to fine-tune from (e.g. yolo11n.pt).
-      settings (processing_settings.json -> "train_masks"), overridden by any flag above:
-      base_weights  COCO-pretrained YOLO checkpoint to fine-tune from (default yolo11n.pt).
-      n_epochs      Number of training epochs (default 100).
-      imgsz         Square image size in px the detector trains at (default 128).
-      batch_size    Training batch size (default 16).
-      device        CUDA device; null = auto-select, e.g. 0 or "cpu" (default null).
-      run_name      Ultralytics run name (subdir under the output directory) (default usv_yolo_detector).
-
-CLI Spock cluster usage
------------------------
+CLI *Spock* cluster usage
+-------------------------
 
 In order to exploit the full functionality of *usv-playpen*, one should install subsidiary uv (sleap) or conda packages (das, vcl-ssl or vcl-ssl-ss). To install these on the *Spock* cluster, you can use the commands below (NB: the conda version is arbitrary, but you should note down which one you used):
 

@@ -675,7 +675,7 @@ def test_main_writes_selected_format_and_returns_zero(tmp_path, monkeypatch):
 
     meta_file = _write_geom_meta(tmp_path)
     _patch_qt(monkeypatch, file_result=(str(meta_file), ""), item_result=("text", True))
-    assert sglx.main() == 0
+    assert sglx.main([]) == 0
     assert (tmp_path / "run.imec0.ap_siteCoords.txt").is_file()
 
 
@@ -688,7 +688,7 @@ def test_main_returns_zero_when_file_dialog_cancelled(tmp_path, monkeypatch):
     """
 
     _patch_qt(monkeypatch, file_result=("", ""))
-    assert sglx.main() == 0
+    assert sglx.main([]) == 0
 
 
 def test_main_returns_zero_when_format_dialog_cancelled(tmp_path, monkeypatch):
@@ -701,7 +701,7 @@ def test_main_returns_zero_when_format_dialog_cancelled(tmp_path, monkeypatch):
 
     meta_file = _write_geom_meta(tmp_path)
     _patch_qt(monkeypatch, file_result=(str(meta_file), ""), item_result=("text", False))
-    assert sglx.main() == 0
+    assert sglx.main([]) == 0
 
 
 def test_main_returns_one_on_conversion_error(tmp_path, monkeypatch):
@@ -716,7 +716,7 @@ def test_main_returns_one_on_conversion_error(tmp_path, monkeypatch):
     bad_meta = tmp_path / "bad.imec0.ap.meta"
     bad_meta.write_text("imDatPrb_pn=NP1010\n")
     _patch_qt(monkeypatch, file_result=(str(bad_meta), ""), item_result=("text", True))
-    assert sglx.main() == 1
+    assert sglx.main([]) == 1
 
 
 def test_main_shows_plot_when_requested(tmp_path, monkeypatch):
@@ -734,7 +734,7 @@ def test_main_shows_plot_when_requested(tmp_path, monkeypatch):
         item_result=("text", True), answer=_FakeStandardButton.Yes,
     )
     monkeypatch.setattr(plt, "show", lambda *a, **k: None)
-    assert sglx.main() == 0
+    assert sglx.main([]) == 0
 
 
 def test_main_legacy_meta_augment_in_place(tmp_path, monkeypatch):
@@ -757,5 +757,20 @@ def test_main_legacy_meta_augment_in_place(tmp_path, monkeypatch):
         monkeypatch, file_result=(str(meta_file), ""),
         item_result=("legacy_meta_augment", True),
     )
-    assert sglx.main() == 0
+    assert sglx.main([]) == 0
     assert "snsGeomMap" in parse_spikeglx_meta(meta_file)
+def test_main_headless_writes_selected_format_and_returns_zero(tmp_path):
+    """
+    Description
+    -----------
+    In headless mode (``--meta-file`` given) the conversion runs without
+    Qt: passing the meta path and ``--output-format text`` writes the
+    coordinate file beside the meta and returns exit code 0.
+    """
+
+    meta_file = _write_geom_meta(tmp_path)
+    exit_code = sglx.main(
+        ["--meta-file", str(meta_file), "--output-format", "text"]
+    )
+    assert exit_code == 0
+    assert (tmp_path / "run.imec0.ap_siteCoords.txt").is_file()

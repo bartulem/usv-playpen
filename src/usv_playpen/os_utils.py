@@ -194,9 +194,9 @@ def _host_experimenter() -> str:
     """
     Description
     -----------
-    Returns the canonical experimenter id used to resolve the ``{experimenter}``
-    placeholder in the analysis data / model paths (via :func:`configure_path`)
-    and to re-key experimenter-scoped settings paths on headless / CLI runs. It
+    Returns the canonical experimenter id used to re-key experimenter-scoped
+    paths (in the analysis data / model settings) to the host / CLI experimenter,
+    via :func:`rebase_experimenter_in_paths`. It
     is resolved once and cached for the process, from two sources in order:
 
     1. the ``EXPERIMENTER_ID`` environment variable, when set and non-empty --
@@ -245,7 +245,7 @@ def _host_experimenter() -> str:
     if "experimenter" not in host_config:
         msg = (
             f"Host config '{_HOST_CONFIG_PATH}' has no 'experimenter' entry; "
-            "cannot fill the '{experimenter}' placeholder in data paths."
+            "cannot re-key experimenter-scoped data paths."
         )
         raise KeyError(msg)
 
@@ -320,13 +320,10 @@ def rebase_experimenter_in_paths(obj: object = None,
     (target = the host ``experimenter`` from the TOML), so the two contexts
     re-key paths identically.
 
-    Two reference forms are handled:
-
-    * the literal ``{experimenter}`` placeholder (replaced wholesale,
-      regardless of position), and
-    * any name in ``experimenter_list`` that occurs either as a complete
-      path component (bounded by ``/`` or ``\\`` or a string end) or as the
-      entire string (e.g. the ``send_email.experimenter`` field).
+    Every name in ``experimenter_list`` that occurs either as a complete path
+    component (bounded by ``/`` or ``\\`` or a string end) or as the entire
+    string (e.g. the ``send_email.experimenter`` field) is rewritten to
+    ``exp_id``.
 
     Strings that merely contain a name as an unbounded substring (e.g. a PC
     label such as ``"A84I Linux"``) are left untouched, and a reference that
@@ -354,7 +351,7 @@ def rebase_experimenter_in_paths(obj: object = None,
     if isinstance(obj, list):
         return [rebase_experimenter_in_paths(value, experimenter_list, exp_id) for value in obj]
     if isinstance(obj, str):
-        rebased_string = obj.replace('{experimenter}', exp_id)
+        rebased_string = obj
         is_pathlike = ('/' in rebased_string) or ('\\' in rebased_string)
         for name in experimenter_list:
             if name == exp_id or name not in rebased_string:
@@ -394,7 +391,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     overrides. ``generate_masks.sam2_model_cfg`` is a SAM2 config NAME resolved
     by the installed package's Hydra search path (not a file under the root),
     so it is left untouched. The derived paths keep the canonical
-    ``/mnt/falkner`` / ``{experimenter}`` form; ``configure_path`` translates
+    ``/mnt/falkner`` form; ``configure_path`` translates
     them to the host mount downstream, exactly like the other model paths. The
     mutation is in place and idempotent.
 
@@ -466,13 +463,6 @@ def configure_path(pa: str) -> str:
     the form expected by the OS currently in use, for any share listed in
     the resolved lab-share table (falkner, murthy, ...).
 
-    A ``{experimenter}`` placeholder -- used in the analysis data / model paths
-    in the ``*_settings.json`` files so those paths follow the experimenter
-    rather than hard-coding a name -- is first filled with the canonical
-    experimenter id (:func:`_host_experimenter`, declared in exactly one place).
-    Paths without the placeholder (e.g. the user-entered root/arena directories)
-    are unaffected.
-
     Only the leading mount root is rewritten; the remainder of the path is kept
     verbatim apart from normalising the path separator to the target OS
     (``\\`` on Windows, ``/`` elsewhere). A root must be followed by a path
@@ -497,9 +487,6 @@ def configure_path(pa: str) -> str:
         matched or the host OS is unrecognised.
     """
 
-    if "{experimenter}" in pa:
-        pa = pa.replace("{experimenter}", _host_experimenter())
-
     system = platform.system()
     if system not in _OS_KEYS:
         return pa
@@ -518,6 +505,37 @@ def configure_path(pa: str) -> str:
                 return f"{share[target_key]}{remainder}"
 
     return pa
+
+
+def resolve_experimenter_path(pa: str) -> str:
+    """
+    Description
+    -----------
+    Resolve a shipped data path to the experimenter currently in use: re-key any
+    experimenter name in the path (the shipped default -- e.g. ``Bartul``) to the
+    host / CLI experimenter via :func:`rebase_experimenter_in_paths`, then
+    OS-translate the leading mount root with :func:`configure_path`. This is the
+    non-GUI counterpart of the GUI's front-page re-keying: the GUI rebases the
+    loaded settings dicts to its selected experimenter, whereas headless callers
+    (the CLI, the analysis notebooks, the marimo explorer) resolve one path at a
+    time to :func:`_host_experimenter` (the ``EXPERIMENTER_ID`` env var, else the
+    host config TOML's ``experimenter`` key).
+
+    Parameters
+    ----------
+    pa (str)
+        A path carrying a shipped experimenter name (e.g.
+        ``/mnt/falkner/Bartul/EPHYS``).
+
+    Returns
+    -------
+    resolved (str)
+        The path with its experimenter component re-keyed to the host / CLI
+        experimenter and its mount root translated to the host OS.
+    """
+
+    rebased = rebase_experimenter_in_paths(pa, _host_experimenter_list(), _host_experimenter())
+    return configure_path(rebased)
 
 
 def find_cluster_path() -> str:
@@ -553,9 +571,9 @@ def resolve_data_root(key: str) -> pathlib.Path:
     -----------
     Reads a canonical data-location path from
     ``analyses_settings.json['data_roots'][key]`` and resolves it via
-    :func:`configure_path`, which fills the ``{experimenter}`` placeholder with
-    the canonical experimenter id and translates the leading mount root to the
-    host OS. This is the single place the analysis data roots (the EPHYS /
+    :func:`resolve_experimenter_path`, which re-keys the shipped experimenter
+    name in the path to the host / CLI experimenter and translates the leading
+    mount root to the host OS. This is the single place the analysis data roots (the EPHYS /
     histology / Data trees, the unit catalog, the aggregator output directory,
     ...) are defined, so they are user-editable configuration that is also
     OS-portable and experimenter-keyed -- rather than hard-coded
@@ -570,13 +588,13 @@ def resolve_data_root(key: str) -> pathlib.Path:
     Returns
     -------
     data_root (pathlib.Path)
-        The configured path, with ``{experimenter}`` filled in and its leading
-        mount root translated to the host OS.
+        The configured path, re-keyed to the host / CLI experimenter and with
+        its leading mount root translated to the host OS.
     """
 
     with _ANALYSES_SETTINGS_PATH.open() as settings_file:
         data_roots = json.load(settings_file)["data_roots"]
-    return pathlib.Path(configure_path(data_roots[key]))
+    return pathlib.Path(resolve_experimenter_path(data_roots[key]))
 
 
 def ephys_base_for_data_root(data_root_directory: str) -> pathlib.Path:

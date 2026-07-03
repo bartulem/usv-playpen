@@ -50,7 +50,7 @@ def test_find_cluster_path_is_os_independent(as_os, system):
     assert os_utils.find_cluster_path() == "/mnt/cup/labs/falkner"
 
 
-# _host_experimenter + configure_path {experimenter} fill
+# _host_experimenter + resolve_experimenter_path re-keying
 
 def test_host_experimenter_reads_from_host_config(monkeypatch):
     """The experimenter id is read from the `experimenter` key of the host
@@ -98,19 +98,20 @@ def test_host_experimenter_env_var_used_when_config_missing(monkeypatch, tmp_pat
     ("Darwin", "/Volumes/falkner/Liza/EPHYS"),
     ("Windows", "F:\\Liza\\EPHYS"),
 ])
-def test_configure_path_fills_experimenter_then_translates(as_os, monkeypatch, system, expected):
-    """`configure_path` fills the `{experimenter}` placeholder from the host
-    experimenter id, THEN translates the leading mount root to the host OS. A
-    non-default experimenter ('Liza') proves the substitution actually happens."""
+def test_resolve_experimenter_path_rekeys_then_translates(as_os, monkeypatch, system, expected):
+    """`resolve_experimenter_path` re-keys the shipped experimenter name in the
+    path to the host experimenter, THEN translates the leading mount root to the
+    host OS. A non-default host ('Liza') proves the re-key actually happens."""
     monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", ["Liza"])
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_LIST_CACHE", [["Bartul", "Liza"]])
     as_os(system)
-    assert os_utils.configure_path("/mnt/falkner/{experimenter}/EPHYS") == expected
+    assert os_utils.resolve_experimenter_path("/mnt/falkner/Bartul/EPHYS") == expected
 
 
-def test_configure_path_without_placeholder_never_reads_experimenter(as_os, monkeypatch, tmp_path):
-    """A path with no `{experimenter}` (e.g. a user-entered root/arena dir) is
-    OS-translated only; the experimenter id is never read — proven by pointing
-    the host config at an absent file and asserting no error is raised."""
+def test_configure_path_os_translates_only(as_os, monkeypatch, tmp_path):
+    """`configure_path` only OS-translates the leading mount root; it never reads
+    the experimenter id (re-keying is `resolve_experimenter_path`'s job) — proven
+    by pointing the host config at an absent file and asserting no error."""
     monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", [])
     monkeypatch.setattr(os_utils, "_HOST_CONFIG_PATH", tmp_path / "absent.toml")
     as_os("Darwin")
@@ -121,12 +122,14 @@ def test_configure_path_without_placeholder_never_reads_experimenter(as_os, monk
 
 def test_resolve_data_root_reads_key_and_delegates(as_os, monkeypatch, tmp_path):
     """`resolve_data_root` reads the requested key from the `data_roots` block
-    and resolves it via `configure_path` (which fills `{experimenter}` and
-    OS-translates). A non-default experimenter ('Liza') proves it flows through."""
+    and resolves it via `resolve_experimenter_path` (which re-keys the shipped
+    experimenter name and OS-translates). A non-default host ('Liza') proves the
+    re-key flows through."""
     settings = tmp_path / "analyses_settings.json"
-    settings.write_text('{"data_roots": {"ephys_root": "/mnt/falkner/{experimenter}/EPHYS"}}')
+    settings.write_text('{"data_roots": {"ephys_root": "/mnt/falkner/Bartul/EPHYS"}}')
     monkeypatch.setattr(os_utils, "_ANALYSES_SETTINGS_PATH", settings)
     monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_CACHE", ["Liza"])
+    monkeypatch.setattr(os_utils, "_HOST_EXPERIMENTER_LIST_CACHE", [["Bartul", "Liza"]])
     as_os("Darwin")
     assert os_utils.resolve_data_root("ephys_root") == pathlib.Path("/Volumes/falkner/Liza/EPHYS")
     as_os("Linux")
@@ -135,8 +138,8 @@ def test_resolve_data_root_reads_key_and_delegates(as_os, monkeypatch, tmp_path)
 
 def test_resolve_data_root_reads_shipped_block(as_os):
     """The shipped analyses_settings.json defines the `data_roots` keys the
-    analysis tools rely on; spot-check one resolves on the host OS (with the
-    shipped `experimenter` filled into `{experimenter}`)."""
+    analysis tools rely on; spot-check one resolves on the host OS (the shipped
+    `Bartul` re-keyed to the host experimenter, which is `Bartul` here)."""
     as_os("Linux")
     assert os_utils.resolve_data_root("catalog_path") == pathlib.Path(
         "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv"

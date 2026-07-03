@@ -847,3 +847,144 @@ def test_compute_group_acoustics_missing_peak_amp_ch_falls_back_to_channel_zero(
     engine.compute_group_acoustics(session, "group_b_df", 0.040, message_output=messages.append)
     np.testing.assert_array_equal(captured["peak_channels"], [0.0, 0.0])
     assert any("no 'peak_amp_ch' column" in line and "sess_no_ch" in line for line in messages)
+
+
+def _group_sessions():
+    """
+    Description
+    -----------
+    Two sessions sharing the same three-neuron spike data, each exposing a
+    ``group_a_df`` (5 onsets) and ``group_b_df`` (4 onsets) as polars tables with a
+    ``start`` column — the structure the mid-level group-comparison helpers consume.
+
+    Returns
+    -------
+    list[dict]
+        Two session records with ``session_id`` / ``neural_data`` / ``total_duration``
+        / ``group_a_df`` / ``group_b_df``.
+    """
+
+    neural = _neural_data()
+    onsets_a = np.array([5.0, 15.0, 25.0, 35.0, 45.0])
+    onsets_b = np.array([10.0, 20.0, 30.0, 40.0])
+    return [
+        {
+            "session_id": "s0", "neural_data": neural, "total_duration": 100.0,
+            "group_a_df": pls.DataFrame({"start": onsets_a}),
+            "group_b_df": pls.DataFrame({"start": onsets_b}),
+        },
+        {
+            "session_id": "s1", "neural_data": neural, "total_duration": 100.0,
+            "group_a_df": pls.DataFrame({"start": onsets_a + 1.0}),
+            "group_b_df": pls.DataFrame({"start": onsets_b + 1.0}),
+        },
+    ]
+
+
+def test_pool_group_count_matrices_concatenates_trials():
+    """
+    Description
+    -----------
+    Pooling two sessions concatenates every group's trials along the trial axis at a
+    constant neuron-row dimension, and an empty session list yields ``(0, 0)`` arrays.
+    """
+
+    pooled_a, pooled_b = engine.pool_group_count_matrices(_group_sessions(), window_s=1.0)
+    assert pooled_a.shape == (3, 10)   # 5 group-A onsets x 2 sessions, 3 neurons
+    assert pooled_b.shape == (3, 8)    # 4 group-B onsets x 2 sessions
+    empty_a, empty_b = engine.pool_group_count_matrices([], window_s=1.0)
+    assert empty_a.shape == (0, 0) and empty_b.shape == (0, 0)
+
+
+@pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:Degrees of freedom <= 0:RuntimeWarning")
+def test_compare_groups_matches_manual_composition():
+    """
+    Description
+    -----------
+    ``compare_groups`` is exactly the documented composition of a seed / seed+1 pair of
+    bootstraps plus a seed+2 permutation test: it reproduces those primitives called
+    by hand, is identical under a repeated seed, and diverges under a different one.
+    """
+
+    rng = np.random.default_rng(0)
+    pooled_a = rng.integers(0, 5, size=(4, 12)).astype(float)
+    pooled_b = rng.integers(0, 5, size=(4, 10)).astype(float)
+    out = engine.compare_groups(pooled_a, pooled_b, bootstrap_n=8, n_boot=64, n_permutations=64, seed=3)
+    assert set(out) == {"boot_a", "boot_b", "perm", "bootstrap_n"}
+    assert out["bootstrap_n"] == 8
+
+    boot_a = engine.bootstrap_coactivity_distribution(pooled_a, 8, 64, seed=3)
+    boot_b = engine.bootstrap_coactivity_distribution(pooled_b, 8, 64, seed=4)
+    perm = engine.perform_label_permutation_test(counts_a=pooled_a, counts_b=pooled_b, n_permutations=64, seed=5)
+    for metric in ("r_sc", "similarity", "pop_corr"):
+        np.testing.assert_array_equal(out["boot_a"][metric], boot_a[metric])
+        np.testing.assert_array_equal(out["boot_b"][metric], boot_b[metric])
+        assert out["perm"][metric]["observed_delta"] == perm[metric]["observed_delta"]
+        assert out["perm"][metric]["p_two_tailed"] == perm[metric]["p_two_tailed"]
+
+    again = engine.compare_groups(pooled_a, pooled_b, bootstrap_n=8, n_boot=64, n_permutations=64, seed=3)
+    np.testing.assert_array_equal(out["boot_a"]["pop_corr"], again["boot_a"]["pop_corr"])
+    other = engine.compare_groups(pooled_a, pooled_b, bootstrap_n=8, n_boot=64, n_permutations=64, seed=9)
+    assert not np.array_equal(out["boot_a"]["pop_corr"], other["boot_a"]["pop_corr"])
+
+
+@pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+def test_per_session_group_metrics_filters_deltas_and_null():
+    """
+    Description
+    -----------
+    ``per_session_group_metrics`` drops sessions below the trial floor, exposes A-minus-B
+    deltas consistent with the per-group metrics, omits the null unless ``n_shuffles`` is
+    requested, and produces a seed-reproducible per-session null when it is.
+    """
+
+    sessions = _group_sessions()
+    sessions.append({
+        "session_id": "sparse", "neural_data": _neural_data(), "total_duration": 100.0,
+        "group_a_df": pls.DataFrame({"start": [1.0]}),          # < min_trials
+        "group_b_df": pls.DataFrame({"start": [2.0, 3.0]}),
+    })
+    rows = engine.per_session_group_metrics(sessions, window_s=1.0)
+    assert [row["session_id"] for row in rows] == ["s0", "s1"]   # sparse session dropped
+    for row in rows:
+        assert row["n_a"] == 5 and row["n_b"] == 4
+        assert set(row["metrics_a"]) == {"r_sc", "similarity", "pop_corr"}
+        for metric in row["deltas"]:
+            expected = row["metrics_a"][metric] - row["metrics_b"][metric]
+            observed = row["deltas"][metric]
+            assert observed == expected or (np.isnan(observed) and np.isnan(expected))
+        assert "null" not in row
+
+    a = engine.per_session_group_metrics(sessions, window_s=1.0, n_shuffles=16, seed=7)
+    b = engine.per_session_group_metrics(sessions, window_s=1.0, n_shuffles=16, seed=7)
+    np.testing.assert_array_equal(a[0]["null"]["pop_corr"], b[0]["null"]["pop_corr"])
+
+
+@pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:Degrees of freedom <= 0:RuntimeWarning")
+def test_run_group_comparison_keys_and_reproducibility():
+    """
+    Description
+    -----------
+    ``run_group_comparison`` returns every result object the notebook consumes with the
+    expected pooled shapes and per-session row count, and the whole pipeline is
+    reproducible under a fixed base seed.
+    """
+
+    sessions = _group_sessions()
+    kwargs = dict(window_s=1.0, bootstrap_n=6, n_boot=32, n_shuffles=16, n_permutations=32)
+    out = engine.run_group_comparison(sessions, seed=1, **kwargs)
+    assert set(out) == {
+        "pooled_a", "pooled_b", "boot_a", "boot_b", "perm",
+        "chained_null_a", "chained_null_b", "per_session", "bootstrap_n",
+    }
+    assert out["pooled_a"].shape == (3, 10) and out["pooled_b"].shape == (3, 8)
+    assert len(out["per_session"]) == 2
+
+    again = engine.run_group_comparison(sessions, seed=1, **kwargs)
+    np.testing.assert_array_equal(out["chained_null_a"]["pop_corr"], again["chained_null_a"]["pop_corr"])
+    np.testing.assert_array_equal(out["boot_b"]["pop_corr"], again["boot_b"]["pop_corr"])

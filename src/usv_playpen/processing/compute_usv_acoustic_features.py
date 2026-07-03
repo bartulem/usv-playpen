@@ -46,8 +46,11 @@ from ..time_utils import is_gui_context, smart_wait
 # Numerical floor that keeps divisions and logs finite on empty/degenerate regions.
 _EPS = 1e-8
 
-# Feature columns written into the USV summary CSV, in output order. Mirrors the
-# downstream consumers' `_CONTINUOUS_ACOUSTIC_FEATURES`.
+# Feature columns written into the USV summary CSV, in output order. The six
+# continuous spectral/amplitude descriptors mirror the downstream consumers'
+# `_CONTINUOUS_ACOUSTIC_FEATURES`; `mask_number` — the integer count of SAM masks
+# per USV — is appended after them (it is integer-valued, so the continuous-stats
+# list omits it, but the neuronal-tuning consumers bin it as a discrete property).
 FEATURE_COLUMNS = (
     "mean_freq_hz",
     "peak_freq_hz",
@@ -55,6 +58,7 @@ FEATURE_COLUMNS = (
     "mean_amplitude",
     "max_amplitude",
     "spectral_entropy",
+    "mask_number",
 )
 
 
@@ -96,7 +100,7 @@ def build_mask_region_masks(
     spectrogram_index: np.ndarray,
     n_freq: int,
     n_time: int,
-) -> tuple[np.ndarray, int]:
+) -> tuple[np.ndarray, np.ndarray, int]:
     """
     Description
     -----------
@@ -130,16 +134,22 @@ def build_mask_region_masks(
     -------
     region_masks (np.ndarray)
         A ``(N_valid, F, T)`` float32 array (1.0 inside the region, 0.0 outside).
+    mask_counts (np.ndarray)
+        Per-USV count of instance masks owning each valid USV (0 when the box
+        detector produced none), shape ``(N_valid,)`` int64 — the ``mask_number``
+        feature.
     fallback_count (int)
         Number of valid USVs that had no mask and fell back to the time-window.
     """
 
     n_valid = usv_indices.shape[0]
     region_masks = np.zeros((n_valid, n_freq, n_time), dtype=np.float32)
+    mask_counts = np.zeros(n_valid, dtype=np.int64)
     fallback_count = 0
     for i in range(n_valid):
         summary_row = int(usv_indices[i])
         mask_rows = np.flatnonzero(spectrogram_index == summary_row)
+        mask_counts[i] = mask_rows.size
         union_mask = (
             np.any(segmentations[mask_rows], axis=0) if mask_rows.size > 0
             else None
@@ -155,7 +165,7 @@ def build_mask_region_masks(
             signal_len = int(min(max(int(durations[i]), 1), n_time))
             region_masks[i, :, :signal_len] = 1.0
             fallback_count += 1
-    return region_masks, fallback_count
+    return region_masks, mask_counts, fallback_count
 
 
 def compute_acoustic_features(
@@ -207,7 +217,9 @@ def compute_acoustic_features(
     Returns
     -------
     features (dict[str, np.ndarray])
-        Mapping of each name in :data:`FEATURE_COLUMNS` to a length-``N`` array.
+        Mapping of each spectral / amplitude descriptor name to a length-``N``
+        array (the :data:`FEATURE_COLUMNS` entries except ``mask_number``, which
+        the caller injects from the per-USV mask counts).
 
     Raises
     ------
@@ -375,7 +387,7 @@ class USVAcousticFeatureExtractor:
         # has no detected mask).
         region_masks = None
         if has_masks:
-            region_masks, fallback_count = build_mask_region_masks(
+            region_masks, mask_counts, fallback_count = build_mask_region_masks(
                 durations=durations,
                 usv_indices=usv_indices,
                 segmentations=segmentations,
@@ -389,6 +401,7 @@ class USVAcousticFeatureExtractor:
                 f"({fallback_count} with no detected mask fell back to the signal time-window)."
             )
         else:
+            mask_counts = np.zeros(len(usv_indices), dtype=np.int64)
             self.message_output(
                 "No mask group in the spectrogram H5; computing features over the signal time-window."
             )
@@ -401,6 +414,11 @@ class USVAcousticFeatureExtractor:
             high_energy_frac=high_energy_frac,
             region_masks=region_masks,
         )
+        # `mask_number` is the per-USV SAM mask count -- not a spectral descriptor,
+        # so it is injected here rather than computed inside
+        # `compute_acoustic_features`. It is 0 for USVs with no detected mask (and
+        # for every USV when the session has no mask group at all).
+        features["mask_number"] = mask_counts
 
         features_df = pls.DataFrame(
             {"_usv_row": usv_indices, **{name: features[name].astype(np.float64) for name in FEATURE_COLUMNS}}

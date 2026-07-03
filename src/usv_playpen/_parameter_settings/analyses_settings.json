@@ -12,13 +12,13 @@
   },
   "credentials_directory": "",
   "data_roots": {
-    "ephys_root": "/mnt/falkner/{experimenter}/EPHYS",
-    "histology_root": "/mnt/falkner/{experimenter}/histology",
-    "data_root": "/mnt/falkner/{experimenter}/Data",
-    "catalog_path": "/mnt/falkner/{experimenter}/EPHYS/unit_catalog.csv",
-    "aggregator_out_dir": "/mnt/falkner/{experimenter}/neuronal_tuning",
-    "allen_meshes_dir": "/mnt/falkner/{experimenter}/EPHYS/allen_meshes",
-    "converter_path": "/mnt/falkner/{experimenter}/EPHYS/neuropixels_sites_to_anatomy_converter.json"
+    "ephys_root": "/mnt/falkner/Bartul/EPHYS",
+    "histology_root": "/mnt/falkner/Bartul/histology",
+    "data_root": "/mnt/falkner/Bartul/Data",
+    "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
+    "aggregator_out_dir": "/mnt/falkner/Bartul/neuronal_tuning",
+    "allen_meshes_dir": "/mnt/falkner/Bartul/EPHYS/allen_meshes",
+    "converter_path": "/mnt/falkner/Bartul/EPHYS/neuropixels_sites_to_anatomy_converter.json"
   },
   "compute_behavioral_features": {
     "head_points": ["Head", "Ear_R", "Ear_L", "Nose"],

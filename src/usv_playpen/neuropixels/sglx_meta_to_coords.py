@@ -76,6 +76,7 @@ Interactive (Qt-based GUI; same family as the project's main GUI)::
 
 from __future__ import annotations
 
+import argparse
 import logging
 import shutil
 import sys
@@ -1263,12 +1264,56 @@ def _ensure_qt_app() -> QApplication:
     return app
 
 
-def main() -> int:
+def _convert_meta(
+    meta_path: Path, output_format: OutputFormat
+) -> tuple[Path, ShankCoords, dict[str, str]]:
     """
     Description
     -----------
-    Qt-based standalone GUI for converting one SpikeGLX meta file
-    into a per-channel geometry artefact. Three modal dialogs:
+    Parse one SpikeGLX meta file, derive its per-channel geometry, and
+    write the requested artefact next to the meta file. Shared by the
+    interactive GUI and the headless command-line paths so both produce
+    byte-identical output.
+
+    Parameters
+    ----------
+    meta_path (Path)
+        Path to the SpikeGLX ``*.ap.meta`` file to convert.
+    output_format (OutputFormat)
+        Which artefact to emit (Kilosort chanMap, text / NumPy site
+        coordinates, JRClust strings, or a legacy-meta in-place upgrade).
+
+    Returns
+    -------
+    written (Path)
+        The path of the artefact that was written.
+    coords (ShankCoords)
+        The derived per-channel coordinates (returned for plotting).
+    meta (dict[str, str])
+        The parsed meta key/value mapping (returned for plotting).
+    """
+
+    meta = parse_spikeglx_meta(meta_path)
+    coords = coords_from_meta(meta)
+    if output_format is OutputFormat.LEGACY_META_AUGMENT:
+        written = augment_legacy_meta(meta_path, coords)
+    else:
+        written = write_coords_file(
+            meta=meta,
+            coords=coords,
+            output_format=output_format,
+            save_dir=meta_path.parent,
+            base_name=meta_path.stem,
+        )
+    return written, coords, meta
+
+
+def _run_gui() -> int:
+    """
+    Description
+    -----------
+    Interactive Qt front-end for :func:`main`. Three modal dialogs run in
+    sequence:
 
     1. ``QFileDialog`` to pick the meta file.
     2. ``QInputDialog`` to pick the output format (defaults to
@@ -1287,7 +1332,6 @@ def main() -> int:
         (caught and surfaced to the user as a dialog).
     """
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
     app = _ensure_qt_app()
 
     meta_path_str, _ = QFileDialog.getOpenFileName(
@@ -1315,22 +1359,7 @@ def main() -> int:
     output_format = OutputFormat(selected_label)
 
     try:
-        meta = parse_spikeglx_meta(meta_path)
-        coords = coords_from_meta(meta)
-        if output_format is OutputFormat.LEGACY_META_AUGMENT:
-            save_dir = meta_path.parent
-            base_name = meta_path.stem
-            written = augment_legacy_meta(meta_path, coords)
-        else:
-            save_dir = meta_path.parent
-            base_name = meta_path.stem
-            written = write_coords_file(
-                meta=meta,
-                coords=coords,
-                output_format=output_format,
-                save_dir=save_dir,
-                base_name=base_name,
-            )
+        written, coords, meta = _convert_meta(meta_path, output_format)
         logger.info("wrote %s", written)
     except (FileNotFoundError, KeyError, ValueError) as exc:
         QMessageBox.critical(None, "Conversion failed", str(exc))
@@ -1351,6 +1380,91 @@ def main() -> int:
         plt.close(fig)
 
     _ = app
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    """
+    Description
+    -----------
+    Convert one SpikeGLX meta file into a per-channel geometry artefact,
+    either headlessly from command-line flags or, when none are given,
+    through the interactive Qt GUI (:func:`_run_gui`).
+
+    Headless mode is triggered by passing ``--meta-file``: the whole
+    conversion then runs without Qt, so it can be scripted or run on a
+    cluster next to the spike-sorting step. ``--output-format`` selects
+    the artefact (defaults to the Kilosort chanMap); the probe layout can
+    be shown with ``--plot`` or written to a file with ``--save-plot`` for
+    a headless sanity check. With no ``--meta-file`` the Qt dialogs run.
+
+    Parameters
+    ----------
+    argv (list[str] | None)
+        Command-line arguments (defaults to ``sys.argv[1:]`` when None).
+
+    Returns
+    -------
+    exit_code (int)
+        ``0`` on success or clean cancellation; ``1`` on a conversion
+        error (surfaced to stderr in headless mode, or as a
+        ``QMessageBox.critical`` dialog in GUI mode).
+    """
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    format_labels = [fmt.value for fmt in OutputFormat]
+    parser = argparse.ArgumentParser(
+        prog="npx-meta-to-coords",
+        description=(
+            "Convert a SpikeGLX *.ap.meta file into a per-channel geometry "
+            "artefact (Kilosort chanMap, site coordinates, JRClust strings, or "
+            "a legacy-meta upgrade). Pass --meta-file to run headlessly; with no "
+            "arguments an interactive Qt GUI is launched instead."
+        ),
+    )
+    parser.add_argument(
+        "--meta-file", default=None,
+        help="Path to the SpikeGLX *.ap.meta file. When given, runs headlessly (no GUI).",
+    )
+    parser.add_argument(
+        "--output-format", default=OutputFormat.KILOSORT_MAT.value, choices=format_labels,
+        help="Output artefact format for headless mode (default: kilosort_mat).",
+    )
+    parser.add_argument(
+        "--plot", action="store_true",
+        help="After a headless conversion, show the probe-layout plot interactively.",
+    )
+    parser.add_argument(
+        "--save-plot", default=None,
+        help="After a headless conversion, write the probe-layout plot to this path (no display needed).",
+    )
+    args = parser.parse_args(argv)
+
+    # No --meta-file -> fall back to the interactive Qt GUI.
+    if args.meta_file is None:
+        return _run_gui()
+
+    # Headless path: convert straight from the flags, no Qt.
+    meta_path = Path(args.meta_file)
+    output_format = OutputFormat(args.output_format)
+    try:
+        written, coords, meta = _convert_meta(meta_path, output_format)
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        logger.error("Conversion failed: %s", exc)
+        return 1
+    logger.info("wrote %s", written)
+
+    if args.save_plot is not None:
+        fig = plot_coords(coords, meta)
+        fig.savefig(args.save_plot, bbox_inches="tight")
+        plt.close(fig)
+        logger.info("saved probe-layout plot to %s", args.save_plot)
+    elif args.plot:
+        fig = plot_coords(coords, meta)
+        plt.show()
+        plt.close(fig)
+
     return 0
 
 

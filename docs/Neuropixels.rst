@@ -7,11 +7,11 @@ unit-quality pipelines** in ``usv_playpen.neuropixels``. Where the
 :ref:`Process` section ends with spike-sorted, session-split clusters,
 this subsystem brackets the two manual steps you run outside the GUI —
 probe-track registration in *napari* (with the *brainreg* and
-*brainglobe-segmentation* plugins) and channel alignment in the IBL
+*brainglobe-segmentation* plugins) and channel alignment in the International Brain Laboratory (IBL)
 ephys-alignment GUI. It assembles raw light-sheet microscopy into registrable
 volumes, bridges *Kilosort* output and the traced probe tracks into the format
 that GUI expects, and finally distils every unit into a single quality-metrics
-catalog anchored to the Allen CCF.
+catalog anchored to the Allen Common Coordinate Framework (CCF, the Allen atlas).
 
 Step 0 is done at acquisition time — it builds the probe geometry, spike-sorts
 the recording with *kilosort4*, and manually curates the result in *Phy2* (each in
@@ -108,8 +108,10 @@ alive, long before the brain is extracted for light-sheet imaging.
 per-channel geometry artifact for a downstream sorter — a *Kilosort*
 ``chanMap.mat``, a JRClust ``.prm`` string set, a ``(n_channels, 2)``
 ``.npy``, a plain tab-delimited file, or an in-place upgrade of a legacy
-(pre-SpikeGLX 032623) meta. Run it as a GUI via the
-``npx-meta-to-coords`` console script (see :ref:`CLI`), or programmatically:
+(pre-SpikeGLX 032623) meta. Run it headlessly
+(``npx-meta-to-coords --meta-file <meta>``) or as an interactive GUI (with no
+arguments) via the ``npx-meta-to-coords`` console script (see :ref:`CLI`), or
+programmatically:
 
 .. code-block:: python
 
@@ -145,10 +147,10 @@ ready-to-edit runner for the sorting step is at
 1. Light-sheet volume assembly
 -------------------------------
 Two acquisition modalities are supported. **LaVision UltraMicroscope**
-acquisitions are a flat directory of OME-TIFF Z-planes per channel
+acquisitions are a flat directory of Open Microscopy Environment TIFF (OME-TIFF) Z-planes per channel
 (single tile); ``stack_lightsheet_volume`` glues the planes into one
-BigTIFF per channel, optionally mirroring each plane and reversing the Z
-order. **LifeCanvas SmartSPIM** acquisitions are a tiled XY grid of Z-stacks
+BigTIFF (the BigTIFF large-image format) per channel, optionally mirroring each plane and reversing the Z
+order. **LifeCanvas SmartSPIM** light-sheet microscope acquisitions are a tiled XY grid of Z-stacks
 per channel under ``Ex_{wavelength}_Ch{n}/{X}/{X}_{Y}/``, where the ``X`` / ``Y``
 tokens are each tile's **stage position** (in 0.1 µm units). To assemble the tiles
 into one image, ``stitch_smartspim_tiles`` needs to know where each lands in
@@ -316,7 +318,7 @@ points from top to bottom along that shank (a ruler helps if the tissue is disto
    ``R_track_0, R_track_1, R_track_2, R_track_3`` for the right (per the Neuropixels 2.0
    user manual).
 
-The traced per-shank ``.npy`` point clouds (Allen CCF apdvml, voxel-origin µm) are exactly
+The traced per-shank ``.npy`` point clouds (Allen CCF apdvml, the anterior-posterior/dorsal-ventral/medial-lateral axis order, voxel-origin µm) are exactly
 what Step 3's ``write_xyz_picks`` converts into the ``xyz_picks_shank{n}.json`` files the
 IBL alignment GUI loads.
 
@@ -327,8 +329,8 @@ IBL alignment GUI loads.
 Once the volumes are registered with *brainreg* and per-shank tracks traced
 with *brainglobe-segmentation* (Step 2), the IBL ephys-alignment GUI anchors every recording
 channel to an Allen CCF region. It needs two inputs per session / probe /
-hemisphere: the per-shank **track points** in IBL mlapdv space, and an
-**ALF dataset** of ``spikes.*`` / ``clusters.*`` / ``templates.*`` /
+hemisphere: the per-shank **track points** in IBL mlapdv (the medial-lateral/anterior-posterior/dorsal-ventral axis order) space, and an
+**ALF dataset** (the IBL's standardized ALF data layout) of ``spikes.*`` / ``clusters.*`` / ``templates.*`` /
 ``channels.*`` arrays.
 
 ``IBLAlignmentExporter`` replicates these from the *Kilosort* directory plus
@@ -462,7 +464,7 @@ Two pure-JSON steps consume the GUI's per-shank output:
 
 ``remap_channel_ids_to_raw`` re-keys each per-shank JSON from the GUI's
 per-shank channel indices (``channel_0`` .. ``channel_{m-1}``) back to raw
-recording channel ids, using the IMRO table cached at construction (a
+recording channel ids, using the probe's IMEC readout (IMRO) table cached at construction (a
 no-op on single-shank probes). ``write_unified_channel_locations`` then
 merges the per-shank JSONs into a single ``channel_locations.json`` keyed
 by raw channel id and sorted by integer index — the layout *SpikeInterface*
@@ -510,7 +512,7 @@ The block is merged back into ``neuropixels_sites_to_anatomy_converter.json`` in
 the same nested ``{mouse: {session: {probe: {region: [[lo, hi], ...]}}}}`` layout
 — **every other mouse / session / probe is preserved**, and the compact
 one-line-per-region formatting is kept. Because *Kilosort* row ordering is
-shank-major, each probe's entry has every range bounded inside one shank's KS-row
+shank-major, each probe's entry has every range bounded inside one shank's Kilosort (KS)-row
 block (rows 0..95, 96..191, etc.); the within-shank axial ordering is not always
 monotonic, so a single anatomical band on a shank may appear as two non-contiguous
 ``[lo, hi]`` KS-row intervals — set membership still resolves the right region
@@ -529,7 +531,7 @@ regardless. One probe's entry looks like:
         }
     }
 
-Here PAG and MRN interleave — each is several non-contiguous KS-row ranges (the
+Here periaqueductal gray (PAG) and midbrain reticular nucleus (MRN) interleave — each is several non-contiguous KS-row ranges (the
 shank-major wrap above) — yet a membership test on any KS row still returns the
 right region.
 
@@ -564,7 +566,7 @@ catalog on pinned stock ``spikeinterface==0.104.3``. It reads the
 hundreds-of-GB recording **once**, in two passes: a recording-free *core
 pass* for the spike-train metrics, and a single sequential *recording-
 dependent pass* that extracts windowed waveforms for a uniform per-unit
-random subsample and derives the template, amplitude, PCA and ``sd_ratio``
+random subsample and derives the template, amplitude, principal component analysis (PCA) and ``sd_ratio``
 metrics from them; the amplitude metrics come from those windowed waveforms, so
 ``spike_amplitudes`` (which would re-stream the whole recording per spike) is not
 computed.
@@ -680,7 +682,7 @@ Every unit becomes one row of ``unit_catalog.csv``. Its columns, by group:
 
 * **somatic** — the somatic / non-somatic call (``True`` = somatic; the rule described above).
 * **spiking_profile** — reserved placeholder (``NaN`` here; filled by a downstream step).
-* **loc_ap** / **loc_ml** / **loc_dv** — the unit's 3-D location (Allen CCF AP / ML / DV, µm) from monopolar triangulation.
+* **loc_ap** / **loc_ml** / **loc_dv** — the unit's 3-D location (Allen CCF AP / ML / DV — anterior-posterior / medial-lateral / dorsal-ventral, µm) from monopolar triangulation.
 * **closest_ch** — the recording channel nearest that triangulated location.
 * **brain_area** — the Allen CCF region acronym at the unit's location.
 
@@ -690,7 +692,7 @@ Every unit becomes one row of ``unit_catalog.csv``. Its columns, by group:
 * **firing_rate_si** — *SpikeInterface*'s single-pass firing rate (Hz).
 * **firing_range** — 5–95th-percentile spread of the per-bin firing rate (Hz).
 * **num_spikes** — total spike count.
-* **noise_level** — RMS noise on the unit's peak channel.
+* **noise_level** — root-mean-square (RMS) noise on the unit's peak channel.
 
 *Waveform (template) shape*
 
@@ -720,7 +722,7 @@ Every unit becomes one row of ``unit_catalog.csv``. Its columns, by group:
 * **rp_contamination** — refractory-period contamination estimate.
 * **presence_ratio** — fraction of the recording (60-s bins) in which the unit fires.
 * **snr** — signal-to-noise ratio (template peak amplitude vs noise).
-* **sd_ratio** — spike-amplitude SD relative to noise SD.
+* **sd_ratio** — spike-amplitude standard deviation (SD) relative to noise SD.
 * **sync_spike_2** / **sync_spike_4** / **sync_spike_8** — fraction of spikes coincident with ≥ 2 / 4 / 8 other units (synchrony / cross-unit contamination).
 
 *Isolation (PC-space)*
@@ -862,8 +864,8 @@ region.
 
 .. _histology-notebook:
 
-Interactive notebook
----------------------
+Notebook
+--------
 The ``npx_histology_unit_quality_processing.ipynb`` notebook is the
 recommended entry point — it runs the whole workflow above in order from a
 single **Parameters** cell. Its detailed walkthrough, knobs, and rendered

@@ -12,7 +12,7 @@ Calibration — overview
 In *usv-playpen*, camera calibration has a two-fold purpose: (1) learning the spatial relationship between the used cameras, (2) capturing positions of microphones and arena corners.
 
 In order to reconstruct mouse body key-points in 3D, the spatial relationship between the cameras must first be determined.
-This is done by displaying a ChArUco board in the field of view of all cameras, ideally in at least several orientations,
+This is done by displaying a ChArUco calibration board (chessboard + ArUco markers) in the field of view of all cameras, ideally in at least several orientations,
 and then calculating the reprojection error of specific markers.
 
 A brief introduction on the uses of ChArUco boards can be found `here <https://docs.opencv.org/3.4/df/d4a/tutorial_charuco_detection.html>`_.
@@ -33,7 +33,7 @@ Calibration — preparation
 Create a ChArUco board
 ~~~~~~~~~~~~~~~~~~~~~~
 
-OpenCV provides a function to create a ChArUco board. This is implemented through SLEAP-Anipose and available in the GUI.
+OpenCV provides a function to create a ChArUco board. This is implemented through the SLEAP-Anipose pose-tracking pipeline and available in the GUI.
 A thing to consider is the size of the board. The larger the board, the more markers it contains, and the more accurate the
 calibration will be. The user is responsible for printing the board and attaching it to a flat surface. By default, the board
 has the following characteristics (found in */usv-playpen/_parameter_settings/processing_settings.json*):
@@ -72,16 +72,16 @@ screw that secures the top to the vertical rail. Secured parts should not wobble
 loosening the screws and removing the pieces one by one. Try not to push any of these acrylic parts against the floor while removing, since they can break.
 
 After removing the corner parts, each of the four mesh
-barriers can be slid out from the metal frame by gently pulling up (you can bend them slightly to avoid obstacles like SYNC LEDs). The important consideration in this process is to **remain mindful of camera positions**,
+barriers can be slid out from the metal frame by gently pulling up (you can bend them slightly to avoid obstacles like synchronization (SYNC) LEDs). The important consideration in this process is to **remain mindful of camera positions**,
 such that you avoid bumping into them, as changing camera positions will require a new calibration procedure.
 
 The objective of this process is to improve the range of the ChArUco board and to enable microphone visibility. Tracking microphone positions is
 necessary for localizing sound sources, and tracking arena corners helps us establish the boundaries of the environment. To simplify tracking of the
-corners, which may not be visible to the cameras, we use IR-retroreflective markers. One can place four half-spherical retroreflectors to four
+corners, which may not be visible to the cameras, we use infrared (IR) retroreflective markers. One can place four half-spherical retroreflectors to four
 corners of the arena (see example video above): they now establish the approximate boundary of the arena.
 
 To expedite execution, place the physical ChArUco board inside the arena (see example video above), and check that all IR reflectors are turned on: you want to make sure
-they are pointing roughly into the center of the arena. Finally, check camera availability and visibility in the Motif web interface (see image below for comparison).
+they are pointing roughly into the center of the arena. Finally, check camera availability and visibility in the Motif (the Loopbio Motif acquisition software) web interface (see image below for comparison).
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/ir_reflectors_difference.png
    :width: 800
@@ -215,7 +215,7 @@ On the next page, you can set some basic parameters:
 
 * **Avisoft Recorder directory** : this is the directory which contains the *rec_usgh.exe* file
 * **Avisoft base directory** : this is the local directory where the recordings will be saved
-* **Avisoft config directory** : this is the local directory where the Avisoft config file is located (must be on C:\\ drive!)
+* **Avisoft config directory** : this is the local directory where the Avisoft (the ultrasonic-audio software) config file is located (must be on C:\\ drive!)
 * **Coolterm directory** : this is the local directory where the Arduino serial terminal outputs will be saved
 * **File destination(s) Linux** : these are the directories on both video PCs where the file server is mounted
 * **File destination(s) Windows** : these are the directories on the audio PC where the file server is mounted
@@ -227,7 +227,7 @@ On the next page, you can set some basic parameters:
 * **Ethernet network ID** : this is the ID of the ethernet network
 * **Notify e-mail(s) of PC usage** : this is the e-mail address that will be notified of the start and end of PC usage
 
-The file-destination directories above are derived from the ``[[lab_shares]]`` table near the top of *behavioral_experiments_settings.toml*, which records how this host mounts the lab CUP shares (it is also read by ``os_utils`` and the processing code). Each entry stores only the per-platform tokens, not full paths:
+The file-destination directories above are derived from the ``[[lab_shares]]`` table near the top of *behavioral_experiments_settings.toml*, which records how this host mounts the lab CUP file server shares (it is also read by ``os_utils`` and the processing code). Each entry stores only the per-platform tokens, not full paths:
 
 * **name** : the share name (e.g. ``falkner``, ``murthy``); it is appended to the mount parent to form each full root, and is also used as ``\\<file_server>\<name>``
 * **windows** : the drive **letter** the share is mapped to on Windows (a ``:`` is appended automatically)
@@ -257,7 +257,7 @@ In the *Audio Settings* section, you can set certain parameters for the audio re
 
 In the *Sync settings* section, you set the serial port of the Arduino that drives synchronization:
 
-* **Arduino SYNC port**: the COM port the synchronization Arduino is connected to (default ``COM7``). This Arduino runs the ``other/synchronization/generate_sync_pulses.ino`` sketch and emits the periodic TTL/LED sync pulses (the SYNC LEDs the cameras see, plus the pulse train shared with the audio and NIDQ/e-phys streams) that let the processing step align audio, video, and e-phys in time. It must match the port the Arduino actually enumerates on -- and the port set in the CoolTerm config (see *Requirements*).
+* **Arduino SYNC port**: the COM port the synchronization Arduino is connected to (default ``COM7``). This Arduino runs the ``other/synchronization/generate_sync_pulses.ino`` sketch and emits the periodic transistor-transistor logic (TTL)/LED sync pulses (the SYNC LEDs the cameras see, plus the pulse train shared with the audio and National Instruments data acquisition (NIDQ)/electrophysiology (e-phys) streams) that let the processing step align audio, video, and e-phys in time. It must match the port the Arduino actually enumerates on -- and the port set in the CoolTerm serial terminal config (see *Requirements*).
 
 In the *Video Settings* section, you can also set certain parameters for the video recording, while others (most notably, camera exposure time and gain) need to be set manually in the *behavioral_experiments_settings.toml* file. In the GUI, you can set the following parameters for the video recording:
 
@@ -282,7 +282,7 @@ In the example below, one would be using all 5 cameras, a "hq" codec and a 150 f
 Metadata
 --------
 
-The experiment metadata is saved in a YAML file with the following basic structure:
+The experiment metadata is saved in a YAML file (the YAML configuration format) with the following basic structure:
 
 .. code-block:: yaml
 
