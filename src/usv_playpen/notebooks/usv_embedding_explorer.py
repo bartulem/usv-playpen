@@ -34,7 +34,7 @@ Architecture
   ``alt.selection_interval`` brush. Optional category-boundary contours overlay
   the scatter. The spec inlines session_id / row_index / x / y / color per
   point (~200 bytes each), so the max_points ceiling is bounded by marimo's
-  ``output_max_bytes`` (raised to 150 MB in pyproject.toml).
+  ``output_max_bytes`` (raised to 200 MB in pyproject.toml).
 - Brushing samples spectrograms from the selection along an Archimedean spiral
   (centre -> edge) and renders them as a square grid to the RIGHT of the scatter
   -- read from the consolidated h5 for only the sampled rows, padded to the
@@ -273,11 +273,11 @@ def _widgets(available_lists, mo):
     )
     # Scatter is thumbnail-free, but each point still inlines session_id /
     # row_index / x / y / color (~200 bytes in the chart spec, measured), so the
-    # 600 K ceiling is ~120 MB -- covered by output_max_bytes (150 MB) in
+    # 700 K ceiling is ~140 MB -- covered by output_max_bytes (200 MB) in
     # pyproject.toml. Rendering the full set is slow: above ~100 K, brushing /
     # interaction feels sluggish in some browsers.
     max_points_slider = mo.ui.slider(
-        start=5_000, stop=600_000, step=5_000, value=50_000,
+        start=5_000, stop=700_000, step=5_000, value=50_000,
         label="Max points",
     )
     apply_mask_checkbox = mo.ui.checkbox(

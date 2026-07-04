@@ -322,11 +322,11 @@ sam-2 = { git = "https://github.com/facebookresearch/sam2.git" }
 
 # Lift marimo's per-cell output cap for the usv_embedding_explorer notebook:
 # its thumbnail-free altair scatter inlines session_id / row_index / x / y /
-# color per point (~200 bytes each, measured), so the 600 K-point ceiling is
-# ~120 MB of chart spec -- far over marimo's default cap. 150 MB covers 600 K
+# color per point (~200 bytes each, measured), so the 700 K-point ceiling is
+# ~140 MB of chart spec -- far over marimo's default cap. 200 MB covers 700 K
 # with headroom (incl. the optional boundary-overlay column). Rendering that
 # many points is deliberately slow (see the max_points note in the notebook);
 # raise this and the slider stop together if the ceiling grows. (Sampled
 # spectrograms are a separate single base64 PNG, not per-point thumbnails.)
 [tool.marimo.runtime]
-output_max_bytes = 150_000_000
+output_max_bytes = 200_000_000
