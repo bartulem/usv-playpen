@@ -321,10 +321,12 @@ sleap-anipose = { git = "https://github.com/davidt0x/sleap-anipose.git", branch 
 sam-2 = { git = "https://github.com/facebookresearch/sam2.git" }
 
 # Lift marimo's per-cell output cap for the usv_embedding_explorer notebook:
-# its thumbnail-free altair scatter embeds x / y / color for up to ~500 K
-# points (~50 bytes each, ~25 MB) in the chart spec, which exceeds marimo's
-# default output cap. 30 MB is generous; raise further if the point ceiling
-# grows. (The sampled spectrograms render as a separate single base64 PNG,
-# not per-point thumbnails.)
+# its thumbnail-free altair scatter inlines session_id / row_index / x / y /
+# color per point (~200 bytes each, measured), so the 600 K-point ceiling is
+# ~120 MB of chart spec -- far over marimo's default cap. 150 MB covers 600 K
+# with headroom (incl. the optional boundary-overlay column). Rendering that
+# many points is deliberately slow (see the max_points note in the notebook);
+# raise this and the slider stop together if the ceiling grows. (Sampled
+# spectrograms are a separate single base64 PNG, not per-point thumbnails.)
 [tool.marimo.runtime]
-output_max_bytes = 30_000_000
+output_max_bytes = 150_000_000

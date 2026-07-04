@@ -32,8 +32,9 @@ Architecture
   session id / emitter sex) OR a continuous metric through the colormap
   (density, duration, frequencies, amplitudes, spectral entropy), with an
   ``alt.selection_interval`` brush. Optional category-boundary contours overlay
-  the scatter. The spec only embeds x / y / color, so hundreds of thousands of
-  points fit under marimo's ``output_max_bytes``.
+  the scatter. The spec inlines session_id / row_index / x / y / color per
+  point (~200 bytes each), so the max_points ceiling is bounded by marimo's
+  ``output_max_bytes`` (raised to 150 MB in pyproject.toml).
 - Brushing samples spectrograms from the selection along an Archimedean spiral
   (centre -> edge) and renders them as a square grid to the RIGHT of the scatter
   -- read from the consolidated h5 for only the sampled rows, padded to the
@@ -270,12 +271,13 @@ def _widgets(available_lists, mo):
         start=5, stop=50, step=5, value=50,
         label="Examples (spectrograms) plotted",
     )
-    # Scatter is thumbnail-free: each point is ~50 bytes in the chart spec, so
-    # hundreds of thousands of points fit inside the 30 MB cap. The slider tops
-    # out at 500 K to leave headroom for altair rendering performance; above
-    # ~100 K interaction starts to feel sluggish in some browsers.
+    # Scatter is thumbnail-free, but each point still inlines session_id /
+    # row_index / x / y / color (~200 bytes in the chart spec, measured), so the
+    # 600 K ceiling is ~120 MB -- covered by output_max_bytes (150 MB) in
+    # pyproject.toml. Rendering the full set is slow: above ~100 K, brushing /
+    # interaction feels sluggish in some browsers.
     max_points_slider = mo.ui.slider(
-        start=5_000, stop=500_000, step=5_000, value=50_000,
+        start=5_000, stop=600_000, step=5_000, value=50_000,
         label="Max points",
     )
     apply_mask_checkbox = mo.ui.checkbox(
