@@ -290,29 +290,11 @@ messages_control.disable = [
 # requiring deps now mandate patched versions) and removed; the lockfile still
 # resolves each to a patched release.
 #
-# Re-added 2026-06-18 -- starlette (#44): marimo still allows 1.2.1, which is
-# vulnerable to request.url authority poisoning via an unvalidated request
-# path; patched in 1.3.0. Prune once marimo's floor mandates >=1.3.0.
+# Last pruned 2026-07-04 -- the starlette (#44), cryptography (#45), bleach
+# (#46, #47), marimo (#49), jupyter-server (#48) and msgpack (#51) floors were
+# all redundant (verified with `uv lock --upgrade`: each resolves to a patched
+# release on its own) and removed; constraint-dependencies is now empty.
 #
-# Added 2026-06-18 -- cryptography (#45): paramiko 4.0.0 pulls 46.0.7, whose
-# bundled OpenSSL has the 2026-06-09 advisory; patched in 48.0.1. Prune once
-# paramiko's floor mandates >=48.0.1.
-#
-# Added 2026-06-18 -- bleach (#46, #47): nbsphinx/jupyterlab pull 6.2.0, which
-# fails to sanitize disallowed URI schemes (Unicode-obfuscated and formaction);
-# patched in 6.4.0. Prune once the requiring deps mandate >=6.4.0.
-#
-# Added 2026-06-19 -- marimo (#49): marimo resolves to 0.23.4, which has a
-# reflected XSS in the notebook page; patched in 0.23.9. Prune once our floor
-# (or a transitive requirer) mandates >=0.23.9.
-#
-# Added 2026-06-19 -- jupyter-server (#48): jupyterlab pulls 2.18.2, whose
-# NbconvertFileHandler/NbconvertPostHandler omit a sandbox CSP, allowing stored
-# XSS; patched in 2.20.0. Prune once jupyterlab's floor mandates >=2.20.0.
-#
-# Added 2026-06-20 -- msgpack (#51): librosa pulls 1.1.2, whose Unpacker can
-# SEGV (out-of-bounds read) / act as a DoS vector when reused after a caught
-# error; patched in 1.2.1. Prune once librosa's floor mandates >=1.2.1.
 # ultralytics pulls in base `opencv-python`, but `aniposelib` (camera
 # calibration) calls the function-style cv2.aruco API (detectMarkers /
 # interpolateCornersCharuco / estimatePoseCharucoBoard / refineDetectedMarkers)
@@ -332,22 +314,17 @@ messages_control.disable = [
 override-dependencies = [
     "opencv-python; python_version < '0'",
 ]
-constraint-dependencies = [
-    "starlette>=1.3.0",
-    "cryptography>=48.0.1",
-    "bleach>=6.4.0",
-    "marimo>=0.23.9",
-    "jupyter-server>=2.20.0",
-    "msgpack>=1.2.1",
-]
+constraint-dependencies = []
 
 [tool.uv.sources]
 sleap-anipose = { git = "https://github.com/davidt0x/sleap-anipose.git", branch = "main" }
 sam-2 = { git = "https://github.com/facebookresearch/sam2.git" }
 
-# Lift marimo's per-cell output cap so the usv-embedding-explorer notebook
-# can embed up to ~10 K base64-encoded spectrogram thumbnails inside
-# its altair vconcat chart spec without hitting "Your output is too
-# large". 30 MB is generous; raise further if needed.
+# Lift marimo's per-cell output cap for the usv_embedding_explorer notebook:
+# its thumbnail-free altair scatter embeds x / y / color for up to ~500 K
+# points (~50 bytes each, ~25 MB) in the chart spec, which exceeds marimo's
+# default output cap. 30 MB is generous; raise further if the point ceiling
+# grows. (The sampled spectrograms render as a separate single base64 PNG,
+# not per-point thumbnails.)
 [tool.marimo.runtime]
 output_max_bytes = 30_000_000
