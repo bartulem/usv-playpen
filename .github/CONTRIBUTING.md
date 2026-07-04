@@ -148,8 +148,9 @@ Two settings shape how you write tests (details in
 [Writing tests](#writing-tests)): pytest runs with **warnings-as-errors**
 (`filterwarnings = ["error"]`) and `xfail_strict`, so new code must not emit
 warnings; and there is **no enforced coverage threshold** (the Codecov upload is
-non-blocking). CI runs the suite on **Python 3.12 and 3.13**, across ubuntu,
-macos, and windows; **3.12–3.13** is the declared support surface.
+non-blocking). CI runs the suite on **Python 3.12 and 3.13**, on ubuntu + macos
+(Windows is excluded — torch/jax don't load their native libraries there);
+**3.12–3.13** is the declared support surface.
 
 ## Building the docs
 
