@@ -10,7 +10,7 @@ authors = [
 description = "GUI/CLI to conduct, process and analyze experiments w/ multichannel e-phys, audio and video acquisition"
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.12,<3.14"
 keywords = ["neuroscience", "mouse", "usv", "behavior", "social", "courtship"]
 classifiers = [
   "Development Status :: 1 - Planning",
@@ -21,7 +21,6 @@ classifiers = [
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Scientific/Engineering",
@@ -210,7 +209,7 @@ files = ["src", "tests"]
 # kernels. The usv-playpen-native orchestrators (processing/generate_masks.py,
 # processing/train_qlvm.py) are checked normally.
 exclude = ["src/usv_playpen/processing/masks/", "src/usv_playpen/processing/qlvm_training/"]
-python_version = "3.11"
+python_version = "3.12"
 warn_unused_configs = true
 strict = true
 enable_error_code = ["ignore-without-code", "redundant-expr", "truthy-bool"]
@@ -264,10 +263,9 @@ isort.required-imports = ["from __future__ import annotations"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["T20"]
-"noxfile.py" = ["T20"]
 
 [tool.pylint]
-py-version = "3.11"
+py-version = "3.12"
 ignore-paths = [".*/_version.py"]
 reports.output-format = "colorized"
 similarities.ignore-imports = "yes"

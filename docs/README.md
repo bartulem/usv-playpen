@@ -1,4 +1,4 @@
-[![Python version](https://img.shields.io/badge/Python-3.11%20|%203.12%20|%203.13-blue)](https://www.python.org/downloads/)
+[![Python version](https://img.shields.io/badge/Python-3.12%20|%203.13-blue)](https://www.python.org/downloads/)
 [![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.7926971-blue)](https://doi.org/10.5281/zenodo.7926971)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](https://github.com/bartulem/usv-playpen/blob/main/LICENSE)
 [![repo size](https://img.shields.io/github/repo-size/bartulem/usv-playpen)](https://github.com/bartulem/usv-playpen/)
