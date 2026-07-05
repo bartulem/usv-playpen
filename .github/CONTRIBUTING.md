@@ -84,6 +84,10 @@ Commit `pyproject.toml` and `uv.lock` **together, in the same change** — a
 lockfile out of step with the manifest is a bug. (End users just run `uv sync`;
 the README covers version-pinned checkouts.)
 
+Re-syncing repeatedly grows `~/.cache/uv` (tens of GB with the torch/jax/CUDA
+deps); `uv cache clean` reclaims it safely — matters on quota-limited home
+directories like the cluster.
+
 **Registering a console command.** CLI entry points live in
 **`[project.scripts]`** as `kebab-name = "import.path:function"`; after
 `uv sync` the name is on `PATH`:

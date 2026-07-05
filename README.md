@@ -115,6 +115,16 @@ package version from the new git tag; without it the GUI may display a stale
 version number. All machines should be set to the same tag to guarantee
 identical behaviour.
 
+### Disk usage on quota-limited systems
+
+`uv` caches wheels and build artifacts under `~/.cache/uv`; with the torch + jax
+
+- CUDA stack this grows to **tens of GB** and keeps growing across `uv sync`
+  runs. On a quota-limited home directory (e.g. the PNI cluster's ~95 GB soft
+  limit) run **`uv cache clean`** periodically — it is safe, since it only
+  removes re-downloadable caches (the next `uv sync` re-fetches). If you also
+  use conda on that machine, `conda clean --all` reclaims its package cache too.
+
 ## Usage
 
 Run the GUI with:
