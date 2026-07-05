@@ -455,6 +455,48 @@ def find_base_path() -> str | None:
     return f"{base}\\" if system == "Windows" else base
 
 
+_ON_CLUSTER_CACHE: list[bool] = []
+
+
+def _on_cluster() -> bool:
+    """
+    Description
+    -----------
+    Reports whether this process is running on the compute cluster (spock/della),
+    detected by the PRESENCE OF THE CLUSTER MOUNT rather than a host-name pattern:
+    every lab share is mounted under ``/mnt/cup/labs/<lab>`` there, so the primary
+    share's ``cluster`` root exists as a directory only where that mount is
+    present. This lets ``configure_path`` resolve share paths to their cluster
+    form on the cluster without a fragile ``spock*``/``della*`` name match (which
+    would rot on renames and break on other clusters) and without relying on
+    SLURM env vars (set only inside a running job, missing on the login node).
+
+    The result is cached for the process -- the mount does not appear or disappear
+    within a run. If the host share table can not be resolved (e.g. no host config
+    on this machine), the answer is False: an unconfigured host is treated as a
+    workstation and the host-OS form is used.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    (bool)
+        True when the primary lab share's cluster mount root is present.
+    """
+
+    if _ON_CLUSTER_CACHE:
+        return _ON_CLUSTER_CACHE[0]
+    try:
+        cluster_root = _host_lab_shares()[0][0]["cluster"]
+        result = os.path.isdir(cluster_root)
+    except (RuntimeError, KeyError, IndexError):
+        result = False
+    _ON_CLUSTER_CACHE.append(result)
+    return result
+
+
 def configure_path(pa: str) -> str:
     """
     Description
@@ -484,8 +526,19 @@ def configure_path(pa: str) -> str:
     -------
     pa (str)
         OS-converted path, or the original string if no known share root
-        matched or the host OS is unrecognised.
+        matched or the host OS is unrecognised. On the compute cluster (detected
+        by the cluster mount's presence, see ``_on_cluster``) the cluster form
+        (``/mnt/cup/labs/<lab>/...``) is returned instead, via ``to_cluster_path``.
     """
+
+    # On the compute cluster every lab share is mounted under /mnt/cup/labs/<lab>,
+    # a form the host-OS (linux) target never produces; when that mount is present
+    # resolve to the cluster form, so a path in ANY host form -- e.g. the canonical
+    # /mnt/falkner form the *_settings.json store -- points at where the share
+    # actually lives on this machine. to_cluster_path leaves an already-cluster-form
+    # path (e.g. an explicitly-passed session root) unchanged.
+    if _on_cluster():
+        return to_cluster_path(pa)
 
     system = platform.system()
     if system not in _OS_KEYS:

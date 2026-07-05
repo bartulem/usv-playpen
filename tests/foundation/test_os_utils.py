@@ -363,6 +363,54 @@ def test_to_cluster_path_passthrough(pa, expected):
     assert os_utils.to_cluster_path(pa) == expected
 
 
+# _on_cluster + cluster-aware configure_path
+
+def test_on_cluster_true_when_cluster_mount_present(monkeypatch, tmp_path):
+    """_on_cluster is a filesystem check (cluster-mount presence), not a host-name
+    match: it is True exactly when the primary share's cluster root exists as a
+    directory."""
+    cluster_root = tmp_path / "cup" / "labs" / "falkner"
+    cluster_root.mkdir(parents=True)
+    monkeypatch.setattr(
+        os_utils, "_HOST_SHARES_CACHE",
+        [(({"name": "falkner", "cluster": str(cluster_root)},), "cup")],
+    )
+    monkeypatch.setattr(os_utils, "_ON_CLUSTER_CACHE", [])
+    assert os_utils._on_cluster() is True
+
+
+def test_on_cluster_false_when_cluster_mount_absent(monkeypatch, tmp_path):
+    """No cluster mount on this filesystem -> not on the cluster; the host-OS form
+    is used downstream."""
+    monkeypatch.setattr(
+        os_utils, "_HOST_SHARES_CACHE",
+        [(({"name": "falkner", "cluster": str(tmp_path / "absent")},), "cup")],
+    )
+    monkeypatch.setattr(os_utils, "_ON_CLUSTER_CACHE", [])
+    assert os_utils._on_cluster() is False
+
+
+def test_configure_path_resolves_cluster_form_on_cluster(monkeypatch):
+    """On the cluster (mount present) configure_path resolves ANY host form to the
+    cluster mount via to_cluster_path, regardless of platform.system() -- this is
+    what makes the canonical /mnt/falkner settings paths work inside a cluster job.
+    An already-cluster-form path (e.g. an explicitly-passed session root) is left
+    unchanged."""
+    monkeypatch.setattr(os_utils, "_ON_CLUSTER_CACHE", [True])
+    assert (os_utils.configure_path("/mnt/falkner/Bartul/spectrograms/sam")
+            == "/mnt/cup/labs/falkner/Bartul/spectrograms/sam")
+    assert (os_utils.configure_path("/mnt/cup/labs/murthy/Bartul/Data/s1")
+            == "/mnt/cup/labs/murthy/Bartul/Data/s1")
+
+
+def test_configure_path_keeps_host_form_off_cluster(as_os, monkeypatch):
+    """Off the cluster (no cluster mount) configure_path keeps its host-OS
+    behavior untouched -- the cluster branch is a strict addition."""
+    monkeypatch.setattr(os_utils, "_ON_CLUSTER_CACHE", [False])
+    as_os("Darwin")
+    assert os_utils.configure_path("/mnt/falkner/Bartul/x") == "/Volumes/falkner/Bartul/x"
+
+
 # atomic_output_path
 
 def test_atomic_output_path_publishes_only_on_clean_exit(tmp_path):
