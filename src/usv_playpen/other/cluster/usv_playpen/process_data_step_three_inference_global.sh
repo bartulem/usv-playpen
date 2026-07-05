@@ -23,7 +23,7 @@ VCL_CONDA_ENV="vcl-ssl"
 SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726"
 ARENA_SESSION_ROOT_DIRECTORY="/mnt/cup/labs/falkner/Bartul/Data/20230124_092213"
 VCL_VERSION="vcl-ssl" # 'vcl' or 'vcl-ssl'
-VCL_MODEL_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/sound_localization/conformer_smol_4.00"
+VCL_MODEL_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/sound_localization/animal_id_model"
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #

@@ -1181,7 +1181,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 
    "vocalocator": {
     "vcl_conda_env_name": "vcl-ssl-ss",
-    "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/conformer_smol_4.00",
+    "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/animal_id_model",
     "vcl_version": "vcl-ssl"
    }
 
