@@ -367,6 +367,11 @@ class SpectrogramGenerator:
 @click.option('--nperseg', 'nperseg', type=int, default=None, required=False, help='STFT window length (n_fft).')
 @click.option('--min-freq', 'min_freq', type=float, default=None, required=False, help='Lower frequency cutoff (Hz).')
 @click.option('--max-freq', 'max_freq', type=float, default=None, required=False, help='Upper frequency cutoff (Hz).')
+@click.option('--noverlap', 'noverlap', type=int, default=None, required=False, help='STFT segment overlap in samples (nperseg - hop_length); legacy scipy-style overlap kept in the block for parity with the QLVM training config.')
+@click.option('--hop-length', 'hop_length', type=int, default=None, required=False, help='STFT hop length in samples (frames advance); falls back to nperseg // 4 when unset.')
+@click.option('--window', 'window', type=str, default=None, required=False, help='STFT window function name passed to librosa.stft (e.g. blackmanharris).')
+@click.option('--offset', 'offset', type=float, default=None, required=False, help='Symmetric padding in seconds added to each USV before/after its start/stop bounds when slicing the audio.')
+@click.option('--normalize/--no-normalize', 'normalize', default=None, required=False, help='Whether to min-max normalize each averaged spectrogram to [0, 1].')
 @click.pass_context
 def generate_spectrograms_cli(ctx, root_directory, **kwargs) -> None:
     """
@@ -388,6 +393,7 @@ def generate_spectrograms_cli(ctx, root_directory, **kwargs) -> None:
         ctx=ctx,
         provided_params=provided_params,
         settings_dict='processing_settings',
+        block='generate_spectrograms',
     )
 
     SpectrogramGenerator(

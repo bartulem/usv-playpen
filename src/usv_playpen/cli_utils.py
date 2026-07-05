@@ -117,6 +117,7 @@ def modify_settings_json_for_cli(
     provided_params: list,
     parameters_lists: list | None = None,
     settings_dict: str | None = None,
+    block: str | None = None,
 ) -> dict:
     """
     Description
@@ -132,7 +133,10 @@ def modify_settings_json_for_cli(
     settings block is ambiguous: it is applied to the first match (the block
     ``find_nested_key_paths`` lists first) and the ambiguity is reported on stderr,
     naming every location and the one chosen, so the user can switch to the
-    explicit dot-path override form to target a specific block.
+    explicit dot-path override form to target a specific block. Passing ``block``
+    removes this ambiguity entirely by scoping the resolution and write to that
+    single block, which is how the processing-pipeline commands (each of which
+    owns exactly one block) apply their flags.
 
     Parameters
     ----------
@@ -150,6 +154,13 @@ def modify_settings_json_for_cli(
         ``_parameter_settings/`` to load and modify (analyses, processing or
         visualizations); used as ``f"_parameter_settings/{settings_dict}.json"``.
         Defaults to None.
+    block (str | None)
+        Top-level settings block to scope every override into (e.g.
+        ``'train_qlvm'``). When set, each provided flag is resolved and written
+        WITHIN this block only, so a key shared across blocks (``n_epochs``,
+        ``batch_size``, ``latent_dim``, ...) always targets this command's block
+        instead of the first global match. When None (the default), overrides
+        fall back to the legacy global key search across all blocks.
 
     Returns
     -------
@@ -192,6 +203,27 @@ def modify_settings_json_for_cli(
             param_value = list(ctx.params[param_name])
         else:
             param_value = [ctx.params[param_name]]
+
+        # When a command names its own settings block, scope the override to that
+        # block so a key shared across blocks (e.g. n_epochs / batch_size, which
+        # occur in several processing blocks) always targets THIS command's block
+        # rather than the first global match.
+        if block is not None:
+            block_dict = settings_parameter_dict.get(block)
+            sub_paths = (
+                find_nested_key_paths(block_dict, param_name)
+                if isinstance(block_dict, dict)
+                else []
+            )
+            if not sub_paths:
+                print(
+                    f"Warning: CLI option '{param_name}' did not match any key in "
+                    f"block '{block}' of '{settings_dict}.json'; its value was not applied.",
+                    file=sys.stderr,
+                )
+                continue
+            set_nested_value_by_path(block_dict, sub_paths[0], param_value)
+            continue
 
         matching_paths = find_nested_key_paths(settings_parameter_dict, param_name)
         if not matching_paths:

@@ -321,6 +321,8 @@ class YOLODatasetExporter:
 @click.option('--output-directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write the YOLO dataset.')
 @click.option('--label-source', 'label_source', type=click.Choice(['cc', 'manual', 'merge']), default=None, required=False, help='Box label source: cc pseudo-labels, manual files, or merge.')
 @click.option('--validation-split', 'validation_split', type=float, default=None, required=False, help='Fraction of images held out for validation.')
+@click.option('--random-state', 'random_state', type=int, default=None, required=False, help='Random seed (RNG seed) for the reproducible train/val split permutation.')
+@click.option('--colormap', 'colormap', type=str, default=None, required=False, help='Matplotlib colormap name the spectrogram images are rendered with (must match the detector colormap).')
 @click.option('--manual-labels-directory', 'manual_labels_directory', type=str, default=None, required=False, help='Directory of hand-verified {spec_id}.txt YOLO labels (manual/merge).')
 @click.pass_context
 def export_yolo_dataset_cli(ctx, root_directories, output_directory, **kwargs) -> None:
@@ -344,6 +346,7 @@ def export_yolo_dataset_cli(ctx, root_directories, output_directory, **kwargs) -
         ctx=ctx,
         provided_params=provided_params,
         settings_dict='processing_settings',
+        block='export_yolo_dataset',
     )
 
     root_dirs = [p.strip() for p in root_directories.split(",") if p.strip()]

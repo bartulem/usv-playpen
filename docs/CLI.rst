@@ -431,13 +431,26 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
     usage: generate-usv-spectrograms [-h] --root-directory PATH
                             [--num-freq-bins INTEGER] [--num-time-bins INTEGER]
                             [--nperseg INTEGER] [--min-freq FLOAT] [--max-freq FLOAT]
+                            [--noverlap INTEGER] [--hop-length INTEGER]
+                            [--window TEXT] [--offset FLOAT]
+                            [--normalize | --no-normalize]
 
     required arguments:
       --root-directory      Session root directory path.
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      (full parameters under processing_settings.json -> "generate_spectrograms")
+      --num-freq-bins       Number of spectrogram frequency bins.
+      --num-time-bins       Number of spectrogram time bins.
+      --nperseg             STFT window length (n_fft).
+      --min-freq            Lower frequency cutoff (Hz).
+      --max-freq            Upper frequency cutoff (Hz).
+      --noverlap            STFT segment overlap in samples (nperseg - hop_length); legacy scipy-style overlap kept in the block for parity with the QLVM training config.
+      --hop-length          STFT hop length in samples (frames advance); falls back to nperseg // 4 when unset.
+      --window              STFT window function name passed to librosa.stft (e.g. blackmanharris).
+      --offset              Symmetric padding in seconds added to each USV before/after its start/stop bounds when slicing the audio.
+      --normalize / --no-normalize
+                            Whether to min-max normalize each averaged spectrogram to [0, 1].
 
 ``generate-usv-masks``
 ``generate-usv-masks`` segments each USV's calls with the box-prompt detector → SAM2 path (default ``detector=yolo``; ``cc`` connected-component fallback) and writes the instance masks back into the SAME spectrogram H5 under a ``mask/<session>`` group (``segmentations`` (M, 128, 128) bool, ``spectrogram_index`` (M,) int). Requires a pretrained SAM2 checkpoint and trained YOLO weights configured in settings (a missing path raises a clear error). GPU recommended.
@@ -446,20 +459,54 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 
     usage: generate-usv-masks [-h] --root-directory PATH
                             [--detector {yolo,cc}]
-                            [--sam2-model-dir PATH] [--sam2-model-cfg TEXT] [--sam2-model-path PATH]
-                            [--yolo-weights PATH] [--yolo-conf FLOAT] [--yolo-iou FLOAT]
+                            [--sam2-model-dir TEXT] [--sam2-model-cfg TEXT]
+                            [--sam2-model-path TEXT] [--yolo-weights TEXT]
+                            [--yolo-conf FLOAT] [--yolo-iou FLOAT]
+                            [--method TEXT] [--yolo-imgsz INTEGER]
+                            [--mask-cmap TEXT] [--duration-min INTEGER]
+                            [--batch-size INTEGER]
+                            [--multimask-output | --no-multimask-output]
+                            [--iou-floor FLOAT]
+                            [--drop-below-iou | --no-drop-below-iou]
+                            [--split-disconnected | --no-split-disconnected]
+                            [--max-iters INTEGER]
+                            [--merge-instances | --no-merge-instances]
+                            [--merge-iou FLOAT] [--merge-containment FLOAT]
+                            [--mask-intensity-floor FLOAT]
+                            [--tiny-mask-floor-px INTEGER] [--min-box-area INTEGER]
 
     required arguments:
-      --root-directory      Session root directory path.
+      --root-directory            Session root directory path.
 
     optional arguments:
-      -h, --help            Show this help message and exit.
-      --detector            Box detector backend (yolo learned detector or cc baseline).
-      --sam2-model-dir      SAM2 model directory (config/checkpoint resolve against it).
-      --sam2-model-cfg      SAM2 model config name/path (resolvable from sam2_model_dir).
-      --sam2-model-path     SAM2 checkpoint path.
-      --yolo-weights        Trained YOLO best.pt weights path.
-      (full parameters under processing_settings.json -> "generate_masks")
+      -h, --help                  Show this help message and exit.
+      --detector                  Box detector backend (yolo learned detector or cc baseline).
+      --sam2-model-dir            SAM2 model directory (config/checkpoint resolve against it).
+      --sam2-model-cfg            SAM2 model config name/path (resolvable from sam2_model_dir).
+      --sam2-model-path           SAM2 checkpoint path.
+      --yolo-weights              Trained YOLO best.pt weights path.
+      --yolo-conf                 YOLO confidence threshold (lower => more recall).
+      --yolo-iou                  YOLO NMS IoU (raise to keep stacked calls).
+      --method                    Mask-generation method; only 'boxprompt' (SAM2 box-prompt path) is supported.
+      --yolo-imgsz                YOLO detector input image size in px (native spectrogram size is 128).
+      --mask-cmap                 Matplotlib colormap used to render each spectrogram to RGB before SAM2 prompting.
+      --duration-min              Minimum USV duration (time bins) to segment; shorter/placeholder (duration==0) rows are skipped.
+      --batch-size                Number of spectrograms processed per batch before a memory-cleanup pass.
+      --multimask-output / --no-multimask-output
+                                  Let SAM2 emit multiple candidate masks per box and keep the highest-IoU one (vs a single mask).
+      --iou-floor                 Predicted-IoU threshold below which a mask is flagged low-IoU (see --drop-below-iou).
+      --drop-below-iou / --no-drop-below-iou
+                                  Discard masks whose SAM2 predicted IoU is below --iou-floor (default keeps them).
+      --split-disconnected / --no-split-disconnected
+                                  Split a SAM2 mask with multiple 8-connected components into separate instances.
+      --max-iters                 Residual re-prompting passes for the cc detector (the yolo detector is always single-pass).
+      --merge-instances / --no-merge-instances
+                                  Post-merge near-duplicate / contained instances to correct over-segmentation.
+      --merge-iou                 IoU above which two overlapping instances are fused in the post-merge step.
+      --merge-containment         Containment fraction above which a smaller instance is merged into a larger enclosing one.
+      --mask-intensity-floor      Normalized-intensity floor; keep only mask pixels at/above it (drops faint harmonics/tails). 0 disables.
+      --tiny-mask-floor-px        Minimum mask area in px; smaller masks / split components are dropped.
+      --min-box-area              Minimum detector box area in px before SAM2 prompting; 0 disables the gate.
 
 ``generate-usv-acoustic-features``
 ``generate-usv-acoustic-features`` computes interpretable per-USV spectral/amplitude features and merges them into the session's ``usv_summary.csv``. When a ``mask/<session>`` group is present it restricts each feature to the true SAM mask region (``np.any`` union of the call's segmentations); otherwise it falls back to the signal time-window.
@@ -474,7 +521,8 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      (full parameters under processing_settings.json -> "compute_usv_acoustic_features")
+      --low-energy-frac     Lower edge of the bandwidth energy band.
+      --high-energy-frac    Upper edge of the bandwidth energy band.
 
 ``build-qlvm-training-set``
 ``build-qlvm-training-set`` aggregates a list of session root directories into a single curated ``.npz`` training set (``train_data.npz`` + ``val_data.npz``, or ``full_data.npz``) for the QLVM. With ``--masking-type sam`` (default), each kept spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group (background zeroed; a call with no detected mask keeps an all-ones mask); ``--masking-type none`` keeps raw spectrograms.
@@ -482,27 +530,30 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 .. code-block:: text
 
     usage: build-qlvm-training-set [-h] --root-directories TEXT,TEXT,... --output-directory PATH
-                            [--length-threshold FLOAT] [--validation-split FLOAT]
+                            [--length-threshold FLOAT]
+                            [--dataset-size-constraint INTEGER]
+                            [--validation-split FLOAT] [--random-state INTEGER]
+                            [--target-shape INTEGER INTEGER]
                             [--full-dataset | --no-full-dataset]
                             [--time-stretch | --no-time-stretch]
                             [--masking-type {sam,none}]
 
     required arguments:
-      --root-directories      Comma-separated string of session root directory paths.
-      --output-directory      Directory to write the .npz training set.
+      --root-directories              Comma-separated string of session root directory paths.
+      --output-directory              Directory to write the .npz training set.
 
     optional arguments:
-      -h, --help              Show this help message and exit.
-      --masking-type          Apply SAM mask regions ("sam") or keep raw spectrograms ("none").
-      settings (processing_settings.json -> "build_qlvm_training_set"), overridden by any flag above:
-      length_threshold         Minimum USV duration in ms to keep a call (default 50.0).
-      dataset_size_constraint  Optional cap on the number of spectrograms; null = no cap (default null).
-      validation_split         Fraction held out as val_data.npz (default 0.2).
-      random_state             Seed for the train/val split (default 42).
-      full_dataset             Write a single full_data.npz instead of a train/val split (default false).
-      target_shape             (H, W) each spectrogram is resized to (default [128, 128]).
-      time_stretch             Augment with random time-stretching (default false).
-      masking_type             Apply SAM mask regions ("sam") or keep raw spectrograms ("none") (default "sam").
+      -h, --help                      Show this help message and exit.
+      --length-threshold              Drop spectrograms with duration >= threshold (time bins).
+      --dataset-size-constraint       Optional cap on the total number of kept spectrograms (absolute count if > 1, proportion if in (0, 1]); omit for no cap (null = all data).
+      --validation-split              Fraction held out for validation.
+      --random-state                  RNG (random number generator) seed for reproducible subsampling and the train/val split.
+      --target-shape                  Output spectrogram (freq, time) shape as two ints, e.g. --target-shape 128 128.
+      --full-dataset / --no-full-dataset
+                                      Write a single full_data.npz (no train/val split).
+      --time-stretch / --no-time-stretch
+                                      Time-warp the signal window instead of center-resizing.
+      --masking-type                  Apply SAM mask regions from the mask/<session> groups ("sam") or keep raw spectrograms ("none").
 
 ``train-qlvm``
 ``train-qlvm`` trains the QLVM decoder on a ``build-qlvm-training-set`` ``.npz`` set (fixed quasi-random torus lattice + ConvTranspose decoder, Bernoulli evidence objective) and writes ``qmc_train_qlvm.tar`` (full checkpoint) plus ``qmc_decoder_weights.npz``. That ``.npz`` is the train→inference bridge: point ``infer-qlvm-latents``' ``weights_npz_path`` at it (the torch-free JAX (the JAX numerical-computing library) inference reloads exactly these decoder weights). GPU recommended.
@@ -511,8 +562,12 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 
     usage: train-qlvm [-h] --dataset-directory PATH --output-directory PATH
                             [--n-epochs INTEGER] [--latent-dim INTEGER]
-                            [--lattice-type {korobov,roberts,fibonacci}] [--korobov-a INTEGER]
+                            [--lattice-type {korobov,roberts,fibonacci}]
+                            [--korobov-a INTEGER] [--train-n-points INTEGER]
+                            [--test-n-points INTEGER] [--fib-m INTEGER]
                             [--batch-size INTEGER] [--learning-rate FLOAT]
+                            [--val-freq INTEGER] [--seed INTEGER]
+                            [--num-workers INTEGER]
 
     required arguments:
       --dataset-directory   Directory holding the .npz training set (build-qlvm-training-set output).
@@ -520,19 +575,18 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      settings (processing_settings.json -> "train_qlvm"), overridden by any flag above:
-      n_epochs        Number of training epochs (default 300).
-      latent_dim      Torus latent dimensionality (default 2).
-      lattice_type    Quasi-random lattice generator: korobov / roberts / fibonacci (default korobov).
-      korobov_a       Korobov generating integer, used when lattice_type=korobov (default 76).
-      train_n_points  Lattice points used during training (default 1021).
-      test_n_points   Lattice points used at evaluation (default 2039).
-      fib_m           Fibonacci lattice order, used when lattice_type=fibonacci (default 15).
-      batch_size      Training batch size (default 64).
-      learning_rate   Adam learning rate (default 0.001).
-      val_freq        Run validation every N epochs (default 10).
-      seed            Global RNG seed (default 42).
-      num_workers     DataLoader worker processes; 0 = main process (default 0).
+      --n-epochs            Number of training epochs.
+      --latent-dim          Torus latent dimensionality.
+      --lattice-type        Quasi-random lattice generator.
+      --korobov-a           Korobov generating integer.
+      --train-n-points      Number of quasi-random lattice points used during training (korobov/roberts).
+      --test-n-points       Number of quasi-random lattice points used at evaluation/validation (korobov/roberts).
+      --fib-m               Fibonacci lattice order (used only when lattice-type=fibonacci; 2D only).
+      --batch-size          Training batch size.
+      --learning-rate       Adam learning rate.
+      --val-freq            Run validation-evidence evaluation every N epochs (must be >= 1).
+      --seed                Global RNG seed (torch + numpy) for reproducible shuffling / per-batch torus shifts.
+      --num-workers         DataLoader worker processes (0 = load in the main process).
 
 ``infer-qlvm-latents``
 ``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm_dim1`` / ``qlvm_dim2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``.
@@ -540,19 +594,31 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 .. code-block:: text
 
     usage: infer-qlvm-latents [-h] --root-directory PATH
-                            [--weights-npz-path PATH]
-                            [--reference-arrays-fine-npz-path PATH]
-                            [--reference-arrays-coarse-npz-path PATH]
+                            [--weights-npz-path TEXT]
+                            [--reference-arrays-fine-npz-path TEXT]
+                            [--reference-arrays-coarse-npz-path TEXT]
+                            [--lattice-type {korobov,roberts,fibonacci}]
+                            [--latent-dim INTEGER] [--n-points INTEGER]
+                            [--korobov-a INTEGER] [--fib-m INTEGER]
+                            [--time-stretch | --no-time-stretch]
 
     required arguments:
       --root-directory      Session root directory path.
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      --weights-npz-path    Path to the converted decoder weights .npz (train-qlvm output).
-      --reference-arrays-fine-npz-path    FINE reference arrays.npz (ws_labels_periodic -> qlvm_category).
-      --reference-arrays-coarse-npz-path  COARSE reference arrays.npz (ws_labels_periodic -> qlvm_supercategory).
-      (full parameters under processing_settings.json -> "infer_qlvm_latents")
+      --weights-npz-path    Path to the converted decoder weights .npz.
+      --reference-arrays-fine-npz-path
+                            Path to the FINE reference arrays.npz (ws_labels_periodic -> qlvm_category).
+      --reference-arrays-coarse-npz-path
+                            Path to the COARSE reference arrays.npz (ws_labels_periodic -> qlvm_supercategory).
+      --lattice-type        Quasi-random lattice generator used to rebuild the fixed QLVM (quasi-Monte Carlo latent variable model) lattice at inference.
+      --latent-dim          Dimensionality of the toroidal latent space.
+      --n-points            Number of lattice points used at inference.
+      --korobov-a           Korobov generating integer (used when lattice-type=korobov).
+      --fib-m               Fibonacci lattice order m (used when lattice-type=fibonacci).
+      --time-stretch / --no-time-stretch
+                            Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.
 
 ``export-yolo-dataset``
 ``export-yolo-dataset`` renders USV spectrograms to images (exactly as the detector renders them at inference) and writes an Ultralytics-format YOLO dataset (``images/{train,val}``, ``labels/{train,val}``, ``data.yaml``). ``--label-source cc`` (default) pseudo-labels boxes with the unlearned connected-component detector (no annotation needed); ``manual`` ingests hand-verified ``{spec_id}.txt`` labels; ``merge`` uses cc overridden by manual where present.
@@ -560,23 +626,23 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 .. code-block:: text
 
     usage: export-yolo-dataset [-h] --root-directories TEXT,TEXT,... --output-directory PATH
-                            [--label-source {cc,manual,merge}] [--validation-split FLOAT]
-                            [--manual-labels-directory PATH]
+                            [--label-source {cc,manual,merge}]
+                            [--validation-split FLOAT] [--random-state INTEGER]
+                            [--colormap TEXT]
+                            [--manual-labels-directory TEXT]
 
     required arguments:
-      --root-directories      Comma-separated string of session root directory paths.
-      --output-directory      Directory to write the YOLO dataset.
+      --root-directories    Comma-separated string of session root directory paths.
+      --output-directory    Directory to write the YOLO dataset.
 
     optional arguments:
-      -h, --help              Show this help message and exit.
-      --label-source          Box label source: cc pseudo-labels, manual files, or merge.
-      --manual-labels-directory  Directory of hand-verified {spec_id}.txt YOLO labels.
-      settings (processing_settings.json -> "export_yolo_dataset"), overridden by any flag above:
-      label_source             Box-label source: "cc" pseudo-labels / "manual" / "merge" (default "cc").
-      validation_split         Fraction of images held out for val (default 0.2).
-      random_state             Seed for the train/val split (default 42).
-      colormap                 Matplotlib colormap the spectrogram images are rendered with (default viridis).
-      manual_labels_directory  Directory of hand-verified {spec_id}.txt labels, for "manual"/"merge" (default "").
+      -h, --help            Show this help message and exit.
+      --label-source        Box label source: cc pseudo-labels, manual files, or merge.
+      --validation-split    Fraction of images held out for validation.
+      --random-state        Random seed (RNG seed) for the reproducible train/val split permutation.
+      --colormap            Matplotlib colormap name the spectrogram images are rendered with (must match the detector colormap).
+      --manual-labels-directory
+                            Directory of hand-verified {spec_id}.txt YOLO labels (manual/merge).
 
 ``train-masks``
 ``train-masks`` fine-tunes the Ultralytics YOLO box detector on an ``export-yolo-dataset`` dataset (from a COCO-pretrained ``yolo11n.pt`` by default) and copies the resulting ``best.pt`` to ``<output-directory>/best.pt`` — the path to set as ``generate-usv-masks``' ``yolo_weights``. GPU recommended.
@@ -584,7 +650,9 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 .. code-block:: text
 
     usage: train-masks [-h] --dataset-directory PATH --output-directory PATH
-                            [--base-weights TEXT] [--n-epochs INTEGER] [--batch-size INTEGER]
+                            [--base-weights TEXT] [--n-epochs INTEGER]
+                            [--imgsz INTEGER] [--batch-size INTEGER]
+                            [--device TEXT] [--run-name TEXT]
 
     required arguments:
       --dataset-directory   YOLO dataset directory (export-yolo-dataset output, with data.yaml).
@@ -593,13 +661,11 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
     optional arguments:
       -h, --help            Show this help message and exit.
       --base-weights        Base YOLO checkpoint to fine-tune from (e.g. yolo11n.pt).
-      settings (processing_settings.json -> "train_masks"), overridden by any flag above:
-      base_weights  COCO-pretrained YOLO checkpoint to fine-tune from (default yolo11n.pt).
-      n_epochs      Number of training epochs (default 100).
-      imgsz         Square image size in px the detector trains at (default 128).
-      batch_size    Training batch size (default 16).
-      device        CUDA device; null = auto-select, e.g. 0 or "cpu" (default null).
-      run_name      Ultralytics run name (subdir under the output directory) (default usv_yolo_detector).
+      --n-epochs            Number of training epochs.
+      --imgsz               Square image size (px) the detector trains at; 128 is the native spectrogram size.
+      --batch-size          Training batch size (imgs/batch).
+      --device              Compute device: a GPU index (e.g. "0"), "cpu", or omit for Ultralytics auto-select (null).
+      --run-name            Ultralytics run name (subdir under the output directory holding the run artifacts).
 
 Analyze
 -------

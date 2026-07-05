@@ -396,8 +396,14 @@ class QLVMTrainer:
 @click.option('--latent-dim', 'latent_dim', type=int, default=None, required=False, help='Torus latent dimensionality.')
 @click.option('--lattice-type', 'lattice_type', type=click.Choice(['korobov', 'roberts', 'fibonacci']), default=None, required=False, help='Quasi-random lattice generator.')
 @click.option('--korobov-a', 'korobov_a', type=int, default=None, required=False, help='Korobov generating integer.')
+@click.option('--train-n-points', 'train_n_points', type=int, default=None, required=False, help='Number of quasi-random lattice points used during training (korobov/roberts).')
+@click.option('--test-n-points', 'test_n_points', type=int, default=None, required=False, help='Number of quasi-random lattice points used at evaluation/validation (korobov/roberts).')
+@click.option('--fib-m', 'fib_m', type=int, default=None, required=False, help='Fibonacci lattice order (used only when lattice-type=fibonacci; 2D only).')
 @click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Training batch size.')
 @click.option('--learning-rate', 'learning_rate', type=float, default=None, required=False, help='Adam learning rate.')
+@click.option('--val-freq', 'val_freq', type=int, default=None, required=False, help='Run validation-evidence evaluation every N epochs (must be >= 1).')
+@click.option('--seed', 'seed', type=int, default=None, required=False, help='Global RNG seed (torch + numpy) for reproducible shuffling / per-batch torus shifts.')
+@click.option('--num-workers', 'num_workers', type=int, default=None, required=False, help='DataLoader worker processes (0 = load in the main process).')
 @click.pass_context
 def train_qlvm_cli(ctx, dataset_directory, output_directory, **kwargs) -> None:
     """
@@ -420,6 +426,7 @@ def train_qlvm_cli(ctx, dataset_directory, output_directory, **kwargs) -> None:
         ctx=ctx,
         provided_params=provided_params,
         settings_dict='processing_settings',
+        block='train_qlvm',
     )
 
     QLVMTrainer(

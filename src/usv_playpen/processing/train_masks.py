@@ -172,7 +172,10 @@ class MaskDetectorTrainer:
 @click.option('--output-directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory for the Ultralytics run + copied best.pt.')
 @click.option('--base-weights', 'base_weights', type=str, default=None, required=False, help='Base YOLO checkpoint to fine-tune from (e.g. yolo11n.pt).')
 @click.option('--n-epochs', 'n_epochs', type=int, default=None, required=False, help='Number of training epochs.')
-@click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Training batch size.')
+@click.option('--imgsz', 'imgsz', type=int, default=None, required=False, help='Square image size (px) the detector trains at; 128 is the native spectrogram size.')
+@click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Training batch size (imgs/batch).')
+@click.option('--device', 'device', type=str, default=None, required=False, help='Compute device: a GPU index (e.g. "0"), "cpu", or omit for Ultralytics auto-select (null).')
+@click.option('--run-name', 'run_name', type=str, default=None, required=False, help='Ultralytics run name (subdir under the output directory holding the run artifacts).')
 @click.pass_context
 def train_masks_cli(ctx, dataset_directory, output_directory, **kwargs) -> None:
     """
@@ -195,6 +198,7 @@ def train_masks_cli(ctx, dataset_directory, output_directory, **kwargs) -> None:
         ctx=ctx,
         provided_params=provided_params,
         settings_dict='processing_settings',
+        block='train_masks',
     )
 
     MaskDetectorTrainer(

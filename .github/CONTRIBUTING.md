@@ -477,6 +477,20 @@ notebook:
 - A documented settings block must **match** the shipped `*_settings.json` (same
   keys, representative values). When a key/flag is renamed in code, fix the docs
   in the **same** change — a stale key/flag is a doc _bug_, not a style nit.
+- **Processing-pipeline CLI commands expose their _whole_ settings block, and
+  document every flag.** Every key in a command's `processing_settings.json`
+  block is a `click.option` whose second positional arg is the bare setting key
+  (e.g. `@click.option('--n-epochs', 'n_epochs', ...)`), and the command passes
+  `block='<its block>'` to `modify_settings_json_for_cli` so an override always
+  writes to **that** command's block — never the first global key match (keys
+  like `n_epochs` / `batch_size` / `latent_dim` recur across blocks, so an
+  unscoped write lands in the wrong one). Adding a settings key means adding its
+  flag in the same change. In `CLI.rst`, document such a command as `usage` →
+  `required arguments` → `optional arguments` with **every** `--flag` described
+  (the `usage` line enumerates them all, wrapped like the `generate-viz` block);
+  do **not** enumerate the settings-JSON keys separately, list their defaults,
+  or add a `(full parameters under processing_settings.json -> ...)` pointer —
+  every parameter is a real flag, so it is simply listed as one.
 - **Experimenter paths:** the shipped `*_settings.json` carry a literal
   experimenter directory (`/mnt/falkner/Bartul/...`), and the code re-keys it to
   the active experimenter at runtime (`os_utils.rebase_experimenter_in_paths` —

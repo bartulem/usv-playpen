@@ -158,3 +158,64 @@ def test_modify_settings_warns_on_ambiguous_param(capsys):
     # Applied to the first match (naturalistic) only; the other block is untouched.
     assert result["create_naturalistic_usv_playback_wav"]["playback_seed"] == 7
     assert result["create_usv_playback_wav"]["playback_seed"] != 7
+
+
+# modify_settings_json_for_cli — block= scopes an override to a single settings block
+
+def test_modify_settings_block_scopes_shared_key():
+    """``batch_size`` occurs in generate_masks, train_qlvm AND train_masks. With
+    ``block='train_qlvm'`` the override must land in THAT block only. The pre-block
+    resolver wrote a shared key to the first global match (generate_masks), so a
+    command's own ``--batch-size`` silently missed its target; this guards the fix."""
+    ctx = SimpleNamespace(params={"batch_size": 999})
+    result = modify_settings_json_for_cli(
+        ctx,
+        provided_params=["batch_size"],
+        settings_dict="processing_settings",
+        block="train_qlvm",
+    )
+    assert result["train_qlvm"]["batch_size"] == 999
+    assert result["generate_masks"]["batch_size"] != 999
+    assert result["train_masks"]["batch_size"] != 999
+
+
+def test_modify_settings_block_emits_no_ambiguity_warning(capsys):
+    """A shared key is no longer ambiguous once resolution is scoped to one block,
+    so the ambiguity warning the global path prints must not appear."""
+    ctx = SimpleNamespace(params={"batch_size": 8})
+    modify_settings_json_for_cli(
+        ctx,
+        provided_params=["batch_size"],
+        settings_dict="processing_settings",
+        block="train_qlvm",
+    )
+    assert "ambiguous" not in capsys.readouterr().err
+
+
+def test_modify_settings_block_warns_when_key_absent_from_block(capsys):
+    """A provided param that is not a key of the named block is skipped with a
+    block-specific 'did not match' warning, instead of leaking into another block."""
+    ctx = SimpleNamespace(params={"batch_size": 8})
+    modify_settings_json_for_cli(
+        ctx,
+        provided_params=["batch_size"],
+        settings_dict="processing_settings",
+        block="compute_usv_acoustic_features",  # this block has no batch_size key
+    )
+    err = capsys.readouterr().err
+    assert "did not match" in err
+    assert "batch_size" in err
+    assert "compute_usv_acoustic_features" in err
+
+
+def test_modify_settings_block_none_falls_back_to_global_first_match():
+    """``block=None`` (the default, used by the non-pipeline commands) preserves the
+    legacy behavior: a shared key is written to the first block
+    ``find_nested_key_paths`` lists (generate_masks for batch_size)."""
+    ctx = SimpleNamespace(params={"batch_size": 999})
+    result = modify_settings_json_for_cli(
+        ctx,
+        provided_params=["batch_size"],
+        settings_dict="processing_settings",
+    )
+    assert result["generate_masks"]["batch_size"] == 999

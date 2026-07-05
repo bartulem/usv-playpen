@@ -279,6 +279,12 @@ class QLVMLatentInference:
 @click.option('--weights-npz-path', 'weights_npz_path', type=str, default=None, required=False, help='Path to the converted decoder weights .npz.')
 @click.option('--reference-arrays-fine-npz-path', 'reference_arrays_fine_npz_path', type=str, default=None, required=False, help='Path to the FINE reference arrays.npz (ws_labels_periodic -> qlvm_category).')
 @click.option('--reference-arrays-coarse-npz-path', 'reference_arrays_coarse_npz_path', type=str, default=None, required=False, help='Path to the COARSE reference arrays.npz (ws_labels_periodic -> qlvm_supercategory).')
+@click.option('--lattice-type', 'lattice_type', type=click.Choice(['korobov', 'roberts', 'fibonacci']), default=None, required=False, help='Quasi-random lattice generator used to rebuild the fixed QLVM (quasi-Monte Carlo latent variable model) lattice at inference.')
+@click.option('--latent-dim', 'latent_dim', type=int, default=None, required=False, help='Dimensionality of the toroidal latent space.')
+@click.option('--n-points', 'n_points', type=int, default=None, required=False, help='Number of lattice points used at inference.')
+@click.option('--korobov-a', 'korobov_a', type=int, default=None, required=False, help='Korobov generating integer (used when lattice-type=korobov).')
+@click.option('--fib-m', 'fib_m', type=int, default=None, required=False, help='Fibonacci lattice order m (used when lattice-type=fibonacci).')
+@click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.')
 @click.pass_context
 def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
     """
@@ -300,6 +306,7 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
         ctx=ctx,
         provided_params=provided_params,
         settings_dict='processing_settings',
+        block='infer_qlvm_latents',
     )
 
     QLVMLatentInference(

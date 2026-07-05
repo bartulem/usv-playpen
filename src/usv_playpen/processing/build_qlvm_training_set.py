@@ -530,7 +530,10 @@ class QLVMTrainingSetBuilder:
 @click.option('--root-directories', type=str, required=True, help='Comma-separated string of session root directory paths.')
 @click.option('--output-directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write the .npz training set.')
 @click.option('--length-threshold', 'length_threshold', type=float, default=None, required=False, help='Drop spectrograms with duration >= threshold (time bins).')
+@click.option('--dataset-size-constraint', 'dataset_size_constraint', type=int, default=None, required=False, help='Optional cap on the total number of kept spectrograms (absolute count if > 1, proportion if in (0, 1]); omit for no cap (null = all data).')
 @click.option('--validation-split', 'validation_split', type=float, default=None, required=False, help='Fraction held out for validation.')
+@click.option('--random-state', 'random_state', type=int, default=None, required=False, help='RNG (random number generator) seed for reproducible subsampling and the train/val split.')
+@click.option('--target-shape', 'target_shape', nargs=2, type=int, default=None, required=False, help='Output spectrogram (freq, time) shape as two ints, e.g. --target-shape 128 128.')
 @click.option('--full-dataset/--no-full-dataset', 'full_dataset', default=None, required=False, help='Write a single full_data.npz (no train/val split).')
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Time-warp the signal window instead of center-resizing.')
 @click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Apply SAM mask regions from the mask/<session> groups ("sam") or keep raw spectrograms ("none").')
@@ -556,6 +559,8 @@ def build_qlvm_training_set_cli(ctx, root_directories, output_directory, **kwarg
         ctx=ctx,
         provided_params=provided_params,
         settings_dict='processing_settings',
+        parameters_lists=['target_shape'],
+        block='build_qlvm_training_set',
     )
 
     root_dirs = [p.strip() for p in root_directories.split(",") if p.strip()]

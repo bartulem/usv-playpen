@@ -470,6 +470,7 @@ def compute_usv_acoustic_features_cli(ctx, root_directory, **kwargs) -> None:
         ctx=ctx,
         provided_params=provided_params,
         settings_dict='processing_settings',
+        block='compute_usv_acoustic_features',
     )
 
     USVAcousticFeatureExtractor(

@@ -398,6 +398,22 @@ class MaskGenerator:
 @click.option('--yolo-weights', 'yolo_weights', type=str, default=None, required=False, help='Trained YOLO best.pt weights path.')
 @click.option('--yolo-conf', 'yolo_conf', type=float, default=None, required=False, help='YOLO confidence threshold (lower => more recall).')
 @click.option('--yolo-iou', 'yolo_iou', type=float, default=None, required=False, help='YOLO NMS IoU (raise to keep stacked calls).')
+@click.option('--method', 'method', type=str, default=None, required=False, help="Mask-generation method; only 'boxprompt' (SAM2 box-prompt path) is supported.")
+@click.option('--yolo-imgsz', 'yolo_imgsz', type=int, default=None, required=False, help='YOLO detector input image size in px (native spectrogram size is 128).')
+@click.option('--mask-cmap', 'mask_cmap', type=str, default=None, required=False, help='Matplotlib colormap used to render each spectrogram to RGB before SAM2 prompting.')
+@click.option('--duration-min', 'duration_min', type=int, default=None, required=False, help='Minimum USV duration (time bins) to segment; shorter/placeholder (duration==0) rows are skipped.')
+@click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Number of spectrograms processed per batch before a memory-cleanup pass.')
+@click.option('--multimask-output/--no-multimask-output', 'multimask_output', default=None, required=False, help='Let SAM2 emit multiple candidate masks per box and keep the highest-IoU one (vs a single mask).')
+@click.option('--iou-floor', 'iou_floor', type=float, default=None, required=False, help='Predicted-IoU threshold below which a mask is flagged low-IoU (see --drop-below-iou).')
+@click.option('--drop-below-iou/--no-drop-below-iou', 'drop_below_iou', default=None, required=False, help='Discard masks whose SAM2 predicted IoU is below --iou-floor (default keeps them).')
+@click.option('--split-disconnected/--no-split-disconnected', 'split_disconnected', default=None, required=False, help='Split a SAM2 mask with multiple 8-connected components into separate instances.')
+@click.option('--max-iters', 'max_iters', type=int, default=None, required=False, help='Residual re-prompting passes for the cc detector (the yolo detector is always single-pass).')
+@click.option('--merge-instances/--no-merge-instances', 'merge_instances', default=None, required=False, help='Post-merge near-duplicate / contained instances to correct over-segmentation.')
+@click.option('--merge-iou', 'merge_iou', type=float, default=None, required=False, help='IoU above which two overlapping instances are fused in the post-merge step.')
+@click.option('--merge-containment', 'merge_containment', type=float, default=None, required=False, help='Containment fraction above which a smaller instance is merged into a larger enclosing one.')
+@click.option('--mask-intensity-floor', 'mask_intensity_floor', type=float, default=None, required=False, help='Normalized-intensity floor; keep only mask pixels at/above it (drops faint harmonics/tails). 0 disables.')
+@click.option('--tiny-mask-floor-px', 'tiny_mask_floor_px', type=int, default=None, required=False, help='Minimum mask area in px; smaller masks / split components are dropped.')
+@click.option('--min-box-area', 'min_box_area', type=int, default=None, required=False, help='Minimum detector box area in px before SAM2 prompting; 0 disables the gate.')
 @click.pass_context
 def generate_masks_cli(ctx, root_directory, **kwargs) -> None:
     """
@@ -420,6 +436,7 @@ def generate_masks_cli(ctx, root_directory, **kwargs) -> None:
         ctx=ctx,
         provided_params=provided_params,
         settings_dict='processing_settings',
+        block='generate_masks',
     )
 
     MaskGenerator(
