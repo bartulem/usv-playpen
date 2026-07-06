@@ -589,7 +589,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --num-workers         DataLoader worker processes (0 = load in the main process).
 
 ``infer-qlvm-latents``
-``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm_dim1`` / ``qlvm_dim2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``.
+``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm_dim1`` / ``qlvm_dim2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``. With ``--masking-type sam`` (default) each spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group before embedding -- matching how the decoder was trained by ``build-qlvm-training-set`` (embedding raw spectrograms into a masked-trained decoder is out-of-distribution); ``--masking-type none`` embeds raw spectrograms.
 
 .. code-block:: text
 
@@ -601,6 +601,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
                             [--latent-dim INTEGER] [--n-points INTEGER]
                             [--korobov-a INTEGER] [--fib-m INTEGER]
                             [--time-stretch | --no-time-stretch]
+                            [--masking-type {sam,none}]
 
     required arguments:
       --root-directory      Session root directory path.
@@ -619,6 +620,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --fib-m               Fibonacci lattice order m (used when lattice-type=fibonacci).
       --time-stretch / --no-time-stretch
                             Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.
+      --masking-type        Apply SAM mask regions from the mask/<session> groups before embedding ("sam", matching how the decoder was trained) or embed raw spectrograms ("none").
 
 ``export-yolo-dataset``
 ``export-yolo-dataset`` renders USV spectrograms to images (exactly as the detector renders them at inference) and writes an Ultralytics-format YOLO dataset (``images/{train,val}``, ``labels/{train,val}``, ``data.yaml``). ``--label-source cc`` (default) pseudo-labels boxes with the unlearned connected-component detector (no annotation needed); ``manual`` ingests hand-verified ``{spec_id}.txt`` labels; ``merge`` uses cc overridden by manual where present.

@@ -113,6 +113,7 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
         "korobov_a": 3,
         "fib_m": 16,
         "time_stretch": False,
+        "masking_type": "sam",
     }
     mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
     ql.QLVMLatentInference(
@@ -173,6 +174,7 @@ def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid):
         "korobov_a": 3,
         "fib_m": 16,
         "time_stretch": False,
+        "masking_type": "sam",
     }
     return root, session_id, cfg
 
@@ -202,6 +204,58 @@ def test_infer_and_merge_category_vs_supercategory_semantics(tmp_path, mocker):
     # FINE labels land in qlvm_category (100..115), COARSE in qlvm_supercategory (0..6).
     assert all(100 <= c <= 115 for c in cats)
     assert all(0 <= s <= 6 for s in supercats)
+
+
+def test_infer_and_merge_masking_type_applies_or_skips_sam_mask(tmp_path, mocker):
+    """The decoder is trained on SAM-masked (background-zeroed) spectrograms, so
+    ``masking_type='sam'`` must zero every pixel outside the call's SAM mask region
+    before embedding, while ``masking_type='none'`` must embed the raw spectrogram.
+    This pins the train/inference masking parity: embedding raw specs into a
+    masked-trained decoder is out-of-distribution and yields unreliable latents.
+    The spectrogram fed to ``embed_data`` is captured under both settings."""
+    rng = np.random.default_rng(3)
+    res = 8
+    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
+    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
+
+    # Add a SAM mask group covering only the top half (rows 0:64) of each real USV
+    # (spectrogram rows 0 and 2); build_session_masks unions per spectrogram_index.
+    n_f = n_t = 128
+    seg = np.zeros((2, n_f, n_t), dtype=bool)
+    seg[:, :64, :] = True
+    h5_loc = root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5"
+    with h5py.File(h5_loc, "a") as f:
+        mask_group = f.create_group(f"mask/{session_id}")
+        mask_group.create_dataset("segmentations", data=seg)
+        mask_group.create_dataset("spectrogram_index", data=np.array([0, 2], dtype=np.int64))
+
+    # Capture the spectrogram batch handed to the decoder without needing a real
+    # embedding; return valid torus coordinates so the downstream lookup succeeds.
+    captured = {}
+
+    def _fake_embed(lattice, data, params):
+        captured["data"] = np.asarray(data)
+        return np.full((data.shape[0], 2), 0.5, dtype=np.float64)
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    mocker.patch("usv_playpen.processing.qlvm_latents.embed_data", side_effect=_fake_embed)
+
+    def _run(masking_type):
+        cfg["masking_type"] = masking_type
+        ql.QLVMLatentInference(
+            root_directory=str(root),
+            input_parameter_dict={"infer_qlvm_latents": cfg},
+            message_output=lambda *_a, **_kw: None,
+        ).infer_and_merge()
+        return captured["data"]
+
+    data_sam = _run("sam")
+    assert np.all(data_sam[:, 0, 64:, :] == 0.0), "masking_type='sam' must zero the region outside the SAM mask"
+    assert np.any(data_sam[:, 0, :64, :] != 0.0), "the masked-in (kept) region must retain the spectrogram"
+
+    data_none = _run("none")
+    assert np.any(data_none[:, 0, 64:, :] != 0.0), "masking_type='none' must embed the raw (unmasked) spectrogram"
 
 
 def test_infer_and_merge_idempotent_preserves_other_columns(tmp_path, mocker):

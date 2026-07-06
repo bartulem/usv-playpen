@@ -305,6 +305,7 @@
     "n_points": 1021,
     "korobov_a": 76,
     "fib_m": 16,
-    "time_stretch": false
+    "time_stretch": false,
+    "masking_type": "sam"
   }
 }

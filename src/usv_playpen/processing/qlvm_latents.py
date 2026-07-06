@@ -38,7 +38,7 @@ from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import configure_path, derive_spectrogram_model_paths, first_match_or_raise
-from ..processing.build_qlvm_training_set import stretch_specs
+from ..processing.build_qlvm_training_set import build_session_masks, stretch_specs
 from ..time_utils import is_gui_context, smart_wait
 from .qlvm_model import embed_data, gen_fib_basis, gen_korobov_basis, roberts_sequence
 
@@ -233,14 +233,25 @@ class QLVMLatentInference:
             session_group = h5_file[f"spectrogram/{root.name}"]
             specs = session_group["spectrograms"][:]
             durations = session_group["durations"][:]
-        # spectrogram rows are 1:1 with usv_summary.csv; embed only the real
-        # (duration > 0) USVs and remember their row positions for the merge.
-        usv_indices = np.flatnonzero(durations > 0).astype(np.uint32)
-        specs = specs[usv_indices]
-        durations = durations[usv_indices]
+            # spectrogram rows are 1:1 with usv_summary.csv; embed only the real
+            # (duration > 0) USVs and remember their row positions for the merge.
+            usv_indices = np.flatnonzero(durations > 0).astype(np.uint32)
+            specs = specs[usv_indices].astype(np.float32)
+            durations = durations[usv_indices]
+            # Apply the SAM mask exactly as build_qlvm_training_set does, so the
+            # decoder -- trained on masked (background-zeroed) spectrograms -- receives
+            # in-distribution input. Embedding raw spectrograms into a masked-trained
+            # decoder is out-of-distribution and yields unreliable coordinates.
+            # masking_type "none" keeps raw spectrograms (correct only if the decoder
+            # was trained without masking).
+            if cfg['masking_type'] == 'sam':
+                masks, _ = build_session_masks(
+                    h5_file, root.name, usv_indices, specs.shape[1], specs.shape[2]
+                )
+                specs = specs * masks
 
         # Preprocess identically to the training set (same resize/time-stretch).
-        resized = stretch_specs(specs.astype(np.float32), durations, (128, 128), cfg['time_stretch'])
+        resized = stretch_specs(specs, durations, (128, 128), cfg['time_stretch'])
         data = jnp.asarray(resized[:, None, :, :])
 
         coords = np.asarray(embed_data(lattice, data, params))           # (N, 2)
@@ -285,6 +296,7 @@ class QLVMLatentInference:
 @click.option('--korobov-a', 'korobov_a', type=int, default=None, required=False, help='Korobov generating integer (used when lattice-type=korobov).')
 @click.option('--fib-m', 'fib_m', type=int, default=None, required=False, help='Fibonacci lattice order m (used when lattice-type=fibonacci).')
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.')
+@click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Apply SAM mask regions before embedding ("sam", matching training) or embed raw spectrograms ("none").')
 @click.pass_context
 def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
     """
