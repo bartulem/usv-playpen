@@ -1391,6 +1391,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 * **korobov_a** : Korobov generating integer (must match training)
 * **fib_m** : Fibonacci lattice parameter (must match training)
 * **time_stretch** : whether to time-stretch spectrograms before embedding (must match training)
+* **masking_type** : ``"sam"`` (default) masks each spectrogram by the union of its SAM regions before embedding, matching how the decoder was trained by *Build QLVM training set*; ``"none"`` embeds raw spectrograms (must match training)
 
 .. code-block:: json
 
@@ -1403,7 +1404,8 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "n_points": 1021,
         "korobov_a": 76,
         "fib_m": 16,
-        "time_stretch": false
+        "time_stretch": false,
+        "masking_type": "sam"
       }
 
 Train spectrogram-pipeline models
