@@ -88,7 +88,7 @@ Process
       --output-name         Name of the concatenated file.
 
 ``rectify-video-fps``
-``rectify-video-fps`` iis the command-line interface for re-encoding videos to a correct frame rate.
+``rectify-video-fps`` is the command-line interface for re-encoding videos to a correct frame rate.
 
 .. code-block:: text
 
@@ -712,9 +712,9 @@ Analyze
     optional arguments:
         -h, --help                   Show this help message and exit.
         --num-usv-files              Number of WAV files to create.
-        --total-usv-number           Total number of USVs to distribute across file.
+        --total-usv-number           Total number of USVs to distribute across files.
         --ipi-duration               Inter-USV-interval duration (in s).
-        --wav-sampling-rate          Sampling rate for the output WAV file (in Hz).
+        --wav-sampling-rate          Sampling rate for the output WAV file (in kHz).
         --playback-snippets-dir      Directory of USV playback snippets.
 
 ``generate-naturalistic-usv-playback``
@@ -798,7 +798,7 @@ The command writes a single self-describing HDF5 archive ``usv_interval_analysis
                                   absorbs the long-pause tail). 'gauss' =
                                   log-Gaussian mixture (classical).
       --bootstrap-lrt-B           Number of parametric bootstrap replicates
-                                  per pairwise LRT. Default 50.
+                                  per pairwise LRT. Default 1000.
       --bootstrap-lrt-n-subsample Subsample size for both observed and
                                   bootstrap fits. Default 15000.
       --bootstrap-lrt-alpha       Significance threshold for the step-up
@@ -982,7 +982,7 @@ Visualize
       --nodes / --no-nodes             Display mouse nodes.
       --node-size                      Size of the mouse nodes.
       --node-opacity                   Opacity of the mouse nodes.
-      --node-lw                        Line width for the mouse node connections.
+      --node-lw                        Line width (edge) for the mouse node markers.
       --node-connection-lw             Line width for mouse node connections.
       --body-opacity                   Opacity of the mouse body.
       --history-point                  Node to use for the history trail.

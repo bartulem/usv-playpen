@@ -313,11 +313,21 @@ The ``usv_playpen.visualizations.qlvm_torus_traversal_video`` module renders a t
 - **Part 2 — Peak-to-peak walks**: shortest-torus-path walks between random cluster peaks; the right 5×15 grid fills row-major with the nearest USV at each visited position (the current tile bordered in cyan).
 - **Part 3 — Boundary crossings**: curved walks that wrap the torus edges/corners; the right grid's columns are trajectory positions and rows are nearest neighbours (the current trajectory tile bordered in cyan).
 
-It is **cohort-level** — it reads one model's analysis arrays + the consolidated store, not a session directory — and is exposed both as the ``qlvm-torus-traversal-video`` CLI and in the GUI *Visualize* window (third column): "Render QLVM torus video" (Yes/No), a **Clustering** selector (``coarse`` = 7 clusters / ``fine`` = 12), and a **Video fps** slider. A single **Spectrograms directory** **Browse** field lives in the left column under **Credentials directory** (the shared ``shared_resources.spectrograms_dir`` base, under which the QLVM arrays and the consolidated store are resolved by convention).
+It is **cohort-level** — it reads one model's analysis arrays + the consolidated store, not a session directory — and is exposed both as the ``qlvm-torus-traversal-video`` CLI and in the GUI *Visualize* window (third column): "Render QLVM demo video" (Yes/No), a **QLVM clustering type borders** selector (``coarse`` = 7 clusters / ``fine`` = 12), and a **Video sampling rate (fps)** slider. A single **Spectrograms directory** **Browse** field lives in the left column under **Credentials directory** (the shared ``shared_resources.spectrograms_dir`` base, under which the QLVM arrays and the consolidated store are resolved by convention).
+
+To render it, list a root directory, set the *Spectrograms directory*, select *Render QLVM demo video*, choose the clustering and *Video sampling rate (fps)*, click *Next* and then *Visualize*:
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_3.png
+   :align: center
+   :alt: Visualize Step 3
+
+.. raw:: html
+
+   <br>
 
 Inputs — both resolved by convention via ``configure_path`` from the single ``shared_resources.spectrograms_dir`` base (shared with the USV sequence figure and the stitched spectrogram):
 
-- ``<spectrograms_dir>/qlvm/arrays_{coarse,fine}.npz`` — the QLVM analysis arrays, used ONLY for the ``heatmap`` background, ``ws_labels_periodic`` cluster contours, and ``centers`` (the cluster peaks / path waypoints); the **Clustering** selector picks which one.
+- ``<spectrograms_dir>/qlvm/arrays_{coarse,fine}.npz`` — the QLVM analysis arrays, used ONLY for the ``heatmap`` background, ``ws_labels_periodic`` cluster contours, and ``centers`` (the cluster peaks / path waypoints); the **QLVM clustering type borders** selector picks which one.
 - ``<spectrograms_dir>/spectrograms_*.h5`` (newest match) — the consolidated per-session spectrogram/SAM2 store. It supplies BOTH the per-USV latent coords (per-session ``spectrogram/<key>/qlvm_dim``) for the nearest-neighbour lookup AND the spectrograms (``spectrogram/<key>/spectrograms``) shown on the right. No latents pickle is read at render time, and coverage spans all sessions in the store.
 
 **One-time prerequisite** — the consolidated H5 does not ship with latent coordinates, so it must be enriched once with a small per-session ``spectrogram/<key>/qlvm_dim`` (n, 2) dataset (a few MB, non-destructive — existing spectrograms/masks are untouched), populated from the latents provenance pickle. This is a one-off data migration (a throwaway script, not a repo command). If the video is run before the store has ``qlvm_dim`` it raises a clear error.
@@ -332,7 +342,7 @@ Because it is cohort-level, the output is not written next to a session; the ``.
 
 The render parameters live in the ``qlvm_torus_traversal_video`` block of */usv-playpen/_parameter_settings/visualizations_settings.json*:
 
-* **clustering** : which cluster set to traverse — ``coarse`` (7 clusters) or ``fine`` (12); set by the GUI **Clustering** selector.
+* **clustering** : which cluster set to traverse — ``coarse`` (7 clusters) or ``fine`` (12); set by the GUI **QLVM clustering type borders** selector.
 * **fps** : output frame rate.
 * **dpi** : raster resolution of each rendered frame.
 * **m** : number of nearest-neighbour USVs shown in the concentric rings around each cluster peak (Part 1).
@@ -377,6 +387,16 @@ The render parameters live in the ``qlvm_torus_traversal_video`` block of */usv-
 Render a USV sequence figure
 -----------------------------
 ``USVSpectrogramPlotter.plot_sequence`` (the ``'sequence'`` mode of ``make_usv_spectrograms``) renders a **per-session**, static two-panel figure of the USVs in a chosen ``[start, start + duration]`` window (seconds). It is wired into the GUI *Visualize* window (third column) under "Render USV sequence figure" and dispatched per session in ``visualize_data.py`` via ``make_usv_spectrograms_bool`` (enabling the GUI toggle sets ``make_usv_spectrograms.mode = 'sequence'``).
+
+To render it, list a session root, select *Render USV sequence figure*, set the audio-sequence window and options, click *Next* and then *Visualize*:
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_4.png
+   :align: center
+   :alt: Visualize Step 4
+
+.. raw:: html
+
+   <br>
 
 - **Left** — a precomputed cohort embedding landscape (``embedding`` = ``qlvm`` or ``vae``), drawn with no ticks/ticklabels. The window's USVs are colored by emitter (``male_colors[0]`` / ``female_colors[0]`` / ``unassigned_colors[0]``), sized by call duration, numbered ``1..n`` in time order, and joined by a connecting line whose color runs white → male color along the bout and whose per-segment width tracks the inter-USV silent gap (``start`` of the next minus ``stop`` of the previous; on the QLVM torus the line takes the short wrap-around route across an edge when that is closer — VAE (variational autoencoder) is a plain plane, no wrapping). Both embeddings draw a gray_r density heatmap and, when ``draw_boundaries`` is on, overlay black category boundaries selected by ``boundary_clustering`` (``coarse`` / ``fine``). Both maps are resolved by convention from the shared ``shared_resources.spectrograms_dir``: QLVM from ``<dir>/qlvm/arrays_{coarse,fine}.npz`` (the watershed arrays, on the unit torus); VAE from ``<dir>/vae/vae_density_{coarse,fine}.npz`` (a cohort density precomputed over the umap (Uniform Manifold Approximation and Projection) coordinate extent), where **coarse** = ``vae_supercategory`` and **fine** = ``vae_category`` regions. The VAE files are built once with ``build_vae_density_npz`` (CLI ``build-vae-density``), which pools the cohort via ``build_pooled_embeddings_df``, histograms a density, and rasterizes a nearest-neighbour category field. VAE still requires the session's ``usv_summary`` to carry ``vae_umap1``/``vae_umap2`` (else a clear error is raised); when the resolved npz is absent (e.g. the VAE density was never precomputed) the panel falls back to a bare (tick-free) scatter.
 - **Right** — ONE continuous spectrogram over the same window: the per-USV averaged spectrograms are SAM2-masked (when ``apply_mask``) and stitched at their true times onto a **black** background, so only the calls are lit and the gaps are black; an optional raw-audio trace can sit on top (``plot_raw_audio``), taken from the channel that is loudest across the window's USVs (the most-frequent per-USV ``peak_amp_ch``; raw waveforms are NOT averaged across mics — the per-mic phase delays would interfere destructively). Each USV can also be marked with a horizontal emitter-colored bar along the top of the spectrogram (``mark_usv_segments``). The left-panel numbers match the time order of the calls along the right time axis.
@@ -462,6 +482,16 @@ Render embedding thumbnails
 The ``usv_playpen.visualizations.make_usv_spectrograms`` module's remaining cohort-level helper, ``plot_embedding_with_category_thumbnails``, is GUI-exposed (its pooled summary helpers — ``plot_usv_property_histograms``, ``plot_session_type_usv_counts``, ``plot_session_usv_timeline`` — are notebook-driven; see :doc:`Notebooks`):
 
 - ``plot_embedding_with_category_thumbnails`` — a two-panel figure pairing an embedding scatter (VAE umap or QLVM torus) — colored by call category and overlaid with kNN (k-nearest-neighbors) cluster boundaries — against a per-category grid of spectrogram thumbnails sampled from the consolidated SAM2 + spectrogram store. Unlike the helpers above it is **cohort-level** and exposed in the GUI: enabling *Render embedding thumbnails* in the *Visualize* window (third column, with **map type**, **clustering type borders** (coarse / fine), **thumbnails per category**, **thumbnail layout**, **draw cluster boundaries**, **apply SAM2 mask** and **per-cluster sampling** selectors) pools every cohort session list under ``shared_resources.input_files_directory`` and resolves the store from ``shared_resources.spectrograms_dir``, then runs ONCE (the same run-once dispatch as the QLVM torus video, via ``render_embedding_thumbnails_for_cohort``). Its layout / sampling knobs all live in the ``embedding_thumbnails`` settings block (documented below); the figure DPI and the sampling seed are taken from the general ``figures`` block (``dpi`` / ``seed``); the QLVM cluster centers (for cluster-ID labels / spiral centers) are auto-resolved from the newest ``qlvm_clusters_*.h5`` under ``spectrograms_dir`` (QLVM map only); and the cohort scatter is read from the precomputed pooled-embeddings cache ``<spectrograms_dir>/embeddings/pooled_embeddings.parquet`` (one parquet holding both embeddings' coordinates and the coarse + fine labels) — built once on a fast mount via ``build_pooled_embeddings_df`` so the figure does not re-read every session's ``usv_summary.csv``.
+
+To render it, select *Render embedding thumbnails* in the *Visualize* window, choose the map / clustering / layout options, click *Next* and then *Visualize*:
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_5.png
+   :align: center
+   :alt: Visualize Step 5
+
+.. raw:: html
+
+   <br>
 
 Being cohort-level, the figure is written to the project-wide ``figures.save_directory`` with a name built from the map and label column (plus a ``_YYYYMMDD_HHMMSS`` stamp when ``figures.timestamp_in_name`` is set):
 

@@ -374,7 +374,7 @@ the GUI's two inputs — the per-shank track points and the ALF dataset:
 
 .. parsed-literal::
 
-    <histology>/164335_0/20250912_imec0/
+    <histology>/164335_0/20250912/
     └── **ibl_RH**/                          (one per probe + hemisphere)
         ├── **xyz_picks_shank1.json**, …     (one per shank — ``write_xyz_picks``)
         ├── **the ALF dataset**              (spikes / clusters / templates / channels arrays — ``write_alf_outputs``)
@@ -476,7 +476,7 @@ map as the pre-alignment step (no separate settings):
 
 .. parsed-literal::
 
-    <histology>/181322_2/20251012_imec0/ibl_LH/
+    <histology>/181322_2/20251012/ibl_LH/
     ├── channel_locations_shank1.json, …    (input — from the IBL GUI, one per shank)
     └── **channel_locations.json**          (output — unified, raw-channel-id keyed for *SpikeInterface*)
 
@@ -632,7 +632,7 @@ The ``somatic_classifier`` sub-block holds the waveform peak/trough shape thresh
 for the somatic / non-somatic decision (after Deligkaris et al. 2016 — a unit reads as
 non-somatic when a large, narrow positive peak precedes the main trough):
 
-* **min_trough_to_peak2_ratio** (``5.0``) — non-somatic requires the main-trough-to-post-trough-peak amplitude ratio *below* this.
+* **min_trough_to_peak2_ratio** (``5.0``) — non-somatic requires the main-trough-to-pre-trough-peak amplitude ratio *below* this.
 * **min_width_first_peak** (``4``) / **min_width_main_trough** (``5``) — non-somatic requires the pre-trough peak and main-trough half-prominence widths (in samples) *below* these.
 * **max_peak1_to_peak2_ratio** (``3.0``) — non-somatic requires the pre-trough-to-post-trough peak amplitude ratio *above* this.
 * **max_main_peak_to_trough_ratio** (``0.8``) — a unit is non-somatic outright when its largest positive peak exceeds this fraction of the trough amplitude.
@@ -791,7 +791,7 @@ same convention.
 Both indices point at the same electrode, whose actual ``(lateral, axial)``
 **physical position** in microns is the common anchor used to bridge them
 (below) — not an indexing convention in its own right. Within each shank the
-lateral is one of two values 27 µm apart; across shanks the absolute lateral is
+lateral is one of two values 32 µm apart; across shanks the absolute lateral is
 offset by ``shank * 250 µm`` (4-shank center-to-center spacing).
 
 Conversion principles

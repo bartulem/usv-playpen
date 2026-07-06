@@ -375,16 +375,16 @@ pipeline:
 .. code-block:: text
 
     VocalOnsetModelingPipeline      ->  { "usv_feature_arr", "no_usv_feature_arr" }
-    BoutParameterPipeline           ->  { "positive_events", "bout_durations", "bout_syllable_counts" }
+    BoutParameterPipeline           ->  { "X", "y", "groups" }
     VocalCategoryModelingPipeline   ->  { "target_feature_arr", "other_feature_arr" }
-    MultinomialModelingPipeline     ->  { <per-USV feature windows>, "labels" }
-    ContinuousModelingPipeline      ->  { <per-USV feature windows>, <2-D manifold position>, "category" }
+    MultinomialModelingPipeline     ->  { "X", "y" }
+    ContinuousModelingPipeline      ->  { "X", "Y", "w", ["supercategory"], ["category"] }
 
-* **VocalOnsetModelingPipeline** — ``usv_feature_arr`` = positive onset windows, ``no_usv_feature_arr`` = silent-epoch (negative) windows. ``analysis_specific``: ``model_target_vocal_type``, ``usv_count_threshold``.
-* **BoutParameterPipeline** — ``positive_events`` = the bout-onset windows; ``bout_durations`` / ``bout_syllable_counts`` = the per-bout regression targets. ``analysis_specific``: ``target_variable``.
+* **VocalOnsetModelingPipeline** — ``usv_feature_arr`` = positive onset windows, ``no_usv_feature_arr`` = silent-epoch (negative) windows. ``analysis_specific``: ``model_target_vocal_type``, ``usv_bout_time``, ``usv_per_bout_floor``.
+* **BoutParameterPipeline** — ``X`` = the bout-onset feature windows, ``y`` = the per-bout regression target (selected by ``model_target_variable``), ``groups`` = the session grouping. ``analysis_specific``: ``target_variable``.
 * **VocalCategoryModelingPipeline** — ``target_feature_arr`` = windows for the chosen target category, ``other_feature_arr`` = windows for the pooled "other". ``analysis_specific``: ``target_category``.
-* **MultinomialModelingPipeline** — per-USV feature windows paired with ``labels`` (each USV's category). ``analysis_specific``: ``categories_kept``, ``class_counts``.
-* **ContinuousModelingPipeline** — per-USV feature windows paired with the 2-D acoustic-manifold position target (and each USV's ``category``). ``analysis_specific``: ``usv_manifold_column_names``.
+* **MultinomialModelingPipeline** — ``X`` = per-USV feature windows, ``y`` = each USV's category label. ``analysis_specific``: ``categories_kept``, ``class_counts``.
+* **ContinuousModelingPipeline** — ``X`` = per-USV feature windows, ``Y`` = the 2-D acoustic-manifold position target, ``w`` = inverse-density KDE weights (always present); ``supercategory`` and/or ``category`` (each USV's manifold cluster label) are added when those columns are configured. ``analysis_specific``: ``usv_manifold_column_names``.
 
 .. note::
 
@@ -463,37 +463,38 @@ modeling-input pickle. Each is a flat dict of **feature-indexed arrays** (not th
 
     {
         "features":     ["speed", "nose-nose", ...],    # F feature names (row / column order)
-        "spearman_rho": <array (F, F)>,                 # feature x feature Spearman correlation
+        "spearman_rho": <array (F, F)>,                 # feature x feature Spearman correlation (signed, [-1, 1])
+        "pearson_rho":  <array (F, F)>,                 # feature x feature Pearson correlation (signed, [-1, 1])
         "vif":          <array (F,)>,                   # per-feature variance-inflation factor
-        "rho_signal":   <array (F,)>,                   # each feature's correlation with Y(t)
-        "concern":      [["ego_yaw", "back_yaw"]],      # pairs above concern_threshold
-        "exclude":      [],                             # pairs above exclude_threshold
-        "concern_threshold": 0.7, "exclude_threshold": 0.9,
+        "condition_number": <float>,                    # design-matrix condition number
+        "flagged_pairs": [("ego_yaw", "back_yaw", 0.83, "concern"), ...],  # (feat_i, feat_j, rho, tier) tuples (rho signed); tier in {concern, exclude}
+        "concern_threshold": 0.7, "exclude_threshold": 0.85,
+        "n_events": <int>, "source_pickle": "...", "created": "...",
         "_input_metadata": {"...": "..."}
     }
 
-* **spearman_rho** / **vif** — the pairwise Spearman-``|rho|`` matrix and per-feature VIFs (the two ``plot_collinearity_audit`` panels).
-* **rho_signal** — each feature's correlation with the event train ``Y(t)`` (also stored per-session as ``rho_signal_per_session_mean`` / ``_sem``, against a ``rho_signal_null_mean`` baseline).
-* **concern** / **exclude** — the feature pairs whose ``|rho|`` crosses each threshold.
+* **spearman_rho** / **pearson_rho** / **vif** — the pairwise ``Spearman`` and Pearson (signed) correlation matrices and per-feature VIFs (the ``plot_collinearity_audit`` panels).
+* **flagged_pairs** — the feature pairs whose ``|rho|`` crosses a threshold, each as ``(feat_i, feat_j, rho, tier)`` (signed ``rho``) with ``tier`` in ``{"concern", "exclude"}``.
+* **condition_number** / **n_events** — the design-matrix condition number and the number of events the audit ran on.
 
 ``*_timescales.pkl`` — how far in time each predictor carries information:
 
 .. code-block:: text
 
     {
-        "features":            ["speed", "..."],        # F feature names (columns below)
+        "features":            ["speed", "..."],        # F feature names (axis-0 / rows below)
         "acf_lags_seconds":    "<array (L,)>",          # ACF lag axis
-        "acf_median":          "<array (L, F)>",        # median autocorrelation per feature (+ acf_p25 / acf_p75)
-        "acf_null_mean":       "<array (L, F)>",        # circular-shift null envelope (+ acf_null_p0_5 / _p99_5)
+        "acf_median":          "<array (F, L)>",        # per-feature median autocorrelation (+ acf_p25 / acf_p75)
+        "acf_null_mean":       "<array (F, L)>",        # circular-shift null envelope (+ acf_null_p0_5 / _p99_5)
         "tau_acf_1_over_e":    "<array (F,)>",          # per-feature ACF horizons (+ tau_acf_0_2, tau_acf_integrated)
         "signal_lags_seconds": "<array (M,)>",          # cross-correlation lag axis
-        "rho_signal":          "<array (M, F)>",        # feature x Y(t) cross-correlation (+ null envelope)
+        "rho_signal":          "<array (F, M)>",        # feature x Y(t) cross-correlation (+ per-session mean/sem and null envelope)
         "ibi_thresholds": {"...": "..."}, "configured_filter_history": 4,
         "_input_metadata": {"...": "..."}
     }
 
-* **acf_median** (rows = lags, columns = features) vs **acf_null_*** — each feature's autocorrelation against a circular-shift null; the **ACF horizon** (``tau_acf_*``) is how long it stays above that null.
-* **rho_signal** / **signal_lags_seconds** — each feature's cross-correlation with ``Y(t)`` across lags; the **cross-correlation horizon** is the lag at which it leaves the null envelope.
+* **acf_median** (rows = features, columns = lags) vs **acf_null_*** — each feature's autocorrelation against a circular-shift null; the **ACF horizon** (``tau_acf_*``) is how long it stays above that null.
+* **rho_signal** / **signal_lags_seconds** — each feature's cross-correlation with ``Y(t)`` across lags (also stored per-session as ``rho_signal_per_session_mean`` / ``_sem`` against a ``rho_signal_null_mean`` envelope); the **cross-correlation horizon** is the lag at which it leaves the null envelope.
 * **ibi_thresholds** / **configured_filter_history** — the bout-gap thresholds and history window recorded for context.
 
 Univariate modeling
@@ -508,7 +509,7 @@ the fitted temporal filters with ``plot_significant_filters``.
 After the array finishes, merge the per-feature pickles into a single artifact.
 ``consolidate_univariate`` asserts metadata equality across every pickle
 (guarding against stray files from a different run), hoists the agreed
-``_input_metadata`` / ``_run_metadata`` / ``_univariate_metadata`` blocks to the
+``_input_metadata`` / ``_run_metadata`` / ``_consolidation_metadata`` blocks to the
 top, and emits a self-describing filename:
 
 .. code-block:: python

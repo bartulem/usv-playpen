@@ -504,7 +504,7 @@ top of one consolidated artifact, and emit a self-describing filename.
     )
 
     # 2. Model-selection per-step -> consolidated
-    #    selection_<tag>_<condition>_<selection_function>_<ts>.pkl
+    #    model_selection_final_<sex>_<condition>_<analysis_tag>_<split_strategy>[_<ts>].pkl
     consolidate_model_selection(
         input_dir=cons_selection_input_dir,
         move_to_steps_subdir=cons_selection_move_to_steps_subdir,
@@ -1665,7 +1665,7 @@ change what gets analysed.
 * **session_lists** — the configured session-list files, each ``configure_path``-resolved to the host OS.
 * **interval_types** / **mode_label** — the two interval definitions (``s2s`` start-to-start, ``e2s`` end-to-start) and their human-readable titles; every compute and plot cell loops over these.
 * **model_class** — ``"gauss"`` or ``"t"``, selecting the Gaussian or Student-t mixture family for the whole run.
-* **plot_log_xlims** / **bins_per_sex** / **tau** — plot-only knobs read straight from JSON (not archived in the HDF5).
+* **plot_log_xlims** / **bins_per_sex** — plot-only knobs read straight from JSON (not archived in the HDF5); **tau** is likewise read from JSON but *is* archived in the HDF5.
 
 **Compute the fits.** Run once. First, walk every session in the list, read its ``*_usv_summary.csv``,
 compute consecutive inter-USV intervals for both modes, and append them with
@@ -1984,7 +1984,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 
 **Cross-session summaries.** The second part pools many sessions. Its three ``make_usv_spectrograms`` helper figures each carry their own parameters (still the per-figure half of the hybrid layout); all three share the same noise filter, ``noise_col_id = 'vae_supercategory'`` with ``noise_categories = (0,)``, which drops noise rows before plotting.
 
-**2. Property histograms.** ``plot_usv_property_histograms`` is a module-level helper (not a method on ``USVSpectrogramPlotter``) that pools per-USV properties across many sessions into a single five-panel figure: ``duration`` (ms), ``mean_amplitude`` (a.u.), ``mean_freq_hz`` (kHz), ``freq_bandwidth_hz`` (kHz), ``spectral_entropy`` (a.u.). Each panel uses 36 linearly-spaced bins over the FeatureZoo theoretical range; the title reports the number of sessions loaded and the total pooled vocalizations.
+**2. Property histograms.** ``plot_usv_property_histograms`` is a module-level helper (not a method on ``USVSpectrogramPlotter``) that pools per-USV properties across many sessions into a single five-panel figure: ``duration`` (ms), ``mean_amplitude`` (a.u.), ``mean_freq_hz`` (kHz), ``freq_bandwidth_hz`` (kHz), ``spectral_entropy`` (nats). Each panel uses 36 linearly-spaced bins over the FeatureZoo theoretical range; the title reports the number of sessions loaded and the total pooled vocalizations.
 
 .. code-block:: python
 

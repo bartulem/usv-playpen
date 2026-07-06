@@ -471,7 +471,7 @@ Since the average office PC does not necessarily have GPU-capabilities, it is ad
 
 The preparation consists of creating a *job_list.txt* file which contains the paths to the video files and the model(s) to be used for inference. The job list can then be used by a shell script, such as the one in */usv-playpen/other/cluster/SLEAP/sleap_inference_global.sh* to execute inference on all video files of interest.
 
-To run the SLEAP cluster job preparation, you need to list the root directories of interest (which will search for all videos recorded in those sessions), select the SLEAP conda environment name used **on the cluster**, select directories of centroid and centered instance models, select the output inference directory, select *Prepare SLEAP cluster job*, click *Next* and finally *Process*:
+To run the SLEAP cluster job preparation, you need to list the root directories of interest (which will search for all videos recorded in those sessions), select the SLEAP conda environment name used **on the cluster**, select directories of centroid and centered instance models, select the output inference directory, select *Make SLEAP job list*, click *Next* and finally *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_5.png
    :align: center
@@ -762,7 +762,7 @@ If you used the SYNC recording mode (usghflags: 1574), the *Trgbox-USGH device(s
 
    <br>
 
-The *Convert to single-ch files* step populates the *original* directory with single channel files of the entire recording. The *Crop AUDIO (to VIDEO)* step will crop the audio files to the video duration, and save them in the *cropped_to_video* subdirectory. Both steps require the usage of `sox <https://sourceforge.net/projects/sox/>`_. In the last step, the *original* directory will be deleted; reduced to one channel below for brevity:
+The *Convert to single-ch files* step populates the *original* directory with single channel files of the entire recording. The *Crop AUDIO (to VIDEO)* step will crop the audio files to the video duration, and save them in the *cropped_to_video* subdirectory. Both steps require the usage of `sox <https://sourceforge.net/projects/sox/>`_. The *original* directory is later removed by the *A/V sync check* step (once synchronization passes the divergence tolerance), not by this step; reduced to one channel below for brevity:
 
 .. parsed-literal::
 
@@ -779,13 +779,12 @@ The *Convert to single-ch files* step populates the *original* directory with si
     │   ├── ephys
     │   │   ...
     │   ├── sync
-    │   │   ├── **m_video_frames_in_audio_samples**
-    │   │   ├── **s_video_frames_in_audio_samples**
-    │   │   ├── **nidq_ipi_data.npy**
+    │   │   ├── **m_video_frames_in_audio_samples.txt**
+    │   │   ├── **s_video_frames_in_audio_samples.txt**
     │   └── video
     │       ...
 
-The *Crop AUDIO (to VIDEO)* step will also result in the creation of a *audio_triggerbox_sync_info.json* file, which contains the sample number of first and last recorded video frame and the break duration detected prior to recording. It will also contain information about the total duration of the audio recording and its discrepancy with the duration of the video recording. In the *sync* subdirectory, the *m_video_frames_in_audio_samples* and *s_video_frames_in_audio_samples* files will be created, which contain the sample numbers of video frame starts in the audio recording. These files are useful should troubleshooting sync issues arise. In case, National Instruments data acquisition (NIDQ) data was recorded, the *nidq_ipi_data.npy* file will be created, which contains the inter-pulse interval (IPI) durations (first row) and IPI start samples (second row).
+The *Crop AUDIO (to VIDEO)* step will also result in the creation of a *audio_triggerbox_sync_info.json* file, which contains the sample number of first and last recorded video frame and the break duration detected prior to recording. It will also contain information about the total duration of the audio recording and its discrepancy with the duration of the video recording. In the *sync* subdirectory, the *m_video_frames_in_audio_samples.txt* and *s_video_frames_in_audio_samples.txt* files will be created, which contain the sample numbers of video frame starts in the audio recording. These files are useful should troubleshooting sync issues arise.
 
 .. code-block:: json
 
@@ -1119,7 +1118,7 @@ You might also want to know which animal emitted which vocalization. To do this,
 
    <br>
 
-This will create a *sound_localization* subdirectory which will contain several files: [1] dset.h5 file which contains all data relevant for sound localization, [2] assessment.h5 file which contains 2D assessment data, and [3] assessment_assn.npy which contains 6D assessment output - the output of this file is then transferred to the "emitter" column of the *20250430_145017_usv_summary.csv* file.
+This will create a *sound_localization* subdirectory. With the default *vcl-ssl* backend, it contains a *dset.h5* file (all data relevant for sound localization) and a *model_predictions.npz* file, whose predictions are transferred to the "emitter" column of the *20250430_145017_usv_summary.csv* file. (With the older *vcl* backend it instead contains *dset.h5*, an *assessment.h5* file with 2D assessment data, and an *assessment_assn.npy* file with 6D assessment output that feeds the "emitter" column.)
 
 .. parsed-literal::
 
@@ -1189,6 +1188,10 @@ Render spectrograms and latents
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Once the curated *usv_summary.csv* exists (see *Curate DAS outputs* above), an in-house, self-contained pipeline turns every detected ultrasonic vocalization (USV) into a spectrogram, a USV mask, interpretable acoustic features, and toroidal **QLVM** latents. These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run them together, you need to list the root directories of interest, set the *Spectrogram models directory* (the single root from which the Segment Anything Model 2 (SAM2), YOLO, and QLVM model paths are derived), select *Generate spectrograms*, *Generate masks*, *Compute USV features* and *Infer QLVM latents*, click *Next* and then *Process* (GPU is required):
+
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_15.png
+   :align: center
+   :alt: Processing Step 15
 
 .. raw:: html
 
@@ -1289,7 +1292,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains th
 * **num_freq_bins** : number of spectrogram frequency bins (output height)
 * **num_time_bins** : number of spectrogram time bins (output width)
 * **nperseg** : STFT window length / n_fft (samples)
-* **noverlap** : STFT overlap between successive windows (samples)
+* **noverlap** : legacy scipy-style STFT overlap kept for parity with the QLVM training config; it is **not** used to compute the spectrogram (the hop is governed by ``hop_length``)
 * **min_freq** : lower frequency cutoff (Hz)
 * **max_freq** : upper frequency cutoff (Hz)
 * **hop_length** : STFT hop length (samples; defaults to ``nperseg // 4`` when null)
@@ -1429,11 +1432,11 @@ Box labels are set by ``--label-source`` (or ``export_yolo_dataset.label_source`
 
 A/V synchronization
 -------------------
-To run audio/video (A/V) synchronization, you need to list the root directories of interest, select *A/V Synchronization*, click *Next* and then *Process*:
+To run audio/video (A/V) synchronization, you need to list the root directories of interest, select *Run A/V sync check*, click *Next* and then *Process*:
 
-.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_15.png
+.. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_16.png
    :align: center
-   :alt: Processing Step 15
+   :alt: Processing Step 16
 
 .. raw:: html
 
@@ -1452,7 +1455,7 @@ The A/V synchronization procedure will first create a *sync_px* file for each in
     │   ├── sync
     │   │   ...
     │   │   ├── **nidq_ipi_data.npy**
-    │   │   ├── **sync_px_21372315-250430145009.mmap**
+    │   │   ├── **sync_px_21372315-250430145009**
     │   │   ├── **20250430_145017_summary.svg**
     │   └── video
     │       ...
@@ -1512,7 +1515,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "nidq_num_channels": 9,
         "nidq_bool": false,
         "nidq_triggerbox_input_bit_position": 5,
-        "nidq_sync_input_bit_position": 7}
+        "nidq_sync_input_bit_position": 7
     },
    "find_video_sync_trains": {
         "sync_camera_serial_num": [

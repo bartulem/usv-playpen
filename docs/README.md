@@ -22,7 +22,7 @@
 GUI/CLI to facilitate conducting experiments with multi-probe e-phys
 (Neuropixels), multichannel audio (Avisoft) and multi-camera video (Loopbio)
 acquisition. Developed for behavioral recording purposes at the
-[Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-26
+[Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-27
 ([Falkner](https://www.falknerlab.com/)/[Murthy](https://murthylab.princeton.edu/)
 labs). Due to necessary proprietary software, recordings can only be performed
 on OS Windows. The data processing, analysis and visualization branches of the
@@ -114,6 +114,15 @@ Replace `v0.9.5` with whichever version you want. The
 package version from the new git tag; without it the GUI may display a stale
 version number. All machines should be set to the same tag to guarantee
 identical behaviour.
+
+### Disk usage on quota-limited systems
+
+`uv` caches wheels and build artifacts under `~/.cache/uv`; with the
+torch/jax/CUDA stack this grows to **tens of GB** and keeps growing across
+`uv sync` runs. On a quota-limited home directory (e.g. the PNI cluster's ~95 GB
+soft limit) run **`uv cache clean`** periodically — it is safe, since it only
+removes re-downloadable caches (the next `uv sync` re-fetches). If you also use
+conda on that machine, `conda clean --all` reclaims its package cache too.
 
 ## Usage
 
