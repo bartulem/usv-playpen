@@ -124,7 +124,9 @@ def _install_fake_kernels(monkeypatch, canned_masks):
 
 def test_flatten_session_masks_packs_and_indexes():
     """flatten_session_masks pads each mask to (F, T), records the owning spec row,
-    and preserves only the valid-width columns."""
+    preserves only the valid-width columns, and flips each mask from the detector's
+    image (high-freq-at-top) orientation to natural (low-freq-first) frequency order
+    (see test_flatten_session_masks_flips_to_natural_frequency_orientation)."""
     canned = {
         0: [{"segmentation": _seg(40)}, {"segmentation": _seg(40, rows=(5,))}],
         1: [],
@@ -137,9 +139,30 @@ def test_flatten_session_masks_packs_and_indexes():
     assert spectrogram_index.tolist() == [0, 0, 2]
     # Row 0's first mask spans 40 columns; everything at/after 40 is padding.
     assert not segmentations[0, :, 40:].any()
-    assert segmentations[0, 10, :40].all()
-    # Cropping back to the spec duration recovers the original segmentation.
-    assert np.array_equal(segmentations[2, :, :60], _seg(60))
+    # _seg sets rows 10 & 20; flatten flips them to F-1-10 / F-1-20 (natural order).
+    assert segmentations[0, _N_FREQ - 1 - 10, :40].all()
+    # Cropping back to the spec duration recovers the flipped segmentation.
+    assert np.array_equal(segmentations[2, :, :60], np.flipud(_seg(60)))
+
+
+def test_flatten_session_masks_flips_to_natural_frequency_orientation():
+    """REGRESSION: the box-prompt detector + SAM2 run on ``np.flipud(spec)`` (image
+    orientation, high-freq-at-top), so each returned mask's frequency axis is inverted
+    relative to the stored spectrogram and the ascending ``frequency_bins`` axis the
+    acoustic-feature / QLVM code index against. flatten_session_masks MUST flip it back
+    to natural (low-freq-first) order, or masked mean_freq / peak_freq / QLVM latents
+    come out mirrored around the band centre (a low-freq call read as high-freq).
+
+    A mask at the image TOP (rows 0..k-1) must be stored at the natural BOTTOM
+    (rows F-k..F-1)."""
+    seg = np.zeros((_N_FREQ, _N_TIME), dtype=bool)
+    seg[:5, :12] = True  # image-top band == high frequency in the detector image
+    segmentations, _idx = flatten_session_masks({7: [{"segmentation": seg}]}, _N_FREQ, _N_TIME)
+
+    stored = segmentations[0]
+    assert stored[_N_FREQ - 5:_N_FREQ, :12].all()  # flipped down to the natural bottom
+    assert not stored[:5].any()                    # nothing left at the image-top rows
+    assert np.array_equal(stored, np.flipud(seg))
 
 
 def test_flatten_session_masks_empty():

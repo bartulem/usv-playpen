@@ -112,7 +112,13 @@ def flatten_session_masks(
         for mask in processed_masks[spec_row]:
             seg = np.asarray(mask['segmentation'], dtype=bool)
             valid_cols = min(seg.shape[1], num_time_bins)
-            segmentations[row_idx, :, :valid_cols] = seg[:, :valid_cols]
+            # The box-prompt path detects boxes and prompts SAM2 on np.flipud(spec)
+            # (image orientation, high-freq-at-top), so each returned mask's frequency
+            # axis is inverted relative to the stored spectrogram and the ascending
+            # ``frequency_bins`` axis the acoustic-feature / QLVM code index against.
+            # Flip it back to natural (low-freq-first) orientation here so masked
+            # features and latents land at the correct frequency.
+            segmentations[row_idx, :, :valid_cols] = np.flipud(seg)[:, :valid_cols]
             spectrogram_index[row_idx] = int(spec_row)
             row_idx += 1
 
