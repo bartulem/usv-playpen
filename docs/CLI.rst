@@ -249,14 +249,13 @@ Process
 
 .. code-block:: text
 
-    usage: sleap-to-h5 [-h] --root-directory PATH [--venv-path TEXT]
+    usage: sleap-to-h5 [-h] --root-directory PATH
 
     required arguments:
       --root-directory      Session root directory path.
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      --venv-path           SLEAP VENV path.
 
 ``anipose-calibrate``
 ``anipose-calibrate`` is the command-line interface for conducting Anipose camera calibration.
@@ -264,7 +263,7 @@ Process
 .. code-block:: text
 
     usage: anipose-calibrate [-h] --root-directory PATH
-                             [--board-provided | --no-board-provided]
+                             [--board-provided]
                              [--board-dims INTEGER INTEGER] [--square-len INTEGER]
                              [--marker-params FLOAT FLOAT] [--dict-size INTEGER]
                              [--img-dims INTEGER INTEGER]
@@ -274,8 +273,7 @@ Process
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      --board-provided / --no-board-provided
-                            Indicate that the calibration board is provided.
+      --board-provided      Indicate that the calibration board is provided.
       --board-dims          Checkerboard dimensions (squares_x, squares_y).
       --square-len          Length of a checkerboard square (mm).
       --marker-params       ArUco marker length (mm) and dictionary bits.
@@ -327,7 +325,7 @@ Process
 
 .. code-block:: text
 
-    usage: anipose-trm [-h] --root-directory PATH --exp-code TEXT --arena-file PATH
+    usage: anipose-trm [-h] --root-directory PATH --exp-code TEXT --arena-directory PATH
                        [--save-data-for TEXT]
                        [--delete-original | --no-delete-original]
                        [--ref-len FLOAT]
@@ -371,15 +369,18 @@ Process
 
 .. code-block:: text
 
-    usage: das-summarize [-h] --root-directory PATH [--win-len INTEGER]
-                         [--freq-cutoff INTEGER] [--corr-cutoff FLOAT]
-                         [--var-cutoff FLOAT]
+    usage: das-summarize [-h] --root-directory PATH
+                         [--filter-putative-noise | --no-filter-putative-noise]
+                         [--win-len INTEGER] [--freq-cutoff INTEGER]
+                         [--corr-cutoff FLOAT] [--var-cutoff FLOAT]
 
     required arguments:
       --root-directory      Session root directory path.
 
     optional arguments:
       -h, --help            Show this help message and exit.
+      --filter-putative-noise / --no-filter-putative-noise
+                            Run the Phase-4 amplitude/spectrogram noise rejection (default: enabled); pass --no-filter-putative-noise to keep every merged detection.
       --win-len             Window length of the signal.
       --freq-cutoff         Low frequency cutoff (Hz).
       --corr-cutoff         Minimum noise correlation cutoff.

@@ -72,7 +72,8 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
 * **fig_format** : default output file format. For the per-cluster ratemap PDFs, ``pdf`` produces a single multi-page document; ``png`` / ``jpg`` / ``svg`` write one file per page.
 * **dpi** : default raster resolution applied to every ``fig.savefig`` callsite that goes through ``visualizations.figure_io.save_figure``.
 * **timestamp_in_name** : when ``true``, ``_YYYYMMDD_HHMMSS`` is appended to figure stems by default. Session-bound figures opt out of this with ``timestamp_in_name=false`` since their filenames already embed a session id or unit id.
-* **cmap** : default matplotlib colormap used by every heatmap / ratemap callsite (one of ``viridis``, ``cividis``, ``plasma``, ``inferno``, ``magma``). ``make_behavioral_videos`` keeps its own ``general_figure_specs.cmap`` argument and is unaffected.
+* **cmap** : default matplotlib colormap used by every heatmap / ratemap callsite (one of ``viridis``, ``cividis``, ``plasma``, ``inferno``, ``magma``). ``make_behavioral_videos`` uses its own fixed colormap (``inferno``, hardcoded) and is unaffected.
+* **seed** : random seed for figure-side stochastic operations, for reproducibility.
 
 .. code-block:: json
 
@@ -81,7 +82,8 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
         "fig_format": "png",
         "dpi": 300,
         "timestamp_in_name": true,
-        "cmap": "inferno"
+        "cmap": "inferno",
+        "seed": 0
     }
 
 Visualize 3D behavior (figure/video)
@@ -144,6 +146,15 @@ The */usv-playpen/_parameter_settings/visualizations_settings.json* file contain
 * **beh_features_bool** : plot the behavioral features dynamics subplot
 * **beh_features_to_plot** : list of behavioral features in the subplot
 * **special_beh_features** : list of highlighted behavioral features in the subplot
+
+Parameters controlling the figure output format and video encoding (``general_figure_specs``):
+
+* **fig_format** : output image format for still frames (e.g. "png").
+* **animation_codec** : FFMPEG video codec for the rendered animation (e.g. "h264_nvenc").
+* **animation_codec_preset_flag** : codec preset / speed-quality flag (e.g. "p5").
+* **animation_codec_tune_flag** : codec tuning flag (e.g. "hq").
+* **animation_writer** : matplotlib animation writer (e.g. "ffmpeg").
+* **animation_format** : output video container format (e.g. "mp4").
 
 Parameters specific to the arena figure include:
 
@@ -234,7 +245,6 @@ Parameters specific to subplots include:
         "special_beh_features": [],
         "general_figure_specs": {
           "fig_format": "png",
-          "fig_dpi": 600,
           "animation_codec": "h264_nvenc",
           "animation_codec_preset_flag": "p5",
           "animation_codec_tune_flag": "hq",

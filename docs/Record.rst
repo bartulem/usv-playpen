@@ -257,7 +257,7 @@ In the *Audio Settings* section, you can set certain parameters for the audio re
 
 In the *Sync settings* section, you set the serial port of the Arduino that drives synchronization:
 
-* **Arduino SYNC port**: the COM port the synchronization Arduino is connected to (default ``COM7``). This Arduino runs the ``other/synchronization/generate_sync_pulses.ino`` sketch and emits the periodic transistor-transistor logic (TTL)/LED sync pulses (the SYNC LEDs the cameras see, plus the pulse train shared with the audio and National Instruments data acquisition (NIDQ)/electrophysiology (e-phys) streams) that let the processing step align audio, video, and e-phys in time. It must match the port the Arduino actually enumerates on -- and the port set in the CoolTerm serial terminal config (see *Requirements*).
+* **Arduino SYNC port**: the COM port the synchronization Arduino is connected to (default ``COM7``). This Arduino runs the ``src/usv_playpen/other/synchronization/generate_sync_pulses.ino`` sketch and emits the periodic transistor-transistor logic (TTL)/LED sync pulses (the SYNC LEDs the cameras see, plus the pulse train shared with the audio and National Instruments data acquisition (NIDQ)/electrophysiology (e-phys) streams) that let the processing step align audio, video, and e-phys in time. It must match the port the Arduino actually enumerates on -- and the port set in the CoolTerm serial terminal config (see *Requirements*).
 
 In the *Video Settings* section, you can also set certain parameters for the video recording, while others (most notably, camera exposure time and gain) need to be set manually in the *behavioral_experiments_settings.toml* file. In the GUI, you can set the following parameters for the video recording:
 
@@ -303,6 +303,8 @@ The experiment metadata is saved in a YAML file (the YAML configuration format) 
       calibration_session: ''
       keywords: []
       notes: ''
+      usv_playpen_recording_version: ''
+      usv_playpen_processing_version: ''
     Environment:
       playpen_version: null
       luminance_lux: null
@@ -331,14 +333,8 @@ It is worth noting that you can also manually modify the equipment settings in t
     device_model = 'Loopbio Triggerbox'
     device_sn = 'm_10009'
     device_count = 1
-    device_sr = 150
-    device_sr_calibration = 10
     sensor_model = 'FLIR Blackfly S BFS-U3-13Y3M'
-    sensor_count = 5
     sensor_lens = ['Fujinon HF6XA-5M', 'Fujinon HF8XA-5M',]
-    sensor_sn = [21241563, 21369048, 21372315, 21372316, 22085397,]
-    sensor_exposure_time = [2500, 2500, 2500, 2500, 2500,]
-    sensor_gain = [0, 0, 0, 0, 0]
     device_pc_name = ['PNI-22BRBG2N3', 'PNI-221M80LM3']
     device_pc_model = 'Dell Precision 3650'
     device_pc_cpu = 'i9-11900K'
@@ -348,7 +344,6 @@ It is worth noting that you can also manually modify the equipment settings in t
     acquisition_software = 'Motif'
     software_version = '5.2.0'
     output_file_extension = 'mp4'
-    output_file_codec = 'nvenc-slow-yuv420'
     output_file_dtype = 'uint8'
     output_file_image_shape = [1024, 1280]
 
@@ -356,8 +351,6 @@ It is worth noting that you can also manually modify the equipment settings in t
     device_model = 'UltraSoundGate 1216H'
     device_count = 2
     device_sn = ['1216H/33', '1216H/26',]
-    device_sync = false
-    device_sr = 250000
     sensor_model = 'CM16/CMPA'
     sensor_count = 24
     device_pc_name = 'PNI-DRMDK74'

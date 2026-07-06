@@ -427,8 +427,8 @@ These steps change videos and video directory structure from the native Loopbio 
 
 The */usv-playpen/_parameter_settings/processing_settings.json* file also contains a section partially modifiable in the GUI, but it can entirely be modified manually:
 
-* **camera_serial_num** : serial numbers of cameras used in the recording
-* **video_extension** : video type (usually "mp4")
+* **concatenate_camera_serial_num** / **encode_camera_serial_num** : serial numbers of cameras used in the recording (for concatenation / re-encoding, respectively)
+* **concatenate_video_extension** / **encode_video_extension** : video type (usually "mp4")
 * **concatenated_video_name** : name of the concatenated video file
 * **conversion_target_file** : name of the concatenated video file as target for re-encoding
 * **constant_rate_factor** : FFMPEG constant rate factor for re-encoding
@@ -438,18 +438,18 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
 .. code-block:: json
 
     "concatenate_video_files": {
-        "camera_serial_num": [
+        "concatenate_camera_serial_num": [
           "21372315",
           "21372316",
           "21369048",
           "22085397",
           "21241563"
         ],
-        "video_extension": "mp4",
+        "concatenate_video_extension": "mp4",
         "concatenated_video_name": "concatenated_temp"
       },
       "rectify_video_fps": {
-        "camera_serial_num": [
+        "encode_camera_serial_num": [
           "21372315",
           "21372316",
           "21369048",
@@ -457,7 +457,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
           "21241563"
         ],
         "conversion_target_file": "concatenated_temp",
-        "video_extension": "mp4",
+        "encode_video_extension": "mp4",
         "constant_rate_factor": 16,
         "encoding_preset": "veryfast",
         "delete_old_file": true
@@ -804,13 +804,13 @@ The *Crop AUDIO (to VIDEO)* step will also result in the creation of a *audio_tr
 The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
 
 * **device_receiving_input** : USGH device receiving Loopbio Triggerbox input (if using SYNC mode, this should be "m")
-* **ch_receiving_input** : microphone channel receiving Loopbio Triggerbox input
+* **triggerbox_ch_receiving_input** : microphone channel receiving Loopbio Triggerbox input
 
 .. code-block:: json
 
     "crop_wav_files_to_video": {
         "device_receiving_input": "m",
-        "ch_receiving_input": 4
+        "triggerbox_ch_receiving_input": 4
       }
 
 Run HPSS
@@ -922,14 +922,14 @@ The purpose of these two functions is to first high-pass filter each audio file 
 
 The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
 
-* **audio_format** : audio file format (usually "wav")
+* **filter_audio_format** : audio file format (usually "wav")
 * **filter_dirs** : list of directories to be filtered (usually "hpss")
 * **filter_freq_bounds** : frequency bounds for filtering (usually [0, 30000])
 
 .. code-block:: json
 
     "filter_audio_files": {
-        "audio_format": "wav",
+        "filter_audio_format": "wav",
         "filter_dirs": [
           "hpss"
         ],
@@ -1482,14 +1482,14 @@ In case NIDQ was also used in the recording, the first of the device plots will 
 The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
 
 * **extra_data_camera** : serial number of the camera used to store phidget data
-* **ch_receiving_input** : microphone channel receiving Arduino digital input
+* **sync_ch_receiving_input** : microphone channel receiving Arduino digital input
 * **extract_exact_video_frame_times_bool** : instead of using frame indices multiplied by empirical frame rate, use Loopbio times directly (which is less precise!)
 * **nidq_sr** : sampling rate of the NIDQ device (in Hz)
 * **nidq_num_channels** : number of channels on the NIDQ device (9 on BNC-2110)
 * **nidq_bool** : whether NIDQ device received Triggerbox AND sync input
 * **nidq_triggerbox_input_bit_position** : triggerbox input bit position on the NIDQ device digital channel (assumes last channel is digital!)
 * **nidq_sync_input_bit_position** : sync input bit position on the NIDQ device digital channel (assumes last channel is digital!)
-* **camera_serial_num** : serial numbers of cameras that can detect flashing LEDs
+* **sync_camera_serial_num** : serial numbers of cameras that can detect flashing LEDs
 * **led_px_version** : version of the LED pixel positions
 * **led_px_dev** : maximal deviation (in px) of observed LED flashes relative to expected positions
 * **relative_intensity_threshold** : top threshold (on 0-1 scale) for relative temporal change in pixel intensity
@@ -1505,20 +1505,21 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
     }
    },
    "find_audio_sync_trains": {
-        "ch_receiving_input": 2,
+        "sync_ch_receiving_input": 2,
         "extract_exact_video_frame_times_bool": false,
         "nidq_sr": 62500.72887,
         "nidq_num_channels": 9,
+        "nidq_bool": false,
         "nidq_triggerbox_input_bit_position": 5,
         "nidq_sync_input_bit_position": 7}
     },
    "find_video_sync_trains": {
-        "camera_serial_num": [
+        "sync_camera_serial_num": [
             "21372315"
         ],
         "led_px_version": "current",
         "led_px_dev": 10,
-        "video_extension": "mp4",
+        "sync_video_extension": "mp4",
         "relative_intensity_threshold": 1.0,
         "millisecond_divergence_tolerance": 12
    }

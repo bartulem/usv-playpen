@@ -285,7 +285,7 @@ stock ``spikeinterface==0.104.3`` and reads the (hundreds-of-GB, multi-hour)
 recording **once** in two passes: a recording-free core pass for the spike-train
 metrics, and a single sequential recording read for the ``waveforms`` extension
 from which the template / somatic / location / SNR / PCA / amplitude metrics all
-derive. It writes the global 47-column ``EPHYS/unit_catalog.csv`` (rows merged in
+derive. It writes the global 55-column ``EPHYS/unit_catalog.csv`` (rows merged in
 idempotently per ``mouse_id`` + ``rec_date`` + probe) plus each probe's
 ``channel_order_per_shank.json``.
 
@@ -1669,7 +1669,7 @@ change what gets analysed.
 
 **Compute the fits.** Run once. First, walk every session in the list, read its ``*_usv_summary.csv``,
 compute consecutive inter-USV intervals for both modes, and append them with
-sex / cohort / estrous (reproductive-cycle) metadata to one Polars DataFrame:
+sex metadata to one Polars DataFrame:
 
 .. code-block:: python
 

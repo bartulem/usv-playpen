@@ -61,6 +61,10 @@ Modeling settings
 All knobs live in ``_parameter_settings/modeling_settings.json``, organised into
 blocks. Each block is shown below as it appears in the file, followed by its keys.
 
+.. note::
+
+   The ``mixture_model_params`` block is not enumerated here: it holds fitted per-sex inter-syllable-interval mixture parameters (``male``/``female`` → ``means``/``sds``) written by the pipeline, not user-facing tuning knobs.
+
 **io** — the cohort and where outputs go.
 
 .. code-block:: json
