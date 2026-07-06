@@ -785,7 +785,7 @@ a single band there (e.g. shank-1 ventral MRN) lands on two non-contiguous
 KS-row intervals.
 
 *Phy* reads these sidecars directly and keeps the same numbering, so *phy*
-channel labels and unit file names like ``cl0017_ch042_good.npy`` follow the
+channel labels and unit file names like ``imec0_cl0017_ch042_good.npy`` follow the
 same convention.
 
 Both indices point at the same electrode, whose actual ``(lateral, axial)``
@@ -841,7 +841,7 @@ Raw-meta channel id:
 - ``spike_clusters.npy`` peak channels
 - ``channel_order_per_shank.json`` (after the snsGeomMap-based fix)
 - ``unit_catalog.csv`` ``closest_ch`` column
-- Unit file names like ``cl0017_ch042_good.npy``
+- Unit file names like ``imec0_cl0017_ch042_good.npy``
 - The regenerated ``neuropixels_sites_to_anatomy_converter.json`` (see
   below)
 

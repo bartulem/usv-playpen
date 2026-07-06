@@ -217,14 +217,14 @@ Parameters specific to subplots include:
             "fs_volume_adjustment": true
         },
         "animate_bool": false,
-        "video_start_time": 567.19,
-        "video_duration": 5.0,
+        "video_start_time": 37.0,
+        "video_duration": 10.0,
         "plot_theme": "dark",
         "save_fig": true,
         "view_angle": "top",
         "side_azimuth_start": 45,
         "rotate_side_view_bool": false,
-        "rotation_speed": 5,
+        "rotation_speed": 20,
         "history_bool": false,
         "speaker_bool": false,
         "spectrogram_bool": false,
@@ -282,8 +282,8 @@ Parameters specific to subplots include:
         "subplot_specs": {
           "beh_features_window_size": 10,
           "raster_window_size": 1,
-          "raster_lw": 0.1,
-          "raster_ll": 0.9,
+          "raster_lw": 0.3,
+          "raster_ll": 10.9,
           "spectrogram_cbar_bool": true,
           "spectrogram_plot_window_size": 1,
           "spectrogram_power_limit": [

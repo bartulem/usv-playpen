@@ -92,7 +92,7 @@ On the other hand, for **processing sessions separately**, the order of processi
     #. Compute USV features
     #. Infer QLVM latents
 
-If you recorded a session with audio, e-phys and video data (imaginary example: 20250430_145017) and a calibration session (20250430_141750), the directory and file structure should look as follows:
+If you recorded a session with audio, e-phys and video data (imaginary example: 20250430_145017) and a calibration session (20250430_142022), the directory and file structure should look as follows:
 
 .. parsed-literal::
 
@@ -126,21 +126,21 @@ If you recorded a session with audio, e-phys and video data (imaginary example: 
     │           ├── metadata.yaml
     │       ...
     │
-    ├── 20250430_141750
+    ├── 20250430_142022
     │    ├── sync
     │    │   ...
     │    ├── video
-    │        ├── 20250430_141750.21241563
+    │        ├── 20250430_142022.21241563
     │        │   ...
-    │        ├── 20250430141750
+    │        ├── 20250430142022
     │        │   ├── video
     │        │   │   ├── 21241563
     │        │   │   ...
-    │        │   │   ├── 20250430141750_calibration.metadata.h5
-    │        │   │   ├── 20250430141750_calibration.toml
-    │        │   │   ├── 20250430141750_reprojection_histogram.png
+    │        │   │   ├── 20250430142022_calibration.metadata.h5
+    │        │   │   ├── 20250430142022_calibration.toml
+    │        │   │   ├── 20250430142022_reprojection_histogram.png
     │        │   │   ...
-    │        ├── calibration_20250430_141321.21241563
+    │        ├── calibration_20250430_141910.21241563
     │        │   ...
 
 E-phys processing
@@ -591,17 +591,17 @@ This shouldn’t take longer than one minute; the directory structure and file n
     ├── 20250430_145017
     │   ...
     │
-    ├── 20250430_141750
+    ├── 20250430_142022
     │    ├── sync
     │    │   ...
     │    ├── video
-    │        ├── 20250430_141750.21241563
+    │        ├── 20250430_142022.21241563
     │        │   ...
-    │        ├── 20250430141750
-    │        │   ├── **20250430141750_points3d.h5**
-    │        │   ├── **20250430141750_points3d_translated_rotated_metric.h5**
+    │        ├── 20250430142022
+    │        │   ├── **20250430142022_points3d.h5**
+    │        │   ├── **20250430142022_points3d_translated_rotated_metric.h5**
     │        │   ...
-    │        ├── calibration_20250430_141321.21241563
+    │        ├── calibration_20250430_141910.21241563
     │        │   ...
 
 3D animal points
@@ -1492,6 +1492,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 * **sync_camera_serial_num** : serial numbers of cameras that can detect flashing LEDs
 * **led_px_version** : version of the LED pixel positions
 * **led_px_dev** : maximal deviation (in px) of observed LED flashes relative to expected positions
+* **sync_video_extension** : video type (usually "mp4")
 * **relative_intensity_threshold** : top threshold (on 0-1 scale) for relative temporal change in pixel intensity
 * **millisecond_divergence_tolerance** : maximal deviation of IPI onsets (in ms) between video detections and ground truth
 

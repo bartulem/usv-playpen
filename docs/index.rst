@@ -5,7 +5,7 @@ Welcome! *usv-playpen* is a graphical user and command line interface (hencefort
 experiments with multi-probe e-phys (electrophysiology; the Neuropixels electrode-array system), multi-channel audio (the Avisoft ultrasonic-audio system) and multi-camera
 video (the Loopbio multi-camera video system) acquisition. Developed for behavioral recording purposes at the
 `Princeton Neuroscience Institute <https://pni.princeton.edu/>`_
-2021-25 (`Falkner <https://www.falknerlab.com/>`_/`Murthy <https://murthylab.princeton.edu/>`_ labs).
+2021-26 (`Falkner <https://www.falknerlab.com/>`_/`Murthy <https://murthylab.princeton.edu/>`_ labs).
 Due to proprietary software design and limitations, recordings can only be performed on OS Windows.
 The data processing, analysis and visualization branches of the GUI are platform-independent.
 

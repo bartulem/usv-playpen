@@ -22,7 +22,7 @@
 GUI/CLI to facilitate conducting experiments with multi-probe e-phys
 (Neuropixels), multichannel audio (Avisoft) and multi-camera video (Loopbio)
 acquisition. Developed for behavioral recording purposes at the
-[Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-26
+[Princeton Neuroscience Institute](https://pni.princeton.edu/) 2021-27
 ([Falkner](https://www.falknerlab.com/)/[Murthy](https://murthylab.princeton.edu/)
 labs). Due to necessary proprietary software, recordings can only be performed
 on OS Windows. The data processing, analysis and visualization branches of the

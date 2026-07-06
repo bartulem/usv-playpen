@@ -18,7 +18,7 @@ with suppress(URLError, OSError):
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "usv-playpen"
-copyright = "2025, github/bartulem"
+copyright = "2021-2026, github/bartulem"
 author = "Bartul Mimica (documentation)"
 try:
     release = metadata.version('usv-playpen').split('.dev')[0]

@@ -94,7 +94,8 @@ Process
 
     usage: rectify-video-fps [-h] --root-directory PATH [--camera-serial TEXT...]
                              [--target-file TEXT] [--extension TEXT]
-                             [--crf INTEGER] [--preset TEXT]
+                             [--crf INTEGER]
+                             [--preset {ultrafast,superfast,veryfast,faster,fast,medium,slow,slower,veryslow}]
                              [--delete-old-file | --no-delete-old-file]
                              [--conduct-concat | --no-conduct-concat]
 
@@ -131,7 +132,7 @@ Process
 
 .. code-block:: text
 
-    usage: crop-wav-files [-h] --root-directory PATH [--trigger-device TEXT]
+    usage: crop-wav-files [-h] --root-directory PATH [--trigger-device {both,m,r}]
                           [--trigger-channel INTEGER]
 
     required arguments:
@@ -181,7 +182,7 @@ Process
 
 .. code-block:: text
 
-    usage: ev-sync-check [-h] --root-directory PATH [--file-type TEXT]
+    usage: ev-sync-check [-h] --root-directory PATH [--file-type {ap,lf}]
                          [--tolerance FLOAT]
 
     required arguments:
@@ -294,7 +295,7 @@ Process
                                [--rigid-constraint "TEXT,TEXT"...]
                                [--weak-constraint "TEXT,TEXT"...] [--smooth-scale FLOAT]
                                [--weight-weak INTEGER] [--weight-rigid INTEGER]
-                               [--reprojection-threshold INTEGER] [--regularization TEXT]
+                               [--reprojection-threshold INTEGER] [--regularization {l1,l2}]
                                [--n-deriv-smooth INTEGER]
 
     required arguments:
@@ -326,7 +327,7 @@ Process
 .. code-block:: text
 
     usage: anipose-trm [-h] --root-directory PATH --exp-code TEXT --arena-directory PATH
-                       [--save-data-for TEXT]
+                       [--save-data-for {animal,arena}]
                        [--delete-original | --no-delete-original]
                        [--ref-len FLOAT]
 
@@ -348,7 +349,7 @@ Process
 .. code-block:: text
 
     usage: das-infer [-h] --root-directory PATH [--env-name TEXT] [--model-dir PATH]
-                     [--model-name TEXT] [--output-type TEXT]
+                     [--model-name TEXT] [--output-type {csv,hdf5}]
                      [--confidence-thresh FLOAT] [--min-len FLOAT] [--fill-gap FLOAT]
 
     required arguments:
@@ -406,7 +407,7 @@ Process
 
 .. code-block:: text
 
-    usage: vcl-assign        [-h] --root-directory PATH [--vcl-version TEXT]
+    usage: vcl-assign        [-h] --root-directory PATH [--vcl-version {vcl,vcl-ssl}]
                              [--env-name TEXT] [--model-dir PATH]
 
     required arguments:
@@ -682,7 +683,7 @@ Analyze
                                   [--head-points TEXT TEXT TEXT TEXT]
                                   [--tail-points TEXT TEXT TEXT TEXT TEXT]
                                   [--back-root-points TEXT TEXT TEXT]
-                                  [--derivative-bins TEXT]
+                                  [--derivative-bins TEXT...]
 
     required arguments:
       --root-directory      Session root directory path.
