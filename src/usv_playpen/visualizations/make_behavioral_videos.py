@@ -610,7 +610,8 @@ def plot_spectrogram(plot_axes: plt.Axes,
         freq_limit (list)
             Frequency y-axis limits [fmin, fmax] for spectrogram.
         freq_yticks (list)
-            Frequency y-axis ticks for spectrogram.
+            Frequency y-axis tick positions (Hz) for the spectrogram, from the
+            ``spectrogram_yticks`` setting; labelled in kHz. Empty list = no ticks.
         plot_usv_segments_bool (bool)
             Boolean for plotting assignment of USV segments.
         usv_segments_list (list)
@@ -661,10 +662,16 @@ def plot_spectrogram(plot_axes: plt.Axes,
                          labelpad=-6,
                          fontsize=6,
                          color=color_mode_preferences['spectrogram_text_color'])
-    # y-axis: only the 'Freq (kHz)' label, pulled in close to the axis; no
-    # frequency tick marks or numeric labels.
+    # y-axis: the 'Freq (kHz)' label plus the configured frequency ticks. The
+    # ``freq_yticks`` positions are in Hz (from the ``spectrogram_yticks``
+    # setting) and are labelled in kHz to match the axis title; an empty list
+    # keeps the axis tick-free.
     plot_axes.set_ylim(freq_limit)
-    plot_axes.set_yticks([])
+    if freq_yticks:
+        plot_axes.set_yticks(list(freq_yticks))
+        plot_axes.set_yticklabels([f"{tick / 1000:g}" for tick in freq_yticks])
+    else:
+        plot_axes.set_yticks([])
     plot_axes.yaxis.set_tick_params(which='minor', left=False)
     plot_axes.spines['bottom'].set_color(color_mode_preferences['tick_color'])
     plot_axes.spines['top'].set_color(color_mode_preferences['tick_color'])

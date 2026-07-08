@@ -1751,7 +1751,6 @@ def _make_neuronal_tuning(root, *, n_shuffles=5, smoothing_sd=0.0):
             "behavioral_min_occupancy_seconds": 0.1,
             "usv_property_min_occupancy_seconds": 0.05,
             "include_partner_vocalization_tuning_bool": False,
-            "shuffle_chunk_size": 4,
             "smoothing_sd": smoothing_sd,
             "circular_features": ["allo_yaw", "body_dir"],
         },

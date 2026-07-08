@@ -42,8 +42,6 @@ when built. So ``import box_detectors.detect`` and ``py_compile`` succeed in
 
 from __future__ import annotations
 
-import os
-import sys
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
@@ -146,35 +144,6 @@ def _build_unet(
         "box_detectors subproject (box_detectors.unet) in the MMMmB monorepo, or pick "
         "--detector yolo / cc."
     )
-    if not weights:
-        raise ValueError(
-            "get_detector('unet', ...) requires weights=<path to trained unet .pt> "
-            "(train via box_detectors.unet.train first)."
-        )
-    from unet.infer import (  # type: ignore
-        UNetInferConfig,
-        detect_boxes_unet,
-        load_model,
-    )
-
-    if cfg is None:
-        if config_yaml:
-            cfg = UNetInferConfig.from_yaml(config_yaml)
-        else:
-            cfg = UNetInferConfig()
-    # Apply any explicit per-call overrides (device, prob_thresh, ...).
-    for k, v in (cfg_overrides or {}).items():
-        if hasattr(cfg, k):
-            setattr(cfg, k, v)
-    if device is not None:
-        cfg.device = device
-
-    model = load_model(weights, device=cfg.device)
-
-    def detect(spec: np.ndarray, duration: int) -> List[Box]:
-        return list(detect_boxes_unet(spec, duration, model=model, cfg=cfg))
-
-    return detect
 
 
 def _build_yolo(

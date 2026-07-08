@@ -644,33 +644,37 @@ def are_points_in_conf_set(
     # out-of-range index; the angle is intentionally left unclipped because its
     # bins already span the full [-pi, pi) circle.
     nose_points = np.clip(points[:, 0, :2], -arena_dims[:2] / 2, arena_dims[:2] / 2)
-    # The PDF (and hence the confidence set) is *sampled at* the 100 grid
-    # coordinates `linspace(-dim/2, dim/2, 100)` along each spatial axis (see
-    # make_xy_grid in get_conf_sets_6d), so confidence_set[..., i, ...] is the
-    # PDF value at grid coordinate `grid[i]`. To look a query point up against
+    # The PDF (and hence the confidence set) is *sampled at* the
+    # `grid_resolution` grid coordinates `linspace(-dim/2, dim/2, grid_resolution[axis])`
+    # along each spatial axis (see make_xy_grid in get_conf_sets_6d; these MUST
+    # match the grid_resolution passed there), so confidence_set[..., i, ...] is
+    # the PDF value at grid coordinate `grid[i]`. To look a query point up against
     # that grid it must be mapped to its NEAREST grid coordinate, which means
     # digitizing against the MIDPOINTS between adjacent grid coordinates -- not
     # against the grid coordinates themselves. Digitizing against the grid
     # coordinates (the previous behaviour) shifted every point by half a cell,
     # so a point sitting just past a grid coordinate was assigned the lower cell
     # even though the upper grid coordinate was closer. The angular axis is
-    # genuinely binned (a 45-bin histogram with edges `linspace(-pi, pi, 46)`),
-    # so it is digitized against those 46 bin edges, matching estimate_angle_pdf.
+    # genuinely binned (an `n_angle_bins - 1`-bin histogram with edges
+    # `linspace(-pi, pi, n_angle_bins)`), so it is digitized against those
+    # `n_angle_bins` bin edges, matching estimate_angle_pdf.
     y_grid = np.linspace(-arena_dims[1] / 2, arena_dims[1] / 2, grid_resolution[1])
     x_grid = np.linspace(-arena_dims[0] / 2, arena_dims[0] / 2, grid_resolution[0])
     y_bins = 0.5 * (y_grid[1:] + y_grid[:-1])
     x_bins = 0.5 * (x_grid[1:] + x_grid[:-1])
     angle_bins = np.linspace(-np.pi, np.pi, n_angle_bins, endpoint=True)
-    # Digitizing a (clipped) point against the 99 midpoints returns its nearest
-    # grid index directly in [0, 99] -- NO -1 offset (the -1 only applied to the
-    # old grid-coordinate-as-edge scheme). A point below the first midpoint maps
-    # to grid cell 0; one above the last maps to grid cell 99.
+    # Digitizing a (clipped) point against the `grid_resolution[axis] - 1`
+    # midpoints returns its nearest grid index directly in
+    # `[0, grid_resolution[axis] - 1]` -- NO -1 offset (the -1 only applied to
+    # the old grid-coordinate-as-edge scheme). A point below the first midpoint
+    # maps to grid cell 0; one above the last maps to the final cell.
     y_bin_indices = np.digitize(nose_points[:, 1], y_bins)
     x_bin_indices = np.digitize(nose_points[:, 0], x_bins)
-    # The angular axis carries 45 bins; digitizing against the 46 histogram
-    # edges yields indices 0..45, where index 45 only occurs for yaw == +pi
-    # (the closed right edge of the last bin). Fold that single boundary value
-    # back into the last bin so the index never runs past the 45-wide axis.
+    # The angular axis carries `n_angle_bins - 1` bins; digitizing against the
+    # `n_angle_bins` histogram edges yields indices 0..`n_angle_bins - 1`, where
+    # the top index only occurs for yaw == +pi (the closed right edge of the last
+    # bin). Fold that single boundary value back into the last bin so the index
+    # never runs past the axis width.
     angle_bin_indices = np.digitize(head_to_nose_yaw, angle_bins) - 1
     angle_bin_indices = np.clip(angle_bin_indices, 0, angle_bins.shape[0] - 2)
 

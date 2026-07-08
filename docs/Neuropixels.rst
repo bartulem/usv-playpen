@@ -485,7 +485,7 @@ map as the pre-alignment step (no separate settings):
 6. Channel-brain area converter
 -------------------------------
 This step folds the session's per-probe brain-region map into the global
-channel-brain area converter (:mod:`usv_playpen.neuropixels.anatomy_converter`),
+channel-brain area converter (``usv_playpen.neuropixels.anatomy_converter``),
 which maps *Kilosort*-row index ranges to brain regions. It is keyed by the
 *Kilosort*-row index (see :ref:`channel-numbering conventions <channel-indexing>`)
 so that downstream consumers passing *Kilosort* row numbers into membership checks

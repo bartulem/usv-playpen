@@ -679,3 +679,33 @@ def test_resolve_modeling_setting_reads_block_key():
     assert float(os_utils.resolve_modeling_setting('model_params', 'selection_p_val')) == 0.01
     assert int(os_utils.resolve_modeling_setting('diagnostics', 'ece_n_bins')) == 10
     assert float(os_utils.resolve_modeling_setting('model_params', 'session_split_initial_tolerance')) == 0.05
+
+
+def test_rebase_experimenter_in_paths_rewrites_bounded_components_only():
+    """`rebase_experimenter_in_paths` rewrites an experimenter name only where it
+    is a full path component or the entire string, re-keying it to `exp_id`;
+    unbounded substrings and non-matching leaves are left untouched, and it
+    recurses through dicts/lists while leaving non-strings alone."""
+
+    obj = {
+        "ephys": "/mnt/falkner/Bartul/EPHYS",     # bounded component -> rebased
+        "who": "Bartul",                          # entire string -> rebased
+        "lookalike": "/mnt/Bartuli/data",         # 'Bartul' is an unbounded substring -> untouched
+        "label": "A84I Linux",                    # unrelated non-path string -> untouched
+        "roots": ["/mnt/falkner/Bartul/Data", 42],  # recurse list; ints pass through
+    }
+    out = os_utils.rebase_experimenter_in_paths(obj, experimenter_list=["Bartul"], exp_id="Annegret")
+    assert out["ephys"] == "/mnt/falkner/Annegret/EPHYS"
+    assert out["who"] == "Annegret"
+    assert out["lookalike"] == "/mnt/Bartuli/data"
+    assert out["label"] == "A84I Linux"
+    assert out["roots"] == ["/mnt/falkner/Annegret/Data", 42]
+
+
+def test_rebase_experimenter_in_paths_is_idempotent():
+    """Re-keying a path that already uses `exp_id` is a no-op (safe to apply on
+    every load / experimenter change)."""
+
+    already = {"p": "/mnt/falkner/Annegret/EPHYS"}
+    out = os_utils.rebase_experimenter_in_paths(already, experimenter_list=["Bartul"], exp_id="Annegret")
+    assert out == already

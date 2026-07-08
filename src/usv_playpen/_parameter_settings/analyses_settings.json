@@ -138,7 +138,6 @@
     "behavioral_min_occupancy_seconds": 1.0,
     "usv_property_min_occupancy_seconds": 0.25,
     "include_partner_vocalization_tuning_bool": false,
-    "shuffle_chunk_size": 50,
     "smoothing_sd": 1.0,
     "circular_features": ["allo_yaw", "body_dir"]
   },

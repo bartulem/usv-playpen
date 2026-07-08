@@ -214,8 +214,7 @@
       },
       "ridge_regression": {
         "alphas": [0.1, 1.0, 10.0, 100.0],
-        "cv": 10,
-        "fit_intercept": true
+        "cv": 10
       }
     },
     "basis_functions": {
@@ -229,7 +228,6 @@
       "bspline": {
         "n_splines": 32,
         "degree": 3,
-        "spacing": "log",
         "plot_bool": true
       },
       "laplacian_pyramid": {

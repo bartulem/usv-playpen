@@ -211,6 +211,48 @@ def test_plot_spectrogram_honors_spectrogram_cmap():
         plt.close(fig)
 
 
+def test_plot_spectrogram_applies_freq_yticks():
+    """``freq_yticks`` (Hz positions, from the ``spectrogram_yticks`` setting) is
+    now applied to the y-axis and labelled in kHz; an empty list leaves the axis
+    tick-free."""
+
+    rng = np.random.default_rng(3)
+    spec = rng.uniform(-80.0, 0.0, size=(128, 200)).astype(np.float32)
+
+    fig, ax = plt.subplots()
+    try:
+        plot_spectrogram(
+            plot_axes=ax, figure_object=fig,
+            spec_start=0, spec_end=200, audio_sr=250000, stft_hop=128,
+            half_window_size_sec=0.5, color_mode_preferences=_COLOR_MODE,
+            spectrogram_amplitude=spec, power_limit=[-80, 0],
+            freq_limit=[0, 125000], freq_yticks=[50000, 100000],
+            usv_segments_list=[], usv_segment_lw=2.0,
+            usv_segment_colors_list=[], usv_segments_ypos=60000,
+            cbar_bool=False, plot_usv_segments_bool=False,
+        )
+        assert list(ax.get_yticks()) == [50000, 100000]
+        assert [t.get_text() for t in ax.get_yticklabels()] == ["50", "100"]
+    finally:
+        plt.close(fig)
+
+    fig, ax = plt.subplots()
+    try:
+        plot_spectrogram(
+            plot_axes=ax, figure_object=fig,
+            spec_start=0, spec_end=200, audio_sr=250000, stft_hop=128,
+            half_window_size_sec=0.5, color_mode_preferences=_COLOR_MODE,
+            spectrogram_amplitude=spec, power_limit=[-80, 0],
+            freq_limit=[0, 125000], freq_yticks=[],
+            usv_segments_list=[], usv_segment_lw=2.0,
+            usv_segment_colors_list=[], usv_segments_ypos=60000,
+            cbar_bool=False, plot_usv_segments_bool=False,
+        )
+        assert list(ax.get_yticks()) == []
+    finally:
+        plt.close(fig)
+
+
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
 def test_plot_raster_draws_eventplot_and_area_labels():

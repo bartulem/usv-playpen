@@ -167,7 +167,6 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **behavioral_min_occupancy_seconds** : minimum behavioral occupancy per bin (in s) to draw that bin in 1D feature plots; persisted into ``behavioral_metadata``
 * **usv_property_min_occupancy_seconds** : minimum vocal-property occupancy per bin (in s) to keep the rate estimate finite
 * **include_partner_vocalization_tuning_bool** : also compute partner-side vocal tuning when its threshold is met
-* **shuffle_chunk_size** : how many shuffles to materialize at once (memory / speed knob)
 * **smoothing_sd** : standard deviation of the Gaussian kernel (in bins) applied to ratemaps and shuffle distributions; ``0`` disables smoothing
 * **circular_features** : list of behavioral feature suffixes that are wrap-around in nature (e.g. ``allo_yaw``, ``body_dir``); used by the triage helpers to detect divergence runs that span the bin-0 / bin-N boundary
 
@@ -192,7 +191,6 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "behavioral_min_occupancy_seconds": 1.0,
         "usv_property_min_occupancy_seconds": 0.25,
         "include_partner_vocalization_tuning_bool": false,
-        "shuffle_chunk_size": 50,
         "smoothing_sd": 1.0,
         "circular_features": ["allo_yaw", "body_dir"]
     }

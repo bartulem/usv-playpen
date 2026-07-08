@@ -34,39 +34,6 @@ def get_sam2_config(config_name: str) -> Dict:
     return dict(params)
 
 
-def post_process_masks(masks: List[Dict],
-                      image_shape: Tuple[int, int],
-                      spectrogram: np.ndarray = None) -> List[Dict]:
-    """Post-process masks using iterative merging.
-
-    If spectrogram is provided, uses intelligent filters.
-    Otherwise, just merges overlapping masks.
-
-    Args:
-        masks: List of mask dictionaries from SAM2.
-        image_shape: Tuple of (height, width) for the image.
-        spectrogram: Optional spectrogram array for intelligent filtering.
-
-    Returns:
-        List[Dict]: Processed and merged masks.
-    """
-    if not masks:
-        return masks
-
-    if spectrogram is not None:
-        return simple_pipeline(
-            masks,
-            spectrogram,
-            filter_size=False,            # Remove tiny masks
-            filter_intensity=False,       # Keep bright masks
-            max_area_ratio=0.1,
-            min_area_ratio=0.005
-        )
-    else:
-        # Just merge overlapping masks
-        return iterative_mask_merging(masks, overlap_method='any')
-
-
 def compute_iou(mask1: np.ndarray, mask2: np.ndarray) -> float:
     """
     Compute Intersection over Union between two masks.
@@ -216,61 +183,3 @@ def get_bbox(mask: np.ndarray) -> Tuple[int, int, int, int]:
     if len(rows) == 0:
         return (0, 0, 0, 0)
     return (rows.min(), cols.min(), rows.max(), cols.max())
-
-
-def simple_pipeline(masks: List[Dict],
-                   spectrogram: np.ndarray,
-                   merge_overlap_method: str = 'any',
-                   use_merge_constraints: bool = False,
-                   filter_size: bool = True,
-                   filter_intensity: bool = True,
-                   min_pixels: int = 100,
-                   max_area_ratio: float = .3,
-                   min_area_ratio: float = .001,
-                   verbose: bool = False) -> List[Dict]:
-    """
-    Complete simple pipeline: merge + optional filters.
-
-    Args:
-        masks: Raw masks from SAM2
-        spectrogram: Original spectrogram
-        merge_overlap_method: How to define overlap for merging
-        use_merge_constraints: Whether to use constrained merging
-        filter_size: Whether to filter by size after merging
-        filter_intensity: Whether to filter by intensity after merging
-        min_pixels: Minimum mask size if filter_size=True
-        verbose: Print progress
-
-    Returns:
-        Processed masks
-    """
-
-    if not masks:
-        return masks
-
-    # Step 0: Filter masks by size (we know one spec is full background, some are super small)
-    max_area = max_area_ratio * spectrogram.shape[0] * spectrogram.shape[1]
-    min_area = min_area_ratio * spectrogram.shape[0] * spectrogram.shape[1]
-    masks = [m for m in masks if m['area'] <= max_area and m['area'] >= min_area]
-
-    if verbose:
-        print(f"\n=== Simple Pipeline ===")
-        print(f"Input: {len(masks)} masks")
-
-    # Step 1: Merge overlapping masks
-    if verbose:
-        print("\nStep 1: Merging overlapping masks...")
-    merged = iterative_mask_merging(
-        masks,
-        overlap_method=merge_overlap_method,
-        verbose=verbose
-    )
-
-    if verbose:
-        print(f"After merging: {len(merged)} masks")
-
-    if verbose:
-        print(f"\nFinal: {len(merged)} masks")
-        print("=" * 50)
-
-    return merged

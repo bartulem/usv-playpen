@@ -2,7 +2,7 @@
 # ABOUTME: Builds low-discrepancy latent lattices and Box-Muller / cell-sampling helpers.
 import numpy as np
 import torch
-from scipy.spatial import Voronoi, voronoi_plot_2d
+from scipy.spatial import Voronoi
 from scipy.spatial.distance import cdist
 
 
@@ -64,7 +64,7 @@ def gen_korobov_basis(a,
     num_points = 2039, a = 1487
     num_points = 4093, a = 1516
     see table 16.1 of owen for more
-    these were constructed for num_dims \in {8,12,24,32}
+    these were constructed for num_dims \\in {8,12,24,32}
     this is a fibonacci lattice for num_dims = 2, a = Fib(m-1), n = Fib(m) for m >= 3
     """
 
@@ -110,7 +110,6 @@ def get_default_voronoi(grid):
   assert np.allclose(vor.points[0], pts[k])
 
   central_verts = vor.vertices[vor.regions[vor.point_region[0]]]
-  nverts = len(central_verts)
 
   zero_centered_cell = central_verts - pts[k]
   return torch.from_numpy(zero_centered_cell)
@@ -131,7 +130,6 @@ def sample_from_grid(grid,posterior,num_samples=1000):
     #sample_fnc = np.vectorize(fn)
     #print(posterior.shape)
     (B1,N) = posterior.shape
-    n = len(grid)
     samples = torch.multinomial(posterior,num_samples,replacement=True).to(grid.device)
     (B2,K) = samples.shape
     assert B1 == B2
