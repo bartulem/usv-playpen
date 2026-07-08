@@ -49,6 +49,13 @@ from .manifold_torus_regression import resolve_manifold_regressor_cls
 from .modeling_metadata import (
     build_selection_metadata, inject_metadata, RESERVED_METADATA_KEYS,
 )
+from ..os_utils import resolve_modeling_setting
+
+# Forward-selection significance level and the Expected-Calibration-Error
+# histogram bin count, read from the settings blocks rather than bare 0.01 / 10
+# literals so a single shipped value drives every selector / calibration call.
+_SELECTION_P_VAL = resolve_modeling_setting('model_params', 'selection_p_val')
+_ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 
 
 def _harvest_upstream_metadata(univariate_data: dict,
@@ -412,7 +419,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                                output_directory: str,
                                settings_path: str = None,
                                use_top_rank_as_anchor: bool = False,
-                               p_val: float = 0.01) -> None:
+                               p_val: float = _SELECTION_P_VAL) -> None:
     """
     Performs Forward Stepwise Selection to identify the "minimal sufficient set"
     of behavioral features that predict vocal (bout) onset.
@@ -750,7 +757,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_te_fold), history_frames), axis=1)
                 metrics['ll'].append(log_loss(y_te_fold.astype(int), np.clip(y_proba_mean, 1e-15, 1 - 1e-15)))
 
-                y_pred_mean = (y_proba_mean > 0.5).astype(int)
+                y_pred_mean = (y_proba_mean >= settings['diagnostics']['binary_decision_threshold']).astype(int)
                 metrics['score'].append(balanced_accuracy_score(y_te_fold, y_pred_mean))
                 metrics['f1'].append(f1_score(y_te_fold, y_pred_mean, zero_division=0))
                 metrics['recall'].append(recall_score(y_te_fold, y_pred_mean, zero_division=0))
@@ -758,7 +765,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 metrics['brier'].append(float(brier_score_loss(y_te_fold.astype(int), y_proba_mean)))
                 try:
                     y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
-                    metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=10))
+                    metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=_ECE_N_BINS))
                 except Exception:
                     metrics['ece'].append(np.nan)
                 metrics['mcc'].append(safe_matthews_corrcoef(y_te_fold.astype(int), y_pred_mean))
@@ -925,7 +932,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                     y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_te_fold), history_frames), axis=1)
                     metrics['ll'].append(log_loss(y_te_fold.astype(int), np.clip(y_proba_mean, 1e-15, 1 - 1e-15)))
 
-                    y_pred_mean = (y_proba_mean > 0.5).astype(int)
+                    y_pred_mean = (y_proba_mean >= settings['diagnostics']['binary_decision_threshold']).astype(int)
                     metrics['score'].append(balanced_accuracy_score(y_te_fold, y_pred_mean))
                     metrics['f1'].append(f1_score(y_te_fold, y_pred_mean, zero_division=0))
                     metrics['recall'].append(recall_score(y_te_fold, y_pred_mean, zero_division=0))
@@ -933,7 +940,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                     metrics['brier'].append(float(brier_score_loss(y_te_fold.astype(int), y_proba_mean)))
                     try:
                         y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
-                        metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=10))
+                        metrics['ece'].append(expected_calibration_error(y_te_fold.astype(int), y_pred_mean, y_proba_2d, n_bins=_ECE_N_BINS))
                     except Exception:
                         metrics['ece'].append(np.nan)
                     metrics['mcc'].append(safe_matthews_corrcoef(y_te_fold.astype(int), y_pred_mean))
@@ -1625,7 +1632,7 @@ def vocal_category_model_selection(
                     X_te_gam = get_unrolled_X_for_multivariate(X_te_list, history_frames)
                     y_proba_tiled = gam.predict_proba(X_te_gam)
                     y_proba = np.mean(y_proba_tiled.reshape(len(y_te), history_frames), axis=1)
-                    y_pred = (y_proba >= 0.5).astype(int)
+                    y_pred = (y_proba >= settings['diagnostics']['binary_decision_threshold']).astype(int)
                     gam_diffs = gam.logs_['diffs']
                     fold_n_iter = float(len(gam_diffs))
                     fold_converged = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
@@ -1638,7 +1645,7 @@ def vocal_category_model_selection(
                 metrics['brier'].append(float(brier_score_loss(y_te, y_proba)))
                 try:
                     y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
-                    metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=10))
+                    metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=_ECE_N_BINS))
                 except Exception:
                     metrics['ece'].append(np.nan)
                 metrics['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
@@ -1803,7 +1810,7 @@ def vocal_category_model_selection(
                         X_te_gam = get_unrolled_X_for_multivariate(X_te_list, history_frames)
                         y_proba_tiled = gam.predict_proba(X_te_gam)
                         y_proba = np.mean(y_proba_tiled.reshape(len(y_te), history_frames), axis=1)
-                        y_pred = (y_proba >= 0.5).astype(int)
+                        y_pred = (y_proba >= settings['diagnostics']['binary_decision_threshold']).astype(int)
                         gam_diffs = gam.logs_['diffs']
                         fold_n_iter = float(len(gam_diffs))
                         fold_converged = bool(len(gam_diffs) > 0 and len(gam_diffs) < gam_kwargs['max_iter'])
@@ -1816,7 +1823,7 @@ def vocal_category_model_selection(
                     metrics['brier'].append(float(brier_score_loss(y_te, y_proba)))
                     try:
                         y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
-                        metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=10))
+                        metrics['ece'].append(expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=_ECE_N_BINS))
                     except Exception:
                         metrics['ece'].append(np.nan)
                     metrics['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
@@ -1998,7 +2005,7 @@ def bout_parameter_model_selection(
         settings_path: str = None,
         target_variable: str = 'bout_durations',
         use_top_rank_as_anchor: bool = False,
-        p_val: float = 0.01
+        p_val: float = _SELECTION_P_VAL
 ) -> None:
     """
     Performs forward stepwise selection for continuous bout parameter regression.
@@ -2750,7 +2757,7 @@ def multinomial_vocal_category_model_selection(
         output_directory: str,
         settings_path: str = None,
         use_top_rank_as_anchor: bool = False,
-        p_val: float = 0.01
+        p_val: float = _SELECTION_P_VAL
 ) -> None:
     """
     Performs forward stepwise selection for multinomial USV category prediction.
@@ -3266,7 +3273,7 @@ def multinomial_vocal_category_model_selection(
             except Exception:
                 f_met['brier'].append(np.nan)
             try:
-                f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=10))
+                f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=_ECE_N_BINS))
             except Exception:
                 f_met['ece'].append(np.nan)
             f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
@@ -3391,7 +3398,7 @@ def multinomial_vocal_category_model_selection(
                 except Exception:
                     f_met['brier'].append(np.nan)
                 try:
-                    f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=10))
+                    f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=_ECE_N_BINS))
                 except Exception:
                     f_met['ece'].append(np.nan)
                 f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
@@ -3611,7 +3618,7 @@ def multinomial_vocal_category_model_selection(
                     except Exception:
                         f_met['brier'].append(np.nan)
                     try:
-                        f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=10))
+                        f_met['ece'].append(expected_calibration_error(y_te, y_pred, probs_canonical, n_bins=_ECE_N_BINS))
                     except Exception:
                         f_met['ece'].append(np.nan)
                     f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
@@ -3763,7 +3770,7 @@ def continuous_vocal_manifold_model_selection(
         output_directory: str,
         settings_path: str = None,
         use_top_rank_as_anchor: bool = False,
-        p_val: float = 0.01
+        p_val: float = _SELECTION_P_VAL
 ) -> None:
     """
     Performs forward stepwise selection for continuous manifold-position

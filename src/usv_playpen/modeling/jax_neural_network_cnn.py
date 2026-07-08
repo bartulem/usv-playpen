@@ -63,6 +63,12 @@ from .manifold_metric import (
 from .modeling_usv_manifold_position import (
     get_stratified_spatial_splits_stable as _manifold_spatial_splits,
 )
+from ..os_utils import resolve_modeling_setting
+
+# Initial spatial-CV session-split matching tolerance, read from the settings
+# block (it auto-widens at runtime; this is the starting value) rather than a
+# bare 0.05 default.
+_SESSION_SPLIT_INITIAL_TOLERANCE = resolve_modeling_setting('model_params', 'session_split_initial_tolerance')
 
 
 class HashableDict(dict):
@@ -407,7 +413,8 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
     params = {}
     state = {}
 
-    channels = [in_channels, 32, 64, 128, 256]
+    block_channels = hp['block_channels']
+    channels = [in_channels, *block_channels]
 
     # Read structural inputs directly from dict
     std_kernel = hp['kernel_size']
@@ -418,7 +425,7 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
 
     current_time = time_steps
 
-    for i in range(4):
+    for i in range(len(block_channels)):
         c_in = channels[i]
         c_out = channels[i + 1]
 
@@ -642,7 +649,7 @@ def cnn_forward(params: Dict[str, jax.Array],
     use_inception = hp['use_inception_kernels']
     num_inc_kernels = len(hp['inception_kernel_sizes'])
 
-    for i in range(4):
+    for i in range(len(hp['block_channels'])):
         in_channels = out.shape[1]
 
         # === PATH A: Main Transform (Multi-Scale vs Standard) ===
@@ -760,7 +767,7 @@ def cnn_forward(params: Dict[str, jax.Array],
 
 # PHASE 3: LEARNING RATE SCHEDULER
 
-def build_lr_schedule(peak_lr: float, total_epochs: int, steps_per_epoch: int) -> optax.Schedule:
+def build_lr_schedule(peak_lr: float, total_epochs: int, steps_per_epoch: int, warmup_fraction: float = 0.10) -> optax.Schedule:
     """
     Constructs a Warmup Cosine Decay learning rate schedule.
 
@@ -782,6 +789,9 @@ def build_lr_schedule(peak_lr: float, total_epochs: int, steps_per_epoch: int) -
         Total number of training epochs defined in the hyperparameters.
     steps_per_epoch : int
         Number of batches processed per epoch (calculated as total_samples // batch_size).
+    warmup_fraction : float
+        Fraction of total training steps spent linearly warming the learning rate up
+        to ``peak_lr`` before the cosine decay begins. Defaults to 0.10.
 
     Returns
     -------
@@ -791,7 +801,7 @@ def build_lr_schedule(peak_lr: float, total_epochs: int, steps_per_epoch: int) -
     """
 
     total_steps = total_epochs * steps_per_epoch
-    warmup_steps = int(0.10 * total_steps)
+    warmup_steps = int(warmup_fraction * total_steps)
 
     # Ensure at least 1 warmup step to prevent Optax errors on extremely short runs
     warmup_steps = max(1, warmup_steps)
@@ -894,7 +904,7 @@ class NeuralContinuousCNNRunner:
                                              n_clusters: int = 15,
                                              test_prop: float = 0.2,
                                              n_splits: int = 100,
-                                             tolerance: float = 0.05,
+                                             tolerance: float = _SESSION_SPLIT_INITIAL_TOLERANCE,
                                              random_seed: int = 0) -> List[Tuple[np.ndarray, np.ndarray]]:
         """
         Thin delegator to the canonical splitter in
@@ -1709,7 +1719,7 @@ class NeuralContinuousCNNRunner:
                     sizing_rng = np.random.default_rng(self.random_seed + fold)
                     steps_per_epoch = len(get_grid_balanced_indices(Y_tr, self.hp['grid_size'], self.hp['samples_per_cell'], rng=sizing_rng)) // self.hp['batch_size']
 
-                lr_schedule = build_lr_schedule(self.hp['learning_rate'], self.hp['epochs'], steps_per_epoch) if self.hp['use_scheduler'] else self.hp['learning_rate']
+                lr_schedule = build_lr_schedule(self.hp['learning_rate'], self.hp['epochs'], steps_per_epoch, self.hp['warmup_fraction']) if self.hp['use_scheduler'] else self.hp['learning_rate']
 
                 # Optional weight-decay mask: when
                 # `weight_decay_exclude_output_head` is True, the AdamW

@@ -1056,6 +1056,7 @@ def compute_group_acoustics(
     group_key: str,
     window_s: float,
     message_output: Any = None,
+    acoustics_params: dict | None = None,
 ) -> dict[str, np.ndarray]:
     """
     Description
@@ -1077,6 +1078,11 @@ def compute_group_acoustics(
         Snippet length in seconds, measured from each onset.
     message_output : Any, optional
         Diagnostic sink; defaults to None, in which case the built-in ``print`` is used.
+    acoustics_params : dict, optional
+        Keyword overrides forwarded to :func:`extract_snippet_acoustics` (the STFT
+        window / hop, the ``blackmanharris`` window name, the ``min_freq`` /
+        ``max_freq`` band, and the ``low_energy_frac`` / ``high_energy_frac``
+        bandwidth-crossing fractions). ``None`` uses that function's defaults.
 
     Returns
     -------
@@ -1092,7 +1098,10 @@ def compute_group_acoustics(
     else:
         log(f"  {session['session_id']}: no 'peak_amp_ch' column -> using channel 0.")
         peak_channels = np.zeros(onsets.shape[0])
-    return extract_snippet_acoustics(session["session_root"], onsets, peak_channels, window_s)
+    forwarded_acoustics = {} if acoustics_params is None else acoustics_params
+    return extract_snippet_acoustics(
+        session["session_root"], onsets, peak_channels, window_s, **forwarded_acoustics
+    )
 
 
 def cohens_d(x: np.ndarray, y: np.ndarray) -> float:
@@ -1271,6 +1280,8 @@ def per_session_group_metrics(
     *,
     min_trials: int = 2,
     n_shuffles: int | None = None,
+    min_shift_s: float = 20.0,
+    max_shift_s: float = 60.0,
     seed: int | None = None,
 ) -> list[dict[str, Any]]:
     """
@@ -1300,6 +1311,10 @@ def per_session_group_metrics(
     n_shuffles : int | None
         If set, number of circular shuffles for the per-session null; ``None`` skips
         the null (only observed metrics + deltas).
+    min_shift_s : float, optional
+        Minimum circular time shift (seconds) for the per-session null, by default 20.0.
+    max_shift_s : float, optional
+        Maximum circular time shift (seconds) for the per-session null, by default 60.0.
     seed : int | None
         Base RNG seed for the per-session nulls; session ``i`` uses ``seed + i``.
 
@@ -1336,6 +1351,8 @@ def per_session_group_metrics(
                 neural_data=session["neural_data"],
                 total_duration=session["total_duration"],
                 window_s=window_s,
+                min_shift_s=min_shift_s,
+                max_shift_s=max_shift_s,
                 n_shuffles=n_shuffles,
                 seed=None if seed is None else seed + session_index,
             )
@@ -1351,6 +1368,8 @@ def run_group_comparison(
     n_boot: int = 1000,
     n_shuffles: int = 1000,
     n_permutations: int = 1000,
+    min_shift_s: float = 20.0,
+    max_shift_s: float = 60.0,
     seed: int | None = None,
 ) -> dict[str, Any]:
     """
@@ -1388,6 +1407,10 @@ def run_group_comparison(
         Chained-shuffle iterations per group (default 1000).
     n_permutations : int
         Label-permutation iterations (default 1000).
+    min_shift_s : float, optional
+        Minimum circular time shift (seconds) for the chained null, by default 20.0.
+    max_shift_s : float, optional
+        Maximum circular time shift (seconds) for the chained null, by default 60.0.
     seed : int | None
         Base RNG seed for the whole pipeline.
 
@@ -1413,11 +1436,13 @@ def run_group_comparison(
     durations = [session["total_duration"] for session in sessions]
     chained_null_a = perform_chained_circular_shuffle(
         session_onsets=onsets_a, session_neural_data=neural, session_durations=durations,
-        window_s=window_s, n_shuffles=n_shuffles, seed=None if seed is None else seed + 5,
+        window_s=window_s, min_shift_s=min_shift_s, max_shift_s=max_shift_s,
+        n_shuffles=n_shuffles, seed=None if seed is None else seed + 5,
     )
     chained_null_b = perform_chained_circular_shuffle(
         session_onsets=onsets_b, session_neural_data=neural, session_durations=durations,
-        window_s=window_s, n_shuffles=n_shuffles, seed=None if seed is None else seed + 6,
+        window_s=window_s, min_shift_s=min_shift_s, max_shift_s=max_shift_s,
+        n_shuffles=n_shuffles, seed=None if seed is None else seed + 6,
     )
     per_session = per_session_group_metrics(sessions, window_s)
     return {

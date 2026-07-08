@@ -70,6 +70,9 @@ def _tiny_cfg(spectrograms_dir, peaks_only=False):
         "shared_resources": {
             "spectrograms_dir": str(spectrograms_dir),
         },
+        "figures": {
+            "cmap": "inferno",
+        },
         "qlvm_torus_traversal_video": {
             "clustering": "coarse",
             "fps": 4, "dpi": 30, "m": 4,

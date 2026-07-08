@@ -267,12 +267,13 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         # smooth-abs split. ego_yaw / back_yaw (sharp peak at zero)
         # need `sqrt(x² + ε²)` to keep pygam IRLS conditioning
         # tractable; allo angles tolerate plain `|x|`.
+        abs_features = self.modeling_settings['kinematic_features']['abs_features']
         smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
         processed_beh_feature_data_dict = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_feature_data_dict,
             suffixes=revised_behavioral_predictors,
             feature_bounds=feature_bounds,
-            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw'],
+            abs_features=abs_features,
             smooth_abs_features=smooth_abs_features,
         )
 

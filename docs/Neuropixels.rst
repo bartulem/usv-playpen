@@ -627,6 +627,10 @@ The metrics tunables live in the ``npx_spike_quality_metrics`` block of
 * **shank_width_microns** / **shank_spacing_microns** : geometry used to fold the within-shank lateral offset into the anatomical AP axis.
 * **probe_to_hemisphere** : the same probe → hemisphere map as the alignment step.
 * **job_kwargs** : *SpikeInterface* job settings — ``n_jobs`` (the main throughput knob for the single recording read), ``chunk_duration``, ``progress_bar``.
+* **extension_params** : per-session overrides for the *SpikeInterface* extension parameters — the ``waveforms`` window (``ms_before`` / ``ms_after``), the ``random_spikes`` subsample size / seed, and the ``noise_levels`` chunk-sample seed. Only the keys given are overridden; unnamed keys keep their module defaults.
+* **quality_metric_params** : per-session overrides for the per-metric quality parameters — the ``isi_violation`` (``isi_threshold_ms`` / ``min_isi_ms``) and ``rp_violation`` (``refractory_period_ms`` / ``censored_period_ms``) thresholds. Layered onto the module defaults key-by-key.
+* **template_metric_params** : per-session overrides for the template-metric parameters — the exp-decay goodness-of-fit floor (``min_r2_exp_decay``) and the spread threshold (``spread_threshold``).
+* **triangulation_max_distance_um** : maximum distance (µm) the monopolar-triangulation solver may place a source from the reference channel.
 
 The ``somatic_classifier`` sub-block holds the waveform peak/trough shape thresholds
 for the somatic / non-somatic decision (after Deligkaris et al. 2016 — a unit reads as
@@ -662,7 +666,21 @@ non-somatic when a large, narrow positive peak precedes the main trough):
             "n_jobs": 16,
             "chunk_duration": "1s",
             "progress_bar": true
-        }
+        },
+        "extension_params": {
+            "random_spikes": {"max_spikes_per_unit": 1000, "seed": 0},
+            "waveforms": {"ms_before": 0.7, "ms_after": 2.1},
+            "noise_levels": {"random_slices_kwargs": {"seed": 0}}
+        },
+        "quality_metric_params": {
+            "isi_violation": {"isi_threshold_ms": 1.5, "min_isi_ms": 0},
+            "rp_violation": {"refractory_period_ms": 1.0, "censored_period_ms": 0.0}
+        },
+        "template_metric_params": {
+            "min_r2_exp_decay": 0.5,
+            "spread_threshold": 0.2
+        },
+        "triangulation_max_distance_um": 1000
     }
 
 Every unit becomes one row of ``unit_catalog.csv``. Its columns, by group:

@@ -109,6 +109,7 @@ def viz_settings() -> dict:
 
     return {
         "brain_area_colors": dict(_BRAIN_AREA_COLORS),
+        "cell_type_colors": ["#1A1A1A", "#7A7A7A", "#CFCFCF"],
         "figures": {"fig_format": "png", "dpi": 100, "timestamp_in_name": False},
     }
 

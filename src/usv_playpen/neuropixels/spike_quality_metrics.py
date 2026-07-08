@@ -53,6 +53,7 @@ duplicating them (the bug in the original notebook's blind-append).
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import warnings
@@ -190,6 +191,43 @@ TEMPLATE_METRIC_PARAMS = {
     'column_range': None,
 }
 
+# Default maximum distance (microns) the monopolar-triangulation solver may
+# place a source from the reference channel (was a bare ``1000`` literal in
+# ``compute_unit_locations``); overridable via the settings block.
+DEFAULT_TRIANGULATION_MAX_DISTANCE_UM = 1000
+
+
+def _merge_metric_overrides(base: dict, override: dict | None) -> None:
+    """
+    Description
+    -----------
+    Applies a two-level ``override`` onto ``base`` in place. A top-level key in
+    ``override`` whose value is a dict (and whose matching ``base`` entry is
+    also a dict) updates that sub-dict key-by-key, adding or replacing only the
+    named sub-keys; any other value replaces the whole entry. This lets a
+    per-session settings block override individual metric parameters of the
+    default :data:`EXTENSION_PARAMS` / :data:`QM_PARAMS` dicts without having to
+    restate the keys it leaves untouched.
+
+    Parameters
+    ----------
+    base (dict)
+        The default metric-parameter dict, mutated in place.
+    override (dict | None)
+        Partial overrides to layer on; ``None`` leaves ``base`` unchanged.
+
+    Returns
+    -------
+    None
+    """
+    if override is None:
+        return
+    for key, value in override.items():
+        if isinstance(value, dict) and key in base and isinstance(base[key], dict):
+            base[key].update(value)
+        else:
+            base[key] = value
+
 # Column order of the per-session unit catalog.
 CATALOG_COLUMNS = [
     'rec_date', 'mouse_id', 'rec_sessions', 'probe_sn', 'hs_sn', 'kilosort_version',
@@ -320,6 +358,10 @@ class SpikeQualityMetricsExtractor:
         unit_subset: int | list | None = None,
         analyzer_folder: str | os.PathLike | None = None,
         job_kwargs: dict | None = None,
+        extension_params: dict | None = None,
+        quality_metric_params: dict | None = None,
+        template_metric_params: dict | None = None,
+        triangulation_max_distance_um: float = DEFAULT_TRIANGULATION_MAX_DISTANCE_UM,
     ) -> None:
         if hemisphere not in ('L', 'R'):
             msg = f"hemisphere must be 'L' or 'R', got {hemisphere!r}"
@@ -339,6 +381,21 @@ class SpikeQualityMetricsExtractor:
         self.unit_subset = unit_subset
         self.analyzer_folder = Path(analyzer_folder) if analyzer_folder is not None else None
         self.job_kwargs = dict(job_kwargs) if job_kwargs is not None else dict(DEFAULT_JOB_KWARGS)
+
+        # Metric-parameter dicts: start from the module-level defaults and layer
+        # any per-session overrides from the settings block, so the SI extension,
+        # quality-metric and template-metric tunables (waveform window, ISI /
+        # refractory thresholds, subsample sizes / seeds, exp-decay R^2 floor,
+        # spread threshold, ...) are configurable rather than fixed module
+        # constants. The monopolar-triangulation reach is exposed the same way.
+        self.extension_params = copy.deepcopy(EXTENSION_PARAMS)
+        self.qm_params = copy.deepcopy(QM_PARAMS)
+        self.template_metric_params = dict(TEMPLATE_METRIC_PARAMS)
+        _merge_metric_overrides(self.extension_params, extension_params)
+        _merge_metric_overrides(self.qm_params, quality_metric_params)
+        if template_metric_params is not None:
+            self.template_metric_params.update(template_metric_params)
+        self.triangulation_max_distance_um = triangulation_max_distance_um
 
         self.ephys_path = self.os_cup_loc / ephys_dirname / f"{self.session_date}_{self.probe_id}"
         self.ks_path = self.ephys_path / f"kilosort{self.kilosort_version}"
@@ -448,7 +505,7 @@ class SpikeQualityMetricsExtractor:
         self.spike_train_metrics = si.compute_quality_metrics(
             self.analyzer,
             metric_names=SPIKE_TRAIN_METRIC_NAMES,
-            metric_params={k: v for k, v in QM_PARAMS.items() if k in SPIKE_TRAIN_METRIC_NAMES},
+            metric_params={k: v for k, v in self.qm_params.items() if k in SPIKE_TRAIN_METRIC_NAMES},
             **self.job_kwargs,
         )
 
@@ -518,18 +575,18 @@ class SpikeQualityMetricsExtractor:
 
             unit_template_metrics = {
                 'peak_to_valley': get_peak_to_trough_duration(
-                    peaks_info, sampling_frequency, **TEMPLATE_METRIC_PARAMS),
+                    peaks_info, sampling_frequency, **self.template_metric_params),
                 'peak_trough_ratio': get_waveform_ratios(
-                    template_single, peaks_info, **TEMPLATE_METRIC_PARAMS)['peak_after_to_trough_ratio'],
+                    template_single, peaks_info, **self.template_metric_params)['peak_after_to_trough_ratio'],
                 # get_half_widths returns (trough_hw, peak_hw); the catalog's
                 # `fwhm` is the trough half-width (the fork's get_half_width
                 # measured the trough)
                 'half_width': get_half_widths(
-                    template_single, sampling_frequency, peaks_info, **TEMPLATE_METRIC_PARAMS)[0],
+                    template_single, sampling_frequency, peaks_info, **self.template_metric_params)[0],
                 'repolarization_slope': get_repolarization_slope(
-                    template_single, sampling_frequency, peaks_info, **TEMPLATE_METRIC_PARAMS),
+                    template_single, sampling_frequency, peaks_info, **self.template_metric_params),
                 'recovery_slope': get_recovery_slope(
-                    template_single, sampling_frequency, peaks_info, **TEMPLATE_METRIC_PARAMS),
+                    template_single, sampling_frequency, peaks_info, **self.template_metric_params),
             }
             # somatic flag + waveform-shape features, computed from the trough / peak
             # indices `get_trough_and_peak_idx` already detected above.
@@ -540,9 +597,9 @@ class SpikeQualityMetricsExtractor:
             template_multi = template_all[:, sparsity_mask[unit_index]]
             channel_locations_sparse = channel_locations[sparsity_mask[unit_index]]
             unit_template_metrics['exp_decay'] = get_exp_decay(
-                template_multi, channel_locations_sparse, **TEMPLATE_METRIC_PARAMS)
+                template_multi, channel_locations_sparse, **self.template_metric_params)
             unit_template_metrics['spread'] = get_spread(
-                template_multi, channel_locations_sparse, sampling_frequency, **TEMPLATE_METRIC_PARAMS)
+                template_multi, channel_locations_sparse, sampling_frequency, **self.template_metric_params)
 
             template_metrics[unit_id] = unit_template_metrics
 
@@ -587,7 +644,7 @@ class SpikeQualityMetricsExtractor:
         with warnings.catch_warnings():
             warnings.simplefilter('ignore')
 
-            self.analyzer.compute(EXTENSION_PARAMS, **self.job_kwargs)
+            self.analyzer.compute(self.extension_params, **self.job_kwargs)
 
             # SpikeInterface's own templates (the average of the windowed
             # waveforms) — used by the template metrics, the amplitude
@@ -598,7 +655,7 @@ class SpikeQualityMetricsExtractor:
             si_metrics = si.compute_quality_metrics(
                 self.analyzer,
                 metric_names=SI_RECORDING_METRIC_NAMES,
-                metric_params={k: v for k, v in QM_PARAMS.items() if k in SI_RECORDING_METRIC_NAMES},
+                metric_params={k: v for k, v in self.qm_params.items() if k in SI_RECORDING_METRIC_NAMES},
             )
             amplitude_metrics = self._compute_amplitude_metrics()
 
@@ -654,9 +711,9 @@ class SpikeQualityMetricsExtractor:
         nbefore = waveforms_extension.nbefore
         random_spikes = self.analyzer.get_extension('random_spikes').get_random_spikes()
 
-        amplitude_cv_params = QM_PARAMS['amplitude_cv']
-        amplitude_cutoff_params = QM_PARAMS['amplitude_cutoff']
-        sd_ratio_params = QM_PARAMS['sd_ratio']
+        amplitude_cv_params = self.qm_params['amplitude_cv']
+        amplitude_cutoff_params = self.qm_params['amplitude_cutoff']
+        sd_ratio_params = self.qm_params['sd_ratio']
 
         rows = {}
         for unit_index, unit_id in enumerate(self.analyzer.unit_ids):
@@ -841,7 +898,7 @@ class SpikeQualityMetricsExtractor:
             wf_data = np.ptp(a=wf, axis=0)
 
             unit_location = np.array(
-                solve_monopolar_triangulation_3d(wf_data, temp_chan_locs, 1000, 'minimize_with_log_penality')
+                solve_monopolar_triangulation_3d(wf_data, temp_chan_locs, self.triangulation_max_distance_um, 'minimize_with_log_penality')
             )
 
             distances = np.linalg.norm(temp_chan_locs - unit_location, axis=1)

@@ -72,7 +72,7 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
 * **fig_format** : default output file format. For the per-cluster ratemap PDFs, ``pdf`` produces a single multi-page document; ``png`` / ``jpg`` / ``svg`` write one file per page.
 * **dpi** : default raster resolution applied to every ``fig.savefig`` callsite that goes through ``visualizations.figure_io.save_figure``.
 * **timestamp_in_name** : when ``true``, ``_YYYYMMDD_HHMMSS`` is appended to figure stems by default. Session-bound figures opt out of this with ``timestamp_in_name=false`` since their filenames already embed a session id or unit id.
-* **cmap** : default matplotlib colormap used by every heatmap / ratemap callsite (one of ``viridis``, ``cividis``, ``plasma``, ``inferno``, ``magma``). ``make_behavioral_videos`` uses its own fixed colormap (``inferno``, hardcoded) and is unaffected.
+* **cmap** : default matplotlib colormap used by every heatmap / ratemap callsite (one of ``viridis``, ``cividis``, ``plasma``, ``inferno``, ``magma``); the ``make_behavioral_videos`` spectrogram subplot and the ``qlvm_torus_traversal_video`` spectrogram tiles also read it.
 * **seed** : random seed for figure-side stochastic operations, for reproducibility.
 
 .. code-block:: json
@@ -85,6 +85,36 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
         "cmap": "inferno",
         "seed": 0
     }
+
+Colour palettes
+~~~~~~~~~~~~~~~
+Top-level ``*_colors`` blocks in *visualizations_settings.json* hold the semantic
+(data-meaning) colours shared across figures; every entry is a hex string, so a
+whole figure family can be recoloured in one place. Sex / emitter colours are
+lists (index ``0`` primary, ``1`` secondary) while the grouped palettes are named
+maps.
+
+* **male_colors** / **female_colors** / **unassigned_colors** : per-emitter USV colours (male / female / no-emitter-assigned), used by the USV-timeline, spectrogram-overlay, embedding-scatter and modeling figures.
+* **social_colors** : the single colour for social / dyadic features (e.g. the social-feature ratemaps and the timescale-audit "social" trace).
+* **brain_area_colors** : per-brain-region palette (a seven-bucket map: ``PAG`` / ``MRN`` / ``VTA`` / ``SC`` / ``CENT`` / ``MB`` / ``other``) shared by the behavioral-video overlays and the anatomy / tuning figures.
+* **cell_type_colors** : the mono-grey triad for the per-mouse cell-type stacked bars in the anatomy figures.
+* **coactivity_colors** : the ``group_a`` / ``group_b`` / ``null`` / ``threshold`` colours for the neuronal-coactivity figures (also the defaults the coactivity notebook may override inline).
+* **component_colors** : the per-mixture-component colour cycle for the inter-USV-interval mixture-model figures (paired in code with distinct line styles).
+* **corner_colors** : the arena-corner marker colours (``North`` / ``West`` / ``South`` / ``East``) for the behavioral-video arena overlay.
+
+.. code-block:: json
+
+    "male_colors": ["#9AC0CD", "#8CA252"],
+    "female_colors": ["#FF6347", "#B851B4"],
+    "social_colors": ["#5A6470"],
+    "unassigned_colors": ["#C0C0C0"],
+    "brain_area_colors": {"PAG": "#677470", "MRN": "#939884", "VTA": "#F5D27A",
+                          "SC": "#9FB7D8", "CENT": "#D88080", "MB": "#9BBE85", "other": "#B8B8B8"},
+    "cell_type_colors": ["#1A1A1A", "#7A7A7A", "#CFCFCF"],
+    "coactivity_colors": {"group_a": "#DC143C", "group_b": "#1E90FF", "null": "#808080", "threshold": "#000000"},
+    "component_colors": ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+                         "#9467bd", "#8c564b", "#e377c2", "#7f7f7f"],
+    "corner_colors": {"North": "#FF0000", "West": "#FFFF00", "South": "#008000", "East": "#0000FF"}
 
 Visualize 3D behavior (figure/video)
 ------------------------------------

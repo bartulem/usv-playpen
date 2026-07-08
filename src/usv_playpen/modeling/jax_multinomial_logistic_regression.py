@@ -86,6 +86,7 @@ def _multinomial_train_loop_jit(
         l2_reg,
         focal_gamma,
         learning_rate,
+        grad_clip_norm,
         tol,
         max_iter: int,
         n_feats: int,
@@ -121,7 +122,7 @@ def _multinomial_train_loop_jit(
     # raise on NaN probabilities -- the silent per-fold failure mode
     # observed in the multinomial selector pickles.
     optimizer = optax.chain(
-        optax.clip_by_global_norm(1.0),
+        optax.clip_by_global_norm(grad_clip_norm),
         optax.adam(scheduler),
     )
     check_interval = 100
@@ -186,6 +187,7 @@ def _multinomial_default_step(
         l2_reg,
         focal_gamma,
         learning_rate,
+        grad_clip_norm,
         loss_fn,
         n_feats: int,
         n_time: int,
@@ -249,7 +251,7 @@ def _multinomial_default_step(
 
     scheduler = optax.cosine_decay_schedule(init_value=learning_rate, decay_steps=max_iter)
     optimizer = optax.chain(
-        optax.clip_by_global_norm(1.0),
+        optax.clip_by_global_norm(grad_clip_norm),
         optax.adam(scheduler),
     )
     grads = jax.grad(loss_fn)(
@@ -325,6 +327,12 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         and any additional inverse-frequency reweighting would double-correct.
     learning_rate : float, default=1e-3
         Step size for the Adam optimizer.
+    grad_clip_norm : float, default=1.0
+        Global-norm gradient clip applied before Adam consumes the gradient
+        (via ``optax.clip_by_global_norm``). Bounds the per-step move so a
+        single high-curvature step cannot push the weights into the
+        NaN-propagating regime; the convex loss means clipping never biases the
+        solution. Exposed as a hyperparameter rather than a hard-coded ``1.0``.
     max_iter : int, default=5000
         Maximum number of optimization steps (epochs).
     tol : float, default=1e-4
@@ -374,6 +382,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             focal_gamma: float = 2.0,
             uniform_class_weights: bool = False,
             learning_rate: float = 1e-3,
+            grad_clip_norm: float = 1.0,
             max_iter: int = 5000,
             tol: float = 1e-4,
             random_state: int = 0,
@@ -392,6 +401,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         self.focal_gamma = focal_gamma
         self.uniform_class_weights = uniform_class_weights
         self.learning_rate = learning_rate
+        self.grad_clip_norm = grad_clip_norm
         self.max_iter = max_iter
         self.tol = tol
         self.random_state = random_state
@@ -661,7 +671,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         # global gradient norm before Adam so a single overshoot can
         # never put ``W`` into the NaN-propagating regime.
         optimizer = optax.chain(
-            optax.clip_by_global_norm(1.0),
+            optax.clip_by_global_norm(self.grad_clip_norm),
             optax.adam(scheduler),
         )
         opt_state = optimizer.init(params)
@@ -684,6 +694,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
                 params, opt_state = _multinomial_default_step(
                     params, opt_state, X_j, Y_j, c_weights,
                     self.lambda_smooth, self.l2_reg, self.focal_gamma, self.learning_rate,
+                    self.grad_clip_norm,
                     self._loss_fn, self.n_features, self.n_time_bins,
                     self.smoothness_derivative_order, self.max_iter,
                 )
@@ -727,6 +738,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
                 jnp.asarray(self.l2_reg, dtype=jnp.float32),
                 jnp.asarray(self.focal_gamma, dtype=jnp.float32),
                 jnp.asarray(self.learning_rate, dtype=jnp.float32),
+                jnp.asarray(self.grad_clip_norm, dtype=jnp.float32),
                 jnp.asarray(self.tol, dtype=jnp.float32),
                 int(self.max_iter),
                 int(self.n_features),

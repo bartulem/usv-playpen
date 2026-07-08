@@ -186,6 +186,31 @@ def test_plot_spectrogram_renders_with_usv_segments_and_cbar():
         plt.close(fig)
 
 
+def test_plot_spectrogram_honors_spectrogram_cmap():
+    """The spectrogram colormap is supplied by the caller (from the shared
+    ``figures.cmap`` setting) rather than hard-coded, so passing an explicit
+    ``spectrogram_cmap`` must be reflected in the rendered mesh's colormap."""
+
+    rng = np.random.default_rng(2)
+    spec = rng.uniform(-80.0, 0.0, size=(128, 200)).astype(np.float32)
+    fig, ax = plt.subplots()
+    try:
+        plot_spectrogram(
+            plot_axes=ax, figure_object=fig,
+            spec_start=0, spec_end=200, audio_sr=250000, stft_hop=128,
+            half_window_size_sec=0.5, color_mode_preferences=_COLOR_MODE,
+            spectrogram_amplitude=spec, power_limit=[-80, 0],
+            freq_limit=[0, 125000], freq_yticks=[],
+            usv_segments_list=[], usv_segment_lw=2.0,
+            usv_segment_colors_list=[], usv_segments_ypos=60000,
+            spectrogram_cmap="viridis",
+            cbar_bool=False, plot_usv_segments_bool=False,
+        )
+        assert ax.collections[0].get_cmap().name == "viridis"
+    finally:
+        plt.close(fig)
+
+
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
 def test_plot_raster_draws_eventplot_and_area_labels():
@@ -334,6 +359,61 @@ def test_plot_arena_corners_mics_full_render():
         assert any("20240101_120000" in t.get_text() for t in ax.texts)
     finally:
         plt.close(fig)
+
+
+def test_plot_arena_corners_mics_honors_corner_colors():
+    """The four arena-corner colours are supplied from the ``corner_colors``
+    settings block rather than hard-coded, so an explicit ``corner_colors`` dict
+    must be reflected in the rendered corner scatter facecolors."""
+
+    from matplotlib.colors import to_rgba
+
+    rng = np.random.default_rng(0)
+    arena_names = ["North", "West", "South", "East"]
+    data = np.zeros((1, 1, 28, 3), dtype=float)
+    data[0, 0, :4, :] = [[0, 1, 0], [-1, 0, 0], [0, -1, 0], [1, 0, 0]]
+    data[0, 0, 4:, :] = rng.uniform(-0.5, 0.5, size=(24, 3))
+    corner_colors = {"North": "#111111", "West": "#222222", "South": "#333333", "East": "#444444"}
+    fig, ax = _ax3d()
+    try:
+        plot_arena_corners_mics(
+            data=data, plot_axes=ax, frame_number=0, session_id="20240101_120000",
+            esr=150.0, animal_id={"m1": "♂"},
+            animal_colors=["#FF0000"], color_mode_preferences=_COLOR_MODE,
+            arena_node_connections=[], arena_node_names=arena_names,
+            arena_axes_lw=1.0, arena_mics_lw=0.5, arena_mics_opacity=0.6,
+            corner_size=20, corner_opacity=1.0, mesh_color="#333333",
+            mesh_opacity=0.2, active_mic_position=0, active_mic_color="#FF0000",
+            inactive_mic_color="#777777", text_start_coords=[0.02, 0.95],
+            main_text_offset=0.03, mouse_id_text_offset=0.06, text_fontsize=8,
+            corner_colors=corner_colors,
+            arena_node_connections_bool=False, plot_corners_bool=True,
+            plot_mesh_walls_bool=False, active_mic_bool=False, inactive_mic_bool=False,
+        )
+        rendered = {
+            tuple(np.round(coll.get_facecolor()[0], 3))
+            for coll in ax.collections if len(coll.get_facecolor()) > 0
+        }
+        for hex_code in corner_colors.values():
+            assert tuple(np.round(to_rgba(hex_code), 3)) in rendered
+    finally:
+        plt.close(fig)
+
+
+def test_shipped_semantic_palette_blocks_present():
+    """The cell-type, coactivity, mixture-component and arena-corner palettes are
+    read from dedicated ``visualizations_settings.json`` blocks rather than
+    hard-coded, so the shipped file must expose all four with the expected
+    shapes."""
+
+    settings_path = (pathlib.Path(usv_playpen.__file__).parent
+                     / "_parameter_settings" / "visualizations_settings.json")
+    with settings_path.open() as fh:
+        viz = json.load(fh)
+    assert isinstance(viz["cell_type_colors"], list) and len(viz["cell_type_colors"]) == 3
+    assert set(viz["coactivity_colors"]) >= {"group_a", "group_b", "null", "threshold"}
+    assert isinstance(viz["component_colors"], list) and len(viz["component_colors"]) >= 8
+    assert set(viz["corner_colors"]) == {"North", "West", "South", "East"}
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")

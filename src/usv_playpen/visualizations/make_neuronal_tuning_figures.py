@@ -422,6 +422,19 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             self.__dict__[kw_arg] = kw_val
         self.app_context_bool = is_gui_context()
 
+        # Output resolution and cosmetic-RNG seed, read once from the shared
+        # `figures` block so every figure this class builds uses the project-wide
+        # values instead of hard-coded dpi / seed literals. The same defensive
+        # fallback as the save path is kept so a figures-less settings dict (e.g.
+        # in unit tests) still constructs.
+        figures_settings = (
+            self.visualizations_parameter_dict["figures"]
+            if "figures" in self.visualizations_parameter_dict
+            else {}
+        )
+        self._figure_dpi = int(figures_settings["dpi"] if "dpi" in figures_settings else 300)
+        self._figure_seed = int(figures_settings["seed"] if "seed" in figures_settings else 0)
+
         # Unit-selection filter (applied at the figure layer; the aggregator
         # pickle holds every unit). Defaults reproduce the historical
         # good + somatic scope.
@@ -1001,7 +1014,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         min_bouts = int(triage["thresholds_used"]["vmi_min_bouts"])
 
         xlim_lo, xlim_hi = 1e-3, 1e2
-        fig = plt.figure(figsize=(14, 6.4), dpi=150)
+        fig = plt.figure(figsize=(14, 6.4), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -1259,7 +1272,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             cond_a: str = "intact_female",
             cond_b: str = "mute_female",
             n_bootstrap: int = 2000,
-            random_seed: int = 0,
+            random_seed: int | None = None,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -1358,6 +1371,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             frac = (log_fr - FR_LOG_MIN) / (FR_LOG_MAX - FR_LOG_MIN)
             return FR_SIZE_MIN + (FR_SIZE_MAX - FR_SIZE_MIN) * frac
 
+        # Fall back to the project-wide `figures.seed` when the caller does not
+        # pin a seed, so the bootstrap RNG is settings-driven rather than fixed.
+        if random_seed is None:
+            random_seed = self._figure_seed
         rng = np.random.default_rng(random_seed)
         # Pearson r + bootstrap CIs per region for the 8th panel.
         r_summary: dict[str, dict] = {}
@@ -1383,7 +1400,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             r_lo, r_hi = np.nanquantile(boot_rs, [0.025, 0.975])
             r_summary[region] = {"r": r_pt, "lo": float(r_lo), "hi": float(r_hi), "n": n}
 
-        fig = plt.figure(figsize=(14, 6.4), dpi=150)
+        fig = plt.figure(figsize=(14, 6.4), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -1804,7 +1821,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             frac = (clipped - NT_RANGE_MIN) / (NT_RANGE_MAX - NT_RANGE_MIN)
             return NT_SIZE_MIN + (NT_SIZE_MAX - NT_SIZE_MIN) * frac
 
-        fig = plt.figure(figsize=(14, 6.4), dpi=150)
+        fig = plt.figure(figsize=(14, 6.4), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -2227,7 +2244,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # out against the solid-fill tiers below it.
         both_face_color = "#FFFFFF"
 
-        fig, ax = plt.subplots(figsize=(10.0, 5.4), dpi=150)
+        fig, ax = plt.subplots(figsize=(10.0, 5.4), dpi=self._figure_dpi)
         bar_kwargs = dict(width=0.78, edgecolor=COLOR_BLACK, linewidth=0.4)
 
         # Stack order bottom to top: never-sig, sig+ only, sig− only, sig-both.
@@ -2629,7 +2646,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # Figure layout: four equal-aspect sagittal panels sharing
         # axis extent (scatter + sig+ occupancy-normalized density +
         # sig- occupancy-normalized density + sig+ minus sig- diff).
-        fig = plt.figure(figsize=(18.0, 4.8), dpi=150)
+        fig = plt.figure(figsize=(18.0, 4.8), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             1, 4,
             figure=fig,
@@ -2980,7 +2997,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         region_colors = self._resolve_region_colors()
         bg_color = COLOR_LIGHT
 
-        fig = plt.figure(figsize=(14.0, 6.4), dpi=150)
+        fig = plt.figure(figsize=(14.0, 6.4), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -3358,7 +3375,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
         region_colors = self._resolve_region_colors()
 
-        fig = plt.figure(figsize=(18.0, 6.6), dpi=150)
+        fig = plt.figure(figsize=(18.0, 6.6), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, len(VMI_REGION_ORDER),
             figure=fig,
@@ -3748,7 +3765,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         x_lo_disp = x_lo_snap * unit_scale
         x_hi_disp = x_hi_snap * unit_scale
 
-        fig = plt.figure(figsize=(14.0, 6.4), dpi=150)
+        fig = plt.figure(figsize=(14.0, 6.4), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -4110,7 +4127,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         n_classes = USV_CATEGORY_N_CLASSES[segmentation]
         class_ids = np.arange(1, n_classes + 1)
 
-        fig = plt.figure(figsize=(14.0, 6.4), dpi=150)
+        fig = plt.figure(figsize=(14.0, 6.4), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,
@@ -4282,7 +4299,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             frac = (clipped - Z_LOW) / (Z_HIGH - Z_LOW)
             return SIZE_MIN + (SIZE_MAX - SIZE_MIN) * frac
 
-        fig = plt.figure(figsize=(14.0, 6.4), dpi=150)
+        fig = plt.figure(figsize=(14.0, 6.4), dpi=self._figure_dpi)
         gs = gridspec.GridSpec(
             2, 4,
             figure=fig,

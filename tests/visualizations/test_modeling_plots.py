@@ -31,6 +31,10 @@ import matplotlib.pyplot as plt
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
     from usv_playpen.visualizations.modeling_plots import (
+        _FIGURE_DPI,
+        _FIGURE_SEED,
+        _GLOBAL_CMAP,
+        _VIZ_SETTINGS,
         DeepResultsVisualizer,
         _classify_predictor_feature,
         _last_bin_of_consecutive_run,
@@ -51,6 +55,20 @@ with warnings.catch_warnings():
         plot_univariate_multinomial_filters_grid,
         plot_univariate_multinomial_performance,
     )
+
+
+# figure resolution / seed / cmap derive from the shared `figures` block
+
+
+def test_figure_dpi_seed_cmap_derive_from_settings():
+    """The module-level figure resolution, RNG seed, and colormap are read from
+    the shared ``figures`` block of ``visualizations_settings.json`` rather than
+    hard-coded, so every ``plt.subplots(...)`` / ``savefig(...)`` / estimator call
+    honours the single configured source."""
+
+    assert _FIGURE_DPI == _VIZ_SETTINGS["figures"]["dpi"]
+    assert _FIGURE_SEED == _VIZ_SETTINGS["figures"]["seed"]
+    assert _GLOBAL_CMAP == _VIZ_SETTINGS["figures"]["cmap"]
 
 
 # _classify_predictor_feature

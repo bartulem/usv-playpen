@@ -19,6 +19,8 @@ import numpy as np
 import pytest
 
 from usv_playpen.neuropixels.anatomy_converter import (
+    _KILOSORT_VERSION,
+    _PROBE_TO_HEMISPHERE,
     _build_ks_keyed_block,
     _cli,
     _load_ibl_position_to_region,
@@ -27,6 +29,7 @@ from usv_playpen.neuropixels.anatomy_converter import (
     add_session_to_anatomy_converter,
     regenerate_anatomy_converter,
 )
+from usv_playpen.os_utils import resolve_analyses_setting
 
 
 def test_runs_to_ranges_empty_is_empty_dict():
@@ -548,6 +551,42 @@ def test_cli_bare_invocation_prints_help_and_writes_nothing(tmp_path, monkeypatc
     out = capsys.readouterr().out
     assert "usage" in out.lower()
     assert converter_path.read_text() == before
+
+
+def test_probe_map_and_kilosort_version_derive_from_settings():
+    """
+    Description
+    -----------
+    The per-probe hemisphere map and the Kilosort version are read from
+    ``analyses_settings.json`` rather than hard-coded, so the module-level
+    constants must equal the shipped settings values (guards against the map
+    drifting out of sync with the rest of the neuropixels pipeline).
+    """
+
+    assert _PROBE_TO_HEMISPHERE == resolve_analyses_setting(
+        "npx_histology_ibl_alignment_export", "probe_to_hemisphere"
+    )
+    assert _KILOSORT_VERSION == int(
+        resolve_analyses_setting("npx_spike_quality_metrics", "kilosort_version")
+    )
+
+
+def test_cli_probe_to_hemisphere_malformed_pair_errors(monkeypatch):
+    """
+    Description
+    -----------
+    A ``--probe-to-hemisphere`` value that is not a ``PROBE=HEMISPHERE`` pair is
+    rejected (argparse ``error`` raises ``SystemExit``) before any converter is
+    touched.
+    """
+
+    monkeypatch.setattr(sys, "argv", [
+        "prog",
+        "--probe-to-hemisphere", "imec0R",
+        "--regenerate-all",
+    ])
+    with pytest.raises(SystemExit):
+        _cli()
 
 
 def test_cli_regenerate_all_and_single_triple_are_mutually_exclusive(tmp_path, monkeypatch):

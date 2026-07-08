@@ -23,6 +23,9 @@ Plus text-summary builders (each returns a ``str``): ``summarize_acoustic_confou
 """
 from __future__ import annotations
 
+import json
+import pathlib
+
 import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as st
@@ -32,11 +35,26 @@ from usv_playpen.analyses.neuronal_coactivity_engine import (
     cohens_d,
 )
 
-# Default group / null / threshold colours (hex), matching the notebook.
-COACTIVITY_GROUP_A_COLOR = "#DC143C"    # crimson
-COACTIVITY_GROUP_B_COLOR = "#1E90FF"    # dodgerblue
-COACTIVITY_NULL_COLOR = "#808080"       # gray
-COACTIVITY_THRESHOLD_COLOR = "#000000"  # black
+# Default group / null / threshold colours (hex), read from the shared
+# `coactivity_colors` block of `visualizations_settings.json` (matching the
+# notebook) rather than hard-coded here. A missing file (partial install) falls
+# back to the shipped literals so the module can still be imported.
+_VIZ_SETTINGS_PATH = (
+    pathlib.Path(__file__).parent.parent
+    / "_parameter_settings" / "visualizations_settings.json"
+)
+try:
+    with _VIZ_SETTINGS_PATH.open() as _vf:
+        _COACTIVITY_COLORS = json.load(_vf)["coactivity_colors"]
+except FileNotFoundError:
+    _COACTIVITY_COLORS = {
+        "group_a": "#DC143C", "group_b": "#1E90FF",
+        "null": "#808080", "threshold": "#000000",
+    }
+COACTIVITY_GROUP_A_COLOR = _COACTIVITY_COLORS["group_a"]      # crimson
+COACTIVITY_GROUP_B_COLOR = _COACTIVITY_COLORS["group_b"]      # dodgerblue
+COACTIVITY_NULL_COLOR = _COACTIVITY_COLORS["null"]            # gray
+COACTIVITY_THRESHOLD_COLOR = _COACTIVITY_COLORS["threshold"]  # black
 
 # The three coactivity metrics and their human-readable panel titles.
 _METRICS = ("r_sc", "similarity", "pop_corr")

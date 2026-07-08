@@ -44,6 +44,11 @@ import pytest
 from usv_playpen.visualizations.make_usv_spectrograms import (
     BANDWIDTH_BIMODAL_SPLIT_KHZ,
     EMBEDDING_ALL_COLS,
+    SESSION_TYPE_FEMALE_COLOR,
+    SESSION_TYPE_MALE_COLOR,
+    USV_TIMELINE_FEMALE_COLOR,
+    USV_TIMELINE_MALE_COLOR,
+    USV_TIMELINE_UNASSIGNED_COLOR,
     USVSpectrogramPlotter,
     _count_usvs_per_session,
     _knn_boundary_grid,
@@ -59,6 +64,27 @@ from usv_playpen.visualizations.make_usv_spectrograms import (
     plot_usv_property_histograms,
     render_embedding_thumbnails_for_cohort,
 )
+
+
+def test_session_type_and_timeline_colors_derive_from_settings():
+    """The session-type and USV-timeline sex / unassigned colors are read from
+    the `male_colors` / `female_colors` / `unassigned_colors` palette blocks of
+    `visualizations_settings.json` rather than hard-coded, so the module-level
+    constants must equal the shipped palette entries (guards against the plot
+    colors drifting out of sync with the project palette)."""
+
+    settings_path = (
+        pathlib.Path(__import__("usv_playpen").__file__).parent
+        / "_parameter_settings" / "visualizations_settings.json"
+    )
+    with settings_path.open() as settings_file:
+        viz_settings = json.load(settings_file)
+
+    assert SESSION_TYPE_MALE_COLOR == viz_settings["male_colors"][0]
+    assert SESSION_TYPE_FEMALE_COLOR == viz_settings["female_colors"][0]
+    assert USV_TIMELINE_MALE_COLOR == viz_settings["male_colors"][0]
+    assert USV_TIMELINE_FEMALE_COLOR == viz_settings["female_colors"][0]
+    assert USV_TIMELINE_UNASSIGNED_COLOR == viz_settings["unassigned_colors"][0]
 
 
 # ---- synthetic-artifact builders ------------------------------------------

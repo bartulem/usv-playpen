@@ -69,7 +69,22 @@ from usv_playpen.visualizations.usv_interval_summary_statistics import (
     plot_bootstrap_lrt_panel,
     save_notebook_archive_to_h5,
 )
+from usv_playpen.visualizations import usv_interval_summary_statistics as uiss
 from usv_playpen.analyses.usv_interval_archive import write_ivi_h5
+
+
+def test_component_palette_colors_derive_from_settings():
+    """The per-mixture-component palette pairs code-defined line styles with
+    colours read from the ``component_colors`` block of
+    ``visualizations_settings.json`` rather than hard-coded hex, so the palette's
+    colour column must equal the shipped list (line styles stay in code)."""
+
+    settings_path = (Path(uiss.__file__).parent.parent
+                     / "_parameter_settings" / "visualizations_settings.json")
+    with settings_path.open() as fh:
+        component_colors = json.load(fh)["component_colors"]
+    palette_colors = [color for color, _linestyle in uiss._COMPONENT_PALETTE]
+    assert palette_colors == list(component_colors[:len(palette_colors)])
 
 
 # ---------------------------------------------------------------------------

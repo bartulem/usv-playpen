@@ -1184,6 +1184,28 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
     "vcl_version": "vcl-ssl"
    }
 
+The ``assign_vocalizations`` block holds the confidence-set hyperparameters used
+when turning the 6-D localizer output into per-mouse attributions (all exposed as
+``vcl-assign`` CLI flags):
+
+* **temperature** : covariance temperature scaling applied to the 6-D predictive covariance.
+* **grid_resolution** : spatial ``(x_res, y_res)`` grid the confidence-set PDF is sampled on. The same grid drives both the PDF construction and the point-in-set lookup, so it is a single shared value.
+* **n_angle_bins** : number of angular histogram bin edges (``-pi`` to ``pi``).
+* **n_samples** : Monte-Carlo sample count for the per-vocalization angle PDF.
+* **confidence_level** : confidence level (in ``[0, 1]``) for the extracted confidence sets.
+* **angle_pdf_seed** : RNG seed for the reproducible angle-PDF sampling.
+
+.. code-block:: json
+
+   "assign_vocalizations": {
+    "temperature": 1.0,
+    "grid_resolution": [100, 100],
+    "n_angle_bins": 46,
+    "n_samples": 500,
+    "confidence_level": 0.95,
+    "angle_pdf_seed": 0
+   }
+
 Render spectrograms and latents
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1395,6 +1417,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 * **fib_m** : Fibonacci lattice parameter (must match training)
 * **time_stretch** : whether to time-stretch spectrograms before embedding (must match training)
 * **masking_type** : ``"sam"`` (default) masks each spectrogram by the union of its SAM regions before embedding, matching how the decoder was trained by *Build QLVM training set*; ``"none"`` embeds raw spectrograms (must match training)
+* **target_shape** : output spectrogram ``(freq, time)`` shape the embedder resizes to before inference; must match the ``target_shape`` used by *Build QLVM training set* (default ``[128, 128]``)
 
 .. code-block:: json
 
@@ -1408,7 +1431,8 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "korobov_a": 76,
         "fib_m": 16,
         "time_stretch": false,
-        "masking_type": "sam"
+        "masking_type": "sam",
+        "target_shape": [128, 128]
       }
 
 Train spectrogram-pipeline models

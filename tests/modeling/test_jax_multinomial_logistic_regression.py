@@ -192,6 +192,25 @@ class TestFitPredictProba:
         acc = float(np.mean(model.predict(X) == y))
         assert acc > 0.97
 
+    def test_grad_clip_norm_is_a_configurable_hyperparameter(self):
+        """``grad_clip_norm`` replaces the previously hard-coded ``1.0`` global-norm
+        clip: it is stored as an estimator hyperparameter and threaded into both
+        optimizer builders (the default Python-loop step and the fused ``lax``
+        loop), so a fit under a custom clip still trains to finite weights."""
+
+        X, y = _make_separable_3class()
+        model = SmoothMultinomialLogisticRegression(**{**_fit_kwargs(X.shape[1]), "grad_clip_norm": 0.5})
+        assert model.grad_clip_norm == 0.5
+        model.fit(X, y)
+        assert np.all(np.isfinite(model.coef_))
+        assert float(np.mean(model.predict(X) == y)) > 0.9
+
+        lax_model = SmoothMultinomialLogisticRegression(
+            **{**_fit_kwargs(X.shape[1]), "grad_clip_norm": 0.5, "_use_lax_loop": True}
+        )
+        lax_model.fit(X, y)
+        assert np.all(np.isfinite(lax_model.coef_))
+
     def test_predict_proba_rows_sum_to_one(self):
         """Predicted probabilities form a valid distribution per sample."""
 

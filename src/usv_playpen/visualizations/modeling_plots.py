@@ -82,6 +82,7 @@ with (_PKG_ROOT / "_parameter_settings" / "visualizations_settings.json").open()
 
 # Global color definitions
 male_color = _VIZ_SETTINGS["male_colors"][0]
+male_color_secondary = _VIZ_SETTINGS["male_colors"][1]
 female_color = _VIZ_SETTINGS["female_colors"][0]
 DYADIC_COLOR = _VIZ_SETTINGS["social_colors"][0]
 NEUTRAL_COLOR = "#D3D3D3"
@@ -99,6 +100,12 @@ TIMESCALE_NULL_COLOR = "#808080"   # circular-shift null fill / envelope (was 'g
 # Global default colormap — shared with `figures.cmap` so the
 # multinomial / continuous heatmap defaults match the rest of the repo.
 _GLOBAL_CMAP = _VIZ_SETTINGS["figures"]["cmap"]
+
+# Global figure resolution and RNG seed, read from the same `figures` block so
+# the output dpi and any cosmetic randomness are configured in one place rather
+# than hard-coded at every `plt.subplots(...)` / `savefig(...)` / estimator call.
+_FIGURE_DPI = _VIZ_SETTINGS["figures"]["dpi"]
+_FIGURE_SEED = _VIZ_SETTINGS["figures"]["seed"]
 
 def plot_feature_ranking(
         results_file_loc: str,
@@ -253,7 +260,7 @@ def plot_feature_ranking(
         feats_sorted = feat_arr[sorted_indices]
         means_sorted = mean_arr[sorted_indices]
 
-        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(6, 5), dpi=300, tight_layout=True)
+        fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(6, 5), dpi=_FIGURE_DPI, tight_layout=True)
         fig.patch.set_facecolor('#FFFFFF')
         ax.set_facecolor('#FFFFFF')
 
@@ -331,7 +338,7 @@ def plot_feature_ranking(
             if output_dir is None:
                 output_dir = results_path.parent
             out_name = pathlib.Path(output_dir) / f"{results_path.stem}_{metric_key}_ranking.svg"
-            fig.savefig(out_name, bbox_inches='tight', dpi=300)
+            fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI)
             print(f"Plot saved to {out_name}")
 
         plt.show()
@@ -462,7 +469,7 @@ def plot_significant_filters(
         else:
             feat_color = other_color
 
-        fig, ax = plt.subplots(figsize=(3, 2.5), dpi=300, facecolor='#FFFFFF', tight_layout=True)
+        fig, ax = plt.subplots(figsize=(3, 2.5), dpi=_FIGURE_DPI, facecolor='#FFFFFF', tight_layout=True)
         ax.set_facecolor('#FFFFFF')
 
         filter_size_vector = np.arange(mean_filter.size)
@@ -492,7 +499,7 @@ def plot_significant_filters(
             if output_dir is None: output_dir = results_path.parent
             safe_name = feature.replace('.', '_')
             out_name = pathlib.Path(output_dir) / f"{results_path.stem}_filter_{safe_name}.svg"
-            fig.savefig(out_name, bbox_inches='tight', dpi=300, facecolor='#FFFFFF', transparent=False)
+            fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor='#FFFFFF', transparent=False)
             print(f"Saved: {out_name.name}")
 
         plt.show()
@@ -711,7 +718,7 @@ def plot_significant_filters_grid(
         nrows=nrows,
         ncols=ncols,
         figsize=(ncols * 2.5, nrows * 2.0),
-        dpi=300,
+        dpi=_FIGURE_DPI,
         sharex=True,
         sharey=True
     )
@@ -771,7 +778,7 @@ def plot_significant_filters_grid(
     if save_plot:
         if output_dir is None: output_dir = pathlib.Path(results_file_loc).parent
         out_name = pathlib.Path(output_dir) / f"{pathlib.Path(results_file_loc).stem}_filter_grid.svg"
-        fig_grid.savefig(out_name, bbox_inches='tight', dpi=300, facecolor='#FFFFFF', transparent=False)
+        fig_grid.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor='#FFFFFF', transparent=False)
         print(f"Saved: {out_name.name}")
         plt.close(fig_grid)
 
@@ -933,7 +940,7 @@ def plot_raw_feature_difference(
     other_ci_lower = np.nanpercentile(boot_other_means, 0.5, axis=0)
     other_ci_upper = np.nanpercentile(boot_other_means, 99.5, axis=0)
 
-    fig_avg, ax_avg = plt.subplots(figsize=(3, 2), dpi=300, tight_layout=True)
+    fig_avg, ax_avg = plt.subplots(figsize=(3, 2), dpi=_FIGURE_DPI, tight_layout=True)
 
     fig_avg.patch.set_facecolor('#FFFFFF')
     ax_avg.set_facecolor('#FFFFFF')
@@ -960,7 +967,7 @@ def plot_raw_feature_difference(
     sorted_target = all_target_epochs[np.argsort(all_target_epochs[:, 0])[::-1], :]
     sorted_other = all_other_epochs[np.argsort(all_other_epochs[:, 0])[::-1], :]
 
-    fig_heat, axes_heat = plt.subplots(nrows=2, ncols=1, figsize=(2, 4), dpi=300, sharex=True)
+    fig_heat, axes_heat = plt.subplots(nrows=2, ncols=1, figsize=(2, 4), dpi=_FIGURE_DPI, sharex=True)
 
     fig_heat.patch.set_facecolor('#FFFFFF')
 
@@ -1023,10 +1030,10 @@ def plot_raw_feature_difference(
         output_dir.mkdir(parents=True, exist_ok=True)
 
         avg_path = output_dir / f"{figure_name_label}_{feature_key}_zscored_data_avg_bootstrap.svg"
-        fig_avg.savefig(avg_path, dpi=300)
+        fig_avg.savefig(avg_path, dpi=_FIGURE_DPI)
 
         heat_path = output_dir / f"{figure_name_label}_{feature_key}_zscored_data_heatmap.svg"
-        fig_heat.savefig(heat_path, bbox_inches='tight', dpi=300)
+        fig_heat.savefig(heat_path, bbox_inches='tight', dpi=_FIGURE_DPI)
 
 
 def _resolve_cohort_sexes(selection_metadata: dict | None) -> tuple:
@@ -1393,7 +1400,7 @@ def plot_model_selection_results(
     fig_height = max(3.0, 0.32 * n_rows_total + 1.8)
     fig_traj, (ax_traj, ax_bars) = plt.subplots(
         nrows=1, ncols=2,
-        figsize=(10.5, fig_height), dpi=300,
+        figsize=(10.5, fig_height), dpi=_FIGURE_DPI,
         gridspec_kw={'width_ratios': [2.2, 1.0]},
     )
     fig_traj.patch.set_facecolor(BG_COLOR)
@@ -1579,7 +1586,7 @@ def plot_model_selection_results(
         else:
             _out_dir = pathlib.Path(output_dir)
         out_traj = _out_dir / "model_selection_trajectory.svg"
-        fig_traj.savefig(out_traj, bbox_inches='tight', dpi=300,
+        fig_traj.savefig(out_traj, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
         print(f"Saved trajectory figure to: {out_traj}")
 
@@ -1628,7 +1635,7 @@ def plot_model_selection_results(
     fig_grid, axes_grid = plt.subplots(
         nrows=nrows, ncols=ncols,
         figsize=(ncols * 2.5, nrows * 2.0),
-        dpi=300, constrained_layout=True
+        dpi=_FIGURE_DPI, constrained_layout=True
     )
     fig_grid.patch.set_facecolor(BG_COLOR)
 
@@ -1724,7 +1731,7 @@ def plot_model_selection_results(
             _fallback = pathlib.Path(selection_results_path)
             output_dir = _fallback.parent if _fallback.is_file() else _fallback
         out_name = pathlib.Path(output_dir) / "model_selection_final_model_filters.svg"
-        fig_grid.savefig(out_name, bbox_inches='tight', dpi=300, facecolor=BG_COLOR, transparent=False)
+        fig_grid.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor=BG_COLOR, transparent=False)
         print(f"Saved final model filter grid to: {out_name}")
 
     plt.show()
@@ -1882,7 +1889,7 @@ def plot_univariate_multinomial_performance(
     orders = [primary_stats, secondary_stats]
 
     # Ranking Plots
-    fig_ranking, axes_ranking = plt.subplots(nrows=1, ncols=2, figsize=(14, 6), dpi=300)
+    fig_ranking, axes_ranking = plt.subplots(nrows=1, ncols=2, figsize=(14, 6), dpi=_FIGURE_DPI)
     fig_ranking.patch.set_facecolor('#FFFFFF')
     configs = [(evaluation_metric_name, 'actual_eval'), (secondary_metric_name, 'actual_sec')]
 
@@ -1951,7 +1958,7 @@ def plot_univariate_multinomial_performance(
 
     if top_sig_feat:
         print(f"\nGenerating Confusion Trio for top significant feature: {top_sig_feat['name']}")
-        fig_trio, axes_trio = plt.subplots(1, 3, figsize=(18, 5), dpi=300)
+        fig_trio, axes_trio = plt.subplots(1, 3, figsize=(18, 5), dpi=_FIGURE_DPI)
         fig_trio.patch.set_facecolor('#FFFFFF')
         class_names = modeling_data[top_sig_feat['name']]['actual']['classes']
 
@@ -2152,7 +2159,7 @@ def plot_univariate_multinomial_filters_grid(
 
     fig, axes_grid = plt.subplots(nrows=nrows, ncols=ncols,
                                   figsize=(ncols * 3.5, fig_height),
-                                  dpi=300, sharex=True, sharey=True)
+                                  dpi=_FIGURE_DPI, sharex=True, sharey=True)
     fig.patch.set_facecolor('#FFFFFF')
 
     if nrows == 1 and ncols == 1: axes_grid = np.array([axes_grid])
@@ -2479,7 +2486,7 @@ def plot_multinomial_selection_trajectory(
     fig_height = max(3.0, 0.32 * n_rows_total + 1.8)
     fig_traj, (ax_traj, ax_bars) = plt.subplots(
         nrows=1, ncols=2,
-        figsize=(10.5, fig_height), dpi=300,
+        figsize=(10.5, fig_height), dpi=_FIGURE_DPI,
         gridspec_kw={'width_ratios': [2.2, 1.0]},
     )
     fig_traj.patch.set_facecolor(BG_COLOR)
@@ -2705,7 +2712,7 @@ def plot_multinomial_selection_trajectory(
         fname = (f"multinomial_selection_trajectory_{condition}_"
                  f"{metric_primary}.svg")
         save_path = _out_dir / fname
-        fig_traj.savefig(save_path, bbox_inches='tight', dpi=300,
+        fig_traj.savefig(save_path, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
         print(f"Trajectory plot saved to: {save_path}")
 
@@ -2860,7 +2867,7 @@ def plot_multinomial_multivariate_filters(
     nrows = math.ceil(n_feats / ncols)
 
     # MANUAL LAYOUT (Absolute Figure Coordinates)
-    fig = plt.figure(figsize=(18, 5 * nrows), dpi=300)
+    fig = plt.figure(figsize=(18, 5 * nrows), dpi=_FIGURE_DPI)
     fig.patch.set_facecolor('#FFFFFF')
 
     LM, BM = 0.15, 0.12
@@ -3118,7 +3125,7 @@ def plot_multinomial_selection_diagnosis(
         condition = 'unknown'
 
     # Figure 1 -- pairwise binary AUC, lower triangle + diagonal
-    fig_auc, ax = plt.subplots(figsize=(4.0, 3.6), dpi=300)
+    fig_auc, ax = plt.subplots(figsize=(4.0, 3.6), dpi=_FIGURE_DPI)
     fig_auc.patch.set_facecolor(BG_COLOR)
     ax.set_facecolor(BG_COLOR)
     upper_tri_mask = np.triu(np.ones_like(auc_matrix, dtype=bool), k=1)
@@ -3170,12 +3177,12 @@ def plot_multinomial_selection_diagnosis(
         out_dir = _resolve_out_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
         fname = f"multinomial_pairwise_auc_{condition}.svg"
-        fig_auc.savefig(out_dir / fname, bbox_inches='tight', dpi=300,
+        fig_auc.savefig(out_dir / fname, bbox_inches='tight', dpi=_FIGURE_DPI,
                         facecolor=BG_COLOR, transparent=False)
         print(f"Pairwise AUC figure saved to: {out_dir / fname}")
 
     # Figure 2 -- per-class recall (log y-axis, bars touch)
-    fig_rec, ax_r = plt.subplots(figsize=(3.6, 2.2), dpi=300)
+    fig_rec, ax_r = plt.subplots(figsize=(3.6, 2.2), dpi=_FIGURE_DPI)
     fig_rec.patch.set_facecolor(BG_COLOR)
     ax_r.set_facecolor(BG_COLOR)
 
@@ -3210,7 +3217,7 @@ def plot_multinomial_selection_diagnosis(
         out_dir = _resolve_out_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
         fname = f"multinomial_per_class_recall_{condition}.svg"
-        fig_rec.savefig(out_dir / fname, bbox_inches='tight', dpi=300,
+        fig_rec.savefig(out_dir / fname, bbox_inches='tight', dpi=_FIGURE_DPI,
                         facecolor=BG_COLOR, transparent=False)
         print(f"Per-class recall figure saved to: {out_dir / fname}")
 
@@ -3471,7 +3478,7 @@ def plot_manifold_selection_trajectory(
     fig_height = max(3.0, 0.32 * n_rows_total + 1.8)
     fig_traj, (ax_traj, ax_bars) = plt.subplots(
         nrows=1, ncols=2,
-        figsize=(10.5, fig_height), dpi=300,
+        figsize=(10.5, fig_height), dpi=_FIGURE_DPI,
         gridspec_kw={'width_ratios': [2.2, 1.0]},
     )
     fig_traj.patch.set_facecolor(BG_COLOR)
@@ -3674,7 +3681,7 @@ def plot_manifold_selection_trajectory(
         fname = (f"manifold_selection_trajectory_{condition}_"
                  f"{metric_primary}.svg")
         save_path = _out_dir / fname
-        fig_traj.savefig(save_path, bbox_inches='tight', dpi=300,
+        fig_traj.savefig(save_path, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
         print(f"Manifold trajectory plot saved to: {save_path}")
 
@@ -3807,7 +3814,7 @@ def plot_manifold_multivariate_filters(
         ncols = 3
         nrows = math.ceil(n_features / ncols)
 
-        fig = plt.figure(figsize=(18, 3.6 * nrows), dpi=300)
+        fig = plt.figure(figsize=(18, 3.6 * nrows), dpi=_FIGURE_DPI)
         fig.patch.set_facecolor('#FFFFFF')
 
         LM, BM = 0.10, 0.14
@@ -3992,7 +3999,7 @@ class DeepResultsVisualizer:
         elif 'male' in fname:
             self.default_color = male_color
         else:
-            self.default_color = '#8CA252'
+            self.default_color = male_color_secondary
 
     def _handle_save(self, fig: plt.Figure, name: str, save_plot: bool,
                      output_dir: Optional[str], file_format: str) -> None:
@@ -4023,7 +4030,7 @@ class DeepResultsVisualizer:
         ext = file_format.strip('.') if file_format else 'svg'
         save_path = target_dir / f"{name}.{ext}"
 
-        fig.savefig(save_path, dpi=300, bbox_inches='tight', facecolor='#FFFFFF')
+        fig.savefig(save_path, dpi=_FIGURE_DPI, bbox_inches='tight', facecolor='#FFFFFF')
         print(f"[+] Figure saved: {save_path}")
 
     def plot_permutation_test(self,
@@ -4476,7 +4483,7 @@ class DeepResultsVisualizer:
 
         # 3. K-Means Guided Search (Ensures Island Capture)
         print(f"Identifying {n_patches} representative neighborhoods using K-Means...")
-        kmeans = KMeans(n_clusters=n_patches, n_init=10, random_state=42)
+        kmeans = KMeans(n_clusters=n_patches, n_init=10, random_state=_FIGURE_SEED)
         kmeans.fit(Y_true)
         centers = kmeans.cluster_centers_
 
@@ -5064,7 +5071,7 @@ class DeepResultsVisualizer:
         # 0. COLOR MANAGEMENT
         # Reliably pull the color index 0 mapped in __init__
         if highlight_color is None:
-            highlight_color = getattr(self, 'default_color', '#9AC0CD')
+            highlight_color = getattr(self, 'default_color', male_color)
 
         # 1. DISPLAY TITLE
         display_title = category_name if category_name is not None else region_key

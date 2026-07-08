@@ -752,6 +752,8 @@ class TestRunPredictorAudits:
         return {
             'diagnostics': {
                 'collinearity_audit': collinearity,
+                'collinearity_concern_threshold': 0.7,
+                'collinearity_exclude_threshold': 0.85,
                 'timescale_audit': timescale,
                 'timescale_max_lag_seconds': 5.0,
                 'timescale_n_shuffles': 3,

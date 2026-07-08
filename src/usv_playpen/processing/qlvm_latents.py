@@ -251,7 +251,8 @@ class QLVMLatentInference:
                 specs = specs * masks
 
         # Preprocess identically to the training set (same resize/time-stretch).
-        resized = stretch_specs(specs, durations, (128, 128), cfg['time_stretch'])
+        target_shape = tuple(int(v) for v in cfg['target_shape'])
+        resized = stretch_specs(specs, durations, target_shape, cfg['time_stretch'])
         data = jnp.asarray(resized[:, None, :, :])
 
         coords = np.asarray(embed_data(lattice, data, params))           # (N, 2)
@@ -297,6 +298,7 @@ class QLVMLatentInference:
 @click.option('--fib-m', 'fib_m', type=int, default=None, required=False, help='Fibonacci lattice order m (used when lattice-type=fibonacci).')
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.')
 @click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Apply SAM mask regions before embedding ("sam", matching training) or embed raw spectrograms ("none").')
+@click.option('--target-shape', 'target_shape', nargs=2, type=int, default=None, required=False, help='Output spectrogram (freq, time) shape as two ints, matching the training preprocessing, e.g. --target-shape 128 128.')
 @click.pass_context
 def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
     """
@@ -318,6 +320,7 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
         ctx=ctx,
         provided_params=provided_params,
         settings_dict='processing_settings',
+        parameters_lists=['target_shape'],
         block='infer_qlvm_latents',
     )
 

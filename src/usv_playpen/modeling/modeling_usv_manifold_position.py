@@ -80,6 +80,11 @@ from .manifold_metric import (
     manifold_prediction_metrics,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
+from ..os_utils import resolve_modeling_setting
+
+# Initial spatial-CV session-split matching tolerance (auto-widens at runtime),
+# read from the settings block rather than a bare 0.05 default.
+_SESSION_SPLIT_INITIAL_TOLERANCE = resolve_modeling_setting('model_params', 'session_split_initial_tolerance')
 
 
 def compute_inverse_density_weights(Y: np.ndarray,
@@ -158,7 +163,7 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
                                          split_strategy: str = 'session',
                                          test_prop: float = 0.2,
                                          n_splits: int = 100,
-                                         tolerance: float = 0.05,
+                                         tolerance: float = _SESSION_SPLIT_INITIAL_TOLERANCE,
                                          random_seed: int = 0,
                                          max_total_attempts: int = 50000,
                                          widen_step: float = 0.02,
@@ -956,12 +961,13 @@ class ContinuousModelingPipeline(FeatureZoo):
         # smooth-abs split. ego_yaw / back_yaw (sharp peak at zero)
         # need `sqrt(x² + ε²)` to keep pygam IRLS conditioning
         # tractable; allo angles tolerate plain `|x|`.
+        abs_features = self.modeling_settings['kinematic_features']['abs_features']
         smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
         processed_beh_data = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_data,
             suffixes=revised_predictors,
             feature_bounds=feature_bounds,
-            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw'],
+            abs_features=abs_features,
             smooth_abs_features=smooth_abs_features,
         )
 

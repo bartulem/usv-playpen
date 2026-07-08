@@ -420,3 +420,10 @@ Every setting below is exposed in the GUI's *Create naturalistic playback .WAV* 
         "max_isi_seconds": 12.6,
         "playback_seed": null
     }
+
+.. note::
+
+   The generated ``.wav`` is written at the repository's native **250 kHz** sampling rate.
+   The playback audio device expects **192 kHz**, so change the audio's sampling rate from
+   250 kHz to 192 kHz before playback (resample the file to 192 kHz, or set the output rate
+   on the playback command).

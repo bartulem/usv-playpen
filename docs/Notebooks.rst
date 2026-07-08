@@ -313,7 +313,7 @@ idempotently per ``mouse_id`` + ``rec_date`` + probe) plus each probe's
         catalog = extractor.run()
         print(f"catalog ({catalog.shape[0]} units) written to: {extractor.catalog_path}")
 
-* **SQM_SETTINGS** — the ``npx_spike_quality_metrics`` block (``kilosort_version``, ``num_channels_sparsity``, ``shank_width_microns``, ``shank_spacing_microns``, ``phy_curated``, ``somatic_classifier``, ``job_kwargs``, plus the same ``probe_to_hemisphere`` convention as the IBL export). ``job_kwargs['n_jobs']`` is the main throughput knob for the single recording read.
+* **SQM_SETTINGS** — the ``npx_spike_quality_metrics`` block (``kilosort_version``, ``num_channels_sparsity``, ``shank_width_microns``, ``shank_spacing_microns``, ``phy_curated``, ``somatic_classifier``, ``job_kwargs``, ``extension_params``, ``quality_metric_params``, ``template_metric_params``, ``triangulation_max_distance_um``, plus the same ``probe_to_hemisphere`` convention as the IBL export). Every key except ``probe_to_hemisphere`` is forwarded straight to the extractor as a keyword argument. ``job_kwargs['n_jobs']`` is the main throughput knob for the single recording read; ``extension_params`` / ``quality_metric_params`` / ``template_metric_params`` layer per-session overrides onto the module-default SpikeInterface extension / quality-metric / template-metric parameter dicts, and ``triangulation_max_distance_um`` caps the monopolar-triangulation source reach.
 * **SQM_EXTRACTOR_KWARGS** — that block minus ``probe_to_hemisphere``, splatted into the extractor.
 * **SQM_MOUSE_ID** — the tail-tagged animal id; it names the histology directory (locating ``channel_locations.json``) **and** is written into the catalog's ``mouse_id`` column.
 * **SQM_OS_CUP_LOC** / **SQM_SESSION_DATE** — the session to catalog.
@@ -1192,14 +1192,26 @@ so they resolve on macOS (``/Volumes/falkner``) too.
     }
     CHOSEN_ANIMAL = "178621_2"
 
-    # Coactivity hyperparameters
-    SEED = 0  # base RNG seed; each routine draws a reproducible stream at SEED + offset
-    USV_BOOTSTRAP_NUM = 300
-    N_BOOT_ITERATIONS = 1000
-    N_SHUFFLES = 1000
-    N_PERMUTATIONS = 1000
-    WINDOW_S = 0.030
-    PER_SESSION_N_SHUFFLES = 500
+    # Coactivity hyperparameters — read from the `neuronal_coactivity` block of
+    # analyses_settings.json (loaded once in the Imports cell) rather than
+    # hard-coded here. Edit the JSON to retune.
+    COACTIVITY_SETTINGS = analyses_settings["neuronal_coactivity"]
+    SEED = COACTIVITY_SETTINGS[
+        "seed"
+    ]  # base RNG seed; each routine draws a reproducible stream at SEED + offset
+    USV_BOOTSTRAP_NUM = COACTIVITY_SETTINGS["bootstrap_n"]
+    N_BOOT_ITERATIONS = COACTIVITY_SETTINGS["n_boot"]
+    N_SHUFFLES = COACTIVITY_SETTINGS["n_shuffles"]
+    N_PERMUTATIONS = COACTIVITY_SETTINGS["n_permutations"]
+    WINDOW_S = COACTIVITY_SETTINGS["window_s"]
+    PER_SESSION_N_SHUFFLES = COACTIVITY_SETTINGS["per_session_n_shuffles"]
+    MIN_SHIFT_S = COACTIVITY_SETTINGS["min_shift_s"]
+    MAX_SHIFT_S = COACTIVITY_SETTINGS["max_shift_s"]
+    N_AMPLITUDE_BINS = COACTIVITY_SETTINGS["n_amplitude_bins"]
+    MIN_BIN_TRIALS = COACTIVITY_SETTINGS["min_bin_trials"]
+    ACOUSTICS_PARAMS = COACTIVITY_SETTINGS[
+        "acoustics"
+    ]  # STFT band / window forwarded to the engine
 
     # Group plotting colours (hex)
     GROUP_A_COLOR = "#DC143C"
@@ -1210,10 +1222,14 @@ so they resolve on macOS (``/Volumes/falkner``) too.
 * **CATEGORY_COLUMN** / **GROUP_A_IDS** / **GROUP_B_IDS** — the ``usv_summary`` column that labels each call and the two sets of category ids contrasted (default ``complex`` [1] vs ``simple`` [7]); ``*_LABEL`` names them in tables and plots.
 * **CATALOG_PATH** / **UNIT_BRAIN_AREAS** / **UNIT_REQUIRE_SOMATIC** / **UNIT_CLUSTER_GROUP** — the unit-catalog file and the three-criteria filter (region, somatic waveform, Kilosort ``cluster_group``) applied to select the population.
 * **ANIMALS_TO_SESSIONS** / **CHOSEN_ANIMAL** / **DATA_ROOT** — the per-animal session lists (Kilosort is per-day, so the loader keeps the single best-populated day), the focal animal for single-animal cells, and the data root.
+* The coactivity hyperparameters below are read from the ``neuronal_coactivity`` block of ``analyses_settings.json`` (loaded once in the Imports cell), so they are tuned in one place — edit the JSON to retune. The segmentation / unit-filter / animal-map values above stay inline as per-run edits.
 * **SEED** — base RNG seed; each stochastic routine offsets it (``SEED + k``) for an independent, reproducible stream.
 * **USV_BOOTSTRAP_NUM** / **N_BOOT_ITERATIONS** / **N_SHUFFLES** / **N_PERMUTATIONS** / **PER_SESSION_N_SHUFFLES** — matched trial count and iteration counts for the pooled bootstrap, chained/per-session shuffle nulls, and label permutation.
 * **WINDOW_S** — the post-onset window (30 ms) over which spikes are counted per call.
-* **GROUP_A_COLOR** / **GROUP_B_COLOR** / **NULL_COLOR** / **THRESHOLD_COLOR** — hex colours for the two groups, the null histograms, and the 99th-percentile / threshold lines.
+* **MIN_SHIFT_S** / **MAX_SHIFT_S** — the circular-shift range (seconds) for the shuffle nulls, forwarded to ``run_group_comparison`` / ``per_session_group_metrics``.
+* **N_AMPLITUDE_BINS** / **MIN_BIN_TRIALS** — the amplitude-stratification quantile-bin count and the per-group-per-bin trial floor for the amplitude-stratified section.
+* **ACOUSTICS_PARAMS** — the ``neuronal_coactivity.acoustics`` sub-block (STFT ``nperseg`` / ``hop_length`` / ``window``, the ``min_freq`` / ``max_freq`` band, and the ``low_energy_frac`` / ``high_energy_frac`` bandwidth-crossing fractions), forwarded to ``engine.compute_group_acoustics`` → ``extract_snippet_acoustics``.
+* **GROUP_A_COLOR** / **GROUP_B_COLOR** / **NULL_COLOR** / **THRESHOLD_COLOR** — hex colours for the two groups, the null histograms, and the 99th-percentile / threshold lines. The plotting module's defaults for these are read from the ``coactivity_colors`` block of ``visualizations_settings.json``; the notebook keeps explicit values here so a run can override them inline.
 
 **Setup & load data.** Read the unit catalog once with ``engine.load_unit_catalog``, then load the
 chosen animal's data through ``engine.load_animal_sessions``: the three-criteria

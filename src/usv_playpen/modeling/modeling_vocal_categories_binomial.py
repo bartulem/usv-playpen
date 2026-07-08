@@ -61,6 +61,11 @@ from .modeling_utils import (
     safe_confusion_matrix,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
+from ..os_utils import resolve_modeling_setting
+
+# Expected-Calibration-Error histogram bin count, read from the settings block
+# rather than a bare 10 literal.
+_ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 
 
 def _collect_category_windows(times: np.ndarray,
@@ -330,12 +335,13 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         # peaked at zero (e.g. ego_yaw, back_yaw) need
         # `sqrt(x² + ε²)` to avoid the IRLS conditioning collapse
         # that pygam suffers when the data piles up at the kink.
+        abs_features = self.modeling_settings['kinematic_features']['abs_features']
         smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
         processed_beh_data = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_data,
             suffixes=revised_predictors,
             feature_bounds=getattr(self, 'feature_boundaries', {}),
-            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw'],
+            abs_features=abs_features,
             smooth_abs_features=smooth_abs_features,
         )
 
@@ -894,7 +900,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         # the per-frame label expansion of the training rows above.
                         y_prob_frame = gam.predict_proba(X_te_gam)
                         y_prob = np.mean(y_prob_frame.reshape(X_te.shape), axis=1)
-                        y_pred = (y_prob > 0.5).astype(int)
+                        y_pred = (y_prob >= self.modeling_settings['diagnostics']['binary_decision_threshold']).astype(int)
 
                         if strat == 'actual':
                             grid_0 = np.column_stack([np.zeros(self.history_frames), time_indices])
@@ -931,7 +937,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         results[strat]['f1'][split_idx] = f1_score(y_te, y_pred, average='binary', zero_division=0.0)
                         results[strat]['brier'][split_idx] = float(brier_score_loss(y_te, y_prob))
                         try:
-                            results[strat]['ece'][split_idx] = expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=10)
+                            results[strat]['ece'][split_idx] = expected_calibration_error(y_te, y_pred, y_proba_2d, n_bins=_ECE_N_BINS)
                         except Exception as e:
                             print(f"[warn] ECE (calibration) metric could not be recorded: {e}")
                         results[strat]['mcc'][split_idx] = safe_matthews_corrcoef(y_te, y_pred)

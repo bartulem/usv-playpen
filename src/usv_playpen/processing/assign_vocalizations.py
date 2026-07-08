@@ -250,9 +250,25 @@ class Vocalocator:
             arena_dims = np.array(model_config['DATA']['ARENA_DIMS'])
             true_locs = ctx['scaled_locations'][:]
 
-        conf_sets, _, _ = get_conf_sets_6d(raw_output, arena_dims, 1.0, True)
+        # Confidence-set hyperparameters (temperature, spatial grid resolution,
+        # angular bin count, angle-PDF sample count / seed, confidence level) come
+        # from the `assign_vocalizations` settings block rather than being
+        # hard-coded here. The same grid resolution / angle-bin count is passed to
+        # both get_conf_sets_6d and are_points_in_conf_set so the confidence-set
+        # lookup samples the identical grid the sets were built on.
+        av_settings = self.input_parameter_dict['assign_vocalizations']
+        conf_grid_resolution = tuple(int(v) for v in av_settings['grid_resolution'])
+        conf_n_angle_bins = av_settings['n_angle_bins']
+        conf_sets, _, _ = get_conf_sets_6d(
+            raw_output, arena_dims, av_settings['temperature'], True,
+            grid_resolution=conf_grid_resolution,
+            n_angle_bins=conf_n_angle_bins,
+            n_samples=av_settings['n_samples'],
+            confidence_level=av_settings['confidence_level'],
+            angle_pdf_seed=av_settings['angle_pdf_seed'],
+        )
 
-        pts_in_set = np.stack([are_points_in_conf_set(conf_sets, true_locs[:, mouse_idx, ...], arena_dims,) for mouse_idx in range(true_locs.shape[1])],axis=1,)
+        pts_in_set = np.stack([are_points_in_conf_set(conf_sets, true_locs[:, mouse_idx, ...], arena_dims, grid_resolution=conf_grid_resolution, n_angle_bins=conf_n_angle_bins,) for mouse_idx in range(true_locs.shape[1])],axis=1,)
 
         none_in_set = pts_in_set.sum(axis=1) == 0
         one_in_set = pts_in_set.sum(axis=1) == 1

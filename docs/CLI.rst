@@ -409,6 +409,10 @@ Process
 
     usage: vcl-assign        [-h] --root-directory PATH [--vcl-version {vcl,vcl-ssl}]
                              [--env-name TEXT] [--model-dir PATH]
+                             [--temperature FLOAT]
+                             [--grid-resolution INTEGER INTEGER]
+                             [--n-angle-bins INTEGER] [--n-samples INTEGER]
+                             [--confidence-level FLOAT] [--angle-pdf-seed INTEGER]
 
     required arguments:
       --root-directory      Session root directory path.
@@ -418,6 +422,12 @@ Process
       --vcl-version         Version of Vocalocator to use ('vcl' or 'vcl-ssl').
       --env-name            Name of the Vocalocator conda environment.
       --model-dir           Directory of the Vocalocator model.
+      --temperature         Covariance temperature scaling for the 6D confidence sets.
+      --grid-resolution     Spatial (x_res, y_res) grid the confidence-set PDF is sampled on, e.g. --grid-resolution 100 100.
+      --n-angle-bins        Number of angular histogram bin edges (-pi..pi) for the confidence-set PDF.
+      --n-samples           Monte-Carlo sample count for the per-vocalization angle PDF.
+      --confidence-level    Confidence level (0..1) for the extracted confidence sets.
+      --angle-pdf-seed      RNG seed for the reproducible angle-PDF sampling.
 
 .. _usv-pipeline-cli:
 
@@ -602,6 +612,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
                             [--lattice-type {korobov,roberts,fibonacci}]
                             [--latent-dim INTEGER] [--n-points INTEGER]
                             [--korobov-a INTEGER] [--fib-m INTEGER]
+                            [--target-shape INTEGER INTEGER]
                             [--time-stretch | --no-time-stretch]
                             [--masking-type {sam,none}]
 
@@ -620,6 +631,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --n-points            Number of lattice points used at inference.
       --korobov-a           Korobov generating integer (used when lattice-type=korobov).
       --fib-m               Fibonacci lattice order m (used when lattice-type=fibonacci).
+      --target-shape        Output spectrogram (freq, time) shape as two ints, matching the training preprocessing, e.g. --target-shape 128 128.
       --time-stretch / --no-time-stretch
                             Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.
       --masking-type        Apply SAM mask regions from the mask/<session> groups before embedding ("sam", matching how the decoder was trained) or embed raw spectrograms ("none").
@@ -1113,6 +1125,7 @@ Unlike ``npx-meta-to-coords``, the channel-brain area converter runs fully headl
 
     usage: python -m usv_playpen.neuropixels.anatomy_converter [-h]
              [--converter-path PATH] [--ephys-root PATH] [--histology-root PATH]
+             [--probe-to-hemisphere PROBE=HEMISPHERE [PROBE=HEMISPHERE ...]]
              [--regenerate-all] [--mouse TEXT] [--session TEXT] [--probe TEXT]
              [--force] [--dry-run]
 
@@ -1121,6 +1134,10 @@ Unlike ``npx-meta-to-coords``, the channel-brain area converter runs fully headl
       --converter-path      Path to the converter JSON to update.
       --ephys-root          Root directory containing per-probe Kilosort outputs.
       --histology-root      Root directory containing per-mouse IBL histology output.
+      --probe-to-hemisphere
+                            Override the per-probe hemisphere map as space-separated
+                            PROBE=HEMISPHERE pairs (e.g. imec0=R imec1=L); defaults to
+                            analyses_settings.json.
       --regenerate-all      Bulk-regenerate EVERY triple already in the converter
                             (mutually exclusive with --mouse/--session/--probe).
       --mouse               Mouse id for single-triple mode (requires --session/--probe).

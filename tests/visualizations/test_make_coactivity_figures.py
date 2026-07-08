@@ -20,6 +20,25 @@ import pytest
 from usv_playpen.analyses import neuronal_coactivity_engine as engine
 from usv_playpen.visualizations import make_coactivity_figures as mcf
 
+
+def test_coactivity_default_colors_derive_from_settings():
+    """The default group / null / threshold colours are read from the
+    ``coactivity_colors`` block of ``visualizations_settings.json`` rather than
+    hard-coded, so the module constants must equal the shipped palette."""
+
+    import json
+    import pathlib
+
+    settings_path = (pathlib.Path(mcf.__file__).parent.parent
+                     / "_parameter_settings" / "visualizations_settings.json")
+    with settings_path.open() as fh:
+        colors = json.load(fh)["coactivity_colors"]
+    assert mcf.COACTIVITY_GROUP_A_COLOR == colors["group_a"]
+    assert mcf.COACTIVITY_GROUP_B_COLOR == colors["group_b"]
+    assert mcf.COACTIVITY_NULL_COLOR == colors["null"]
+    assert mcf.COACTIVITY_THRESHOLD_COLOR == colors["threshold"]
+
+
 _METRICS = ("r_sc", "similarity", "pop_corr")
 _FEATURES = ("rms", "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz")
 _FEATURE_LABELS = {

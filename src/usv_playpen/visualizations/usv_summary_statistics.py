@@ -36,15 +36,17 @@ _VIZ_SETTINGS_PATH = (
 )
 try:
     with _VIZ_SETTINGS_PATH.open() as _vf:
-        _GLOBAL_CMAP = json.load(_vf)["figures"]["cmap"]
+        _VIZ_FIGURES = json.load(_vf)["figures"]
+    _GLOBAL_CMAP = _VIZ_FIGURES["cmap"]
 except FileNotFoundError:
+    _VIZ_FIGURES = {}
     _GLOBAL_CMAP = "inferno"
 
-# Fixed seed for the purely cosmetic figure randomness in this module -- the
-# strip/swarm x-jitter and the KDE point subsampling -- so that re-rendering a
-# figure yields pixel-identical output instead of a slightly different cloud /
-# density estimate each run.
-_FIGURE_RNG_SEED = 0
+# Seed for the purely cosmetic figure randomness in this module -- the
+# strip/swarm x-jitter and the KDE point subsampling -- read from the shared
+# `figures.seed` so that re-rendering a figure yields pixel-identical output
+# instead of a slightly different cloud / density estimate each run.
+_FIGURE_RNG_SEED = _VIZ_FIGURES["seed"] if "seed" in _VIZ_FIGURES else 0
 
 
 def _figure_rng() -> np.random.Generator:

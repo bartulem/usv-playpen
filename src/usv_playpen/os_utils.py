@@ -14,7 +14,7 @@ import platform
 import subprocess
 import time as _time
 from collections.abc import Callable, Iterable, Iterator
-from typing import Optional
+from typing import Any, Optional
 
 import toml
 
@@ -616,6 +616,37 @@ def find_cluster_path() -> str:
 
 
 _ANALYSES_SETTINGS_PATH = pathlib.Path(__file__).parent / "_parameter_settings" / "analyses_settings.json"
+_MODELING_SETTINGS_PATH = pathlib.Path(__file__).parent / "_parameter_settings" / "modeling_settings.json"
+
+
+def resolve_modeling_setting(block: str, key: str) -> Any:
+    """
+    Description
+    -----------
+    Reads a single configuration value from ``modeling_settings.json[block][key]``.
+    The modeling counterpart to :func:`resolve_analyses_setting`, it lets modeling
+    modules source a value (e.g. the model-selection significance level, the
+    calibration-bin count, the initial session-split tolerance) from the settings
+    file as a module-level default instead of hard-coding it as a bare function
+    default, so a single shipped value drives every call site.
+
+    Parameters
+    ----------
+    block (str)
+        A top-level block name in ``modeling_settings.json`` (e.g. ``'model_params'``,
+        ``'diagnostics'``).
+    key (str)
+        A key within that block (e.g. ``'selection_p_val'``, ``'ece_n_bins'``).
+
+    Returns
+    -------
+    value (Any)
+        The value stored at ``modeling_settings.json[block][key]``, returned verbatim
+        (no path resolution or type coercion is applied).
+    """
+
+    with _MODELING_SETTINGS_PATH.open() as settings_file:
+        return json.load(settings_file)[block][key]
 
 
 def resolve_data_root(key: str) -> pathlib.Path:
@@ -648,6 +679,36 @@ def resolve_data_root(key: str) -> pathlib.Path:
     with _ANALYSES_SETTINGS_PATH.open() as settings_file:
         data_roots = json.load(settings_file)["data_roots"]
     return pathlib.Path(resolve_experimenter_path(data_roots[key]))
+
+
+def resolve_analyses_setting(block: str, key: str) -> Any:
+    """
+    Description
+    -----------
+    Reads a single configuration value from
+    ``analyses_settings.json[block][key]``. This is the non-path counterpart to
+    :func:`resolve_data_root`: it exposes settings that live outside the
+    ``data_roots`` block (e.g. the per-probe hemisphere map, the Kilosort
+    version) to modules that would otherwise hard-code them as module-level
+    constants, keeping those values user-editable configuration.
+
+    Parameters
+    ----------
+    block (str)
+        A top-level block name in ``analyses_settings.json``
+        (e.g. ``'npx_histology_ibl_alignment_export'``).
+    key (str)
+        A key within that block (e.g. ``'probe_to_hemisphere'``).
+
+    Returns
+    -------
+    value (Any)
+        The value stored at ``analyses_settings.json[block][key]``, returned
+        verbatim (no path resolution or type coercion is applied).
+    """
+
+    with _ANALYSES_SETTINGS_PATH.open() as settings_file:
+        return json.load(settings_file)[block][key]
 
 
 def ephys_base_for_data_root(data_root_directory: str) -> pathlib.Path:

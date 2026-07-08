@@ -1683,8 +1683,8 @@ class NeuronalTuning(FeatureZoo):
             cluster_data_shuffled = shuffle_spikes(
                 spike_array=cluster_data_frames,
                 total_fr_num=behavioral_data.shape[0],
-                shuffle_min_fr=int(np.floor(20 * empirical_camera_sr)),
-                shuffle_max_fr=int(np.floor(60 * empirical_camera_sr)),
+                shuffle_min_fr=int(np.floor(float(params["shuffle_seconds_range"][0]) * empirical_camera_sr)),
+                shuffle_max_fr=int(np.floor(float(params["shuffle_seconds_range"][1]) * empirical_camera_sr)),
                 n_shuffles=params["n_shuffles"],
                 seed=params["shuffle_seed"],
             )

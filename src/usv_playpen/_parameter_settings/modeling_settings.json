@@ -20,9 +20,11 @@
     "split_strategy": "mixed",
     "split_num": 10,
     "test_proportion": 0.1,
+    "session_split_initial_tolerance": 0.05,
     "session_split_max_attempts": 50000,
     "session_split_widen_step": 0.02,
     "session_split_widen_every": 1000,
+    "selection_p_val": 0.01,
     "usv_bout_time": 2,
     "usv_per_bout_floor": 2,
     "onset_target_category": null
@@ -50,6 +52,13 @@
     "dyadic_pose_symmetric": false,
     "include_1st_derivatives": false,
     "include_2nd_derivatives": false,
+    "abs_features": [
+      "allo_roll",
+      "allo_yaw-nose",
+      "nose-allo_yaw",
+      "allo_yaw-TTI",
+      "TTI-allo_yaw"
+    ],
     "smooth_abs_features": {
       "ego_yaw": 1.0,
       "back_yaw": 0.5
@@ -70,7 +79,11 @@
 
   "diagnostics": {
     "collinearity_audit": false,
+    "collinearity_concern_threshold": 0.7,
+    "collinearity_exclude_threshold": 0.85,
     "timescale_audit": false,
+    "binary_decision_threshold": 0.5,
+    "ece_n_bins": 10,
     "timescale_max_lag_seconds": 10.0,
     "timescale_n_shuffles": 1000,
     "timescale_shuffle_range": [20, 60],
@@ -96,6 +109,8 @@
         "loss_function": "huber",
         "huber_delta": 1.0,
         "learning_rate": 0.0005,
+        "block_channels": [32, 64, 128, 256],
+        "warmup_fraction": 0.1,
         "weight_decay": 0.001,
         "weight_decay_exclude_output_head": true,
         "cnn_torus_output_encoding": "sin_cos",

@@ -119,9 +119,11 @@ cross-validation splitting.
         "split_strategy": "mixed",
         "split_num": 10,
         "test_proportion": 0.1,
+        "session_split_initial_tolerance": 0.05,
         "session_split_max_attempts": 50000,
         "session_split_widen_step": 0.02,
         "session_split_widen_every": 1000,
+        "selection_p_val": 0.01,
         "usv_bout_time": 2,
         "usv_per_bout_floor": 2,
         "onset_target_category": null
@@ -137,7 +139,9 @@ cross-validation splitting.
 * **random_seed** — seeds every stochastic step (splits, permutations, initialisation) for reproducibility.
 * **spatial_cluster_num** — number of spatial clusters used to build the spatial-CV folds for the continuous manifold target.
 * **split_strategy** / **split_num** / **test_proportion** — cross-validation: ``'mixed'`` (stratified shuffle over the pooled data) or ``'session'`` (hold whole sessions out); ``split_num`` folds; ``test_proportion`` held out per fold.
+* **session_split_initial_tolerance** — the starting class-balance tolerance for the ``'session'`` strategy's held-out-set search, before it begins widening (default ``0.05``).
 * **session_split_max_attempts** / **session_split_widen_step** / **session_split_widen_every** — tuning for the ``'session'`` strategy's search for balanced held-out session sets (max attempts, plus how much / how often the balance tolerance is relaxed).
+* **selection_p_val** — the significance level gating whether a candidate feature is admitted during forward-stepwise model selection (default ``0.01``).
 * **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout'`` mode: a candidate silent-epoch onset is kept only if no USV (from any source) starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
 * **usv_per_bout_floor** — the minimum number of USVs a positive bout must contain (``'bout'`` mode).
 * **onset_target_category** — restrict positive onsets to a single USV category (``'individual'`` mode only); ``null`` pools all categories (see the single-category note under :ref:`Modeling input data <modeling-extract>`).
@@ -155,6 +159,8 @@ cross-validation splitting.
         "dyadic_pose_symmetric": false,
         "include_1st_derivatives": false,
         "include_2nd_derivatives": false,
+        "abs_features": ["allo_roll", "allo_yaw-nose", "nose-allo_yaw",
+                         "allo_yaw-TTI", "TTI-allo_yaw"],
         "smooth_abs_features": {"ego_yaw": 1.0, "back_yaw": 0.5}
     }
 
@@ -163,6 +169,7 @@ cross-validation splitting.
 * **dyadic_engagement** — social-engagement features (e.g. ``orofacial-sei``).
 * **dyadic_pose_symmetric** — if ``true``, include both ``A-B`` and ``B-A`` orientations of each dyadic-pose feature.
 * **include_1st_derivatives** / **include_2nd_derivatives** — also add the velocity / acceleration of each feature.
+* **abs_features** — feature suffixes folded to their plain absolute value ``|x|`` before pooled z-scoring (for signed angles whose sign is not behaviorally meaningful); read by every pipeline that z-scores across sessions.
 * **smooth_abs_features** — per-feature Gaussian-smoothing σ (frames) applied to the absolute value of the named features.
 
 **vocal_features** — which vocal predictors enter the zoo, and the acoustic-manifold definition.
@@ -196,7 +203,11 @@ cross-validation splitting.
 
     "diagnostics": {
         "collinearity_audit": false,
+        "collinearity_concern_threshold": 0.7,
+        "collinearity_exclude_threshold": 0.85,
         "timescale_audit": false,
+        "binary_decision_threshold": 0.5,
+        "ece_n_bins": 10,
         "timescale_max_lag_seconds": 10.0,
         "timescale_n_shuffles": 1000,
         "timescale_shuffle_range": [20, 60],
@@ -205,14 +216,17 @@ cross-validation splitting.
     }
 
 * **collinearity_audit** / **timescale_audit** — enable each audit during extraction.
+* **collinearity_concern_threshold** / **collinearity_exclude_threshold** — Pearson ``|ρ|`` cutoffs for the collinearity audit: pairs above the concern threshold (default ``0.7``) are flagged for review, pairs above the exclude threshold (default ``0.85``) are treated as effectively redundant.
+* **binary_decision_threshold** — probability cutoff for turning a predicted probability into a 0/1 label (a positive label is assigned when ``p >= threshold``); shared by every binary onset / category selector and pipeline.
+* **ece_n_bins** — histogram bin count for the Expected Calibration Error diagnostic (default ``10``), shared by every calibration computation (the one adaptive site scales its own bin count to the sample size).
 * **timescale_max_lag_seconds** — maximum lag examined for the ACF (autocorrelation function) / cross-correlation horizons.
 * **timescale_n_shuffles** / **timescale_shuffle_range** — number of circular-shift surrogates and the ``(min, max)`` shift range (seconds) for the null envelope.
 * **timescale_signal_floor_seconds** / **timescale_signal_min_run_seconds** — thresholds for calling a horizon significant (minimum above-null run length).
 
 **hyperparameters** — per-engine model tuning, grouped into four sub-blocks:
 
-* **deep_learning.cnn_continuous** — the 1-D ResNet for the continuous manifold target (architecture, optimiser, spatial-CV, saliency), consumed by ``NeuralContinuousCNNRunner``.
-* **jax_linear.bivariate** / **jax_linear.multinomial_logistic** — the JAX smooth bivariate regression (continuous manifold) and multinomial-logistic (vocal categories) models.
+* **deep_learning.cnn_continuous** — the 1-D ResNet for the continuous manifold target (architecture, optimiser, spatial-CV, saliency), consumed by ``NeuralContinuousCNNRunner``. The ``block_channels`` list sets the per-block channel widths (and therefore the network depth); ``warmup_fraction`` is the fraction of total steps spent warming the learning rate up before the cosine decay.
+* **jax_linear.bivariate** / **jax_linear.multinomial_logistic** — the JAX smooth bivariate regression (continuous manifold) and multinomial-logistic (vocal categories) models. The multinomial estimator additionally exposes a ``grad_clip_norm`` hyperparameter (global-norm gradient clip, default ``1.0``) that bounds each optimiser step.
 * **classical.pygam** / **classical.logistic_regression** / **classical.ridge_regression** — the ``'pygam'`` / ``'sklearn'`` engine models (GAM splines, logistic-CV, ridge).
 * **basis_functions.raised_cosine** / **bspline** / **laplacian_pyramid** — parameters for each ``model_basis_function`` choice.
 

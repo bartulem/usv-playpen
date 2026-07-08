@@ -14,6 +14,9 @@ plain-abs branch folds the sign; and the smooth-abs branch applies
 
 from __future__ import annotations
 
+import importlib.resources
+import json
+
 import numpy as np
 import polars as pls
 import pytest
@@ -21,6 +24,78 @@ import pytest
 from usv_playpen.modeling.modeling_cross_session_normalization import (
     zscore_different_sessions_together,
 )
+
+
+def test_shipped_settings_expose_abs_features_list():
+    """The five modeling pipelines read the plain-abs feature list from
+    ``modeling_settings.json['kinematic_features']['abs_features']`` rather than
+    hard-coding it, so the shipped block must carry a non-empty list of string
+    feature suffixes (its absence would raise ``KeyError`` at fit time)."""
+
+    settings_traversable = importlib.resources.files('usv_playpen').joinpath(
+        '_parameter_settings', 'modeling_settings.json'
+    )
+    kinematic_features = json.loads(settings_traversable.read_text())['kinematic_features']
+    abs_features = kinematic_features['abs_features']
+    assert isinstance(abs_features, list) and len(abs_features) > 0
+    assert all(isinstance(feature, str) for feature in abs_features)
+    # `smooth_abs_features` must remain a sibling key (the two folds are distinct).
+    assert 'smooth_abs_features' in kinematic_features
+
+
+def test_shipped_settings_expose_binary_decision_threshold():
+    """Every binary label is assigned by thresholding the predicted probability
+    at ``diagnostics.binary_decision_threshold`` (with a single unified ``>=``
+    operator across all selectors and pipelines), so the shipped block must
+    carry the threshold as a probability in ``[0, 1]``; its absence would raise
+    ``KeyError`` where the prediction is thresholded."""
+
+    settings_traversable = importlib.resources.files('usv_playpen').joinpath(
+        '_parameter_settings', 'modeling_settings.json'
+    )
+    threshold = json.loads(settings_traversable.read_text())['diagnostics']['binary_decision_threshold']
+    assert isinstance(threshold, (int, float))
+    assert 0.0 <= float(threshold) <= 1.0
+
+
+def test_shipped_settings_expose_borderline_tunables():
+    """The former hard-coded modeling defaults are now settings-driven, so the
+    shipped blocks must expose the session-split initial tolerance and the
+    forward-selection significance level (``model_params``) and the ECE
+    histogram bin count (``diagnostics``) with sane types / ranges."""
+
+    settings = json.loads(
+        importlib.resources.files('usv_playpen').joinpath(
+            '_parameter_settings', 'modeling_settings.json'
+        ).read_text()
+    )
+    model_params = settings['model_params']
+    diagnostics = settings['diagnostics']
+    assert 0.0 <= float(model_params['session_split_initial_tolerance']) <= 1.0
+    assert 0.0 < float(model_params['selection_p_val']) < 1.0
+    assert int(diagnostics['ece_n_bins']) >= 2
+
+
+def test_modeling_constants_resolve_from_settings():
+    """The module-level constants that replaced the bare literals are read from
+    the settings file via ``resolve_modeling_setting``, so they must equal the
+    shipped values (guards the wiring end-to-end)."""
+
+    import warnings
+
+    from usv_playpen.os_utils import resolve_modeling_setting
+    # These modules pull the JAX / optax stack, whose import emits a one-time
+    # DeprecationWarning that the suite's warnings-as-errors would promote.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        from usv_playpen.modeling import jax_neural_network_cnn, model_selection, modeling_utils
+
+    assert model_selection._SELECTION_P_VAL == resolve_modeling_setting('model_params', 'selection_p_val')
+    assert model_selection._ECE_N_BINS == resolve_modeling_setting('diagnostics', 'ece_n_bins')
+    assert modeling_utils._ECE_N_BINS == resolve_modeling_setting('diagnostics', 'ece_n_bins')
+    assert jax_neural_network_cnn._SESSION_SPLIT_INITIAL_TOLERANCE == resolve_modeling_setting(
+        'model_params', 'session_split_initial_tolerance'
+    )
 
 
 # zscore_different_sessions_together

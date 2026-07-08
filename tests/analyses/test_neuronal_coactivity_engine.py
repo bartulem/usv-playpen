@@ -823,6 +823,55 @@ def test_compute_group_acoustics_reads_peak_amp_ch(tmp_path, monkeypatch):
     assert "rms" in out
 
 
+def test_compute_group_acoustics_forwards_acoustics_params(monkeypatch):
+    """
+    Description
+    -----------
+    The optional ``acoustics_params`` dict (the settings-driven STFT band / window)
+    is forwarded verbatim as keyword arguments to :func:`extract_snippet_acoustics`,
+    so the acoustic band is configurable rather than pinned to the extractor's
+    hard-coded defaults.
+    """
+
+    group_df = pls.DataFrame({"start": [0.1, 0.2], "peak_amp_ch": [0, 1]})
+    session = {"session_id": "sess0", "session_root": "/root", "group_a_df": group_df}
+
+    captured = {}
+
+    def _fake_extract(session_root, onsets, peak_channels, window_s, **kwargs):
+        captured["kwargs"] = kwargs
+        return {"rms": np.zeros(onsets.shape[0])}
+
+    monkeypatch.setattr(engine, "extract_snippet_acoustics", _fake_extract)
+    engine.compute_group_acoustics(
+        session, "group_a_df", 0.030,
+        acoustics_params={"min_freq": 25000.0, "max_freq": 110000.0, "nperseg": 1024},
+    )
+    assert captured["kwargs"] == {"min_freq": 25000.0, "max_freq": 110000.0, "nperseg": 1024}
+
+
+def test_shipped_neuronal_coactivity_block_schema():
+    """The notebook drives the coactivity engine from the ``neuronal_coactivity``
+    block of ``analyses_settings.json`` rather than hard-coded literals, so the
+    shipped block must expose the expected scalar hyperparameters and the nested
+    ``acoustics`` STFT sub-block."""
+
+    import importlib.resources
+    import json as _json
+
+    settings_traversable = importlib.resources.files("usv_playpen").joinpath(
+        "_parameter_settings", "analyses_settings.json"
+    )
+    block = _json.loads(settings_traversable.read_text())["neuronal_coactivity"]
+    for key in ("seed", "window_s", "bootstrap_n", "n_boot", "n_shuffles",
+                "n_permutations", "per_session_n_shuffles", "n_amplitude_bins",
+                "min_bin_trials", "min_shift_s", "max_shift_s"):
+        assert key in block, f"missing neuronal_coactivity key: {key}"
+    for acoustic_key in ("nperseg", "hop_length", "window", "min_freq", "max_freq",
+                         "low_energy_frac", "high_energy_frac"):
+        assert acoustic_key in block["acoustics"], f"missing acoustics key: {acoustic_key}"
+
+
 def test_compute_group_acoustics_missing_peak_amp_ch_falls_back_to_channel_zero(tmp_path, monkeypatch):
     """
     Description

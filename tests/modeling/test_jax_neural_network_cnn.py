@@ -212,6 +212,35 @@ class TestBuildLrSchedule:
         assert float(sched(0)) == pytest.approx(0.0, abs=1e-9)
         assert float(sched(1)) > 0.0
 
+    def test_warmup_fraction_is_configurable(self):
+        """``warmup_fraction`` replaces the previously hard-coded 0.10: the LR
+        peaks at ``warmup_fraction * total_steps`` instead of the fixed 10%
+        point, so a larger fraction pushes the peak later."""
+
+        peak = 0.01
+        total_epochs, steps_per_epoch = 10, 10
+        total_steps = total_epochs * steps_per_epoch
+        sched = build_lr_schedule(peak, total_epochs, steps_per_epoch, warmup_fraction=0.25)
+        assert float(sched(int(0.25 * total_steps))) == pytest.approx(peak, rel=1e-3)
+        # the old fixed 10% point is now still on the warmup ramp (below peak).
+        assert float(sched(int(0.10 * total_steps))) < peak
+
+
+def test_shipped_cnn_continuous_has_block_channels_and_warmup_fraction():
+    """The CNN block channel widths / depth and the LR warmup fraction are read
+    from the ``cnn_continuous`` settings block rather than hard-coded, so the
+    shipped block must expose ``block_channels`` (a non-empty int list) and
+    ``warmup_fraction`` (a fraction in ``[0, 1]``)."""
+
+    settings_path = (pathlib.Path(__file__).resolve().parents[2]
+                     / 'src' / 'usv_playpen' / '_parameter_settings'
+                     / 'modeling_settings.json')
+    with settings_path.open() as fh:
+        cnn = json.load(fh)['hyperparameters']['deep_learning']['cnn_continuous']
+    assert isinstance(cnn['block_channels'], list) and len(cnn['block_channels']) > 0
+    assert all(isinstance(channel, int) for channel in cnn['block_channels'])
+    assert 0.0 <= float(cnn['warmup_fraction']) <= 1.0
+
 
 # _batch_norm_1d
 

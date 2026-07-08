@@ -1087,6 +1087,12 @@ def prepare_vcl_assign_cli(root_directory, arena_directory) -> None:
 @click.option('--vcl-version', type=click.Choice(['vcl', 'vcl-ssl'], case_sensitive=False), default=None, required=False, help="Version of Vocalocator to use ('vcl' or 'vcl-ssl').")
 @click.option('--env-name', 'vcl_conda_env_name', type=str, default=None, required=False, help='Name of the Vocalocator conda environment.')
 @click.option('--model-dir', 'vcl_model_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='Directory of the Vocalocator model.')
+@click.option('--temperature', 'temperature', type=float, default=None, required=False, help='Covariance temperature scaling for the 6D confidence sets (assign_vocalizations block).')
+@click.option('--grid-resolution', 'grid_resolution', nargs=2, type=int, default=None, required=False, help='Spatial (x_res, y_res) grid the confidence-set PDF is sampled on, e.g. --grid-resolution 100 100.')
+@click.option('--n-angle-bins', 'n_angle_bins', type=int, default=None, required=False, help='Number of angular histogram bin edges (-pi..pi) for the confidence-set PDF.')
+@click.option('--n-samples', 'n_samples', type=int, default=None, required=False, help='Monte-Carlo sample count for the per-vocalization angle PDF.')
+@click.option('--confidence-level', 'confidence_level', type=float, default=None, required=False, help='Confidence level (0..1) for the extracted confidence sets.')
+@click.option('--angle-pdf-seed', 'angle_pdf_seed', type=int, default=None, required=False, help='RNG seed for the reproducible angle-PDF sampling.')
 @click.pass_context
 def vcl_assign_cli(ctx, root_directory, **kwargs) -> None:
     """
@@ -1106,6 +1112,7 @@ def vcl_assign_cli(ctx, root_directory, **kwargs) -> None:
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
         provided_params=provided_params,
+        parameters_lists=['grid_resolution'],
         settings_dict='processing_settings'
     )
 

@@ -102,7 +102,11 @@ from .modeling_collinearity_audit import (
     audit_predictor_timescales,
 )
 from .modeling_cross_session_normalization import zscore_different_sessions_together
-from ..os_utils import configure_path
+from ..os_utils import configure_path, resolve_modeling_setting
+
+# Expected-Calibration-Error histogram bin count, read from the settings block
+# rather than a bare 10 default.
+_ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 
 
 def prepare_modeling_sessions(modeling_settings: dict) -> list:
@@ -1008,7 +1012,7 @@ def brier_score_multi(y_true: np.ndarray,
 def expected_calibration_error(y_true: np.ndarray,
                                y_pred: np.ndarray,
                                y_proba: np.ndarray,
-                               n_bins: int = 10) -> float:
+                               n_bins: int = _ECE_N_BINS) -> float:
     """
     Computes the top-label Expected Calibration Error (ECE).
 
@@ -1588,6 +1592,8 @@ def run_predictor_audits(processed_beh_dict: dict,
                 camera_fps_dict=camera_fps_dict,
                 save_path=coll_path,
                 source_pickle=pickle_basename,
+                concern_thresh=diagnostics_cfg['collinearity_concern_threshold'],
+                exclude_thresh=diagnostics_cfg['collinearity_exclude_threshold'],
                 input_metadata=input_metadata,
             )
         except Exception as exc:

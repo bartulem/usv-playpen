@@ -979,3 +979,64 @@ def test_are_points_in_conf_set_angle_binning():
 
     conf[0, y_idx, x_idx, a_idx] = False
     assert bool(are_points_in_conf_set(conf, points, arena)[0]) is False
+
+
+def test_are_points_in_conf_set_honors_grid_resolution():
+    """
+    Description
+    -----------
+    ``are_points_in_conf_set`` must sample the confidence set on the supplied
+    ``grid_resolution`` / ``n_angle_bins`` rather than a hard-coded 100x100x46,
+    so a smaller configured grid is indexed consistently (this is the same
+    settings value ``get_conf_sets_6d`` builds the sets on).
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    arena = np.array([100.0, 100.0])
+    points = np.zeros((1, 2, 3))
+    points[0, 0, :2] = [10.0, 20.0]   # nose (node 0)
+    points[0, 1, :2] = [0.0, 0.0]     # head (node 1)
+
+    grid_resolution = (10, 10)
+    n_angle_bins = 8
+
+    yaw = np.arctan2(20.0, 10.0)
+    y_grid = np.linspace(-50.0, 50.0, grid_resolution[1])
+    x_grid = np.linspace(-50.0, 50.0, grid_resolution[0])
+    y_bins = 0.5 * (y_grid[1:] + y_grid[:-1])
+    x_bins = 0.5 * (x_grid[1:] + x_grid[:-1])
+    angle_bins = np.linspace(-np.pi, np.pi, n_angle_bins, endpoint=True)
+    y_idx = int(np.digitize(20.0, y_bins))
+    x_idx = int(np.digitize(10.0, x_bins))
+    a_idx = int(np.clip(np.digitize(yaw, angle_bins) - 1, 0, angle_bins.shape[0] - 2))
+
+    conf = np.zeros((1, grid_resolution[1], grid_resolution[0], n_angle_bins - 1), dtype=bool)
+    conf[0, y_idx, x_idx, a_idx] = True
+    assert bool(are_points_in_conf_set(
+        conf, points, arena, grid_resolution=grid_resolution, n_angle_bins=n_angle_bins,
+    )[0]) is True
+
+
+def test_shipped_assign_vocalizations_block_schema():
+    """The confidence-set hyperparameters are read from the shipped
+    ``assign_vocalizations`` block of ``processing_settings.json`` rather than
+    hard-coded, so the block must expose the expected keys with sane types."""
+
+    import importlib.resources
+
+    settings_traversable = importlib.resources.files("usv_playpen").joinpath(
+        "_parameter_settings", "processing_settings.json"
+    )
+    block = json.loads(settings_traversable.read_text())["assign_vocalizations"]
+    assert set(block) >= {
+        "temperature", "grid_resolution", "n_angle_bins",
+        "n_samples", "confidence_level", "angle_pdf_seed",
+    }
+    assert len(block["grid_resolution"]) == 2
+    assert 0.0 <= float(block["confidence_level"]) <= 1.0

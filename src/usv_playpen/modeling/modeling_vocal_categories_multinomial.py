@@ -55,6 +55,13 @@ from .modeling_utils import (
 )
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from ..analyses.compute_behavioral_features import FeatureZoo
+from ..os_utils import resolve_modeling_setting
+
+# Initial spatial-CV session-split matching tolerance (auto-widens at runtime)
+# and the Expected-Calibration-Error histogram bin count, read from the settings
+# blocks rather than bare 0.05 / 10 literals.
+_SESSION_SPLIT_INITIAL_TOLERANCE = resolve_modeling_setting('model_params', 'session_split_initial_tolerance')
+_ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 
 
 def get_stratified_group_splits_stable(
@@ -64,7 +71,7 @@ def get_stratified_group_splits_stable(
         split_strategy: str = 'session',
         test_prop: float = 0.2,
         n_splits: int = 100,
-        tolerance: float = 0.05,
+        tolerance: float = _SESSION_SPLIT_INITIAL_TOLERANCE,
         random_seed: int = 0,
         max_total_attempts: int = 50000,
         widen_step: float = 0.02,
@@ -480,7 +487,7 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
             if inner_cv_scoring_metric == 'brier':
                 return float(brier_score_multi(y_true_, y_proba_, model_classes_))
             if inner_cv_scoring_metric == 'ece':
-                return float(expected_calibration_error(y_true_, y_pred_, y_proba_, n_bins=10))
+                return float(expected_calibration_error(y_true_, y_pred_, y_proba_, n_bins=_ECE_N_BINS))
         except (ValueError, RuntimeError):
             return float('nan')
         return float('nan')
@@ -811,12 +818,13 @@ class MultinomialModelingPipeline(FeatureZoo):
         # smooth-abs split. ego_yaw / back_yaw (sharp peak at zero)
         # need `sqrt(x² + ε²)` to keep pygam IRLS conditioning
         # tractable; allo angles tolerate plain `|x|`.
+        abs_features = self.modeling_settings['kinematic_features']['abs_features']
         smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
         processed_beh_data = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_data,
             suffixes=revised_predictors,
             feature_bounds=getattr(self, 'feature_boundaries', {}),
-            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw'],
+            abs_features=abs_features,
             smooth_abs_features=smooth_abs_features,
         )
 
@@ -1628,7 +1636,7 @@ class MultinomialModelRunner:
                     f_brier = np.nan
                     print(f"[warn] fold diagnostic metric could not be recorded: {e}")
                 try:
-                    f_ece = expected_calibration_error(y_test, predictions, probs_canonical, n_bins=10)
+                    f_ece = expected_calibration_error(y_test, predictions, probs_canonical, n_bins=_ECE_N_BINS)
                 except Exception as e:
                     f_ece = np.nan
                     print(f"[warn] fold diagnostic metric could not be recorded: {e}")

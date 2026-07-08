@@ -382,10 +382,27 @@ src/usv_playpen/
   repo-level guards `test_docs_notebooks.py`, `test_notebooks_static.py`,
   `test_package.py`, `test_src_integrity.py`. A new source module gets a test
   module in the mirrored directory.
-- **Settings are data, not code.** The `*_settings.json` files under
-  `_parameter_settings/` are the single source of truth for tunables; code reads
-  them, docs mirror them (see
-  [Documentation conventions](#documentation-conventions)).
+- **Settings are data, not code — never hard-code a tunable.** The
+  `*_settings.json` files under `_parameter_settings/` are the single source of
+  truth for tunables; code reads them (per-command blocks, via
+  `modify_settings_json_for_cli`), the GUI/CLI override those keys, and the docs
+  mirror them (see [Documentation conventions](#documentation-conventions)). A
+  _tunable_ is any value a user might reasonably want to change — thresholds,
+  cutoffs, percentiles, z-scores, gap/duration bounds, fractions/ratios/scale
+  factors/gains/normalization targets, window/hop/bin sizes, fps or
+  sampling-rate assumptions, default counts/limits, seeds, filter parameters,
+  file/dir stems, and colour hex values (which route through the palette /
+  `*_colors` blocks). These belong in a settings block (add a CLI flag if the
+  command exposes one), **not** as a magic literal in the code. Genuine
+  constants stay in code and should be _derived, not literal_ where possible —
+  dtype ranges as `np.iinfo`/`np.finfo`, maths/physical constants,
+  format/protocol invariants, array-axis indices, and definitional unit
+  conversions.
+- **Avoid hard-coding by default; when a literal seems unavoidable, ask first.**
+  Do not silently introduce a magic number/string. If a value really does seem
+  to belong in the code rather than a settings block, check with the maintainer
+  before adding it — propose the settings key (which block, the key name, and
+  whether it needs a CLI flag) and get a decision first.
 
 ## Module & pipeline patterns
 

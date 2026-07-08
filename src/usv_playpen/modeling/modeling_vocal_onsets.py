@@ -46,6 +46,11 @@ from .modeling_utils import (
     run_predictor_audits,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
+from ..os_utils import resolve_modeling_setting
+
+# Expected-Calibration-Error histogram bin count, read from the settings block
+# rather than a bare 10 literal.
+_ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 
 
 class VocalOnsetModelingPipeline(FeatureZoo):
@@ -309,12 +314,13 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # `sqrt(x² + ε²)` instead, otherwise the bulk of mass sits
         # on the kink and IRLS conditioning collapses. See
         # `zscore_different_sessions_together` for the full story.
+        abs_features = self.modeling_settings['kinematic_features']['abs_features']
         smooth_abs_features = self.modeling_settings['kinematic_features']['smooth_abs_features']
         processed_beh_feature_data_dict = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_feature_data_dict,
             suffixes=revised_behavioral_predictors,
             feature_bounds=getattr(self, 'feature_boundaries', {}),
-            abs_features=['allo_roll', 'allo_yaw-nose', 'nose-allo_yaw', 'allo_yaw-TTI', 'TTI-allo_yaw'],
+            abs_features=abs_features,
             smooth_abs_features=smooth_abs_features,
         )
         print("Z-scoring complete.")
@@ -928,7 +934,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     results['actual']['brier'][split_idx] = float(brier_score_loss(y_test, y_proba_actual))
                     try:
                         y_proba_2d = np.column_stack([1.0 - y_proba_actual, y_proba_actual])
-                        results['actual']['ece'][split_idx] = expected_calibration_error(y_test, y_pred_actual, y_proba_2d, n_bins=10)
+                        results['actual']['ece'][split_idx] = expected_calibration_error(y_test, y_pred_actual, y_proba_2d, n_bins=_ECE_N_BINS)
                     except Exception as e:
                         print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
@@ -985,7 +991,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     results['null']['brier'][split_idx] = float(brier_score_loss(y_test, y_proba_shuffled))
                     try:
                         y_proba_2d = np.column_stack([1.0 - y_proba_shuffled, y_proba_shuffled])
-                        results['null']['ece'][split_idx] = expected_calibration_error(y_test, y_pred_shuffled, y_proba_2d, n_bins=10)
+                        results['null']['ece'][split_idx] = expected_calibration_error(y_test, y_pred_shuffled, y_proba_2d, n_bins=_ECE_N_BINS)
                     except Exception as e:
                         print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
@@ -1185,7 +1191,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
                     y_proba_tiled = gam_actual.predict_proba(X_test_gam)
                     y_proba_mean_epoch = np.mean(y_proba_tiled.reshape(X_test.shape), axis=1)
-                    y_pred_mean_epoch = (y_proba_mean_epoch > 0.5).astype(int)
+                    y_pred_mean_epoch = (y_proba_mean_epoch >= self.modeling_settings['diagnostics']['binary_decision_threshold']).astype(int)
 
                     # predict_mu returns the Bernoulli mean (probability), not log-odds.
                     prob_0 = gam_actual.predict_mu(grid_X_0).astype(np.float32)
@@ -1210,7 +1216,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                         results['actual']['brier'][split_idx] = float(brier_score_loss(y_test_int, y_proba_mean_epoch))
                         try:
                             y_proba_2d = np.column_stack([1.0 - y_proba_mean_epoch, y_proba_mean_epoch])
-                            results['actual']['ece'][split_idx] = expected_calibration_error(y_test_int, y_pred_mean_epoch, y_proba_2d, n_bins=10)
+                            results['actual']['ece'][split_idx] = expected_calibration_error(y_test_int, y_pred_mean_epoch, y_proba_2d, n_bins=_ECE_N_BINS)
                         except Exception as e:
                             print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
@@ -1258,7 +1264,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
                     y_proba_shuffled_tiled = gam_shuffled.predict_proba(X_test_gam)
                     y_proba_shuffled_mean = np.mean(y_proba_shuffled_tiled.reshape(X_test.shape), axis=1)
-                    y_pred_shuffled_mean = (y_proba_shuffled_mean > 0.5).astype(int)
+                    y_pred_shuffled_mean = (y_proba_shuffled_mean >= self.modeling_settings['diagnostics']['binary_decision_threshold']).astype(int)
 
                     # predict_mu returns the Bernoulli mean (probability), not log-odds.
                     # grid_X_0/grid_X_1 are loop-invariant and identical to the
@@ -1287,7 +1293,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                         results['null']['brier'][split_idx] = float(brier_score_loss(y_test_int, y_proba_shuffled_mean))
                         try:
                             y_proba_2d = np.column_stack([1.0 - y_proba_shuffled_mean, y_proba_shuffled_mean])
-                            results['null']['ece'][split_idx] = expected_calibration_error(y_test_int, y_pred_shuffled_mean, y_proba_2d, n_bins=10)
+                            results['null']['ece'][split_idx] = expected_calibration_error(y_test_int, y_pred_shuffled_mean, y_proba_2d, n_bins=_ECE_N_BINS)
                         except Exception as e:
                             print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 

@@ -35,6 +35,29 @@
     "MB": "#9BBE85",
     "other": "#B8B8B8"
   },
+  "cell_type_colors": ["#1A1A1A", "#7A7A7A", "#CFCFCF"],
+  "coactivity_colors": {
+    "group_a": "#DC143C",
+    "group_b": "#1E90FF",
+    "null": "#808080",
+    "threshold": "#000000"
+  },
+  "component_colors": [
+    "#1f77b4",
+    "#ff7f0e",
+    "#2ca02c",
+    "#d62728",
+    "#9467bd",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f"
+  ],
+  "corner_colors": {
+    "North": "#FF0000",
+    "West": "#FFFF00",
+    "South": "#008000",
+    "East": "#0000FF"
+  },
   "send_email": {
     "visualizations_pc_list": [
       "A84E Windows",

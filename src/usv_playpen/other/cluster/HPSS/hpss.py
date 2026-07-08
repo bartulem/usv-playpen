@@ -5,6 +5,8 @@ Runs HPSS on the cluster.
 
 from __future__ import annotations
 
+import importlib.resources
+import json
 import pathlib
 import sys
 
@@ -49,6 +51,15 @@ def hpss_func(
         )
     wav_file = wav_files[wav_file_idx]
 
+    # load the HPSS parameters from the shipped processing settings so this cluster
+    # run stays identical to the local modify_files.hpss_audio implementation instead
+    # of re-hard-coding the STFT window/hop, kernel size, power, and margin here.
+    settings_traversable = importlib.resources.files('usv_playpen').joinpath(
+        '_parameter_settings', 'processing_settings.json'
+    )
+    hpss_params = json.loads(settings_traversable.read_text())['modify_files']['Operator']['hpss_audio']
+    stft_window_length, stft_hop_size = hpss_params['stft_window_length_hop_size']
+
     # read the audio file (use Scipy, not Librosa because Librosa performs scaling)
     sampling_rate_audio, audio_data = wavfile.read(wav_file)
 
@@ -56,19 +67,25 @@ def hpss_func(
     audio_data = audio_data.astype(np.float32)
 
     # perform Short-Time Fourier Transform (STFT) on the audio data
-    spectrogram_data = librosa.stft(y=audio_data, n_fft=512)
+    spectrogram_data = librosa.stft(
+        y=audio_data, n_fft=stft_window_length, hop_length=stft_hop_size
+    )
 
     # perform HPSS on the spectrogram data
     D_harmonic, D_percussive = librosa.decompose.hpss(
-        S=spectrogram_data, kernel_size=(5, 60), power=4.0, mask=False, margin=(4, 1)
+        S=spectrogram_data,
+        kernel_size=hpss_params['kernel_size'],
+        power=hpss_params['hpss_power'],
+        mask=False,
+        margin=hpss_params['margin'],
     )
 
     # convert the harmonic component back to the time domain
     harmonic_data = librosa.istft(
         stft_matrix=D_harmonic,
         length=audio_data.shape[0],
-        win_length=512,
-        hop_length=128,
+        win_length=stft_window_length,
+        hop_length=stft_hop_size,
     )
 
     # ensure the float values are within the range of 16-bit integers. Clip values outside the range to the minimum and maximum representable values.

@@ -658,3 +658,24 @@ def test_wait_timeout_no_raise_returns_status():
     assert time.monotonic() - start < 5  # grace period did not block (terminate killed it)
     assert hung.terminated
     assert len(status) == 1
+
+
+def test_resolve_analyses_setting_reads_block_key():
+    """`resolve_analyses_setting` returns a value straight from
+    `analyses_settings.json[block][key]` (used by the neuropixels tools to source
+    the probe→hemisphere map and Kilosort version from settings)."""
+
+    assert os_utils.resolve_analyses_setting(
+        'npx_histology_ibl_alignment_export', 'probe_to_hemisphere'
+    ) == {'imec0': 'R', 'imec1': 'L'}
+    assert int(os_utils.resolve_analyses_setting('npx_spike_quality_metrics', 'kilosort_version')) == 4
+
+
+def test_resolve_modeling_setting_reads_block_key():
+    """`resolve_modeling_setting` returns a value straight from
+    `modeling_settings.json[block][key]` (used to source the former hard-coded
+    modeling defaults — selection p-value, ECE bins, session-split tolerance)."""
+
+    assert float(os_utils.resolve_modeling_setting('model_params', 'selection_p_val')) == 0.01
+    assert int(os_utils.resolve_modeling_setting('diagnostics', 'ece_n_bins')) == 10
+    assert float(os_utils.resolve_modeling_setting('model_params', 'session_split_initial_tolerance')) == 0.05

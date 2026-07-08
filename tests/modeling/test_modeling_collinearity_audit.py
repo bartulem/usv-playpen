@@ -16,6 +16,7 @@ occupies.
 
 from __future__ import annotations
 
+import json
 import pickle
 
 import numpy as np
@@ -126,6 +127,42 @@ class TestFlaggedPairs:
         assert len(pairs) == 1
         assert pairs[0][2] == pytest.approx(-0.92)
         assert pairs[0][3] == 'exclude'
+
+    def test_custom_thresholds_retier_and_drop(self):
+        """The concern / exclude cutoffs are honoured (they are now supplied from
+        the ``diagnostics`` settings block rather than fixed): tightening
+        ``concern_thresh`` drops a weak pair, and lowering ``exclude_thresh``
+        promotes a mid-strength pair from 'concern' to 'exclude'."""
+
+        names = ['a', 'b', 'c']
+        rho = np.array([
+            [1.00, 0.80, 0.10],
+            [0.80, 1.00, 0.60],
+            [0.10, 0.60, 1.00],
+        ])
+        # Default 0.7 / 0.85: a-b is concern (0.8), b-c (0.6) is below concern.
+        default_pairs = _flagged_pairs(rho, names, concern_thresh=0.7, exclude_thresh=0.85)
+        assert [(p[0], p[1], p[3]) for p in default_pairs] == [('a', 'b', 'concern')]
+        # Lower both cutoffs: b-c now qualifies and a-b crosses into 'exclude'.
+        retiered = _flagged_pairs(rho, names, concern_thresh=0.5, exclude_thresh=0.75)
+        assert [(p[0], p[1], p[3]) for p in retiered] == [('a', 'b', 'exclude'), ('b', 'c', 'concern')]
+
+
+def test_shipped_collinearity_thresholds_in_diagnostics_block():
+    """The collinearity concern / exclude thresholds are read from the
+    ``diagnostics`` block of ``modeling_settings.json`` rather than left as fixed
+    function defaults, so the shipped block must expose both as probabilities in
+    ``[0, 1]`` with concern <= exclude."""
+
+    import importlib.resources
+
+    settings_traversable = importlib.resources.files("usv_playpen").joinpath(
+        "_parameter_settings", "modeling_settings.json"
+    )
+    diagnostics = json.loads(settings_traversable.read_text())["diagnostics"]
+    concern = float(diagnostics["collinearity_concern_threshold"])
+    exclude = float(diagnostics["collinearity_exclude_threshold"])
+    assert 0.0 <= concern <= exclude <= 1.0
 
 
 # _per_session_acf

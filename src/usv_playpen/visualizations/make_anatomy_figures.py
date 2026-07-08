@@ -68,11 +68,6 @@ _CELL_TYPE_LABELS: tuple[str, ...] = (
     "Somatic", "Non-somatic", "Multi-unit",
 )
 
-# Strong-contrast mono-grey triad agreed for the cell-type stacks.
-_CELL_TYPE_PALETTE: tuple[str, ...] = (
-    "#1A1A1A", "#7A7A7A", "#CFCFCF",
-)
-
 # Mouse IDs excluded from anatomy figures (insufficient yield / not used
 # in any downstream analysis).
 _EXCLUDED_MOUSE_IDS: frozenset[str] = frozenset({"147366"})
@@ -467,7 +462,7 @@ class AnatomyFigureMaker:
 
         x_positions = range(len(pivot.index))
         bottom = [0] * len(pivot.index)
-        for label, hex_code in zip(_CELL_TYPE_LABELS, _CELL_TYPE_PALETTE):
+        for label, hex_code in zip(_CELL_TYPE_LABELS, self.visualizations_parameter_dict['cell_type_colors']):
             heights = pivot[label].to_numpy()
             ax.bar(
                 x_positions,

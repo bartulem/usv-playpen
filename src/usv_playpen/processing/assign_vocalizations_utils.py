@@ -499,6 +499,12 @@ def get_conf_sets_6d(
     arena_dims_mm: np.ndarray,
     temperature: float = 1.0,
     return_pdf: bool = False,
+    *,
+    grid_resolution: tuple[int, int] = (100, 100),
+    n_angle_bins: int = 46,
+    n_samples: int = 500,
+    confidence_level: float = 0.95,
+    angle_pdf_seed: int = _ANGLE_PDF_SEED,
 ) -> tuple:
     """
     Description
@@ -515,6 +521,18 @@ def get_conf_sets_6d(
         Temperature parameter for scaling.
     return_pdf (bool)
         Whether to return PDFs or not.
+    grid_resolution (tuple[int, int])
+        Spatial ``(x_res, y_res)`` grid the PDF is sampled on; MUST match the
+        grid used by :func:`are_points_in_conf_set` (the confidence-set lookup),
+        so both are supplied from the same settings value. Defaults to (100, 100).
+    n_angle_bins (int)
+        Number of angular histogram bin edges from -pi to pi. Defaults to 46.
+    n_samples (int)
+        Monte-Carlo sample count for the per-vocalization angle PDF. Defaults to 500.
+    confidence_level (float)
+        Confidence level (in [0, 1]) for the extracted confidence sets. Defaults to 0.95.
+    angle_pdf_seed (int)
+        RNG seed for the reproducible angle-PDF sampling. Defaults to ``_ANGLE_PDF_SEED``.
 
     Returns
     -------
@@ -524,8 +542,8 @@ def get_conf_sets_6d(
 
     pred_means_mm = convert_from_arb(raw_output[:, :6], arena_dims=arena_dims_mm)
     pred_cov_6d_mm = compute_covs_6d(raw_output, arena_dims_mm) * temperature
-    points_spatial = make_xy_grid(arena_dims_mm, (100, 100))
-    bins_angular = np.linspace(-np.pi, np.pi, 46, endpoint=True)
+    points_spatial = make_xy_grid(arena_dims_mm, grid_resolution)
+    bins_angular = np.linspace(-np.pi, np.pi, n_angle_bins, endpoint=True)
     points_angular = 0.5 * (bins_angular[1:] + bins_angular[:-1])  # Bin centers
 
     def routine(mean_6d, cov_6d):
@@ -552,7 +570,7 @@ def get_conf_sets_6d(
         """
 
         _, est_angle_pdf = estimate_angle_pdf(
-            mean_6d, cov_6d, n_samples=500, theta_bins=bins_angular, seed=_ANGLE_PDF_SEED
+            mean_6d, cov_6d, n_samples=n_samples, theta_bins=bins_angular, seed=angle_pdf_seed
         )
         total_pdf = eval_pdf_with_angle(
             points_spatial=points_spatial,
@@ -561,8 +579,8 @@ def get_conf_sets_6d(
             cov_2d=cov_6d[:2, :2],
             histogram=est_angle_pdf,
         )
-        conf_set = get_confidence_set(total_pdf, 0.95)
-        conf_set_no_angle = get_confidence_set(total_pdf.sum(axis=-1), 0.95)
+        conf_set = get_confidence_set(total_pdf, confidence_level)
+        conf_set_no_angle = get_confidence_set(total_pdf.sum(axis=-1), confidence_level)
         return conf_set, conf_set_no_angle, total_pdf
 
     results = Parallel(n_jobs=-1)(
@@ -586,6 +604,9 @@ def are_points_in_conf_set(
     confidence_sets: np.ndarray,
     points: np.ndarray,
     arena_dims: np.ndarray,
+    *,
+    grid_resolution: tuple[int, int] = (100, 100),
+    n_angle_bins: int = 46,
 ) -> np.ndarray:
     """
     Description
@@ -601,6 +622,13 @@ def are_points_in_conf_set(
         Points to test. Shape: (n, n_node, 3)
     arena_dims (np.ndarray)
         A (2,) shape ndarray containing the X and Y dimensions of the arena.
+    grid_resolution (tuple[int, int])
+        Spatial ``(x_res, y_res)`` grid the confidence sets were sampled on;
+        MUST match the ``grid_resolution`` passed to :func:`get_conf_sets_6d`,
+        so both are supplied from the same settings value. Defaults to (100, 100).
+    n_angle_bins (int)
+        Number of angular histogram bin edges (must match :func:`get_conf_sets_6d`).
+        Defaults to 46.
 
     Returns
     -------
@@ -628,11 +656,11 @@ def are_points_in_conf_set(
     # even though the upper grid coordinate was closer. The angular axis is
     # genuinely binned (a 45-bin histogram with edges `linspace(-pi, pi, 46)`),
     # so it is digitized against those 46 bin edges, matching estimate_angle_pdf.
-    y_grid = np.linspace(-arena_dims[1] / 2, arena_dims[1] / 2, 100)
-    x_grid = np.linspace(-arena_dims[0] / 2, arena_dims[0] / 2, 100)
+    y_grid = np.linspace(-arena_dims[1] / 2, arena_dims[1] / 2, grid_resolution[1])
+    x_grid = np.linspace(-arena_dims[0] / 2, arena_dims[0] / 2, grid_resolution[0])
     y_bins = 0.5 * (y_grid[1:] + y_grid[:-1])
     x_bins = 0.5 * (x_grid[1:] + x_grid[:-1])
-    angle_bins = np.linspace(-np.pi, np.pi, 46, endpoint=True)
+    angle_bins = np.linspace(-np.pi, np.pi, n_angle_bins, endpoint=True)
     # Digitizing a (clipped) point against the 99 midpoints returns its nearest
     # grid index directly in [0, 99] -- NO -1 offset (the -1 only applied to the
     # old grid-coordinate-as-edge scheme). A point below the first midpoint maps

@@ -20,17 +20,30 @@ from spikeinterface.metrics.quality.quality_metrics import get_quality_metric_li
 
 from usv_playpen.neuropixels.spike_quality_metrics import (
     CATALOG_COLUMNS,
+    DEFAULT_TRIANGULATION_MAX_DISTANCE_UM,
+    EXTENSION_PARAMS,
     QM_PARAMS,
     RECORDING_DEPENDENT_METRIC_NAMES,
     SPIKE_TRAIN_METRIC_NAMES,
+    TEMPLATE_METRIC_PARAMS,
     SpikeQualityMetricsExtractor,
+    _merge_metric_overrides,
 )
 
 
 def _new_extractor():
-    """Build a bare extractor instance, bypassing ``__init__`` and its disk I/O."""
+    """Build a bare extractor instance, bypassing ``__init__`` and its disk I/O.
+    The metric-parameter attributes normally set from the settings block in
+    ``__init__`` are populated from the module defaults so the compute methods
+    (which read ``self.qm_params`` / ``self.extension_params`` /
+    ``self.template_metric_params`` / ``self.triangulation_max_distance_um``)
+    work on the __new__'d instance."""
     instance = SpikeQualityMetricsExtractor.__new__(SpikeQualityMetricsExtractor)
     instance.somatic_classifier = None
+    instance.extension_params = EXTENSION_PARAMS
+    instance.qm_params = QM_PARAMS
+    instance.template_metric_params = TEMPLATE_METRIC_PARAMS
+    instance.triangulation_max_distance_um = DEFAULT_TRIANGULATION_MAX_DISTANCE_UM
     return instance
 
 
@@ -367,6 +380,65 @@ def test_constructor_resolves_paths_and_parses_meta(tmp_path):
     assert extractor.ks_path == tmp_path / "EPHYS" / "20240101_imec0" / "kilosort4"
     assert extractor.channel_locations_file.name == "channel_locations.json"
     assert extractor.meta["imSampRate"] == "30000.0"
+
+
+def test_merge_metric_overrides_two_level():
+    """
+    Description
+    -----------
+    ``_merge_metric_overrides`` layers a partial override onto a defaults dict
+    in place: a dict-valued key updates the matching sub-dict key-by-key
+    (leaving its unnamed sub-keys intact), while a scalar / new key replaces or
+    adds the whole entry, and ``None`` is a no-op.
+    """
+
+    base = {"a": {"x": 1, "y": 2}, "b": 5}
+    _merge_metric_overrides(base, {"a": {"y": 20, "z": 30}, "c": 9})
+    assert base == {"a": {"x": 1, "y": 20, "z": 30}, "b": 5, "c": 9}
+
+    untouched = {"a": {"x": 1}}
+    _merge_metric_overrides(untouched, None)
+    assert untouched == {"a": {"x": 1}}
+
+
+def test_constructor_applies_metric_param_overrides(tmp_path):
+    """
+    Description
+    -----------
+    The constructor starts from the module-default metric-parameter dicts and
+    layers the ``extension_params`` / ``quality_metric_params`` /
+    ``template_metric_params`` / ``triangulation_max_distance_um`` overrides onto
+    them, so a named sub-key is overridden while its siblings keep the defaults,
+    and the module-level constants are never mutated.
+    """
+
+    _make_meta(tmp_path / "EPHYS" / "20240101_imec0")
+    extractor = SpikeQualityMetricsExtractor(
+        os_cup_loc=tmp_path, mouse_id="M1", session_date="20240101",
+        probe_id="imec0", hemisphere="R",
+        extension_params={"waveforms": {"ms_before": 1.0}},
+        quality_metric_params={"isi_violation": {"isi_threshold_ms": 2.0}},
+        template_metric_params={"spread_threshold": 0.5},
+        triangulation_max_distance_um=750,
+    )
+    # Overridden values applied.
+    assert extractor.extension_params["waveforms"]["ms_before"] == 1.0
+    assert extractor.qm_params["isi_violation"]["isi_threshold_ms"] == 2.0
+    assert extractor.template_metric_params["spread_threshold"] == 0.5
+    assert extractor.triangulation_max_distance_um == 750
+    # Sibling defaults preserved (not clobbered by the partial override).
+    assert extractor.extension_params["waveforms"]["ms_after"] == EXTENSION_PARAMS["waveforms"]["ms_after"]
+    assert extractor.qm_params["rp_violation"]["refractory_period_ms"] == QM_PARAMS["rp_violation"]["refractory_period_ms"]
+    assert extractor.template_metric_params["min_r2_exp_decay"] == TEMPLATE_METRIC_PARAMS["min_r2_exp_decay"]
+    # Module-level constants must not be mutated by construction.
+    assert EXTENSION_PARAMS["waveforms"]["ms_before"] == 0.7
+    assert QM_PARAMS["isi_violation"]["isi_threshold_ms"] == 1.5
+
+
+def test_default_triangulation_max_distance_um_is_1000():
+    """The monopolar-triangulation reach defaults to the historical 1000 µm."""
+
+    assert DEFAULT_TRIANGULATION_MAX_DISTANCE_UM == 1000
 
 
 def test_constructor_rejects_invalid_hemisphere(tmp_path):

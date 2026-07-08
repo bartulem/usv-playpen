@@ -186,6 +186,58 @@
       "n_jobs": 16,
       "chunk_duration": "1s",
       "progress_bar": true
+    },
+    "extension_params": {
+      "random_spikes": {
+        "max_spikes_per_unit": 1000,
+        "seed": 0
+      },
+      "waveforms": {
+        "ms_before": 0.7,
+        "ms_after": 2.1
+      },
+      "noise_levels": {
+        "random_slices_kwargs": {
+          "seed": 0
+        }
+      }
+    },
+    "quality_metric_params": {
+      "isi_violation": {
+        "isi_threshold_ms": 1.5,
+        "min_isi_ms": 0
+      },
+      "rp_violation": {
+        "refractory_period_ms": 1.0,
+        "censored_period_ms": 0.0
+      }
+    },
+    "template_metric_params": {
+      "min_r2_exp_decay": 0.5,
+      "spread_threshold": 0.2
+    },
+    "triangulation_max_distance_um": 1000
+  },
+  "neuronal_coactivity": {
+    "seed": 0,
+    "window_s": 0.03,
+    "bootstrap_n": 300,
+    "n_boot": 1000,
+    "n_shuffles": 1000,
+    "n_permutations": 1000,
+    "per_session_n_shuffles": 500,
+    "n_amplitude_bins": 5,
+    "min_bin_trials": 15,
+    "min_shift_s": 20.0,
+    "max_shift_s": 60.0,
+    "acoustics": {
+      "nperseg": 2048,
+      "hop_length": 512,
+      "window": "blackmanharris",
+      "min_freq": 30000.0,
+      "max_freq": 120000.0,
+      "low_energy_frac": 0.05,
+      "high_energy_frac": 0.95
     }
   }
 }

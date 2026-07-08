@@ -574,6 +574,7 @@ def plot_spectrogram(plot_axes: plt.Axes,
                      usv_segment_lw: int|float,
                      usv_segment_colors_list: list[str],
                      usv_segments_ypos: int|float,
+                     spectrogram_cmap: str = 'inferno',
                      cbar_bool: bool = False,
                      plot_usv_segments_bool: bool = False) -> None:
     """
@@ -620,6 +621,9 @@ def plot_spectrogram(plot_axes: plt.Axes,
             USVs segments colored by mouse identity.
         usv_segments_ypos (int / float)
             Y-position of USV segments.
+        spectrogram_cmap (str)
+            Matplotlib colormap name for the spectrogram image; supplied from
+            the shared ``figures.cmap`` setting by the callers.
 
     Returns
     -------
@@ -631,7 +635,7 @@ def plot_spectrogram(plot_axes: plt.Axes,
                                    hop_length=stft_hop,
                                    y_axis='linear',
                                    x_axis='time',
-                                   cmap='inferno',
+                                   cmap=spectrogram_cmap,
                                    vmin=power_limit[0],
                                    vmax=power_limit[1],
                                    ax=plot_axes)
@@ -1034,6 +1038,7 @@ def plot_arena_corners_mics(data: np.ndarray,
                             main_text_offset: int|float,
                             mouse_id_text_offset: int|float,
                             text_fontsize: int,
+                            corner_colors: dict | None = None,
                             arena_node_connections_bool: bool = False,
                             plot_corners_bool: bool = False,
                             plot_mesh_walls_bool: bool = False,
@@ -1135,10 +1140,16 @@ def plot_arena_corners_mics(data: np.ndarray,
                               c=inactive_mic_color, s=20, alpha=arena_mics_opacity)
 
     if plot_corners_bool:
-        plot_axes.scatter(data[0, 0, node_idx['North'], 0], data[0, 0, node_idx['North'], 1], data[0, 0, node_idx['North'], 2], c='#FF0000', s=corner_size, alpha=corner_opacity)
-        plot_axes.scatter(data[0, 0, node_idx['West'], 0], data[0, 0, node_idx['West'], 1], data[0, 0, node_idx['West'], 2], c='#FFFF00', s=corner_size, alpha=corner_opacity)
-        plot_axes.scatter(data[0, 0, node_idx['South'], 0], data[0, 0, node_idx['South'], 1], data[0, 0, node_idx['South'], 2], c='#008000', s=corner_size, alpha=corner_opacity)
-        plot_axes.scatter(data[0, 0, node_idx['East'], 0], data[0, 0, node_idx['East'], 1], data[0, 0, node_idx['East'], 2], c='#0000FF', s=corner_size, alpha=corner_opacity)
+        # Per-corner colours come from the shared `corner_colors` settings block
+        # (supplied by the callers); fall back to the shipped mapping so a direct
+        # call that omits them still renders.
+        resolved_corner_colors = corner_colors if corner_colors is not None else {
+            'North': '#FF0000', 'West': '#FFFF00', 'South': '#008000', 'East': '#0000FF',
+        }
+        plot_axes.scatter(data[0, 0, node_idx['North'], 0], data[0, 0, node_idx['North'], 1], data[0, 0, node_idx['North'], 2], c=resolved_corner_colors['North'], s=corner_size, alpha=corner_opacity)
+        plot_axes.scatter(data[0, 0, node_idx['West'], 0], data[0, 0, node_idx['West'], 1], data[0, 0, node_idx['West'], 2], c=resolved_corner_colors['West'], s=corner_size, alpha=corner_opacity)
+        plot_axes.scatter(data[0, 0, node_idx['South'], 0], data[0, 0, node_idx['South'], 1], data[0, 0, node_idx['South'], 2], c=resolved_corner_colors['South'], s=corner_size, alpha=corner_opacity)
+        plot_axes.scatter(data[0, 0, node_idx['East'], 0], data[0, 0, node_idx['East'], 1], data[0, 0, node_idx['East'], 2], c=resolved_corner_colors['East'], s=corner_size, alpha=corner_opacity)
 
     # plot bottom sides
     plot_axes.plot([data[0, 0, node_idx['North'], 0], data[0, 0, node_idx['West'], 0]],
@@ -1861,6 +1872,7 @@ class Create3DVideo:
                                     plot_corners_bool=self.visualizations_parameter_dict['make_behavioral_videos']['arena_figure_specs']['plot_corners_bool'],
                                     corner_size=self.visualizations_parameter_dict['make_behavioral_videos']['arena_figure_specs']['corner_size'],
                                     corner_opacity=self.visualizations_parameter_dict['make_behavioral_videos']['arena_figure_specs']['corner_opacity'],
+                                    corner_colors=self.visualizations_parameter_dict['corner_colors'],
                                     plot_mesh_walls_bool=self.visualizations_parameter_dict['make_behavioral_videos']['arena_figure_specs']['plot_mesh_walls_bool'],
                                     mesh_color=color_mode_preferences['arena_mesh_color'],
                                     mesh_opacity=self.visualizations_parameter_dict['make_behavioral_videos']['arena_figure_specs']['mesh_opacity'],
@@ -1942,6 +1954,7 @@ class Create3DVideo:
                                  stft_hop=stft_hop,
                                  half_window_size_sec=half_window_size_sec,
                                  cbar_bool=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_cbar_bool'],
+                                 spectrogram_cmap=self.visualizations_parameter_dict['figures']['cmap'],
                                  color_mode_preferences=color_mode_preferences,
                                  spectrogram_amplitude=spectrogram_amplitude,
                                  power_limit=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_power_limit'],
@@ -2119,6 +2132,7 @@ class Create3DVideo:
                                         plot_corners_bool=self.visualizations_parameter_dict['make_behavioral_videos']['arena_figure_specs']['plot_corners_bool'],
                                         corner_size=self.visualizations_parameter_dict['make_behavioral_videos']['arena_figure_specs']['corner_size'],
                                         corner_opacity=self.visualizations_parameter_dict['make_behavioral_videos']['arena_figure_specs']['corner_opacity'],
+                                        corner_colors=self.visualizations_parameter_dict['corner_colors'],
                                         plot_mesh_walls_bool=self.visualizations_parameter_dict['make_behavioral_videos']['arena_figure_specs']['plot_mesh_walls_bool'],
                                         mesh_color=color_mode_preferences['arena_mesh_color'],
                                         mesh_opacity=self.visualizations_parameter_dict['make_behavioral_videos']['arena_figure_specs']['mesh_opacity'],
@@ -2195,6 +2209,7 @@ class Create3DVideo:
                                      stft_hop=stft_hop,
                                      half_window_size_sec=half_window_size_sec,
                                      cbar_bool=False,
+                                     spectrogram_cmap=self.visualizations_parameter_dict['figures']['cmap'],
                                      color_mode_preferences=color_mode_preferences,
                                      spectrogram_amplitude=spectrogram_amplitude,
                                      power_limit=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_power_limit'],

@@ -68,24 +68,32 @@ from .plot_style import apply_plot_style
 apply_plot_style()
 
 
-# Load the project-wide default cmap from `visualizations_settings.json`
-# at module import. Used as the default for the module-level
-# `plot_embedding_with_category_thumbnails` helper's `cmap=` arguments (was
-# two hard-coded `'inferno'` literals). Class instances continue to
-# resolve their cmap via `_resolve_cmap` (also reads `figures.cmap`).
-# The `figures.cmap` entry is a required field of the packaged settings
-# file, so it is read by direct key access; only the file-not-found
-# case (e.g. a partial install) falls back to a literal so the module
-# can still be imported.
+# Load the project-wide default cmap and sex / unassigned palettes from
+# `visualizations_settings.json` at module import. The cmap is the default for
+# the module-level `plot_embedding_with_category_thumbnails` helper's `cmap=`
+# arguments (was two hard-coded `'inferno'` literals); the palettes feed the
+# module-level session-type / USV-timeline / manifold color constants below (was
+# hard-coded `#9AC0CD` / `#FF6347` / `#C0C0C0` literals). Class instances
+# continue to resolve their cmap via `_resolve_cmap` (also reads `figures.cmap`).
+# These are required fields of the packaged settings file, so they are read by
+# direct key access; only the file-not-found case (e.g. a partial install) falls
+# back to literals so the module can still be imported.
 _VIZ_SETTINGS_PATH = (
     pathlib.Path(__file__).parent.parent
     / "_parameter_settings" / "visualizations_settings.json"
 )
 try:
     with _VIZ_SETTINGS_PATH.open() as _vf:
-        _GLOBAL_CMAP = json.load(_vf)["figures"]["cmap"]
+        _VIZ_SETTINGS = json.load(_vf)
+    _GLOBAL_CMAP = _VIZ_SETTINGS["figures"]["cmap"]
+    _MALE_COLORS = _VIZ_SETTINGS["male_colors"]
+    _FEMALE_COLORS = _VIZ_SETTINGS["female_colors"]
+    _UNASSIGNED_COLORS = _VIZ_SETTINGS["unassigned_colors"]
 except FileNotFoundError:
     _GLOBAL_CMAP = "inferno"
+    _MALE_COLORS = ["#9AC0CD", "#8CA252"]
+    _FEMALE_COLORS = ["#FF6347", "#B851B4"]
+    _UNASSIGNED_COLORS = ["#C0C0C0"]
 
 # Fraction of the figure width reserved on the right for the colorbar
 # column when ``plot_cbar`` is True; the colorbar itself is anchored to
@@ -1581,8 +1589,8 @@ HISTOGRAM_N_BINS = 36
 # Session-type bar-chart colors. Lone-male uses the project's male
 # color, female-female the female color, and male-female a desaturated
 # midpoint between them (50/50 male+female RGB blended 35% toward white).
-SESSION_TYPE_MALE_COLOR = "#9AC0CD"
-SESSION_TYPE_FEMALE_COLOR = "#FF6347"
+SESSION_TYPE_MALE_COLOR = _MALE_COLORS[0]
+SESSION_TYPE_FEMALE_COLOR = _FEMALE_COLORS[0]
 SESSION_TYPE_MALE_FEMALE_COLOR = "#DFB8B3"
 
 
@@ -2039,9 +2047,9 @@ def plot_session_type_usv_counts(
 # Default colors for the per-session USV timeline. Reuse the project
 # male/female palette; "unassigned" uses a neutral grey to read as
 # "no emitter identified".
-USV_TIMELINE_MALE_COLOR = "#9AC0CD"
-USV_TIMELINE_FEMALE_COLOR = "#FF6347"
-USV_TIMELINE_UNASSIGNED_COLOR = "#C0C0C0"
+USV_TIMELINE_MALE_COLOR = _MALE_COLORS[0]
+USV_TIMELINE_FEMALE_COLOR = _FEMALE_COLORS[0]
+USV_TIMELINE_UNASSIGNED_COLOR = _UNASSIGNED_COLORS[0]
 
 
 def _resolve_session_emitter_ids(session_root: str) -> tuple[str, str]:
@@ -3657,8 +3665,8 @@ def plot_embedding_with_category_thumbnails(
     ax_scatter.set_ylim(y_lo - y_pad, y_hi + y_pad)
     ax_scatter.set_box_aspect(1)
 
-    sex_male_color = "#9AC0CD"
-    sex_female_color = "#FF6347"
+    sex_male_color = _MALE_COLORS[0]
+    sex_female_color = _FEMALE_COLORS[0]
 
     # The four auxiliary panels in the bottom line are roughly a quarter the
     # linear size of the big top scatter. With the SAME ``scatter_df`` of points

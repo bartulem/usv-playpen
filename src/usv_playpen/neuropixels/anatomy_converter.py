@@ -48,7 +48,7 @@ from typing import Any
 
 import numpy as np
 
-from ..os_utils import resolve_data_root
+from ..os_utils import resolve_analyses_setting, resolve_data_root
 
 
 # Data-location defaults are configured in `analyses_settings.json` under
@@ -59,10 +59,17 @@ _DEFAULT_CONVERTER_PATH = resolve_data_root("converter_path")
 _DEFAULT_EPHYS_ROOT = resolve_data_root("ephys_root")
 _DEFAULT_HISTOLOGY_ROOT = resolve_data_root("histology_root")
 
-# Constant across all sessions in this dataset (user-confirmed). Update
-# this if a future probe is wired differently and the dict needs to be
-# per-session instead.
-_PROBE_TO_HEMISPHERE: dict[str, str] = {"imec0": "R", "imec1": "L"}
+# Per-probe hemisphere map and Kilosort version, read from
+# ``analyses_settings.json`` rather than hard-coded here, so they stay in sync
+# with the settings the rest of the neuropixels pipeline reads. The CLI
+# ``--probe-to-hemisphere`` flag still overrides the map per run; update the
+# JSON if a future probe is wired differently.
+_PROBE_TO_HEMISPHERE: dict[str, str] = dict(
+    resolve_analyses_setting("npx_histology_ibl_alignment_export", "probe_to_hemisphere")
+)
+_KILOSORT_VERSION: int = int(
+    resolve_analyses_setting("npx_spike_quality_metrics", "kilosort_version")
+)
 
 
 def _load_ibl_position_to_region(
@@ -302,7 +309,7 @@ def _regenerate_probe_block(
         ``(block, None)`` on success, or ``(None, reason)`` when skipped.
     """
 
-    ks_dir = ephys_root / f"{rec_date}_{probe}" / "kilosort4"
+    ks_dir = ephys_root / f"{rec_date}_{probe}" / f"kilosort{_KILOSORT_VERSION}"
     if not (ks_dir / "channel_positions.npy").exists():
         return None, f"{mouse_id}/{session_id}/{probe}: no channel_positions.npy"
     if probe not in probe_to_hemisphere:
@@ -583,6 +590,10 @@ def _cli() -> None:
         help="Root directory containing per-mouse IBL histology output.",
     )
     parser.add_argument(
+        "--probe-to-hemisphere", nargs="+", default=None, metavar="PROBE=HEMISPHERE",
+        help="Override the per-probe hemisphere map as space-separated PROBE=HEMISPHERE pairs (e.g. imec0=R imec1=L); defaults to analyses_settings.json.",
+    )
+    parser.add_argument(
         "--regenerate-all", action="store_true",
         help="Bulk-regenerate EVERY triple already in the converter (mutually exclusive with --mouse/--session/--probe).",
     )
@@ -608,6 +619,17 @@ def _cli() -> None:
     )
     args = parser.parse_args()
 
+    # Parse the optional PROBE=HEMISPHERE overrides into a dict; leaving it None
+    # lets the callees fall back to the settings-derived _PROBE_TO_HEMISPHERE.
+    probe_to_hemisphere = None
+    if args.probe_to_hemisphere is not None:
+        probe_to_hemisphere = {}
+        for pair in args.probe_to_hemisphere:
+            if "=" not in pair:
+                parser.error(f"--probe-to-hemisphere expects PROBE=HEMISPHERE pairs, got '{pair}'")
+            probe_key, hemisphere_value = pair.split("=", 1)
+            probe_to_hemisphere[probe_key] = hemisphere_value
+
     single = args.mouse is not None or args.session is not None or args.probe is not None
     if single and args.regenerate_all:
         parser.error("--regenerate-all cannot be combined with --mouse/--session/--probe")
@@ -620,6 +642,7 @@ def _cli() -> None:
             converter_path=args.converter_path,
             ephys_root=args.ephys_root,
             histology_root=args.histology_root,
+            probe_to_hemisphere=probe_to_hemisphere,
             dry_run=args.dry_run,
         )
     elif args.regenerate_all:
@@ -627,6 +650,7 @@ def _cli() -> None:
             converter_path=args.converter_path,
             ephys_root=args.ephys_root,
             histology_root=args.histology_root,
+            probe_to_hemisphere=probe_to_hemisphere,
             dry_run=args.dry_run,
         )
     else:

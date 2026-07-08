@@ -215,6 +215,14 @@
     "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/animal_id_model",
     "vcl_version": "vcl-ssl"
   },
+  "assign_vocalizations": {
+    "temperature": 1.0,
+    "grid_resolution": [100, 100],
+    "n_angle_bins": 46,
+    "n_samples": 500,
+    "confidence_level": 0.95,
+    "angle_pdf_seed": 0
+  },
   "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
   "generate_spectrograms": {
     "num_freq_bins": 128,
@@ -306,6 +314,7 @@
     "korobov_a": 76,
     "fib_m": 16,
     "time_stretch": false,
-    "masking_type": "sam"
+    "masking_type": "sam",
+    "target_shape": [128, 128]
   }
 }

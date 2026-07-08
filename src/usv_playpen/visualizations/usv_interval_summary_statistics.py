@@ -12,6 +12,7 @@ panels deviate as documented per function.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -767,15 +768,31 @@ def _draw_text_legend(
     )
 
 
-_COMPONENT_PALETTE: tuple[tuple[str, object], ...] = (
-    ("#1f77b4", "--"),
-    ("#ff7f0e", "-."),
-    ("#2ca02c", ":"),
-    ("#d62728", (0, (3, 1, 1, 1))),
-    ("#9467bd", (0, (5, 1))),
-    ("#8c564b", (0, (1, 1))),
-    ("#e377c2", (0, (3, 1, 1, 1, 1, 1))),
-    ("#7f7f7f", (0, (5, 2, 1, 2))),
+# Per-mixture-component line styles (dash patterns are code; the colours come
+# from the shared `component_colors` block of `visualizations_settings.json`).
+_COMPONENT_LINESTYLES: tuple[object, ...] = (
+    "--",
+    "-.",
+    ":",
+    (0, (3, 1, 1, 1)),
+    (0, (5, 1)),
+    (0, (1, 1)),
+    (0, (3, 1, 1, 1, 1, 1)),
+    (0, (5, 2, 1, 2)),
+)
+_VIZ_SETTINGS_PATH = (
+    Path(__file__).parent.parent / "_parameter_settings" / "visualizations_settings.json"
+)
+try:
+    with _VIZ_SETTINGS_PATH.open() as _vf:
+        _COMPONENT_COLORS = json.load(_vf)["component_colors"]
+except FileNotFoundError:
+    _COMPONENT_COLORS = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+        "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
+    ]
+_COMPONENT_PALETTE: tuple[tuple[str, object], ...] = tuple(
+    zip(_COMPONENT_COLORS, _COMPONENT_LINESTYLES)
 )
 
 

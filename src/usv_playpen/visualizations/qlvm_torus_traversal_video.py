@@ -81,7 +81,6 @@ _C_BLACK = "#000000"
 _C_GRAY = "#808080"
 _C_LIGHTGRAY = "#D3D3D3"
 _C_SUBTITLE = "#444444"
-_SPEC_CMAP = "inferno"
 
 
 def torus_forward(coords: np.ndarray) -> np.ndarray:
@@ -461,6 +460,12 @@ class QLVMTorusTraversalVideo:
                 )
             self.message_output(f"Pooled {n_samples} latents, {K} clusters ({clustering}).")
 
+            # Spectrogram colormap, read from the shared `figures.cmap` so it
+            # matches the rest of the repo rather than a module-level hard-coded
+            # "inferno". Resolved here (after the qlvm_dim validation) so a store
+            # lacking latents still surfaces that error first.
+            spec_cmap = self.input_parameter_dict['figures']['cmap']
+
             n_neighbors_max = min(max(m + 1, boundary_neighbors, 1), n_samples)
             nn_index = NearestNeighbors(n_neighbors=n_neighbors_max,
                                         algorithm="ball_tree").fit(torus_forward(pooled_coords))
@@ -607,7 +612,7 @@ class QLVMTorusTraversalVideo:
             nz = heatmap[heatmap > 0]
             vmax = float(np.percentile(nz, 95)) if nz.size else None
             ax_l.imshow(heatmap, origin='lower', extent=(0, 1, 0, 1),
-                        cmap=_SPEC_CMAP, vmin=0, vmax=vmax, aspect='equal')
+                        cmap=spec_cmap, vmin=0, vmax=vmax, aspect='equal')
             xx = np.linspace(0, 1, res)
             yy = np.linspace(0, 1, res)
             ax_l.contour(xx, yy, ws_labels, levels=np.arange(0.5, K + 1.5),
@@ -661,7 +666,7 @@ class QLVMTorusTraversalVideo:
                 """Initialise one tile axes: blank imshow + empty title; return (im, t)."""
                 ax.set_xticks([]); ax.set_yticks([])
                 _set_border(ax, _C_LIGHTGRAY, 0.5)
-                im = ax.imshow(np.zeros((spec_H, spec_W)), cmap=_SPEC_CMAP,
+                im = ax.imshow(np.zeros((spec_H, spec_W)), cmap=spec_cmap,
                                origin='lower', aspect='auto', vmin=0, vmax=1)
                 t = ax.set_title('', fontsize=fontsize, pad=1)
                 return im, t
