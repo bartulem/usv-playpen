@@ -19,14 +19,12 @@ EMAIL_TYPE="ALL"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen"
 
 NUM_USV_FILES=1
-SAMPLING_RATE=250
-SNIPPETS_DIR_PREFIX="female"
+PLAYBACK_SEX="female"
 TOTAL_PLAYBACK_TIME=1080
 
-# Inter-USV / inter-sequence interval distributions are no longer passed here:
-# they are reconstructed at generation time from the per-sex Student-t mixture
-# in the HDF5 interval archive (configured via naturalistic_iui_archive_h5 in
-# analyses_settings.json).
+# Real bouts are replayed from a per-sex naturalistic USV repository H5, configured
+# via male_repository_h5 / female_repository_h5 in analyses_settings.json; only the
+# sex (and the per-sex repository path) is selected -- no interval model here.
 
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
@@ -55,8 +53,7 @@ echo "" >> "$JOB_SCRIPT"
 echo "generate-naturalistic-usv-playback \\
     --exp-id \"$EXPERIMENTER_ID\" \\
     --num-naturalistic-usv-files $NUM_USV_FILES \\
-    --naturalistic-wav-sampling-rate $SAMPLING_RATE \\
-    --naturalistic-playback-snippets-dir-prefix \"$SNIPPETS_DIR_PREFIX\" \\
+    --playback-sex \"$PLAYBACK_SEX\" \\
     --total-playback-time $TOTAL_PLAYBACK_TIME" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #

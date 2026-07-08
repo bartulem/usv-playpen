@@ -808,7 +808,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 .. code-block:: json
 
     "crop_wav_files_to_video": {
-        "device_receiving_input": "m",
+        "device_receiving_input": "both",
         "triggerbox_ch_receiving_input": 4
       }
 

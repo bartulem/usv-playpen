@@ -314,11 +314,58 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "playback_seed": null
     }
 
+Build the naturalistic USV repository
+-------------------------------------
+Naturalistic playback replays **clean, real vocalizations**, so the vocalizations must first be reconstructed and stored in a **repository**. ``build-naturalistic-usv-repository`` reads one or more session lists, segments each emitter's USVs into their natural **bouts**, reconstructs every USV of every *complete* bout directly from its masked spectrogram (an inverse STFT of the SAM mask — it does **not** slice the raw recording, so detector noise is excluded), and writes the clean audio together with each bout's membership, emission order, real within-bout and between-bout gaps, and every per-USV acoustic feature (including ``mask_number``).
+
+Each run builds exactly **one (sex, social context) database**, chosen by ``context_label``. The **session lists you supply are the only filter** — the builder does not gate on experiment code, so you control coverage purely by which sessions you list. The output is written to::
+
+    <naturalistic_usv_repository_dir>/<sex>/naturalistic_usv_repository_<context>_<datestring>.h5
+
+where ``naturalistic_usv_repository_dir`` is configured once under the shared ``data_roots`` block, ``<sex>`` is ``male`` / ``female`` / ``mixed``, and ``<context>`` is the filename token (``courtship`` / ``same_sex`` / ``lone`` / ``mixed``). The datestring suffix means rebuilding a context never overwrites an earlier build, and each H5 also records the exact session lists it was built from (provenance). To run it from the command line, see :doc:`CLI`.
+
+The */usv-playpen/_parameter_settings/analyses_settings.json* ``build_naturalistic_usv_repository`` section:
+
+* **session_lists** : one or more text files (one session root directory per line) whose sessions this build draws from; this list is the *sole* selection of what enters the repository
+* **context_label** : which (sex, social context) database to build — one of ``courtship_male``, ``courtship_female``, ``lone_male``, ``lone_female``, ``same_sex_male``, ``same_sex_female``, ``mixed``. It sets three things at once: (1) *emitter handling* — a ``courtship_*`` build keeps only the target sex's attributed track (the two animals differ in sex), while ``same_sex_*`` / ``lone_*`` keep **every** USV labelled by that sex (no per-USV attribution needed), and ``mixed`` keeps every USV with no sex split; (2) the output *subdirectory* (``male`` / ``female`` / ``mixed``); and (3) the filename *context token*
+* **ibi_z_score** : how many standard deviations above the mean (in log inter-USV-interval space) a silent gap must be to count as a **bout boundary** — the split threshold is ``exp(μ + z·σ)`` (``2.58`` ≈ the 99.5th percentile of the one-sided cutoff), with the per-sex ``μ`` and ``σ`` taken from the modeling mixture model
+* **ibi_component_index** : which component of the per-sex log-inter-USV-interval mixture supplies that ``μ`` and ``σ`` (``0`` = the first / fastest component)
+* **min_vocalizations** : the fewest USVs a bout must contain to be kept (single-call bouts are dropped)
+* **length_threshold** : the maximum USV duration in spectrogram **time-bins** — a bout is discarded if any of its USVs is longer than this, since the stored mask is only 128 columns wide and would otherwise truncate the call
+* **min_duration** : the minimum USV duration in time-bins — a bout is discarded if any of its USVs is shorter
+* **mask_dilation** : grow the SAM mask by this many bins before inversion; ``0`` keeps the mask **tight** (dilation pulls in neighbouring energy and muddies the reconstruction)
+* **feather_sigma_time** : Gaussian sigma (in time-bins) of the **time-only** mask feather that softens each call's onset/offset to remove edge clicks (feathering is applied in time only — a frequency feather bleeds a halo above and below the call)
+* **fade_ms** : length (ms) of the raised-cosine onset/offset fade applied to each reconstructed USV (call-adaptive), removing any residual edge click
+* **peak_normalize** : if ``true``, peak-normalize every USV to a uniform level; if ``false``, preserve the calls' relative amplitudes
+* **peak_target_fraction** : the fraction of the int16 ceiling each peak-normalized snippet is scaled to (``0.85`` leaves headroom below clipping)
+
+The repository root itself lives under the shared ``data_roots`` block:
+
+* **naturalistic_usv_repository_dir** : the root directory holding the ``male`` / ``female`` / ``mixed`` subdirectories that the builds are written into and the playback step reads from
+
+.. code-block:: json
+
+    "build_naturalistic_usv_repository": {
+        "session_lists": [
+            "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
+        ],
+        "context_label": "courtship_female",
+        "ibi_z_score": 2.58,
+        "ibi_component_index": 0,
+        "min_vocalizations": 2,
+        "length_threshold": 128,
+        "min_duration": 1,
+        "mask_dilation": 0,
+        "feather_sigma_time": 0.8,
+        "fade_ms": 4.0,
+        "peak_normalize": true,
+        "peak_target_fraction": 0.85
+    }
+
 Create naturalistic playback .WAV
 ---------------------------------
-This function creates a .WAV file containing naturalistic sequences of USV snippets. The snippets are randomly selected from the female or male USV snippet repository in
-the specified directory and assembled into sequences with empirically derived inter-event intervals. The resulting .WAV file can be used for playback experiments.
-To achieve this in the GUI, select *Create naturalistic playback .WAV file* (no need to list root directories!), select total number of files to be created, number of vocalizations in each one, click *Next* and then *Analyze*:
+This function creates a .WAV file that replays **real vocalization bouts** drawn from a naturalistic USV repository (built by ``build-naturalistic-usv-repository``, above). Instead of stitching randomly-chosen single snippets, it replays whole recorded bouts in their natural emission order (``1-2-3-4-5-6``) with their real timing, so the playback reproduces natural USV sequences. The resulting .WAV file can be used for playback experiments.
+To achieve this in the GUI, select *Create naturalistic playback .WAV file* (no need to list root directories!), set the parameters described below — the **vocalization context** (a dropdown listing only the contexts that have actually been built), the **playback duration** and **number of files**, the optional **complexity steering** (a Yes/No dropdown plus threshold / start / end / bandwidth sliders that grey out when it is off), and the **playback seed** — then click *Next* and *Analyze*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_5.png
    :align: center
@@ -328,45 +375,48 @@ To achieve this in the GUI, select *Create naturalistic playback .WAV file* (no 
 
    <br>
 
-Inter-USV intervals (IUIs) and inter-sequence intervals (ISIs) are sampled from a sex-specific log-space Student-t mixture (mixture of Student's t-distributions) model fit to the empirical end-to-start (``e2s``) inter-USV interval distribution. The fitted model is read live from the HDF5 interval archive produced by the inter-USV interval analysis (see :doc:`Notebooks`) (the ``naturalistic_iui_archive_h5`` setting); the number of components ``K`` is the per-sex value the archive's bootstrap-LRT step-up procedure selected (``K_selected_<sex>``), so no component counts or parameters are hardcoded.
-Sex is inferred automatically from the ``naturalistic_playback_snippets_dir_prefix`` setting (e.g. ``"female"`` or ``"male"``). The reconstructed mixture (components sorted ascending by log-mean) is split into two roles:
+From ``context_label`` the generator opens the **newest** matching repository H5 under ``<naturalistic_usv_repository_dir>/<sex>/``, which holds the clean reconstructed audio plus the natural bout structure (which USVs belong to each bout, their order, and the real within-bout and between-bout gaps). It writes a fixed ``edge_silence_seconds`` lead-in silence, then repeats:
 
-* **ISI** is drawn from the *slowest* (longest-interval) component only — the long quiet pause between sequences
-* **IUI** is drawn from the pool of *all remaining (faster) components* (weights renormalised) — the short within-sequence gaps; pooling rather than using only the fastest breathing-expiration component keeps the full within-sequence interval mass (e.g. the female ~0.9 s component, which carries most of her mass)
-* **Sequence length** is drawn from N(13, 5) clipped to [3, 23] USVs
+* draw a random **intact bout** and append its USVs in their natural emission order, separated by their real within-bout **inter-USV intervals (IUI)** of silence
+* between bouts (not before the first), insert the drawn bout's real preceding **inter-sequence interval (ISI)** of silence — a session-first bout (no recorded pause) uses a sampled real ISI — **clipped to** ``max_isi_seconds`` so no single pause is huge
 
-Because the low-degrees-of-freedom Student-t components have heavy tails (a raw draw, once exponentiated, can exceed the entire playback file), every draw is reject-resampled to a per-sex ``[100 - clip_pct, clip_pct]`` percentile band (``naturalistic_interval_clip_pct``) before being exponentiated, so a single draw cannot emit an absurdly long silence.
+It keeps adding whole bouts, skipping any that (with the lead-out) would overrun the target, until the remaining time is too small; it then writes a fixed ``edge_silence_seconds`` lead-out silence. The within-bout and between-bout gaps are genuine recorded values (no interval model). Because the file is built of whole bouts framed by the fixed edge silences, it is **up to** ``total_acceptable_naturalistic_playback_time`` seconds — opening and closing on the edge silence and ending on a complete bout — rather than exactly that length.
 
-The analysis results in the creation of three files: [1] WAV file containing playback vocalizations, [2] a *spacing* text file informing you of the duration of each vocalization in order, and [3] a *usvids* text file containing the identity of each vocalization snippet if you need to go back and look at what it was:
+The three files are written into the ``naturalistic_usv_playback_dir`` directory configured under the shared ``data_roots`` block. The analysis creates: [1] the WAV file, [2] a *spacing* text file with the sample count of each chunk in order, and [3] a *usvids* text file with the identity of each chunk — ``<session>_usv<row>`` for a vocalization (so you can trace it back to the source session and USV), or ``ISI`` / ``IUI`` for a silence gap:
 
 .. parsed-literal::
 
-    /mnt/falkner/Bartul/usv_playback_experiments/naturalistic_usv_playback_files
+    /mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_files
     ├── **female_usv_playback_1080s_20250506_190808.wav**
     ├── **female_usv_playback_1080s_20250506_190808_spacing.txt**
     ├── **female_usv_playback_1080s_20250506_190808_usvids.txt**
     ...
 
-The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a section only partially modifiable in the GUI, but it can be modified manually:
+Every setting below is exposed in the GUI's *Create naturalistic playback .WAV* block: ``context_label`` is a dropdown (populated only with contexts that have a built repository); ``total_acceptable_naturalistic_playback_time``, ``num_naturalistic_usv_files`` and ``playback_seed`` are text fields; ``complexity_enabled`` is a Yes/No dropdown; and ``complexity_mask_threshold``, ``complexity_start_fraction``, ``complexity_end_fraction`` and ``complexity_bandwidth`` are sliders that grey out while complexity is disabled. The same values can equally be edited directly in *analyses_settings.json*:
 
-* **num_naturalistic_usv_files** : number of naturalistic playback files to be created
-* **naturalistic_wav_sampling_rate** : sampling rate of the playback .WAV file in kHz
-* **naturalistic_playback_snippets_dir_prefix** : prefix of the subdirectory where the USV snippets are stored (the rest of the subdirectory name should be ``"_usv_playback_snippets"``); also determines which sex-specific Student-t model is used (``"female"`` or ``"male"``)
-* **total_acceptable_naturalistic_playback_time** : total acceptable duration of the playback file (in s)
-* **naturalistic_iui_archive_h5** : path to the HDF5 interval archive (``usv_interval_analysis_*.h5``) produced by the inter-USV interval analysis (see :doc:`Notebooks`); the per-sex Student-t model is reconstructed from it at generation time
-* **naturalistic_interval_mode** : interval definition used for the gaps (``"e2s"`` = end-to-start, the physical silent gap between successive USVs)
-* **naturalistic_interval_clip_pct** : per-sex upper percentile for heavy-tail clipping, a ``{"male": ..., "female": ...}`` dict; each draw is reject-resampled into the ``[100 - clip_pct, clip_pct]`` percentile band of its sub-mixture
-* **playback_seed** : optional RNG seed for reproducible snippet selection and assembly; ``null`` draws a fresh random stimulus each run, an integer reproduces the same stimulus
+* **num_naturalistic_usv_files** : number of naturalistic playback files to create in one run (with a fixed ``playback_seed`` the files differ from one another but the whole set is reproducible)
+* **context_label** : which repository to play back — one of ``courtship_male``, ``courtship_female``, ``lone_male``, ``lone_female``, ``same_sex_male``, ``same_sex_female``, ``mixed``. It selects the sex subdirectory and context token, and the playback always opens the **newest** matching build in that directory (no explicit file path); the chosen sex also prefixes the output filenames
+* **total_acceptable_naturalistic_playback_time** : the target duration of the playback file (in s); since the file is assembled from whole bouts framed by the fixed edge silences, the result is *up to* this length (a little under), ending on a complete bout
+* **complexity_enabled** : master switch for complexity steering. If ``false`` (default) bouts are drawn **uniformly at random** (the natural mix) and the remaining ``complexity_*`` settings are inert; if ``true`` the draws are biased by call complexity
+* **complexity_mask_threshold** : with steering on, a USV is *complex* if its ``mask_number`` (count of SAM masks) is ``>=`` this value (``2`` = multi-component), else *simple*
+* **complexity_start_fraction** / **complexity_end_fraction** : the target fraction of *complex* USVs at the **start** and **end** of the file (0–1), interpolated linearly across the file position. Equal values hold a constant simple:complex ratio (e.g. ``1.0 / 1.0`` = all-complex throughout); unequal values are a ramp — ``0.0 → 1.0`` starts simple and grows more complex. Because bouts are drawn with replacement, a target is met by repeating complex-heavy bouts as needed (whole bouts, natural order preserved), bounded by what the available bouts contain; the achieved ratio and number of distinct bouts used are logged
+* **complexity_bandwidth** : the width (standard deviation, in complex-fraction units) of the Gaussian that weights each bout by how far its own complex-fraction sits from the current target. **Smaller** (e.g. ``0.05``) steers tightly to the target but from a narrow pool of bouts (more repetition); **larger** (e.g. ``0.5``) keeps more variety but tracks the target more loosely. The default ``0.15`` is a moderate middle
+* **edge_silence_seconds** : fixed silence written at the very start and very end of the file (s), so it opens and closes on a short, constant gap rather than a variable (or truncated) real pause. Default ``1.0``
+* **max_isi_seconds** : each inserted inter-bout pause (ISI) is clipped to at most this many seconds, so a single unusually long recorded gap cannot drop a giant silence into the file. Default ``12.6`` (a typical courtship inter-bout gap)
+* **playback_seed** : RNG seed for the bout draws; ``null`` draws a fresh random stimulus every run (non-reproducible), an integer reproduces the exact same file(s)
 
 .. code-block:: json
 
     "create_naturalistic_usv_playback_wav": {
         "num_naturalistic_usv_files": 1,
-        "naturalistic_wav_sampling_rate": 250,
-        "naturalistic_playback_snippets_dir_prefix": "female",
-        "total_acceptable_naturalistic_playback_time": 1080,
-        "naturalistic_iui_archive_h5": "/mnt/falkner/Bartul/modeling/usv_interval_results/usv_interval_analysis_20260501_193959.h5",
-        "naturalistic_interval_mode": "e2s",
-        "naturalistic_interval_clip_pct": { "male": 99.0, "female": 97.0 },
+        "context_label": "courtship_male",
+        "total_acceptable_naturalistic_playback_time": 60,
+        "complexity_enabled": false,
+        "complexity_mask_threshold": 2,
+        "complexity_start_fraction": 0.0,
+        "complexity_end_fraction": 1.0,
+        "complexity_bandwidth": 0.15,
+        "edge_silence_seconds": 1.0,
+        "max_isi_seconds": 12.6,
         "playback_seed": null
     }

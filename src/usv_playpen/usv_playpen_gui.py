@@ -65,7 +65,8 @@ from PyQt6.QtWidgets import (
 )
 
 from .analyses.analyze_data import Analyst
-from .os_utils import configure_path, rebase_experimenter_in_paths
+from .analyses.generate_audio_files import _PLAYBACK_CONTEXTS
+from .os_utils import configure_path, rebase_experimenter_in_paths, resolve_data_root
 from .processing.preprocess_data import Stylist
 from .recording.behavioral_experiments import ExperimentController
 from .visualizations.visualize_data import Visualizer
@@ -4050,7 +4051,7 @@ class USVPlaypenWindow(QMainWindow):
         self.AnalysesSettings = AnalysesSettings(self)
         self.setWindowTitle(f'{app_name} (Analyze data > Settings)')
         self.setCentralWidget(self.AnalysesSettings)
-        analyze_one_x, analyze_one_y = (770, 735)
+        analyze_one_x, analyze_one_y = (745, 745)
         self.setFixedSize(analyze_one_x, analyze_one_y)
 
         analyses_dir_label = QLabel('(*) Root directories for analyses', self.AnalysesSettings)
@@ -4173,6 +4174,8 @@ class USVPlaypenWindow(QMainWindow):
         self.frequency_shift_audio_dir_list = sorted(['cropped_to_video', 'hpss', 'hpss_filtered'], key=lambda x: x == self.analyses_input_dict['frequency_shift_audio_segment']['fs_audio_dir'], reverse=True)
         self.frequency_shift_audio_dir_cb = QComboBox(self.AnalysesSettings)
         self.frequency_shift_audio_dir_cb.addItems(self.frequency_shift_audio_dir_list)
+        # keep the closed box narrow but let the dropdown popup show full labels
+        self.frequency_shift_audio_dir_cb.view().setMinimumWidth(max((self.frequency_shift_audio_dir_cb.fontMetrics().horizontalAdvance(_fs) for _fs in self.frequency_shift_audio_dir_list), default=0) + 30)
         self.frequency_shift_audio_dir_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.frequency_shift_audio_dir_cb.activated.connect(partial(self._combo_box_fs_audio_dir, variable_id='fs_audio_dir'))
         self.frequency_shift_audio_dir_cb.move(analyses_col_two_x2, 70)
@@ -4274,15 +4277,21 @@ class USVPlaypenWindow(QMainWindow):
         self.create_naturalistic_usv_playback_wav_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='create_naturalistic_usv_playback_wav_cb_bool'))
         self.create_naturalistic_usv_playback_wav_cb.move(analyses_col_two_x2, 400)
 
-        num_naturalistic_usv_files_label = QLabel('Number of playback files:', self.AnalysesSettings)
-        num_naturalistic_usv_files_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        num_naturalistic_usv_files_label.move(analyses_col_two_x1, 430)
-        self.num_naturalistic_usv_files = QLineEdit(f"{self.analyses_input_dict['create_naturalistic_usv_playback_wav']['num_naturalistic_usv_files']}", self.AnalysesSettings)
-        self.num_naturalistic_usv_files.setFont(QFont(self.font_id, 10 + self.font_size_increase))
-        self.num_naturalistic_usv_files.setStyleSheet('QLineEdit { width: 85px; }')
-        self.num_naturalistic_usv_files.move(analyses_col_two_x2, 432)
+        playback_context_label = QLabel('Choose vocalization context:', self.AnalysesSettings)
+        playback_context_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        playback_context_label.move(analyses_col_two_x1, 430)
+        self.playback_context_list = sorted(self._available_playback_contexts(), key=lambda x: x == self.analyses_input_dict['create_naturalistic_usv_playback_wav']['context_label'], reverse=True)
+        self.playback_context_cb = QComboBox(self.AnalysesSettings)
+        self.playback_context_cb.addItems(self.playback_context_list)
+        # keep the closed box narrow (user preference) but let the dropdown popup show full labels
+        self.playback_context_cb.view().setMinimumWidth(max((self.playback_context_cb.fontMetrics().horizontalAdvance(_ctx) for _ctx in self.playback_context_list), default=0) + 30)
+        self.playback_context_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.playback_context_cb.activated.connect(partial(self._combo_box_playback_context, variable_id='playback_context'))
+        self.playback_context_cb.move(analyses_col_two_x2, 430)
+        # keep the stored context in sync with the (built-only) dropdown's default selection
+        self.playback_context = self.playback_context_list[0]
 
-        total_playback_file_duration_label = QLabel('Total playback file duration (s):', self.AnalysesSettings)
+        total_playback_file_duration_label = QLabel('Playback duration (s):', self.AnalysesSettings)
         total_playback_file_duration_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         total_playback_file_duration_label.move(analyses_col_two_x1, 460)
         self.total_playback_file_duration = QLineEdit(f"{self.analyses_input_dict['create_naturalistic_usv_playback_wav']['total_acceptable_naturalistic_playback_time']}", self.AnalysesSettings)
@@ -4290,15 +4299,78 @@ class USVPlaypenWindow(QMainWindow):
         self.total_playback_file_duration.setStyleSheet('QLineEdit { width: 85px; }')
         self.total_playback_file_duration.move(analyses_col_two_x2, 462)
 
-        preferred_mouse_sex_label = QLabel('Sex of USV emitter:', self.AnalysesSettings)
-        preferred_mouse_sex_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        preferred_mouse_sex_label.move(analyses_col_two_x1, 490)
-        self.preferred_mouse_sex_list = sorted(['combined', 'male', 'female'], key=lambda x: x == self.analyses_input_dict['create_naturalistic_usv_playback_wav']['naturalistic_playback_snippets_dir_prefix'], reverse=True)
-        self.preferred_mouse_sex_cb = QComboBox(self.AnalysesSettings)
-        self.preferred_mouse_sex_cb.addItems(self.preferred_mouse_sex_list)
-        self.preferred_mouse_sex_cb.setStyleSheet('QComboBox { width: 57px; }')
-        self.preferred_mouse_sex_cb.activated.connect(partial(self._combo_box_preferred_mouse_sex, variable_id='preferred_mouse_sex'))
-        self.preferred_mouse_sex_cb.move(analyses_col_two_x2, 490)
+        num_naturalistic_usv_files_label = QLabel('Number of generated files:', self.AnalysesSettings)
+        num_naturalistic_usv_files_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        num_naturalistic_usv_files_label.move(analyses_col_two_x1, 490)
+        self.num_naturalistic_usv_files = QLineEdit(f"{self.analyses_input_dict['create_naturalistic_usv_playback_wav']['num_naturalistic_usv_files']}", self.AnalysesSettings)
+        self.num_naturalistic_usv_files.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.num_naturalistic_usv_files.setStyleSheet('QLineEdit { width: 85px; }')
+        self.num_naturalistic_usv_files.move(analyses_col_two_x2, 492)
+
+        complexity_enabled_label = QLabel('Complexity enabled:', self.AnalysesSettings)
+        complexity_enabled_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        complexity_enabled_label.move(analyses_col_two_x1, 520)
+        self.complexity_enabled_cb = QComboBox(self.AnalysesSettings)
+        self.complexity_enabled_cb.addItems(['Yes', 'No'] if self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_enabled'] else ['No', 'Yes'])
+        self.complexity_enabled_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.complexity_enabled_cb.activated.connect(self._update_complexity_enabled_state)
+        self.complexity_enabled_cb.move(analyses_col_two_x2, 520)
+
+        self.complexity_mask_threshold_label = QLabel(f"Complexity threshold ({self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_mask_threshold']}):", self.AnalysesSettings)
+        self.complexity_mask_threshold_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        self.complexity_mask_threshold_label.setFixedWidth(255)
+        self.complexity_mask_threshold_label.move(analyses_col_two_x1, 550)
+        self.complexity_mask_threshold_slider = QSlider(Qt.Orientation.Horizontal, self.AnalysesSettings)
+        self.complexity_mask_threshold_slider.setFixedWidth(87)
+        self.complexity_mask_threshold_slider.setRange(2, 6)
+        self.complexity_mask_threshold_slider.setValue(int(self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_mask_threshold']))
+        self.complexity_mask_threshold_slider.valueChanged.connect(partial(self._update_naturalistic_slider_label, label_widget=self.complexity_mask_threshold_label, prefix='Complexity threshold', fraction=False))
+        self.complexity_mask_threshold_slider.move(analyses_col_two_x2, 553)
+
+        self.complexity_start_fraction_label = QLabel(f"Start fraction ({self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_start_fraction']:.2f}):", self.AnalysesSettings)
+        self.complexity_start_fraction_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        self.complexity_start_fraction_label.setFixedWidth(255)
+        self.complexity_start_fraction_label.move(analyses_col_two_x1, 580)
+        self.complexity_start_fraction_slider = QSlider(Qt.Orientation.Horizontal, self.AnalysesSettings)
+        self.complexity_start_fraction_slider.setFixedWidth(87)
+        self.complexity_start_fraction_slider.setRange(0, 100)
+        self.complexity_start_fraction_slider.setValue(round(self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_start_fraction'] * 100))
+        self.complexity_start_fraction_slider.valueChanged.connect(partial(self._update_naturalistic_slider_label, label_widget=self.complexity_start_fraction_label, prefix='Start fraction', fraction=True))
+        self.complexity_start_fraction_slider.move(analyses_col_two_x2, 583)
+
+        self.complexity_end_fraction_label = QLabel(f"End fraction ({self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_end_fraction']:.2f}):", self.AnalysesSettings)
+        self.complexity_end_fraction_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        self.complexity_end_fraction_label.setFixedWidth(255)
+        self.complexity_end_fraction_label.move(analyses_col_two_x1, 610)
+        self.complexity_end_fraction_slider = QSlider(Qt.Orientation.Horizontal, self.AnalysesSettings)
+        self.complexity_end_fraction_slider.setFixedWidth(87)
+        self.complexity_end_fraction_slider.setRange(0, 100)
+        self.complexity_end_fraction_slider.setValue(round(self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_end_fraction'] * 100))
+        self.complexity_end_fraction_slider.valueChanged.connect(partial(self._update_naturalistic_slider_label, label_widget=self.complexity_end_fraction_label, prefix='End fraction', fraction=True))
+        self.complexity_end_fraction_slider.move(analyses_col_two_x2, 613)
+
+        self.complexity_bandwidth_label = QLabel(f"Steering bandwidth ({self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_bandwidth']:.2f}):", self.AnalysesSettings)
+        self.complexity_bandwidth_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        self.complexity_bandwidth_label.setFixedWidth(255)
+        self.complexity_bandwidth_label.move(analyses_col_two_x1, 640)
+        self.complexity_bandwidth_slider = QSlider(Qt.Orientation.Horizontal, self.AnalysesSettings)
+        self.complexity_bandwidth_slider.setFixedWidth(87)
+        self.complexity_bandwidth_slider.setRange(0, 100)
+        self.complexity_bandwidth_slider.setValue(round(self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_bandwidth'] * 100))
+        self.complexity_bandwidth_slider.valueChanged.connect(partial(self._update_naturalistic_slider_label, label_widget=self.complexity_bandwidth_label, prefix='Steering bandwidth', fraction=True))
+        self.complexity_bandwidth_slider.move(analyses_col_two_x2, 643)
+
+        playback_seed_label = QLabel('Playback seed (blank=random):', self.AnalysesSettings)
+        playback_seed_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        playback_seed_label.move(analyses_col_two_x1, 670)
+        _playback_seed_value = self.analyses_input_dict['create_naturalistic_usv_playback_wav']['playback_seed']
+        self.playback_seed_edit = QLineEdit('' if _playback_seed_value is None else f"{_playback_seed_value}", self.AnalysesSettings)
+        self.playback_seed_edit.setFont(QFont(self.font_id, 10 + self.font_size_increase))
+        self.playback_seed_edit.setStyleSheet('QLineEdit { width: 85px; }')
+        self.playback_seed_edit.move(analyses_col_two_x2, 672)
+
+        # Grey out the complexity sliders when complexity steering is off.
+        self._update_complexity_enabled_state()
 
         self._create_buttons_analyze(seq=0, class_option=self.AnalysesSettings,
                                      button_pos_y=analyze_one_y - 35, next_button_x_pos=analyze_one_x - 100)
@@ -4400,7 +4472,14 @@ class USVPlaypenWindow(QMainWindow):
 
         self.analyses_input_dict['create_naturalistic_usv_playback_wav']['num_naturalistic_usv_files'] = int(_safe_literal_eval(self.num_naturalistic_usv_files.text()))
         self.analyses_input_dict['create_naturalistic_usv_playback_wav']['total_acceptable_naturalistic_playback_time'] = int(_safe_literal_eval(self.total_playback_file_duration.text()))
-        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['naturalistic_playback_snippets_dir_prefix'] = self.preferred_mouse_sex
+        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['context_label'] = self.playback_context
+        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_enabled'] = self.complexity_enabled_cb.currentText() == 'Yes'
+        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_mask_threshold'] = self.complexity_mask_threshold_slider.value()
+        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_start_fraction'] = self.complexity_start_fraction_slider.value() / 100.0
+        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_end_fraction'] = self.complexity_end_fraction_slider.value() / 100.0
+        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['complexity_bandwidth'] = self.complexity_bandwidth_slider.value() / 100.0
+        _naturalistic_seed_text = self.playback_seed_edit.text().strip()
+        self.analyses_input_dict['create_naturalistic_usv_playback_wav']['playback_seed'] = int(_naturalistic_seed_text) if _naturalistic_seed_text else None
 
         self.analyses_input_dict['frequency_shift_audio_segment']['fs_audio_dir'] = self.fs_audio_dir
         self.analyses_input_dict['frequency_shift_audio_segment']['fs_device_id'] = self.fs_device_id
@@ -4430,7 +4509,7 @@ class USVPlaypenWindow(QMainWindow):
         self.VisualizationsSettings = VisualizationsSettings(self)
         self.setWindowTitle(f'{app_name} (Visualize data > Settings)')
         self.setCentralWidget(self.VisualizationsSettings)
-        visualize_one_x, visualize_one_y = (1180, 740)
+        visualize_one_x, visualize_one_y = (1155, 715)
         self.setFixedSize(visualize_one_x, visualize_one_y)
 
         visualizations_dir_label = QLabel('(*) Root directories for visualizations', self.VisualizationsSettings)
@@ -5645,13 +5724,15 @@ class USVPlaypenWindow(QMainWindow):
                 break
 
 
-    def _combo_box_preferred_mouse_sex(self,
-                                       index: int,
-                                       variable_id: str = None) -> None:
+    def _combo_box_playback_context(self,
+                                    index: int,
+                                    variable_id: str = None) -> None:
         """
         Description
         -----------
-        Preferred sex of the mouse which produced USVs.
+        Selected naturalistic playback context label (a (sex, social context) pair such as
+        ``courtship_female`` or ``lone_male``); it picks the sex subdirectory and context
+        of the repository the playback draws bouts from.
 
         Parameters
         ----------
@@ -5665,10 +5746,95 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        for idx in range(len(self.preferred_mouse_sex_list)):
+        for idx in range(len(self.playback_context_list)):
             if index == idx:
-                self.__dict__[variable_id] = self.preferred_mouse_sex_list[idx]
+                self.__dict__[variable_id] = self.playback_context_list[idx]
                 break
+
+    def _update_naturalistic_slider_label(self, value: int, label_widget=None, prefix: str = '', fraction: bool = False) -> None:
+        """
+        Description
+        -----------
+        Live-updates a naturalistic-playback slider's label to show its current value as the
+        user drags it. Fraction sliders (range 0-100) are shown as 0.00-1.00; the
+        mask-threshold slider is shown as its integer value.
+
+        Parameters
+        ----------
+        value (int)
+            The slider's current integer value (emitted by valueChanged).
+        label_widget (QLabel)
+            The label to update in place.
+        prefix (str)
+            The text before the value, e.g. 'Start fraction'.
+        fraction (bool)
+            If True, display value/100 as a 2-decimal fraction; else the integer value.
+
+        Returns
+        -------
+        None
+        """
+
+        shown = f"{value / 100:.2f}" if fraction else f"{value}"
+        label_widget.setText(f"{prefix} ({shown}):")
+
+    def _update_complexity_enabled_state(self, *_args) -> None:
+        """
+        Description
+        -----------
+        Enable the complexity-steering sliders (threshold, start/end fraction, bandwidth)
+        and their labels only when ``Complexity enabled`` is 'Yes'; grey them out otherwise,
+        since they have no effect when steering is off.
+
+        Parameters
+        ----------
+        *_args
+            Ignored positional args (the combo ``activated`` signal passes an index this slot
+            does not use).
+
+        Returns
+        -------
+        None
+        """
+
+        complexity_enabled = self.complexity_enabled_cb.currentText() == 'Yes'
+        for label_widget, slider_widget in (
+            (self.complexity_mask_threshold_label, self.complexity_mask_threshold_slider),
+            (self.complexity_start_fraction_label, self.complexity_start_fraction_slider),
+            (self.complexity_end_fraction_label, self.complexity_end_fraction_slider),
+            (self.complexity_bandwidth_label, self.complexity_bandwidth_slider),
+        ):
+            label_widget.setEnabled(complexity_enabled)
+            slider_widget.setEnabled(complexity_enabled)
+
+    def _available_playback_contexts(self) -> list:
+        """
+        Description
+        -----------
+        Return the naturalistic playback context labels that actually have a built repository
+        on disk, by globbing ``<naturalistic_usv_repository_dir>/<sex>/`` for each context's
+        ``naturalistic_usv_repository_<token>_*.h5``. The playback-context dropdown offers only
+        these, so a user cannot select a context that has not been built. Falls back to every
+        context if the repository root cannot be resolved or nothing is found (fail-open, so a
+        transient mount issue does not empty the dropdown; the run-time FileNotFoundError from
+        the generator remains the backstop).
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        available (list)
+            Context labels with at least one built repository (or all labels as a fallback).
+        """
+
+        try:
+            repository_root = resolve_data_root('naturalistic_usv_repository_dir')
+        except Exception:
+            return list(_PLAYBACK_CONTEXTS)
+        available = [label for label, (token, sex) in _PLAYBACK_CONTEXTS.items()
+                     if any((repository_root / sex).glob(f'naturalistic_usv_repository_{token}_*.h5'))]
+        return available or list(_PLAYBACK_CONTEXTS)
 
     def _combo_box_fs_audio_dir(self,
                                 index: int,
@@ -7402,7 +7568,7 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
                            '21369048_rec_checkbox_bool': True if '21369048' in _toml['video']['general']['expected_cameras'] else False,
                            '22085397_rec_checkbox_bool': True if '22085397' in _toml['video']['general']['expected_cameras'] else False,
                            '21241563_rec_checkbox_bool': True if '21241563' in _toml['video']['general']['expected_cameras'] else False,
-                           'create_naturalistic_usv_playback_wav_cb_bool': False, 'preferred_mouse_sex': analyses_input_dict['create_naturalistic_usv_playback_wav']['naturalistic_playback_snippets_dir_prefix']}
+                           'create_naturalistic_usv_playback_wav_cb_bool': False, 'playback_context': analyses_input_dict['create_naturalistic_usv_playback_wav']['context_label']}
 
     # Seed each lab's destination checkbox directly from the persisted selection
     # (the only recording-destination state stored now); no drive-letter matching.

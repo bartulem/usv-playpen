@@ -1,6 +1,6 @@
 {
   "analyses_booleans": {
-    "compute_behavioral_features_bool": true,
+    "compute_behavioral_features_bool": false,
     "compute_neuronal_tuning_bool": false,
     "compute_inter_usv_interval_distributions_bool": false,
     "create_usv_playback_wav_bool": false,
@@ -18,7 +18,9 @@
     "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
     "aggregator_out_dir": "/mnt/falkner/Bartul/neuronal_tuning",
     "allen_meshes_dir": "/mnt/falkner/Bartul/EPHYS/allen_meshes",
-    "converter_path": "/mnt/falkner/Bartul/EPHYS/neuropixels_sites_to_anatomy_converter.json"
+    "converter_path": "/mnt/falkner/Bartul/EPHYS/neuropixels_sites_to_anatomy_converter.json",
+    "naturalistic_usv_repository_dir": "/mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_repositories",
+    "naturalistic_usv_playback_dir": "/mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_files"
   },
   "compute_behavioral_features": {
     "head_points": ["Head", "Ear_R", "Ear_L", "Nose"],
@@ -43,9 +45,12 @@
     "cv_n_folds": 5,
     "cv_n_init": 5,
     "mixture_model_n_init": 10,
-    "mixture_model_reg_covar": 1e-4,
+    "mixture_model_reg_covar": 0.0001,
     "tau": 0.5,
-    "bins_per_sex": { "male": 80, "female": 30 },
+    "bins_per_sex": {
+      "male": 80,
+      "female": 30
+    },
     "plot_log_xlims": [-5.0, 5.0],
     "model_class": "t",
     "bootstrap_lrt_B": 1000,
@@ -69,13 +74,32 @@
   },
   "create_naturalistic_usv_playback_wav": {
     "num_naturalistic_usv_files": 1,
-    "naturalistic_wav_sampling_rate": 250,
-    "naturalistic_playback_snippets_dir_prefix": "female",
-    "total_acceptable_naturalistic_playback_time": 1080,
-    "naturalistic_iui_archive_h5": "/mnt/falkner/Bartul/modeling/usv_interval_results/usv_interval_analysis_20260501_193959.h5",
-    "naturalistic_interval_mode": "e2s",
-    "naturalistic_interval_clip_pct": { "male": 99.0, "female": 97.0 },
+    "context_label": "courtship_male",
+    "total_acceptable_naturalistic_playback_time": 60,
+    "complexity_enabled": false,
+    "complexity_mask_threshold": 2,
+    "complexity_start_fraction": 0.0,
+    "complexity_end_fraction": 1.0,
+    "complexity_bandwidth": 0.15,
+    "edge_silence_seconds": 1.0,
+    "max_isi_seconds": 12.6,
     "playback_seed": null
+  },
+  "build_naturalistic_usv_repository": {
+    "session_lists": [
+      "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
+    ],
+    "context_label": "courtship_female",
+    "ibi_z_score": 2.58,
+    "ibi_component_index": 0,
+    "min_vocalizations": 2,
+    "length_threshold": 128,
+    "min_duration": 1,
+    "mask_dilation": 0,
+    "feather_sigma_time": 0.8,
+    "fade_ms": 4.0,
+    "peak_normalize": true,
+    "peak_target_fraction": 0.85
   },
   "create_usv_playback_wav": {
     "num_usv_files": 1,

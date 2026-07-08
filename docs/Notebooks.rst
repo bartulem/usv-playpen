@@ -1980,7 +1980,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
     plt.show()
 
 * **spectrogram_session_root** — a session directory holding a ``*_int16.mmap*`` audio file (and, for stitched mode, a ``*_usv_summary.csv`` 1:1 with the consolidated h5 entries). All other spectrogram knobs (mode, channel, ``time_window``, ``freq_limits``, ``nfft``, colorbar, save) live in the ``make_usv_spectrograms`` block of ``visualizations_settings.json``; override them on ``vis_settings``.
-* **spectrogram_cmap_choice** — ``'female'`` / ``'male'`` selects the matching per-sex colormap; ``None`` falls back to ``vis_settings['make_usv_spectrograms']['spectrogram_cmap']``.
+* **spectrogram_cmap_choice** — ``'female'`` / ``'male'`` selects the matching per-sex colormap; ``None`` falls back to the project-wide ``vis_settings['figures']['cmap']``.
 
 **Cross-session summaries.** The second part pools many sessions. Its three ``make_usv_spectrograms`` helper figures each carry their own parameters (still the per-figure half of the hybrid layout); all three share the same noise filter, ``noise_col_id = 'vae_supercategory'`` with ``noise_categories = (0,)``, which drops noise rows before plotting.
 

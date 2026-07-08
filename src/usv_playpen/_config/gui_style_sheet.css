@@ -77,3 +77,6 @@ QSlider:handle {
 QSlider:handle:hover {
   background: #000000;
 }
+QSlider:handle:disabled {
+  background-color: #cccccc;
+}

@@ -132,6 +132,7 @@ generate-usv-spectrograms = "usv_playpen.processing.generate_spectrograms:genera
 generate-usv-masks = "usv_playpen.processing.generate_masks:generate_masks_cli"
 generate-usv-acoustic-features = "usv_playpen.processing.compute_usv_acoustic_features:compute_usv_acoustic_features_cli"
 build-qlvm-training-set = "usv_playpen.processing.build_qlvm_training_set:build_qlvm_training_set_cli"
+build-naturalistic-usv-repository = "usv_playpen.analyses.build_naturalistic_usv_repository:build_naturalistic_usv_repository_cli"
 train-qlvm = "usv_playpen.processing.train_qlvm:train_qlvm_cli"
 export-yolo-dataset = "usv_playpen.processing.export_yolo_dataset:export_yolo_dataset_cli"
 train-masks = "usv_playpen.processing.train_masks:train_masks_cli"

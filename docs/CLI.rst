@@ -717,15 +717,51 @@ Analyze
         --wav-sampling-rate          Sampling rate for the output WAV file (in kHz).
         --playback-snippets-dir      Directory of USV playback snippets.
 
+``build-naturalistic-usv-repository``
+``build-naturalistic-usv-repository`` is the command-line interface for building one naturalistic USV repository — the clean, reconstructed vocalizations that naturalistic playback replays (see the *Build the naturalistic USV repository* section of :doc:`Analyze` for the full explanation of every parameter).
+
+.. code-block:: text
+
+    usage: build-naturalistic-usv-repository [-h] [--session-list PATH]
+                                             [--context-label {courtship_male,courtship_female,lone_male,lone_female,same_sex_male,same_sex_female,mixed}]
+                                             [--ibi-z-score FLOAT] [--ibi-component-index INTEGER]
+                                             [--min-vocalizations INTEGER] [--length-threshold INTEGER]
+                                             [--min-duration INTEGER] [--mask-dilation INTEGER]
+                                             [--feather-sigma-time FLOAT] [--fade-ms FLOAT]
+                                             [--peak-normalize | --no-peak-normalize] [--peak-target-fraction FLOAT]
+
+    optional arguments:
+        -h, --help                                    Show this help message and exit.
+        --session-list                                Text file of session root directories (one per line); repeatable. These lists are the sole selection of what enters the repository.
+        --context-label                               Which (sex, social context) database to build; drives emitter handling, output subdirectory, and the filename token.
+        --ibi-z-score                                 z-score for the bout-boundary threshold exp(mu + z*sd).
+        --ibi-component-index                         Per-sex mixture component index used for the bout threshold.
+        --min-vocalizations                           Minimum USVs for a bout to be kept.
+        --length-threshold                            Drop a bout if any USV is longer than this (spectrogram time-bins).
+        --min-duration                                Drop a bout if any USV is shorter than this (time-bins).
+        --mask-dilation                               Grow the SAM mask by this many bins before inversion (0 = tight).
+        --feather-sigma-time                          Gaussian sigma (time-bins) of the time-only mask feather.
+        --fade-ms                                     Raised-cosine onset/offset fade length (ms).
+        --peak-normalize/--no-peak-normalize          Peak-normalize each USV to a uniform level, or preserve relative amplitude.
+        --peak-target-fraction                        Fraction of the int16 ceiling each peak-normalized snippet is scaled to.
+
+The output directory is not a CLI option: it is ``naturalistic_usv_repository_dir`` under the ``data_roots`` block of *analyses_settings.json*, and each run writes ``<dir>/<sex>/naturalistic_usv_repository_<context>_<datestring>.h5``.
+
 ``generate-naturalistic-usv-playback``
 ``generate-naturalistic-usv-playback`` is the command-line interface for generating naturalistic USV playback files.
 
 .. code-block:: text
 
     usage: generate-naturalistic-usv-playback [-h] --exp-id TEXT [--num-naturalistic-usv-files INTEGER]
-                                              [--naturalistic-wav-sampling-rate INTEGER]
+                                              [--context-label {courtship_male,courtship_female,lone_male,lone_female,same_sex_male,same_sex_female,mixed}]
                                               [--total-playback-time INTEGER]
-                                              [--naturalistic-playback-snippets-dir-prefix TEXT]
+                                              [--complexity-enabled | --no-complexity-enabled]
+                                              [--complexity-mask-threshold INTEGER]
+                                              [--complexity-start-fraction FLOAT]
+                                              [--complexity-end-fraction FLOAT]
+                                              [--complexity-bandwidth FLOAT]
+                                              [--edge-silence-seconds FLOAT]
+                                              [--max-isi-seconds FLOAT]
 
     required arguments:
         --exp-id                                      Experimenter ID.
@@ -733,11 +769,17 @@ Analyze
     optional arguments:
         -h, --help                                    Show this help message and exit.
         --num-naturalistic-usv-files                  Number of naturalistic playback files to be created.
-        --naturalistic-wav-sampling-rate              Sampling rate of the naturalistic playback .WAV file in kHz.
-        --naturalistic-playback-snippets-dir-prefix   Prefix of the snippet subdirectory (the rest of its name should be "_usv_playback_snippets".
-        --total-playback-time                         Total acceptable time of the playback time (in s).
+        --context-label                               Which (sex, social context) repository to play back; the newest matching build is used.
+        --total-playback-time                         Total acceptable duration of the playback file (in s).
+        --complexity-enabled/--no-complexity-enabled  Steer bout draws toward a target call complexity (else uniform).
+        --complexity-mask-threshold                   A USV is complex if its mask_number is >= this (default 2).
+        --complexity-start-fraction                   Target complex-USV fraction at the START of the file (0-1).
+        --complexity-end-fraction                     Target complex-USV fraction at the END of the file (0-1); differs from start = ramp.
+        --complexity-bandwidth                        Gaussian bandwidth (complex-fraction units) for complexity steering; smaller = tighter to target.
+        --edge-silence-seconds                        Fixed lead-in/lead-out silence at the start and end of the file (s).
+        --max-isi-seconds                             Clip each inter-bout pause (ISI) to at most this many seconds.
 
-The inter-USV / inter-sequence interval distributions are not CLI options: they are reconstructed at generation time from the per-sex Student-t mixture in the HDF5 interval archive (configured via ``naturalistic_iui_archive_h5`` in *analyses_settings.json*).
+The repository is not selected by an explicit file path: ``context_label`` picks the sex subdirectory + context, and the newest matching build in ``<naturalistic_usv_repository_dir>/<sex>/`` is used. ``playback_seed`` (for a reproducible stimulus) is the one parameter without a command-line flag — set it in the ``create_naturalistic_usv_playback_wav`` block of *analyses_settings.json*.
 
 ``generate-usv-interval-distributions``
 ``generate-usv-interval-distributions`` is the command-line interface for computing inter-vocalization-interval (inter-USV interval) distributions across one or more session-list text files and (optionally) sweeping a 1D mixture model (Gaussian or Student-t) on the pooled log-inter-USV intervals.

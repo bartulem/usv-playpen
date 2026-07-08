@@ -2,6 +2,7 @@
 @author: bartulem
 Generates playback WAV files and frequency shifts audio segment.
 """
+from __future__ import annotations
 
 import os
 import random
@@ -9,6 +10,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+import h5py
 import librosa
 import noisereduce as nr
 import numpy as np
@@ -16,148 +18,22 @@ import soundfile as sf
 from scipy.io import wavfile
 from tqdm import tqdm
 
-from ..os_utils import find_base_path, find_cluster_path
+from ..os_utils import find_base_path, find_cluster_path, newest_match_or_raise, resolve_data_root
 from ..time_utils import is_gui_context, smart_wait
-from .mixture_model_utils import TMixture, _sample_from_mixture
-from .usv_interval_archive import read_usv_interval_h5, reconstruct_best_model
 
-
-def _split_iui_isi(model: TMixture) -> tuple[TMixture, TMixture]:
-    """
-    Description
-    -----------
-    Splits a per-sex log-space Student-t interval mixture into the two
-    sub-models the naturalistic playback generator needs:
-
-    * the within-sequence inter-USV-interval (IUI) pool -- every component
-      EXCEPT the slowest, with mixing weights renormalised to sum to 1, and
-    * the between-sequence inter-sequence-interval (ISI) model -- the single
-      slowest (longest-interval) component.
-
-    The reconstructed model returned by :func:`reconstruct_best_model` is
-    pre-sorted in ascending log-mean order, so the slowest component is the
-    last one (index ``K - 1``); no re-sorting is performed here. Pooling every
-    non-slowest component into the IUI sub-model (rather than using only the
-    fastest breathing-expiration component) keeps the full within-sequence
-    interval mass -- this matters for sexes whose characteristic gap sits in a
-    middle component (e.g. the female ~0.9 s component carrying the bulk of the
-    mass) rather than in the fastest one.
-
-    Parameters
-    ----------
-    model (TMixture)
-        A fitted per-sex Student-t mixture (components ascending by log-mean).
-
-    Returns
-    -------
-    iui_model (TMixture)
-        Sub-mixture of all components except the slowest, weights renormalised.
-    isi_model (TMixture)
-        Single-component model holding the slowest component only.
-    """
-
-    K = model.n_components
-    if K < 2:
-        msg = (
-            "create_naturalistic_usv_playback_wav: need >= 2 Student-t "
-            f"components to separate IUI from ISI, but the model has K={K}."
-        )
-        raise ValueError(msg)
-
-    means = model.means_.ravel()
-    covariances = model.covariances_.ravel()
-    nus = model.nus_.ravel()
-    weights = model.weights_.ravel()
-
-    iui_weights = weights[:-1] / weights[:-1].sum()
-    iui_model = TMixture(
-        weights=iui_weights,
-        means=means[:-1],
-        covariances=covariances[:-1],
-        nus=nus[:-1],
-    )
-    isi_model = TMixture(
-        weights=np.array([1.0]),
-        means=means[-1:],
-        covariances=covariances[-1:],
-        nus=nus[-1:],
-    )
-    return iui_model, isi_model
-
-
-def _mixture_log_bounds(model: TMixture, clip_pct: float) -> tuple[float, float]:
-    """
-    Description
-    -----------
-    Estimates a symmetric log-space percentile band ``[100 - clip_pct,
-    clip_pct]`` for a Student-t mixture by sampling it once. The band is used
-    to reject-resample draws so the heavy tails of low-``nu`` components cannot
-    emit an absurdly long (or short) interval -- a raw draw from a ``nu ~ 3``
-    component, once exponentiated, can otherwise exceed the entire playback
-    duration.
-
-    A fixed-seed local generator is used so the bounds are deterministic for a
-    given model and do NOT perturb the caller's reproducible draw stream.
-
-    Parameters
-    ----------
-    model (TMixture)
-        The (sub-)mixture to bound.
-    clip_pct (float)
-        Upper percentile of the retained band (e.g. ``99.5``); the lower edge
-        is its complement (``100 - clip_pct``).
-
-    Returns
-    -------
-    lo_log (float)
-        Lower log-space bound (the ``100 - clip_pct`` percentile).
-    hi_log (float)
-        Upper log-space bound (the ``clip_pct`` percentile).
-    """
-
-    bound_rng = np.random.default_rng(0)
-    log_samples = _sample_from_mixture(model, 200000, bound_rng)
-    lo_log = float(np.percentile(log_samples, 100.0 - clip_pct))
-    hi_log = float(np.percentile(log_samples, clip_pct))
-    return lo_log, hi_log
-
-
-def _draw_bounded_seconds(
-    model: TMixture,
-    rng: np.random.Generator,
-    lo_log: float,
-    hi_log: float,
-) -> float:
-    """
-    Description
-    -----------
-    Draws a single interval (in seconds) from a log-space Student-t mixture,
-    reject-resampling until the log-space draw falls inside ``[lo_log,
-    hi_log]``, then exponentiating. This caps the heavy-tailed components
-    without distorting the bulk of the distribution.
-
-    Parameters
-    ----------
-    model (TMixture)
-        The (sub-)mixture to sample from.
-    rng (np.random.Generator)
-        The caller's random generator (seeded by ``playback_seed`` for
-        reproducible stimulus sets).
-    lo_log (float)
-        Lower log-space acceptance bound.
-    hi_log (float)
-        Upper log-space acceptance bound.
-
-    Returns
-    -------
-    interval_seconds (float)
-        The accepted draw, exponentiated from log-space into seconds.
-    """
-
-    while True:
-        draw = float(_sample_from_mixture(model, 1, rng)[0])
-        if lo_log <= draw <= hi_log:
-            return float(np.exp(draw))
+# Maps a playback `context_label` to (context filename token, sex subdirectory / output-name
+# prefix). Mirrors the build-side _CONTEXT_LABELS in build_naturalistic_usv_repository; the
+# generator opens the newest ``naturalistic_usv_repository_<token>_*.h5`` under
+# ``<naturalistic_usv_repository_dir>/<sex>/``.
+_PLAYBACK_CONTEXTS = {
+    "courtship_male":   ("courtship", "male"),
+    "courtship_female": ("courtship", "female"),
+    "lone_male":        ("lone",      "male"),
+    "lone_female":      ("lone",      "female"),
+    "same_sex_male":    ("same_sex",  "male"),
+    "same_sex_female":  ("same_sex",  "female"),
+    "mixed":            ("mixed",     "mixed"),
+}
 
 
 def _read_int16_snippet(snippet_path: Path) -> np.ndarray:
@@ -249,47 +125,42 @@ class AudioGenerator:
         """
         Description
         -----------
-        Constructs naturalistic USV playback sequences by sampling inter-event
-        intervals and sequence lengths from empirically derived distributions.
+        Constructs naturalistic USV playback WAV file(s) by replaying REAL vocalization
+        bouts drawn from a per-sex naturalistic USV repository H5 (built by
+        ``build_naturalistic_usv_repository``). Instead of drawing single USVs at random
+        and sampling inter-event gaps from a mixture model, this replays whole recorded
+        bouts in their natural emission order (``1-2-3-4-5-6``) with their real timing.
 
-        Inter-USV intervals (IUI) and inter-sequence intervals (ISI) are sampled
-        from a sex-specific log-space Student-t mixture model fit to the
-        empirical end-to-start (``e2s``) inter-USV interval distribution. The
-        fitted model is read live from the HDF5 interval archive
-        (``naturalistic_iui_archive_h5``); the number of components ``K`` is the
-        per-sex value selected by the archive's bootstrap-LRT step-up procedure
-        (``K_selected_<sex>``), so no component counts or parameters are
-        hard-coded here. The reconstructed mixture (components ascending by
-        log-mean) is split into two roles:
-            - ISI: the slowest (longest-interval) component only -- the long
-              quiet pause between sequences.
-            - IUI: the pool of all remaining (faster) components, weights
-              renormalised -- the short within-sequence gaps. Pooling rather
-              than using only the fastest breathing-expiration component keeps
-              the full within-sequence interval mass (e.g. the female ~0.9 s
-              component, which carries most of her mass).
-
-        Because the low-``nu`` Student-t components have heavy tails, every draw
-        is reject-resampled to the ``[100 - clip_pct, clip_pct]`` percentile band
-        of its sub-mixture before being exponentiated, so a single draw cannot
-        emit an absurdly long silence. The clip percentile is read per sex from
-        ``naturalistic_interval_clip_pct`` (a ``{'male': ..., 'female': ...}``
-        dict), since the sexes' within-sequence interval spreads differ.
-
-        Sequence length is drawn from N(13, 5) clipped to [3, 23] USVs.
-        Sex is inferred from naturalistic_playback_snippets_dir_prefix.
+        The ``context_label`` (a (sex, social context) pair, e.g. ``courtship_female``) picks
+        the newest repository H5 under ``<naturalistic_usv_repository_dir>/<sex>/`` matching
+        that context; it supplies: a concatenated int16 ``audio`` array indexed per USV by
+        ``usv/offset`` + ``usv/length``; the per-bout USV runs (``bout/usv_start`` +
+        ``bout/usv_count``, stored in emission order); the real within-bout inter-USV
+        gaps (``usv/gap_to_next_s``); and the real preceding inter-bout pause
+        (``bout/preceding_isi_s``). The output sampling rate is the repository's
+        ``sampling_rate_hz`` root attribute.
 
         The way the code works is as follows:
-        (1) it finds all .wav files in the specified directory (female or male)
-        (2) it draws a long inter-sequence quiet interval (ISI) from the slowest
-            t-mixture component (bounded), then exponentiates
-        (3) it draws a sequence length from N(13, 5) clipped to [3, 23]
-        (4) it plays that many pseudo-randomly chosen USVs, each separated by
-            a short inter-USV interval (IUI) drawn from the IUI sub-mixture
-            (bounded), then exponentiated
-        (5) it goes back to (2) and repeats until exceeding total playback time
+        (1) it writes a fixed ``edge_silence_seconds`` lead-in silence
+        (2) it draws a random intact bout and appends its USVs in order, separated by
+            their real within-bout inter-USV intervals (IUI) of silence
+        (3) between bouts (not before the first) it inserts the drawn bout's real preceding
+            inter-sequence interval (ISI) of silence -- a session-first bout (``NaN``) uses
+            a sampled real ISI -- clipped to ``max_isi_seconds`` so no single pause is huge
+        (4) it keeps adding whole bouts, skipping any that (with the lead-out) would overrun
+            the target, until the remaining time is too small; it then writes a fixed
+            ``edge_silence_seconds`` lead-out silence. The file is therefore built of whole
+            bouts and is *up to* ``total_acceptable_naturalistic_playback_time``, opening and
+            closing on the fixed edge silence
 
-        NB: Run time for ~18 min .wav file is ~2 minutes.
+        Two side-car files are written alongside each ``.wav`` (both 1:1 with the audio
+        chunks, clamped to the truncated WAV): ``_spacing.txt`` (per-chunk sample counts)
+        and ``_usvids.txt`` (per-chunk labels -- ``<session>_usv<row>`` for a USV, or
+        ``ISI`` / ``IUI`` for a silence gap).
+
+        ``playback_seed`` (``None`` by default -> fresh entropy) seeds the numpy generator
+        driving BOTH the bout draws and the fallback-ISI draws, so an integer seed yields
+        a documented, repeatable stimulus set.
 
         Parameters
         ----------
@@ -300,175 +171,243 @@ class AudioGenerator:
         Returns
         -------
         usv_playback (.wav file(s))
-            Wave file(s) with naturalistic sequences of USVs.
+            Wave file(s) of naturalistic real-bout USV sequences, plus their
+            ``_spacing.txt`` / ``_usvids.txt`` side-cars.
         """
 
         self.message_output(f"Creating naturalistic USV playback file(s) started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        os_base_path = find_base_path()
-        local_cup_mount_bool = os.path.ismount(os_base_path)
-        prefix = self.create_playback_settings_dict['naturalistic_playback_snippets_dir_prefix']
-        if local_cup_mount_bool:
-            playback_snippets_dir = Path(os_base_path) / self.exp_id / 'usv_playback_experiments' / f"{prefix}_usv_playback_snippets"
-            output_file_dir = Path(os_base_path) / self.exp_id / 'usv_playback_experiments' / 'naturalistic_usv_playback_files'
-        else:
-            playback_snippets_dir = Path(find_cluster_path()) / self.exp_id / 'usv_playback_experiments' / f"{prefix}_usv_playback_snippets"
-            output_file_dir = Path(find_cluster_path()) / self.exp_id / 'usv_playback_experiments' / 'naturalistic_usv_playback_files'
+        settings = self.create_playback_settings_dict
+        context_label = settings['context_label']
+        if context_label not in _PLAYBACK_CONTEXTS:
+            msg = f"context_label must be one of {sorted(_PLAYBACK_CONTEXTS)}, got {context_label!r}."
+            raise ValueError(msg)
+        # `context_label` picks the sex subdirectory + context filename token; playback always
+        # uses the newest matching build in that directory (no explicit file path). `sex` also
+        # prefixes the output WAV / txt filenames ('male' / 'female' / 'mixed').
+        context_token, sex = _PLAYBACK_CONTEXTS[context_label]
+        try:
+            repository_h5_path = newest_match_or_raise(
+                resolve_data_root('naturalistic_usv_repository_dir') / sex,
+                f"naturalistic_usv_repository_{context_token}_*.h5",
+                key=lambda p: p.stat().st_mtime,
+                label=f"{context_label} naturalistic USV repository",
+            )
+        except FileNotFoundError:
+            # No build exists for this context: report it cleanly (the GUI shows this in its
+            # output box) and stop, rather than raising an uncaught error / crashing.
+            self.message_output(
+                f"No naturalistic USV repository has been built for context '{context_label}'; "
+                f"nothing to play back. Build one with build-naturalistic-usv-repository first."
+            )
+            return
+        total_acceptable_playback_time = settings['total_acceptable_naturalistic_playback_time']
+        complexity_enabled = settings['complexity_enabled']
+        complexity_mask_threshold = settings['complexity_mask_threshold']
+        complexity_start_fraction = settings['complexity_start_fraction']
+        complexity_end_fraction = settings['complexity_end_fraction']
+        complexity_bandwidth = settings['complexity_bandwidth']
+        edge_silence_seconds = settings['edge_silence_seconds']
+        max_isi_seconds = settings['max_isi_seconds']
 
+        output_file_dir = resolve_data_root('naturalistic_usv_playback_dir')
         output_file_dir.mkdir(parents=True, exist_ok=True)
 
-        wav_sampling_rate = self.create_playback_settings_dict['naturalistic_wav_sampling_rate']
-        total_acceptable_playback_time = self.create_playback_settings_dict['total_acceptable_naturalistic_playback_time']
+        # `playback_seed` is None by default (fresh entropy, non-reproducible); set it to
+        # an integer for a documented, repeatable stimulus set. It seeds the numpy
+        # Generator driving both the random bout draws and the fallback-ISI draws.
+        rng = np.random.default_rng(settings['playback_seed'])
 
-        # Reconstruct the sex-specific Student-t interval model live from the
-        # HDF5 archive (no hard-coded parameters), using the per-sex component
-        # count the archive's bootstrap-LRT selected. Split it into the
-        # within-sequence IUI pool and the between-sequence ISI component, then
-        # precompute per-sub-model percentile bounds for heavy-tail clipping.
-        sex = 'female' if 'female' in prefix.lower() else 'male'
-        interval_mode = self.create_playback_settings_dict['naturalistic_interval_mode']
-        clip_pct = self.create_playback_settings_dict['naturalistic_interval_clip_pct'][sex]
-        interval_archive = read_usv_interval_h5(self.create_playback_settings_dict['naturalistic_iui_archive_h5'])
-        mode_node = interval_archive['modes'][interval_mode]
-        k_selected = int(mode_node['attrs'][f'K_selected_{sex}'])
-        interval_model, _ = reconstruct_best_model(mode_node['mixture_model_fits'], sex, k_selected)
-        iui_model, isi_model = _split_iui_isi(interval_model)
-        iui_lo_log, iui_hi_log = _mixture_log_bounds(iui_model, clip_pct)
-        isi_lo_log, isi_hi_log = _mixture_log_bounds(isi_model, clip_pct)
-        self.message_output(
-            f"Loaded {interval_mode} Student-t interval model for '{sex}' (K={k_selected}) from archive; "
-            f"IUI pool = {iui_model.n_components} component(s), ISI = slowest component."
-        )
+        with h5py.File(repository_h5_path, 'r') as repository:
+            sampling_rate = int(repository.attrs['sampling_rate_hz'])
+            bout_usv_start = repository['bout/usv_start'][:]
+            bout_usv_count = repository['bout/usv_count'][:]
+            bout_preceding_isi = repository['bout/preceding_isi_s'][:]
+            usv_offset = repository['usv/offset'][:]
+            usv_length = repository['usv/length'][:]
+            usv_session = repository['usv/session'].asstr()[:]
+            usv_row = repository['usv/usv_row'][:]
+            usv_gap_to_next = repository['usv/gap_to_next_s'][:]
+            audio_dataset = repository['audio']
+            n_bout = int(bout_usv_start.shape[0])
+            # Real inter-bout pauses (excluding the NaN of each session's first bout),
+            # used as the ISI when a randomly drawn bout is a session's first bout.
+            real_isi_pool = bout_preceding_isi[~np.isnan(bout_preceding_isi)]
 
-        # `playback_seed` is None by default (fresh entropy, non-reproducible);
-        # set it to an integer to generate a documented, repeatable stimulus set.
-        # It seeds BOTH a numpy Generator (`rng`, which drives the ISI/IUI interval
-        # draws and the sequence-length draw -- i.e. the substantive interval/length
-        # structure) and a local random.Random (`py_rng`, used only for USV-file
-        # selection); the latter avoids mutating the global `random` module state.
-        playback_seed = self.create_playback_settings_dict['playback_seed']
-        rng = np.random.default_rng(playback_seed)
-        py_rng = random.Random(playback_seed)
+            # Per-bout complex-fraction: the fraction of the bout's USVs that are "complex"
+            # (mask_number >= threshold). Used to steer the bout draw toward a scheduled
+            # target complexity; computed only when complexity steering is enabled.
+            if complexity_enabled:
+                usv_is_complex = repository['usv/features/mask_number'][:] >= complexity_mask_threshold
+                bout_complex_fraction = np.array([
+                    float(np.mean(usv_is_complex[int(s):int(s) + int(c)]))
+                    for s, c in zip(bout_usv_start, bout_usv_count, strict=True)
+                ])
+            else:
+                usv_is_complex = None
+                bout_complex_fraction = None
 
-        for _ in range(self.create_playback_settings_dict['num_naturalistic_usv_files']):
-            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
-            current_time = datetime.today().strftime('%Y%m%d_%H%M%S')
+            for _ in range(settings['num_naturalistic_usv_files']):
+                smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+                current_time = datetime.today().strftime('%Y%m%d_%H%M%S')
 
-            wav_files_list = sorted(playback_snippets_dir.glob('*.wav'))
-            if not wav_files_list:
-                msg = (
-                    f"create_naturalistic_usv_playback_wav: no .wav playback snippets found in "
-                    f"{playback_snippets_dir!s}; cannot draw USV files for the playback sequence."
-                )
-                raise FileNotFoundError(msg)
-            # Preload + validate each unique snippet once (snippets are drawn with
-            # replacement from a small fixed pool, so the same files would otherwise
-            # be re-read thousands of times across the build); the seeded draw
-            # sequence is unchanged, so the output is byte-identical.
-            wav_cache = {wav_path: _read_int16_snippet(wav_path) for wav_path in wav_files_list}
-            # Accumulate chunks in a list, concatenated ONCE after the while loop
-            # (O(N)); per-iteration np.concatenate recopies the whole buffer -> O(N^2).
-            replay_chunks = []
-            # Collect the per-chunk (sample_count, label) metadata in parallel with the
-            # audio chunks and write the spacing/usvids .txt files AFTER the loop,
-            # clamped to target_samples, so they describe exactly the samples kept in
-            # the sliced WAV. The inner sequence loop can overshoot the time budget;
-            # the WAV is sliced to target_samples but the metadata must match it, or
-            # downstream alignment walking spacing.txt desynchronizes past the cut.
-            meta_entries: list[tuple[int, str]] = []
-            target_samples = int(total_acceptable_playback_time * wav_sampling_rate * 1e3)
+                # Accumulate audio chunks + (sample_count, label) metadata, concatenated
+                # ONCE after the loop (O(N)); spacing/usvids are written AFTER the loop
+                # clamped to target_samples so they describe exactly the sliced WAV.
+                replay_chunks: list[np.ndarray] = []
+                meta_entries: list[tuple[int, str]] = []
+                target_samples = int(total_acceptable_playback_time * sampling_rate)
+                total_playback_time_created = 0.0
+                last_time_updated = 0.0
+                # Complexity-steering bookkeeping (achieved ratio + variety), logged after.
+                drawn_bout_indices: list[int] = []
+                complex_usv_placed = 0
+                total_usv_placed = 0
 
-            total_playback_time_created = 0
-            last_time_updated = 0  # Variable to track progress for tqdm
+                replay_txt_path = output_file_dir / f"{sex}_usv_playback_{total_acceptable_playback_time}s_{current_time}_spacing.txt"
+                usv_id_txt_path = output_file_dir / f"{sex}_usv_playback_{total_acceptable_playback_time}s_{current_time}_usvids.txt"
 
-            replay_txt_path = output_file_dir / f"{prefix}_usv_playback_{total_acceptable_playback_time}s_{current_time}_spacing.txt"
-            usv_id_txt_path = output_file_dir / f"{prefix}_usv_playback_{total_acceptable_playback_time}s_{current_time}_usvids.txt"
+                with (replay_txt_path.open('w+') as replay_txt_file,
+                      usv_id_txt_path.open('w+') as usv_id_txt_file,
+                      tqdm(total=total_acceptable_playback_time, desc="Generating Playback", unit="s") as pbar):
 
-            # This ensures files are opened only once and not overwritten.
-            with (replay_txt_path.open('w+') as replay_txt_file,
-                  usv_id_txt_path.open('w+') as usv_id_txt_file,
-                  tqdm(total=total_acceptable_playback_time, desc="Generating Playback", unit="s") as pbar):
+                    # fixed lead-in silence at the very start (stands in for the first bout's
+                    # preceding pause, so the file opens on a call after a short, constant gap)
+                    edge_silence_samples = int(np.ceil(edge_silence_seconds * sampling_rate))
+                    replay_chunks.append(np.zeros(edge_silence_samples, dtype=np.int16))
+                    meta_entries.append((edge_silence_samples, 'ISI'))
+                    total_playback_time_created += edge_silence_seconds
 
-                while total_playback_time_created < total_acceptable_playback_time:
-                    # inter-sequence interval: draw the long between-sequence pause
-                    # from the slowest t-mixture component, reject-resampled to the
-                    # [100 - clip_pct, clip_pct] percentile band so a heavy tail cannot
-                    # emit an absurdly long silence
-                    isi = _draw_bounded_seconds(isi_model, rng, isi_lo_log, isi_hi_log)
-
-                    # if this ISI alone would consume all remaining time, stop rather
-                    # than filling the tail of the file with silence
-                    if total_playback_time_created + isi >= total_acceptable_playback_time:
-                        break
-
-                    # `wav_sampling_rate` is stored in kHz (e.g. 250), so multiplying by
-                    # 1e3 converts it to samples-per-second (Hz) before scaling by seconds
-                    isi_samples = int(np.ceil(isi * wav_sampling_rate * 1e3))
-
-                    replay_chunks.append(np.zeros(isi_samples, dtype=np.int16))
-                    meta_entries.append((isi_samples, 'ISI'))
-
-                    total_playback_time_created += isi
-
-                    # sequence length: Gaussian(13, 5) clipped to [3, 23]
-                    usv_seq_length = int(np.clip(round(rng.normal(13, 5)), 3, 23))
-                    for usv_idx in range(usv_seq_length):
-                        # pick USV file
-                        random_wav_file = py_rng.choice(wav_files_list)
-                        random_wav_file_data = wav_cache[random_wav_file]
-                        total_playback_time_created += (random_wav_file_data.shape[0] / (wav_sampling_rate * 1e3))
-
-                        if usv_idx < (usv_seq_length - 1):
-                            # inter-USV interval: draw the within-sequence gap from the
-                            # IUI sub-mixture (all components except the slowest),
-                            # reject-resampled to the percentile band
-                            iui = _draw_bounded_seconds(iui_model, rng, iui_lo_log, iui_hi_log)
-                            iui_samples = int(np.ceil(iui * wav_sampling_rate * 1e3))
-                            total_playback_time_created += iui
-
-                            replay_chunks.append(random_wav_file_data)
-                            meta_entries.append((random_wav_file_data.shape[0], random_wav_file.name))
-                            replay_chunks.append(np.zeros(iui_samples, dtype=np.int16))
-                            meta_entries.append((iui_samples, 'IUI'))
+                    first_bout = True
+                    # stop once many consecutive draws no longer fit the remaining time
+                    consecutive_skips = 0
+                    while consecutive_skips < 100:
+                        # draw a bout: uniform by default, or steered toward the scheduled
+                        # target complexity (a linear ramp across the file position) when
+                        # complexity_enabled -- bouts whose complex-fraction is near the
+                        # current target are favoured via a Gaussian weight; repetition (with
+                        # replacement) supplies complex bouts as needed
+                        if complexity_enabled:
+                            file_position = min(1.0, total_playback_time_created / total_acceptable_playback_time)
+                            target_fraction = complexity_start_fraction + (complexity_end_fraction - complexity_start_fraction) * file_position
+                            draw_weights = np.exp(-((bout_complex_fraction - target_fraction) ** 2) / (2.0 * complexity_bandwidth ** 2))
+                            bout_index = int(rng.choice(n_bout, p=draw_weights / draw_weights.sum()))
                         else:
-                            replay_chunks.append(random_wav_file_data)
-                            meta_entries.append((random_wav_file_data.shape[0], random_wav_file.name))
+                            bout_index = int(rng.integers(n_bout))
 
-                    # manually update the progress bar at the end of each loop
-                    update_amount = int(np.floor(total_playback_time_created - last_time_updated))
-                    pbar.update(update_amount)
-                    last_time_updated = total_playback_time_created
+                        usv_start = int(bout_usv_start[bout_index])
+                        usv_count = int(bout_usv_count[bout_index])
 
-                if pbar.n < pbar.total:
-                    pbar.update(pbar.total - pbar.n)
+                        # inter-sequence interval before this bout: the first placed bout has
+                        # none (the fixed lead-in stands in for it); later bouts use the real
+                        # recorded pause (NaN -> a sampled real ISI), clipped to max_isi_seconds
+                        if first_bout:
+                            isi = 0.0
+                        else:
+                            isi = float(bout_preceding_isi[bout_index])
+                            if np.isnan(isi):
+                                isi = (float(real_isi_pool[int(rng.integers(real_isi_pool.shape[0]))])
+                                       if real_isi_pool.size else 0.0)
+                            isi = min(isi, max_isi_seconds)
+                        isi_samples = int(np.ceil(isi * sampling_rate))
 
-                # Write the spacing / usvids metadata clamped to target_samples so it
-                # describes exactly the samples kept in the sliced WAV below: walk the
-                # per-chunk entries, clamp the single chunk that straddles the
-                # truncation boundary to its in-WAV length, and drop everything past it.
-                offset = 0
-                for count, label in meta_entries:
-                    if offset >= target_samples:
-                        break
-                    kept = min(count, target_samples - offset)
-                    replay_txt_file.write(f'{kept} \n')
-                    usv_id_txt_file.write(f'{label} \n')
-                    offset += count
+                        # cost of this whole bout: its ISI + all USV audio + the real within-bout
+                        # inter-USV gaps (IUIs are natural + small, so they are not clipped)
+                        bout_usv_seconds = sum(int(usv_length[usv_start + p]) for p in range(usv_count)) / sampling_rate
+                        bout_iui_seconds = sum(float(usv_gap_to_next[usv_start + p]) for p in range(usv_count - 1))
+                        bout_seconds = isi + bout_usv_seconds + bout_iui_seconds
 
-            replay_wav_arr = (np.concatenate(replay_chunks) if replay_chunks
-                              else np.array([], dtype=np.int16))
-            replay_wav_arr = replay_wav_arr[:target_samples]
+                        # skip a bout that (with the fixed lead-out) would overrun the target and
+                        # try another, so the file ends on a whole bout without stopping early on
+                        # one large draw; after many consecutive misses the remaining time is too
+                        # small for anything and the loop stops. The first bout is always placed.
+                        if not first_bout and (total_playback_time_created + bout_seconds + edge_silence_seconds) > total_acceptable_playback_time:
+                            consecutive_skips += 1
+                            continue
+                        consecutive_skips = 0
 
-            actual_total_time_sec = int(np.ceil(replay_wav_arr.shape[0] / (wav_sampling_rate * 1e3)))
-            self.message_output(f"The total duration of the generated naturalistic playback file is {round(actual_total_time_sec / 60, 2)} min.")
+                        if isi_samples > 0:
+                            replay_chunks.append(np.zeros(isi_samples, dtype=np.int16))
+                            meta_entries.append((isi_samples, 'ISI'))
+                            total_playback_time_created += isi
 
-            wavfile.write(filename=output_file_dir / f"{prefix}_usv_playback_{total_acceptable_playback_time}s_{current_time}.wav",
-                          rate=int(wav_sampling_rate * 1e3),
-                          data=replay_wav_arr)
+                        if complexity_enabled:
+                            drawn_bout_indices.append(bout_index)
+                            bout_complex = usv_is_complex[usv_start:usv_start + usv_count]
+                            complex_usv_placed += int(bout_complex.sum())
+                            total_usv_placed += int(bout_complex.size)
+
+                        # replay the bout's USVs in their natural order, each separated by
+                        # its real within-bout inter-USV interval
+                        for position in range(usv_count):
+                            usv = usv_start + position
+                            start_sample = int(usv_offset[usv])
+                            length_samples = int(usv_length[usv])
+                            usv_audio = np.asarray(audio_dataset[start_sample:start_sample + length_samples], dtype=np.int16)
+                            usv_label = f"{usv_session[usv]}_usv{int(usv_row[usv]):05d}"
+                            total_playback_time_created += usv_audio.shape[0] / sampling_rate
+
+                            if position < (usv_count - 1):
+                                iui = float(usv_gap_to_next[usv])
+                                iui_samples = int(np.ceil(iui * sampling_rate))
+                                total_playback_time_created += iui
+                                replay_chunks.append(usv_audio)
+                                meta_entries.append((usv_audio.shape[0], usv_label))
+                                replay_chunks.append(np.zeros(iui_samples, dtype=np.int16))
+                                meta_entries.append((iui_samples, 'IUI'))
+                            else:
+                                replay_chunks.append(usv_audio)
+                                meta_entries.append((usv_audio.shape[0], usv_label))
+
+                        first_bout = False
+
+                        update_amount = int(np.floor(total_playback_time_created - last_time_updated))
+                        pbar.update(update_amount)
+                        last_time_updated = total_playback_time_created
+
+                    # fixed lead-out silence at the very end (so the file closes on a call
+                    # followed by a short, constant gap rather than a truncated pause)
+                    replay_chunks.append(np.zeros(edge_silence_samples, dtype=np.int16))
+                    meta_entries.append((edge_silence_samples, 'ISI'))
+                    total_playback_time_created += edge_silence_seconds
+
+                    if pbar.n < pbar.total:
+                        pbar.update(pbar.total - pbar.n)
+
+                    # Write spacing/usvids clamped to target_samples so they describe
+                    # exactly the samples kept in the sliced WAV: walk the per-chunk
+                    # entries, clamp the chunk straddling the truncation boundary, drop
+                    # everything past it.
+                    offset = 0
+                    for count, label in meta_entries:
+                        if offset >= target_samples:
+                            break
+                        kept = min(count, target_samples - offset)
+                        replay_txt_file.write(f'{kept} \n')
+                        usv_id_txt_file.write(f'{label} \n')
+                        offset += count
+
+                replay_wav_arr = (np.concatenate(replay_chunks) if replay_chunks
+                                  else np.array([], dtype=np.int16))
+                replay_wav_arr = replay_wav_arr[:target_samples]
+
+                actual_total_time_sec = int(np.ceil(replay_wav_arr.shape[0] / sampling_rate))
+                self.message_output(f"The total duration of the generated naturalistic playback file is {round(actual_total_time_sec / 60, 2)} min.")
+
+                if complexity_enabled and total_usv_placed:
+                    self.message_output(
+                        f"Complexity steering (complex = mask_number >= {complexity_mask_threshold}): "
+                        f"target {complexity_start_fraction:.2f} -> {complexity_end_fraction:.2f}, "
+                        f"achieved {complex_usv_placed / total_usv_placed:.2f} complex USVs using "
+                        f"{len(set(drawn_bout_indices))} distinct bouts of {n_bout}."
+                    )
+
+                wavfile.write(filename=output_file_dir / f"{sex}_usv_playback_{total_acceptable_playback_time}s_{current_time}.wav",
+                              rate=sampling_rate,
+                              data=replay_wav_arr)
 
         self.message_output(f"Creating naturalistic USV playback file(s) ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
-
 
     def create_usv_playback_wav(self) -> None:
         """

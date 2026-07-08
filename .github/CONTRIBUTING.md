@@ -285,11 +285,12 @@ Precise rules:
 - **Keep the `Parameters` and `Returns` headers even when empty** — a
   no-argument function still writes `Parameters` + underline + a blank line; a
   `None`-returning function writes `Returns` + underline + `None`.
-- **Module docstring** at the top of every file. First-party files open it with
+- **Module docstring** at the top of every file, opening on line 1 (`"""`) with
   an `@author: <you>` line, then a one-line purpose; keep the line when editing
-  an existing file. Vendored / clean-room subtrees (`processing/masks`,
-  `processing/qlvm_training`, `other/…`, `neuropixels/sglx_meta_to_coords.py`)
-  are exempt.
+  an existing file. **Exactly one blank line separates the closing `"""` from
+  the first import** (`from __future__ import annotations`). Vendored /
+  clean-room subtrees (`processing/masks`, `processing/qlvm_training`,
+  `other/…`, `neuropixels/sglx_meta_to_coords.py`) are exempt.
 - The minority `name : type` (numpydoc) form appears in `modeling/` and
   `other/cluster/`. Don't convert those files; match whichever form the file
   already uses.

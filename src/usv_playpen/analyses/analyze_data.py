@@ -238,9 +238,15 @@ def generate_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
 @click.command(name='generate-naturalistic-usv-playback')
 @click.option('--exp-id', type=str, required=True, help='Experimenter ID.')
 @click.option('--num-naturalistic-usv-files', 'num_naturalistic_usv_files', type=int, default=None, required=False, help='Number of WAV files to create.')
-@click.option('--naturalistic-wav-sampling-rate', 'naturalistic_wav_sampling_rate', type=int, default=None, required=False, help='Sampling rate for the output WAV file (in kHz).')
-@click.option('--naturalistic-playback-snippets-dir-prefix', 'naturalistic_playback_snippets_dir_prefix', type=str, default=None, required=False, help='Prefix of directory of the naturalistic USV playback snippets.')
+@click.option('--context-label', 'context_label', type=click.Choice(['courtship_male', 'courtship_female', 'lone_male', 'lone_female', 'same_sex_male', 'same_sex_female', 'mixed']), default=None, required=False, help='Which (sex, social context) repository to play back; the newest matching build in that directory is used.')
 @click.option('--total-playback-time', 'total_acceptable_naturalistic_playback_time', type=int, default=None, required=False, help='Maximum amount of seconds for the duration of the naturalistic playback file.')
+@click.option('--complexity-enabled/--no-complexity-enabled', 'complexity_enabled', default=None, required=False, help='Steer bout draws toward a target call complexity (else uniform).')
+@click.option('--complexity-mask-threshold', 'complexity_mask_threshold', type=int, default=None, required=False, help='A USV is "complex" if its mask_number is >= this (default 2).')
+@click.option('--complexity-start-fraction', 'complexity_start_fraction', type=float, default=None, required=False, help='Target complex-USV fraction at the START of the file (0-1).')
+@click.option('--complexity-end-fraction', 'complexity_end_fraction', type=float, default=None, required=False, help='Target complex-USV fraction at the END of the file (0-1); differs from start = linear ramp.')
+@click.option('--complexity-bandwidth', 'complexity_bandwidth', type=float, default=None, required=False, help='Gaussian bandwidth (complex-fraction units) for complexity steering; smaller = tighter to target.')
+@click.option('--edge-silence-seconds', 'edge_silence_seconds', type=float, default=None, required=False, help='Fixed lead-in/lead-out silence at the start and end of the file (s).')
+@click.option('--max-isi-seconds', 'max_isi_seconds', type=float, default=None, required=False, help='Clip each inter-bout pause (ISI) to at most this many seconds.')
 @click.pass_context
 def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
     """
