@@ -1158,9 +1158,12 @@ def bootstrap_vs_null_stats(
         ``(boot_mean - null_mean) / null_std`` (0.0 when the null has zero spread).
     """
 
-    boot_mean = float(np.mean(boot_data))
-    null_mean = float(np.mean(null_data))
-    null_std = float(np.std(null_data))
+    # NaN-aware reductions (matching the permutation path above): a resample that
+    # yields all-NaN corrcoef rows (constant neurons) returns a NaN metric, and a
+    # plain np.mean would poison boot_mean -> a spuriously significant p_val.
+    boot_mean = float(np.nanmean(boot_data))
+    null_mean = float(np.nanmean(null_data))
+    null_std = float(np.nanstd(null_data))
     n_null = int(np.size(null_data))
     p_val = float((np.sum(null_data >= boot_mean) + 1) / (n_null + 1))
     z = (boot_mean - null_mean) / null_std if null_std > 0 else 0.0

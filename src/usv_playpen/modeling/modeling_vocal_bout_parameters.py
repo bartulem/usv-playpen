@@ -40,7 +40,6 @@ import gc
 import time
 import warnings
 from pygam import GAM, te
-from scipy.stats import spearmanr
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit
 from sklearn.linear_model import RidgeCV
 from sklearn.metrics import mean_gamma_deviance, mean_squared_log_error
@@ -64,6 +63,7 @@ from .modeling_utils import (
     run_predictor_audits,
     unroll_history_matrix,
     pearson_r_safe,
+    spearman_r_safe,
     root_mean_squared_error,
     mean_absolute_error_1d,
 )
@@ -288,7 +288,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         mixture_model_params_md = self.modeling_settings['mixture_model_params']
         for sex in ('male', 'female'):
             params = mixture_model_params_md[sex]
-            if mixture_model_idx < len(params['means']):
+            # Require a non-negative in-range index: a negative `mixture_model_idx` passes a
+            # bare `< len(...)` guard and then indexes from the array end, silently selecting
+            # the wrong mixture component (matches the guard in `modeling_utils`).
+            if 0 <= mixture_model_idx < len(params['means']):
                 ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
                     params['means'][mixture_model_idx], params['sds'][mixture_model_idx],
                     self.modeling_settings['model_params']['mixture_model_z_score'],
@@ -570,7 +573,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         test_prop = model_selection['test_proportion']
         base_seed = self.modeling_settings['model_params']['random_seed']
         if base_seed is None:
-            base_seed = 42
+            base_seed = 0
 
         # 2. Safety checks
         if test_prop <= 0 or test_prop >= 1:
@@ -813,7 +816,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 # Store results
                 results['actual']['explained_deviance'].append(d2)
                 results['actual']['residual_deviance'].append(res_dev)
-                results['actual']['spearman_r'].append(spearmanr(y_te, y_pred)[0])
+                results['actual']['spearman_r'].append(spearman_r_safe(y_te, y_pred))
                 results['actual']['pearson_r'].append(pearson_r_safe(y_te, y_pred))
                 results['actual']['msle'].append(mean_squared_log_error(y_te, y_pred))
                 results['actual']['mae'].append(mean_absolute_error_1d(y_te, y_pred))
@@ -897,7 +900,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
                 results['null']['explained_deviance'].append(d2_null)
                 results['null']['residual_deviance'].append(res_dev_null)
-                results['null']['spearman_r'].append(spearmanr(y_te, y_pred_shuff)[0])
+                results['null']['spearman_r'].append(spearman_r_safe(y_te, y_pred_shuff))
                 results['null']['pearson_r'].append(pearson_r_safe(y_te, y_pred_shuff))
                 results['null']['msle'].append(mean_squared_log_error(y_te, y_pred_shuff))
                 results['null']['mae'].append(mean_absolute_error_1d(y_te, y_pred_shuff))
@@ -1063,7 +1066,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 # Store results
                 results['actual']['explained_deviance'].append(d2)
                 results['actual']['residual_deviance'].append(res_dev)
-                results['actual']['spearman_r'].append(spearmanr(y_te, y_pred)[0])
+                results['actual']['spearman_r'].append(spearman_r_safe(y_te, y_pred))
                 results['actual']['pearson_r'].append(pearson_r_safe(y_te, y_pred))
                 results['actual']['msle'].append(mean_squared_log_error(y_te, y_pred))
                 results['actual']['mae'].append(mean_absolute_error_1d(y_te, y_pred))
@@ -1129,7 +1132,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
                 results['null']['explained_deviance'].append(d2_null)
                 results['null']['residual_deviance'].append(res_dev_null)
-                results['null']['spearman_r'].append(spearmanr(y_te, y_pred_null)[0])
+                results['null']['spearman_r'].append(spearman_r_safe(y_te, y_pred_null))
                 results['null']['pearson_r'].append(pearson_r_safe(y_te, y_pred_null))
                 results['null']['msle'].append(mean_squared_log_error(y_te, y_pred_null))
                 results['null']['mae'].append(mean_absolute_error_1d(y_te, y_pred_null))

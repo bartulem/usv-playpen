@@ -42,6 +42,39 @@ apply_plot_style()
 _DAS_ANNOTATION_FILE_RE = re.compile(r"^([ms])_.*_(ch\d{2})_.*annotations\.csv$")
 
 
+def _write_usv_summary_csv(merged: list, out_path: pathlib.Path) -> None:
+    """Write the per-session USV summary CSV from a list of merged interval dicts.
+
+    Single source of truth for the summary schema, shared by all three
+    ``summarize_das_findings`` branches (noise-filtered with >1 USV, the single-USV
+    case, and filtering-disabled) so the column set / formatting can never drift
+    between them.
+
+    Parameters
+    ----------
+    merged : list
+        List of merged USV interval dicts, each carrying ``start``/``stop``/
+        ``peak_amp_ch``/``mean_amp_ch``/``chs_count``/``chs_detected`` keys.
+    out_path : pathlib.Path
+        Destination path for the ``*_usv_summary.csv`` file.
+
+    Returns
+    -------
+    (None)
+    """
+    pls.DataFrame({
+        "usv_id": [f"{_num:04d}" for _num in range(len(merged))],
+        "start": [u['start'] for u in merged],
+        "stop": [u['stop'] for u in merged],
+        "duration": [u['stop'] - u['start'] for u in merged],
+        "peak_amp_ch": [float(u['peak_amp_ch']) for u in merged],
+        "mean_amp_ch": [float(u['mean_amp_ch']) for u in merged],
+        "chs_count": [float(u['chs_count']) for u in merged],
+        "chs_detected": [str(u['chs_detected']) for u in merged],
+        "emitter": [None] * len(merged),
+    }).write_csv(file=out_path)
+
+
 class FindMouseVocalizations:
     def __init__(
         self,
@@ -515,18 +548,9 @@ class FindMouseVocalizations:
                 )
 
                 # save the summary file
-                pls.DataFrame({
-                    "usv_id": [f"{_num:04d}" for _num in range(len(merged))],
-                    "start": [u['start'] for u in merged],
-                    "stop": [u['stop'] for u in merged],
-                    "duration": [u['stop'] - u['start'] for u in merged],
-                    "peak_amp_ch": [float(u['peak_amp_ch']) for u in merged],
-                    "mean_amp_ch": [float(u['mean_amp_ch']) for u in merged],
-                    "chs_count": [float(u['chs_count']) for u in merged],
-                    "chs_detected": [str(u['chs_detected']) for u in merged],
-                    "emitter": [None] * len(merged),
-                }).write_csv(
-                    file=pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_summary.csv",
+                _write_usv_summary_csv(
+                    merged,
+                    pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_summary.csv",
                 )
 
             elif filter_putative_noise_bool and n_usv == 1:
@@ -581,18 +605,9 @@ class FindMouseVocalizations:
                 )
 
                 # save the summary file
-                pls.DataFrame({
-                    "usv_id": [f"{_num:04d}" for _num in range(len(merged))],
-                    "start": [u['start'] for u in merged],
-                    "stop": [u['stop'] for u in merged],
-                    "duration": [u['stop'] - u['start'] for u in merged],
-                    "peak_amp_ch": [float(u['peak_amp_ch']) for u in merged],
-                    "mean_amp_ch": [float(u['mean_amp_ch']) for u in merged],
-                    "chs_count": [float(u['chs_count']) for u in merged],
-                    "chs_detected": [str(u['chs_detected']) for u in merged],
-                    "emitter": [None] * len(merged),
-                }).write_csv(
-                    file=pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_summary.csv",
+                _write_usv_summary_csv(
+                    merged,
+                    pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_summary.csv",
                 )
 
             elif not filter_putative_noise_bool and n_usv >= 1:
@@ -607,18 +622,9 @@ class FindMouseVocalizations:
                 )
 
                 # save the summary file
-                pls.DataFrame({
-                    "usv_id": [f"{_num:04d}" for _num in range(len(merged))],
-                    "start": [u['start'] for u in merged],
-                    "stop": [u['stop'] for u in merged],
-                    "duration": [u['stop'] - u['start'] for u in merged],
-                    "peak_amp_ch": [float(u['peak_amp_ch']) for u in merged],
-                    "mean_amp_ch": [float(u['mean_amp_ch']) for u in merged],
-                    "chs_count": [float(u['chs_count']) for u in merged],
-                    "chs_detected": [str(u['chs_detected']) for u in merged],
-                    "emitter": [None] * len(merged),
-                }).write_csv(
-                    file=pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_summary.csv",
+                _write_usv_summary_csv(
+                    merged,
+                    pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_summary.csv",
                 )
 
             # load metadata

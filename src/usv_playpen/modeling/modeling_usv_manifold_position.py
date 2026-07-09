@@ -104,13 +104,15 @@ def compute_inverse_density_weights(Y: np.ndarray,
     On `metric='torus'`, scipy's flat-space `gaussian_kde` would
     under-estimate density near the wrap boundary (a point at
     `(0.99, 0.5)` should pick up neighbours from `(0.01, 0.5)`, but
-    flat KDE treats them as period units apart). The fix is the
-    standard "lattice replication" trick: tile the points across a
-    3x3 grid of period-shifts, fit KDE on the replicated set, and
-    evaluate at the original points only. The kernel-sum at every
-    original point now correctly accounts for the across-the-wrap
-    neighbours, and the density gets multiplied by 9 (a global
-    constant that cancels in the unit-mean normalisation below).
+    flat KDE treats them as period units apart). The fix fits the KDE
+    on the ORIGINAL points (so its Scott's-rule bandwidth reflects the
+    intra-cluster spread) and applies wrap-awareness at EVALUATION as a
+    periodic sum over the 3x3 lattice shifts: `density(y) = sum_s kde(y + s)`.
+    Fitting on a 9x lattice-replicated cloud instead (the previous
+    approach) made `gaussian_kde` infer a bandwidth dominated by the
+    period spacing, over-smoothing the density and silently flattening
+    the inverse-density reweighting — the same bug fixed in
+    `acoustic_manifold_geometry`.
 
     Parameters
     ----------
@@ -122,8 +124,9 @@ def compute_inverse_density_weights(Y: np.ndarray,
     epsilon : float, default 1e-5
         Small constant added to the denominator to prevent division by zero.
     metric : str, default 'euclidean'
-        `'euclidean'` (flat KDE, legacy behaviour) or `'torus'` (3x3
-        lattice-replication KDE).
+        `'euclidean'` (flat KDE, legacy behaviour) or `'torus'` (KDE fit
+        on the original points, evaluated as a periodic sum over the 3x3
+        lattice shifts).
     period : float, default 1.0
         Per-axis wrap period; ignored when `metric='euclidean'`.
 
@@ -136,16 +139,20 @@ def compute_inverse_density_weights(Y: np.ndarray,
 
     if metric == 'torus':
         Y_arr = np.asarray(Y, dtype=np.float64)
-        # 3x3 lattice replication: shift by (-P, 0, +P) on each axis.
+        # Fit on the ORIGINAL points (correct intra-cluster bandwidth), then sum the
+        # kernel over the 3x3 period-shifts at evaluation for wrap-awareness. The shift
+        # set is symmetric, so `sum_s kde(Y + s)` equals the periodic density.
         shifts = np.array(
             [(dx, dy) for dx in (-period, 0.0, period) for dy in (-period, 0.0, period)],
             dtype=np.float64,
         )
-        Y_replicated = np.concatenate([Y_arr + s for s in shifts], axis=0)
-        kde = gaussian_kde(Y_replicated.T)
+        kde = gaussian_kde(Y_arr.T)
+        densities = np.zeros(Y_arr.shape[0], dtype=np.float64)
+        for shift in shifts:
+            densities = densities + kde((Y_arr + shift).T)
     else:
         kde = gaussian_kde(Y.T)
-    densities = kde(Y.T)
+        densities = kde(Y.T)
 
     raw_weights = 1.0 / (densities + epsilon)
 
@@ -995,7 +1002,10 @@ class ContinuousModelingPipeline(FeatureZoo):
         mixture_model_params_md = self.modeling_settings['mixture_model_params']
         for sex in ('male', 'female'):
             params = mixture_model_params_md[sex]
-            if mixture_model_idx_md < len(params['means']):
+            # Require a non-negative in-range index: a negative `mixture_model_idx_md` passes a
+            # bare `< len(...)` guard and then indexes from the array end, silently selecting
+            # the wrong mixture component (matches the guard in `modeling_utils`).
+            if 0 <= mixture_model_idx_md < len(params['means']):
                 ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
                     params['means'][mixture_model_idx_md], params['sds'][mixture_model_idx_md],
                     self.modeling_settings['model_params']['mixture_model_z_score'],
@@ -1360,7 +1370,11 @@ class ContinuousModelRunner:
                             f"bin_size={bin_size} exceeds the history window length T={T} for "
                             f"feature '{feat}', collapsing X to zero time bins."
                         )
-                    X_sess = X_sess[:, :new_T * bin_size].reshape(N, new_T, bin_size).mean(axis=2)
+                    # Keep the MOST RECENT `new_T * bin_size` columns (drop the oldest
+                    # `T % bin_size` from the front). Columns are chronological with the
+                    # last column = frame onset-1, so truncating the tail instead would
+                    # discard the frames closest to onset and misalign the filter time axis.
+                    X_sess = X_sess[:, T - new_T * bin_size:].reshape(N, new_T, bin_size).mean(axis=2)
 
                 X_list.append(X_sess)
                 Y_list.append(Y_sess)

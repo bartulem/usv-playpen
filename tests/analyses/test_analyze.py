@@ -2780,6 +2780,11 @@ def test_feature_zoo_save_behavioral_features_end_to_end(tmp_path, mocker):
             "tail_points":      ["TTI", "Tail_0", "Tail_1", "Tail_2", "TailTip"],
             "back_root_points": ["Neck", "Trunk", "TTI"],
             "derivative_bins":  10,
+            "speed_smoothing_time_window": 0.015,
+            "feature_hist_num_bins": 36,
+            "spatial_hist_min_val": -32,
+            "spatial_hist_max_val": 32,
+            "spatial_hist_num_bins": 196,
         },
         message_output=lambda *_a, **_kw: None,
     )
@@ -2863,6 +2868,11 @@ def test_feature_zoo_save_behavioral_features_single_mouse_skips_social(tmp_path
             "tail_points":      ["TTI", "Tail_0", "Tail_1", "Tail_2", "TailTip"],
             "back_root_points": ["Neck", "Trunk", "TTI"],
             "derivative_bins":  10,
+            "speed_smoothing_time_window": 0.015,
+            "feature_hist_num_bins": 36,
+            "spatial_hist_min_val": -32,
+            "spatial_hist_max_val": 32,
+            "spatial_hist_num_bins": 196,
         },
         message_output=lambda *_a, **_kw: None,
     )
@@ -3049,7 +3059,10 @@ def test_bin_property_indices_nan_and_degenerate_range():
     vals = np.array([0.0, 5.0, 10.0, np.nan])
     out = _bin_property_indices(vals, [0.0, 10.0], 5)
     assert out[3] == -1                      # NaN -> sentinel
-    assert out[0] == 0 and out[2] == 4       # clipped into range
+    # In-range values bin normally; a value == the upper edge (10.0) is out of the
+    # half-open [low, high) range and is now DROPPED to the -1 sentinel (previously it
+    # was clipped into the last bin), matching the behavioral/spatial occupancy binning.
+    assert out[0] == 0 and out[1] == 2 and out[2] == -1
     # all-NaN -> all sentinel
     assert np.all(_bin_property_indices(np.array([np.nan, np.nan]), [0.0, 1.0], 4) == -1)
     # degenerate (zero-width) range -> all sentinel

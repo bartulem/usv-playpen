@@ -484,12 +484,17 @@ def plot_mouse_data(data: np.ndarray,
 
     for mouse_idx in range(data.shape[1]):
         if history_bool:
-            # plot history of animal paths
-            for hist_point_idx, hist_point in enumerate(range(frame_number - history_frame_span, frame_number)):
+            # plot history of animal paths; clamp the start to frame 0 so early frames
+            # (frame_number < history_frame_span) do not index `data` with a negative
+            # wrap into end-of-session coordinates. The colour is keyed to absolute
+            # recency (distance back from `frame_number`), so it is byte-identical to the
+            # old enumerate-based gradient once the window is full and simply starts
+            # partway along the gradient while the window is still filling.
+            for hist_point in range(max(0, frame_number - history_frame_span), frame_number):
                 plot_axes.plot([data[hist_point, mouse_idx, node_idx[history_point], 0], data[hist_point + 1, mouse_idx, node_idx[history_point], 0]],
                                [data[hist_point, mouse_idx, node_idx[history_point], 1], data[hist_point + 1, mouse_idx, node_idx[history_point], 1]],
                                [data[hist_point, mouse_idx, node_idx[history_point], 2], data[hist_point + 1, mouse_idx, node_idx[history_point], 2]],
-                               color=animal_cm[mouse_idx](int(255*hist_point_idx/history_frame_span)), ls=history_ls, lw=history_lw)
+                               color=animal_cm[mouse_idx](int(255*(hist_point - (frame_number - history_frame_span))/history_frame_span)), ls=history_ls, lw=history_lw)
 
         # plot node connection lines
         for nc_idx, nc in enumerate(node_connections):
@@ -1743,6 +1748,11 @@ class Create3DVideo:
                             else:
                                 beh_features_to_plot.append(f"{mouse_track_names[0]}-{mouse_track_names[1]}.{tentative_social_feature}")
                                 beh_features_to_plot.append(f"{mouse_track_names[1]}-{mouse_track_names[0]}.{tentative_social_feature}")
+                else:
+                    # Explicit user-supplied selection: use it verbatim. Without this branch
+                    # `beh_features_to_plot` is only bound in the auto-populate path above, so
+                    # a non-empty setting would hit an UnboundLocalError at the slice below.
+                    beh_features_to_plot = self.visualizations_parameter_dict['make_behavioral_videos']['beh_features_to_plot']
 
                 # get feature data
                 beh_feature_data = self.load_beh_features_file()
@@ -1977,6 +1987,11 @@ class Create3DVideo:
                 if (self.visualizations_parameter_dict['make_behavioral_videos']['animate_bool'] and
                         self.visualizations_parameter_dict['make_behavioral_videos']['spike_sound_bool']):
                     for special_unit in self.visualizations_parameter_dict['make_behavioral_videos']['raster_special_units']:
+                        if special_unit not in cluster_data_dict:
+                            # This special unit was excluded by `raster_selection_criteria`
+                            # (e.g. a brain_areas filter); skip its spike-sound file rather
+                            # than KeyError-ing on the narrowed cluster dict.
+                            continue
                         spikes_for_sound = filter_spikes_for_raster(input_arr=cluster_data_dict[special_unit],
                                                                     ra_st_fr=frame_start,
                                                                     ra_end_fr=frame_start + frame_span,

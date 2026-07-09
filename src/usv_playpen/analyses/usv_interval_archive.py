@@ -75,7 +75,15 @@ def _polars_to_h5(group: h5py.Group, name: str, df: pls.DataFrame) -> None:
     None
     """
 
-    schema = {col: str(dtype) for col, dtype in df.schema.items()}
+    # A nullable integer column is promoted to float64 on write (its nulls become NaN);
+    # record it as "Float64" so the reader rebuilds a matching float column instead of
+    # forcing the NaN-bearing data back to an integer dtype (which raises on conversion).
+    _int_dtypes = (pls.Int8, pls.Int16, pls.Int32, pls.Int64,
+                   pls.UInt8, pls.UInt16, pls.UInt32, pls.UInt64)
+    schema = {
+        col: ("Float64" if (dtype in _int_dtypes and df[col].null_count() > 0) else str(dtype))
+        for col, dtype in df.schema.items()
+    }
 
     if df.height == 0:
         # Zero-length compound dataset isn't trivially constructable from
@@ -110,7 +118,14 @@ def _polars_to_h5(group: h5py.Group, name: str, df: pls.DataFrame) -> None:
         elif dtype in (pls.Float32, pls.Float64):
             np_fields.append((col, np.float64))
         elif dtype == pls.Boolean:
-            np_fields.append((col, np.bool_))
+            # A nullable Boolean column cannot fill a np.bool_ field: its nulls arrive as
+            # Python None and the to_list path silently coerces them to False. Promote to
+            # float64 (null -> NaN) so the round-trip preserves the null, matching the
+            # nullable-int handling above; all-valid boolean columns keep np.bool_.
+            if df[col].null_count() > 0:
+                np_fields.append((col, np.float64))
+            else:
+                np_fields.append((col, np.bool_))
         else:
             # Fallback: stringify
             np_fields.append((col, str_dtype))

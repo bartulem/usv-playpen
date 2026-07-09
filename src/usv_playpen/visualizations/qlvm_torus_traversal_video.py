@@ -143,9 +143,7 @@ def pool_latents_from_h5(h5) -> tuple[np.ndarray, list[tuple[str, int]]]:
     return np.concatenate(coords_chunks, axis=0), index
 
 
-# ---------------------------------------------------------------------------
 # Geometry / trajectory helpers (pure, no matplotlib state)
-# ---------------------------------------------------------------------------
 
 
 def _lin(a, b, n):
@@ -191,9 +189,7 @@ def _shortest_extended(a, b):
     return a, a + d
 
 
-# ---------------------------------------------------------------------------
 # Matplotlib artist helpers (mutate / create axes & inset artists)
-# ---------------------------------------------------------------------------
 
 
 def _set_border(ax, color, width):
@@ -228,9 +224,7 @@ def _set_contour_style(cs, lw, alpha):
             coll.set_alpha(alpha)
 
 
-# ---------------------------------------------------------------------------
 # Phase-list construction (pure: builds the ordered animation script)
-# ---------------------------------------------------------------------------
 
 
 def build_phases(centers, K, peaks_only, title_card_frames, cluster_hold_frames,

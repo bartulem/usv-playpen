@@ -3927,7 +3927,10 @@ def continuous_vocal_manifold_model_selection(
     SCREEN_BASELINE_STRATEGY = 'null'
 
     num_features = len(univariate_data)
-    alpha_corrected = p_val / num_features
+    # Guard the Bonferroni divisor: an empty univariate file (only metadata blocks, popped
+    # above) would divide by zero here; fall back to the raw p-value so the empty-candidates
+    # path below reports "no significant features" cleanly (as the sibling selectors do).
+    alpha_corrected = p_val / num_features if num_features > 0 else p_val
     candidates = []
 
     # The selection score (`SELECTION_SCORE_KEY`: `r2_spatial` on euclidean,

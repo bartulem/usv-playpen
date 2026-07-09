@@ -32,7 +32,6 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
 from scipy import ndimage
 from tqdm import tqdm
 
@@ -409,61 +408,3 @@ def process_session_batch_boxprompt(
             log_memory_usage(logger, f"after batch {batch_idx}/{total_batches}")
 
     return session_name, processed_masks
-
-
-def build_detector_cfg(args) -> BoxDetectorConfig:
-    """Build a BoxDetectorConfig from parsed CLI args (boxprompt detector knobs).
-
-    Field precedence (low -> high): BoxDetectorConfig defaults < the mapped CLI knobs
-    (``pad_*``/``merge_*``/``min_area_px``/``strict_traces``, already preset-adjusted in
-    cli.py) < ``detector_extra`` (a named preset's non-flag thresholds like ``PCT``) <
-    ``detector_config_json`` (explicit power-user override file).
-    """
-    kwargs = dict(
-        pad_time=args.pad_time,
-        pad_freq=args.pad_freq,
-        merge_time_gap=args.merge_time_gap,
-        merge_freq_gap=args.merge_freq_gap,
-        min_area_px=args.min_area_px,
-        strict_traces=args.strict_traces,
-    )
-    # Named-preset detector fields not exposed as CLI flags (PCT, ABS_FLOOR, min_mean_int, ...).
-    kwargs.update(getattr(args, "detector_extra", None) or {})
-    # Explicit JSON file overrides everything.
-    if getattr(args, "detector_config_json", None):
-        import json
-        with open(args.detector_config_json) as fh:
-            kwargs.update(json.load(fh))
-    return BoxDetectorConfig(**kwargs)
-
-
-def boxprompt_config_summary(args, detector_cfg: Optional[BoxDetectorConfig]) -> Dict:
-    """Assemble the box-prompt config dict stored in the pkl / YAML (analog of sam2_config)."""
-    det = getattr(args, "detector", "cc")
-    summary = {
-        "method": "boxprompt",
-        "detector_type": det,
-        "multimask_output": not args.single_mask,
-        "iou_floor": args.iou_floor,
-        "drop_below_iou": args.drop_below_iou,
-        "split_disconnected": not args.no_split_masks,
-        "max_iters": args.max_iters,
-        "merge_instances": not args.no_merge_instances,
-        "merge_iou": args.merge_iou,
-        "merge_containment": args.merge_containment,
-        "mask_intensity_floor": getattr(args, "mask_intensity_floor", 0.0),
-        "tiny_mask_floor_px": getattr(args, "tiny_mask_floor_px", 12),
-        "min_box_area": getattr(args, "min_box_area", 0),
-    }
-    if det == "yolo":
-        summary["yolo"] = {
-            "weights": getattr(args, "yolo_weights", None),
-            "conf": getattr(args, "yolo_conf", None),
-            "iou": getattr(args, "yolo_iou", None),
-            "imgsz": getattr(args, "yolo_imgsz", None),
-        }
-        # Keep the legacy key populated so downstream readers of "detector" don't KeyError.
-        summary["detector"] = summary["yolo"]
-    else:
-        summary["detector"] = dict(detector_cfg.__dict__) if detector_cfg else {}
-    return summary

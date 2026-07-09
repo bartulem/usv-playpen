@@ -445,23 +445,29 @@ def init_cnn_params_and_state(key: jax.Array, in_channels: int,
             # blocks 0-3) and of the dense-head keys (`k[-2]`, `k[-1]`), so the
             # kernels are independently seeded for any supported kernel count.
             inc_dw_key_offset = 40
-            if inc_dw_key_offset + len(inc_kernels) > len(k):
+            # The pointwise + shortcut keys sit immediately after the depthwise block
+            # (offsets 40+N and 40+N+1). Reserve those two slots and keep clear of the
+            # dense-head keys `k[-2]`/`k[-1]`, so no inception key reuses another block's
+            # slot (the old `k[10]`/`k[11]` collided with standard block 1's keys).
+            inc_pw_key_offset = inc_dw_key_offset + len(inc_kernels)
+            inc_sc_key_offset = inc_pw_key_offset + 1
+            if inc_sc_key_offset >= len(k) - 2:
                 raise ValueError(
                     f"Too many inception kernels ({len(inc_kernels)}) for the reserved "
-                    f"PRNG-key budget: keys {inc_dw_key_offset}..{inc_dw_key_offset + len(inc_kernels) - 1} "
-                    f"would exceed the {len(k)} split keys. Reduce "
-                    f"`inception_kernel_sizes` or widen the `jax.random.split` count."
+                    f"PRNG-key budget: keys {inc_dw_key_offset}..{inc_sc_key_offset} "
+                    f"would collide with the dense-head keys in the {len(k)} split keys. "
+                    f"Reduce `inception_kernel_sizes` or widen the `jax.random.split` count."
                 )
             for j, k_size in enumerate(inc_kernels):
                 params[f'b0_dw_w_{j}'] = jax.random.normal(k[inc_dw_key_offset + j], (c_in, 1, k_size)) * jnp.sqrt(2.0 / k_size)
 
             # Pointwise mixes parallel scales (N_kernels * in_channels -> c_out)
             pw_in_dim = c_in * len(inc_kernels)
-            params['b0_pw_w'] = jax.random.normal(k[10], (c_out, pw_in_dim, 1)) * jnp.sqrt(2.0 / pw_in_dim)
+            params['b0_pw_w'] = jax.random.normal(k[inc_pw_key_offset], (c_out, pw_in_dim, 1)) * jnp.sqrt(2.0 / pw_in_dim)
             params['b0_pw_b'] = jnp.zeros((1, c_out, 1))
 
             # Shortcut matches scale and channel expansion
-            params['b0_sc_w'] = jax.random.normal(k[11], (c_out, c_in, 1)) * jnp.sqrt(2.0 / c_in)
+            params['b0_sc_w'] = jax.random.normal(k[inc_sc_key_offset], (c_out, c_in, 1)) * jnp.sqrt(2.0 / c_in)
             params['b0_sc_b'] = jnp.zeros((1, c_out, 1))
         else:
             # === Standard Blocks (Or Block 0 if Inception is False) ===
@@ -1519,8 +1525,10 @@ class NeuralContinuousCNNRunner:
                 return angle_decode_jax(preds_raw, manifold_period_jax)
             return preds_raw
 
-        # Helper for efficient, memory-safe evaluation (splits test set to avoid OOM)
-        def evaluate_batched(p, s, x_s):
+        # Helper for efficient, memory-safe evaluation (splits test set to avoid OOM).
+        # `y_center` / `y_scale` are passed in explicitly (not closed over) so each fold
+        # evaluates against the SAME prediction box it was trained on.
+        def evaluate_batched(p, s, x_s, y_center, y_scale):
             preds = []
 
             for i in range(0, len(x_s), batch_size):
@@ -1535,7 +1543,7 @@ class NeuralContinuousCNNRunner:
                 # is_training=False prevents BN stats from updating during eval
                 # Passing self.hp enables the dynamic physics defined in Phase 2
                 pred_batch, _ = cnn_forward(
-                    p, s, batch_x, Y_center, Y_scale, self.hp,
+                    p, s, batch_x, y_center, y_scale, self.hp,
                     rng_key=None, is_training=False
                 )
 
@@ -1546,23 +1554,24 @@ class NeuralContinuousCNNRunner:
             return _decode_predictions_for_eval(preds_raw)
 
         # Forward + backward pass, hoisted ABOVE the fold / strategy loops and
-        # jitted once per `fit` call. It closes over only fit-invariant state
-        # (`Y_center` / `Y_scale`, the hyperparameter dict, and the torus
-        # output / period config) and is always called on fixed-size
-        # `batch_size` batches, so this conv-heavy graph is traced and compiled
-        # a SINGLE time and reused across every fold and strategy. Only the
-        # small optimiser-update graph (`_apply_update` below), which depends on
-        # the per-fold LR schedule, is re-jitted per fold — avoiding a full
-        # forward / backward recompile on every fold and strategy.
+        # jitted once per `fit` call. `Y_center` / `Y_scale` are passed in as explicit
+        # TRACED arguments (`y_center` / `y_scale`) rather than closed over, so each
+        # fold trains against its OWN per-fold prediction box instead of reusing the
+        # box baked in when the graph was first traced on fold 0. Because jit caches on
+        # argument avals (identical fold-to-fold), the conv-heavy graph is still traced
+        # and compiled a SINGLE time and reused across every fold and strategy. Only the
+        # small optimiser-update graph (`_apply_update` below), which depends on the
+        # per-fold LR schedule, is re-jitted per fold — avoiding a full forward /
+        # backward recompile on every fold and strategy.
         @jax.jit
-        def _compute_grads(p, s, xs, yt, rng_key):
+        def _compute_grads(p, s, xs, yt, rng_key, y_center, y_scale):
             # Split the key: use one half for this step's dropout, keep the
             # other for the next step.
             rng_key, drop_key = jax.random.split(rng_key)
 
             def loss_fn(weights, current_state):
                 preds, new_state = cnn_forward(
-                    weights, current_state, xs, Y_center, Y_scale, self.hp,
+                    weights, current_state, xs, y_center, y_scale, self.hp,
                     rng_key=drop_key, is_training=True
                 )
 
@@ -1631,6 +1640,7 @@ class NeuralContinuousCNNRunner:
         # We only persist the heavy parameters for the actual strategy
         best_actual_params_list = []
         best_actual_states_list = []
+        best_actual_scale_list = []
         actual_errors = []
 
         for fold, (train_idx, test_idx) in enumerate(folds):
@@ -1652,6 +1662,7 @@ class NeuralContinuousCNNRunner:
                 actual_errors.append(float('inf'))
                 best_actual_params_list.append(None)
                 best_actual_states_list.append(None)
+                best_actual_scale_list.append(None)
                 _checkpoint_deep_storage(f"post-fold-{fold + 1}-skipped")
                 continue
 
@@ -1800,12 +1811,13 @@ class NeuralContinuousCNNRunner:
 
                         # 3. Forward / backward (once-compiled) then optimiser step
                         grads, state, dropout_rng = _compute_grads(
-                            params, state, jnp.array(X_batch), jnp.array(Y_tr[idx]), dropout_rng
+                            params, state, jnp.array(X_batch), jnp.array(Y_tr[idx]), dropout_rng,
+                            Y_center, Y_scale
                         )
                         params, opt_state = _apply_update(params, opt_state, grads)
 
                     if epoch % 5 == 0:
-                        Y_pred_te = evaluate_batched(params, state, jnp.array(X_te))
+                        Y_pred_te = evaluate_batched(params, state, jnp.array(X_te), Y_center, Y_scale)
                         err = float(jnp.mean(jnp.sqrt(jnp.sum(signed_diff_jax(
                             jnp.array(Y_te), Y_pred_te,
                             metric=self.manifold_metric, period=self.manifold_period,
@@ -1825,7 +1837,7 @@ class NeuralContinuousCNNRunner:
                         if patience_counter >= patience_limit:
                             break
 
-                Y_pred_final = evaluate_batched(best_params, best_state, jnp.array(X_te))
+                Y_pred_final = evaluate_batched(best_params, best_state, jnp.array(X_te), Y_center, Y_scale)
                 fold_results[f'Y_pred_{strategy}'] = Y_pred_final
                 fold_results[f'error_{strategy}'] = best_err
 
@@ -1835,6 +1847,7 @@ class NeuralContinuousCNNRunner:
                     actual_errors.append(best_err)
                     best_actual_params_list.append(best_params)
                     best_actual_states_list.append(best_state)
+                    best_actual_scale_list.append((Y_center, Y_scale))
                     # Persist the per-fold "actual" weights into
                     # `fold_results` so the post-Phase-1 checkpoint
                     # captures every byte the saliency phase needs.
@@ -1864,6 +1877,10 @@ class NeuralContinuousCNNRunner:
         best_fold_idx = int(np.argmin(actual_errors))
         best_params = best_actual_params_list[best_fold_idx]
         best_state = best_actual_states_list[best_fold_idx]
+        # The best fold's own prediction box, so Phase 2/3 evaluate against the same
+        # `Y_center` / `Y_scale` `best_params` were trained under (rather than whatever
+        # box the final loop iteration happened to leave in scope).
+        best_Y_center, best_Y_scale = best_actual_scale_list[best_fold_idx]
         test_idx_final = folds[best_fold_idx][1]
 
         X_te_base = np.array(X_seq[test_idx_final])
@@ -1883,7 +1900,7 @@ class NeuralContinuousCNNRunner:
                 # Decouple the specific feature across the trial dimension
                 X_perm[:, f_idx, :] = X_perm[perm_idx, f_idx, :]
 
-                Y_pred_perm = evaluate_batched(best_params, best_state, jnp.array(X_perm))
+                Y_pred_perm = evaluate_batched(best_params, best_state, jnp.array(X_perm), best_Y_center, best_Y_scale)
                 err_perm = float(jnp.mean(jnp.sqrt(jnp.sum(signed_diff_jax(
                     jnp.array(Y_te_final), Y_pred_perm,
                     metric=self.manifold_metric, period=self.manifold_period,
@@ -2011,7 +2028,7 @@ class NeuralContinuousCNNRunner:
             # compute it once here instead of once per cluster inside the loop below.
             global_saliency_template = self._compute_global_saliency_template(
                 best_params, best_state,
-                jnp.array(X_te_base), Y_center, Y_scale,
+                jnp.array(X_te_base), best_Y_center, best_Y_scale,
             )
 
             for label, g in geometry.items():
@@ -2024,7 +2041,7 @@ class NeuralContinuousCNNRunner:
                 #    this cluster's empirically-derived centroid.
                 saliency_maps = self.compute_centroid_saliency(
                     best_params, best_state,
-                    jnp.array(X_te_base), Y_center, Y_scale,
+                    jnp.array(X_te_base), best_Y_center, best_Y_scale,
                     polygon_centroid=tuple(centroid),
                     global_template=global_saliency_template,
                 )

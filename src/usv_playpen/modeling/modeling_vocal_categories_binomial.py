@@ -366,7 +366,10 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         mixture_model_params = self.modeling_settings['mixture_model_params']
         for sex in ('male', 'female'):
             params = mixture_model_params[sex]
-            if mixture_model_idx < len(params['means']):
+            # Require a non-negative in-range index: a negative `mixture_model_idx` passes a
+            # bare `< len(...)` guard and then indexes from the array end, silently selecting
+            # the wrong mixture component (matches the guard in `modeling_utils`).
+            if 0 <= mixture_model_idx < len(params['means']):
                 ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
                     params['means'][mixture_model_idx], params['sds'][mixture_model_idx],
                     self.modeling_settings['model_params']['mixture_model_z_score'],
@@ -626,6 +629,12 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         test_prop = model_ops['test_proportion']
         split_strategy = model_ops['split_strategy']
         rand_seed = self.modeling_settings['model_params']['random_seed']
+        # The 50/50 balance and train/test shuffle below draw from NumPy's GLOBAL RNG
+        # (`balance_two_class_arrays` / `shuffle_train_test_arrays`); seed it here so the
+        # fitting dispatcher reproduces splits from `random_seed`. The extraction stage
+        # seeds the global RNG via `prepare_modeling_sessions`, but the fitting entry
+        # point does not otherwise touch it.
+        np.random.seed(rand_seed)
 
         splits_data = []
 
@@ -806,8 +815,10 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                 if split_idx >= n_splits: break
 
                 if strat == 'null':
+                    # Coalesce a None `random_seed` to 0 so the null branch does not crash
+                    # on `None + split_idx` (matches `run_predictor_audits`).
                     null_rng = np.random.default_rng(
-                        self.modeling_settings['model_params']['random_seed'] + split_idx + 1
+                        (self.modeling_settings['model_params']['random_seed'] or 0) + split_idx + 1
                     )
                     y_tr = null_rng.permutation(y_tr)
 

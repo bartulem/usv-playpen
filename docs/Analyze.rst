@@ -94,6 +94,11 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **tail_points** : tail skeleton node names (order matters!)
 * **back_root_points** : back skeleton node names (order matters!)
 * **derivative_bins** : number of bins to compute derivatives over
+* **speed_smoothing_time_window** : Gaussian speed-smoothing window (in seconds); its stddev is ``floor(window * capture_framerate)`` frames
+* **feature_hist_num_bins** : number of bins for the 1-D feature-distribution histograms
+* **spatial_hist_min_val** : lower edge (cm) of the 2-D spatial-occupancy histogram
+* **spatial_hist_max_val** : upper edge (cm) of the 2-D spatial-occupancy histogram
+* **spatial_hist_num_bins** : number of bins per axis for the 2-D spatial-occupancy histogram
 
 .. code-block:: json
 
@@ -116,7 +121,12 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
           "Trunk",
           "TTI"
         ],
-        "derivative_bins": 10
+        "derivative_bins": 10,
+        "speed_smoothing_time_window": 0.015,
+        "feature_hist_num_bins": 36,
+        "spatial_hist_min_val": -32,
+        "spatial_hist_max_val": 32,
+        "spatial_hist_num_bins": 196
   }
 
 Compute neuronal tuning curves
@@ -256,6 +266,9 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **fs_sequence_duration** : duration of the audio segment in seconds
 * **fs_octave_shift** : octave shift of the audio segment (e.g. -3 shifts down three octaves, to 1/8 the original frequency)
 * **fs_volume_adjustment** : whether to automatically increase the volume of the audio segment; recommended since the vocalizations are faint
+* **fs_compand_transfer** : SoX ``compand`` transfer-function argument string applied during the volume-adjustment pass (attack/decay + dB transfer points)
+* **fs_noise_reduction_std_threshold** : ``noisereduce`` stationary noise-reduction threshold (in noise standard deviations)
+* **fs_sinc_upper_cutoff_hz** : upper cutoff (Hz) of the SoX ``sinc`` low-pass, scaled by the octave shift, applied to non-filtered source audio
 
 .. code-block:: json
 
@@ -267,7 +280,10 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "fs_sequence_start": 900.0,
         "fs_sequence_duration": 2.0,
         "fs_octave_shift": -3,
-        "fs_volume_adjustment": true
+        "fs_volume_adjustment": true,
+        "fs_compand_transfer": "0.3,1 6:-70,-60,-20 -5 -90 0.2",
+        "fs_noise_reduction_std_threshold": 3,
+        "fs_sinc_upper_cutoff_hz": 25000
     }
 
 Create artificial playback .WAV

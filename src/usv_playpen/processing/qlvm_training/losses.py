@@ -99,17 +99,25 @@ def binary_lp(samples,data,importance_weights=[]):
         ## should this be log2....
         t1 = torch.einsum('bjdl,sjdl->bs',data,torch.log(samples))
         t2 = torch.einsum('bjdl,sjdl->bs',1-data,torch.log(1-samples))
-        #if torch.any(t1 == )
-        assert not torch.any(t1 == torch.nan)
-        assert not (torch.any(t2 == torch.nan))
 
         ### returns: batch x n samples
-        return (t1 + t2) +torch.log(importance_weights)
-    except:
+        result = (t1 + t2) +torch.log(importance_weights)
+    except Exception:
         print("shapes were probably weird: here's what they were:")
         print(f"samples: {samples.shape}")
         print(f"data: {data.shape}")
         assert False
+
+    # NaN check OUTSIDE the shape-error try/except so a genuine NaN (e.g. log of a
+    # degenerate/0 sample) raises a clear NaN diagnostic instead of the misleading
+    # "shapes were probably weird" message. ``x == torch.nan`` is always False (NaN never
+    # compares equal), so the original in-try guard was a permanent no-op; use torch.isnan.
+    if torch.isnan(result).any():
+        raise ValueError(
+            "binary_lp produced NaN (likely log of a degenerate/0 decoder sample); "
+            "check the decoder outputs feeding the QLVM loss."
+        )
+    return result
 def binary_lp_old(samples,data):
 
     """

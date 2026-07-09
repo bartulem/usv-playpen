@@ -2,11 +2,8 @@
 # ABOUTME: torch is imported lazily so the CPU spectrogram step never pays for it at import time.
 import os
 import gc
-import random
 import logging
 from typing import Optional
-
-import numpy as np
 
 # Single, GPU-aware implementations consolidated from the old utils.py (CPU-only)
 # and sam_utils.py (GPU) variants so there is exactly one of each name.
@@ -76,37 +73,6 @@ def log_memory_usage(logger: logging.Logger, stage: str = "") -> None:
     logger.info(msg)
 
 
-def set_random_seed(seed: int, deterministic: bool = False) -> None:
-    """Seed random / numpy / torch (incl. CUDA) for reproducibility.
-
-    Args:
-        seed: Random seed value.
-        deterministic: If True, enable deterministic torch algorithms (slower).
-    """
-    random.seed(seed)
-    np.random.seed(seed)
-
-    try:
-        import torch
-    except ImportError:
-        return
-
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-
-    if deterministic:
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        os.environ['PYTHONHASHSEED'] = str(seed)
-        if hasattr(torch, 'use_deterministic_algorithms'):
-            torch.use_deterministic_algorithms(True, warn_only=True)
-    else:
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cudnn.deterministic = False
-
-
 def setup_device(deterministic: bool = False, logger: Optional[logging.Logger] = None):
     """Set up the compute device (cuda/mps/cpu) with sensible perf flags.
 
@@ -141,27 +107,3 @@ def setup_device(deterministic: bool = False, logger: Optional[logging.Logger] =
 
     logger.info(f"Compute device: {device}")
     return device
-
-
-def compile_model(model, enable: bool = False, logger: Optional[logging.Logger] = None):
-    """Optionally ``torch.compile`` the SAM2 image encoder for speed.
-
-    Returns the model (compiled or original). Compilation failures are logged and
-    swallowed so a run never dies because compile is unsupported.
-    """
-    if logger is None:
-        logger = logging.getLogger(__name__)
-
-    import torch
-    if not enable or not hasattr(torch, 'compile'):
-        return model
-
-    try:
-        logger.info("Compiling SAM2 image encoder...")
-        model.image_encoder = torch.compile(
-            model.image_encoder, mode="reduce-overhead", fullgraph=True)
-        logger.info("Model compilation successful")
-    except Exception as e:
-        logger.warning(f"Compilation failed: {e}, proceeding without compilation")
-
-    return model

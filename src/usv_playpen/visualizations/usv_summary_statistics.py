@@ -29,7 +29,7 @@ from ..analyses._usv_io import extract_session_metadata, load_and_filter_usv_dat
 # Load the project-wide default cmap from `visualizations_settings.json`
 # at module import. Used as the default for every `cmap=` arg in this
 # file and as the base for the custom "white-base" colormap built in
-# `plot_category_polar_kde_grid` (was a hard-coded `'inferno'`).
+# `plot_category_prevalence_and_embedding` (was a hard-coded `'inferno'`).
 _VIZ_SETTINGS_PATH = (
     pathlib.Path(__file__).parent.parent
     / "_parameter_settings" / "visualizations_settings.json"
@@ -3016,9 +3016,13 @@ def plot_estrous_category_kde_grid(
         msg = "No USV categories found in usv_pls."
         raise ValueError(msg)
 
-    # Compute background KDE once — shared across all subplots
-    bg_dist = bg_pls['distance'].drop_nulls().to_numpy()
-    bg_angle_rad = np.deg2rad(np.abs(bg_pls[angle_key].drop_nulls().to_numpy()))
+    # Compute background KDE once — shared across all subplots. Drop nulls JOINTLY
+    # over both columns (matching the per-cell path below): dropping nulls on
+    # `distance` and the angle column separately would misalign the two 1-D arrays
+    # row-for-row (and break/crash when their null counts differ).
+    bg_subset = bg_pls.select(['distance', angle_key]).drop_nulls()
+    bg_dist = bg_subset['distance'].to_numpy()
+    bg_angle_rad = np.deg2rad(np.abs(bg_subset[angle_key].to_numpy()))
 
     valid_bg = ~np.isnan(bg_dist) & ~np.isnan(bg_angle_rad) & (bg_dist <= max_distance)
     if valid_bg.sum() < 10:

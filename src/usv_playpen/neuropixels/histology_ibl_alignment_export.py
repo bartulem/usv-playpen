@@ -1196,10 +1196,10 @@ class IBLAlignmentExporter:
         ----------
         sparse_data : numpy.ndarray
             Waveform array of shape ``(n_waveforms, n_samples,
-            n_channels)``. Whitened or unwhitened — the argmax/argmin
-            positions are invariant under the channel-wise linear
-            unwhitening so either input gives the same result on the
-            peak channel.
+            n_channels)``. Durations are computed on the whitened
+            waveform to match phylib's convention (the unwhitening is a
+            full channel-mixing multiply, so a single channel's time
+            course is not preserved under it).
         peak_channels : numpy.ndarray
             Per-waveform peak channel index of shape ``(n_waveforms,)``.
 

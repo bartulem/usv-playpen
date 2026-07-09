@@ -5885,11 +5885,17 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                                 fontsize=10, labelpad=2,
                             )
                             ty_min, ty_max = ax1.get_ylim()
+                            # Expand ylim to the ceil top-tick (as the sibling occupancy /
+                            # property axes do) so the top tick's position matches its label
+                            # instead of being drawn above the axes or labelled with a value
+                            # that isn't where the tick sits.
+                            ty_top = np.ceil(ty_max)
+                            ax1.set_ylim(ty_min, ty_top)
                             ax1.set_yticks(
-                                ticks=[max(np.floor(ty_min), 0), np.ceil(ty_max)],
+                                ticks=[max(np.floor(ty_min), 0), ty_top],
                                 labels=[
                                     f"{max(np.floor(ty_min), 0):.1f}",
-                                    f"{ty_max:.1f}",
+                                    f"{ty_top:.1f}",
                                 ],
                                 fontsize=10,
                             )
@@ -6149,7 +6155,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             zorder=2,
         )
         ax_peth.axvline(x=0.0, color=COLOR_BLACK, ls="--", lw=0.5)
-        ax_peth.set_xlim(bin_centers.min(), bin_centers.max())
+        # Span the full bin-edge range (centres +/- half a bin), not centre-to-centre, so the
+        # t=0 onset marker and the window-edge xticks (e.g. -2.0 / 0.0) stay inside the axes.
+        peth_half_bin = (bin_centers[1] - bin_centers[0]) / 2.0 if bin_centers.size > 1 else 0.0
+        ax_peth.set_xlim(bin_centers.min() - peth_half_bin, bin_centers.max() + peth_half_bin)
         # explicit X ticks at 0.25 s spacing so 0 s is always visible
         peth_xticks = np.arange(-2.0, 0.0001, 0.25)
         ax_peth.set_xticks(peth_xticks)
@@ -6944,7 +6953,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     ha="center", va="center",
                     fontsize=9, fontweight="bold", color=COLOR_BLACK,
                     path_effects=[
-                        mpe.withStroke(linewidth=2.0, foreground="white"),
+                        mpe.withStroke(linewidth=2.0, foreground="#FFFFFF"),
                     ],
                 )
         ax.set_xlim(x_min, x_max)

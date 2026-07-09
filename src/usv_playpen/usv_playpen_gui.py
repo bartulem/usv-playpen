@@ -7563,12 +7563,14 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
                            'visualizations_pc_choice': visualizations_input_dict['send_email']['visualizations_pc_choice'], 'analyses_pc_choice': analyses_input_dict['send_email']['analyses_pc_choice'],
                            'processing_pc_choice': processing_input_dict['send_email']['Messenger']['processing_pc_choice'], 'encoding_preset': processing_input_dict['modify_files']['Operator']['rectify_video_fps']['encoding_preset'],
                            'vcl_version': processing_input_dict['vocalocator']['vcl_version'], 'specific_camera_serial': _toml['video']['general']['specific_camera_serial'],
-                           '21372315_rec_checkbox_bool': True if '21372315' in _toml['video']['general']['expected_cameras'] else False,
-                           '21372316_rec_checkbox_bool': True if '21372316' in _toml['video']['general']['expected_cameras'] else False,
-                           '21369048_rec_checkbox_bool': True if '21369048' in _toml['video']['general']['expected_cameras'] else False,
-                           '22085397_rec_checkbox_bool': True if '22085397' in _toml['video']['general']['expected_cameras'] else False,
-                           '21241563_rec_checkbox_bool': True if '21241563' in _toml['video']['general']['expected_cameras'] else False,
                            'create_naturalistic_usv_playback_wav_cb_bool': False, 'playback_context': analyses_input_dict['create_naturalistic_usv_playback_wav']['context_label']}
+
+    # Seed one recording-destination checkbox per available camera serial (looping over the
+    # master ``available_cameras`` list rather than a hard-coded subset), so every camera the
+    # GUI builds from ``available_cameras`` has its ``{serial}_rec_checkbox_bool`` and cannot
+    # KeyError if the serial list is edited in the TOML.
+    for camera_serial in _toml['video']['general']['available_cameras']:
+        initial_values_dict[f"{camera_serial}_rec_checkbox_bool"] = camera_serial in _toml['video']['general']['expected_cameras']
 
     # Seed each lab's destination checkbox directly from the persisted selection
     # (the only recording-destination state stored now); no drive-letter matching.

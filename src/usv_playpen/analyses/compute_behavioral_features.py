@@ -416,8 +416,10 @@ def calculate_tail_curvature(input_arr: np.ndarray) -> np.ndarray:
         / segment_lengths[:, :-1, np.newaxis]
     )
 
-    # per-frame mean curvature magnitude (1/length units)
-    avg_curvature = np.mean(np.linalg.norm(curvature, axis=2), axis=1)
+    # per-frame mean curvature magnitude (1/length units); NaN-aware so a single
+    # untracked distal tail segment does not null an otherwise well-tracked frame
+    # (consistent with the np.nanmean segment-length rescale two lines below)
+    avg_curvature = np.nanmean(np.linalg.norm(curvature, axis=2), axis=1)
 
     # rescale by the per-frame mean segment length to produce a unitless
     # "tail bendiness index" (cancels the inner 1/length units and lands
@@ -1909,7 +1911,7 @@ class FeatureZoo:
             speed[mouse_num, :, :] = calculate_speed(
                 tracked_points_array=mouse_data[:, mouse_num, exclude_tail_mask, :],
                 capture_framerate=empirical_camera_sr,
-                smoothing_time_window=0.015,
+                smoothing_time_window=self.behavioral_parameters_dict["speed_smoothing_time_window"],
             )
 
             speed_1st_der[mouse_num, :, :], speed_2nd_der[mouse_num, :, :] = (
@@ -2705,7 +2707,7 @@ class FeatureZoo:
                     feature_arr=behavioral_features_df.select(column).to_numpy(),
                     min_val=self.feature_boundaries[column.split(".")[1]][0],
                     max_val=self.feature_boundaries[column.split(".")[1]][1],
-                    num_bins=36,
+                    num_bins=self.behavioral_parameters_dict["feature_hist_num_bins"],
                     camera_fr=empirical_camera_sr,
                     space_bool=False,
                 )
@@ -2727,9 +2729,9 @@ class FeatureZoo:
                         ),
                         axis=1,
                     ),
-                    min_val=-32,
-                    max_val=32,
-                    num_bins=196,
+                    min_val=self.behavioral_parameters_dict["spatial_hist_min_val"],
+                    max_val=self.behavioral_parameters_dict["spatial_hist_max_val"],
+                    num_bins=self.behavioral_parameters_dict["spatial_hist_num_bins"],
                     camera_fr=empirical_camera_sr,
                     space_bool=True,
                 )

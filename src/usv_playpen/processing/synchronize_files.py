@@ -755,7 +755,13 @@ class Synchronizer:
                         all_zero_matches = np.all(np.abs(result_array) <= tolerance, axis=1)
 
                         if np.any(all_zero_matches):
-                            sync_sequence_dict = {camera_dir: np.ravel(arduino_ipi_durations_subarrays[all_zero_matches])}
+                            # Key by the camera serial (the ``Path`` basename), not the full
+                            # ``Path``: the exact-frame-times consumer globs
+                            # ``video/*.{serial}/metadata.yaml``, which only matches when the key
+                            # is the bare serial string. ``pathlib.Path(...).name`` handles both a
+                            # Path (production) and a bare serial string (the function's str-typed
+                            # signature / tests) without an AttributeError.
+                            sync_sequence_dict = {pathlib.Path(camera_dir).name: np.ravel(arduino_ipi_durations_subarrays[all_zero_matches])}
                             ipi_start_frames = temp_ipi_start_frames
                             return sync_sequence_dict, ipi_start_frames, True
 
@@ -947,6 +953,18 @@ class Synchronizer:
                 self.message_output(f"For NIDQ, the largest break in video frame recording is {largest_break_end_hop_sec} seconds.")
 
                 loopbio_start_nidq_sample = int(triggerbox_bit_changes[largest_break_end_hop] + 1)
+                # Bounds-guard the end index (the LSB path at `find_lsb_changes` guards the
+                # identical arithmetic): if the recording ends at/near the last camera frame
+                # with no trailing triggerbox edge, `largest_break_end_hop + total_frame_number`
+                # overruns `triggerbox_bit_changes` and would raise a cryptic IndexError.
+                if largest_break_end_hop + total_frame_number >= triggerbox_bit_changes.shape[0]:
+                    raise ValueError(
+                        f"NIDQ triggerbox has only {triggerbox_bit_changes.shape[0]} rising edges after the "
+                        f"largest break at index {largest_break_end_hop}, but {total_frame_number} video frames "
+                        f"were expected. The recording appears to end at/before the last camera frame, so the "
+                        f"loopbio end NIDQ sample cannot be located — check the NIDQ triggerbox channel and the "
+                        f"expected frame count."
+                    )
                 loopbio_end_nidq_sample = int(triggerbox_bit_changes[largest_break_end_hop + total_frame_number] + 1)
                 nidq_rec_duration = (loopbio_end_nidq_sample - loopbio_start_nidq_sample) / self.input_parameter_dict['find_audio_sync_trains']['nidq_sr']
                 nidq_video_difference = nidq_rec_duration - total_video_time_least
@@ -1344,7 +1362,7 @@ class Synchronizer:
                         m_lsb_original = m_data_original[start_end_video['m']['start_first_recorded_frame']:start_end_video['m']['end_last_recorded_frame'] + 1] & 1
 
                         # resample the LSB data
-                        m_lsb_modified = np.where(np.interp(x=m_new_arr_indices, xp=m_original_arr_indices, fp=m_lsb_original).astype(np.int16) > 0.5, 1, 0).astype(np.int16)
+                        m_lsb_modified = np.where(np.interp(x=m_new_arr_indices, xp=m_original_arr_indices, fp=m_lsb_original) > 0.5, 1, 0).astype(np.int16)
 
                         # load data again and overwrite the LSB
                         _, m_data_tempo_adjusted = wavfile.read(f'{outfile_loc}')
@@ -1374,7 +1392,7 @@ class Synchronizer:
                         s_lsb_original = s_data_original[start_end_video['s']['start_first_recorded_frame']:start_end_video['s']['end_last_recorded_frame'] + 1] & 1
 
                         # resample the LSB data
-                        s_lsb_modified = np.where(np.interp(x=s_new_arr_indices, xp=s_original_arr_indices, fp=s_lsb_original).astype(np.int16) > 0.5, 1, 0).astype(np.int16)
+                        s_lsb_modified = np.where(np.interp(x=s_new_arr_indices, xp=s_original_arr_indices, fp=s_lsb_original) > 0.5, 1, 0).astype(np.int16)
 
                         # load data again and overwrite the LSB
                         _, s_data_tempo_adjusted = wavfile.read(f'{outfile_loc}')

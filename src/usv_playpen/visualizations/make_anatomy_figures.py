@@ -1187,24 +1187,26 @@ class AnatomyFigureMaker:
                 "No SU-somatic clusters found in any probe for this session."
             )
         all_units.sort(key=lambda u: -u["ptp"])
-        top_units = (
-            all_units if n_top_units is None else all_units[:n_top_units]
-        )
 
-        # Optional filters: probe and/or shank.
+        # Optional filters: probe and/or shank. Apply them BEFORE the top-N slice so
+        # `n_top_units` selects the N highest-amplitude units OF THE SELECTED probe/shank,
+        # not the N highest overall (of which the filters could drop most).
         if probe_filter is not None:
-            top_units = [u for u in top_units if u["probe"] == probe_filter]
+            all_units = [u for u in all_units if u["probe"] == probe_filter]
         if shank_filter is not None:
             keep = []
-            for u in top_units:
+            for u in all_units:
                 cs = u["ctx"]["channel_shanks"].astype(int)
                 if int(cs[u["peakch"]]) == shank_filter:
                     keep.append(u)
-            top_units = keep
-        if not top_units:
+            all_units = keep
+        if not all_units:
             raise RuntimeError(
                 "No units left after probe / shank filters."
             )
+        top_units = (
+            all_units if n_top_units is None else all_units[:n_top_units]
+        )
 
         # Per-unit deterministic lateral jitter so units sharing a peak
         # channel don't fully overlap. Seed by cluster_num so the same
@@ -1276,11 +1278,15 @@ class AnatomyFigureMaker:
             for s in all_shanks
         }
 
+        # ONE fixed voltage->µm scale for the whole row, derived from the largest-ptp
+        # rendered unit (top_units is sorted ptp-descending, and the probe/shank filters
+        # preserve that order), so peak amplitudes vary visibly across units instead of
+        # every unit being normalised to the same height (the documented contract).
+        fixed_scale = peak_amplitude_target_um / max(top_units[0]["ptp"], 1e-6)
         for ax_idx, shank_id in enumerate(all_shanks):
             ax = axes[ax_idx]
             shank_units = [u for u in top_units if u["shank"] == shank_id]
             for unit in shank_units:
-                effective_scale = peak_amplitude_target_um / max(unit["ptp"], 1e-6)
                 _, axi_drawn = self._draw_single_unit_waveforms_in_brain_space(
                     ax,
                     ctx=unit["ctx"],
@@ -1288,7 +1294,7 @@ class AnatomyFigureMaker:
                     template=unit["template"],
                     peakch=unit["peakch"],
                     waveform_width_um=waveform_width_um,
-                    waveform_voltage_uv_scale=effective_scale,
+                    waveform_voltage_uv_scale=fixed_scale,
                     opacity_sigma_um=opacity_sigma_um,
                     n_neighbors_each_side=n_neighbors_each_side,
                     lateral_offset_um=unit["lateral_offset_um"],
@@ -1399,19 +1405,23 @@ class AnatomyFigureMaker:
         )
         with ibl_path.open() as fh:
             ibl_payload = json.load(fh)
+        # Round (not truncate) the (lateral, axial) key on BOTH sides: the IBL JSON and the
+        # KS `positions_full` can store the same electrode as e.g. 31.9999 vs 32.0, and int()
+        # floors toward zero, desyncing the keys so the lookup silently falls to `None`
+        # (mis-colouring the contact). Matches anatomy_converter / spike_quality_metrics.
         pos_to_region: dict[tuple[int, int], str] = {}
         for key, entry in ibl_payload.items():
             if not key.startswith("channel_"):
                 continue
-            pos_to_region[(int(entry["lateral"]), int(entry["axial"]))] = (
+            pos_to_region[(int(round(entry["lateral"])), int(round(entry["axial"])))] = (
                 entry["brain_region"]
             )
         contact_colours = [
             self.brain_area_colors[pool_brain_area(
                 pos_to_region[
-                    (int(positions_full[ch, 0]), int(positions_full[ch, 1]))
+                    (int(round(positions_full[ch, 0])), int(round(positions_full[ch, 1])))
                 ]
-                if (int(positions_full[ch, 0]), int(positions_full[ch, 1]))
+                if (int(round(positions_full[ch, 0])), int(round(positions_full[ch, 1])))
                 in pos_to_region
                 else None
             )]
@@ -1566,7 +1576,7 @@ class AnatomyFigureMaker:
         sb_ax = axes[0]
         sb_xlim = sb_ax.get_xlim()
         n_samples = top_units[0]["template"].shape[0]
-        ms_bar_um = (30.0 / n_samples) * waveform_width_um
+        ms_bar_um = (30.0 / max(n_samples - 1, 1)) * waveform_width_um
         # For imec1 (schematic_on_left) the leftmost data panel
         # sits next to the schematic and the shank itself is at high
         # absolute lateral (e.g. shank 4 ≈ 777 µm), so the same

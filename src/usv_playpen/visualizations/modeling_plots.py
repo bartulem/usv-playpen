@@ -198,6 +198,9 @@ def plot_feature_ranking(
 
     valid_features = [k for k in feature_keys if k not in ignore_features]
     n_features = len(valid_features)
+    if n_features == 0:
+        print("No valid features found for significance calculation; nothing to plot.")
+        return
     corrected_p_top = (1 - (p_val / n_features)) * 100
     corrected_p_bottom = (p_val / n_features) * 100
 
@@ -1245,13 +1248,18 @@ def plot_model_selection_results(
 
         winner_data = candidates[best_feat]
 
+        _sec_raw = np.array(winner_data.get(metric_secondary, [np.nan]), dtype=float)
+        _sec_finite = _sec_raw[np.isfinite(_sec_raw)]
         steps_data.append({
             'step_idx': i,
             'feature_name': best_feat,
             'prim_scores': np.array(winner_data[primary_metric]),
             'prim_mean': best_prim_mean,
-            'sec_scores': np.array(winner_data.get(metric_secondary, [np.nan])),
-            'sec_mean': np.mean(winner_data.get(metric_secondary, [np.nan]))
+            'sec_scores': _sec_raw,
+            # NaN-filter the secondary metric before averaging (the primary is filtered at
+            # 1229-1230); a single NaN fold would otherwise make sec_mean -- and the
+            # final_score derived from it -- NaN. NaN only when EVERY fold is non-finite.
+            'sec_mean': float(np.mean(_sec_finite)) if _sec_finite.size else float('nan')
         })
 
     n_steps = len(steps_data)
@@ -1824,6 +1832,11 @@ def plot_univariate_multinomial_performance(
     # Strip reserved metadata blocks before iterating feature entries.
     valid_features = [k for k in modeling_data.keys() if k not in RESERVED_METADATA_KEYS]
     n_features = len(valid_features)
+    if n_features == 0:
+        # A results pickle with only reserved-metadata keys would divide by zero in the
+        # Bonferroni correction below; exit cleanly (as the multivariate sibling does).
+        print("No feature entries found in modeling_data; nothing to plot.")
+        return
 
     lower_is_better = ['ll', 'nll', 'log_loss', 'loss', 'mse', 'rmse']
     eval_is_lower_better = evaluation_metric in lower_is_better
@@ -1842,6 +1855,15 @@ def plot_univariate_multinomial_performance(
 
         actual_eval = actual_eval[~np.isnan(actual_eval)]
         null_eval = null_eval[~np.isnan(null_eval)]
+        # Filter the secondary metric's NaN folds too (stored per-fold like the primary
+        # eval); otherwise a single NaN fold poisons the secondary-metric sort key and
+        # the mean bar with NaN.
+        actual_sec = actual_sec[~np.isnan(actual_sec)]
+        if actual_sec.size == 0:
+            # Every secondary-metric fold was NaN (while the primary was finite); keep a
+            # single NaN so the downstream np.mean stays NaN ("no data") without a
+            # "Mean of empty slice" RuntimeWarning that would raise under filterwarnings=error.
+            actual_sec = np.array([np.nan])
         if len(actual_eval) == 0 or len(null_eval) == 0: continue
 
         actual_mean = np.mean(actual_eval)
@@ -1985,7 +2007,13 @@ def plot_univariate_multinomial_performance(
             ax = axes_trio[j]
 
             if j == 2:
-                v_limit = np.max(np.abs(diff_cm))
+                # NaN-aware: a class absent from the pooled held-out set produces an
+                # all-NaN row under normalize='true', so plain np.max would make v_limit
+                # NaN and degenerate the colour scaling. Fall back to a unit scale if no
+                # finite spread remains.
+                v_limit = np.nanmax(np.abs(diff_cm))
+                if not np.isfinite(v_limit) or v_limit == 0:
+                    v_limit = 1.0
                 vmin, vmax = -v_limit, v_limit
                 cbar_bool = True
             else:
@@ -2088,6 +2116,11 @@ def plot_univariate_multinomial_filters_grid(
     # Strip reserved metadata blocks before iterating feature entries.
     valid_features = [k for k in modeling_data.keys() if k not in RESERVED_METADATA_KEYS]
     n_features = len(valid_features)
+    if n_features == 0:
+        # A results pickle with only reserved-metadata keys would divide by zero in the
+        # Bonferroni correction below; exit cleanly (as the multivariate sibling does).
+        print("No feature entries found in modeling_data; nothing to plot.")
+        return
 
     lower_is_better = ['ll', 'nll', 'log_loss', 'loss', 'mse', 'rmse']
     eval_is_lower_better = evaluation_metric in lower_is_better
@@ -2811,9 +2844,6 @@ def plot_multinomial_multivariate_filters(
         'xtick.minor.visible': False,
         'ytick.minor.visible': False
     }
-    _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
-    plt.rcParams.update(_rcp_override)
-
     selection_steps, _, _ = load_selection_results(selection_results_path)
 
     if not selection_steps:
@@ -2831,123 +2861,130 @@ def plot_multinomial_multivariate_filters(
         print("No valid features were selected in this run.")
         return
 
-    # Self-Healing Logic: Reconstruct weights if the training script failed to finalize
-    if 'weights_reshaped' in valid_data:
-        weights = valid_data['weights_reshaped']
-        features = valid_data['final_model_features']
-        classes = valid_data['classes']
-    else:
-        print("Finalized matrix not found. Reconstructing weights on the fly...")
-        winner = valid_data['selected_feature']
-        features = valid_data['current_features'] + [winner]
-        winner_data = valid_data['candidates_summary'][winner]
-        classes = winner_data['classes']
+    # Apply the local rcParams overrides only around the actual render, and restore them in
+    # a finally so they never leak into later plots on ANY exit -- normal return OR an
+    # exception mid-render (matches plot_manifold_multivariate_filters).
+    _saved_rcp = {k: plt.rcParams[k] for k in _rcp_override}
+    plt.rcParams.update(_rcp_override)
+    try:
+        # Self-Healing Logic: Reconstruct weights if the training script failed to finalize
+        if 'weights_reshaped' in valid_data:
+            weights = valid_data['weights_reshaped']
+            features = valid_data['final_model_features']
+            classes = valid_data['classes']
+        else:
+            print("Finalized matrix not found. Reconstructing weights on the fly...")
+            winner = valid_data['selected_feature']
+            features = valid_data['current_features'] + [winner]
+            winner_data = valid_data['candidates_summary'][winner]
+            classes = winner_data['classes']
 
-        # Pull raw JAX coefficients and reshape them manually
-        raw_weights = np.array(winner_data['folds']['weights'])
-        n_folds, n_classes, n_total_inputs = raw_weights.shape
-        n_features = len(features)
-        n_time_bins = n_total_inputs // n_features
-        weights = raw_weights.reshape(n_folds, n_classes, n_features, n_time_bins)
+            # Pull raw JAX coefficients and reshape them manually
+            raw_weights = np.array(winner_data['folds']['weights'])
+            n_folds, n_classes, n_total_inputs = raw_weights.shape
+            n_features = len(features)
+            n_time_bins = n_total_inputs // n_features
+            weights = raw_weights.reshape(n_folds, n_classes, n_features, n_time_bins)
 
-    # ``nanmean`` so folds that failed to converge (stored as all-NaN
-    # weight tensors by the CNN trainer) are skipped at each position
-    # rather than poisoning every cell of the averaged weight matrix.
-    # ``np.mean`` here would propagate any NaN into the cell, which
-    # turns the whole heatmap into NaN as soon as a single fold is
-    # bad. ``catch_warnings`` silences the "All-NaN slice" emission
-    # that fires only for positions where every fold is NaN -- those
-    # cells stay NaN and the plotting code below handles them.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", category=RuntimeWarning)
-        mean_weights = np.nanmean(weights, axis=0)
-
-    n_feats = len(features)
-    ncols = 3
-    nrows = math.ceil(n_feats / ncols)
-
-    # MANUAL LAYOUT (Absolute Figure Coordinates)
-    fig = plt.figure(figsize=(18, 5 * nrows), dpi=_FIGURE_DPI)
-    fig.patch.set_facecolor('#FFFFFF')
-
-    LM, BM = 0.15, 0.12
-    W_GAP, H_GAP = 0.08, 0.18
-    SUB_W = (1.0 - LM - 0.1) / ncols - W_GAP
-    SUB_H = (1.0 - BM - 0.1) / nrows - H_GAP
-
-    for i in range(n_feats):
-        row = i // ncols
-        col = i % ncols
-
-        ax_x = LM + col * (SUB_W + W_GAP)
-        ax_y = (1.0 - 0.08 - SUB_H) - row * (SUB_H + H_GAP)
-
-        ax = fig.add_axes([ax_x, ax_y, SUB_W, SUB_H])
-        ax.set_facecolor('#FFFFFF')
-
-        feat_slice = mean_weights[:, i, :]
-        # ``nanmax`` returns NaN when every cell of ``feat_slice`` is
-        # NaN (would happen only if every fold is NaN at every
-        # position for this feature -- still possible if the feature
-        # was unlucky enough to land entirely in failed folds).
-        # NaN is truthy in Python so ``nanmax(...) or 1.0`` would
-        # leave NaN as the colormap range -- be explicit instead.
+        # ``nanmean`` so folds that failed to converge (stored as all-NaN
+        # weight tensors by the CNN trainer) are skipped at each position
+        # rather than poisoning every cell of the averaged weight matrix.
+        # ``np.mean`` here would propagate any NaN into the cell, which
+        # turns the whole heatmap into NaN as soon as a single fold is
+        # bad. ``catch_warnings`` silences the "All-NaN slice" emission
+        # that fires only for positions where every fold is NaN -- those
+        # cells stay NaN and the plotting code below handles them.
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", category=RuntimeWarning)
-            peak = np.nanmax(np.abs(feat_slice))
-        max_amp = float(peak) if np.isfinite(peak) and peak > 0 else 1.0
+            mean_weights = np.nanmean(weights, axis=0)
 
-        ax.imshow(feat_slice, aspect='auto', cmap=cmap,
-                  vmin=-max_amp, vmax=max_amp, interpolation='nearest')
+        n_feats = len(features)
+        ncols = 3
+        nrows = math.ceil(n_feats / ncols)
 
-        # X-AXIS
-        n_bins = feat_slice.shape[1]
-        tick_times = np.arange(-int(history_window_sec), 1)
-        tick_locs = [(t + history_window_sec) / history_window_sec * (n_bins - 1) for t in tick_times]
-        ax.set_xticks(tick_locs)
-        ax.set_xticklabels([f"{t}s" for t in tick_times], color=TEXT_COLOR, fontsize=10)
-        ax.set_xlabel("Time prior to USV (s)", color=TEXT_COLOR, fontsize=11, labelpad=12)
+        # MANUAL LAYOUT (Absolute Figure Coordinates)
+        fig = plt.figure(figsize=(18, 5 * nrows), dpi=_FIGURE_DPI)
+        fig.patch.set_facecolor('#FFFFFF')
 
-        # Y-AXIS
-        ax.set_yticks(np.arange(len(classes)))
-        ax.set_yticklabels(classes, color=TEXT_COLOR, fontsize=10)
-        ax.set_ylabel("USV Category", color=TEXT_COLOR, fontsize=12, fontweight='bold', labelpad=20)
+        LM, BM = 0.15, 0.12
+        W_GAP, H_GAP = 0.08, 0.18
+        SUB_W = (1.0 - LM - 0.1) / ncols - W_GAP
+        SUB_H = (1.0 - BM - 0.1) / nrows - H_GAP
 
-        # TITLES & SPINES
-        ax.set_title(f"{features[i]}\nInfluence: ±{max_amp:.3f}",
-                     color=TEXT_COLOR, fontsize=12, fontweight='bold', pad=25)
+        for i in range(n_feats):
+            row = i // ncols
+            col = i % ncols
 
-        for side in ['top', 'right', 'bottom', 'left']:
-            ax.spines[side].set_visible(True)
-            ax.spines[side].set_edgecolor('#000000')
-            ax.spines[side].set_linewidth(1.5)
+            ax_x = LM + col * (SUB_W + W_GAP)
+            ax_y = (1.0 - 0.08 - SUB_H) - row * (SUB_H + H_GAP)
 
-        ax.tick_params(axis='both', which='both', bottom=True, left=True,
-                       labelbottom=True, color=TEXT_COLOR, length=5)
+            ax = fig.add_axes([ax_x, ax_y, SUB_W, SUB_H])
+            ax.set_facecolor('#FFFFFF')
 
-    cbar_ax = fig.add_axes([0.92, 0.3, 0.012, 0.4])
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=-1, vmax=1))
-    cbar = fig.colorbar(sm, cax=cbar_ax)
-    cbar.set_label('Predictive Weight (Blue: Suppress | Red: Promote)', color=TEXT_COLOR, fontsize=11, labelpad=15)
-    cbar.ax.yaxis.set_tick_params(color=TEXT_COLOR, labelcolor=TEXT_COLOR)
-    cbar.set_ticks([-1, 0, 1])
-    cbar.ax.set_yticklabels(['-', '0', '+'], color=TEXT_COLOR)
+            feat_slice = mean_weights[:, i, :]
+            # ``nanmax`` returns NaN when every cell of ``feat_slice`` is
+            # NaN (would happen only if every fold is NaN at every
+            # position for this feature -- still possible if the feature
+            # was unlucky enough to land entirely in failed folds).
+            # NaN is truthy in Python so ``nanmax(...) or 1.0`` would
+            # leave NaN as the colormap range -- be explicit instead.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                peak = np.nanmax(np.abs(feat_slice))
+            max_amp = float(peak) if np.isfinite(peak) and peak > 0 else 1.0
 
-    if save_plot:
-        path_str = str(selection_results_path).lower()
-        condition = 'male_mute_partner' if 'male_mute_partner' in path_str else \
-            ('female' if 'female' in path_str else 'male')
-        # ``selection_results_path`` is polymorphic; if a file was
-        # passed, anchor the output dir to its parent.
-        _fallback = pathlib.Path(selection_results_path)
-        if _fallback.is_file():
-            _fallback = _fallback.parent
-        out_dir = pathlib.Path(output_dir) if output_dir else _fallback
-        fname = f"model_selection_multinomial_usv_category_{condition}_filters_final.svg"
-        fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches=None)
+            ax.imshow(feat_slice, aspect='auto', cmap=cmap,
+                      vmin=-max_amp, vmax=max_amp, interpolation='nearest')
 
-    plt.show()
-    plt.rcParams.update(_saved_rcp)
+            # X-AXIS
+            n_bins = feat_slice.shape[1]
+            tick_times = np.arange(-int(history_window_sec), 1)
+            tick_locs = [(t + history_window_sec) / history_window_sec * (n_bins - 1) for t in tick_times]
+            ax.set_xticks(tick_locs)
+            ax.set_xticklabels([f"{t}s" for t in tick_times], color=TEXT_COLOR, fontsize=10)
+            ax.set_xlabel("Time prior to USV (s)", color=TEXT_COLOR, fontsize=11, labelpad=12)
+
+            # Y-AXIS
+            ax.set_yticks(np.arange(len(classes)))
+            ax.set_yticklabels(classes, color=TEXT_COLOR, fontsize=10)
+            ax.set_ylabel("USV Category", color=TEXT_COLOR, fontsize=12, fontweight='bold', labelpad=20)
+
+            # TITLES & SPINES
+            ax.set_title(f"{features[i]}\nInfluence: ±{max_amp:.3f}",
+                         color=TEXT_COLOR, fontsize=12, fontweight='bold', pad=25)
+
+            for side in ['top', 'right', 'bottom', 'left']:
+                ax.spines[side].set_visible(True)
+                ax.spines[side].set_edgecolor('#000000')
+                ax.spines[side].set_linewidth(1.5)
+
+            ax.tick_params(axis='both', which='both', bottom=True, left=True,
+                           labelbottom=True, color=TEXT_COLOR, length=5)
+
+        cbar_ax = fig.add_axes([0.92, 0.3, 0.012, 0.4])
+        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=-1, vmax=1))
+        cbar = fig.colorbar(sm, cax=cbar_ax)
+        cbar.set_label('Predictive Weight (Blue: Suppress | Red: Promote)', color=TEXT_COLOR, fontsize=11, labelpad=15)
+        cbar.ax.yaxis.set_tick_params(color=TEXT_COLOR, labelcolor=TEXT_COLOR)
+        cbar.set_ticks([-1, 0, 1])
+        cbar.ax.set_yticklabels(['-', '0', '+'], color=TEXT_COLOR)
+
+        if save_plot:
+            path_str = str(selection_results_path).lower()
+            condition = 'male_mute_partner' if 'male_mute_partner' in path_str else \
+                ('female' if 'female' in path_str else 'male')
+            # ``selection_results_path`` is polymorphic; if a file was
+            # passed, anchor the output dir to its parent.
+            _fallback = pathlib.Path(selection_results_path)
+            if _fallback.is_file():
+                _fallback = _fallback.parent
+            out_dir = pathlib.Path(output_dir) if output_dir else _fallback
+            fname = f"model_selection_multinomial_usv_category_{condition}_filters_final.svg"
+            fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches=None)
+
+        plt.show()
+    finally:
+        plt.rcParams.update(_saved_rcp)
 
 
 def plot_multinomial_selection_diagnosis(
@@ -4475,7 +4512,7 @@ class DeepResultsVisualizer:
         Y_pred = np.vstack([np.array(f['Y_pred_actual']) for f in cv_folds])
 
         # 2. Custom White-Base derived from the global cmap
-        base_cmap = plt.cm.get_cmap(_GLOBAL_CMAP)
+        base_cmap = plt.get_cmap(_GLOBAL_CMAP)
         cmap_colors = base_cmap(np.linspace(0, 1, 256))
         white = np.array([1, 1, 1, 1])
         cmap_colors[:25, :] = np.linspace(white, cmap_colors[25, :], 25)
@@ -4685,7 +4722,7 @@ class DeepResultsVisualizer:
         Y_pred = np.vstack([np.asarray(f['Y_pred_actual']) for f in cv_folds])
 
         # white-base inferno cmap (matches Euclidean branch)
-        base_cmap = plt.cm.get_cmap(_GLOBAL_CMAP)
+        base_cmap = plt.get_cmap(_GLOBAL_CMAP)
         cmap_colors = base_cmap(np.linspace(0, 1, 256))
         white = np.array([1, 1, 1, 1])
         cmap_colors[:25, :] = np.linspace(white, cmap_colors[25, :], 25)
@@ -4765,23 +4802,26 @@ class DeepResultsVisualizer:
                     s.set_edgecolor('#B0B0B0'); s.set_linewidth(0.4)
                 continue
 
-            # 3x3 tiled KDE on the prediction subset.
+            # Wrap-aware KDE on the prediction subset: fit on the ORIGINAL points (so the
+            # Scott's-rule bandwidth reflects the intra-patch spread) and apply wrap-awareness
+            # as a periodic sum over the 3x3 period shifts at EVALUATION. Fitting on the
+            # 9x-tiled cloud instead inflates the bandwidth by the period spacing and
+            # over-smooths the density (same fix as compute_inverse_density_weights).
             p_subset = Y_pred[mask]
-            tiled = np.vstack([p_subset + np.array(off, dtype=float)
-                               for off in tile_offsets])
             # Identical / collinear predictions give a singular covariance and
-            # crash gaussian_kde; skip the density overlay for such patches
-            # (tiling a single point 9x is still rank-deficient, so the
-            # n_in >= min_samples guard above does not catch this case).
+            # crash gaussian_kde; skip the density overlay for such patches.
             try:
-                kde = gaussian_kde(tiled.T)
+                kde = gaussian_kde(p_subset.T)
             except (np.linalg.LinAlgError, ValueError):
                 ax.set_title(f"n={n_in} (no KDE)", fontsize=panel_fontsize - 2)
                 ax.set_xlim(0, period); ax.set_ylim(0, period)
                 ax.set_aspect('equal')
                 ax.set_xticks([]); ax.set_yticks([])
                 continue
-            zi = kde(grid_pts).reshape(xi.shape)
+            zi = np.zeros(grid_pts.shape[1], dtype=float)
+            for off in tile_offsets:
+                zi = zi + kde(grid_pts + np.asarray(off, dtype=float)[:, None])
+            zi = zi.reshape(xi.shape)
             zi_norm = (zi - zi.min()) / (zi.max() - zi.min() + 1e-12)
 
             if plot_type.lower() == 'contour':
@@ -5162,7 +5202,7 @@ class DeepResultsVisualizer:
                 spine.set_edgecolor(text_color)
                 spine.set_linewidth(1.0)
 
-        base_cmap = plt.cm.get_cmap(_GLOBAL_CMAP)
+        base_cmap = plt.get_cmap(_GLOBAL_CMAP)
         cmap_colors = base_cmap(np.linspace(0, 1, 256))
         cmap_colors[:25, :] = np.linspace(np.array([1, 1, 1, 1]), cmap_colors[25, :], 25)
         white_inferno = ListedColormap(cmap_colors)
@@ -5954,7 +5994,7 @@ def plot_collinearity_audit(audit_pkl_path: str,
     finite_vif = np.where(finite_mask, vif, np.nan)
     # Sort descending by VIF; +inf gets pushed to the top via the
     # masking trick (`-inf` for the negative-sort, sorted ascending).
-    sort_idx = np.argsort(-np.where(finite_mask, vif, -np.inf))
+    sort_idx = np.argsort(-np.where(finite_mask, vif, np.inf))
     vif_sorted = vif[sort_idx]
     names_sorted = [feature_names[i] for i in sort_idx]
     colors_sorted = [color_by_name[n] for n in names_sorted]

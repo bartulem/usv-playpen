@@ -72,6 +72,9 @@ def _fs_settings(audio_dir: str = "original",
         "fs_sequence_duration": 0.05,
         "fs_octave_shift": octave_shift,
         "fs_volume_adjustment": volume_adjustment,
+        "fs_compand_transfer": "0.3,1 6:-70,-60,-20 -5 -90 0.2",
+        "fs_noise_reduction_std_threshold": 3,
+        "fs_sinc_upper_cutoff_hz": 25000,
     }
 
 
@@ -296,7 +299,7 @@ def _run_usv_playback(tmp_path, mocker, *, seed, exp_id, n_snippets=8, total_usv
                  return_value=True)
     mocker.patch("usv_playpen.analyses.generate_audio_files.smart_wait")
     mocker.patch("usv_playpen.analyses.generate_audio_files.wavfile.read",
-                 return_value=(250, np.zeros(8, dtype=np.int16)))
+                 return_value=(int(250 * 1e3), np.zeros(8, dtype=np.int16)))
     mocker.patch("usv_playpen.analyses.generate_audio_files.wavfile.write")
 
     ag = AudioGenerator(
@@ -505,6 +508,23 @@ def test_read_int16_snippet_rejects_non_int16(tmp_path):
     out = _read_int16_snippet(good)
     assert out.dtype == np.int16
     assert out.shape[0] == 8
+
+
+def test_read_int16_snippet_rejects_rate_mismatch(tmp_path):
+    """A snippet whose native sample rate differs from ``expected_rate_hz`` raises a
+    clear ValueError (the builder does not resample, so a mismatched snippet would play
+    back at the wrong speed/pitch); a matching rate is accepted, and no check runs when
+    ``expected_rate_hz`` is None."""
+    snippet = tmp_path / "snippet.wav"
+    wavfile.write(snippet, 250000, np.arange(8, dtype=np.int16))
+
+    with pytest.raises(ValueError, match="native sample rate"):
+        _read_int16_snippet(snippet, expected_rate_hz=192000)
+
+    out = _read_int16_snippet(snippet, expected_rate_hz=250000)
+    assert out.shape[0] == 8
+    # No rate is enforced when expected_rate_hz is omitted.
+    assert _read_int16_snippet(snippet).shape[0] == 8
 
 
 def test_naturalistic_playback_metadata_matches_truncated_wav(tmp_path, mocker):

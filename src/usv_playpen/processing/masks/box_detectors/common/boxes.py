@@ -1,11 +1,11 @@
-# ABOUTME: Pure numpy/scipy/skimage box utilities: GT-mask -> instances -> (t,l,b,r) bboxes,
-# ABOUTME: clamping, format converters (YOLO xywhn / SAM xyxy), and canonical spec->uint8 rendering.
-"""Shared, dependency-light box / mask / rendering helpers for box_detectors.
+# ABOUTME: Pure numpy box utilities: clamping, format converters (YOLO xywhn / SAM xyxy),
+# ABOUTME: and canonical spec->uint8 rendering.
+"""Shared, dependency-light box / rendering helpers for box_detectors.
 
-NO torch, NO ultralytics, NO segmentation_models_pytorch here — only numpy,
-scipy.ndimage, skimage, and (optionally, for viridis) cv2. Keeping this module
-light means every detector (exporter, U-Net, YOLO) and the unit tests can import
-it in any cluster env or on the GPU-less dev host.
+NO torch, NO ultralytics, NO segmentation_models_pytorch here — only numpy
+and (optionally, for viridis) cv2. Keeping this module light means every
+detector (exporter, U-Net, YOLO) and the unit tests can import it in any
+cluster env or on the GPU-less dev host.
 
 Box-format contract
 -------------------
@@ -44,129 +44,15 @@ The single canonical rendering used by BOTH the exporter and YOLO inference is
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Tuple
 
 import numpy as np
-from scipy import ndimage
 
 # Inclusive (top, left, bottom, right) = (y0, x0, y1, x1). Rows=freq, cols=time.
 Box = Tuple[int, int, int, int]
 
 
-# ---------------------------------------------------------------------------
-# GT mask -> per-instance boolean masks -> bounding boxes
-# ---------------------------------------------------------------------------
-def mask_to_instances(mask: np.ndarray, min_area: int = 0) -> List[np.ndarray]:
-    """Split a GT mask into a list of per-instance boolean masks.
-
-    Handles BOTH GT mask flavours produced by the SAM2 finetune dataset:
-
-    * **Instance-ID (VOS-style) masks** — a single-channel integer image where
-      each distinct nonzero pixel value is one instance ID (0 = background).
-      Each unique nonzero value becomes one instance mask. This is detected when
-      the mask has more than two distinct values (i.e. not purely binary).
-    * **Binary masks** — only {0, nonzero}. Instances are recovered as
-      8-connected components via :func:`scipy.ndimage.label`.
-
-    A 3-channel (HxWxC) mask is reduced to a single label channel first:
-    if all channels are equal it is collapsed; otherwise the max over channels
-    is used (RGB-encoded instance maps still separate by value).
-
-    Args:
-        mask: ``[H, W]`` or ``[H, W, C]`` array (any integer/float dtype). Pixel
-            values are interpreted as labels (instance-ID) or foreground (binary).
-        min_area: Drop instances/components with fewer than this many pixels. The
-            key knob for BINARY masks, whose 8-connected components otherwise
-            include single-pixel noise fragments (one scattered foreground can
-            explode into 100+ tiny "instances"). Mirrors
-            ``cc_box_detector.BoxDetectorConfig.min_area_px`` (≈20). 0 = no filter.
-
-    Returns:
-        List of boolean ``[H, W]`` arrays, one per instance. Empty if the mask
-        has no foreground (or all instances fall below ``min_area``). Order is by
-        ascending instance ID (instance-ID masks) or connected-component label
-        (binary masks).
-    """
-    arr = np.asarray(mask)
-    if arr.ndim == 3:
-        # Collapse channels: identical channels -> one; else max keeps distinct IDs.
-        if arr.shape[2] >= 1 and np.all(arr == arr[:, :, :1]):
-            arr = arr[:, :, 0]
-        else:
-            arr = arr.max(axis=2)
-    if arr.ndim != 2:
-        raise ValueError(f"mask must be 2D (or HxWxC); got shape {np.asarray(mask).shape}")
-
-    # Round to integer labels (PNG masks are integer-valued but may load as float).
-    lab_img = np.rint(arr).astype(np.int64)
-    if lab_img.max() <= 0:
-        return []
-
-    nonzero_vals = np.unique(lab_img[lab_img > 0])
-
-    # Binary mask (single foreground value) -> 8-connected components.
-    if nonzero_vals.size <= 1:
-        structure = np.ones((3, 3), dtype=int)  # 8-connectivity
-        labeled, n_comp = ndimage.label(lab_img > 0, structure=structure)
-        instances = [labeled == k for k in range(1, n_comp + 1)]
-    else:
-        # Instance-ID mask -> one mask per unique nonzero value.
-        instances = [lab_img == v for v in nonzero_vals]
-
-    if min_area > 0:
-        instances = [m for m in instances if int(m.sum()) >= int(min_area)]
-    return instances
-
-
-def instance_bbox(instance_mask: np.ndarray) -> Box:
-    """Inclusive ``(top, left, bottom, right)`` bbox of a boolean instance mask.
-
-    Args:
-        instance_mask: Boolean (or truthy) ``[H, W]`` array with >= 1 True pixel.
-
-    Returns:
-        ``(top, left, bottom, right)`` = ``(rows.min, cols.min, rows.max,
-        cols.max)``, inclusive — matching ``cc_box_detector.get_bbox``.
-
-    Raises:
-        ValueError: if the mask is empty (no True pixel).
-    """
-    m = np.asarray(instance_mask).astype(bool)
-    rows = np.any(m, axis=1)
-    cols = np.any(m, axis=0)
-    if not rows.any() or not cols.any():
-        raise ValueError("instance_bbox: empty instance mask (no True pixels)")
-    rmin, rmax = np.where(rows)[0][[0, -1]]
-    cmin, cmax = np.where(cols)[0][[0, -1]]
-    return (int(rmin), int(cmin), int(rmax), int(cmax))
-
-
-def masks_to_boxes(mask: np.ndarray, min_area: int = 0) -> List[Box]:
-    """Full GT-mask -> list of inclusive ``(t,l,b,r)`` boxes.
-
-    Combines :func:`mask_to_instances` and :func:`instance_bbox`. Instances with
-    no pixels are skipped defensively (should not happen for label-derived masks).
-
-    Args:
-        mask: GT mask, ``[H, W]`` or ``[H, W, C]`` (instance-ID or binary).
-        min_area: Drop instances smaller than this many pixels (see
-            :func:`mask_to_instances`). Use ~20 to suppress binary-mask noise
-            fragments; 0 = no filter.
-
-    Returns:
-        List of ``(top, left, bottom, right)`` boxes (one per kept instance).
-    """
-    boxes: List[Box] = []
-    for inst in mask_to_instances(mask, min_area=min_area):
-        if not inst.any():
-            continue
-        boxes.append(instance_bbox(inst))
-    return boxes
-
-
-# ---------------------------------------------------------------------------
 # Clamping
-# ---------------------------------------------------------------------------
 def clamp_box(box: Box, n_freq: int, duration: int) -> Box:
     """Clamp a box to ``[0, n_freq-1]`` (rows/freq) x ``[0, duration-1]`` (cols/time).
 
@@ -197,9 +83,7 @@ def clamp_box(box: Box, n_freq: int, duration: int) -> Box:
     return (t, l, b, r)
 
 
-# ---------------------------------------------------------------------------
 # Format converters (YOLO + SAM need these)
-# ---------------------------------------------------------------------------
 def tlbr_to_xywhn(box: Box, W: int, H: int) -> Tuple[float, float, float, float]:
     """Convert inclusive ``(t,l,b,r)`` -> YOLO normalized ``(xc, yc, w, h)``.
 
@@ -243,9 +127,7 @@ def tlbr_to_xyxy(box: Box) -> Tuple[int, int, int, int]:
     return (int(l), int(t), int(r), int(b))
 
 
-# ---------------------------------------------------------------------------
 # Canonical spectrogram -> uint8 image rendering
-# ---------------------------------------------------------------------------
 def render_spec_image(spec: np.ndarray, colormap: str = "viridis") -> np.ndarray:
     """Min-max normalize a ``[F, T]`` spec and render it to a uint8 ``HxWx3`` image.
 

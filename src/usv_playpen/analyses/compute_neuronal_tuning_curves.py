@@ -619,8 +619,12 @@ def _bin_property_indices(
     if width <= 0:
         return out
     raw = np.floor((values[finite] - low) / width).astype(np.int64)
-    raw = np.clip(raw, 0, n_bins - 1)
-    out[finite] = raw
+    # Drop (not clip) out-of-range values: a value outside [low, high) must not be
+    # folded into the first/last bin (matches the behavioral/spatial occupancy binning,
+    # which excludes out-of-range indices via its validity mask). Out-of-range stays -1.
+    in_range = (raw >= 0) & (raw < n_bins)
+    finite_positions = np.where(finite)[0]
+    out[finite_positions[in_range]] = raw[in_range]
     return out
 
 
@@ -1929,7 +1933,14 @@ class NeuronalTuning(FeatureZoo):
             anchor_property_bin_idx: dict[str, np.ndarray] = {}
             anchor_property_occ_seconds: dict[str, np.ndarray] = {}
             for prop in CONTINUOUS_PROPERTIES:
-                values = usv_df[prop].to_numpy()[anchor_idx]
+                if prop in usv_df.columns:
+                    values = usv_df[prop].to_numpy()[anchor_idx]
+                else:
+                    # Optional feature column absent for this session (e.g. a QLVM /
+                    # spectral property not produced when QLVM wasn't run); treat it as
+                    # all-NaN so it yields empty occupancy and NaN tuning instead of
+                    # raising ColumnNotFoundError and aborting the whole run.
+                    values = np.full(anchor_durations.shape[0], np.nan, dtype=float)
                 bin_range = self.vocal_boundaries[prop]
                 n_bins_prop = _bin_count_for_property(prop, n_bins_default)
                 idx = _bin_property_indices(values, bin_range, n_bins_prop)
@@ -1945,7 +1956,13 @@ class NeuronalTuning(FeatureZoo):
 
             anchor_categorical: dict[str, dict] = {}
             for cat_feat in CATEGORICAL_FEATURES:
-                cat_values = usv_df[cat_feat].to_numpy()[anchor_idx]
+                if cat_feat in usv_df.columns:
+                    cat_values = usv_df[cat_feat].to_numpy()[anchor_idx]
+                else:
+                    # Optional categorical column absent (e.g. qlvm_category on a VAE-only
+                    # session); all-NaN -> the null-drop below yields an empty category set
+                    # (n_cats == 0), so this feature produces no tuning instead of crashing.
+                    cat_values = np.full(anchor_durations.shape[0], np.nan, dtype=float)
                 # Drop null sentinels regardless of dtype before building the
                 # category set: polars `.to_numpy()` on an integer column that
                 # contains nulls yields a float (NaN) or object (None) array,
@@ -2005,7 +2022,11 @@ class NeuronalTuning(FeatureZoo):
                 occ_seconds_per_cat = np.zeros(n_cats, dtype=float)
                 for i_c in cat_to_idx.values():
                     member = anchor_cat_idx_dense == i_c
-                    count_per_cat[i_c] = int(member.sum())
+                    # Count only CLEAN (within_valid) anchors, matching the occupancy and
+                    # rate below, so the n_usv_min_category gate reflects the effective
+                    # sample size (a category with many anchors but few clean ones must not
+                    # pass the minimum on the strength of overlap-contaminated anchors).
+                    count_per_cat[i_c] = int((member & within_valid).sum())
                     occ_seconds_per_cat[i_c] = float(
                         anchor_durations[member & within_valid].sum()
                     )

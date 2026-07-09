@@ -3542,7 +3542,10 @@ def plot_embedding_with_category_thumbnails(
     bottom_row = outer[1, 0].subgridspec(1, 4, wspace=0.12)
 
     def _overlay_boundaries(ax, alpha=1.0, linewidth=2.5):
-        if boundary_labels is None:
+        # `boundary_labels` is also computed when sampling_method == 'spiral' (the spiral
+        # sampler needs the label grid), so gate the DRAWING on the user's flag too —
+        # otherwise spiral runs draw boundary contours despite draw_cluster_boundaries=False.
+        if boundary_labels is None or not draw_cluster_boundaries:
             return
         ax.contour(
             boundary_xx, boundary_yy, boundary_labels,
@@ -3641,7 +3644,7 @@ def plot_embedding_with_category_thumbnails(
                 zorder=20,
             )
 
-    # QLVM is a quantized latent variable model, not UMAP -- label
+    # QLVM is a quasi-Monte Carlo latent variable model, not UMAP -- label
     # accordingly.
     map_axis_token = "DIM" if map_prefix == "qlvm" else "UMAP"
     ax_scatter.set_xlabel(

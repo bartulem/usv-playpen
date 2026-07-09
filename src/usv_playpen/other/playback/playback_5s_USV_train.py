@@ -49,10 +49,10 @@ def run_playback_files(num_seq,
     io.setup(io_pin_id, io.OUT)
 
     # find .wav files
-    wav_file_lst = sorted(pathlib.Path(audio_d).glob('*.wav'))
+    wav_file_lst = sorted(pathlib.Path(audio_directory).glob('*.wav'))
     if not wav_file_lst:
         raise FileNotFoundError(
-            f"No .wav files found under '{audio_d}' — nothing to play back."
+            f"No .wav files found under '{audio_directory}' — nothing to play back."
         )
 
     # get a pseudo-random sequence of audio files — keep the modulo so the

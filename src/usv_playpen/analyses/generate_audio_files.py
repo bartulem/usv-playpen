@@ -36,7 +36,7 @@ _PLAYBACK_CONTEXTS = {
 }
 
 
-def _read_int16_snippet(snippet_path: Path) -> np.ndarray:
+def _read_int16_snippet(snippet_path: Path, expected_rate_hz: int | None = None) -> np.ndarray:
     """
     Description
     -----------
@@ -47,10 +47,19 @@ def _read_int16_snippet(snippet_path: Path) -> np.ndarray:
     buffer, changing the output bit depth, and a ``float32`` snippet in ``[-1, 1]``
     mixed with ``int16`` zeros would have nonsensical relative amplitude.
 
+    When ``expected_rate_hz`` is provided, the snippet's native sample rate must also
+    match it. The builder writes the output WAV at a fixed rate and does NOT resample
+    the concatenated snippets, so a snippet recorded at a different rate would be
+    played back at the wrong speed/pitch -- validating the rate here fails loudly
+    instead of silently corrupting playback timing.
+
     Parameters
     ----------
     snippet_path (Path)
         Path to the snippet ``.wav`` file.
+    expected_rate_hz (int | None)
+        If not ``None``, the snippet's native sample rate (Hz) must equal this value;
+        a mismatch raises ``ValueError``. When ``None``, the rate is not checked.
 
     Returns
     -------
@@ -60,10 +69,11 @@ def _read_int16_snippet(snippet_path: Path) -> np.ndarray:
     Raises
     ------
     ValueError
-        If the snippet WAV is not ``int16``.
+        If the snippet WAV is not ``int16``, or its sample rate differs from
+        ``expected_rate_hz`` (when that is provided).
     """
 
-    _, snippet_data = wavfile.read(snippet_path)
+    snippet_rate, snippet_data = wavfile.read(snippet_path)
     if snippet_data.dtype != np.int16:
         msg = (
             f"playback snippet {Path(snippet_path).name!r} has dtype "
@@ -71,6 +81,15 @@ def _read_int16_snippet(snippet_path: Path) -> np.ndarray:
             f"and output WAV are all int16, so a non-int16 snippet would upcast the "
             f"output bit depth and corrupt relative amplitudes. Re-export the "
             f"snippets as 16-bit PCM."
+        )
+        raise ValueError(msg)
+    if expected_rate_hz is not None and int(snippet_rate) != int(expected_rate_hz):
+        msg = (
+            f"playback snippet {Path(snippet_path).name!r} has a native sample rate of "
+            f"{int(snippet_rate)} Hz but the playback output is written at "
+            f"{int(expected_rate_hz)} Hz, and the builder does not resample -- the "
+            f"snippet would play back at the wrong speed/pitch. Re-export the snippets "
+            f"at {int(expected_rate_hz)} Hz."
         )
         raise ValueError(msg)
     return snippet_data
@@ -292,7 +311,15 @@ class AudioGenerator:
                             file_position = min(1.0, total_playback_time_created / total_acceptable_playback_time)
                             target_fraction = complexity_start_fraction + (complexity_end_fraction - complexity_start_fraction) * file_position
                             draw_weights = np.exp(-((bout_complex_fraction - target_fraction) ** 2) / (2.0 * complexity_bandwidth ** 2))
-                            bout_index = int(rng.choice(n_bout, p=draw_weights / draw_weights.sum()))
+                            weight_sum = draw_weights.sum()
+                            if weight_sum > 0:
+                                bout_index = int(rng.choice(n_bout, p=draw_weights / weight_sum))
+                            else:
+                                # All Gaussian weights underflowed to 0 (a very small
+                                # complexity_bandwidth with every bout far from the target
+                                # complexity); fall back to a uniform draw instead of dividing
+                                # 0/0 -> NaN, which would make rng.choice raise.
+                                bout_index = int(rng.integers(n_bout))
                         else:
                             bout_index = int(rng.integers(n_bout))
 
@@ -468,7 +495,8 @@ class AudioGenerator:
             # replacement from a small fixed pool, so the same files would otherwise
             # be re-read thousands of times across the build); the seeded draw
             # sequence is unchanged, so the output is byte-identical.
-            wav_cache = {wav_path: _read_int16_snippet(wav_path) for wav_path in wav_files_list}
+            _expected_snippet_rate_hz = int(wav_sampling_rate * 1e3)
+            wav_cache = {wav_path: _read_int16_snippet(wav_path, expected_rate_hz=_expected_snippet_rate_hz) for wav_path in wav_files_list}
 
             ipi_duration_samples = int(np.ceil(ipi_duration * wav_sampling_rate * 1e3))
 
@@ -559,6 +587,9 @@ class AudioGenerator:
         seq_duration = seq_duration if seq_duration is not None else self.freq_shift_settings_dict['fs_sequence_duration']
         octave_shift = self.freq_shift_settings_dict['fs_octave_shift']
         volume_adjustment = self.freq_shift_settings_dict['fs_volume_adjustment']
+        compand_transfer = self.freq_shift_settings_dict['fs_compand_transfer']
+        noise_reduction_std_threshold = self.freq_shift_settings_dict['fs_noise_reduction_std_threshold']
+        sinc_upper_cutoff_hz = self.freq_shift_settings_dict['fs_sinc_upper_cutoff_hz']
 
         audio_file_loc = list((Path(self.root_directory) / 'audio' / audio_dir).glob(f"*{device_id}_*_ch{channel_id:02d}_*.wav"))
 
@@ -592,7 +623,7 @@ class AudioGenerator:
 
         # perform volume adjustment with SoX (if needed)
         if volume_adjustment:
-            subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_resampled_file} {temp_audible_file} compand 0.3,1 6:-70,-60,-20 -5 -90 0.2''',
+            subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_resampled_file} {temp_audible_file} compand {compand_transfer}''',
                              cwd=output_dir,
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.STDOUT,
@@ -603,14 +634,14 @@ class AudioGenerator:
             processed_audio, _ = librosa.load(temp_resampled_file, sr=new_sr)
 
         # perform noise reduction
-        reduced_noise = nr.reduce_noise(y=processed_audio, sr=new_sr, stationary=True, n_std_thresh_stationary=3)
+        reduced_noise = nr.reduce_noise(y=processed_audio, sr=new_sr, stationary=True, n_std_thresh_stationary=noise_reduction_std_threshold)
         sf.write(temp_denoised_file, reduced_noise, new_sr)
 
         # correct the tempo back to the original duration using SoX
         tempo_adjustment_factor = original_sr / new_sr
 
         if 'filtered' not in audio_dir:
-            upper_cutoff_freq = int(np.ceil(25000 / (2 ** abs(octave_shift))))
+            upper_cutoff_freq = int(np.ceil(sinc_upper_cutoff_hz / (2 ** abs(octave_shift))))
             subprocess.Popen(args=f'''{self.command_addition}static_sox {temp_denoised_file} {final_output_file} sinc {upper_cutoff_freq}-0 tempo -s {tempo_adjustment_factor}''',
                              cwd=output_dir,
                              stdout=subprocess.DEVNULL,

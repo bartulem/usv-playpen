@@ -838,7 +838,10 @@ class SpikeQualityMetricsExtractor:
         for key, entry in channel_locations.items():
             if not key.startswith('channel_'):
                 continue
-            pos = (int(entry['lateral']), int(entry['axial']))
+            # Round (not truncate) before the integer (lateral, axial) join: int()
+            # floors toward zero and would desync the IBL and KS keys when one side
+            # stores e.g. 31.9999 and the other 32.0 (matches anatomy_converter).
+            pos = (int(round(entry['lateral'])), int(round(entry['axial'])))
             pos_to_xyz[pos] = (
                 float(entry['x']), float(entry['y']), float(entry['z']),
             )
@@ -873,12 +876,20 @@ class SpikeQualityMetricsExtractor:
                 chan_inds = np.array([template_peak_ch], dtype=chan_inds_sparse.dtype)
 
             temp_chan_locs = np.zeros((chan_inds.size, 3))
+            valid_channel_mask = np.zeros(chan_inds.size, dtype=bool)
             for channel_idx, channel in enumerate(chan_inds):
                 physical_pos = (
-                    int(channel_positions[channel, 0]),
-                    int(channel_positions[channel, 1]),
+                    int(round(channel_positions[channel, 0])),
+                    int(round(channel_positions[channel, 1])),
                 )
+                # A reference / disconnected site can land in a unit's sparse channel set
+                # yet be absent from the IBL `channel_locations.json` map; drop it from the
+                # triangulation instead of aborting the whole session on a KeyError (mirrors
+                # the "unknown"-region fallback in `anatomy_converter._build_ks_keyed_block`).
+                if physical_pos not in pos_to_xyz:
+                    continue
                 x, y, z = pos_to_xyz[physical_pos]
+                valid_channel_mask[channel_idx] = True
                 # strip any inter-shank offset so only the within-shank position remains
                 within_shank_lateral = physical_pos[0] % self.shank_spacing_microns
                 if self.hemisphere == 'R':
@@ -894,6 +905,18 @@ class SpikeQualityMetricsExtractor:
                         z,
                     ]
 
+            chan_inds = chan_inds[valid_channel_mask]
+            temp_chan_locs = temp_chan_locs[valid_channel_mask]
+            if chan_inds.size == 0:
+                # No IBL-mapped channels remain for this unit; record a NaN location rather
+                # than triangulating on an empty set.
+                unit_locations[unit_id] = {
+                    'location': np.full(3, np.nan),
+                    'closest_channel': template_peak_ch,
+                    'brain_region': 'unknown',
+                }
+                continue
+
             wf = self.dense_templates[unit_index][:, chan_inds]
             wf_data = np.ptp(a=wf, axis=0)
 
@@ -905,14 +928,14 @@ class SpikeQualityMetricsExtractor:
             min_distance_index = np.argmin(distances)
             closest_channel_number = chan_inds[min_distance_index]
             closest_physical_pos = (
-                int(channel_positions[closest_channel_number, 0]),
-                int(channel_positions[closest_channel_number, 1]),
+                int(round(channel_positions[closest_channel_number, 0])),
+                int(round(channel_positions[closest_channel_number, 1])),
             )
 
             unit_locations[unit_id] = {
                 'location': unit_location,
                 'closest_channel': closest_channel_number,
-                'brain_region': pos_to_region[closest_physical_pos],
+                'brain_region': pos_to_region[closest_physical_pos] if closest_physical_pos in pos_to_region else 'unknown',
             }
 
         self.unit_locations = unit_locations

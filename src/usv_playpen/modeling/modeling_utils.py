@@ -93,7 +93,7 @@ the single audit-orchestration entry point:
 from pathlib import Path
 import numpy as np
 import polars as pls
-from scipy.stats import pearsonr
+from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import confusion_matrix, matthews_corrcoef
 
 from .load_input_files import _calculate_ibi_threshold
@@ -1264,6 +1264,42 @@ def pearson_r_safe(y_true: np.ndarray, y_pred: np.ndarray) -> float:
         return float('nan')
     try:
         return float(pearsonr(y_true, y_pred)[0])
+    except ValueError:
+        return float('nan')
+
+
+def spearman_r_safe(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """
+    Computes the Spearman rank correlation coefficient between `y_true`
+    and `y_pred`, returning NaN when either input has zero variance.
+
+    Spearman's rho measures *monotonic* (rank-based) agreement and is the
+    complement to :func:`pearson_r_safe`. On a constant `y_pred` fold,
+    `scipy.stats.spearmanr` emits a `ConstantInputWarning` and returns NaN;
+    under a strict `filterwarnings=error` run that warning is promoted to an
+    error and swallowed by the fold's outer `except`, silently NaN-filling the
+    whole actual/null branch. Guarding on the input variance first (mirroring
+    :func:`pearson_r_safe`) avoids emitting the warning at all.
+
+    Parameters
+    ----------
+    y_true : np.ndarray
+        Ground-truth continuous target of shape (N,).
+    y_pred : np.ndarray
+        Predicted continuous values of shape (N,).
+
+    Returns
+    -------
+    float
+        Spearman's rho on [-1, +1], or NaN if either input is constant.
+    """
+
+    y_true = np.asarray(y_true, dtype=np.float64).ravel()
+    y_pred = np.asarray(y_pred, dtype=np.float64).ravel()
+    if np.std(y_true) == 0.0 or np.std(y_pred) == 0.0:
+        return float('nan')
+    try:
+        return float(spearmanr(y_true, y_pred)[0])
     except ValueError:
         return float('nan')
 

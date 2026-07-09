@@ -376,7 +376,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         mixture_model_params = self.modeling_settings['mixture_model_params']
         for sex in ('male', 'female'):
             params = mixture_model_params[sex]
-            if mixture_model_idx < len(params['means']):
+            # Require a non-negative in-range index: a negative `mixture_model_idx` passes a
+            # bare `< len(...)` guard and then indexes from the array end, silently selecting
+            # the wrong mixture component (matches the guard in `modeling_utils`).
+            if 0 <= mixture_model_idx < len(params['means']):
                 ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
                     params['means'][mixture_model_idx], params['sds'][mixture_model_idx],
                     self.modeling_settings['model_params']['mixture_model_z_score'],
@@ -661,6 +664,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         n_splits = self.modeling_settings['model_params']['split_num']
         test_proportion = self.modeling_settings['model_params']['test_proportion']
         random_state = self.modeling_settings['model_params']['random_seed']
+        # The 50/50 balance and train/test shuffle below draw from NumPy's GLOBAL RNG
+        # (`balance_two_class_arrays` / `shuffle_train_test_arrays`); seed it here so the
+        # fitting dispatcher reproduces splits from `random_seed`. The extraction stage
+        # seeds the global RNG via `prepare_modeling_sessions`, but the fitting entry
+        # point does not otherwise touch it.
+        np.random.seed(random_state)
 
         all_sessions = list(feature_data.keys())
 
@@ -943,9 +952,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
             try:
                 # Seeded per-split Generator so the label shuffle is reproducible
-                # and independent of any ambient global RNG state.
+                # and independent of any ambient global RNG state. Coalesce a None
+                # `random_seed` to 0 so the null branch does not crash on `None + split_idx`
+                # (matches `run_predictor_audits`).
                 shuffle_rng = np.random.default_rng(
-                    self.modeling_settings['model_params']['random_seed'] + split_idx + 1
+                    (self.modeling_settings['model_params']['random_seed'] or 0) + split_idx + 1
                 )
                 y_train_shuffled = shuffle_rng.permutation(y_train)
 
@@ -1247,8 +1258,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 # which rank-based AUC and the 0.5-threshold balanced accuracy
                 # blow up to ~0 or ~1 (sign set by the residual). Log-loss is a
                 # proper scoring rule and correctly reads the ~0.5 null as chance.
+                # Coalesce a None `random_seed` to 0 so the null branch does not crash
+                # on `None + split_idx` (matches `run_predictor_audits`).
                 shuffle_rng = np.random.default_rng(
-                    self.modeling_settings['model_params']['random_seed'] + split_idx + 1
+                    (self.modeling_settings['model_params']['random_seed'] or 0) + split_idx + 1
                 )
                 y_train_tiled_null = np.repeat(
                     shuffle_rng.permutation(y_train).astype(np.float32), history_frames

@@ -748,10 +748,12 @@ class MultinomialModelingPipeline(FeatureZoo):
             temp_events = []
             for cat_id, start_times in events_by_category_dict.items():
                 # Floor (not round) onset seconds -> frame index to match the
-                # canonical onset->frame conversion used elsewhere in the
-                # codebase (load_input_files.py), so the multinomial history
-                # window boundary is defined identically to the binary /
-                # continuous pipelines that share these source onsets.
+                # onset->frame conversion used by the input loaders / audits
+                # (load_input_files.py, modeling_collinearity_audit.py). NOTE: the
+                # binary / bout / continuous extraction pipelines apply np.round to
+                # these same onsets, so their history-window boundaries differ from
+                # this one by up to half a frame — a known cross-pipeline convention
+                # split, not an identity.
                 frame_indices = np.floor(start_times * fps).astype(int)
 
                 for f_idx in frame_indices:
@@ -858,7 +860,10 @@ class MultinomialModelingPipeline(FeatureZoo):
         mixture_model_params_md = self.modeling_settings['mixture_model_params']
         for sex in ('male', 'female'):
             params = mixture_model_params_md[sex]
-            if mixture_model_idx_md < len(params['means']):
+            # Require a non-negative in-range index: a negative `mixture_model_idx_md` passes a
+            # bare `< len(...)` guard and then indexes from the array end, silently selecting
+            # the wrong mixture component (matches the guard in `modeling_utils`).
+            if 0 <= mixture_model_idx_md < len(params['means']):
                 ibi_thresholds_md[sex] = float(_calculate_ibi_threshold(
                     params['means'][mixture_model_idx_md], params['sds'][mixture_model_idx_md],
                     self.modeling_settings['model_params']['mixture_model_z_score'],
@@ -1329,6 +1334,10 @@ class MultinomialModelRunner:
         bin_size = hp['bin_resizing_factor']
         balance_train = hp['balance_train_bool']
         base_seed = self.modeling_settings['model_params']['random_seed']
+        # Coalesce a None `random_seed` to 0 so the null-branch RNGs below do not crash
+        # on `None + fold` (matches `run_predictor_audits`).
+        if base_seed is None:
+            base_seed = 0
 
         # `usv_category_number` is no longer a hand-set JSON key. It is
         # auto-derived at extraction time from the cohort-pooled labels
@@ -1677,7 +1686,15 @@ class MultinomialModelRunner:
                 if strategy_data['classes'] is None:
                     strategy_data['classes'] = model_classes
 
-            m = {k: np.nanmean(v) for k, v in strategy_data['folds']['metrics'].items()}
+            # Guard np.nanmean against an all-NaN metric list (a strategy that
+            # produced no valid fold): np.nanmean emits a "Mean of empty slice"
+            # RuntimeWarning that becomes fatal under a strict filterwarnings=error
+            # run and is swallowed by the caller, silently dropping the output. Only
+            # average when a finite value exists (mirrors the binomial pipeline).
+            m = {}
+            for k, v in strategy_data['folds']['metrics'].items():
+                arr = np.asarray(v, dtype=float)
+                m[k] = float(np.nanmean(arr)) if np.any(np.isfinite(arr)) else float('nan')
             print(f"\nFINISHED {strategy.upper()} | Avg Score: {m['score']:.3f} | Avg AUC: {m['auc']:.3f}")
 
             combined_results[strategy] = strategy_data
