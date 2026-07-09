@@ -31,6 +31,7 @@ from usv_playpen.modeling.modeling_utils import (
     identify_empty_event_sessions,
     mean_absolute_error_1d,
     pearson_r_safe,
+    spearman_r_safe,
     pool_session_arrays,
     prepare_modeling_sessions,
     resolve_mouse_roles,
@@ -171,6 +172,16 @@ class TestRegressionMetrics:
 
         y = np.linspace(0.0, 1.0, 10)
         assert np.isnan(pearson_r_safe(y, np.ones_like(y)))
+
+    def test_spearman_monotonic_reversal_and_constant(self):
+        """Spearman rho is +1 for a perfectly monotonic (even non-linear) match,
+        -1 for its reversal, and NaN for a zero-variance input (the NaN-safe guard
+        that avoids scipy's ConstantInputWarning under filterwarnings=error)."""
+
+        y = np.linspace(0.0, 1.0, 50)
+        assert spearman_r_safe(y, np.exp(y)) == pytest.approx(1.0)   # monotonic, non-linear
+        assert spearman_r_safe(y, -y) == pytest.approx(-1.0)
+        assert np.isnan(spearman_r_safe(y, np.ones_like(y)))         # constant -> NaN
 
     def test_rmse_and_mae_zero_on_match(self):
         """Perfect predictions give RMSE == MAE == 0."""

@@ -75,13 +75,14 @@ def _polars_to_h5(group: h5py.Group, name: str, df: pls.DataFrame) -> None:
     None
     """
 
-    # A nullable integer column is promoted to float64 on write (its nulls become NaN);
-    # record it as "Float64" so the reader rebuilds a matching float column instead of
-    # forcing the NaN-bearing data back to an integer dtype (which raises on conversion).
-    _int_dtypes = (pls.Int8, pls.Int16, pls.Int32, pls.Int64,
-                   pls.UInt8, pls.UInt16, pls.UInt32, pls.UInt64)
+    # A nullable integer OR boolean column is promoted to float64 on write (its nulls
+    # become NaN -- see the np_fields promotion below); record it as "Float64" so the
+    # reader rebuilds a matching float column instead of forcing the NaN-bearing data back
+    # to an integer dtype (which raises) or a boolean dtype (which mis-casts NaN -> True).
+    _nullable_promoted = (pls.Int8, pls.Int16, pls.Int32, pls.Int64,
+                          pls.UInt8, pls.UInt16, pls.UInt32, pls.UInt64, pls.Boolean)
     schema = {
-        col: ("Float64" if (dtype in _int_dtypes and df[col].null_count() > 0) else str(dtype))
+        col: ("Float64" if (dtype in _nullable_promoted and df[col].null_count() > 0) else str(dtype))
         for col, dtype in df.schema.items()
     }
 

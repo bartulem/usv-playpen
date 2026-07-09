@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import h5py
 import numpy as np
 import polars as pls
 import pytest
@@ -21,6 +22,33 @@ import usv_playpen.analyses.compute_inter_usv_interval_distributions as iui_mod
 from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
     InterUSVIntervalCalculator,
 )
+from usv_playpen.analyses.usv_interval_archive import _polars_to_h5, _h5_to_polars
+
+
+def test_polars_h5_roundtrip_nullable_int_and_bool(tmp_path):
+    """A nullable Int64 and a nullable Boolean column round-trip through
+    ``_polars_to_h5`` / ``_h5_to_polars`` as Float64 with the null slot preserved as
+    NaN: the writer promotes both to float64 and records "Float64" in the schema, so the
+    reader rebuilds a matching float column instead of forcing NaN back to Int64 (which
+    raises) or coercing a boolean ``None`` to ``False``. A plain float column is unchanged."""
+
+    df = pls.DataFrame({
+        "i": pls.Series([1, None, 3], dtype=pls.Int64),
+        "b": pls.Series([True, None, False], dtype=pls.Boolean),
+        "f": pls.Series([1.5, 2.5, 3.5], dtype=pls.Float64),
+    })
+    out = tmp_path / "roundtrip.h5"
+    with h5py.File(str(out), "w") as f:
+        _polars_to_h5(f, "t", df)
+    with h5py.File(str(out), "r") as f:
+        back = _h5_to_polars(f["t"])
+
+    assert back["i"].dtype == pls.Float64 and back["b"].dtype == pls.Float64
+    i_vals = back["i"].to_list()
+    b_vals = back["b"].to_list()
+    assert i_vals[0] == 1.0 and i_vals[2] == 3.0 and np.isnan(i_vals[1])
+    assert b_vals[0] == 1.0 and b_vals[2] == 0.0 and np.isnan(b_vals[1])
+    assert back["f"].to_list() == [1.5, 2.5, 3.5]
 
 
 # ---------------------------------------------------------------------------
