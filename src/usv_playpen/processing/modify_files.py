@@ -861,11 +861,16 @@ class Operator:
                 if camera_idx == 0:
                     date_joint = sub_directory.name.split('.')[0].split('_')[-2] + sub_directory.name.split('.')[0].split('_')[-1]
 
-                # get frame count and empirical sampling rate
+                # get frame count and empirical sampling rate; the store is closed as soon as
+                # its values are read so it never keeps the backing video chunk open -- a
+                # lingering handle blocks any later move/delete of that file on Windows
                 img_store = new_for_filename(str(sub_directory / 'metadata.yaml'))
-                total_frame_num = img_store.frame_count
-                last_frame_num = img_store.frame_max
-                frame_times = img_store.get_frame_metadata()['frame_time']
+                try:
+                    total_frame_num = img_store.frame_count
+                    last_frame_num = img_store.frame_max
+                    frame_times = img_store.get_frame_metadata()['frame_time']
+                finally:
+                    img_store.close()
                 video_duration = frame_times[-1] - frame_times[0]
                 esr = round(number=total_frame_num / video_duration, ndigits=4)
                 if 'calibration' not in sub_directory.name:
@@ -947,12 +952,18 @@ class Operator:
                     shutil.move(src=current_working_dir / new_file,
                                 dst=dest_base / 'calibration_images' / new_file)
 
-                # clean video directory of all unnecessary files
-                # guard on the file actually being unlinked (target_file); for calibration
-                # sub-directories target_file is '000000.<ext>', not '<conv_target>_<serial>.<ext>'
-                if self.input_parameter_dict['rectify_video_fps']['delete_old_file']:
-                    if (current_working_dir / target_file).is_file():
-                        (current_working_dir / target_file).unlink()
+                # Clean up the disposable intermediate ONLY.
+                #
+                # In a calibration sub-directory `target_file` is '000000.<ext>' -- the RAW
+                # loopbio recording, not a throwaway artefact -- and the re-encoded copy has
+                # already been moved into 'calibration_images'. Deleting it would irreversibly
+                # destroy original footage, so calibration directories are never cleaned.
+                # Non-calibration directories delete '<conv_target>_<serial>.<ext>', which is
+                # the temporary concatenation product and safe to remove.
+                if (self.input_parameter_dict['rectify_video_fps']['delete_old_file']
+                        and 'calibration' not in sub_directory.name
+                        and (current_working_dir / target_file).is_file()):
+                    (current_working_dir / target_file).unlink()
 
         # save camera_frame_count_dict to a file
         # If no camera produced a clean (no-dropped-frames) recording, there is

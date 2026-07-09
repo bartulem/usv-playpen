@@ -654,5 +654,12 @@ def test_rectify_video_fps_no_concat_copies_and_handles_calibration(tmp_path, pr
     moved_calib = video_dir / date_joint / normal_serial / 'calibration_images' / f"{normal_serial}-{date_joint}-calibration.{vid_ext}"
     assert moved_calib.exists()
 
+    # The RAW calibration source must NEVER be deleted, even with delete_old_file=True:
+    # that flag cleans up the disposable concatenation intermediate only. Regression guard
+    # for the bug where the calibration '000000.<ext>' -- original loopbio footage -- was
+    # silently destroyed after re-encoding.
+    assert (calib_cam_dir / f"000000.{vid_ext}").is_file(), \
+        "raw calibration source 000000.<ext> was deleted; it must be preserved"
+
     # camera frame count JSON written for the session.
     assert (video_dir / f"{date_joint}_camera_frame_count_dict.json").is_file()

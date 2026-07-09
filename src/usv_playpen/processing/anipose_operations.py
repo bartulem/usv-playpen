@@ -62,8 +62,14 @@ def find_mouse_names(root_directory: str = None,
                 and "_" in sub_directory.name
                 and "calibration" not in sub_directory.name
             ):
+                # close the store as soon as its metadata is read so it never keeps the
+                # backing video chunk open (a lingering handle blocks a later move/delete
+                # of that file on Windows)
                 img_store = new_for_filename(str(sub_directory / 'metadata.yaml'))
-                user_meta_data = img_store.user_metadata
+                try:
+                    user_meta_data = img_store.user_metadata
+                finally:
+                    img_store.close()
 
                 if "cage" in user_meta_data and "subject" in user_meta_data:
                     # strict=True so a ragged cage/subject pairing (unequal

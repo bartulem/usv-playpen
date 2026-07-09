@@ -1075,8 +1075,14 @@ class Synchronizer:
                         else:
                             video_metadata_search = next(iter(sorted((pathlib.Path(self.root_directory) / 'video').glob(f'*.{video_key}/metadata.yaml'))), None)
                             if video_metadata_search:
+                                # close the store as soon as its frame times are read so it never
+                                # keeps the backing video chunk open (a lingering handle blocks a
+                                # later move/delete of that file on Windows)
                                 img_store = new_for_filename(str(video_metadata_search))
-                                frame_times = np.array(img_store.get_frame_metadata()['frame_time'])
+                                try:
+                                    frame_times = np.array(img_store.get_frame_metadata()['frame_time'])
+                                finally:
+                                    img_store.close()
                                 frame_times = frame_times - frame_times[0]
                                 video_ipi_start_times = frame_times[_video_frames]
 

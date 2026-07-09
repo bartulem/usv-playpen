@@ -199,17 +199,27 @@ class SummaryPlotter:
                 and "calibration" not in sub_directory.name
             ):
                 used_cameras.append(sub_directory.name.split(".")[-1])
+                # read everything needed off the store, then close it immediately so it never
+                # keeps the backing video chunk open (a lingering handle blocks a later
+                # move/delete of that file on Windows)
                 img_store = new_for_filename(str(sub_directory / 'metadata.yaml'))
-                total_frames.append(img_store.frame_count)
-                frame_times = img_store.get_frame_metadata()["frame_time"]
+                try:
+                    store_frame_count = img_store.frame_count
+                    frame_times = img_store.get_frame_metadata()["frame_time"]
+                    store_format = img_store._format
+                    store_user_metadata = img_store.user_metadata
+                finally:
+                    img_store.close()
+
+                total_frames.append(store_frame_count)
                 video_duration = frame_times[-1] - frame_times[0]
                 cam_esr.append(
-                    round(number=img_store.frame_count / video_duration, ndigits=3)
+                    round(number=store_frame_count / video_duration, ndigits=3)
                 )
 
                 if counter == 0:
-                    video_encoding = img_store._format
-                    user_meta_data = img_store.user_metadata
+                    video_encoding = store_format
+                    user_meta_data = store_user_metadata
                     motif_version = f"v{user_meta_data['motif_version']}"
                     camera_gain = user_meta_data["gain"]
                     camera_exposure = user_meta_data["exposuretime"]
