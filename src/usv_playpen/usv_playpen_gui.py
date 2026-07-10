@@ -284,6 +284,7 @@ class ChemoDialog(QDialog):
             'virus_vendor': 'addgene',
             'virus_name': 'pAAV-CaMKIIa-hM4D(Gi)-mCherry',
             'virus_concentration': 'e.g., 1.0e12 vg/mL',
+            'virus_volume': 'e.g. 100 nL',
             'virus_injection_date': 'YYYY-MM-DD',
             'target_area': 'lPAG',
             'agonist_vendor': 'HelloBio',
@@ -314,7 +315,7 @@ class ChemoDialog(QDialog):
 
         line_edit_fields_part1 = [
             'virus_vendor', 'virus_name', 'virus_lot', 'virus_concentration',
-            'virus_injection_date', 'target_area',
+            'virus_volume', 'virus_injection_date', 'target_area',
         ]
         for key in line_edit_fields_part1:
             widget = QLineEdit()
@@ -706,6 +707,7 @@ class LesionDialog(QDialog):
             'name': 'caspase',
             'virus_vendor': 'addgene',
             'virus_name': 'pAAV5-flex-taCasp3-TEVp',
+            'virus_volume': 'e.g. 100 nL',
             'virus_injection_date': '2025-08-15',
             'target_area': 'lPAG'
         }
@@ -725,7 +727,7 @@ class LesionDialog(QDialog):
             self.subject_combo.addItems(subject_ids)
         self.form_layout.addRow("Subject:", self.subject_combo)
 
-        line_edit_fields = ['name', 'virus_vendor', 'virus_name', 'virus_lot', 'virus_concentration', 'virus_injection_date', 'target_area']
+        line_edit_fields = ['name', 'virus_vendor', 'virus_name', 'virus_lot', 'virus_concentration', 'virus_volume', 'virus_injection_date', 'target_area']
         for key in line_edit_fields:
             widget = QLineEdit()
             widget.setPlaceholderText(placeholders.get(key, ""))
@@ -883,6 +885,7 @@ class OptoDialog(QDialog):
         placeholders = {
             'virus_vendor': 'addgene',
             'virus_name': 'AAV-CAG-ChR2-GFP',
+            'virus_volume': 'e.g. 100 nL',
             'virus_injection_date': '2025-09-29',
             'virus_target_area': 'lPAG',
             'fiber_implantation_date': '2025-09-29',
@@ -918,7 +921,7 @@ class OptoDialog(QDialog):
         self.form_layout.addRow("Intervention Type:", self.intervention_type_combo)
         self.fields['intervention_type'] = self.intervention_type_combo
 
-        for key in ['virus_vendor', 'virus_name', 'virus_lot', 'virus_concentration', 'virus_injection_date', 'virus_target_area']:
+        for key in ['virus_vendor', 'virus_name', 'virus_lot', 'virus_concentration', 'virus_volume', 'virus_injection_date', 'virus_target_area']:
             widget = QLineEdit()
             widget.setPlaceholderText(placeholders.get(key, ""))
             self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
