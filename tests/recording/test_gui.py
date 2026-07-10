@@ -660,3 +660,112 @@ def test_nudge_button_icon_up_marks_icon_text_buttons(qtbot):
     qtbot.addWidget(text_only)
     usv_playpen_gui._nudge_button_icon_up(text_only)
     assert not text_only.property("_iconNudged")
+
+
+# ---------------------------------------------------------------------------
+# Subject repository ("remembered animals") <-> session-record consistency.
+#
+# `_add_subject` builds its dict from the form widgets only, so keys with no
+# widget -- notably `interventions` -- are absent from it. The repository writer
+# must therefore never treat an incoming dict as the complete animal.
+# ---------------------------------------------------------------------------
+
+
+def _subject_window(qtbot, monkeypatch, tmp_path):
+    """Main window on the record_three page, with every persistent write
+    redirected away from the user's real config files."""
+
+    monkeypatch.chdir(tmp_path)
+    from usv_playpen.usv_playpen_gui import initialize_main_window
+
+    _app, win = initialize_main_window(no_splash=True)
+    qtbot.addWidget(win)
+    win.subject_repo_path = tmp_path / 'subject_presets.json'
+    monkeypatch.setattr(win, '_write_metadata_to_disk', lambda: None)
+    win.record_three()
+    return win
+
+
+_REMEMBERED = {
+    'subject_id': '181101_2', 'species': 'mouse', 'genotype_strain': 'C57',
+    'sex': 'male', 'housing': 'group', 'dob': '', 'weight': '25',
+    'estrous_stage': 'N/A', 'estrous_sample_time': '',
+    'interventions': {'optogenetics': {'name': 'RED0'}},
+}
+
+
+def _interventions(subject: dict) -> list:
+    return sorted((subject or {}).get('interventions', {}) or {})
+
+
+def test_add_subject_after_recall_keeps_remembered_interventions(qtbot, monkeypatch, tmp_path):
+    """Recalling an animal then pressing "Add Subject" must not erase the
+    interventions stored in subject_presets.json. `_add_subject` passes a
+    form-only dict (no `interventions` key), so a repository writer that
+    replaces wholesale destroys them."""
+
+    import copy
+    win = _subject_window(qtbot, monkeypatch, tmp_path)
+    win.subject_repository = [copy.deepcopy(_REMEMBERED)]
+    win.metadata_settings['Subjects'] = []
+
+    win._on_subject_selected_from_completer('181101_2')
+    win.subject_form_widgets['genotype_strain'].setText('C57BL/6J')   # a real edit
+    win._add_subject()
+
+    assert _interventions(win.subject_repository[0]) == ['optogenetics']
+    assert _interventions(win.metadata_settings['Subjects'][0]) == ['optogenetics']
+
+
+def test_add_subject_by_typed_id_inherits_remembered_interventions(qtbot, monkeypatch, tmp_path):
+    """Typing a remembered animal's id (never touching the completer popup) and
+    pressing "Add Subject" must seed the session record from the remembered
+    preset, so the recording's metadata carries its interventions."""
+
+    import copy
+    from PyQt6.QtWidgets import QComboBox
+
+    win = _subject_window(qtbot, monkeypatch, tmp_path)
+    win.subject_repository = [copy.deepcopy(_REMEMBERED)]
+    win.metadata_settings['Subjects'] = []
+
+    for key, widget in win.subject_form_widgets.items():
+        value = str(_REMEMBERED.get(key, ''))
+        widget.setCurrentText(value) if isinstance(widget, QComboBox) else widget.setText(value)
+    win._add_subject()
+
+    assert _interventions(win.metadata_settings['Subjects'][0]) == ['optogenetics']
+    assert _interventions(win.subject_repository[0]) == ['optogenetics']
+
+
+def test_update_subject_in_repository_still_persists_intervention_deletion(qtbot, monkeypatch, tmp_path):
+    """Merging must not resurrect a deleted intervention: the dialogs pass a
+    subject whose `interventions` dict is present with the entry removed, so the
+    whole sub-dict is replaced."""
+
+    import copy
+    win = _subject_window(qtbot, monkeypatch, tmp_path)
+    both = copy.deepcopy(_REMEMBERED)
+    both['interventions'] = {'optogenetics': {'name': 'RED0'}, 'lesion': {'name': ''}}
+    win.subject_repository = [both]
+
+    after_delete = copy.deepcopy(both)
+    del after_delete['interventions']['lesion']
+    win._update_subject_in_repository(after_delete)
+
+    assert _interventions(win.subject_repository[0]) == ['optogenetics']
+
+
+def test_subject_completer_refreshes_after_repository_change(qtbot, monkeypatch, tmp_path):
+    """A newly remembered animal appears in the autocomplete without having to
+    leave and re-enter the record_three page."""
+
+    win = _subject_window(qtbot, monkeypatch, tmp_path)
+    win.subject_repository = []
+    win._refresh_subject_completer()
+
+    win._update_subject_in_repository({'subject_id': 'NEW_1', 'species': 'mouse'})
+
+    model = win.subject_completer.model()
+    listed = [model.data(model.index(i, 0)) for i in range(model.rowCount())]
+    assert 'NEW_1' in listed

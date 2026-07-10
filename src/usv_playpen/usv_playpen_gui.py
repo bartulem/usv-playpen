@@ -29,7 +29,7 @@ import torch  # noqa: F401
 import platformdirs
 import toml
 import yaml
-from PyQt6.QtCore import QEvent, QRegularExpression, Qt, QTimer
+from PyQt6.QtCore import QEvent, QRegularExpression, QStringListModel, Qt, QTimer
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -1779,14 +1779,52 @@ class USVPlaypenWindow(QMainWindow):
         # the same locally-built dict to both lists, and intervention dialogs
         # pass the session object straight through; without this copy, later
         # mutations to one would silently leak into the other.
-        repository_entry = copy.deepcopy(subject_data_to_save)
+        incoming_entry = copy.deepcopy(subject_data_to_save)
 
+        # MERGE into the stored preset -- never replace it wholesale. Callers
+        # legitimately pass PARTIAL dicts: `_add_subject` builds its dict from the
+        # subject form widgets, and there is no widget for `interventions`, so that
+        # key is simply absent. Overwriting the preset with such a dict silently
+        # destroys the animal's remembered interventions. Merging preserves keys the
+        # caller did not mention, while a key the caller DOES pass still wins --
+        # so deleting an intervention (the dialogs pass a pruned `interventions`
+        # dict) correctly replaces the stored sub-dict.
         if existing_subject_index != -1:
-            self.subject_repository[existing_subject_index] = repository_entry
+            merged_entry = copy.deepcopy(self.subject_repository[existing_subject_index])
+            merged_entry.update(incoming_entry)
+            self.subject_repository[existing_subject_index] = merged_entry
         else:
-            self.subject_repository.append(repository_entry)
+            self.subject_repository.append(incoming_entry)
 
         self._save_subject_to_repository()
+        self._refresh_subject_completer()
+
+    def _refresh_subject_completer(self) -> None:
+        """
+        Description
+        -----------
+        Re-publishes the remembered subject ids into the autocomplete model.
+
+        ``QCompleter`` copies a plain list into a private model at construction, so
+        without a retained model the dropdown keeps the snapshot taken when
+        ``record_three`` was built and never shows an animal remembered during this
+        visit. Backing it with a ``QStringListModel`` lets the list be refreshed in
+        place whenever the repository changes.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        None
+        """
+
+        if not hasattr(self, 'subject_completer_model'):
+            return
+
+        self.subject_completer_model.setStringList(
+            [s['subject_id'] for s in self.subject_repository if s['subject_id']]
+        )
 
     def _clear_subject_form(self) -> None:
         """
@@ -2221,6 +2259,19 @@ class USVPlaypenWindow(QMainWindow):
             subject_data['weight'] = _safe_literal_eval(subject_data['weight'])
         except (ValueError, SyntaxError):
             pass
+
+        # Seed from the remembered preset (or, failing that, the record already in
+        # this session) so keys that have no form widget -- notably `interventions`
+        # -- are carried over instead of dropped. Without this, typing a remembered
+        # animal's id and pressing "Add Subject" produces a session record, and
+        # therefore a recording metadata file, with none of its interventions.
+        seed_subject = next((s for s in self.subject_repository if s['subject_id'] == new_subject_id), None)
+        if seed_subject is None:
+            seed_subject = next((s for s in (self.metadata_settings.get('Subjects') or []) if s and s['subject_id'] == new_subject_id), None)
+        if seed_subject is not None:
+            seeded_data = copy.deepcopy(seed_subject)
+            seeded_data.update(subject_data)
+            subject_data = seeded_data
 
         target_subject_in_session = next((s for s in self.metadata_settings.get('Subjects', []) if s['subject_id'] == new_subject_id), None)
         if target_subject_in_session:
@@ -3127,12 +3178,17 @@ class USVPlaypenWindow(QMainWindow):
 
             y_pos += 30
 
-        subject_ids_from_repo = [s['subject_id'] for s in self.subject_repository if s['subject_id']]
-
-        # create a QCompleter with the list of IDs
-        completer = QCompleter(subject_ids_from_repo, self)
+        # Back the completer with a retained QStringListModel rather than a plain
+        # list: QCompleter copies a list into a private model at construction, so the
+        # dropdown would otherwise keep the snapshot taken here and never show an
+        # animal remembered later in this same visit. _refresh_subject_completer()
+        # republishes the ids whenever the repository changes.
+        self.subject_completer_model = QStringListModel(self)
+        completer = QCompleter(self.subject_completer_model, self)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.subject_completer = completer
+        self._refresh_subject_completer()
 
         if hasattr(self, 'subject_id_edit'):
             self.subject_id_edit.setCompleter(completer)
