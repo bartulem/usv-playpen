@@ -7,7 +7,7 @@ SLEAP_ROOT="Name"
 CPUS_PER_TASK=2
 MEMORY_PER_CPU="24G"
 TIME_RESTRICTION="05:00:00"
-EMAIL_ADDRESS="nsurname@princeton.edu"
+EMAIL_ADDRESS="nsurname@domain.edu"
 EMAIL_TYPE="ALL"
 
 # SLEAP parameters
@@ -83,6 +83,6 @@ EOF
 
 NUM_ARRAY_JOBS=$(grep -c "^" "$ARRAY_ARGS_FILE")
 
-echo "Submitting $NUM_ARRAY_JOBS jobs."
+echo "Submitting $NUM_ARRAY_JOBS jobs using sleap-nn-track..."
 
 sbatch -a 1-"$NUM_ARRAY_JOBS" "$JOB_SCRIPT" "$ARRAY_ARGS_FILE"
