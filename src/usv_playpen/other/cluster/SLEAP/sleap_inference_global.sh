@@ -3,7 +3,9 @@
 # -------------------------------------------------- #
 # ------------- SELECT HYPER-PARAMETERS ------------ #
 
-SLEAP_ROOT="Name"
+# Experimenter id for the paths below (edit to yours). These scripts pass explicit
+# paths, so EXPERIMENTER_ID is not exported and no TOML re-keying is involved.
+EXPERIMENTER_ID="Name"
 CPUS_PER_TASK=2
 MEMORY_PER_CPU="24G"
 TIME_RESTRICTION="05:00:00"
@@ -24,7 +26,7 @@ SLEAP_TRACKING_WINDOW_SIZE=150
 # -------------------------------------------------- #
 # ---------------- CREATE JOB SCRIPT --------------- #
 
-WORK_DIR="/mnt/cup/labs/falkner/$SLEAP_ROOT/SLEAP/inference"
+WORK_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/SLEAP/inference"
 JOB_SCRIPT="$WORK_DIR/sleap_inference_settings.sh"
 ARRAY_ARGS_FILE="$WORK_DIR/job_list.txt"
 
