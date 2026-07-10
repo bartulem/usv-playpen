@@ -13,8 +13,6 @@
 ANALYSIS_TYPE=$1
 
 # Define core variables
-# Experimenter id for the paths below (edit to yours). These scripts pass explicit
-# paths, so EXPERIMENTER_ID is not exported and no TOML re-keying is involved.
 EXPERIMENTER_ID="Name"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
 UNIVARIATE_PATH="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/univariate_results/univariate_multinomial_results.pkl"
