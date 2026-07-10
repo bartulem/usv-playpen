@@ -17,11 +17,22 @@ axes.labelweight : light
 figure.titleweight : light
 
 # Math text rendered in the same family / weight as surrounding text.
+# 'custom' makes matplotlib resolve EVERY math role (rm/it/bf/cal/sf/tt/bfit)
+# the first time any mathtext is rendered, so each role must be named here.
+# Leaving 'cal' unset keeps its stock default of 'cursive', which no machine
+# in the lab ships, and every figure containing mathtext (e.g. the "$\bf{...}$"
+# labels on the A/V sync plot) then emits:
+#   findfont: Font family ['cursive'] not found. Falling back to DejaVu Sans.
+# 'tt' stays monospace on purpose -- it is the code face, not a text face.
 mathtext.default : regular
 mathtext.fontset : custom
 mathtext.rm : Helvetica
 mathtext.it : Helvetica:italic
 mathtext.bf : Helvetica:bold
+mathtext.bfit : Helvetica:bold:italic
+mathtext.cal : Helvetica:italic
+mathtext.sf : Helvetica
+mathtext.tt : monospace
 
 # ------------------------------------------------------------------ #
 # font sizes
