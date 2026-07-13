@@ -149,7 +149,7 @@ def _bivariate_loss_static(
 
 
 @partial(jax.jit, static_argnames=('n_feats', 'n_time', 'smoothness_derivative_order',
-                                   'metric'))
+                                   'metric', 'max_iter'))
 def _bivariate_train_loop_jit(
         params_init,
         opt_state_init,
@@ -160,8 +160,9 @@ def _bivariate_train_loop_jit(
         l2_reg,
         huber_delta,
         learning_rate,
+        grad_clip_norm,
         tol,
-        max_iter,
+        max_iter: int,
         n_feats: int,
         n_time: int,
         smoothness_derivative_order: int,
@@ -192,7 +193,26 @@ def _bivariate_train_loop_jit(
     pre-initialised state without breaking JAX's structural typing.
     """
 
-    optimizer = optax.adam(learning_rate)
+    # Cosine-decay the step to zero over `max_iter`, and clip the global norm of
+    # the gradient before Adam consumes it. Both are required for the
+    # `diff < tol` convergence test to be reachable at all: a *constant* Adam
+    # step does not shrink as the gradient vanishes, so the parameter-change
+    # norm plateaus at a floor set by `learning_rate` and the loop always runs
+    # to `max_iter` reporting `converged=False`. The failure concentrates in the
+    # stiff corner of the tuning grid -- a large `lambda_smooth` on the
+    # 2nd-derivative penalty over hundreds of lags is badly ill-conditioned, and
+    # a fixed step oscillates in those high-curvature directions rather than
+    # settling. The objective is convex, so clipping never biases the solution;
+    # it only bounds the per-step move. `max_iter` is a static argument because
+    # the schedule needs it as a Python int at trace time. Mirrors the
+    # multinomial estimator, which already carried both guards.
+    scheduler = optax.cosine_decay_schedule(
+        init_value=learning_rate, decay_steps=max_iter,
+    )
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(grad_clip_norm),
+        optax.adam(scheduler),
+    )
     check_interval = 100
 
     def step(params, opt_state):
@@ -298,7 +318,27 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         quadratically; larger residuals are penalised linearly. Set to
         `np.inf` to recover pure squared-error regression.
     learning_rate : float, default=1e-3
-        Step size for the Adam optimiser.
+        Initial step size for the Adam optimiser. It is **cosine-decayed to
+        zero over `max_iter` steps**; see `grad_clip_norm` for why.
+    grad_clip_norm : float, default=1.0
+        Global-norm gradient clip applied before Adam consumes the gradient.
+        Together with the cosine-decayed learning rate this mirrors the
+        multinomial estimator, and both exist for the same reason. Under a
+        *constant* Adam step size the update is `lr * m_hat / (sqrt(v_hat) +
+        eps)`, whose magnitude does **not** shrink to zero as the gradient
+        does, so the parameter-change norm plateaus at a floor set by `lr` and
+        the `diff < tol` convergence test can never fire — the loop simply runs
+        to `max_iter` and reports `converged=False`. The problem is worst where
+        the objective is stiffest: a large `lambda_smooth` on the 2nd-derivative
+        penalty over hundreds of lags is a very ill-conditioned quadratic, and a
+        fixed step oscillates in those high-curvature directions instead of
+        settling. Empirically every non-converged fold in the 100-fold cluster
+        output sat in the heavily regularised corner of the tuning grid
+        (`lambda_smooth >= 10`, `l2_reg = 1`) while every converged fold sat at
+        `lambda_smooth <= 1`. Decaying the step to zero makes convergence
+        attainable; clipping bounds the stiff-direction move. The objective is
+        convex, so clipping never biases the solution — it only bounds the
+        per-step move.
     max_iter : int, default=5000
         Maximum number of optimisation steps (epochs) allowed before
         termination.
@@ -354,6 +394,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             smoothness_derivative_order: int = 2,
             huber_delta: float = 1.0,
             learning_rate: float = 1e-3,
+            grad_clip_norm: float = 1.0,
             max_iter: int = 5000,
             tol: float = 1e-4,
             random_state: int = 0,
@@ -374,6 +415,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         self.smoothness_derivative_order = int(smoothness_derivative_order)
         self.huber_delta = huber_delta
         self.learning_rate = learning_rate
+        self.grad_clip_norm = grad_clip_norm
         self.max_iter = max_iter
         self.tol = tol
         self.random_state = random_state
@@ -626,7 +668,17 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         rng = jax.random.PRNGKey(self.random_state)
         params = self._initialize_params(n_inputs, rng)
 
-        optimizer = optax.adam(self.learning_rate)
+        # Must build the SAME optax chain as `_bivariate_train_loop_jit`: the
+        # `opt_state` initialised here is handed to that JIT'd loop, so the two
+        # optimiser pytrees have to be structurally identical (adding the clip
+        # transform changes the state pytree).
+        scheduler = optax.cosine_decay_schedule(
+            init_value=self.learning_rate, decay_steps=self.max_iter,
+        )
+        optimizer = optax.chain(
+            optax.clip_by_global_norm(self.grad_clip_norm),
+            optax.adam(scheduler),
+        )
         opt_state = optimizer.init(params)
 
         @partial(jax.jit, static_argnums=(5, 6))
@@ -687,8 +739,9 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
                 jnp.asarray(self.l2_reg, dtype=jnp.float32),
                 jnp.asarray(self.huber_delta, dtype=jnp.float32),
                 jnp.asarray(self.learning_rate, dtype=jnp.float32),
+                jnp.asarray(self.grad_clip_norm, dtype=jnp.float32),
                 jnp.asarray(self.tol, dtype=jnp.float32),
-                jnp.asarray(self.max_iter, dtype=jnp.int32),
+                int(self.max_iter),
                 int(self.n_features),
                 int(self.n_time_bins),
                 int(self.smoothness_derivative_order),
