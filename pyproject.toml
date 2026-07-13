@@ -342,8 +342,15 @@ sam-2 = { git = "https://github.com/facebookresearch/sam2.git" }
 # PyTorch's CUDA-12.8 index so the whole GPU stack stays on CUDA 12 (which the
 # 575 driver supports); the explicit index declared at the bottom of this file
 # is used ONLY by these two packages.
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
+#
+# The pin is scoped to LINUX. There is no CUDA on macOS, so the cu128 index ships no
+# macOS wheel at all (only manylinux + win_amd64) -- an unscoped pin makes the package
+# uninstallable there ("torch==2.11.0+cu128 ... doesn't have a wheel for the current
+# platform") and breaks the macOS CI leg. The CUDA-12 pin is only meaningful on Linux
+# anyway, since that is where jax[cuda12] and the GPU cluster live; on macOS torch falls
+# back to PyPI (CPU/MPS), where no cu12/cu13 collision can occur.
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
 
 # Lift marimo's per-cell output cap for the usv_embedding_explorer notebook:
 # its thumbnail-free altair scatter inlines session_id / row_index / x / y /
