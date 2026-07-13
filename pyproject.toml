@@ -316,7 +316,18 @@ messages_control.disable = [
 override-dependencies = [
     "opencv-python; python_version < '0'",
 ]
-constraint-dependencies = []
+constraint-dependencies = [
+    # 2026-07-13 -- Dependabot #54 (mistune: quadratic-time DoS in parse_link_text) and
+    # #52 / #53 (soupsieve: ReDoS via catastrophic backtracking in the attribute-selector
+    # VALUE regex, and unbounded memory on comma-separated selector lists). Both are
+    # DOCS-ONLY transitive deps -- mistune via nbsphinx/jupyterlab, soupsieve via
+    # furo/nbsphinx/jupyterlab -- and usv-playpen never parses untrusted Markdown or
+    # user-supplied CSS selectors, so practical exposure is nil. They are floored anyway
+    # because uv's sticky lock will NOT bump a transitive dep on its own: regenerating
+    # uv.lock for an unrelated change (e.g. the torch cu128 pin) leaves them untouched.
+    "mistune>=3.3.0",
+    "soupsieve>=2.8.4",
+]
 
 [tool.uv.sources]
 sleap-anipose = { git = "https://github.com/davidt0x/sleap-anipose.git", branch = "main" }
