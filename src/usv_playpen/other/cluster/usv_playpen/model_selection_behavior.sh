@@ -5,7 +5,7 @@
 #SBATCH --time=96:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=1
-#SBATCH --gpus=1
+#SBATCH --gres=gpu:1
 #SBATCH --mail-user=nsurname@domain.edu
 #SBATCH --mail-type=FAIL
 
@@ -50,9 +50,15 @@ set -e
 # Environment
 source ${USV_PLAYPEN_PATH}.venv/bin/activate
 
-# JAX optimization
 export PYTHONUNBUFFERED=1
+
+# JAX optimization
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export TF_CPP_MIN_LOG_LEVEL=3
+export GLOG_minloglevel=2
+
+echo "node=$(hostname)  CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<unset>}"
+nvidia-smi -L || true
 
 # Execute the consolidated dispatcher
 python -m usv_playpen.modeling.main_model_selection_dispatcher \
