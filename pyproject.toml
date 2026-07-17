@@ -349,6 +349,16 @@ sam-2 = { git = "https://github.com/facebookresearch/sam2.git" }
 # platform") and breaks the macOS CI leg. The CUDA-12 pin is only meaningful on Linux
 # anyway, since that is where jax[cuda12] and the GPU cluster live; on macOS torch falls
 # back to PyPI (CPU/MPS), where no cu12/cu13 collision can occur.
+#
+# DEPENDABOT #56 (torch <= 2.12.1, torch.jit.script memory corruption) is knowingly NOT
+# fixed here. The vulnerable path (torch.jit.script on attacker-controlled input) is never
+# called in this codebase and nothing loads untrusted models, so real exposure is nil. The
+# patched torch (>= 2.13.0) ships no cu128 wheel -- cu128 is the LAST CUDA-12 build torch
+# publishes on this channel -- so "fixing" it would force a migration to the cu129 (CUDA
+# 12.9) channel and a full re-validation of the jax[cuda12] + torch cuDNN coexistence on
+# spock. That is a bad trade for a nil-exposure alert against a hard-won validated stack, so
+# we stay on 2.11.0+cu128 and roll the cu129 bump into the NEXT deliberate torch upgrade
+# (validate cu129 then). Dismiss the GitHub alert as "vulnerable code is not actually used".
 torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu128", marker = "sys_platform == 'linux'" }]
 
