@@ -497,6 +497,7 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
     for lam_sm in lambda_smooth_grid:
         for lam_l2 in l2_reg_grid:
             fold_scores = []
+            pair_diverged = False
             for inner_idx, (in_tr, in_va) in enumerate(inner_folds):
                 try:
                     model = regressor_cls(
@@ -515,6 +516,23 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
                         _use_lax_loop=use_lax_loop,
                     )
                     model.fit(X_train[in_tr], y_train[in_tr])
+                    # A non-finite coefficient matrix means the optimiser
+                    # diverged on this inner sub-fold. This is observed at the
+                    # near-zero-l2 grid corner on severely imbalanced targets
+                    # (a rare class carrying a large inverse-frequency weight
+                    # over a 600-lag design becomes numerically unstable on some
+                    # train subsets even when the full-data fit converges). Such
+                    # a (lambda_smooth, l2_reg) is numerically unusable, so flag
+                    # the whole pair as diverged and exclude it from selection
+                    # below — otherwise its score would be averaged over only
+                    # the inner folds where it happened to survive, letting the
+                    # tuner pick it and hand a diverging hyperparameter to the
+                    # outer fit (whose NaN predictions then crash the metrics).
+                    _coef = getattr(model, 'coef_', None)
+                    if _coef is not None and not np.isfinite(np.asarray(_coef)).all():
+                        pair_diverged = True
+                        fold_scores.append(np.nan)
+                        continue
                     y_pred = model.predict(X_train[in_va], balanced=False)
                     y_proba = model.predict_proba(X_train[in_va], balanced=False)
                     fold_scores.append(_compute_score(
@@ -530,15 +548,19 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
 
             finite = np.asarray([s for s in fold_scores if np.isfinite(s)], dtype=float)
             pair_key = (float(lam_sm), float(lam_l2))
-            if finite.size:
+            # A pair that diverged on ANY inner fold is excluded (score NaN, so
+            # it never enters `valid_pairs`); a well-conditioned run has no such
+            # pair, so this is a no-op there. `finite.size == 0` (scored nowhere)
+            # is likewise treated as invalid.
+            if pair_diverged or finite.size == 0:
+                grid_scores[pair_key] = float('nan')
+                grid_ses[pair_key] = float('nan')
+            else:
                 grid_scores[pair_key] = float(np.mean(finite))
                 grid_ses[pair_key] = (
                     float(np.std(finite, ddof=1) / np.sqrt(finite.size))
                     if finite.size > 1 else 0.0
                 )
-            else:
-                grid_scores[pair_key] = float('nan')
-                grid_ses[pair_key] = float('nan')
 
     valid_pairs = [(pair, score) for pair, score in grid_scores.items() if np.isfinite(score)]
     if not valid_pairs:
