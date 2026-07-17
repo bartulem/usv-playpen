@@ -1043,19 +1043,20 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         spearman_y = _spearman(Y_true[:, 1], Y_pred[:, 1])
 
         # Wrap-aware distance correlation between the decoded prediction and
-        # the truth — the torus-manifold selection score (see the metrics
-        # glossary). Computed ONLY on the torus path (it is O(n^2) and
-        # subsampled); on euclidean it is `nan` and `r2_spatial` is the score.
-        # The `null_model_free` baseline is an empirical-density draw (not a
-        # constant centroid), so its `dcor_xy` is computed the same way and
-        # lands at the finite-sample chance floor.
-        if self.metric == 'torus':
-            dcor_xy = dcor_prediction_truth(
-                Y_pred, Y_true, metric=self.metric, period=self.period,
-                random_state=self.random_state,
-            )
-        else:
-            dcor_xy = float('nan')
+        # the truth — the manifold selection score on BOTH geometries (see the
+        # metrics glossary). It is O(n^2) and subsampled; `dcor_prediction_truth`
+        # reduces to ordinary Euclidean distances on `metric='euclidean'` and to
+        # the wrap-aware geodesic on `metric='torus'`, so it is computed
+        # unconditionally now that euclidean also selects on `dcor_xy` (the
+        # former torus-only gate would leave the euclidean baseline and forward
+        # search reading an all-NaN score, failing every fold). The
+        # `null_model_free` baseline is an empirical-density draw (not a constant
+        # centroid), so its `dcor_xy` is computed the same way and lands at the
+        # finite-sample chance floor.
+        dcor_xy = dcor_prediction_truth(
+            Y_pred, Y_true, metric=self.metric, period=self.period,
+            random_state=self.random_state,
+        )
 
         # `r2_spatial` numerator: sum of squared wrap-aware residuals.
         # Denominator: total wrap-aware dispersion of `Y_true` around

@@ -19,12 +19,15 @@
     "spatial_cluster_num": 20,
     "split_strategy": "mixed",
     "split_num": 10,
-    "test_proportion": 0.1,
+    "test_proportion": 0.2,
     "session_split_initial_tolerance": 0.05,
     "session_split_max_attempts": 50000,
     "session_split_widen_step": 0.02,
     "session_split_widen_every": 1000,
     "selection_p_val": 0.01,
+    "selection_effect_floor": 0.1,
+    "selection_n_bootstrap": 1000,
+    "selection_ci_level": 0.99,
     "usv_bout_time": 2,
     "usv_per_bout_floor": 2,
     "onset_target_category": null
@@ -48,7 +51,7 @@
       "allo_pitch-nose",
       "nose-allo_pitch"
     ],
-    "dyadic_engagement": ["orofacial-sei"],
+    "dyadic_engagement": [],
     "dyadic_pose_symmetric": false,
     "include_1st_derivatives": false,
     "include_2nd_derivatives": false,
@@ -165,7 +168,7 @@
           "lambda_smooth_decades_each_side": 3,
           "l2_reg_decades_each_side": 4,
           "inner_cv_folds": 5,
-          "inner_cv_scoring_metric": "r2_spatial",
+          "inner_cv_scoring_metric": "dcor_xy",
           "inner_cv_use_one_se_rule": true,
           "inner_max_iter": 2500
         }

@@ -474,12 +474,15 @@ class TestManifoldPredictionMetrics:
         assert bundle['pearson_x'] == pytest.approx(1.0, abs=1e-9)
         assert bundle['dcor_xy'] == pytest.approx(1.0, abs=1e-9)
 
-    def test_dcor_only_computed_on_torus(self):
-        """`dcor_xy` is the torus selection score; on euclidean it is `nan`."""
+    def test_dcor_computed_on_both_geometries(self):
+        """`dcor_xy` is the model-selection score on BOTH geometries, so it is a
+        finite distance correlation on euclidean AND torus (it used to be gated
+        torus-only, which left the euclidean baseline/forward-search reading an
+        all-NaN score once euclidean also selected on `dcor_xy`)."""
 
         rng = np.random.default_rng(2)
         Y = rng.random((200, 2)); Yp = rng.random((200, 2))
-        assert np.isnan(
+        assert np.isfinite(
             manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)['dcor_xy']
         )
         assert np.isfinite(

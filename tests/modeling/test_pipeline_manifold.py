@@ -575,19 +575,23 @@ class TestManifoldModelSelection:
         records the ``null_model_free`` empirical-density baseline.
         """
 
-        # Six folds so the one-sided per-fold Wilcoxon can reach the screening
-        # alpha (min one-sided p = 1 / 2**n_folds); ``p_val`` is widened below
-        # to keep the Bonferroni-corrected gate clearable on this tiny cloud.
+        # The session-grain screen bootstraps SESSIONS, so its statistical power
+        # comes from the session count (not the fold count). Use a larger session
+        # panel under session-holdout -- the split the gate is designed for -- so
+        # the strong-signal feature's per-session margin clears the bootstrap CI.
+        gate_n_sessions = 25
         settings, _save_dir = _build_manifold_settings(
-            tmp_path, split_strategy='mixed', split_num=6, test_proportion=0.3,
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
         )
         history_frames = HISTORY_FRAMES
         feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
-        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
 
         input_md = {
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_vae_supercategory',
+            'session_ids': session_ids,
+            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
                 'usv_category_column_name': 'vae_supercategory',
                 'manifold_metric': 'euclidean',
@@ -656,8 +660,8 @@ class TestManifoldModelSelection:
         with step_pkls[-1].open('rb') as fh:
             final_step = pickle.load(fh)
         assert 'self.speed' in final_step['current_features']
-        # Euclidean manifolds keep r2_spatial as the selection score.
-        assert final_step['_run_metadata']['selection_metric'] == 'r2_spatial'
+        # dcor_xy is the selection score on BOTH geometries now.
+        assert final_step['_run_metadata']['selection_metric'] == 'dcor_xy'
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_metric_runs_forward_search(self, tmp_path):
@@ -673,8 +677,13 @@ class TestManifoldModelSelection:
         estimator via the factory and pass ``metric``/``period``.
         """
 
+        # Session-holdout with a large session panel: the session-grain gate
+        # bootstraps SESSIONS, so its power scales with the session count, and it
+        # assumes whole-session holdout (a per-session margin is only leak-free
+        # when the session's events are all in the test fold).
+        gate_n_sessions = 25
         settings, _save_dir = _build_manifold_settings(
-            tmp_path, split_strategy='mixed', split_num=6, test_proportion=0.3,
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
         )
         settings['vocal_features']['usv_manifold_metric'] = 'torus'
         # No temporal binning: the wound-torus target is built from the full-width
@@ -683,11 +692,13 @@ class TestManifoldModelSelection:
         settings['hyperparameters']['jax_linear']['bivariate']['bin_resizing_factor'] = 1
         history_frames = HISTORY_FRAMES
         feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
-        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
 
         input_md = {
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_qlvm_supercategory',
+            'session_ids': session_ids,
+            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_supercategory',
                 'manifold_metric': 'torus',
@@ -750,11 +761,13 @@ class TestManifoldModelSelection:
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_stale_ranking_raises(self, tmp_path):
         """
-        On a torus run the selection screens on `dcor_xy`. A univariate ranking
-        produced before that metric existed (only `r2_spatial`) must raise a
-        clear, actionable error rather than silently skipping every feature and
-        mis-reporting the schema mismatch as "no significant features found" (a
-        misleading false null).
+        On a torus run the selection screens on the session-grain paired-dcor
+        margin, which needs `session_ids` / `n_events_per_session` in the
+        univariate `_input_metadata` and per-fold predictions in each result. A
+        stale ranking that predates that schema (only `r2_spatial` fold metrics,
+        no session metadata) must raise a clear, actionable error rather than
+        silently skipping every feature and mis-reporting the schema mismatch as
+        "no significant features found" (a misleading false null).
         """
 
         settings, _ = _build_manifold_settings(
@@ -777,7 +790,7 @@ class TestManifoldModelSelection:
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
 
-        with pytest.raises(ValueError, match="predates it"):
+        with pytest.raises(ValueError, match="session_ids"):
             continuous_vocal_manifold_model_selection(
                 univariate_results_path=str(ranking_pkl),
                 input_data_path=str(tmp_path / 'does_not_need_to_exist.pkl'),
@@ -799,16 +812,19 @@ class TestManifoldModelSelection:
         dcor_xy.
         """
 
+        gate_n_sessions = 25
         settings, _ = _build_manifold_settings(
-            tmp_path, split_strategy='mixed', split_num=6, test_proportion=0.3,
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
         )
         settings['vocal_features']['usv_manifold_metric'] = 'torus'
         settings['hyperparameters']['jax_linear']['bivariate']['bin_resizing_factor'] = 1
         feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
-        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
         input_md = {
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_qlvm_supercategory',
+            'session_ids': session_ids,
+            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
                 'usv_category_column_name': 'qlvm_supercategory',
                 'manifold_metric': 'torus', 'manifold_period': 1.0,

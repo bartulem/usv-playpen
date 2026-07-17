@@ -370,8 +370,10 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
     residual, so on ``metric='torus'`` it is the geodesic distance and on
     ``metric='euclidean'`` it reduces to the ordinary plane distance.
     ``dcor_xy`` is the wrap-aware distance correlation between prediction and
-    truth and is computed only on the torus (it is the torus selection score);
-    on euclidean it is ``nan`` and ``r2_spatial`` is the score.
+    truth and is computed on BOTH geometries -- it is the model-selection score
+    on the torus AND on euclidean (``dcor_prediction_truth`` reduces to ordinary
+    Euclidean distances when ``metric='euclidean'``). ``r2_spatial`` is retained
+    as a reported descriptor on both, never as the selection score.
 
     Parameters
     ----------
@@ -390,7 +392,7 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         ``(2, 2)`` inverse training covariance for ``mahalanobis_mae``; the
         metric is ``nan`` when ``None``.
     random_state (int)
-        Seed for the subsampled ``dcor_xy`` draw (torus only).
+        Seed for the subsampled ``dcor_xy`` draw.
 
     Returns
     -------
@@ -435,12 +437,15 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         value = spearmanr(a, b)[0]
         return float(value) if np.isfinite(value) else float('nan')
 
-    if metric == 'torus':
-        dcor_xy = dcor_prediction_truth(
-            Y_pred, Y_true, metric=metric, period=period, random_state=random_state,
-        )
-    else:
-        dcor_xy = float('nan')
+    # `dcor_xy` is the model-selection score on BOTH geometries, so it is
+    # computed unconditionally: `dcor_prediction_truth` reduces to ordinary
+    # Euclidean distances on `metric='euclidean'` and to the wrap-aware geodesic
+    # on `metric='torus'`. (It was previously torus-only, back when euclidean
+    # selected on `r2_spatial`; that gate would now leave the euclidean baseline
+    # and forward-search reading an all-NaN score.)
+    dcor_xy = dcor_prediction_truth(
+        Y_pred, Y_true, metric=metric, period=period, random_state=random_state,
+    )
 
     # ss_res reuses the already-computed per-row squared Euclidean distance
     # (euclidean_dist == sqrt(dx**2 + dy**2)), so squaring it recovers

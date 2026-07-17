@@ -1162,21 +1162,48 @@ class TestMultinomialAndManifoldAborts:
 
     def test_manifold_no_significant_features_aborts(self, tmp_path):
         """
-        When every univariate ``actual`` ``r2_spatial`` fails to beat the
-        ``null_model_free`` centroid baseline (Gate 1: mean <= 0) the manifold
-        selector's Wilcoxon screen admits no candidate, so it prints its abort
-        line and returns before loading the input data — no step pickle written.
+        When no feature's per-session paired dcor margin is significant (here
+        both ``actual`` and ``null`` predictions are drawn independently of the
+        truth, so every session margin scatters around 0) the manifold selector's
+        session-grain screen admits no candidate, prints its abort line, and
+        returns before loading the input data — no step pickle written.
         """
 
         settings, _ = _build_settings(tmp_path, model_engine='sklearn',
                                       split_strategy='mixed', split_num=2)
-        feature_names = ['self.speed', 'other.speed']
-        ranking: dict = {}
-        for feature in feature_names:
-            # mean actual r2_spatial <= 0 -> Gate (1) drops every feature.
+        rng = np.random.default_rng(0)
+        n_sessions, per_session = 4, 50
+        session_ids = [f's{i}' for i in range(n_sessions)]
+        event_to_session = np.repeat(np.arange(n_sessions), per_session)
+        truth = rng.random((n_sessions * per_session, 2))
+
+        def _noise_folds():
+            # Leave-one-session-out folds; predictions are independent of the
+            # truth so the per-session dcor margin is null.
+            folds = {'metrics': {'dcor_xy': [0.1, 0.1, 0.1, 0.1]},
+                     'y_pred_xy': [], 'y_true': [], 'test_indices': []}
+            for session_index in range(n_sessions):
+                idx = np.where(event_to_session == session_index)[0]
+                folds['test_indices'].append(idx)
+                folds['y_true'].append(truth[idx])
+                folds['y_pred_xy'].append(rng.random((per_session, 2)))
+            return folds
+
+        ranking: dict = {
+            '_input_metadata': {
+                'session_ids': session_ids,
+                'n_events_per_session': {s: per_session for s in session_ids},
+            }
+        }
+        for feature in ['self.speed', 'other.speed']:
+            # `actual` and `null` share the same predictions, so every session's
+            # paired dcor margin is exactly 0 -> nothing is significant and the
+            # screen aborts deterministically (independent random draws could
+            # scatter a small margin above the CI on so few sessions).
+            shared_folds = _noise_folds()
             ranking[feature] = {
-                'actual': {'folds': {'metrics': {'r2_spatial': [-0.10, -0.20, -0.15, -0.05]}}},
-                'null_model_free': {'folds': {'metrics': {'r2_spatial': [0.0, 0.0, 0.0, 0.0]}}},
+                'actual': {'folds': shared_folds},
+                'null': {'folds': shared_folds},
             }
         ranking_pkl = tmp_path / 'univariate_combined.pkl'
         with ranking_pkl.open('wb') as fh:
