@@ -43,7 +43,13 @@ from usv_playpen.modeling.modeling_utils import (
     shuffle_train_test_arrays,
     unroll_history_matrix,
     zscore_features_across_sessions,
+    format_run_header,
+    format_split_line,
+    format_run_summary,
+    format_selection_step,
+    extract_univariate_headline,
 )
+from datetime import datetime
 
 
 # Probabilistic / classification metrics
@@ -1053,3 +1059,110 @@ class TestRunPredictorAudits:
         ts.assert_called_once()
         bo = ts.call_args.kwargs['onset_times_per_session']
         assert set(bo) == {'s_ok'}
+
+
+# Standardized modeling console-output formatters
+
+def test_format_run_header_lists_files_and_config():
+    """The header block names task/engine/feature, every input file, the output
+    directory, and the split config, bracketed by `=` rules."""
+
+    header = format_run_header(
+        task='ONSET', engine='pygam', feature='self.speed',
+        input_files={'input data': '/a/in.pkl', 'settings': '/a/s.json'},
+        output_directory='/a/out', split_strategy='session', n_splits=10,
+    )
+    lines = header.splitlines()
+    assert lines[0] == '=' * 70 and lines[-1] == '=' * 70
+    assert 'task=ONSET' in header and 'engine=pygam' in header and 'feature=self.speed' in header
+    assert 'split_strategy=session | n_splits=10' in header
+    assert '  input data: /a/in.pkl' in lines
+    assert '  settings: /a/s.json' in lines
+    assert '  output_directory: /a/out' in lines
+
+
+def test_format_split_line_one_and_two_strategies():
+    """One combined split line renders each strategy's metrics in order, with a
+    finite value at four decimals and non-finite as the literal `nan`."""
+
+    line = format_split_line(3, 10, {
+        'ACTUAL': {'AUC': 0.7201, 'LL': 0.65},
+        'NULL': {'AUC': float('nan'), 'LL': 0.69},
+    })
+    assert line == ('Split 03/10 | ACTUAL AUC=0.7201 LL=0.6500 '
+                    '| NULL AUC=nan LL=0.6900')
+
+
+def test_format_run_summary_single_and_multi_metric():
+    """The two-line summary reproduces the requested style: single-metric groups
+    join with ', ', multi-metric groups join within a group with ' / ', and the
+    save line is timestamped with the supplied timestamp."""
+
+    ts = datetime(2026, 7, 18, 12, 0, 0)
+    single = format_run_summary(
+        label='self.speed [pygam]',
+        metrics_by_strategy={'Mean Actual': {'AUC': 0.7468},
+                             'Mean Null': {'AUC': 0.5174}},
+        out_path='/a/f.pkl', timestamp=ts,
+    )
+    assert single.split('\n')[0] == (
+        '--- Finished self.speed [pygam]. Mean Actual AUC: 0.7468, Mean Null AUC: 0.5174')
+    assert single.split('\n')[1] == f'[{ts}] Success. Results saved to: /a/f.pkl'
+
+    multi = format_run_summary(
+        label='self.speed [jax]',
+        metrics_by_strategy={'Mean Actual': {'bal-acc': 0.24, 'AUC': 0.62},
+                             'Mean Null': {'bal-acc': 0.17, 'AUC': 0.50}},
+        out_path='/a/f.pkl', timestamp=ts,
+    )
+    assert multi.split('\n')[0] == (
+        '--- Finished self.speed [jax]. Mean Actual bal-acc: 0.2400 / AUC: 0.6200, '
+        'Mean Null bal-acc: 0.1700 / AUC: 0.5000')
+
+
+def test_format_selection_step_optional_fields():
+    """The selection-step line renders only the non-empty fields, in order:
+    stage, +feature, metrics, decision, detail."""
+
+    assert format_selection_step('Step 03', feature='self.speed',
+                                 metrics={'dcor_xy': 0.31}, decision='ACCEPT',
+                                 detail='CI [+0.01, +0.05]') == (
+        'Step 03 | +self.speed | dcor_xy=0.3100 | ACCEPT | CI [+0.01, +0.05]')
+    assert format_selection_step('Baseline', metrics={'AUC': 0.5}) == 'Baseline | AUC=0.5000'
+    assert format_selection_step('Step 02', decision='REJECT',
+                                 detail='selection finished') == (
+        'Step 02 | REJECT | selection finished')
+
+
+def test_extract_univariate_headline_per_task():
+    """The end-of-run extractor reduces each task's per-fold metrics to the
+    mean-over-folds headline for every strategy present, NaN-guarded, and picks
+    dcor_xy vs r2_spatial by geometry for the continuous task."""
+
+    onset_res = {'actual': {'auc': [0.7, 0.8]}, 'null': {'auc': [0.5, 0.5]}}
+    assert extract_univariate_headline('onset', onset_res) == {
+        'Mean Actual': {'AUC': 0.75}, 'Mean Null': {'AUC': 0.5}}
+
+    params_res = {'actual': {'explained_deviance': [0.1, 0.3]},
+                  'null': {'explained_deviance': [0.0, 0.0]}}
+    assert extract_univariate_headline('params', params_res) == {
+        'Mean Actual': {'D^2': 0.2}, 'Mean Null': {'D^2': 0.0}}
+
+    multi_res = {s: {'folds': {'metrics': {'score': [0.4], 'auc': [0.6]}}}
+                 for s in ('actual', 'null', 'null_model_free')}
+    multi_out = extract_univariate_headline('multinomial', multi_res)
+    assert multi_out['Mean Actual'] == {'bal-acc': 0.4, 'AUC': 0.6}
+    assert set(multi_out) == {'Mean Actual', 'Mean Null', 'Mean Null-MF'}
+
+    # torus geometry: dcor_xy is finite -> it is the headline.
+    torus_res = {s: {'folds': {'metrics': {'dcor_xy': [0.3], 'r2_spatial': [-0.1]}}}
+                 for s in ('actual', 'null', 'null_model_free')}
+    assert extract_univariate_headline('continuous', torus_res)['Mean Actual'] == {'dcor_xy': 0.3}
+
+    # euclidean geometry: dcor_xy all-NaN -> r2_spatial is the headline.
+    euclid_res = {s: {'folds': {'metrics': {'dcor_xy': [float('nan')], 'r2_spatial': [0.2]}}}
+                  for s in ('actual', 'null', 'null_model_free')}
+    assert extract_univariate_headline('continuous', euclid_res)['Mean Actual'] == {'r2_spatial': 0.2}
+
+    # degenerate / minimal result dict -> empty summary, never raises.
+    assert extract_univariate_headline('continuous', {'r2': 0.9}) == {}

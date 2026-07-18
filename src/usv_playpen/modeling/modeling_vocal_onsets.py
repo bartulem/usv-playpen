@@ -44,6 +44,7 @@ from .modeling_utils import (
     safe_matthews_corrcoef,
     safe_confusion_matrix,
     run_predictor_audits,
+    format_split_line,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import resolve_modeling_setting
@@ -886,7 +887,6 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             if X_train.shape[0] == 0 or X_test.shape[0] == 0:
                 continue
             split_has_data = True
-            print(f"  Feature '{feature_name}', Split {split_idx}: Train={X_train.shape}, Test={X_test.shape}")
 
             results['split_sizes']['train'].append(X_train.shape[0])
             results['split_sizes']['test'].append(X_test.shape[0])
@@ -1009,16 +1009,21 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             except Exception as e:
                 print(f"  ERROR during NULL model fit/predict for {feature_name}, split {split_idx}: {e}")
 
+            # Standardized per-split line: ACTUAL vs NULL headline metrics for
+            # this split (NaN where a fold errored or had a single-class test fold).
+            print(format_split_line(split_idx + 1, n_splits, {
+                'ACTUAL': {'AUC': results['actual']['auc'][split_idx],
+                           'LL': results['actual']['ll'][split_idx],
+                           'Brier': results['actual']['brier'][split_idx]},
+                'NULL': {'AUC': results['null']['auc'][split_idx],
+                         'LL': results['null']['ll'][split_idx],
+                         'Brier': results['null']['brier'][split_idx]},
+            }))
+
         results['split_sizes']['train'] = np.array(results['split_sizes']['train'])
         results['split_sizes']['test'] = np.array(results['split_sizes']['test'])
 
-        if split_has_data:
-            mean_auc_actual = np.nanmean(results['actual']['auc'])
-            print_msg = f"  --- Finished {feature_name}. Mean Actual AUC: {mean_auc_actual:.4f}"
-            mean_auc_null = np.nanmean(results['null']['auc'])
-            print_msg += f", Mean Null AUC: {mean_auc_null:.4f}"
-            print(print_msg)
-        else:
+        if not split_has_data:
             print(f"  --- No valid splits processed for feature: {feature_name} ---")
 
         return feature_name, results
@@ -1172,7 +1177,6 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             if actual_split and actual_split[0].shape[0] > 0 and actual_split[2].shape[0] > 0:
                 (X_train, y_train, X_test, y_test) = actual_split
                 split_has_data_actual = True
-                print(f"  ACTUAL Split {split_idx}: Train={X_train.shape}, Test={X_test.shape}")
 
                 results['split_sizes']['train'].append(X_train.shape[0])
                 results['split_sizes']['test'].append(X_test.shape[0])
@@ -1193,12 +1197,6 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     # `gam.logs_` is a `defaultdict(list)` initialized
                     # by pygam in `fit()`, so direct subscript access
                     # returns `[]` for missing keys without `KeyError`.
-                    # Use `... if seq else 0.0` for the empty-list
-                    # case rather than `.get(..., [0.0])`.
-                    deviance_log = gam_actual.logs_['deviance']
-                    print(f"      Completed in {len(diffs)} iters | "
-                          f"Final Δ: {diffs[-1] if diffs else 0.0:.2e} (Tol: {tol_val:.2e}) | "
-                          f"Deviance: {deviance_log[-1] if deviance_log else 0.0:.2f}")
 
                     y_proba_tiled = gam_actual.predict_proba(X_test_gam)
                     y_proba_mean_epoch = np.mean(y_proba_tiled.reshape(X_test.shape), axis=1)
@@ -1231,11 +1229,6 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                         except Exception as e:
                             print(f"[warn] fold diagnostic metric could not be recorded: {e}")
 
-                    print(f"    > ACTUAL Fold {split_idx} (Train N={len(y_train)}, Test N={len(y_test)}): "
-                          f"AUC={results['actual']['auc'][split_idx]:.3f}, "
-                          f"LL={results['actual']['ll'][split_idx]:.3f}, "
-                          f"Brier={results['actual']['brier'][split_idx]:.3f}")
-
                 except Exception as e:
                     print(f"  ERROR during ACTUAL [pygam] fit/predict for {feature_name}, split {split_idx}: {e}")
 
@@ -1266,7 +1259,6 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 y_train_tiled_null = np.repeat(
                     shuffle_rng.permutation(y_train).astype(np.float32), history_frames
                 )
-                print(f"  NULL (label-shuffle) Split {split_idx}: Train={X_train.shape}, Test={X_test.shape}")
 
                 try:
                     fit_start = time.perf_counter()
@@ -1313,16 +1305,23 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 except Exception as e:
                     print(f"  ERROR during NULL [pygam] fit/predict for {feature_name}, split {split_idx}: {e}")
 
+            # Standardized per-split line: ACTUAL vs NULL headline metrics for
+            # this split (values stay NaN where a fold errored or had a single-
+            # class test fold, and render as `nan`).
+            if actual_split and actual_split[0].shape[0] > 0 and actual_split[2].shape[0] > 0:
+                print(format_split_line(split_idx + 1, n_splits, {
+                    'ACTUAL': {'AUC': results['actual']['auc'][split_idx],
+                               'LL': results['actual']['ll'][split_idx],
+                               'Brier': results['actual']['brier'][split_idx]},
+                    'NULL': {'AUC': results['null']['auc'][split_idx],
+                             'LL': results['null']['ll'][split_idx],
+                             'Brier': results['null']['brier'][split_idx]},
+                }))
+
         results['split_sizes']['train'] = np.array(results['split_sizes']['train'])
         results['split_sizes']['test'] = np.array(results['split_sizes']['test'])
 
-        if split_has_data_actual:
-            mean_auc_actual = np.nanmean(results['actual']['auc'])
-            print_msg = f"  --- Finished {feature_name} [pygam]. Mean Actual AUC: {mean_auc_actual:.4f}"
-            mean_auc_null = np.nanmean(results['null']['auc'])
-            print_msg += f", Mean Null AUC: {mean_auc_null:.4f}"
-            print(print_msg)
-        else:
+        if not split_has_data_actual:
             print(f"  --- No valid splits processed for feature: {feature_name} [pygam] ---")
 
         return feature_name, results

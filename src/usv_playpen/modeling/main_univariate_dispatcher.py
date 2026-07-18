@@ -54,6 +54,8 @@ from .modeling_usv_manifold_position import ContinuousModelingPipeline, Continuo
 from .modeling_bases_functions import (raised_cosine, bsplines, identity,
                                       laplacian_pyramid, _normalizecols)
 from .modeling_metadata import (build_run_metadata, inject_metadata, RESERVED_METADATA_KEYS)
+from .modeling_utils import (format_run_header, format_run_summary,
+                             extract_univariate_headline)
 
 def get_basis_matrix_standardized(
         settings: dict,
@@ -270,6 +272,21 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
         print(f"FATAL: Feature mapping failed: {e}")
         return
 
+    # Standardized run header: the CPU tasks (onset/category/params) run the
+    # configured `model_engine` (pygam / sklearn); the JAX tasks (multinomial /
+    # continuous) always run the JAX estimators, so their engine label is 'jax'.
+    run_engine = (settings['model_params']['model_engine']
+                  if args.analysis_type in ['onset', 'category', 'params'] else 'jax')
+    print(format_run_header(
+        task=args.analysis_type.upper(),
+        engine=run_engine,
+        feature=feature_name,
+        input_files={'input data': args.input_data, 'settings': settings_path},
+        output_directory=args.output_dir,
+        split_strategy=settings['model_params']['split_strategy'],
+        n_splits=int(settings['model_params']['split_num']),
+    ))
+
     # 3. Execution Routing
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     results = None
@@ -373,12 +390,28 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
             blocks['_input_metadata'] = input_metadata
         results = inject_metadata(results, **blocks)
 
+        saved_ok = False
         try:
             with out_path.open('wb') as f:
                 pickle.dump(results, f)
-            print(f"[{datetime.now()}] Success. Results saved to: {out_path}")
+            saved_ok = True
         except Exception as e:
             print(f"FATAL: Saving results failed. Error: {e}")
+
+        # Standardized two-line closer: the mean-over-folds headline for ACTUAL
+        # vs NULL (and NULL-MF where the task has it) + the full save path. `res`
+        # is the per-feature result dict produced above (used directly rather
+        # than re-keying `results`, whose single feature key is the runner's
+        # returned name). Printed only after a successful save, and outside the
+        # save try/except so a summary hiccup can never be mis-reported as a save
+        # failure.
+        if saved_ok:
+            summary_metrics = extract_univariate_headline(args.analysis_type, res)
+            print(format_run_summary(
+                label=f"{feature_name} [{run_engine}]",
+                metrics_by_strategy=summary_metrics,
+                out_path=out_path,
+            ))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Consolidated USV Modeling Dispatcher")

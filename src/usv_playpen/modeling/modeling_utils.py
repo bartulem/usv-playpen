@@ -90,6 +90,7 @@ the single audit-orchestration entry point:
                                  creation time.
 """
 
+from datetime import datetime
 from pathlib import Path
 import numpy as np
 import polars as pls
@@ -1359,6 +1360,323 @@ def mean_absolute_error_1d(y_true: np.ndarray, y_pred: np.ndarray) -> float:
         np.asarray(y_true, dtype=np.float64).ravel()
         - np.asarray(y_pred, dtype=np.float64).ravel()
     )))
+
+
+def _render_metric_group(metrics: dict, *, kv_sep: str = '=', join: str = ' ') -> str:
+    """
+    Renders an ordered ``{metric_name: value}`` mapping into a single string.
+
+    This is the shared low-level formatter behind the standardized modeling
+    console output (`format_split_line`, `format_run_summary`). It keeps the
+    numeric rendering identical everywhere: four-decimal fixed-point for finite
+    values and the literal ``nan`` token for non-finite ones (so an all-NaN
+    fold or a degenerate metric is visible rather than crashing the format
+    call). The mapping's iteration order is preserved, so callers control the
+    left-to-right metric order by the order in which they insert keys.
+
+    Parameters
+    ----------
+    metrics : dict
+        Ordered mapping of metric name -> scalar value (float-coercible).
+    kv_sep : str
+        Separator between a metric's name and its value (``'='`` for the
+        compact per-split line, ``': '`` for the end-of-run summary).
+    join : str
+        Separator inserted between successive ``name<kv_sep>value`` tokens
+        (a single space for per-split, ``' / '`` for the multi-metric summary
+        groups).
+
+    Returns
+    -------
+    str
+        The rendered ``name<kv_sep>value`` tokens joined by ``join``.
+    """
+
+    tokens = []
+    for name, value in metrics.items():
+        val = float(value)
+        tokens.append(f"{name}{kv_sep}{val:.4f}" if np.isfinite(val)
+                      else f"{name}{kv_sep}nan")
+    return join.join(tokens)
+
+
+def format_run_header(*, task: str, engine: str, feature: str,
+                      input_files: dict, output_directory: str,
+                      split_strategy: str, n_splits: int) -> str:
+    """
+    Builds the standardized top-of-run header block for a modeling run.
+
+    Emitted once at the start of every univariate feature run and every
+    model-selection run so the log opens with an unambiguous statement of WHAT
+    is being modelled and WHICH files feed it. Replaces the ad-hoc, per-pipeline
+    ``Loading ... from: ...`` / ``Results will be saved to: ...`` lines that
+    differ across task types today, giving one scannable block in a fixed order.
+
+    Parameters
+    ----------
+    task : str
+        Task-type label (e.g. ``'ONSET'``, ``'PARAMS'``, ``'MULTINOMIAL'``).
+    engine : str
+        Fitting engine / framework (e.g. ``'pygam'``, ``'sklearn'``, ``'jax'``).
+    feature : str
+        The feature (univariate) or target (model selection) being modelled.
+    input_files : dict
+        Ordered mapping of human-readable label -> file path for every input
+        the run consumes (raw input pickle, univariate-results pickle, settings
+        file, ...). Rendered one per line in insertion order.
+    output_directory : str
+        Directory (or file) the run's results are written to.
+    split_strategy : str
+        Cross-validation split strategy in force (e.g. ``'session'``, ``'mixed'``).
+    n_splits : int
+        Number of cross-validation splits.
+
+    Returns
+    -------
+    str
+        A multi-line header block bracketed by ``=`` rules.
+    """
+
+    rule = '=' * 70
+    lines = [rule,
+             f"MODELING RUN | task={task} | engine={engine} | feature={feature}",
+             f"  split_strategy={split_strategy} | n_splits={n_splits}"]
+    for label, path in input_files.items():
+        lines.append(f"  {label}: {path}")
+    lines.append(f"  output_directory: {output_directory}")
+    lines.append(rule)
+    return "\n".join(lines)
+
+
+def format_split_line(split_number: int, n_splits: int,
+                      metrics_by_strategy: dict) -> str:
+    """
+    Builds one standardized per-split console line.
+
+    Every cross-validation split, in every pipeline, prints exactly this format
+    so the ACTUAL and NULL (and, where present, the second ``NULL-MF`` model-free
+    baseline) metrics for the split sit side by side on one line. Replaces the
+    divergent per-task split prints (metric-rich fold lines in some pipelines,
+    bare ``> Processing Split N...`` in others).
+
+    Parameters
+    ----------
+    split_number : int
+        1-based split index for display (caller passes ``fold_idx + 1``).
+    n_splits : int
+        Total number of splits.
+    metrics_by_strategy : dict
+        Ordered mapping of strategy label (e.g. ``'ACTUAL'``, ``'NULL'``,
+        ``'NULL-MF'``) -> an ordered ``{metric_name: value}`` mapping for that
+        strategy on this split. Group order and metric order are preserved.
+
+    Returns
+    -------
+    str
+        e.g. ``"Split 03/10 | ACTUAL AUC=0.7200 LL=0.6500 | NULL AUC=0.5000 LL=0.6900"``.
+    """
+
+    groups = [f"{label} {_render_metric_group(metrics)}"
+              for label, metrics in metrics_by_strategy.items()]
+    return f"Split {split_number:02d}/{n_splits:02d} | " + " | ".join(groups)
+
+
+def format_run_summary(*, label: str, metrics_by_strategy: dict,
+                       out_path: str, timestamp=None) -> str:
+    """
+    Builds the standardized two-line end-of-run summary.
+
+    Printed once when a run finishes: line one states the headline result
+    (ACTUAL vs NULL, and NULL-MF where present) and line two states the full
+    path the ``.pkl`` was written to, timestamped with ``datetime.now()`` (the
+    format the univariate dispatcher already uses for its save line).
+
+    Parameters
+    ----------
+    label : str
+        Run label, including the engine tag, e.g. ``'self.speed [pygam]'`` for a
+        univariate feature or ``'multinomial (selected 6 features)'`` for a
+        model-selection run.
+    metrics_by_strategy : dict
+        Ordered mapping of group label (e.g. ``'Mean Actual'``, ``'Mean Null'``,
+        ``'Mean Null-MF'``) -> an ordered ``{metric_name: value}`` mapping. A
+        group's metrics are joined with ``' / '`` and the groups with ``', '``,
+        reproducing ``"Mean Actual AUC: 0.7468, Mean Null AUC: 0.5174"`` for a
+        single metric and the ``bal-acc / AUC`` pair for the multinomial task.
+    out_path : str
+        Full path of the saved results file.
+    timestamp : datetime, optional
+        Timestamp for line two; defaults to ``datetime.now()``. Passed
+        explicitly in tests to make the line deterministic.
+
+    Returns
+    -------
+    str
+        The two summary lines joined by a newline.
+    """
+
+    groups = [f"{group} {_render_metric_group(metrics, kv_sep=': ', join=' / ')}"
+              for group, metrics in metrics_by_strategy.items()]
+    ts = timestamp if timestamp is not None else datetime.now()
+    line_one = f"--- Finished {label}. " + ", ".join(groups)
+    line_two = f"[{ts}] Success. Results saved to: {out_path}"
+    return line_one + "\n" + line_two
+
+
+def format_selection_step(stage: str, *, feature: str = None,
+                          metrics: dict = None, decision: str = None,
+                          detail: str = None) -> str:
+    """
+    Builds one standardized forward-feature-selection console line.
+
+    Gives every stage of a ``*_model_selection`` run (screening, the Step-0
+    baseline, the auto-anchor, and each forward step) one consistent, pipe-
+    delimited shape instead of the divergent ad-hoc prints each function used.
+    Only the non-empty fields are rendered, so the same helper serves a bare
+    stage banner, a candidate test with a metric, and an accept/reject verdict.
+
+    Parameters
+    ----------
+    stage : str
+        Stage label, e.g. ``'Screen'``, ``'Baseline'``, ``'Anchor'``,
+        ``'Step 03'``.
+    feature : str, optional
+        The feature under consideration; rendered as ``+feature`` when given.
+    metrics : dict, optional
+        Ordered ``{metric_name: value}`` rendered as ``name=value`` tokens
+        (four-decimal, nan-safe -- shared with the per-split formatter).
+    decision : str, optional
+        The verdict for this line, e.g. ``'ACCEPT'``, ``'REJECT'``, ``'DROP'``,
+        ``'FAILED'``.
+    detail : str, optional
+        Free-form trailing detail (e.g. a bootstrap CI or a drop reason).
+
+    Returns
+    -------
+    str
+        e.g. ``"Step 03 | +self.speed | dcor_xy=0.3100 | ACCEPT | CI [+0.01, +0.05]"``.
+    """
+
+    parts = [stage]
+    if feature is not None:
+        parts.append(f"+{feature}")
+    if metrics:
+        parts.append(_render_metric_group(metrics))
+    if decision:
+        parts.append(decision)
+    if detail:
+        parts.append(detail)
+    return " | ".join(parts)
+
+
+_STRATEGY_SUMMARY_LABELS = {
+    'actual': 'Mean Actual',
+    'null': 'Mean Null',
+    'null_model_free': 'Mean Null-MF',
+}
+
+
+def _safe_fold_mean(values) -> float:
+    """
+    NaN-safe mean over a per-fold metric list (empty / all-NaN -> ``nan``).
+
+    Guards the end-of-run summary against `RuntimeWarning`-to-error under the
+    test suite's ``filterwarnings = error`` policy: a bare ``np.nanmean`` on an
+    all-NaN or empty fold list would raise, so the finite-value check is done
+    first (the same idiom the runners already use for their own aggregates).
+
+    Parameters
+    ----------
+    values : array-like
+        Per-fold metric values (may contain NaNs from failed folds).
+
+    Returns
+    -------
+    float
+        The nan-ignoring mean, or ``nan`` when nothing finite is present.
+    """
+
+    arr = np.asarray(values, dtype=np.float64).ravel()
+    return float(np.nanmean(arr)) if arr.size and np.any(np.isfinite(arr)) else float('nan')
+
+
+def extract_univariate_headline(analysis_type: str, res: dict) -> dict:
+    """
+    Builds the end-of-run headline ``metrics_by_strategy`` for a univariate run.
+
+    Reads the per-fold metrics a runner already stored in its per-feature result
+    dict and reduces them to the mean-over-folds headline for each strategy that
+    is present (``actual`` -> "Mean Actual", ``null`` -> "Mean Null",
+    ``null_model_free`` -> "Mean Null-MF"). The return value is shaped for
+    `format_run_summary` (an ordered ``{group_label: {metric: value}}`` mapping).
+    Only the headline metric(s) go into the summary; the fuller per-metric set
+    remains on the per-split lines and in the saved pickle.
+
+    Headline metric per task
+    ------------------------
+    - ``onset`` / ``category`` : AUC (from ``res[strategy]['auc']``).
+    - ``params``               : D^2 (from ``res[strategy]['explained_deviance']``).
+    - ``multinomial``          : balanced accuracy + macro AUC
+                                 (``res[strategy]['folds']['metrics']['score']``
+                                 and ``['auc']``).
+    - ``continuous``           : ``dcor_xy`` when it is finite on the ``actual``
+                                 strategy (the torus geometry), else
+                                 ``r2_spatial`` (euclidean); read from
+                                 ``res[strategy]['folds']['metrics']``.
+
+    Parameters
+    ----------
+    analysis_type : str
+        One of ``'onset'``, ``'category'``, ``'params'``, ``'multinomial'``,
+        ``'continuous'``.
+    res : dict
+        A single feature's result dict, keyed by strategy.
+
+    Returns
+    -------
+    dict
+        Ordered ``{group_label: {metric_name: mean_value}}`` for the strategies
+        present, ready to hand to `format_run_summary`.
+    """
+
+    out = {}
+    if analysis_type in ('onset', 'category'):
+        for strategy in ('actual', 'null'):
+            if strategy in res:
+                out[_STRATEGY_SUMMARY_LABELS[strategy]] = {
+                    'AUC': _safe_fold_mean(res[strategy]['auc'])
+                }
+    elif analysis_type == 'params':
+        for strategy in ('actual', 'null'):
+            if strategy in res:
+                out[_STRATEGY_SUMMARY_LABELS[strategy]] = {
+                    'D^2': _safe_fold_mean(res[strategy]['explained_deviance'])
+                }
+    elif analysis_type == 'multinomial':
+        for strategy in ('actual', 'null', 'null_model_free'):
+            if strategy in res:
+                metrics = res[strategy]['folds']['metrics']
+                out[_STRATEGY_SUMMARY_LABELS[strategy]] = {
+                    'bal-acc': _safe_fold_mean(metrics['score']),
+                    'AUC': _safe_fold_mean(metrics['auc']),
+                }
+    elif analysis_type == 'continuous':
+        # Geometry selects the headline: dcor_xy is finite only on the torus
+        # (it is NaN on euclidean/VAE), where r2_spatial is the score instead.
+        # Guard the unconditional `actual` read so a malformed / minimal result
+        # dict (e.g. a mocked dispatcher test) yields an empty summary rather
+        # than raising.
+        if 'actual' in res and 'folds' in res['actual'] and 'metrics' in res['actual']['folds']:
+            actual_metrics = res['actual']['folds']['metrics']
+            dcor_vals = (np.asarray(actual_metrics['dcor_xy'], dtype=np.float64)
+                         if 'dcor_xy' in actual_metrics else np.asarray([], dtype=np.float64))
+            key = 'dcor_xy' if (dcor_vals.size and np.any(np.isfinite(dcor_vals))) else 'r2_spatial'
+            for strategy in ('actual', 'null', 'null_model_free'):
+                if strategy in res:
+                    out[_STRATEGY_SUMMARY_LABELS[strategy]] = {
+                        key: _safe_fold_mean(res[strategy]['folds']['metrics'][key])
+                    }
+    return out
 
 
 def run_predictor_audits(processed_beh_dict: dict,

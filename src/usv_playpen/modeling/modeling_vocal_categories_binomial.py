@@ -59,6 +59,7 @@ from .modeling_utils import (
     expected_calibration_error,
     safe_matthews_corrcoef,
     safe_confusion_matrix,
+    format_split_line,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import resolve_modeling_setting
@@ -822,8 +823,6 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                     )
                     y_tr = null_rng.permutation(y_tr)
 
-                print(f"    Processing {strat.upper()} split {split_idx + 1}/{n_splits}...")
-
                 try:
                     y_prob = None
                     y_pred = None
@@ -901,9 +900,6 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         diffs = gam.logs_['diffs']
                         fold_n_iter = float(len(diffs))
                         fold_converged = bool(diffs and diffs[-1] < gam_args['tol'])
-                        print(f"      Completed in {len(diffs)} iters | "
-                              f"Final Δ: {diffs[-1] if diffs else 0.0:.2e} (Tol: {gam_args['tol']:.2e}) | "
-                              f"Deviance: {gam.logs_['deviance'][-1]:.2f}")
 
                         # Average the per-frame predicted probabilities back to
                         # one probability per window (reshape to (n_windows,
@@ -959,26 +955,25 @@ class VocalCategoryModelingPipeline(FeatureZoo):
                         results[strat]['converged'][split_idx] = float(fold_converged) if fold_converged is not None else np.nan
                         results[strat]['fit_time'][split_idx] = fit_time
 
-                        print(f"    > {strat.capitalize()} Fold {split_idx} (Train N={len(y_tr)}, Test N={len(y_te)}): "
-                              f"AUC={results[strat]['auc'][split_idx]:.3f}, "
-                              f"LL={results[strat]['ll'][split_idx]:.3f}, "
-                              f"Brier={results[strat]['brier'][split_idx]:.3f}, "
-                              f"MCC={results[strat]['mcc'][split_idx]:.3f}")
-
                 except Exception as e:
                     print(f"Fit error {feature_name} ({strat}), fold {split_idx}: {e}")
 
-        # `results[*]['auc']` is pre-filled with NaN per split; a strategy that
-        # produced no valid fold (e.g. a split with no usable data) leaves
-        # an all-NaN array, where `np.nanmean` emits a "Mean of empty slice"
-        # RuntimeWarning and returns NaN. Under a strict `filterwarnings=error`
-        # run that warning is promoted to an error and swallowed by the caller's
-        # try/except, silently dropping the output pickle. Only average when a
-        # finite value exists so the headline never trips the warning.
-        act_auc = np.asarray(results['actual']['auc'], dtype=float)
-        null_auc = np.asarray(results['null']['auc'], dtype=float)
-        mean_auc_act = float(np.nanmean(act_auc)) if np.any(np.isfinite(act_auc)) else float('nan')
-        mean_auc_null = float(np.nanmean(null_auc)) if np.any(np.isfinite(null_auc)) else float('nan')
-        print(f"  Feature {feature_name}: Mean AUC={mean_auc_act:.3f} (Null={mean_auc_null:.3f})")
+        # Standardized per-split lines: ACTUAL vs NULL headline metrics per split.
+        # The two strategies are fit in separate passes above (strategy-outer,
+        # split-inner) and their per-split metrics are written into pre-filled
+        # NaN arrays, so the combined lines are emitted here once both passes are
+        # done (NaN renders where a fold errored or a test fold was single-class).
+        n_ran = min(len(cached_splits), n_splits)
+        for split_idx in range(n_ran):
+            print(format_split_line(split_idx + 1, n_splits, {
+                'ACTUAL': {'AUC': results['actual']['auc'][split_idx],
+                           'LL': results['actual']['ll'][split_idx],
+                           'Brier': results['actual']['brier'][split_idx],
+                           'MCC': results['actual']['mcc'][split_idx]},
+                'NULL': {'AUC': results['null']['auc'][split_idx],
+                         'LL': results['null']['ll'][split_idx],
+                         'Brier': results['null']['brier'][split_idx],
+                         'MCC': results['null']['mcc'][split_idx]},
+            }))
 
         return feature_name, results

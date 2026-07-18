@@ -70,6 +70,7 @@ from .modeling_utils import (
     harmonize_session_columns,
     zscore_features_across_sessions,
     run_predictor_audits,
+    format_split_line,
 )
 from .manifold_torus_regression import resolve_manifold_regressor_cls
 from .manifold_metric import (
@@ -1688,7 +1689,6 @@ class ContinuousModelRunner:
             return X_block[perm]
 
         for strategy in strategies:
-            print(f"  Executing Strategy: [{strategy.upper()}]")
 
             results[strategy] = {
                 'folds': {
@@ -1881,14 +1881,6 @@ class ContinuousModelRunner:
                     fold_converged = bool(model.converged_)
                     fold_fit_time = float(model.fit_time_)
 
-                print(
-                    f"      Fold {fold_idx + 1:03d}/{n_splits} | "
-                    f"R^2: {metrics['r2_spatial']:.3f} | MAE: {metrics['euclidean_mae']:.4f} "
-                    f"| Mahal: {metrics['mahalanobis_mae']:.4f} | "
-                    f"λ_sm={fold_lambda_smooth:.3g} l2={fold_l2_reg:.3g} | converged: {fold_converged}",
-                    flush=True,
-                )
-
                 for m_key, m_val in metrics.items():
                     results[strategy]['folds']['metrics'][m_key].append(m_val)
 
@@ -1905,6 +1897,24 @@ class ContinuousModelRunner:
                 results[strategy]['folds']['selected_l2_reg'].append(fold_l2_reg)
                 results[strategy]['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
                 results[strategy]['folds']['hyperparams_tuned'].append(fold_tuned_flag)
+
+        # Standardized per-split lines (emitted after all strategies, which are
+        # fit in separate passes): the geometry headline (dcor_xy on the torus,
+        # else r2_spatial) plus MAE, for ACTUAL vs NULL vs NULL-MF per split.
+        act_dcor = (np.asarray(results['actual']['folds']['metrics']['dcor_xy'], dtype=float)
+                    if 'dcor_xy' in results['actual']['folds']['metrics']
+                    else np.asarray([], dtype=float))
+        split_key = 'dcor_xy' if (act_dcor.size and np.any(np.isfinite(act_dcor))) else 'r2_spatial'
+        n_ran = len(results['actual']['folds']['metrics']['r2_spatial'])
+        for fold_idx in range(n_ran):
+            line_groups = {}
+            for strat, label in (('actual', 'ACTUAL'), ('null', 'NULL'),
+                                 ('null_model_free', 'NULL-MF')):
+                if strat in results:
+                    fold_metrics = results[strat]['folds']['metrics']
+                    line_groups[label] = {split_key: fold_metrics[split_key][fold_idx],
+                                          'MAE': fold_metrics['euclidean_mae'][fold_idx]}
+            print(format_split_line(fold_idx + 1, n_splits, line_groups))
 
         # Summary Wilcoxon tests against the two null baselines. Error
         # metrics are "lower is better"; `r2_spatial` and the correlations

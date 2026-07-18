@@ -52,6 +52,7 @@ from .modeling_utils import (
     safe_matthews_corrcoef,
     safe_confusion_matrix,
     align_probs_to_canonical,
+    format_split_line,
 )
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from ..analyses.compute_behavioral_features import FeatureZoo
@@ -1683,8 +1684,6 @@ class MultinomialModelRunner:
                 f_met['ece'].append(f_ece)
                 f_met['mcc'].append(f_mcc)
 
-                print(f"Fold {fold + 1:02d}/{n_splits:02d} | Score: {f_score:.3f} | AUC: {f_auc:.3f} | LL: {f_ll:.3f} | Brier: {f_brier:.3f} | ECE: {f_ece:.3f} | MCC: {f_mcc:.3f}")
-
                 # Persist deep storage matrices
                 strategy_data['folds']['weights'].append(fold_weights)
                 strategy_data['folds']['intercepts'].append(fold_intercepts)
@@ -1708,18 +1707,23 @@ class MultinomialModelRunner:
                 if strategy_data['classes'] is None:
                     strategy_data['classes'] = model_classes
 
-            # Guard np.nanmean against an all-NaN metric list (a strategy that
-            # produced no valid fold): np.nanmean emits a "Mean of empty slice"
-            # RuntimeWarning that becomes fatal under a strict filterwarnings=error
-            # run and is swallowed by the caller, silently dropping the output. Only
-            # average when a finite value exists (mirrors the binomial pipeline).
-            m = {}
-            for k, v in strategy_data['folds']['metrics'].items():
-                arr = np.asarray(v, dtype=float)
-                m[k] = float(np.nanmean(arr)) if np.any(np.isfinite(arr)) else float('nan')
-            print(f"\nFINISHED {strategy.upper()} | Avg Score: {m['score']:.3f} | Avg AUC: {m['auc']:.3f}")
-
             combined_results[strategy] = strategy_data
+
+        # Standardized per-split lines: ACTUAL vs NULL vs NULL-MF headline
+        # metrics per split (bal-acc, macro AUC, LL). The three strategies are
+        # fit in separate passes above, so their per-fold metric lists are joined
+        # into one line per split here, once every pass is done.
+        n_ran = len(combined_results['actual']['folds']['metrics']['score'])
+        for fold_idx in range(n_ran):
+            line_groups = {}
+            for strat, label in (('actual', 'ACTUAL'), ('null', 'NULL'),
+                                 ('null_model_free', 'NULL-MF')):
+                if strat in combined_results:
+                    fold_metrics = combined_results[strat]['folds']['metrics']
+                    line_groups[label] = {'bal-acc': fold_metrics['score'][fold_idx],
+                                          'AUC': fold_metrics['auc'][fold_idx],
+                                          'LL': fold_metrics['ll'][fold_idx]}
+            print(format_split_line(fold_idx + 1, n_splits, line_groups))
 
         # Cross-fold hyperparameter report. If tuning was on, the spread
         # of the selected (λ_smooth, l2_reg) across folds tells us

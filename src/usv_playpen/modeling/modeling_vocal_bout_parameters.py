@@ -66,6 +66,7 @@ from .modeling_utils import (
     spearman_r_safe,
     root_mean_squared_error,
     mean_absolute_error_1d,
+    format_split_line,
 )
 
 
@@ -763,8 +764,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         # RNG state from prior calls.
         base_seed = self.modeling_settings['model_params']['random_seed']
 
+        n_splits = self.modeling_settings['model_params']['split_num']
+
         for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
-            print(f"  > Processing Split {split_idx + 1}...")
 
             X_tr_gam = unroll_history_matrix(X_tr, time_indices=time_indices).astype(np.float32)
             X_te_gam = unroll_history_matrix(X_te, time_indices=time_indices).astype(np.float32)
@@ -931,6 +933,16 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             del X_tr_gam, X_te_gam
             gc.collect()
 
+            # Standardized per-split line: ACTUAL vs NULL headline metrics
+            # (D^2 = explained Gamma deviance, MAE) for this split; the `[-1]`
+            # entries are the values just appended (NaN where the fold failed).
+            print(format_split_line(split_idx + 1, n_splits, {
+                'ACTUAL': {'D^2': results['actual']['explained_deviance'][-1],
+                           'MAE': results['actual']['mae'][-1]},
+                'NULL': {'D^2': results['null']['explained_deviance'][-1],
+                         'MAE': results['null']['mae'][-1]},
+            }))
+
         # Safely convert lists to arrays
         for k in results:
             for m in results[k]:
@@ -1024,8 +1036,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         # control is reproducible and independent of ambient global RNG state.
         base_seed = self.modeling_settings['model_params']['random_seed']
 
+        n_splits = self.modeling_settings['model_params']['split_num']
+
         for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
-            print(f"  > Processing Split {split_idx + 1}...")
 
             X_tr_proj = np.dot(X_tr, basis_matrix)
             X_te_proj = np.dot(X_te, basis_matrix)
@@ -1155,6 +1168,16 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 results['null']['n_iter'].append(np.nan)
                 results['null']['converged'].append(False)
                 results['null']['fit_time'].append(np.nan)
+
+            # Standardized per-split line: ACTUAL vs NULL headline metrics
+            # (D^2 = explained Gamma deviance, MAE) for this split; the `[-1]`
+            # entries are the values just appended (NaN where the fold failed).
+            print(format_split_line(split_idx + 1, n_splits, {
+                'ACTUAL': {'D^2': results['actual']['explained_deviance'][-1],
+                           'MAE': results['actual']['mae'][-1]},
+                'NULL': {'D^2': results['null']['explained_deviance'][-1],
+                         'MAE': results['null']['mae'][-1]},
+            }))
 
         # Safely convert lists to arrays
         for k in results:

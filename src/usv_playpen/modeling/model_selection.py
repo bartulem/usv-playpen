@@ -32,6 +32,9 @@ from .modeling_utils import (
     root_mean_squared_error,
     mean_absolute_error_1d,
     bounded_test_proportion,
+    format_run_header,
+    format_run_summary,
+    format_selection_step,
 )
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_multinomial import (
@@ -661,7 +664,6 @@ def vocal_onset_model_selection(univariate_results_path: str,
       memory fragmentation.
     """
 
-    print("--- Starting Model Selection ---")
     chance_ll = np.log(2)  # mean log-loss of a balanced 50/50 coin: the binary chance floor
 
     if settings_path is None:
@@ -671,15 +673,12 @@ def vocal_onset_model_selection(univariate_results_path: str,
     try:
         with open(settings_path, 'r') as f:
             settings = json.load(f)
-        print(f"Loaded settings from: {settings_path}")
     except FileNotFoundError:
         raise FileNotFoundError(f"Settings file not found at {settings_path}")
 
     model_selection_dir = Path(output_directory)
     model_selection_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loading univariate results from: {univariate_results_path}")
-    print(f"Loading raw data from: {input_data_path}")
     with open(univariate_results_path, 'rb') as f:
         univariate_data = pickle.load(f)
     all_feature_data = load_pickle_modeling_data(input_data_path)
@@ -740,7 +739,17 @@ def vocal_onset_model_selection(univariate_results_path: str,
     test_prop = model_ops['test_proportion']
 
     random_seed = settings['model_params']['random_seed']
-    print(f"Random Seed: {random_seed} | Split Strategy: {split_strategy} | Num Splits: {n_splits_selection}")
+    print(format_run_header(
+        task='SELECTION:ONSET',
+        engine=settings['model_params']['model_engine'],
+        feature=Path(univariate_results_path).stem,
+        input_files={'univariate results': univariate_results_path,
+                     'input data': input_data_path,
+                     'settings': settings_path},
+        output_directory=str(model_selection_dir),
+        split_strategy=split_strategy,
+        n_splits=n_splits_selection,
+    ))
     anchor_feature = ranked_features[0]
 
     # Build the selection-level `_run_metadata` block. Frozen here so
@@ -891,7 +900,8 @@ def vocal_onset_model_selection(univariate_results_path: str,
 
     if use_top_rank_as_anchor and step_counter == 0:
         anchor_to_force = ranked_features[0]
-        print(f"\n*** AUTO-ANCHOR: Starting with top ranked feature '{anchor_to_force}' ***")
+        print(format_selection_step('Anchor', feature=anchor_to_force,
+                                    detail='top-ranked; forcing as start'))
         current_model_features = [anchor_to_force]
         gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
         # Per-fold scalar metrics for the anchor. See the function docstring for
@@ -1026,7 +1036,8 @@ def vocal_onset_model_selection(univariate_results_path: str,
             step_counter = 1
 
     while True:
-        print(f"\n=== Step {step_counter} === Best LL: {best_current_score:.5f}")
+        print(format_selection_step(f"Step {step_counter}",
+                                    detail=f"best so far LL={best_current_score:.4f}"))
         step_results_metadata = {
             'step_idx': step_counter, 'current_features': list(current_model_features),
             'baseline_score': best_current_score, 'candidates_summary': {},
@@ -1067,7 +1078,6 @@ def vocal_onset_model_selection(univariate_results_path: str,
             if feat in current_model_features: continue
             gc.collect()
             trial_features = current_model_features + [feat]
-            print(f"  [{i_feat}/{len(ranked_features)}] Testing +{feat}...", end="", flush=True)
 
             gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
             for i in range(1, len(trial_features)):
@@ -1173,7 +1183,9 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 # guard with len > 1 so a one-fold success does not poison the 1SE rule.
                 mean_ll = np.mean(valid)
                 se_ll = np.std(valid, ddof=1) / np.sqrt(len(valid)) if len(valid) > 1 else 0.0
-                print(f" LL: {mean_ll:.4f} (range: {min(valid):.4f}-{max(valid):.4f})")
+                print(format_selection_step(f"Step {step_counter}", feature=feat,
+                                            metrics={'LL': mean_ll},
+                                            detail=f"range {min(valid):.4f}-{max(valid):.4f}"))
 
                 step_results_metadata['candidates_summary'][feat] = {
                     'll': metrics['ll'], 'auc': metrics['auc'], 'score': metrics['score'],
@@ -1188,10 +1200,12 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 if mean_ll < best_candidate_score:
                     best_candidate_score, best_candidate_se, best_candidate = mean_ll, se_ll, feat
             else:
-                print(f" Failed (No valid numeric scores). Metrics: {metrics['ll']}")
+                print(format_selection_step(f"Step {step_counter}", feature=feat,
+                                            decision='FAILED (no valid scores)'))
 
         if (best_current_score - best_candidate_score) > best_candidate_se:
-            print(f"  ACCEPT {best_candidate}")
+            print(format_selection_step(f"Step {step_counter}", feature=best_candidate,
+                                        decision='ACCEPT', metrics={'LL': best_candidate_score}))
             step_results_metadata['selected_feature'] = best_candidate
             current_model_features.append(best_candidate)
 
@@ -1201,7 +1215,8 @@ def vocal_onset_model_selection(univariate_results_path: str,
 
             best_current_score, best_current_se, step_counter = best_candidate_score, best_candidate_se, step_counter + 1
         else:
-            print("  REJECT. Selection Finished.")
+            print(format_selection_step(f"Step {step_counter}", decision='REJECT',
+                                        detail='no candidate beat the 1-SE margin; selection finished'))
             step_results_metadata['selected_feature'] = None
             fname = f"{prefix}{step_counter}.pkl"
             with open(model_selection_dir / fname, 'wb') as f:
@@ -1288,9 +1303,12 @@ def vocal_onset_model_selection(univariate_results_path: str,
 
     with open(last_file, 'wb') as f:
         pickle.dump(_wrap_step(data), f)
-    print(
-        f"Final model filters saved: {len(final_fold_shapes)} fold(s)."
-    )
+    print(format_run_summary(
+        label=f"onset model-selection ({len(current_model_features)} features)",
+        metrics_by_strategy={'Final': {'LL': best_current_score},
+                             'Chance': {'LL': chance_ll}},
+        out_path=str(last_file),
+    ))
 
 
 def _pool_category_features(
@@ -1466,7 +1484,6 @@ def vocal_category_model_selection(
     None
     """
 
-    print("--- Starting Vocal Category Model Selection ---")
     chance_ll = np.log(2)  # mean log-loss of a balanced 50/50 coin: the binary chance floor
 
     if settings_path is None:
@@ -1481,9 +1498,6 @@ def vocal_category_model_selection(
 
     model_selection_dir = Path(output_directory)
     model_selection_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Results will be saved to: {model_selection_dir}")
-    print(f"Loading univariate results from: {univariate_results_path}")
-    print(f"Loading raw data from: {input_data_path}")
 
     # Extract target metadata safely
     fname = Path(univariate_results_path).name
@@ -1492,7 +1506,6 @@ def vocal_category_model_selection(
     target_category = f"category_{cat_match.group(1)}" if cat_match else "category_unknown"
     cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
-    print(f"Target: {target_category} ({target_condition})")
 
     with open(univariate_results_path, 'rb') as f:
         univariate_data = pickle.load(f)
@@ -1622,7 +1635,17 @@ def vocal_category_model_selection(
     else:
         raise ValueError("model_engine in settings must be either 'sklearn' or 'pygam'.")
 
-    print(f"Random Seed: {random_seed} | Num Splits: {n_splits} | Strategy: {split_strategy}")
+    print(format_run_header(
+        task='SELECTION:CATEGORY',
+        engine=settings['model_params']['model_engine'],
+        feature=f"{target_category} ({target_condition})",
+        input_files={'univariate results': univariate_results_path,
+                     'input data': input_data_path,
+                     'settings': settings_path},
+        output_directory=str(model_selection_dir),
+        split_strategy=split_strategy,
+        n_splits=n_splits,
+    ))
 
     # Establish CV indices globally to maintain fold consistency across features
     cv_folds = []
@@ -1752,7 +1775,7 @@ def vocal_category_model_selection(
 
     if use_top_rank_as_anchor and step_counter == 0:
         anchor = ranked_features[0]
-        print(f"\n*** AUTO-ANCHOR: Starting with {anchor} ***")
+        print(format_selection_step('Anchor', feature=anchor, detail='forcing as start'))
         current_model_features = [anchor]
         metrics = {'ll': [], 'auc': [], 'score': [], 'f1': [], 'recall': [],
                    'brier': [], 'ece': [], 'mcc': [],
@@ -1894,7 +1917,8 @@ def vocal_category_model_selection(
 
     print("\n--- Starting Forward Selection ---")
     while True:
-        print(f"\n=== Step {step_counter} === Best LL: {best_current_score:.5f}")
+        print(format_selection_step(f"Step {step_counter}",
+                                    detail=f"best so far LL={best_current_score:.4f}"))
         step_results_metadata = {
             'step_idx': step_counter, 'current_features': list(current_model_features),
             'baseline_score': best_current_score, 'candidates_summary': {}
@@ -1920,7 +1944,6 @@ def vocal_category_model_selection(
             if feat in current_model_features: continue
             gc.collect()
             trial_feats = current_model_features + [feat]
-            print(f"  [{i_feat + 1}/{len(ranked_features)}] Testing +{feat}...", end="", flush=True)
 
             if model_type == 'pygam':
                 gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
@@ -2046,14 +2069,17 @@ def vocal_category_model_selection(
 
             valid = [x for x in metrics['ll'] if np.isfinite(x)]
             if not valid:
-                print(" Failed (no finite folds).")
+                print(format_selection_step(f"Step {step_counter}", feature=feat,
+                                            decision='FAILED (no finite folds)'))
                 continue
 
             mean_ll = np.mean(valid)
             # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
             # guard with len > 1 so a one-fold success does not poison the 1SE rule.
             se_ll = np.std(valid, ddof=1) / np.sqrt(len(valid)) if len(valid) > 1 else 0.0
-            print(f" LL: {mean_ll:.4f} | AUC: {np.nanmean(metrics['auc']):.3f}")
+            print(format_selection_step(f"Step {step_counter}", feature=feat,
+                                        metrics={'LL': mean_ll,
+                                                 'AUC': float(np.nanmean(metrics['auc']))}))
 
             step_results_metadata['candidates_summary'][feat] = {
                 'll': metrics['ll'], 'auc': metrics['auc'],
@@ -2069,7 +2095,8 @@ def vocal_category_model_selection(
                 best_cand_score, best_cand_se, best_cand_name = mean_ll, se_ll, feat
 
         if best_cand_name and (best_current_score - best_cand_score) > best_cand_se:
-            print(f"  ACCEPT {best_cand_name}")
+            print(format_selection_step(f"Step {step_counter}", feature=best_cand_name,
+                                        decision='ACCEPT', metrics={'LL': best_cand_score}))
             current_model_features.append(best_cand_name)
             step_results_metadata['selected_feature'] = best_cand_name
             with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
@@ -2080,13 +2107,12 @@ def vocal_category_model_selection(
             best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
             if len(current_model_features) == len(ranked_features): break
         else:
-            print("  REJECT. Stopping.")
+            print(format_selection_step(f"Step {step_counter}", decision='REJECT',
+                                        detail='no candidate beat the 1-SE margin; selection finished'))
             step_results_metadata['selected_feature'] = None
             with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
                 pickle.dump(_wrap_step(step_results_metadata), f)
             break
-
-    print("Final Feature Set:", current_model_features)
 
     print("\n--- Final Refit for Visualization (CV-based) ---")
     try:
@@ -2192,7 +2218,12 @@ def vocal_category_model_selection(
         with open(last_file, 'wb') as f:
             pickle.dump(_wrap_step(data), f)
 
-        print("Model selection complete. CV-based shapes saved.")
+        print(format_run_summary(
+            label=f"category model-selection ({len(current_model_features)} features)",
+            metrics_by_strategy={'Final': {'LL': best_current_score},
+                                 'Chance': {'LL': chance_ll}},
+            out_path=str(last_file),
+        ))
 
     except Exception as e:
         print(f"Final fit failed: {e}")
@@ -2294,8 +2325,6 @@ def bout_parameter_model_selection(
         Saves step-wise results and final CV-based filter shapes to disk.
     """
 
-    print(f"--- Starting Regression Model Selection for {target_variable} ---")
-
     if settings_path is None:
         settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
         settings_path = str(settings_path_obj)
@@ -2308,10 +2337,7 @@ def bout_parameter_model_selection(
 
     model_selection_dir = Path(output_directory)
     model_selection_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Results will be saved to: {model_selection_dir}")
 
-    print(f"Loading univariate results from: {univariate_results_path}")
-    print(f"Loading raw data from: {input_data_path}")
     with open(univariate_results_path, 'rb') as f:
         univariate_data = pickle.load(f)
 
@@ -2353,7 +2379,9 @@ def bout_parameter_model_selection(
             candidates.append({'feature': feat_name, 'mean_explained_deviance': mean_actual_deviance})
         else:
             reason = "Negative D^2" if mean_actual_deviance <= 0 else "Not Significant"
-            print(f"  Dropping {feat_name}: {reason} (Mean Dev {mean_actual_deviance:.4f} vs Null {null_threshold:.4f})")
+            print(format_selection_step(
+                'Screen', feature=feat_name, decision='DROP',
+                detail=f"{reason} (Mean Dev {mean_actual_deviance:.4f} vs Null {null_threshold:.4f})"))
 
     candidates.sort(key=lambda x: x['mean_explained_deviance'], reverse=True)
     ranked_features = [x['feature'] for x in candidates]
@@ -2395,7 +2423,17 @@ def bout_parameter_model_selection(
     test_prop = model_ops['test_proportion']
     random_seed = settings['model_params']['random_seed']
 
-    print(f"Engine: {model_type.upper()} | Random Seed: {random_seed} | Strategy: {split_strategy} | Num Splits: {n_splits}")
+    print(format_run_header(
+        task='SELECTION:PARAMS',
+        engine=model_type,
+        feature=target_variable,
+        input_files={'univariate results': univariate_results_path,
+                     'input data': input_data_path,
+                     'settings': settings_path},
+        output_directory=str(model_selection_dir),
+        split_strategy=split_strategy,
+        n_splits=n_splits,
+    ))
 
     # Engine-Specific Setup
     basis_matrix = None
@@ -2573,7 +2611,7 @@ def bout_parameter_model_selection(
     # 5. Auto-Anchor Logic
     if use_top_rank_as_anchor and step_counter == 0:
         anchor = ranked_features[0]
-        print(f"\n*** AUTO-ANCHOR: Initializing with {anchor} ***")
+        print(format_selection_step('Anchor', feature=anchor, detail='initializing'))
         # Metric set is aligned with the univariate runner so downstream
         # plotting / aggregation sees the same keys whether it reads a
         # univariate or a selection-step pickle.
@@ -2703,7 +2741,9 @@ def bout_parameter_model_selection(
                     pickle.dump(_wrap_step(step_0_res), f)
                 step_counter = 1
             else:
-                print(f"*** ANCHOR FAILED: {anchor} D^2={mean_anchor_score:.4f} <= 0. Reverting to empty start. ***")
+                print(format_selection_step('Anchor', feature=anchor, decision='FAILED',
+                                            metrics={'D^2': mean_anchor_score},
+                                            detail='<= 0; reverting to empty start'))
 
     # 6. Forward Selection Loop
     print("\n--- Starting Forward Selection ---")
@@ -2737,7 +2777,6 @@ def bout_parameter_model_selection(
         for feat in ranked_features:
             if feat in current_model_features: continue
             gc.collect()
-            print(f" Testing +{feat}...", end="", flush=True)
 
             metrics = {
                 'explained_deviance': [], 'residual_deviance': [],
@@ -2836,14 +2875,16 @@ def bout_parameter_model_selection(
 
             valid = [m for m in metrics['explained_deviance'] if np.isfinite(m)]
             if not valid:
-                print(" Failed (no finite folds).")
+                print(format_selection_step(f"Step {step_counter}", feature=feat,
+                                            decision='FAILED (no finite folds)'))
                 continue
 
             # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
             # guard with len > 1 so a one-fold success does not poison the 1SE rule.
             m_dev = np.mean(valid)
             s_dev = np.std(valid, ddof=1) / np.sqrt(len(valid)) if len(valid) > 1 else 0.0
-            print(f" D^2: {m_dev:.4f}")
+            print(format_selection_step(f"Step {step_counter}", feature=feat,
+                                        metrics={'D^2': m_dev}))
 
             step_results['candidates_summary'][feat] = {
                 **{k: metrics[k] for k in metrics},
@@ -2855,7 +2896,8 @@ def bout_parameter_model_selection(
                 best_cand_score, best_cand_se, best_cand = m_dev, s_dev, feat
 
         if (best_cand_score - best_cand_se) > best_current_score:
-            print(f"  ACCEPT {best_cand}")
+            print(format_selection_step(f"Step {step_counter}", feature=best_cand,
+                                        decision='ACCEPT', metrics={'D^2': best_cand_score}))
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
 
@@ -2866,7 +2908,8 @@ def bout_parameter_model_selection(
             best_current_se = best_cand_se
             step_counter += 1
         else:
-            print("  REJECT. Selection Finished.")
+            print(format_selection_step(f"Step {step_counter}", decision='REJECT',
+                                        detail='no candidate beat the 1-SE margin; selection finished'))
             step_results['selected_feature'] = None
             with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
                 pickle.dump(_wrap_step(step_results), f)
@@ -2945,7 +2988,12 @@ def bout_parameter_model_selection(
         with open(last_file, 'wb') as save_pkl_file:
             pickle.dump(_wrap_step(data), save_pkl_file)
 
-        print("Model selection complete. CV-based shapes saved.")
+        print(format_run_summary(
+            label=f"params model-selection ({len(current_model_features)} features)",
+            metrics_by_strategy={'Final': {'D^2': best_current_score},
+                                 'Baseline': {'D^2': 0.0}},
+            out_path=str(last_file),
+        ))
 
     except Exception as e:
         print(f"Final fit failed: {e}")
@@ -3061,8 +3109,6 @@ def multinomial_vocal_category_model_selection(
         The alpha level used for significance screening against shuffled controls.
     """
 
-    print("--- Starting Multinomial Vocal Category Model Selection ---")
-
     if settings_path is None:
         settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
         settings_path = str(settings_path_obj)
@@ -3075,6 +3121,20 @@ def multinomial_vocal_category_model_selection(
 
     model_selection_dir = Path(output_directory)
     model_selection_dir.mkdir(parents=True, exist_ok=True)
+
+    # Standardized run header (files used + config). The multinomial task always
+    # runs the JAX estimator, so the engine label is 'jax'.
+    print(format_run_header(
+        task='SELECTION:MULTINOMIAL',
+        engine='jax',
+        feature=Path(univariate_results_path).stem,
+        input_files={'univariate results': univariate_results_path,
+                     'input data': input_data_path,
+                     'settings': settings_path},
+        output_directory=str(model_selection_dir),
+        split_strategy=settings['model_params']['split_strategy'],
+        n_splits=int(settings['model_params']['split_num']),
+    ))
 
     with open(univariate_results_path, 'rb') as f:
         univariate_data = pickle.load(f)
@@ -3506,7 +3566,8 @@ def multinomial_vocal_category_model_selection(
         best_current_score = float(np.mean(valid_auc)) if valid_auc else float('-inf')
         best_current_se = float(np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))) if len(valid_auc) > 1 else 0.0
 
-        print(f"  Baseline Global AUC established at: {best_current_score:.4f}")
+        print(format_selection_step('Baseline', detail='model-free marginal prior',
+                                    metrics={'AUC': best_current_score}))
 
         baseline_data['mean_auc'] = best_current_score
         baseline_data['se_auc'] = best_current_se
@@ -3527,7 +3588,7 @@ def multinomial_vocal_category_model_selection(
     # Auto-anchor logic
     if use_top_rank_as_anchor and step_counter == 1:
         anchor = ranked_features[0]
-        print(f"\n*** AUTO-ANCHOR: Testing {anchor} against Baseline ***")
+        print(format_selection_step('Anchor', feature=anchor, detail='testing against baseline'))
 
         cand_data = {
             'folds': {
@@ -3682,7 +3743,8 @@ def multinomial_vocal_category_model_selection(
             cand_data['se_auc'] = se_anc_auc
 
             if (mean_anc_auc - se_anc_auc) > best_current_score:
-                print(f"  *** ANCHOR ACCEPTED: AUC improved to {mean_anc_auc:.4f} ***")
+                print(format_selection_step('Anchor', feature=anchor, decision='ACCEPT',
+                                            metrics={'AUC': mean_anc_auc}))
                 best_current_score = mean_anc_auc
                 best_current_se = se_anc_auc
                 current_model_features = [anchor]
@@ -3698,15 +3760,18 @@ def multinomial_vocal_category_model_selection(
                     pickle.dump(_wrap_step(step_1_res), f)
                 step_counter = 2
             else:
-                print("  *** ANCHOR REJECTED: Failed to beat the model-free marginal-prior baseline. Continuing from Empty Model. ***")
+                print(format_selection_step(
+                    'Anchor', feature=anchor, decision='REJECT',
+                    detail='failed to beat the model-free baseline; continuing from empty model'))
         else:
-            print(
-                "  *** ANCHOR FAILED: every fold errored out. Continuing from Empty Model. ***"
-            )
+            print(format_selection_step(
+                'Anchor', feature=anchor, decision='FAILED',
+                detail='every fold errored out; continuing from empty model'))
 
     # Main Forward Selection Loop
     while True:
-        print(f"\n=== Step {step_counter} === Best AUC: {best_current_score:.5f}")
+        print(format_selection_step(f"Step {step_counter}",
+                                    detail=f"best so far AUC={best_current_score:.4f}"))
         step_results = {
             'step_idx': step_counter,
             'current_features': list(current_model_features),
@@ -3743,7 +3808,6 @@ def multinomial_vocal_category_model_selection(
             if feat in current_model_features:
                 continue
             gc.collect()
-            print(f"  [{i_feat + 1}/{len(ranked_features)}] Testing +{feat}...", end="", flush=True)
 
             trial_feats = current_model_features + [feat]
             n_trial_feats = len(trial_feats)
@@ -3911,28 +3975,32 @@ def multinomial_vocal_category_model_selection(
                     f"are dropped from its mean AUC."
                 )
             if not valid_auc:
-                print(" Failed (no finite folds).")
+                print(format_selection_step(f"Step {step_counter}", feature=feat,
+                                            decision='FAILED (no finite folds)'))
                 continue
 
             mean_auc = np.mean(valid_auc)
             # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
             # guard with len > 1 so a one-fold success does not poison the 1SE rule.
             se_auc = np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc)) if len(valid_auc) > 1 else 0.0
-            print(f" AUC: {mean_auc:.4f}")
+            print(format_selection_step(f"Step {step_counter}", feature=feat,
+                                        metrics={'AUC': mean_auc}))
             cand_data['mean_auc'], cand_data['se_auc'] = mean_auc, se_auc
             step_results['candidates_summary'][feat] = cand_data
             if mean_auc > best_cand_score:
                 best_cand_score, best_cand_se, best_cand = mean_auc, se_auc, feat
 
         if (best_cand and (best_cand_score - best_current_score) > best_cand_se):
-            print(f"  ACCEPT {best_cand}")
+            print(format_selection_step(f"Step {step_counter}", feature=best_cand,
+                                        decision='ACCEPT', metrics={'AUC': best_cand_score}))
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
             with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
                 pickle.dump(_wrap_step(step_results), f)
             best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
         else:
-            print("  REJECT. Selection Finished.")
+            print(format_selection_step(f"Step {step_counter}", decision='REJECT',
+                                        detail='no candidate beat the 1-SE margin; selection finished'))
             step_results['selected_feature'] = None
             with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
                 pickle.dump(_wrap_step(step_results), f)
@@ -3989,7 +4057,19 @@ def multinomial_vocal_category_model_selection(
         with open(last_file_path, 'wb') as f:
             pickle.dump(_wrap_step(step_data), f)
 
-        print("Final model configuration successfully saved.")
+        baseline_score = float('nan')
+        step0_path = model_selection_dir / f"{prefix}0.pkl"
+        if step0_path.exists():
+            with open(step0_path, 'rb') as f:
+                _step0 = pickle.load(f)
+            if 'baseline_score' in _step0:
+                baseline_score = _step0['baseline_score']
+        print(format_run_summary(
+            label=f"multinomial model-selection ({len(current_model_features)} features)",
+            metrics_by_strategy={'Final': {'AUC': best_current_score},
+                                 'Baseline': {'AUC': baseline_score}},
+            out_path=str(last_file_path),
+        ))
     except Exception as e:
         print(f"Final promotion failed: {e}")
 
@@ -4108,8 +4188,6 @@ def continuous_vocal_manifold_model_selection(
         number of evaluated features.
     """
 
-    print("--- Starting Continuous Vocal Manifold Model Selection ---")
-
     if settings_path is None:
         settings_path_obj = Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
         settings_path = str(settings_path_obj)
@@ -4122,9 +4200,21 @@ def continuous_vocal_manifold_model_selection(
 
     model_selection_dir = Path(output_directory)
     model_selection_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Results will be saved to: {model_selection_dir}")
 
-    print(f"Loading univariate results from: {univariate_results_path}")
+    # Standardized run header (files used + config). The continuous/manifold
+    # task always runs the JAX estimators, so the engine label is 'jax'.
+    print(format_run_header(
+        task='SELECTION:CONTINUOUS',
+        engine='jax',
+        feature=Path(univariate_results_path).stem,
+        input_files={'univariate results': univariate_results_path,
+                     'input data': input_data_path,
+                     'settings': settings_path},
+        output_directory=str(model_selection_dir),
+        split_strategy=settings['model_params']['split_strategy'],
+        n_splits=int(settings['model_params']['split_num']),
+    ))
+
     with open(univariate_results_path, 'rb') as f:
         univariate_data = pickle.load(f)
 
@@ -4283,10 +4373,12 @@ def continuous_vocal_manifold_model_selection(
             })
         else:
             reason = ('not BH-significant' if r['feature'] not in bh_significant
-                      else f"margin {r['mean_margin']:+.4f} < floor {_effect_floor:.4f}")
-            print(f"  Dropping {r['feature']}: {reason} (margin {r['mean_margin']:+.4f}, "
-                  f"CI [{r['ci_low']:+.4f}, {r['ci_high']:+.4f}], p={r['p_value']:.3g}, "
-                  f"sessions={r['n_sessions']})")
+                      else f"margin < floor {_effect_floor:.4f}")
+            print(format_selection_step(
+                'Screen', feature=r['feature'], decision='DROP',
+                detail=(f"{reason} (margin {r['mean_margin']:+.4f}, "
+                        f"CI [{r['ci_low']:+.4f}, {r['ci_high']:+.4f}], p={r['p_value']:.3g}, "
+                        f"sessions={r['n_sessions']})")))
 
     # Rank by descending margin (best features first).
     candidates.sort(key=lambda x: x['mean_r2'], reverse=True)
@@ -4684,7 +4776,8 @@ def continuous_vocal_manifold_model_selection(
             if valid_scores.size > 1 else 0.0
         )
 
-        print(f"  Baseline {SELECTION_SCORE_KEY} (density draw) established at: {best_current_score:.4f}")
+        print(format_selection_step('Baseline', detail='empirical-density draw',
+                                    metrics={SELECTION_SCORE_KEY: best_current_score}))
 
         baseline_data['mean_r2'] = best_current_score
         baseline_data['se_r2'] = best_current_se
@@ -4821,7 +4914,7 @@ def continuous_vocal_manifold_model_selection(
     # Auto-anchor logic
     if use_top_rank_as_anchor and step_counter == 1:
         anchor = ranked_features[0]
-        print(f"\n*** AUTO-ANCHOR: Testing {anchor} against Baseline ***")
+        print(format_selection_step('Anchor', feature=anchor, detail='testing against baseline'))
 
         cand_data = _make_manifold_cand_data()
 
@@ -4921,9 +5014,11 @@ def continuous_vocal_manifold_model_selection(
             )
             cand_data['session_improvement'] = anchor_improvement
             if anchor_improvement['ci_low'] > 0.0:
-                print(f"  *** ANCHOR ACCEPTED: {SELECTION_SCORE_KEY} {mean_anc:.4f} | session "
-                      f"improvement +{anchor_improvement['mean_margin']:.4f} "
-                      f"CI [{anchor_improvement['ci_low']:+.4f}, {anchor_improvement['ci_high']:+.4f}] ***")
+                print(format_selection_step(
+                    'Anchor', feature=anchor, decision='ACCEPT',
+                    metrics={SELECTION_SCORE_KEY: mean_anc},
+                    detail=(f"session improvement +{anchor_improvement['mean_margin']:.4f} "
+                            f"CI [{anchor_improvement['ci_low']:+.4f}, {anchor_improvement['ci_high']:+.4f}]")))
                 best_current_score = mean_anc
                 best_current_se = se_anc
                 current_model_folds = cand_data['folds']
@@ -4938,14 +5033,16 @@ def continuous_vocal_manifold_model_selection(
                     pickle.dump(_wrap_step(step_1_res), f)
                 step_counter = 2
             else:
-                print(f"  *** ANCHOR REJECTED: session-improvement CI includes 0 "
-                      f"(+{anchor_improvement['mean_margin']:.4f} "
-                      f"CI [{anchor_improvement['ci_low']:+.4f}, {anchor_improvement['ci_high']:+.4f}]). "
-                      f"Continuing from Empty Model. ***")
+                print(format_selection_step(
+                    'Anchor', feature=anchor, decision='REJECT',
+                    detail=(f"session-improvement CI includes 0 "
+                            f"(+{anchor_improvement['mean_margin']:.4f} "
+                            f"CI [{anchor_improvement['ci_low']:+.4f}, {anchor_improvement['ci_high']:+.4f}]); "
+                            f"continuing from empty model")))
         else:
-            print(
-                "  *** ANCHOR FAILED: every fold errored out. Continuing from Empty Model. ***"
-            )
+            print(format_selection_step(
+                'Anchor', feature=anchor, decision='FAILED',
+                detail='every fold errored out; continuing from empty model'))
 
     # Forward stepwise selection loop
     print("\n--- Starting Forward Selection ---")
@@ -4982,7 +5079,6 @@ def continuous_vocal_manifold_model_selection(
         for i_feat, feat in enumerate(ranked_features):
             if feat in current_model_features: continue
             gc.collect()
-            print(f"  [{i_feat + 1}/{len(ranked_features)}] Testing +{feat}...", end="", flush=True)
 
             trial_feats = current_model_features + [feat]
             n_trial_feats = len(trial_feats)
@@ -5076,7 +5172,8 @@ def continuous_vocal_manifold_model_selection(
                     f"(fit failed / diverged); those folds are dropped from its mean."
                 )
             if not valid_scores.size:
-                print(" Failed (no finite folds).")
+                print(format_selection_step(f"Step {step_counter}", feature=feat,
+                                            decision='FAILED (no finite folds)'))
                 continue
 
             mean_score = float(np.mean(valid_scores))
@@ -5085,7 +5182,8 @@ def continuous_vocal_manifold_model_selection(
                 if valid_scores.size > 1 else 0.0
             )
             mean_mae = float(np.nanmean(cand_data['folds']['metrics']['euclidean_mae']))
-            print(f" {SELECTION_SCORE_KEY}: {mean_score:.4f} | MAE: {mean_mae:.4f}")
+            print(format_selection_step(f"Step {step_counter}", feature=feat,
+                                        metrics={SELECTION_SCORE_KEY: mean_score, 'MAE': mean_mae}))
 
             cand_data['mean_r2'] = mean_score
             cand_data['se_r2'] = se_score
@@ -5116,9 +5214,10 @@ def continuous_vocal_manifold_model_selection(
             step_results['candidates_summary'][best_cand]['session_improvement'] = step_improvement
 
         if step_improvement is not None and step_improvement['ci_low'] > 0.0:
-            print(f"  ACCEPT {best_cand} (session improvement "
-                  f"+{step_improvement['mean_margin']:.4f} "
-                  f"CI [{step_improvement['ci_low']:+.4f}, {step_improvement['ci_high']:+.4f}])")
+            print(format_selection_step(
+                f"Step {step_counter}", feature=best_cand, decision='ACCEPT',
+                detail=(f"session improvement +{step_improvement['mean_margin']:.4f} "
+                        f"CI [{step_improvement['ci_low']:+.4f}, {step_improvement['ci_high']:+.4f}]")))
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
             current_model_folds = best_cand_folds
@@ -5131,12 +5230,15 @@ def continuous_vocal_manifold_model_selection(
             step_counter += 1
         else:
             if step_improvement is not None:
-                print(f"  REJECT {best_cand}: session-improvement CI includes 0 "
-                      f"(+{step_improvement['mean_margin']:.4f} "
-                      f"CI [{step_improvement['ci_low']:+.4f}, {step_improvement['ci_high']:+.4f}]). "
-                      f"Selection Finished.")
+                print(format_selection_step(
+                    f"Step {step_counter}", feature=best_cand, decision='REJECT',
+                    detail=(f"session-improvement CI includes 0 "
+                            f"(+{step_improvement['mean_margin']:.4f} "
+                            f"CI [{step_improvement['ci_low']:+.4f}, {step_improvement['ci_high']:+.4f}]); "
+                            f"selection finished")))
             else:
-                print("  REJECT. Selection Finished.")
+                print(format_selection_step(f"Step {step_counter}", decision='REJECT',
+                                            detail='no candidate improved; selection finished'))
             step_results['selected_feature'] = None
             with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
                 pickle.dump(_wrap_step(step_results), f)
@@ -5166,7 +5268,25 @@ def continuous_vocal_manifold_model_selection(
         with open(last_file_path, 'wb') as f:
             pickle.dump(_wrap_step(step_data), f)
 
-        print(f"Success. Final model configuration saved to {Path(last_file_path).name}")
+        # Standardized end summary: selected-feature count + final vs Step-0
+        # baseline score + the full save path. The Step-0 baseline is read back
+        # from its pickle so the comparison is correct on both fresh and resume
+        # runs (where `best_current_score` no longer holds the baseline).
+        baseline_score = float('nan')
+        step0_path = model_selection_dir / f"{prefix}0.pkl"
+        if step0_path.exists():
+            with open(step0_path, 'rb') as f:
+                _step0 = pickle.load(f)
+            if 'baseline_score' in _step0:
+                baseline_score = _step0['baseline_score']
+        print(format_run_summary(
+            label=f"continuous model-selection ({len(current_model_features)} features)",
+            metrics_by_strategy={
+                'Final': {SELECTION_SCORE_KEY: best_current_score},
+                'Baseline': {SELECTION_SCORE_KEY: baseline_score},
+            },
+            out_path=str(last_file_path),
+        ))
 
     except Exception as e:
         print(f"Final promotion failed: {e}")
