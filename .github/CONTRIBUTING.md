@@ -444,6 +444,57 @@ The house shape to match when writing a new pipeline or CLI command:
 Reference implementations: `analyses/analyze_data.py`, `cli_utils.py`,
 `os_utils.py`, `send_email.py`.
 
+## Modeling console output
+
+The `modeling/` pipelines are the **exception to the no-`print` rule** above:
+they report run progress straight to the console rather than threading
+`message_output`, so ruff's `T20` fires across `modeling/` and is knowingly left
+unaddressed there. To keep every run readable as one system, that output goes
+through the shared formatters in `modeling_utils.py`, **not** ad-hoc `print`
+f-strings. Every run — univariate (one per feature, emitted by
+`main_univariate_dispatcher`) and model selection (each `*_model_selection` in
+`model_selection.py`) — prints the same three things, in order:
+
+1. **A run header** (`format_run_header`) — one block at the top naming the
+   task, engine, feature/target, split strategy, `n_splits`, the **input files
+   used** (input data, univariate results, settings), and the output directory.
+2. **One line per split** — for every CV split, that split's metrics for
+   **ACTUAL and NULL** (and `NULL-MF`, the second model-free baseline, where the
+   task has one) side by side on one line via `format_split_line`.
+   Model-selection screening / anchor / forward-step lines use
+   `format_selection_step` instead
+   (`Stage | +feature | metric | decision | detail`).
+3. **A two-line end summary** (`format_run_summary`) — the headline result
+   (ACTUAL vs NULL for univariate; final vs baseline for selection), then
+   `[timestamp] Success. Results saved to: <full path>`.
+
+**Sequence for adding or changing modeling console output:**
+
+1. Compute all of a split's metrics first (both strategies), then emit **one**
+   `format_split_line` for that split — don't scatter separate per-strategy or
+   per-iteration prints. Where a pipeline fits strategies in separate passes,
+   collect the per-fold metric lists and emit the combined lines in a single
+   loop after the passes finish.
+2. Reduce a univariate run's per-fold metrics to the summary with
+   `extract_univariate_headline(analysis_type, res)` (add the task's branch
+   there when you introduce a new task type); it returns the
+   `{group: {metric: value}}` shape `format_run_summary` expects.
+3. Feed metric values as **raw floats** — the formatters render four-decimal
+   fixed-point and show a non-finite fold as `nan`; don't pre-format with
+   `f"{x:.4f}"`.
+4. Leave **error / warning** prints (`[!] …`, `[warn] …`, `FATAL …`) as they
+   are; only the progress and summary lines are standardized.
+5. Emit the end summary **after** the results are written, and never place a
+   formatting call where its failure could be mis-reported as a save failure —
+   build the summary outside the save `try` (or after the final `pickle.dump`).
+6. The formatters are pure, unit-tested string builders
+   (`tests/modeling/test_modeling_utils.py`); extend those tests in the same
+   change when you alter a format.
+
+This is console output only — it must never change fitting, metrics, CV
+splitting, null generation, acceptance logic, or the contents of any saved
+pickle.
+
 ## Documentation conventions
 
 _(To build the docs, see [Building the docs](#building-the-docs).)_ The docs are
