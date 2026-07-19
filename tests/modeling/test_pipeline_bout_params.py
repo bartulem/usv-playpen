@@ -21,7 +21,7 @@ exercising isolated helpers:
   intra-session bout alignment invariant holds across every feature.
 
 * ``TestUnivariateParamsDispatcher`` drives ``dispatch_univariate_job`` for the
-  ``'params'`` analysis with both the fast ``sklearn`` (RidgeCV-on-log-y) engine
+  ``'params'`` analysis with both the fast ``sklearn`` (Gamma-GLM) engine
   and the ``pygam`` (GammaGAM, log-link) engine, exercising
   ``BoutParameterPipeline._run_model_for_feature_sklearn`` /
   ``_run_model_for_feature_pygam``, the basis construction, the per-fold
@@ -110,8 +110,9 @@ N_SESSIONS = 4
 N_BOUTS = 15
 USV_PER_BOUT = 3
 
-# Per-test ridge hyperparameters: a tiny alpha grid and 2-fold internal CV keep
-# ``RidgeCV`` fast and well-conditioned on the small synthetic design matrices.
+# Per-test sklearn hyperparameters: a tiny alpha grid and 2-fold internal CV keep
+# the ``GammaRegressor`` search fast and well-conditioned on the small synthetic
+# design matrices. (The settings block is still named ``ridge_regression``.)
 _TINY_RIDGE = {'alphas': [0.1, 1.0, 10.0], 'cv': 2, 'fit_intercept': True}
 
 
@@ -146,7 +147,7 @@ def _build_params_input_pickle(
     alignment invariant the real extractor enforces — every behavioral predictor
     is sampled at the identical set of bouts). The target ``y`` is drawn from a
     strictly positive, right-skewed Gamma distribution (the biology the
-    Gamma-GAM / log-Ridge engines assume), and the ``signal_feature_idx`` feature
+    Gamma-GAM / Gamma-GLM engines assume), and the ``signal_feature_idx`` feature
     has ``log(y)`` injected into its history so at least one predictor carries
     above-chance, screenable structure on the continuous contrast.
 
@@ -582,7 +583,7 @@ class TestBoutParameterModelSelection:
             session_ids=session_ids,
             history_frames=HISTORY_FRAMES,
             # Two signal-bearing features so the multivariate forward-selection
-            # candidate-fitting loop (basis-stacked RidgeCV) is exercised.
+            # candidate-fitting loop (basis-stacked Gamma GLM) is exercised.
             signal_feature_idx=(0, 1),
         ))
 
@@ -980,7 +981,7 @@ class TestPerFeatureFitFailureHandlers:
     @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
     def test_sklearn_fit_failure_fills_nan(self, monkeypatch):
         """
-        Monkeypatching ``RidgeCV`` so every ``.fit`` raises drives BOTH the
+        Monkeypatching ``GridSearchCV`` so every ``.fit`` raises drives BOTH the
         actual-branch and null-branch fit ``except`` handlers in
         ``_run_model_for_feature_sklearn``; each per-fold list is filled with a
         NaN placeholder (and a NaN-vector ``filter_shapes`` row for the actual
@@ -992,14 +993,14 @@ class TestPerFeatureFitFailureHandlers:
         feature_data = _bout_feature_data(pipeline.history_frames)
         basis = np.eye(pipeline.history_frames, 3, dtype=float)
 
-        class _ExplodingRidge:
+        class _ExplodingSearch:
             def __init__(self, *a, **k):
                 pass
 
             def fit(self, *a, **k):
-                raise RuntimeError("forced ridge fit failure")
+                raise RuntimeError("forced sklearn fit failure")
 
-        monkeypatch.setattr(bout_params_module, 'RidgeCV', _ExplodingRidge)
+        monkeypatch.setattr(bout_params_module, 'GridSearchCV', _ExplodingSearch)
 
         _fn, res = pipeline._run_model_for_feature_sklearn('self.speed', feature_data, basis)
         assert not np.isfinite(res['actual']['explained_deviance']).any()
@@ -1013,7 +1014,7 @@ class TestPerFeatureFitFailureHandlers:
     def test_sklearn_metric_failure_sets_nan_metrics(self, monkeypatch):
         """
         Monkeypatching ``mean_gamma_deviance`` so it always raises lets the
-        RidgeCV fits succeed but drives the inner metric-computation ``except``
+        Gamma-GLM fits succeed but drives the inner metric-computation ``except``
         handlers (actual + null) that set ``d2`` / ``res_dev`` to NaN while the
         remaining per-fold metrics are still appended. The fold therefore lands
         in the ``DATA-PRESENT`` path (converged ``True``) yet reports a NaN
@@ -1031,7 +1032,8 @@ class TestPerFeatureFitFailureHandlers:
 
         _fn, res = pipeline._run_model_for_feature_sklearn('self.speed', feature_data, basis)
         # The metric except fired -> explained_deviance is NaN, but the fit
-        # itself succeeded so the closed-form RidgeCV marks the fold converged.
+        # itself succeeded (GammaRegressor converged within max_iter) so the fold is
+        # marked converged.
         assert not np.isfinite(res['actual']['explained_deviance']).any()
         assert np.all([bool(c) for c in res['actual']['converged']])
 

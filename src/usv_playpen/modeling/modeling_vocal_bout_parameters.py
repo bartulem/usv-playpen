@@ -40,8 +40,8 @@ import gc
 import time
 import warnings
 from pygam import GAM, te
-from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit
-from sklearn.linear_model import RidgeCV
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit, GridSearchCV
+from sklearn.linear_model import GammaRegressor
 from sklearn.metrics import mean_gamma_deviance, mean_squared_log_error
 from tqdm import tqdm
 
@@ -86,8 +86,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
     2.  **Splitting Strategy**: Implements 'Stratified Group K-Fold' (for 'session' strategy)
         and 'Stratified K-Fold' (for 'mixed' strategy) using quantile binning of the
         continuous target variable.
-    3.  **Modeling**: Uses GammaGAM (pyGAM) and RidgeCV on Log(y) (sklearn) to model
-        strictly positive, skewed distributions typical of duration/complexity data.
+    3.  **Modeling**: Uses GammaGAM (pyGAM) and an L2-penalized Gamma GLM (sklearn,
+        ``GammaRegressor`` with a log link) to model strictly positive, skewed
+        distributions typical of duration/complexity data — both engines fit and
+        score under the same Gamma likelihood.
     """
 
     def __init__(self, modeling_settings_dict=None):
@@ -952,29 +954,35 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
     def _run_model_for_feature_sklearn(self, feature_name, feature_data, basis_matrix):
         r"""
-        Runs a univariate RidgeCV regression on log-transformed bout parameters.
+        Runs a univariate L2-penalized Gamma GLM (log link) on bout parameters.
 
-        This method provides a linear alternative to the GAM approach. It models the relationship
-        between behavioral history and bout parameters by transforming the strictly positive,
-        skewed target variable into a Gaussian-like distribution in log-space.
+        This method provides a linear alternative to the GAM approach while fitting
+        under the SAME likelihood family as the pyGAM engine, so the Gamma-deviance
+        score grades the model under the distribution it was fitted under. (The
+        previous engine fit a ridge on ``ln(y)`` — a log-normal assumption — and
+        then scored it with Gamma deviance, a fit/score mismatch; this replaces it.)
 
         Statistical and mathematical framework:
-        1. Log-transformation: The target variable (y) is transformed via ln(y + epsilon).
-           Since bout duration and complexity are strictly positive and typically log-normally
-           distributed, this mapping satisfies the homoscedasticity and normality assumptions
-           of linear regression.
+        1. Gamma likelihood: bout duration / complexity are strictly positive and
+           right-skewed, so the target is modelled as ``y ~ Gamma`` with a log link
+           (``E[y] = exp(Phi beta)``) rather than log-transformed and treated as
+           Gaussian. The strictly-positive target is floored at ``1e-6`` for the
+           Gamma family.
         2. Basis projection: The high-dimensional feature history (X) is projected onto
            the provided `basis_matrix` (e.g., raised cosine or B-splines). This reduces the
            parameter space from N_lags to N_bases, preventing overfitting and
            ensuring the resulting temporal filters (kernels) are smooth and interpretable.
-        3. L2 regularization (RidgeCV): Fits the model ln(y) = Phi\beta + \alpha||\beta||_2,
-           where Phi is the basis-projected feature matrix. The optimal regularization
-           strength (alpha) is determined via internal cross-validation (the ``cv`` scheme from settings).
+        3. L2 regularization (GammaRegressor): Fits ``log E[y] = Phi beta`` with an
+           L2 penalty ``alpha||beta||_2``, where Phi is the basis-projected feature
+           matrix. The optimal penalty ``alpha`` is selected by an inner-CV search
+           (``GridSearchCV`` over the configured ``alphas`` grid, ``cv`` scheme from
+           settings, scored by Gamma deviance) so the regularisation is chosen under
+           the same metric the model is later reported on.
 
         Evaluation and permutation control:
-        - Original scale metrics: Predictions are back-transformed via exp(\hat{y}_{log}).
-          The same Gamma-GLM scoring bundle as the pyGAM engine is computed on the
-          back-transformed predictions (see the 'Metrics Calculated' block in
+        - Metrics: predictions are on the native (response) scale via the log link.
+          The same Gamma-GLM scoring bundle as the pyGAM engine is computed on them
+          (see the 'Metrics Calculated' block in
           `_run_model_for_feature_pygam`):
           * `explained_deviance` (D^2): `1 - (Residual Deviance / Null Deviance)`,
             the Gamma-equivalent of R^2 (higher is better).
@@ -1010,9 +1018,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             the 'actual' model and the 'null' (label-permuted) control.
         """
 
-        print(f"--- Running [RidgeCV] for: {feature_name} ---")
+        print(f"--- Running [GammaGLM] for: {feature_name} ---")
 
-        def _make_ridge_branch():
+        def _make_sklearn_branch():
             return {
                 'explained_deviance': [], 'spearman_r': [], 'pearson_r': [],
                 'msle': [], 'mae': [], 'rmse': [], 'residual_deviance': [],
@@ -1021,8 +1029,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             }
 
         results = {
-            'actual': _make_ridge_branch(),
-            'null': _make_ridge_branch()
+            'actual': _make_sklearn_branch(),
+            'null': _make_sklearn_branch()
         }
 
         splitter = self.create_data_splits(feature_data)
@@ -1044,16 +1052,25 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             X_te_proj = np.dot(X_te, basis_matrix)
 
             try:
-                # Log-transform target for ridge (homoscedasticity assumption)
-                y_tr_log = np.log(y_tr + 1e-6)
+                # Gamma GLM (log link) fit directly on the strictly-positive
+                # target — the SAME likelihood family the pyGAM engine uses — so
+                # the Gamma-deviance score below grades the model under the
+                # distribution it was fitted under (no more log-normal-fit /
+                # Gamma-score mismatch). The L2 penalty (`alpha`) is chosen by an
+                # inner-CV Gamma-deviance search over the configured grid.
+                y_tr_pos = np.maximum(y_tr, 1e-6)
 
                 fit_start = time.perf_counter()
-                model = RidgeCV(alphas=alphas, cv=cv).fit(X_tr_proj, y_tr_log)
+                model = GridSearchCV(
+                    GammaRegressor(),
+                    {'alpha': list(alphas)},
+                    cv=cv,
+                    scoring='neg_mean_gamma_deviance',
+                ).fit(X_tr_proj, y_tr_pos)
                 fit_time = float(time.perf_counter() - fit_start)
 
-                # Predict and back-transform
-                y_pred_log = model.predict(X_te_proj)
-                y_pred = np.exp(y_pred_log)
+                best = model.best_estimator_
+                y_pred = best.predict(X_te_proj)
 
                 try:
                     # Sanitize inputs (Gamma metrics crash on 0.0)
@@ -1084,18 +1101,21 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 results['actual']['msle'].append(mean_squared_log_error(y_te, y_pred))
                 results['actual']['mae'].append(mean_absolute_error_1d(y_te, y_pred))
                 results['actual']['rmse'].append(root_mean_squared_error(y_te, y_pred))
-                # RidgeCV has no iterative optimizer to report; store NaN for
-                # `n_iter` and `True` for converged (closed-form solve).
-                results['actual']['n_iter'].append(np.nan)
-                results['actual']['converged'].append(True)
+                # GammaRegressor is an iterative (L-BFGS) solver, so report its
+                # convergence rather than the closed-form ridge's always-True.
+                n_iter_actual = int(np.max(np.atleast_1d(best.n_iter_)))
+                results['actual']['n_iter'].append(n_iter_actual)
+                results['actual']['converged'].append(bool(n_iter_actual < best.max_iter))
                 results['actual']['fit_time'].append(fit_time)
 
-                # Store filter shape (in log domain)
-                shape_log = np.dot(model.coef_, basis_matrix.T)
+                # Store filter shape. The Gamma GLM's linear predictor is on the
+                # log scale (log link), so the back-projected filter is the
+                # log-domain temporal kernel, exactly as the previous engine's.
+                shape_log = np.dot(best.coef_, basis_matrix.T)
                 results['actual']['filter_shapes'].append(shape_log)
 
             except Exception as e:
-                print(f"Ridge Fit failed for Actual Split {split_idx + 1}: {e}")
+                print(f"Gamma GLM fit failed for Actual Split {split_idx + 1}: {e}")
                 results['actual']['explained_deviance'].append(np.nan)
                 results['actual']['residual_deviance'].append(np.nan)
                 results['actual']['spearman_r'].append(np.nan)
@@ -1113,14 +1133,19 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             try:
                 null_rng = np.random.default_rng(base_seed + split_idx + 1)
-                y_tr_shuff_log = np.log(null_rng.permutation(y_tr) + 1e-6)
+                y_tr_shuff_pos = np.maximum(null_rng.permutation(y_tr), 1e-6)
 
                 fit_start = time.perf_counter()
-                model_null = RidgeCV(alphas=alphas, cv=cv).fit(X_tr_proj, y_tr_shuff_log)
+                model_null = GridSearchCV(
+                    GammaRegressor(),
+                    {'alpha': list(alphas)},
+                    cv=cv,
+                    scoring='neg_mean_gamma_deviance',
+                ).fit(X_tr_proj, y_tr_shuff_pos)
                 fit_time_null = float(time.perf_counter() - fit_start)
 
-                y_pred_null_log = model_null.predict(X_te_proj)
-                y_pred_null = np.exp(y_pred_null_log)
+                best_null = model_null.best_estimator_
+                y_pred_null = best_null.predict(X_te_proj)
 
                 try:
                     # Sanitize inputs
@@ -1150,13 +1175,14 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 results['null']['msle'].append(mean_squared_log_error(y_te, y_pred_null))
                 results['null']['mae'].append(mean_absolute_error_1d(y_te, y_pred_null))
                 results['null']['rmse'].append(root_mean_squared_error(y_te, y_pred_null))
-                results['null']['n_iter'].append(np.nan)
-                results['null']['converged'].append(True)
+                n_iter_null = int(np.max(np.atleast_1d(best_null.n_iter_)))
+                results['null']['n_iter'].append(n_iter_null)
+                results['null']['converged'].append(bool(n_iter_null < best_null.max_iter))
                 results['null']['fit_time'].append(fit_time_null)
 
             except Exception as e:
                 print(f"Fit failed for Null Split {split_idx + 1}: {e}")
-                # Ridge null branch does not emit filter shapes; every other
+                # The sklearn null branch does not emit filter shapes; every other
                 # per-fold key gets a NaN placeholder to keep lengths aligned.
                 results['null']['explained_deviance'].append(np.nan)
                 results['null']['residual_deviance'].append(np.nan)

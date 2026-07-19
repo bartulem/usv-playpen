@@ -14,8 +14,8 @@ from collections import defaultdict
 from pathlib import Path
 from pygam import LogisticGAM, GAM, te
 from scipy.stats import spearmanr, wilcoxon
-from sklearn.linear_model import LogisticRegressionCV, RidgeCV
-from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit, ShuffleSplit
+from sklearn.linear_model import LogisticRegressionCV, GammaRegressor
+from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit, ShuffleSplit, GridSearchCV
 from sklearn.metrics import (log_loss, roc_auc_score, f1_score, recall_score,
                              balanced_accuracy_score, mean_squared_log_error,
                              mean_gamma_deviance, brier_score_loss)
@@ -2248,15 +2248,14 @@ def bout_parameter_model_selection(
     Engine Flexibility:
     -------------------
     Reads `model_engine` from JSON settings to dynamically construct models:
-    - 'sklearn': Utilizes `RidgeCV` combined with linear basis projection. To satisfy
-                 normality and homoscedasticity assumptions, the target variable (y)
-                 is log-transformed prior to fitting, and predictions are back-transformed.
-                 Back-transformation applies a Jensen-inequality bias correction
-                 (`y_pred = exp(X_te @ beta + sigma^2 / 2)`, with `sigma^2` estimated from the
-                 training residuals of `log(y_tr + 1e-6)`): without the `+ sigma^2 / 2` shift,
-                 naive exponentiation of the linear-predictor targets the conditional median
-                 rather than the conditional mean under a lognormal model, which systematically
-                 biases Gamma deviance and MSLE against the sklearn branch.
+    - 'sklearn': Utilizes an L2-penalized `GammaRegressor` (Gamma GLM, log link)
+                 combined with linear basis projection. It fits under the SAME Gamma
+                 likelihood the model is later scored with (`mean_gamma_deviance`), so
+                 there is no log-normal-fit / Gamma-score mismatch, and — because the
+                 log link targets the conditional mean E[y] directly — no Jensen
+                 back-transform correction is needed. The L2 penalty `alpha` is chosen
+                 by an inner-CV Gamma-deviance search (`GridSearchCV` over the
+                 `ridge_regression.alphas` grid, `cv` scheme from settings).
     - 'pygam': Utilizes `GAM` with a Gamma distribution and Log-link function. High-dimensional
                features are unrolled into tensor product splines (te) to capture non-linear surfaces.
                For each test trial the `H` per-frame predictions produced by the tensor-product
@@ -2632,22 +2631,25 @@ def bout_parameter_model_selection(
                     X_tr_proj = np.dot(X_tr, basis_matrix)
                     X_te_proj = np.dot(X_te, basis_matrix)
 
-                    y_tr_log = np.log(y_tr + 1e-6)
+                    # Gamma GLM (log link) — the SAME likelihood as the pyGAM
+                    # branch and the Gamma-deviance score below, so no log-normal
+                    # fit / Gamma score mismatch. The log link targets E[y]
+                    # directly, so no Jensen back-transform correction is needed;
+                    # the L2 penalty is chosen by inner-CV Gamma deviance.
+                    y_tr_pos = np.maximum(y_tr, 1e-6)
                     fit_start = time.perf_counter()
-                    model = RidgeCV(alphas=lr_params['alphas'], cv=lr_params['cv']).fit(X_tr_proj, y_tr_log)
+                    model = GridSearchCV(
+                        GammaRegressor(),
+                        {'alpha': list(lr_params['alphas'])},
+                        cv=lr_params['cv'],
+                        scoring='neg_mean_gamma_deviance',
+                    ).fit(X_tr_proj, y_tr_pos)
                     fit_time = float(time.perf_counter() - fit_start)
 
-                    # Jensen bias correction: fitting log(y) with OLS/Ridge targets the median on the
-                    # natural scale; for a (conditionally) lognormal model, E[y|X] = exp(Xb + sigma^2/2).
-                    # Without the +sigma^2/2 shift, exp(predict(...)) systematically under-estimates the
-                    # mean, biasing gamma-deviance / MSLE against the sklearn branch.
-                    resid = y_tr_log - model.predict(X_tr_proj)
-                    sigma2 = float(np.var(resid, ddof=1))
-                    y_pred = np.exp(model.predict(X_te_proj) + 0.5 * sigma2)
-                    # RidgeCV has no iterative optimizer to report; the closed-form
-                    # solve is trivially converged.
-                    fold_n_iter = np.nan
-                    fold_converged = True
+                    best = model.best_estimator_
+                    y_pred = best.predict(X_te_proj)
+                    fold_n_iter = int(np.max(np.atleast_1d(best.n_iter_)))
+                    fold_converged = bool(fold_n_iter < best.max_iter)
                 else:
                     X_tr_unrolled = np.empty((len(X_tr) * history_frames, 2))
                     X_tr_unrolled[:, 0] = X_tr.ravel()
@@ -2807,17 +2809,23 @@ def bout_parameter_model_selection(
                         X_tr_stacked = np.hstack([base_proj_tr, new_proj_tr]) if base_proj_tr is not None else new_proj_tr
                         X_te_stacked = np.hstack([base_proj_te, new_proj_te]) if base_proj_te is not None else new_proj_te
 
-                        y_tr_log = np.log(y_tr + 1e-6)
+                        # Gamma GLM (log link), matching the anchor fit and the
+                        # pyGAM branch — fit and Gamma-deviance score share one
+                        # likelihood; no log-normal transform / Jensen correction.
+                        y_tr_pos = np.maximum(y_tr, 1e-6)
                         fit_start = time.perf_counter()
-                        model = RidgeCV(alphas=lr_params['alphas'], cv=lr_params['cv']).fit(X_tr_stacked, y_tr_log)
+                        model = GridSearchCV(
+                            GammaRegressor(),
+                            {'alpha': list(lr_params['alphas'])},
+                            cv=lr_params['cv'],
+                            scoring='neg_mean_gamma_deviance',
+                        ).fit(X_tr_stacked, y_tr_pos)
                         fit_time = float(time.perf_counter() - fit_start)
 
-                        # Jensen bias correction on the natural scale (see anchor fit for rationale).
-                        resid = y_tr_log - model.predict(X_tr_stacked)
-                        sigma2 = float(np.var(resid, ddof=1))
-                        y_pred = np.exp(model.predict(X_te_stacked) + 0.5 * sigma2)
-                        fold_n_iter = np.nan
-                        fold_converged = True
+                        best = model.best_estimator_
+                        y_pred = best.predict(X_te_stacked)
+                        fold_n_iter = int(np.max(np.atleast_1d(best.n_iter_)))
+                        fold_converged = bool(fold_n_iter < best.max_iter)
                     else:
                         X_tr_gam = get_unrolled_X_for_multivariate(trial_tr, history_frames)
                         X_te_gam = get_unrolled_X_for_multivariate(trial_te, history_frames)
@@ -2935,10 +2943,15 @@ def bout_parameter_model_selection(
             fold_res = {}
             if model_type == 'sklearn':
                 X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_list_tr])
-                y_tr_log = np.log(y_tr + 1e-6)
+                y_tr_pos = np.maximum(y_tr, 1e-6)
 
-                model = RidgeCV(alphas=lr_params['alphas'], cv=lr_params['cv']).fit(X_tr_stacked, y_tr_log)
-                coefs = model.coef_.flatten()
+                model = GridSearchCV(
+                    GammaRegressor(),
+                    {'alpha': list(lr_params['alphas'])},
+                    cv=lr_params['cv'],
+                    scoring='neg_mean_gamma_deviance',
+                ).fit(X_tr_stacked, y_tr_pos)
+                coefs = model.best_estimator_.coef_.flatten()
                 n_bases = basis_matrix.shape[1]
 
                 for k, f_name in enumerate(current_model_features):
