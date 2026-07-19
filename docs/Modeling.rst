@@ -124,6 +124,9 @@ cross-validation splitting.
         "session_split_widen_step": 0.02,
         "session_split_widen_every": 1000,
         "selection_p_val": 0.01,
+        "selection_effect_floor": 0.1,
+        "selection_n_bootstrap": 1000,
+        "selection_ci_level": 0.99,
         "usv_bout_time": 2,
         "usv_per_bout_floor": 2,
         "onset_target_category": null
@@ -131,17 +134,18 @@ cross-validation splitting.
 
 * **filter_history** — seconds of behavioral history preceding each event that feed the temporal filter (× ``camera_sampling_rate`` → frames).
 * **mixture_model_component_index** / **mixture_model_z_score** — bout grouping: the fitted inter-syllable-interval mixture (``mixture_model_params``) is thresholded at ``mean + z·sd`` of the selected component (component ``0``, ``z = 2.58``) to decide where one bout ends and the next begins.
-* **model_basis_function** — temporal-filter basis over the history window (``'raised_cosine'`` / ``'bspline'`` / ``'laplacian_pyramid'``; parameters in ``hyperparameters.basis_functions``). Only relevant when ``model_engine = 'sklearn'`` — the ``'pygam'`` engine uses its own tensor-product splines instead.
+* **model_basis_function** — temporal-filter basis over the history window: ``'raised_cosine'`` / ``'bspline'`` / ``'laplacian_pyramid'`` (parameters in ``hyperparameters.basis_functions``), or ``'identity'`` (the raw per-frame history, no projection). Only relevant when ``model_engine = 'sklearn'`` — the ``'pygam'`` engine uses its own tensor-product splines instead.
 * **model_engine** — univariate model backend: ``'pygam'`` (tensor-product-spline GAM, a generalized additive model) or ``'sklearn'`` (basis-projected linear).
 * **model_predictor_mouse_index** — which mouse (``0`` / ``1``) is the **partner**; the **target** — the mouse whose vocal behavior is being predicted — is defined as the other one. Both mice's kinematics enter the predictor set.
-* **model_target_vocal_type** — onset target mode, ``'bout'`` (clustered) or ``'individual'`` (per-USV); used only by ``VocalOnsetModelingPipeline``.
-* **model_target_variable** — for ``BoutParameterPipeline``, which per-bout quantity to regress (``'bout_durations'`` / complexity / intensity).
+* **model_target_vocal_type** — onset target mode, one of ``'bout'`` (clustered bout onsets, both positive and negative pre-event windows kept clean), ``'individual'`` (per-USV onsets), or ``'state'`` (the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent, with no clean-history requirement); used only by ``VocalOnsetModelingPipeline``.
+* **model_target_variable** — for ``BoutParameterPipeline``, which per-bout quantity to regress: ``'bout_durations'`` (first-to-last-USV span, seconds), ``'mean_mask_complexity'`` (per-USV mean spectrogram-mask complexity), or ``'total_mask_complexity'`` (summed over the bout).
 * **random_seed** — seeds every stochastic step (splits, permutations, initialisation) for reproducibility.
 * **spatial_cluster_num** — number of spatial clusters used to build the spatial-CV folds for the continuous manifold target.
 * **split_strategy** / **split_num** / **test_proportion** — cross-validation: ``'mixed'`` (stratified shuffle over the pooled data) or ``'session'`` (hold whole sessions out); ``split_num`` folds; ``test_proportion`` held out per fold.
 * **session_split_initial_tolerance** — the starting class-balance tolerance for the ``'session'`` strategy's held-out-set search, before it begins widening (default ``0.05``).
 * **session_split_max_attempts** / **session_split_widen_step** / **session_split_widen_every** — tuning for the ``'session'`` strategy's search for balanced held-out session sets (max attempts, plus how much / how often the balance tolerance is relaxed).
-* **selection_p_val** — the significance level gating whether a candidate feature is admitted during forward-stepwise model selection (default ``0.01``).
+* **selection_p_val** — the significance level gating whether a candidate feature is admitted during forward-stepwise model selection (default ``0.01``); on the acoustic-manifold target it is the Benjamini–Hochberg FDR ``q`` used to screen candidates.
+* **selection_effect_floor** / **selection_n_bootstrap** / **selection_ci_level** — the acoustic-manifold selection's **session-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-session paired distance-correlation margin over the shuffle null is consistently positive across recordings. ``selection_effect_floor`` is the relative effect floor a screened feature must clear — a fraction of the top surviving driver's margin (default ``0.1`` = 10%); ``selection_n_bootstrap`` is the number of session bootstrap resamples (default ``1000``); ``selection_ci_level`` is the bootstrap confidence level whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (default ``0.99``). These three apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone.
 * **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout'`` mode: a candidate silent-epoch onset is kept only if no USV (from any source) starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
 * **usv_per_bout_floor** — the minimum number of USVs a positive bout must contain (``'bout'`` mode).
 * **onset_target_category** — restrict positive onsets to a single USV category (``'individual'`` mode only); ``null`` pools all categories (see the single-category note under :ref:`Modeling input data <modeling-extract>`).
@@ -188,7 +192,7 @@ cross-validation splitting.
         "usv_manifold_period": 1.0
     }
 
-* **usv_predictor_type** — which vocal-syntax predictors to build (e.g. ``'categories_rate'`` = per-category USV rate).
+* **usv_predictor_type** — which vocal-syntax predictor traces to build: ``'pooled_binary'`` (one pooled per-frame USV-event indicator), ``'pooled_rate'`` (one pooled USV-rate trace), ``'categories_rate'`` (one per-category USV-rate trace per ``usv_category_column_name`` category), or ``'all_rate'`` (the pooled rate plus the per-category rates). A falsy value builds no vocal predictors.
 * **usv_predictor_partner_only** — if ``true``, ingest only the *partner's* USV signals as predictors (not the target mouse's own vocal history).
 * **usv_predictor_smoothing_sd** — Gaussian σ (frames) applied to the USV-rate predictor traces.
 * **usv_category_column_name** — the USV-catalog column defining categories (``'vae_supercategory'`` / ``'qlvm_supercategory'`` / ``'vae_category'`` / ``'qlvm_category'``).
@@ -246,7 +250,7 @@ The regularisation controls (shared by both ``jax_linear`` sub-blocks) look like
                 "lambda_smooth_decades_each_side": 3,
                 "l2_reg_decades_each_side": 4,
                 "inner_cv_folds": 5,
-                "inner_cv_scoring_metric": "r2_spatial",
+                "inner_cv_scoring_metric": "dcor_xy",
                 "inner_cv_use_one_se_rule": true,
                 "inner_max_iter": 2500
             }
@@ -597,6 +601,23 @@ top univariate feature; ``p_val`` is the per-step acceptance threshold.
    balanced-trained intercept) as a fold- and target-comparable effect size.
    Under H0 the actual and null log-loss coincide, so the screen does not
    inflate false positives.
+
+.. note::
+
+   **Significance and acceptance for the acoustic-manifold target.** The
+   continuous-manifold selection scores dependence with the wrap-aware distance
+   correlation ``dcor_xy`` (on both the euclidean and torus geometries) and
+   decides acceptance at the **session** grain rather than the fold grain — the
+   CV folds resample the same recordings, so the fold count inflates
+   significance. A feature is screened in only when its per-session paired
+   ``dcor_xy`` margin over the shuffle null is consistently positive across
+   recordings — Benjamini–Hochberg-FDR-controlled at ``q = selection_p_val`` and
+   clearing the relative ``selection_effect_floor`` (a fraction of the top
+   surviving driver's margin) — and an anchor / forward step is admitted only
+   when its per-session improvement over the current model has a
+   ``selection_ci_level`` session-bootstrap CI (``selection_n_bootstrap``
+   resamples) whose lower bound exceeds ``0``. This replaced an earlier
+   fold-level Wilcoxon / one-standard-error gate.
 
 Run on a single node from the notebook:
 
