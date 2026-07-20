@@ -153,7 +153,7 @@ The */usv-playpen/_parameter_settings/visualizations_settings.json* file contain
 * **arena_directory** : path to the directory with the 3D tracked arena data
 * **speaker_audio_file** : path to the audio file containing the playback speaker sound
 * **pitch_shifted_audio_bool** : if "Yes", automatically frequency-shift the session USVs over the chosen ``[video_start_time, video_start_time + video_duration]`` window into the human-audible range and mux the result onto the video (replaces the former manual ``sequence_audio_file`` path)
-* **pitch_shifted_audio_specs** : pitch-shift recipe used when ``pitch_shifted_audio_bool`` is "Yes" (``fs_audio_dir``, ``fs_device_id``, ``fs_channel_id``, ``fs_wav_sampling_rate``, ``fs_octave_shift``, ``fs_volume_adjustment``)
+* **pitch_shifted_audio_specs** : pitch-shift recipe used when ``pitch_shifted_audio_bool`` is "Yes" (``fs_audio_dir``, ``fs_device_id``, ``fs_channel_id``, ``fs_wav_sampling_rate``, ``fs_octave_shift``, ``fs_volume_adjustment``, ``fs_compand_transfer``, ``fs_noise_reduction_std_threshold``, ``fs_sinc_upper_cutoff_hz``)
 * **animate_bool** : boolean value indicating whether to animate the figure or not ("No" creates figure)
 * **video_start_time** : start time of the figure/video in seconds
 * **video_duration** : duration of the video in seconds
@@ -244,7 +244,10 @@ Parameters specific to subplots include:
             "fs_channel_id": 1,
             "fs_wav_sampling_rate": 250,
             "fs_octave_shift": -3,
-            "fs_volume_adjustment": true
+            "fs_volume_adjustment": true,
+            "fs_compand_transfer": "0.3,1 6:-70,-60,-20 -5 -90 0.2",
+            "fs_noise_reduction_std_threshold": 3,
+            "fs_sinc_upper_cutoff_hz": 25000
         },
         "animate_bool": false,
         "video_start_time": 37.0,
