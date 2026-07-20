@@ -333,11 +333,23 @@ Precise rules:
   contract the production code expects, and return the created paths.
 - **Assertions.** `pytest.approx` for floats, `numpy.testing` / `np.allclose`
   for arrays, and `pytest.raises(..., match=<regex>)` for errors.
-- **Keep the four invariant guards green:** `test_src_integrity` (no test
+- **Mind what your mock makes you blind to.** Mocking the consumer of a
+  configuration dict verifies _that it was called_, never _that it survives the
+  call_ — so a test can hold the real, broken settings and still pass. This is
+  not hypothetical: `frequency_shift_audio_segment` shipped a guaranteed
+  `KeyError` past the whole suite because every test with the real settings
+  mocked the reader, and the only test running the real reader hand-built its
+  dictionary. Mocking at that seam is often right (it keeps sox/librosa out of
+  the suite); the fix is not to un-mock, but to pin the contract the mock hides
+  — see `tests/test_settings_contracts.py` and the settings-block rule under
+  _Module & pipeline patterns_. When a hand-written fixture dict stands in for
+  shipped config, it only proves the code works against **that** dict.
+- **Keep the five invariant guards green:** `test_src_integrity` (no test
   mutates the package), `test_docs_notebooks` (every notebook is referenced in
   `Notebooks.rst`), `test_notebooks_static` (every notebook cell parses and has
-  no undefined names), and `test_package` (installed metadata version ==
-  `usv_playpen.__version__`).
+  no undefined names), `test_package` (installed metadata version ==
+  `usv_playpen.__version__`), and `test_settings_contracts` (every settings
+  block supplies the keys its consumer reads).
 
 ## Notebooks
 
@@ -440,6 +452,22 @@ The house shape to match when writing a new pipeline or CLI command:
   Edit nested settings through `cli_utils.find_nested_key_paths` /
   `set_nested_value_by_path` (which raise on a typo'd path), not manual dict
   digging.
+
+- **A settings block feeding a shared consumer must be registered.** When a
+  function reads its configuration off a caller-supplied dictionary and more
+  than one settings block can fill it, the blocks are two copies of one logical
+  config with nothing keeping them in step: adding a key to one is a silent,
+  one-sided change that only fails at runtime, on whichever path you did not
+  test. Prefer the shape that cannot drift — in-code defaults plus partial
+  overrides, as `neuropixels/spike_quality_metrics.py` does with `QM_PARAMS` +
+  `_merge_metric_overrides` (a key absent from settings falls back to the
+  default rather than raising). Where the consumer genuinely reads a whole
+  block, add a `SettingsContract` to `tests/test_settings_contracts.py` naming
+  every block that reaches it; keys a block legitimately lacks are declared
+  `exempt` with a `reason`, so an intentional asymmetry is recorded instead of
+  silently tolerated. Sub-blocks need their own contract — the guard follows one
+  expression at a time, so a nested read (`tp['...']`) is not covered by the
+  parent's contract.
 
 Reference implementations: `analyses/analyze_data.py`, `cli_utils.py`,
 `os_utils.py`, `send_email.py`.
