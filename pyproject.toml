@@ -47,7 +47,7 @@ dependencies = [
     "optax",
     "pandas",
     "paramiko>=4.0.0",
-    "pillow>=12.2.0",
+    "pillow>=12.3.0",
     "platformdirs",
     "polars",
     "pyarrow",
@@ -91,7 +91,7 @@ test = [
 ]
 dev = [
   { include-group = "test" },
-  "jupyterlab>=4.5.9",
+  "jupyterlab>=4.6.2",
   "ipykernel",
   "ipywidgets",
   "marimo",
@@ -327,6 +327,13 @@ constraint-dependencies = [
     # uv.lock for an unrelated change (e.g. the torch cu128 pin) leaves them untouched.
     "mistune>=3.3.0",
     "soupsieve>=2.8.4",
+    # 2026-07-23 -- Dependabot #70 (setuptools CVE-2026-59890: sdist MANIFEST.in exclusion
+    # bypass via NFC/NFD Unicode collision on macOS APFS/HFS+) is deliberately NOT floored:
+    # setuptools>=83 is incompatible with torch 2.11.0+cu128 (torch 2.11 pins setuptools<83),
+    # so the floor forces torch->2.10.0 and a cuDNN/NCCL downgrade of the whole GPU stack.
+    # We never build/ship sdists to untrusted parties, so practical exposure is nil and the
+    # GPU regression is not worth it. Alert dismissed (tolerable_risk); revisit when torch's
+    # setuptools ceiling lifts.
 ]
 
 [tool.uv.sources]
