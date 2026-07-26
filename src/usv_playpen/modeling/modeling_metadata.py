@@ -84,8 +84,8 @@ RESERVED_METADATA_KEYS = ('_input_metadata', '_run_metadata',
 #: Schema version per metadata block. Bump the corresponding entry whenever
 #: the on-disk shape of that block changes incompatibly.
 SCHEMA_VERSIONS = {
-    'input': 1,
-    'run': 1,
+    'input': 2,
+    'run': 2,
     'selection': 1,
     'consolidation': 1,
 }
@@ -351,6 +351,7 @@ def build_input_metadata(modeling_settings: dict,
                          camera_sampling_rate_hz,
                          ibi_thresholds: dict,
                          analysis_specific: dict,
+                         held_out_session_ids: list = None,
                          settings_path: str = None) -> dict:
     """
     Builds the Level-1 (`_input_metadata`) provenance block for a
@@ -491,6 +492,7 @@ def build_input_metadata(modeling_settings: dict,
         'n_sessions_used': int(n_sessions_used),
         'session_ids': list(session_ids),
         'n_events_per_session': dict(n_events_per_session),
+        'held_out_session_ids': list(held_out_session_ids) if held_out_session_ids is not None else [],
 
         # Behavioral feature provenance
         'feature_zoo_full': list(feature_zoo_full),
@@ -616,6 +618,7 @@ def build_run_metadata(modeling_settings: dict,
     """
 
     model_params = modeling_settings['model_params']
+    model_val = modeling_settings['model_validation']
     hp_root = modeling_settings['hyperparameters']
 
     metadata = {
@@ -626,12 +629,13 @@ def build_run_metadata(modeling_settings: dict,
         'null_strategy': null_strategy,
         'n_outer_folds': int(n_outer_folds),
         'split_strategy': split_strategy,
-        'random_seed_outer': int(model_params['random_seed']),
-        'spatial_cluster_num': int(model_params['spatial_cluster_num']),
-        'test_proportion': float(model_params['test_proportion']),
-        'session_split_max_attempts': int(model_params['session_split_max_attempts']),
-        'session_split_widen_step': float(model_params['session_split_widen_step']),
-        'session_split_widen_every': int(model_params['session_split_widen_every']),
+        'random_seed_outer': int(model_val['random_seed']),
+        'spatial_cluster_num': int(model_val['spatial_cluster_num']),
+        'cv_validation_proportion': float(model_val['cv_validation_proportion']),
+        'held_out_test_proportion': float(model_val['held_out_test_proportion']),
+        'session_split_max_attempts': int(model_val['session_split_max_attempts']),
+        'session_split_widen_step': float(model_val['session_split_widen_step']),
+        'session_split_widen_every': int(model_val['session_split_widen_every']),
     }
 
     # JAX-path knobs — populated for analyses that use the GPU runner.

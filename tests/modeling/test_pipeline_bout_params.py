@@ -479,7 +479,7 @@ class TestUnivariateParamsDispatcher:
                 'pearson_r', 'msle', 'mae', 'rmse',
             ):
                 assert metric in branch
-                assert branch[metric].shape == (settings['model_params']['split_num'],)
+                assert branch[metric].shape == (settings['model_validation']['n_cv_folds'],)
         # The strong-signal feature yields at least one finite (fitted) fold.
         assert np.isfinite(payload[feat_key]['actual']['explained_deviance']).any()
 
@@ -542,10 +542,10 @@ class TestUnivariateParamsDispatcher:
             'n_iter', 'converged', 'fit_time',
         ):
             assert metric in actual
-            assert actual[metric].shape == (settings['model_params']['split_num'],)
+            assert actual[metric].shape == (settings['model_validation']['n_cv_folds'],)
         # The GAM actual branch stacks one filter-shape vector per fold.
         assert actual['filter_shapes'].shape == (
-            settings['model_params']['split_num'], HISTORY_FRAMES,
+            settings['model_validation']['n_cv_folds'], HISTORY_FRAMES,
         )
         assert np.isfinite(actual['explained_deviance']).any()
         # The null (shuffled-control) branch never reconstructs filter shapes,
@@ -817,11 +817,18 @@ def _minimal_bout_pipeline(
         'io': {'camera_sampling_rate': CAMERA_FPS, 'csv_separator': ','},
         'model_params': {
             'filter_history': FILTER_HISTORY,
-            'split_strategy': split_strategy,
-            'split_num': split_num,
-            'test_proportion': test_proportion,
-            'random_seed': random_seed,
             'model_engine': 'sklearn',
+        },
+        # The data-splitting dials moved into `model_validation` (the pipeline
+        # reads them exclusively from there); `split_num` -> `n_cv_folds` and
+        # `test_proportion` -> `cv_validation_proportion`. `held_out_test_proportion`
+        # is 0.0 so no session is reserved for these minimal fixtures.
+        'model_validation': {
+            'split_strategy': split_strategy,
+            'n_cv_folds': split_num,
+            'cv_validation_proportion': test_proportion,
+            'random_seed': random_seed,
+            'held_out_test_proportion': 0.0,
         },
         'hyperparameters': {
             'classical': {

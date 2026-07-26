@@ -28,6 +28,7 @@ from .modeling_metadata import (
 from .load_input_files import _calculate_ibi_threshold
 from .modeling_utils import (
     prepare_modeling_sessions,
+    seeded_session_holdout,
     resolve_mouse_roles,
     select_kinematic_columns,
     build_vocal_signal_columns,
@@ -399,6 +400,13 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             for c in kept_columns_first_sess
         })
 
+        _sorted_session_ids = sorted(processed_beh_feature_data_dict.keys())
+        held_out_session_ids = seeded_session_holdout(
+            session_ids=_sorted_session_ids,
+            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
+            random_seed=self.modeling_settings['model_validation']['random_seed'],
+        )
+
         input_metadata = build_input_metadata(
             modeling_settings=self.modeling_settings,
             analysis_type='onset',
@@ -407,8 +415,9 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             target_idx=target_mouse_idx,
             predictor_idx=predictor_mouse_idx,
             n_sessions_used=len(processed_beh_feature_data_dict),
-            session_ids=sorted(processed_beh_feature_data_dict.keys()),
+            session_ids=_sorted_session_ids,
             n_events_per_session={},  # populated below after epoch slicing
+            held_out_session_ids=held_out_session_ids,
             feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
             feature_zoo_kept=feature_zoo_kept_md,
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
@@ -658,13 +667,13 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             natural class prior of the source data.
         """
 
-        split_strategy = self.modeling_settings['model_params']['split_strategy']
+        split_strategy = self.modeling_settings['model_validation']['split_strategy']
         if strategy_override:
             split_strategy = strategy_override
 
-        n_splits = self.modeling_settings['model_params']['split_num']
-        test_proportion = self.modeling_settings['model_params']['test_proportion']
-        random_state = self.modeling_settings['model_params']['random_seed']
+        n_splits = self.modeling_settings['model_validation']['n_cv_folds']
+        test_proportion = self.modeling_settings['model_validation']['cv_validation_proportion']
+        random_state = self.modeling_settings['model_validation']['random_seed']
         # The 50/50 balance and train/test shuffle below draw from NumPy's GLOBAL RNG
         # (`balance_two_class_arrays` / `shuffle_train_test_arrays`); seed it here so the
         # fitting dispatcher reproduces splits from `random_seed`. The extraction stage
@@ -756,7 +765,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
     def _run_model_for_feature_sklearn(self,
                                      feature_name: str,
                                      feature_data: dict,
-                                     basis_matrix: np.ndarray
+                                     basis_matrix: np.ndarray,
+                                     held_out_session_ids: list = None
                                      ) -> tuple[str, dict]:
         """
         Executes a univariate Logistic Regression analysis for a single behavioral or vocal feature.
@@ -837,7 +847,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         """
 
         # Initialize results structure with 'actual' and 'null' keys
-        n_splits = self.modeling_settings['model_params']['split_num']
+        n_splits = self.modeling_settings['model_validation']['n_cv_folds']
         n_bases = basis_matrix.shape[1]
         # The basis is built with `width=self.history_frames`, so its row
         # count is the temporal-filter span; assert they agree so the
@@ -879,7 +889,25 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             'split_sizes': {'train': [], 'test': []}
         }
 
-        data_splitter = self.create_data_splits(feature_data)
+        # Held-out reserve carved at extraction time (passed explicitly by the
+        # dispatcher). `feature_data` is a per-session dict, so exclusion is a key
+        # filter: fold only the DEVELOPMENT sessions (no held-out session enters
+        # any CV split) and keep the held-out sessions aside to score the
+        # development-refit model once, after the loop. Empty list -- holdout
+        # disabled or a legacy pickle -- leaves `dev_feature_data == feature_data`
+        # and `held_sessions` empty, an exact no-op.
+        held_out_session_ids = held_out_session_ids if held_out_session_ids is not None else []
+        _held_set = set(held_out_session_ids)
+        dev_sessions = [s for s in feature_data.keys() if s not in _held_set]
+        held_sessions = [s for s in feature_data.keys() if s in _held_set]
+        dev_feature_data = {s: feature_data[s] for s in dev_sessions}
+        if held_sessions:
+            print(
+                f"Held-out reserve: {len(held_sessions)} session(s) excluded from "
+                f"CV; scored once after the fold loop."
+            )
+
+        data_splitter = self.create_data_splits(dev_feature_data)
         split_has_data = False
 
         for split_idx, (X_train, y_train, X_test, y_test) in enumerate(data_splitter):
@@ -904,7 +932,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     class_weight='balanced',
                     solver=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['solver'],
                     max_iter=lr_max_iter,
-                    random_state=self.modeling_settings['model_params']['random_seed']
+                    random_state=self.modeling_settings['model_validation']['random_seed']
                 ).fit(X_train_proj, y_train)
                 fit_time = float(time.perf_counter() - fit_start)
 
@@ -956,7 +984,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 # `random_seed` to 0 so the null branch does not crash on `None + split_idx`
                 # (matches `run_predictor_audits`).
                 shuffle_rng = np.random.default_rng(
-                    (self.modeling_settings['model_params']['random_seed'] or 0) + split_idx + 1
+                    (self.modeling_settings['model_validation']['random_seed'] or 0) + split_idx + 1
                 )
                 y_train_shuffled = shuffle_rng.permutation(y_train)
 
@@ -968,7 +996,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                     class_weight='balanced',
                     solver=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['solver'],
                     max_iter=lr_max_iter,
-                    random_state=self.modeling_settings['model_params']['random_seed']
+                    random_state=self.modeling_settings['model_validation']['random_seed']
                 ).fit(X_train_proj, y_train_shuffled)
                 fit_time = float(time.perf_counter() - fit_start)
 
@@ -1023,6 +1051,103 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         results['split_sizes']['train'] = np.array(results['split_sizes']['train'])
         results['split_sizes']['test'] = np.array(results['split_sizes']['test'])
 
+        # Honest held-out score (LogisticRegressionCV). Refit on ALL development
+        # sessions (balanced training, mirroring the 'session' fold) and score once
+        # on the reserved held-out sessions at their natural class prior, for both
+        # the real-label model and a shuffled-label null control (the held-out
+        # chance floor). The only number untouched by CV selection. Stored as a
+        # top-level `results['heldout']`. Skipped when holdout is disabled or the
+        # pooled data is degenerate, leaving no `heldout` key -- the pre-holdout
+        # schema.
+        if held_sessions:
+            hist = self.history_frames
+            X_pos_dev, X_neg_dev = pool_session_arrays(
+                feature_data, dev_sessions, pos_key="usv_feature_arr",
+                neg_key="no_usv_feature_arr", n_frames=hist
+            )
+            X_pos_held, X_neg_held = pool_session_arrays(
+                feature_data, held_sessions, pos_key="usv_feature_arr",
+                neg_key="no_usv_feature_arr", n_frames=hist
+            )
+            X_pos_dev_bal, X_neg_dev_bal = balance_two_class_arrays(X_pos_dev, X_neg_dev)
+            n_held_events = int(X_pos_held.shape[0] + X_neg_held.shape[0])
+
+            def _empty_heldout_rec():
+                return {
+                    'filter_shapes': np.full(history_frames, np.nan),
+                    'coefs_projected': np.full(n_bases, np.nan),
+                    'optimal_C': np.nan,
+                    'score': np.nan, 'recall': np.nan, 'f1': np.nan, 'auc': np.nan,
+                    'll': np.nan, 'deviance_explained': np.nan,
+                    'brier': np.nan, 'ece': np.nan, 'mcc': np.nan,
+                    'confusion_matrix': np.full((2, 2), np.nan),
+                    'n_iter': np.nan, 'converged': np.nan, 'fit_time': np.nan,
+                    'n_held_out_sessions': len(held_sessions),
+                    'n_held_out_events': n_held_events,
+                }
+
+            heldout = {'actual': _empty_heldout_rec(), 'null': _empty_heldout_rec()}
+            if (X_pos_dev_bal.shape[0] > 0 and X_pos_held.shape[0] > 0
+                    and X_neg_held.shape[0] > 0):
+                X_train_dev, y_train_dev = concat_two_class_with_labels(X_pos_dev_bal, X_neg_dev_bal)
+                X_test_held, y_test_held = concat_two_class_with_labels(X_pos_held, X_neg_held)
+                X_train_proj = np.dot(X_train_dev, basis_matrix)
+                X_test_proj = np.dot(X_test_held, basis_matrix)
+                lr_max_iter = self.modeling_settings['hyperparameters']['classical']['logistic_regression']['max_iter']
+                # Distinct-but-deterministic seed for the held-out null permutation;
+                # offset the fold seeds by `n_splits` so it never collides with a fold.
+                held_rng = np.random.default_rng(
+                    (self.modeling_settings['model_validation']['random_seed'] or 0) + n_splits + 1
+                )
+                for branch in ('actual', 'null'):
+                    y_train_use = y_train_dev if branch == 'actual' else held_rng.permutation(y_train_dev)
+                    rec = heldout[branch]
+                    try:
+                        fit_start = time.perf_counter()
+                        lr = LogisticRegressionCV(
+                            penalty=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['penalty'],
+                            Cs=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cs'],
+                            cv=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['cv'],
+                            class_weight='balanced',
+                            solver=self.modeling_settings['hyperparameters']['classical']['logistic_regression']['solver'],
+                            max_iter=lr_max_iter,
+                            random_state=self.modeling_settings['model_validation']['random_seed']
+                        ).fit(X_train_proj, y_train_use)
+                        rec['fit_time'] = float(time.perf_counter() - fit_start)
+
+                        y_pred = lr.predict(X_test_proj)
+                        y_proba = lr.predict_proba(X_test_proj)[:, 1]
+                        rec['coefs_projected'] = lr.coef_.flatten()
+                        rec['optimal_C'] = float(lr.C_[0])
+                        rec['filter_shapes'] = np.dot(lr.coef_, basis_matrix.T).ravel()
+                        rec['score'] = balanced_accuracy_score(y_test_held, y_pred)
+                        rec['recall'] = recall_score(y_test_held, y_pred, zero_division=0.0)
+                        rec['f1'] = f1_score(y_test_held, y_pred, average='binary', zero_division=0.0)
+                        rec['mcc'] = safe_matthews_corrcoef(y_test_held, y_pred)
+                        rec['confusion_matrix'] = safe_confusion_matrix(
+                            y_test_held, y_pred, labels=np.array([0, 1])
+                        )
+                        try:
+                            rec['n_iter'] = float(np.max(lr.n_iter_))
+                            rec['converged'] = float(rec['n_iter'] < lr_max_iter)
+                        except Exception as e:
+                            print(f"[warn] held-out diagnostic metric could not be recorded: {e}")
+                        if len(np.unique(y_test_held)) > 1:
+                            rec['auc'] = roc_auc_score(y_test_held, y_proba)
+                            epsilon = 1e-15
+                            y_proba_clipped = np.clip(y_proba, epsilon, 1 - epsilon)
+                            rec['ll'] = log_loss(y_test_held, y_proba_clipped)
+                            rec['deviance_explained'] = 1.0 - rec['ll'] / np.log(2)
+                            rec['brier'] = float(brier_score_loss(y_test_held, y_proba))
+                            try:
+                                y_proba_2d = np.column_stack([1.0 - y_proba, y_proba])
+                                rec['ece'] = expected_calibration_error(y_test_held, y_pred, y_proba_2d, n_bins=_ECE_N_BINS)
+                            except Exception as e:
+                                print(f"[warn] held-out diagnostic metric could not be recorded: {e}")
+                    except Exception as e:
+                        print(f"  ERROR during held-out {branch} fit/predict for {feature_name}: {e}")
+            results['heldout'] = heldout
+
         if not split_has_data:
             print(f"  --- No valid splits processed for feature: {feature_name} ---")
 
@@ -1031,7 +1156,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
     def _run_model_for_feature_pygam(self,
                                    feature_name: str,
                                    feature_data: dict,
-                                   basis_matrix: np.ndarray  # NOT USED
+                                   basis_matrix: np.ndarray,  # NOT USED
+                                   held_out_session_ids: list = None
                                    ) -> tuple[str, dict]:
         """
         Runs modeling analysis for a single feature using pygam's LogisticGAM
@@ -1101,7 +1227,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         print(f"--- Running [pygam] analysis for feature: {feature_name} ---")
 
-        n_splits = self.modeling_settings['model_params']['split_num']
+        n_splits = self.modeling_settings['model_validation']['n_cv_folds']
         history_frames = self.history_frames
 
         try:
@@ -1165,7 +1291,24 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         def unroll_data_for_gam(X):
             return unroll_history_matrix(X, time_indices=time_indices)
 
-        actual_data_splitter = self.create_data_splits(feature_data, strategy_override=None)
+        # Held-out reserve carved at extraction time (passed explicitly by the
+        # dispatcher). `feature_data` is a per-session dict, so exclusion is a key
+        # filter: fold only the DEVELOPMENT sessions and keep the held-out sessions
+        # aside to score the development-refit model once, after the loop. Empty
+        # list -- holdout disabled or a legacy pickle -- leaves
+        # `dev_feature_data == feature_data` and `held_sessions` empty, a no-op.
+        held_out_session_ids = held_out_session_ids if held_out_session_ids is not None else []
+        _held_set = set(held_out_session_ids)
+        dev_sessions = [s for s in feature_data.keys() if s not in _held_set]
+        held_sessions = [s for s in feature_data.keys() if s in _held_set]
+        dev_feature_data = {s: feature_data[s] for s in dev_sessions}
+        if held_sessions:
+            print(
+                f"Held-out reserve: {len(held_sessions)} session(s) excluded from "
+                f"CV; scored once after the fold loop."
+            )
+
+        actual_data_splitter = self.create_data_splits(dev_feature_data, strategy_override=None)
 
         split_has_data_actual = False
 
@@ -1254,7 +1397,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 # Coalesce a None `random_seed` to 0 so the null branch does not crash
                 # on `None + split_idx` (matches `run_predictor_audits`).
                 shuffle_rng = np.random.default_rng(
-                    (self.modeling_settings['model_params']['random_seed'] or 0) + split_idx + 1
+                    (self.modeling_settings['model_validation']['random_seed'] or 0) + split_idx + 1
                 )
                 y_train_tiled_null = np.repeat(
                     shuffle_rng.permutation(y_train).astype(np.float32), history_frames
@@ -1320,6 +1463,98 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         results['split_sizes']['train'] = np.array(results['split_sizes']['train'])
         results['split_sizes']['test'] = np.array(results['split_sizes']['test'])
+
+        # Honest held-out score (LogisticGAM). Refit on ALL development sessions
+        # (balanced training, mirroring the fold) and score once on the reserved
+        # held-out sessions at their natural class prior, for both the real-label
+        # model and a shuffled-label null control. The only number untouched by CV
+        # selection. Stored as a top-level `results['heldout']`. Skipped when
+        # holdout is disabled or the pooled data is degenerate -- no `heldout` key.
+        if held_sessions:
+            X_pos_dev, X_neg_dev = pool_session_arrays(
+                feature_data, dev_sessions, pos_key="usv_feature_arr",
+                neg_key="no_usv_feature_arr", n_frames=history_frames
+            )
+            X_pos_held, X_neg_held = pool_session_arrays(
+                feature_data, held_sessions, pos_key="usv_feature_arr",
+                neg_key="no_usv_feature_arr", n_frames=history_frames
+            )
+            X_pos_dev_bal, X_neg_dev_bal = balance_two_class_arrays(X_pos_dev, X_neg_dev)
+            n_held_events = int(X_pos_held.shape[0] + X_neg_held.shape[0])
+
+            def _empty_heldout_rec():
+                return {
+                    'filter_shapes': np.full(history_frames, np.nan),
+                    'coefs_projected': np.empty((0,)),
+                    'optimal_C': np.empty((0,)),
+                    'score': np.nan, 'recall': np.nan, 'f1': np.nan, 'auc': np.nan,
+                    'll': np.nan, 'deviance_explained': np.nan,
+                    'brier': np.nan, 'ece': np.nan, 'mcc': np.nan,
+                    'confusion_matrix': np.full((2, 2), np.nan),
+                    'n_iter': np.nan, 'converged': np.nan, 'fit_time': np.nan,
+                    'n_held_out_sessions': len(held_sessions),
+                    'n_held_out_events': n_held_events,
+                }
+
+            heldout = {'actual': _empty_heldout_rec(), 'null': _empty_heldout_rec()}
+            if (X_pos_dev_bal.shape[0] > 0 and X_pos_held.shape[0] > 0
+                    and X_neg_held.shape[0] > 0):
+                X_train_dev, y_train_dev = concat_two_class_with_labels(X_pos_dev_bal, X_neg_dev_bal)
+                X_test_held, y_test_held = concat_two_class_with_labels(X_pos_held, X_neg_held)
+                y_test_int = y_test_held.astype(int)
+                X_train_gam = unroll_data_for_gam(X_train_dev.astype(np.float32))
+                X_test_gam = unroll_data_for_gam(X_test_held.astype(np.float32))
+                # Distinct-but-deterministic seed for the held-out null permutation;
+                # offset the fold seeds by `n_splits` so it never collides with a fold.
+                held_rng = np.random.default_rng(
+                    (self.modeling_settings['model_validation']['random_seed'] or 0) + n_splits + 1
+                )
+                for branch in ('actual', 'null'):
+                    if branch == 'actual':
+                        y_train_use = y_train_dev.astype(np.float32)
+                        gam_kwargs_branch = gam_kwargs_actual
+                    else:
+                        y_train_use = held_rng.permutation(y_train_dev).astype(np.float32)
+                        gam_kwargs_branch = gam_kwargs_shuffled
+                    y_train_tiled = np.repeat(y_train_use, history_frames)
+                    rec = heldout[branch]
+                    try:
+                        fit_start = time.perf_counter()
+                        gam = LogisticGAM(
+                            te(0, 1, n_splines=[n_splines_value, n_splines_time]), **gam_kwargs_branch
+                        ).fit(X_train_gam, y_train_tiled)
+                        rec['fit_time'] = float(time.perf_counter() - fit_start)
+
+                        y_proba_tiled = gam.predict_proba(X_test_gam)
+                        y_proba_mean = np.mean(y_proba_tiled.reshape(X_test_held.shape), axis=1)
+                        y_pred_mean = (y_proba_mean >= self.modeling_settings['diagnostics']['binary_decision_threshold']).astype(int)
+
+                        prob_0 = gam.predict_mu(grid_X_0).astype(np.float32)
+                        prob_1 = gam.predict_mu(grid_X_1).astype(np.float32)
+                        rec['filter_shapes'] = (prob_1 - prob_0).flatten()
+                        rec['score'] = balanced_accuracy_score(y_test_int, y_pred_mean)
+                        rec['recall'] = recall_score(y_test_int, y_pred_mean, zero_division=0.0)
+                        rec['f1'] = f1_score(y_test_int, y_pred_mean, average='binary', zero_division=0.0)
+                        rec['mcc'] = safe_matthews_corrcoef(y_test_int, y_pred_mean)
+                        rec['confusion_matrix'] = safe_confusion_matrix(
+                            y_test_int, y_pred_mean, labels=np.array([0, 1])
+                        )
+                        diffs = gam.logs_['diffs']
+                        rec['n_iter'] = float(len(diffs))
+                        rec['converged'] = float(bool(diffs and diffs[-1] < tol_val))
+                        if len(np.unique(y_test_int)) > 1:
+                            rec['auc'] = roc_auc_score(y_test_int, y_proba_mean)
+                            rec['ll'] = log_loss(y_test_int, np.clip(y_proba_mean, 1e-15, 1 - 1e-15))
+                            rec['deviance_explained'] = 1.0 - rec['ll'] / np.log(2)
+                            rec['brier'] = float(brier_score_loss(y_test_int, y_proba_mean))
+                            try:
+                                y_proba_2d = np.column_stack([1.0 - y_proba_mean, y_proba_mean])
+                                rec['ece'] = expected_calibration_error(y_test_int, y_pred_mean, y_proba_2d, n_bins=_ECE_N_BINS)
+                            except Exception as e:
+                                print(f"[warn] held-out diagnostic metric could not be recorded: {e}")
+                    except Exception as e:
+                        print(f"  ERROR during held-out {branch} [pygam] fit/predict for {feature_name}: {e}")
+            results['heldout'] = heldout
 
         if not split_has_data_actual:
             print(f"  --- No valid splits processed for feature: {feature_name} [pygam] ---")

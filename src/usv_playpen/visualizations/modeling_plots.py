@@ -4141,7 +4141,7 @@ class DeepResultsVisualizer:
         # ahead of the seed and so varied run-to-run). The seed value is
         # read from the modeling settings rather than hard-coded so it
         # tracks the same `random_seed` every other modeling routine uses.
-        np.random.seed(self.modeling_settings['model_params']['random_seed'])
+        np.random.seed(self.modeling_settings['model_validation']['random_seed'])
 
         # COMPUTE PERMUTED NULL SKILL: 1 - (Null_shuffled / Null)
         # This gives the Null "width" so it doesn't break the Y-axis scaling

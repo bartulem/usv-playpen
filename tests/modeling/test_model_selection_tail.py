@@ -407,7 +407,7 @@ class TestBoutOnsetSelectionBranches:
 
         settings, _ = _build_settings(tmp_path, model_engine='sklearn',
                                       split_strategy='mixed', split_num=2)
-        settings['model_params']['split_strategy'] = 'galaxy_brain'
+        settings['model_validation']['split_strategy'] = 'galaxy_brain'
         feature_names = ['self.speed', 'other.speed']
         input_pkl, ranking_pkl, _ = _make_onset_inputs(tmp_path, feature_names)
 
@@ -686,7 +686,7 @@ class TestCategorySelectionBranches:
         settings, _ = _build_settings(tmp_path, model_engine='sklearn',
                                       split_strategy='mixed', split_num=2)
         settings['model_params']['model_type'] = 'sklearn'
-        settings['model_params']['split_strategy'] = 'galaxy_brain'
+        settings['model_validation']['split_strategy'] = 'galaxy_brain'
         feature_names = ['self.speed', 'other.speed']
         session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
         input_pkl = str(_write_category_input_pickle(
@@ -1055,7 +1055,7 @@ class TestBoutParameterSelectionBranches:
 
         settings = _params_settings(tmp_path, model_engine='sklearn',
                                     split_strategy='mixed', split_num=2)
-        settings['model_params']['split_strategy'] = 'origami'
+        settings['model_validation']['split_strategy'] = 'origami'
         feature_names = ['self.speed', 'other.speed']
         session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
         input_pkl = str(_build_params_input_pickle(

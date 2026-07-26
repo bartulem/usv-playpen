@@ -465,9 +465,18 @@ def _full_modeling_settings(model_engine='sklearn',
             'model_predictor_mouse_index': predictor_idx,
             'mixture_model_component_index': 3,
             'mixture_model_z_score': 1.5,
+        },
+        # The data-splitting dials live in their own `model_validation` block now
+        # (the builders read them exclusively from here). `test_proportion` was
+        # renamed to `cv_validation_proportion`; `held_out_test_proportion` is the
+        # reserved held-out fraction (0.0 = the mechanism is off for this fixture).
+        'model_validation': {
+            'split_strategy': 'mixed',
+            'n_cv_folds': 10,
             'random_seed': 42,
             'spatial_cluster_num': 8,
-            'test_proportion': 0.25,
+            'cv_validation_proportion': 0.25,
+            'held_out_test_proportion': 0.0,
             'session_split_max_attempts': 100,
             'session_split_widen_step': 0.05,
             'session_split_widen_every': 10,
@@ -802,7 +811,8 @@ class TestBuildRunMetadata:
         assert md['split_strategy'] == 'mixed'
         assert md['random_seed_outer'] == 42
         assert md['spatial_cluster_num'] == 8
-        assert md['test_proportion'] == 0.25
+        assert md['cv_validation_proportion'] == 0.25
+        assert md['held_out_test_proportion'] == 0.0
         assert md['session_split_max_attempts'] == 100
         assert md['session_split_widen_step'] == 0.05
         assert md['session_split_widen_every'] == 10

@@ -157,11 +157,21 @@ def _build_cnn_settings(save_dir: Path, source_pkl_path: Path, **mp_overrides) -
 
     mp = settings['model_params']
     mp['filter_history'] = FILTER_HISTORY
-    mp['split_strategy'] = 'mixed'
-    mp['random_seed'] = 0
-    mp['spatial_cluster_num'] = 2
-    mp['test_proportion'] = 0.4
-    mp.update(mp_overrides)
+
+    # The split dials moved into `model_validation` (the CNN reads
+    # split_strategy / random_seed / spatial_cluster_num / cv_validation_proportion
+    # exclusively from there); `test_proportion` was renamed to
+    # `cv_validation_proportion`. `held_out_test_proportion` is 0.0 so no session
+    # is reserved for these tiny (N_SESSIONS=2) fixtures. Extra kwargs
+    # (`mp_overrides`, e.g. `spatial_cluster_num`) are all `model_validation`
+    # knobs, so they are applied here too.
+    mv = settings['model_validation']
+    mv['split_strategy'] = 'mixed'
+    mv['random_seed'] = 0
+    mv['spatial_cluster_num'] = 2
+    mv['cv_validation_proportion'] = 0.4
+    mv['held_out_test_proportion'] = 0.0
+    mv.update(mp_overrides)
 
     hp = settings['hyperparameters']['deep_learning']['cnn_continuous']
     hp['epochs'] = 1

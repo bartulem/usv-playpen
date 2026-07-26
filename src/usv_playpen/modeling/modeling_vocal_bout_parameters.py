@@ -54,6 +54,8 @@ from .modeling_metadata import (
 from .load_input_files import _calculate_ibi_threshold
 from .modeling_utils import (
     prepare_modeling_sessions,
+    seeded_session_holdout,
+    development_heldout_masks,
     resolve_mouse_roles,
     select_kinematic_columns,
     build_vocal_signal_columns,
@@ -313,6 +315,13 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             if any(tok in c for tok in ('usv_rate', 'usv_cat_', 'usv_event'))
         })
 
+        _sorted_session_ids = sorted(processed_beh_feature_data_dict.keys())
+        held_out_session_ids = seeded_session_holdout(
+            session_ids=_sorted_session_ids,
+            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
+            random_seed=self.modeling_settings['model_validation']['random_seed'],
+        )
+
         input_metadata = build_input_metadata(
             modeling_settings=self.modeling_settings,
             analysis_type='params',
@@ -321,8 +330,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             target_idx=target_mouse_idx,
             predictor_idx=predictor_mouse_idx,
             n_sessions_used=len(processed_beh_feature_data_dict),
-            session_ids=sorted(processed_beh_feature_data_dict.keys()),
+            session_ids=_sorted_session_ids,
             n_events_per_session={},
+            held_out_session_ids=held_out_session_ids,
             feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
             feature_zoo_kept=feature_zoo_kept_md,
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
@@ -569,12 +579,11 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         n_samples = len(y)
 
         # 1. Configuration
-        model_selection = self.modeling_settings['model_params']
-        split_strategy = strategy_override or model_selection['split_strategy']
+        split_strategy = strategy_override or self.modeling_settings['model_validation']['split_strategy']
 
-        num_iterations = model_selection['split_num']
-        test_prop = model_selection['test_proportion']
-        base_seed = self.modeling_settings['model_params']['random_seed']
+        num_iterations = self.modeling_settings['model_validation']['n_cv_folds']
+        test_prop = self.modeling_settings['model_validation']['cv_validation_proportion']
+        base_seed = self.modeling_settings['model_validation']['random_seed']
         if base_seed is None:
             base_seed = 0
 
@@ -658,7 +667,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         else:
             raise ValueError(f"Unknown split strategy: {split_strategy}")
 
-    def _run_model_for_feature_pygam(self, feature_name, feature_data, basis_matrix):
+    def _run_model_for_feature_pygam(self, feature_name, feature_data, basis_matrix, held_out_session_ids=None):
         r"""
         Runs a univariate GammaGAM regression and permutation test for a single feature.
 
@@ -759,14 +768,35 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         time_indices = np.arange(hist_frames)
 
-        splitter = self.create_data_splits(feature_data)
+        # Held-out reserve carved at extraction time and propagated into
+        # `feature_data['held_out_session_ids']` by the dispatcher. Fold only the
+        # DEVELOPMENT rows (so no held-out session enters any CV split) and keep
+        # the held-out rows aside to score the development-refit model once, after
+        # the loop. Empty list -- holdout disabled or a legacy pickle -- makes
+        # `dev_mask` all-True and `held_mask` all-False, an exact no-op.
+        held_out_session_ids = held_out_session_ids if held_out_session_ids is not None else []
+        dev_mask, held_mask = development_heldout_masks(
+            feature_data['groups'], held_out_session_ids
+        )
+        dev_feature_data = {
+            'X': feature_data['X'][dev_mask],
+            'y': feature_data['y'][dev_mask],
+            'groups': feature_data['groups'][dev_mask],
+        }
+        if held_mask.any():
+            print(
+                f"Held-out reserve: {len(held_out_session_ids)} session(s), "
+                f"{int(held_mask.sum())} event(s) excluded from CV; scored once after the fold loop."
+            )
+
+        splitter = self.create_data_splits(dev_feature_data)
 
         # Seed for per-split null-label permutation Generators so the shuffled
         # control is reproducible and does not inherit ambient global NumPy
         # RNG state from prior calls.
-        base_seed = self.modeling_settings['model_params']['random_seed']
+        base_seed = self.modeling_settings['model_validation']['random_seed']
 
-        n_splits = self.modeling_settings['model_params']['split_num']
+        n_splits = self.modeling_settings['model_validation']['n_cv_folds']
 
         for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
 
@@ -950,9 +980,86 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             for m in results[k]:
                 results[k][m] = np.array(results[k][m])
 
+        # Honest held-out score (pyGAM). Refit on ALL development rows and score
+        # once on the reserved held-out rows, mirroring the actual-branch fold fit
+        # (and a shuffled-label 'null' control for the held-out chance floor).
+        # This is the only number untouched by CV selection. Stored as a top-level
+        # `results['heldout']` so the array-conversion loop above (which assumes
+        # per-fold lists) never touches its scalar/array mix. Skipped when holdout
+        # is disabled, leaving no `heldout` key -- the pre-holdout schema.
+        if held_mask.any():
+            X_held = feature_data['X'][held_mask]
+            y_held = feature_data['y'][held_mask]
+            X_dev_all = dev_feature_data['X']
+            y_dev_all = dev_feature_data['y']
+            X_dev_gam = unroll_history_matrix(X_dev_all, time_indices=time_indices).astype(np.float32)
+            X_held_gam = unroll_history_matrix(X_held, time_indices=time_indices).astype(np.float32)
+            n_held_sessions = int(len(np.unique(feature_data['groups'][held_mask])))
+            n_held_events = int(held_mask.sum())
+            # Distinct-but-deterministic seed for the held-out null permutation;
+            # offset the fold seeds by `n_splits` so it never collides with a fold.
+            held_rng = np.random.default_rng(base_seed + n_splits + 1)
+
+            heldout = {}
+            for branch in ('actual', 'null'):
+                y_dev_use = y_dev_all if branch == 'actual' else held_rng.permutation(y_dev_all)
+                rec = {
+                    'explained_deviance': np.nan, 'spearman_r': np.nan, 'pearson_r': np.nan,
+                    'msle': np.nan, 'mae': np.nan, 'rmse': np.nan, 'residual_deviance': np.nan,
+                    'filter_shapes': np.full(hist_frames, np.nan),
+                    'n_iter': np.nan, 'converged': False, 'fit_time': np.nan,
+                    'n_held_out_sessions': n_held_sessions, 'n_held_out_events': n_held_events,
+                }
+                try:
+                    y_dev_tiled = np.repeat(y_dev_use + 1e-6, hist_frames).astype(np.float32)
+                    gam = GAM(
+                        te(0, 1, n_splines=[n_val, n_time]),
+                        distribution='gamma',
+                        link='log',
+                        max_iter=max_iterations,
+                        tol=tol_val,
+                        lam=lam
+                    )
+                    fit_start = time.perf_counter()
+                    gam.fit(X_dev_gam, y_dev_tiled)
+                    rec['fit_time'] = float(time.perf_counter() - fit_start)
+                    gam_diffs = gam.logs_['diffs']
+                    rec['n_iter'] = int(len(gam_diffs))
+                    rec['converged'] = bool(gam_diffs and gam_diffs[-1] < tol_val)
+
+                    y_pred_tiled = gam.predict(X_held_gam)
+                    y_pred = np.mean(y_pred_tiled.reshape(len(y_held), hist_frames), axis=1)
+                    try:
+                        y_held_safe = np.maximum(y_held, 1e-6)
+                        y_pred_safe = np.maximum(y_pred, 1e-6)
+                        y_null_pred = np.full_like(y_held_safe, np.mean(y_held_safe))
+                        res_dev = mean_gamma_deviance(y_held_safe, y_pred_safe)
+                        null_dev = mean_gamma_deviance(y_held_safe, y_null_pred)
+                        rec['residual_deviance'] = res_dev
+                        rec['explained_deviance'] = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
+                    except Exception as e:
+                        print(f"      [!] Held-out Metric Failed ({branch}): {e}")
+                    rec['spearman_r'] = spearman_r_safe(y_held, y_pred)
+                    rec['pearson_r'] = pearson_r_safe(y_held, y_pred)
+                    rec['msle'] = mean_squared_log_error(y_held, y_pred)
+                    rec['mae'] = mean_absolute_error_1d(y_held, y_pred)
+                    rec['rmse'] = root_mean_squared_error(y_held, y_pred)
+                    # Filter shape is only interpretable for the real-label model,
+                    # matching the fold loop where 'null' never writes it.
+                    if branch == 'actual':
+                        grid_0 = np.stack([np.zeros(hist_frames), time_indices], axis=1)
+                        grid_1 = np.stack([np.ones(hist_frames), time_indices], axis=1)
+                        rec['filter_shapes'] = (gam.predict(grid_1) - gam.predict(grid_0)).flatten()
+                    del gam, y_dev_tiled
+                    gc.collect()
+                except Exception as e:
+                    print(f"Held-out refit failed (pyGAM {branch}): {e}")
+                heldout[branch] = rec
+            results['heldout'] = heldout
+
         return feature_name, results
 
-    def _run_model_for_feature_sklearn(self, feature_name, feature_data, basis_matrix):
+    def _run_model_for_feature_sklearn(self, feature_name, feature_data, basis_matrix, held_out_session_ids=None):
         r"""
         Runs a univariate L2-penalized Gamma GLM (log link) on bout parameters.
 
@@ -1033,7 +1140,28 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             'null': _make_sklearn_branch()
         }
 
-        splitter = self.create_data_splits(feature_data)
+        # Held-out reserve carved at extraction time and propagated into
+        # `feature_data['held_out_session_ids']` by the dispatcher. Fold only the
+        # DEVELOPMENT rows (so no held-out session enters any CV split) and keep
+        # the held-out rows aside to score the development-refit model once, after
+        # the loop. Empty list -- holdout disabled or a legacy pickle -- makes
+        # `dev_mask` all-True and `held_mask` all-False, an exact no-op.
+        held_out_session_ids = held_out_session_ids if held_out_session_ids is not None else []
+        dev_mask, held_mask = development_heldout_masks(
+            feature_data['groups'], held_out_session_ids
+        )
+        dev_feature_data = {
+            'X': feature_data['X'][dev_mask],
+            'y': feature_data['y'][dev_mask],
+            'groups': feature_data['groups'][dev_mask],
+        }
+        if held_mask.any():
+            print(
+                f"Held-out reserve: {len(held_out_session_ids)} session(s), "
+                f"{int(held_mask.sum())} event(s) excluded from CV; scored once after the fold loop."
+            )
+
+        splitter = self.create_data_splits(dev_feature_data)
 
         # Strict dictionary lookups
         ridge_params = self.modeling_settings['hyperparameters']['classical']['ridge_regression']
@@ -1042,9 +1170,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         # Seed for per-split null-label permutation Generators so the shuffled
         # control is reproducible and independent of ambient global RNG state.
-        base_seed = self.modeling_settings['model_params']['random_seed']
+        base_seed = self.modeling_settings['model_validation']['random_seed']
 
-        n_splits = self.modeling_settings['model_params']['split_num']
+        n_splits = self.modeling_settings['model_validation']['n_cv_folds']
 
         for split_idx, (X_tr, y_tr, X_te, y_te) in enumerate(splitter):
 
@@ -1209,5 +1337,74 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         for k in results:
             for m in results[k]:
                 results[k][m] = np.array(results[k][m])
+
+        # Honest held-out score (Gamma GLM). Refit on ALL development rows and
+        # score once on the reserved held-out rows, mirroring the actual-branch
+        # fold fit (and a shuffled-label 'null' control for the held-out chance
+        # floor). The only number untouched by CV selection. Stored as a top-level
+        # `results['heldout']` so the array-conversion loop above (per-fold lists)
+        # never touches its scalar/array mix. Skipped when holdout is disabled,
+        # leaving no `heldout` key -- the pre-holdout schema.
+        if held_mask.any():
+            X_held = feature_data['X'][held_mask]
+            y_held = feature_data['y'][held_mask]
+            X_dev_all = dev_feature_data['X']
+            y_dev_all = dev_feature_data['y']
+            X_dev_proj = np.dot(X_dev_all, basis_matrix)
+            X_held_proj = np.dot(X_held, basis_matrix)
+            n_held_sessions = int(len(np.unique(feature_data['groups'][held_mask])))
+            n_held_events = int(held_mask.sum())
+            # Distinct-but-deterministic seed for the held-out null permutation;
+            # offset the fold seeds by `n_splits` so it never collides with a fold.
+            held_rng = np.random.default_rng(base_seed + n_splits + 1)
+
+            heldout = {}
+            for branch in ('actual', 'null'):
+                y_dev_use = y_dev_all if branch == 'actual' else held_rng.permutation(y_dev_all)
+                rec = {
+                    'explained_deviance': np.nan, 'spearman_r': np.nan, 'pearson_r': np.nan,
+                    'msle': np.nan, 'mae': np.nan, 'rmse': np.nan, 'residual_deviance': np.nan,
+                    'filter_shapes': np.full(self.history_frames, np.nan),
+                    'n_iter': np.nan, 'converged': False, 'fit_time': np.nan,
+                    'n_held_out_sessions': n_held_sessions, 'n_held_out_events': n_held_events,
+                }
+                try:
+                    y_dev_pos = np.maximum(y_dev_use, 1e-6)
+                    fit_start = time.perf_counter()
+                    model = GridSearchCV(
+                        GammaRegressor(),
+                        {'alpha': list(alphas)},
+                        cv=cv,
+                        scoring='neg_mean_gamma_deviance',
+                    ).fit(X_dev_proj, y_dev_pos)
+                    rec['fit_time'] = float(time.perf_counter() - fit_start)
+                    best = model.best_estimator_
+                    y_pred = best.predict(X_held_proj)
+                    try:
+                        y_held_safe = np.maximum(y_held, 1e-6)
+                        y_pred_safe = np.maximum(y_pred, 1e-6)
+                        y_null_pred = np.full_like(y_held_safe, np.mean(y_held_safe))
+                        res_dev = mean_gamma_deviance(y_held_safe, y_pred_safe)
+                        null_dev = mean_gamma_deviance(y_held_safe, y_null_pred)
+                        rec['residual_deviance'] = res_dev
+                        rec['explained_deviance'] = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
+                    except Exception as e:
+                        print(f"      [!] Held-out Metric Failed ({branch}): {e}")
+                    rec['spearman_r'] = spearman_r_safe(y_held, y_pred)
+                    rec['pearson_r'] = pearson_r_safe(y_held, y_pred)
+                    rec['msle'] = mean_squared_log_error(y_held, y_pred)
+                    rec['mae'] = mean_absolute_error_1d(y_held, y_pred)
+                    rec['rmse'] = root_mean_squared_error(y_held, y_pred)
+                    n_iter_held = int(np.max(np.atleast_1d(best.n_iter_)))
+                    rec['n_iter'] = n_iter_held
+                    rec['converged'] = bool(n_iter_held < best.max_iter)
+                    # Filter shape is only interpretable for the real-label model,
+                    # matching the fold loop where 'null' never writes it.
+                    if branch == 'actual':
+                        rec['filter_shapes'] = np.dot(best.coef_, basis_matrix.T)
+                except Exception as e:
+                    print(f"Held-out refit failed (Gamma GLM {branch}): {e}")
+                heldout[branch] = rec
+            results['heldout'] = heldout
 
         return feature_name, results

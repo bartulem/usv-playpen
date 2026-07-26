@@ -63,12 +63,16 @@ from .manifold_metric import (
 from .modeling_usv_manifold_position import (
     get_stratified_spatial_splits_stable as _manifold_spatial_splits,
 )
+from .modeling_utils import (
+    held_out_session_ids_from_metadata,
+    development_heldout_masks,
+)
 from ..os_utils import resolve_modeling_setting
 
 # Initial spatial-CV session-split matching tolerance, read from the settings
 # block (it auto-widens at runtime; this is the starting value) rather than a
 # bare 0.05 default.
-_SESSION_SPLIT_INITIAL_TOLERANCE = resolve_modeling_setting('model_params', 'session_split_initial_tolerance')
+_SESSION_SPLIT_INITIAL_TOLERANCE = resolve_modeling_setting('model_validation', 'session_split_initial_tolerance')
 
 
 class HashableDict(dict):
@@ -872,8 +876,8 @@ class NeuralContinuousCNNRunner:
             self.modeling_settings = modeling_settings
 
         self.history_frames = int(np.floor(self.modeling_settings['model_params']['filter_history'] * self.modeling_settings['io']['camera_sampling_rate']))
-        self.split_strategy = self.modeling_settings['model_params']['split_strategy']
-        self.random_seed = self.modeling_settings['model_params']['random_seed']
+        self.split_strategy = self.modeling_settings['model_validation']['split_strategy']
+        self.random_seed = self.modeling_settings['model_validation']['random_seed']
 
         # Manifold-metric configuration. Threaded through the spatial
         # splitter, the training loss / RMSE evaluations, and the
@@ -1049,6 +1053,14 @@ class NeuralContinuousCNNRunner:
             'features': features,
             'num_bins': num_frames,  # Passed downstream to dynamically build network
             'source_pkl_path': pkl_path,
+            # Held-out session reserve carved once at extraction time and recorded
+            # in `_input_metadata.held_out_session_ids`. Surfaced here (the metadata
+            # block itself is stripped from `features` above) so `run_cnn_training`
+            # can exclude those sessions from every CV fold and score them once at
+            # the end. Empty list -- holdout disabled or a legacy pickle.
+            'held_out_session_ids': held_out_session_ids_from_metadata(
+                raw_data['_input_metadata'] if '_input_metadata' in raw_data else {}
+            ),
         }
         # Surface labels only when every session provided them — partial
         # coverage would corrupt the alignment to Y / X_seq.
@@ -1347,6 +1359,27 @@ class NeuralContinuousCNNRunner:
         groups = data_blocks['groups']
         features = list(data_blocks['features'])
 
+        # Held-out reserve carved once at extraction time and surfaced by the
+        # loader in `data_blocks['held_out_session_ids']`. Every CV fold below is
+        # generated on the DEVELOPMENT sessions only (dev-relative indices remapped
+        # to full-array space), and the accepted model is refit on all development
+        # data and scored once on this block after Phase 1 (the honest,
+        # selection-leakage-free number). An empty list -- holdout disabled or a
+        # pre-v2 pickle -- makes `_dev_mask` all-True and `_held_positions` empty,
+        # so the whole path is an exact no-op.
+        _held_out_session_ids = (
+            data_blocks['held_out_session_ids']
+            if 'held_out_session_ids' in data_blocks else []
+        )
+        _dev_mask, _held_mask = development_heldout_masks(groups, _held_out_session_ids)
+        _dev_positions = np.where(_dev_mask)[0]
+        _held_positions = np.where(_held_mask)[0]
+        if _held_positions.size > 0:
+            print(
+                f"Held-out reserve: {len(_held_out_session_ids)} session(s), "
+                f"{_held_positions.size} event(s) excluded from CV; scored once after Phase 1."
+            )
+
         # Per-USV cluster labels surfaced by the modeling pickle when it
         # carries them (the extract pipeline persists supercategory and
         # category alongside X/Y/w for every USV). The saliency phase
@@ -1415,13 +1448,30 @@ class NeuralContinuousCNNRunner:
         warp_range = self.hp['warp_range']
         perm_iters = self.hp['permutation_iterations']
 
-        cv_settings = self.modeling_settings['model_params']
-
-        folds = self.get_stratified_spatial_splits_stable(
-            groups=groups, Y=Y, n_clusters=cv_settings['spatial_cluster_num'],
-            test_prop=cv_settings['test_proportion'], split_strategy=self.split_strategy,
+        # Fold the DEVELOPMENT sessions only, then remap the dev-relative indices
+        # the splitter returns back into full-array index space via
+        # `_dev_positions`, so every fold index stays a valid row of the full
+        # `X_seq`/`Y`/`w`/`groups` arrays while no held-out row enters a train or
+        # validation split. With holdout disabled `_dev_positions` is the identity
+        # map, so this is byte-identical to the pre-holdout behaviour.
+        _folds_dev = self.get_stratified_spatial_splits_stable(
+            groups=groups[_dev_mask], Y=Y[_dev_mask], n_clusters=self.modeling_settings['model_validation']['spatial_cluster_num'],
+            test_prop=self.modeling_settings['model_validation']['cv_validation_proportion'], split_strategy=self.split_strategy,
             n_splits=n_folds, random_seed=self.random_seed
         )
+        folds = [
+            (_dev_positions[tr_idx], _dev_positions[te_idx])
+            for (tr_idx, te_idx) in _folds_dev
+        ]
+        # Leak guard: no held-out event may appear in any CV fold (train or test).
+        if _held_positions.size > 0:
+            _held_set = set(_held_positions.tolist())
+            for _tr_idx, _te_idx in folds:
+                if _held_set.intersection(_tr_idx.tolist()) or _held_set.intersection(_te_idx.tolist()):
+                    raise AssertionError(
+                        "Held-out session events leaked into a CNN CV fold; the "
+                        "development/held-out split is inconsistent."
+                    )
 
         deep_storage = {
             'metadata': {
@@ -1882,6 +1932,55 @@ class NeuralContinuousCNNRunner:
         # box the final loop iteration happened to leave in scope).
         best_Y_center, best_Y_scale = best_actual_scale_list[best_fold_idx]
         test_idx_final = folds[best_fold_idx][1]
+
+        # Honest held-out score: apply the SELECTED model (the best CV fold's
+        # trained `actual` weights, under the box those weights were trained with)
+        # to the reserved held-out block, which never entered any CV fold. This is
+        # the only number untouched by the fold-based selection above. A model-free
+        # empirical-density draw from the best fold's TRAINING coordinates gives the
+        # matching held-out chance floor. Skipped when holdout is disabled
+        # (`_held_positions` empty) or all folds were skipped -- `deep_storage`
+        # then carries no `heldout` key, matching the pre-holdout schema.
+        if _held_positions.size > 0 and best_params is not None:
+            X_held = jnp.array(X_seq[_held_positions])
+            Y_held = np.array(Y[_held_positions])
+            Y_pred_held = evaluate_batched(best_params, best_state, X_held, best_Y_center, best_Y_scale)
+            held_err = float(jnp.mean(jnp.sqrt(jnp.sum(signed_diff_jax(
+                jnp.array(Y_held), Y_pred_held,
+                metric=self.manifold_metric, period=self.manifold_period,
+            ) ** 2, axis=-1))))
+
+            # Model-free floor on the held-out block: empirical-density draw from
+            # the best fold's TRAINING coordinates (matches the per-fold
+            # null_model_free baseline). Distinct-but-deterministic seed offset by
+            # `n_folds` so it never collides with a fold's RNG.
+            train_idx_final = folds[best_fold_idx][0]
+            Y_tr_final = np.array(Y[train_idx_final])
+            draw_rng = np.random.default_rng(self.random_seed + n_folds + 1)
+            draw_idx = draw_rng.choice(len(Y_tr_final), size=len(Y_held), replace=True)
+            Y_pred_held_mf = Y_tr_final[draw_idx]
+            held_err_mf = float(np.mean(pairwise_distance(
+                Y_held, Y_pred_held_mf,
+                metric=self.manifold_metric, period=self.manifold_period,
+            )))
+
+            deep_storage['heldout'] = {
+                'best_fold_idx': best_fold_idx,
+                'error_actual': held_err,
+                'error_null_model_free': held_err_mf,
+                'Y_true': Y_held,
+                'Y_pred_actual': np.array(Y_pred_held),
+                'Y_pred_null_model_free': Y_pred_held_mf,
+                'test_indices': _held_positions,
+                'n_held_out_sessions': len(_held_out_session_ids),
+                'n_held_out_events': int(_held_positions.size),
+                'source': 'best_cv_fold_actual_model',
+            }
+            print(
+                f"  > [Held-out] {self.manifold_metric.capitalize()} Err: {held_err:.4f} "
+                f"(model-free floor {held_err_mf:.4f}; best fold {best_fold_idx + 1}, "
+                f"{_held_positions.size} events)"
+            )
 
         X_te_base = np.array(X_seq[test_idx_final])
         Y_te_final = np.array(Y[test_idx_final])

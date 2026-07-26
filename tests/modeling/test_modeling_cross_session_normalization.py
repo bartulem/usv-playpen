@@ -60,9 +60,10 @@ def test_shipped_settings_expose_binary_decision_threshold():
 
 def test_shipped_settings_expose_borderline_tunables():
     """The former hard-coded modeling defaults are now settings-driven, so the
-    shipped blocks must expose the session-split initial tolerance and the
-    forward-selection significance level (``model_params``) and the ECE
-    histogram bin count (``diagnostics``) with sane types / ranges."""
+    shipped blocks must expose the session-split initial tolerance
+    (``model_validation``) and the forward-selection significance level
+    (``model_params``) and the ECE histogram bin count (``diagnostics``) with
+    sane types / ranges."""
 
     settings = json.loads(
         importlib.resources.files('usv_playpen').joinpath(
@@ -70,8 +71,9 @@ def test_shipped_settings_expose_borderline_tunables():
         ).read_text()
     )
     model_params = settings['model_params']
+    model_validation = settings['model_validation']
     diagnostics = settings['diagnostics']
-    assert 0.0 <= float(model_params['session_split_initial_tolerance']) <= 1.0
+    assert 0.0 <= float(model_validation['session_split_initial_tolerance']) <= 1.0
     assert 0.0 < float(model_params['selection_p_val']) < 1.0
     assert int(diagnostics['ece_n_bins']) >= 2
 
@@ -94,7 +96,7 @@ def test_modeling_constants_resolve_from_settings():
     assert model_selection._ECE_N_BINS == resolve_modeling_setting('diagnostics', 'ece_n_bins')
     assert modeling_utils._ECE_N_BINS == resolve_modeling_setting('diagnostics', 'ece_n_bins')
     assert jax_neural_network_cnn._SESSION_SPLIT_INITIAL_TOLERANCE == resolve_modeling_setting(
-        'model_params', 'session_split_initial_tolerance'
+        'model_validation', 'session_split_initial_tolerance'
     )
 
 

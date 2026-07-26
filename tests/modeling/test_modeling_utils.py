@@ -48,6 +48,9 @@ from usv_playpen.modeling.modeling_utils import (
     format_run_summary,
     format_selection_step,
     extract_univariate_headline,
+    seeded_session_holdout,
+    held_out_session_ids_from_metadata,
+    development_heldout_masks,
 )
 from datetime import datetime
 
@@ -523,7 +526,9 @@ class TestSelectKinematicColumns:
 class TestPrepareModelingSessions:
 
     def _settings(self, seed, session_file):
-        return {'model_params': {'random_seed': seed},
+        # `random_seed` moved from `model_params` into the `model_validation`
+        # block; `prepare_modeling_sessions` reads it exclusively from there.
+        return {'model_validation': {'random_seed': seed},
                 'io': {'session_list_file': str(session_file)}}
 
     def test_loads_paths_and_seeds_rng(self, tmp_path):
@@ -779,10 +784,14 @@ class TestRunPredictorAudits:
                 'timescale_signal_min_run_seconds': 0.2,
             },
             'model_params': {
-                'random_seed': 0,
                 'filter_history': 1.0,
                 'mixture_model_component_index': 0,
                 'mixture_model_z_score': 1.0,
+            },
+            # `random_seed` moved into `model_validation`; the timescale audit's
+            # shuffle RNG reads it exclusively from there.
+            'model_validation': {
+                'random_seed': 0,
             },
             'mixture_model_params': {
                 'male': {'means': [0.1], 'sds': [0.05]},
@@ -1166,3 +1175,127 @@ def test_extract_univariate_headline_per_task():
 
     # degenerate / minimal result dict -> empty summary, never raises.
     assert extract_univariate_headline('continuous', {'r2': 0.9}) == {}
+
+
+class TestSeededSessionHoldout:
+    """The deterministic session-grain held-out draw used to carve the reserved
+    test block once at data-extraction time (`seeded_session_holdout`)."""
+
+    def test_zero_proportion_reserves_nothing(self):
+        """A proportion of 0 disables the holdout entirely (empty list), so the
+        whole pipeline behaves exactly as it did before the mechanism existed."""
+        assert seeded_session_holdout(['s3', 's1', 's2'], 0.0, 0) == []
+
+    def test_count_is_floor_of_proportion(self):
+        """The reserved count is floor(n_sessions * proportion)."""
+        sessions = [f's{i}' for i in range(10)]
+        assert len(seeded_session_holdout(sessions, 0.25, 0)) == 2  # floor(10 * 0.25)
+        assert len(seeded_session_holdout(sessions, 0.1, 0)) == 1   # floor(10 * 0.1)
+
+    def test_deterministic_and_order_invariant(self):
+        """The same (sessions, proportion, seed) always yields the same sorted
+        reserved set, regardless of the input order (the function sorts first)."""
+        forward = seeded_session_holdout([f's{i}' for i in range(20)], 0.2, 7)
+        shuffled = seeded_session_holdout([f's{i}' for i in reversed(range(20))], 0.2, 7)
+        assert forward == shuffled
+        assert forward == sorted(forward)
+
+    def test_different_seed_can_differ(self):
+        """Different seeds draw (in general) different reserved sets, confirming
+        the seed actually drives the permutation."""
+        a = seeded_session_holdout([f's{i}' for i in range(50)], 0.2, 0)
+        b = seeded_session_holdout([f's{i}' for i in range(50)], 0.2, 1)
+        assert a != b
+
+    def test_reserved_is_subset_of_input(self):
+        """Every reserved session is drawn from the input set (no fabrication)."""
+        sessions = [f's{i}' for i in range(12)]
+        reserved = seeded_session_holdout(sessions, 0.25, 3)
+        assert set(reserved).issubset(set(sessions))
+
+    def test_none_seed_coalesces_to_zero(self):
+        """A None seed is treated as 0 rather than crashing the RNG."""
+        assert seeded_session_holdout([f's{i}' for i in range(10)], 0.2, None) == \
+            seeded_session_holdout([f's{i}' for i in range(10)], 0.2, 0)
+
+    def test_out_of_range_proportion_raises(self):
+        """Proportions outside [0, 1) are rejected."""
+        with pytest.raises(ValueError):
+            seeded_session_holdout(['s0', 's1'], 1.0, 0)
+        with pytest.raises(ValueError):
+            seeded_session_holdout(['s0', 's1'], -0.1, 0)
+
+    def test_reserving_zero_raises(self):
+        """A positive proportion too small to reserve even one whole session
+        (floor rounds it to 0) leaves the holdout meaningless -> ValueError,
+        rather than silently disabling it."""
+        with pytest.raises(ValueError):
+            seeded_session_holdout(['s0', 's1', 's2'], 0.1, 0)  # floor(3 * 0.1) == 0
+
+    def test_positive_proportion_always_leaves_a_development_set(self):
+        """For any proportion in (0, 1) that reserves >= 1 session, at least one
+        development session always remains (floor(n * p) < n for p < 1), so a
+        valid partition is produced and no exception is raised."""
+        reserved = seeded_session_holdout(['s0', 's1'], 0.9, 0)  # floor(2 * 0.9) == 1
+        assert len(reserved) == 1
+
+
+class TestHeldOutSessionIdsFromMetadata:
+    """Reading the reserved held-out list back from an `_input_metadata` block
+    (`held_out_session_ids_from_metadata`), the single source of truth every
+    downstream stage consults."""
+
+    def test_present_field_returned_as_list_copy(self):
+        """A present field is returned as an independent list copy."""
+        md = {'held_out_session_ids': ['s1', 's2']}
+        out = held_out_session_ids_from_metadata(md)
+        assert out == ['s1', 's2']
+        out.append('s3')
+        assert md['held_out_session_ids'] == ['s1', 's2']  # not mutated
+
+    def test_absent_field_returns_empty(self):
+        """A schema-v1 pickle lacking the field yields [] (backward compatible)."""
+        assert held_out_session_ids_from_metadata({'session_ids': ['s1']}) == []
+
+    def test_none_value_returns_empty(self):
+        """An explicit None value is treated as 'no holdout'."""
+        assert held_out_session_ids_from_metadata({'held_out_session_ids': None}) == []
+
+    def test_non_dict_returns_empty(self):
+        """A non-dict argument (e.g. a caller passing {} for a missing block)
+        never raises; it returns []."""
+        assert held_out_session_ids_from_metadata(None) == []
+
+
+class TestDevelopmentHeldoutMasks:
+    """Splitting the per-event session-id array into development vs held-out
+    boolean masks (`development_heldout_masks`)."""
+
+    def test_empty_holdout_is_a_noop_identity(self):
+        """With no reserved sessions the development mask is all-True and the
+        held-out mask all-False, so `np.where(dev_mask)[0]` is the identity index
+        map -- the property that makes every downstream dev-fold remap byte-
+        identical to the pre-holdout behaviour."""
+        groups = np.array(['s0', 's0', 's1', 's2', 's2'])
+        dev_mask, held_mask = development_heldout_masks(groups, [])
+        assert dev_mask.all()
+        assert not held_mask.any()
+        assert np.array_equal(np.where(dev_mask)[0], np.arange(len(groups)))
+
+    def test_partition_by_session(self):
+        """Rows whose session is reserved land in the held-out mask; all others in
+        the development mask; the two masks are exact complements."""
+        groups = np.array(['s0', 's1', 's1', 's2', 's3', 's3'])
+        dev_mask, held_mask = development_heldout_masks(groups, ['s1', 's3'])
+        assert np.array_equal(held_mask, np.array([False, True, True, False, True, True]))
+        assert np.array_equal(dev_mask, ~held_mask)
+        # No held-out session id survives in the development rows.
+        assert set(groups[dev_mask].tolist()).isdisjoint({'s1', 's3'})
+
+    def test_masks_are_complementary_and_full_length(self):
+        """The masks always cover every row exactly once."""
+        groups = np.array([f's{i % 4}' for i in range(20)])
+        dev_mask, held_mask = development_heldout_masks(groups, ['s2'])
+        assert len(dev_mask) == len(held_mask) == len(groups)
+        assert np.array_equal(dev_mask, ~held_mask)
+        assert int(dev_mask.sum() + held_mask.sum()) == len(groups)

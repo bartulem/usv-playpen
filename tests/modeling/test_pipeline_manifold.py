@@ -165,7 +165,7 @@ def _build_manifold_settings(tmp_path: Path, **overrides):
         **overrides,
     )
     settings['model_params']['usv_bout_time'] = 0.5
-    settings['model_params']['spatial_cluster_num'] = SPATIAL_CLUSTER_NUM
+    settings['model_validation']['spatial_cluster_num'] = SPATIAL_CLUSTER_NUM
 
     hp = settings['hyperparameters']['jax_linear']['bivariate']
     hp['bin_resizing_factor'] = 10        # 30 -> 3 temporal predictors
@@ -451,7 +451,7 @@ class TestContinuousModelRunner:
 
         assert set(results.keys()) == {'actual', 'null', 'null_model_free'}
 
-        n_splits = settings['model_params']['split_num']
+        n_splits = settings['model_validation']['n_cv_folds']
         for strategy in ('actual', 'null', 'null_model_free'):
             folds = results[strategy]['folds']
             metrics = folds['metrics']
@@ -501,7 +501,7 @@ class TestContinuousModelRunner:
         runner = ContinuousModelRunner(pipeline)
         results = runner.run_univariate_training(input_pkl, 'self.speed')
 
-        n_splits = settings['model_params']['split_num']
+        n_splits = settings['model_validation']['n_cv_folds']
         actual_folds = results['actual']['folds']
         assert actual_folds['hyperparams_tuned'] == [True] * n_splits
         assert len(actual_folds['selected_lambda_smooth']) == n_splits
@@ -541,7 +541,7 @@ class TestContinuousModelRunner:
         results = runner.run_univariate_training(input_pkl, 'self.speed')
 
         assert set(results.keys()) == {'actual', 'null', 'null_model_free'}
-        n_splits = settings['model_params']['split_num']
+        n_splits = settings['model_validation']['n_cv_folds']
         for strategy in ('actual', 'null'):
             folds = results[strategy]['folds']
             assert len(folds['weights']) == n_splits

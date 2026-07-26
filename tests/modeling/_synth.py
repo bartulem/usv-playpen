@@ -564,13 +564,27 @@ def build_modeling_settings(
     mp = settings['model_params']
     mp['filter_history'] = filter_history
     mp['model_engine'] = model_engine
-    mp['split_strategy'] = split_strategy
-    mp['split_num'] = split_num
-    mp['test_proportion'] = test_proportion
-    mp['random_seed'] = random_seed
     mp['model_target_vocal_type'] = 'bout'
     mp['model_predictor_mouse_index'] = 1
     mp['usv_per_bout_floor'] = 2
+
+    # The data-splitting dials moved out of `model_params` into the
+    # `model_validation` block (the modeling code now reads them exclusively from
+    # there), so the synth overrides must target `model_validation` too — writing
+    # them into `model_params` would silently leave every test running the JSON
+    # template's defaults instead of the requested split config. `split_num` was
+    # renamed to `n_cv_folds` and `test_proportion` to `cv_validation_proportion`.
+    # `held_out_test_proportion` is pinned to 0.0 so the tiny synth cohorts
+    # (N_SESSIONS as low as 2-4) never trip the "reserves 0 sessions" guard and
+    # the whole suite exercises the exact pre-holdout code path (the honest
+    # regression baseline); tests that specifically verify the held-out mechanism
+    # set a positive proportion themselves.
+    mv = settings['model_validation']
+    mv['split_strategy'] = split_strategy
+    mv['n_cv_folds'] = split_num
+    mv['cv_validation_proportion'] = test_proportion
+    mv['random_seed'] = random_seed
+    mv['held_out_test_proportion'] = 0.0
 
     kin = settings['kinematic_features']
     kin['egocentric'] = list(egocentric_features)

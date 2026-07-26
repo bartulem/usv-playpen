@@ -64,6 +64,9 @@ from .modeling_metadata import (
 from .load_input_files import _calculate_ibi_threshold
 from .modeling_utils import (
     prepare_modeling_sessions,
+    seeded_session_holdout,
+    held_out_session_ids_from_metadata,
+    development_heldout_masks,
     resolve_mouse_roles,
     select_kinematic_columns,
     build_vocal_signal_columns,
@@ -85,7 +88,7 @@ from ..os_utils import resolve_modeling_setting
 
 # Initial spatial-CV session-split matching tolerance (auto-widens at runtime),
 # read from the settings block rather than a bare 0.05 default.
-_SESSION_SPLIT_INITIAL_TOLERANCE = resolve_modeling_setting('model_params', 'session_split_initial_tolerance')
+_SESSION_SPLIT_INITIAL_TOLERANCE = resolve_modeling_setting('model_validation', 'session_split_initial_tolerance')
 
 
 def compute_inverse_density_weights(Y: np.ndarray,
@@ -200,7 +203,7 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
           and perfectly stratifies based solely on geographic density.
     n_clusters : int
         Number of geographic micro-neighborhoods to define via K-Means
-        (typically `settings['model_params']['spatial_cluster_num']`).
+        (typically `settings['model_validation']['spatial_cluster_num']`).
         Required — no default — so callers cannot silently inherit a
         stale literal if the project's cluster cardinality changes.
     test_prop : float, default 0.2
@@ -1052,6 +1055,13 @@ class ContinuousModelingPipeline(FeatureZoo):
             for sid, packet in continuous_targets_dict.items()
         }
 
+        _sorted_session_ids = sorted(processed_beh_data.keys())
+        held_out_session_ids = seeded_session_holdout(
+            session_ids=_sorted_session_ids,
+            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
+            random_seed=self.modeling_settings['model_validation']['random_seed'],
+        )
+
         input_metadata = build_input_metadata(
             modeling_settings=self.modeling_settings,
             analysis_type='continuous',
@@ -1060,8 +1070,9 @@ class ContinuousModelingPipeline(FeatureZoo):
             target_idx=targ_idx,
             predictor_idx=pred_idx,
             n_sessions_used=len(processed_beh_data),
-            session_ids=sorted(processed_beh_data.keys()),
+            session_ids=_sorted_session_ids,
             n_events_per_session=n_events_per_session_md,
+            held_out_session_ids=held_out_session_ids,
             feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
             feature_zoo_kept=feature_zoo_kept_md,
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
@@ -1358,6 +1369,14 @@ class ContinuousModelRunner:
         with open(pkl_path, 'rb') as f:
             raw_data = pickle.load(f)
 
+        # Reserved held-out session list (schema-v2+). Threaded onto every
+        # returned feature block so the training loop can exclude these
+        # sessions from all folds / tuning and score them exactly once at the
+        # end. Empty for schema-v1 pickles (backward-compatible no-op).
+        _held_out_session_ids = held_out_session_ids_from_metadata(
+            raw_data['_input_metadata'] if '_input_metadata' in raw_data else {}
+        )
+
         # Strip metadata blocks before iterating features. Without this
         # filter, the underscore-prefixed reserved keys
         # (`_input_metadata` etc.) would be treated as feature names and
@@ -1409,7 +1428,8 @@ class ContinuousModelRunner:
                 'Y': np.vstack(Y_list).astype(np.float32),
                 'w': np.concatenate(w_list).astype(np.float32),
                 'groups': np.concatenate(groups_list),
-                'n_time_bins': X_list[0].shape[1]
+                'n_time_bins': X_list[0].shape[1],
+                'held_out_session_ids': _held_out_session_ids,
             }
 
         return data_blocks
@@ -1546,6 +1566,20 @@ class ContinuousModelRunner:
         groups = feat_data['groups']
         n_time_bins = feat_data['n_time_bins']
 
+        # Reserve the held-out sessions from every fold, the inner-CV tuning, and
+        # the null baselines. Folds are generated over the DEVELOPMENT sessions
+        # only (below) and their indices mapped back to the full-array index
+        # space, so the held-out rows never enter any fold while the stored
+        # `test_indices` stay aligned with the full-session event ordering that
+        # the selection screen's event->session map assumes. The reserved rows
+        # are scored exactly once by the final development-refit model (the
+        # held-out block after the strategy loop). No-op when no session is
+        # reserved (development mask all-True → identity index map).
+        held_out_session_ids = feat_data['held_out_session_ids']
+        _dev_mask, _held_mask = development_heldout_masks(groups, held_out_session_ids)
+        _dev_positions = np.where(_dev_mask)[0]
+        _held_positions = np.where(_held_mask)[0]
+
         lam_smooth_fixed = hp['lambda_smooth_fixed']
         lam_l2_fixed = hp['l2_reg_fixed']
         smoothness_order = hp['smoothness_derivative_order']
@@ -1553,7 +1587,7 @@ class ContinuousModelRunner:
         lr = hp['learning_rate']
         max_iter = hp['max_iter']
         tol = hp['tol']
-        random_seed = hp['random_state']
+        random_seed = self.modeling_settings['model_validation']['random_seed']
         verbose = hp['verbose']
         use_lax_loop = hp['use_lax_loop']
 
@@ -1575,11 +1609,10 @@ class ContinuousModelRunner:
         inner_cv_use_one_se_rule = tune_params['inner_cv_use_one_se_rule']
         inner_max_iter = tune_params['inner_max_iter']
 
-        cv_settings = self.modeling_settings['model_params']
-        n_clusters = cv_settings['spatial_cluster_num']
-        test_prop = cv_settings['test_proportion']
-        n_splits = cv_settings['split_num']
-        split_strategy = cv_settings['split_strategy']
+        n_clusters = self.modeling_settings['model_validation']['spatial_cluster_num']
+        test_prop = self.modeling_settings['model_validation']['cv_validation_proportion']
+        n_splits = self.modeling_settings['model_validation']['n_cv_folds']
+        split_strategy = self.modeling_settings['model_validation']['split_strategy']
 
         # Manifold-metric configuration. Threaded through every site that
         # compares predictions to ground truth (spatial splitter,
@@ -1603,20 +1636,25 @@ class ContinuousModelRunner:
             tune_regularization_bool = False
 
         print("Generating deterministic, spatially-stratified folds...")
-        folds = get_stratified_spatial_splits_stable(
-            groups=groups,
-            Y=Y,
+        _folds_dev = get_stratified_spatial_splits_stable(
+            groups=groups[_dev_mask],
+            Y=Y[_dev_mask],
             n_clusters=n_clusters,
             test_prop=test_prop,
             n_splits=n_splits,
             split_strategy=split_strategy,
             random_seed=random_seed,
-            max_total_attempts=cv_settings['session_split_max_attempts'],
-            widen_step=cv_settings['session_split_widen_step'],
-            widen_every=cv_settings['session_split_widen_every'],
+            max_total_attempts=self.modeling_settings['model_validation']['session_split_max_attempts'],
+            widen_step=self.modeling_settings['model_validation']['session_split_widen_step'],
+            widen_every=self.modeling_settings['model_validation']['session_split_widen_every'],
             metric=manifold_metric,
             period=manifold_period,
         )
+        # Map development-relative fold indices back to the full-array index space
+        # so held-out rows never appear in any fold and stored `test_indices`
+        # remain aligned with the full-session event ordering. Identity map when
+        # no session is reserved.
+        folds = [(_dev_positions[tr_idx], _dev_positions[te_idx]) for (tr_idx, te_idx) in _folds_dev]
 
         # Canonical set of metric keys emitted by `evaluate_metrics`. Used
         # both to initialise the per-fold metric dict and to summarise at
@@ -1897,6 +1935,151 @@ class ContinuousModelRunner:
                 results[strategy]['folds']['selected_l2_reg'].append(fold_l2_reg)
                 results[strategy]['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
                 results[strategy]['folds']['hyperparams_tuned'].append(fold_tuned_flag)
+
+        # ------------------------------------------------------------------
+        # Held-out test evaluation (honest final score).
+        # The reserved held-out sessions were excluded from every fold, from the
+        # inner-CV tuning, and from the null baselines above. Here each strategy's
+        # model is refit on ALL development rows and scored EXACTLY ONCE on the
+        # reserved held-out rows (train = every development row, test = the
+        # held-out rows), mirroring the per-fold fit above. Stored under
+        # `results[strategy]['heldout']`. `None` for every strategy when no
+        # session is reserved, so schema-v1 / holdout-disabled runs are
+        # unaffected. Fold `test_indices` and the held-out rows are disjoint by
+        # construction (the development/held-out masks are complements), so no
+        # held-out row ever informed selection or tuning.
+        # ------------------------------------------------------------------
+        _has_holdout = _held_positions.size > 0
+        # A dedicated seed base past every fold seed (folds use random_seed + fold_idx).
+        held_seed = random_seed + n_splits + 1
+        for strategy in strategies:
+            if not _has_holdout:
+                results[strategy]['heldout'] = None
+                continue
+
+            Xh_train = X[_dev_positions]
+            Yh_train = Y[_dev_positions]
+            wh_train = w[_dev_positions]
+            groupsh_train = groups[_dev_positions]
+            Xh_test = X[_held_positions]
+            Yh_test = Y[_held_positions]
+            wh_test = w[_held_positions]
+
+            if strategy == 'null':
+                shuffle_rng = np.random.default_rng(held_seed + 1)
+                Xh_train = _shuffle_X_within_groups(Xh_train, groupsh_train, shuffle_rng)
+
+            if strategy == 'null_model_free':
+                w_cov = wh_train / (np.sum(wh_train) + 1e-12)
+                mu = circular_mean(Yh_train, metric=manifold_metric, period=manifold_period, weights=w_cov)
+                diff_tr = signed_diff(Yh_train, mu[None, :], metric=manifold_metric, period=manifold_period)
+                cov_tr = (w_cov[:, None] * diff_tr).T @ diff_tr
+                cov_inv = np.linalg.pinv(cov_tr)
+
+                draw_rng = np.random.default_rng(held_seed + 2)
+                draw_idx = draw_rng.choice(len(Yh_train), size=len(Yh_test), replace=True)
+                yh_pred_xy = Yh_train[draw_idx].astype(np.float32)
+
+                metrics_h = manifold_prediction_metrics(
+                    Yh_test, yh_pred_xy, wh_test,
+                    metric=manifold_metric, period=manifold_period,
+                    train_cov_inv=cov_inv, random_state=held_seed,
+                )
+                h_weights, h_intercepts = None, None
+                h_n_iter, h_converged, h_fit_time = 0, True, 0.0
+                h_lambda_smooth = float('nan')
+                h_l2_reg = float('nan')
+                h_grid_audit = {
+                    'grid_scores': {},
+                    'grid_ses': {},
+                    'argmax_pair': None,
+                    'one_se_applied': False,
+                    'one_se_threshold': None,
+                }
+                h_tuned_flag = False
+            else:
+                if tune_regularization_bool:
+                    h_lambda_smooth, h_l2_reg, h_grid_audit = _tune_manifold_regularization(
+                        X_train=Xh_train,
+                        Y_train=Yh_train,
+                        w_train=wh_train,
+                        groups_train=groupsh_train,
+                        lambda_smooth_grid=lambda_smooth_grid,
+                        l2_reg_grid=l2_reg_grid,
+                        inner_cv_folds=inner_cv_folds,
+                        inner_cv_scoring_metric=inner_cv_scoring_metric,
+                        inner_cv_use_one_se_rule=inner_cv_use_one_se_rule,
+                        n_features=1,
+                        n_time_bins=n_time_bins,
+                        spatial_cluster_num=n_clusters,
+                        smoothness_derivative_order=smoothness_order,
+                        huber_delta=huber_delta,
+                        learning_rate=lr,
+                        inner_max_iter=inner_max_iter,
+                        tol=tol,
+                        random_state=held_seed,
+                        verbose=verbose,
+                        use_lax_loop=False,
+                        regressor_cls=regressor_cls,
+                        metric=manifold_metric,
+                        period=manifold_period,
+                    )
+                    h_tuned_flag = True
+                else:
+                    h_lambda_smooth = float(lam_smooth_fixed)
+                    h_l2_reg = float(lam_l2_fixed)
+                    h_grid_audit = {
+                        'grid_scores': {},
+                        'grid_ses': {},
+                        'argmax_pair': None,
+                        'one_se_applied': False,
+                        'one_se_threshold': None,
+                    }
+                    h_tuned_flag = False
+
+                model_h = regressor_cls(
+                    n_features=1,
+                    n_time_bins=n_time_bins,
+                    lambda_smooth=h_lambda_smooth,
+                    l2_reg=h_l2_reg,
+                    smoothness_derivative_order=smoothness_order,
+                    huber_delta=huber_delta,
+                    learning_rate=lr,
+                    max_iter=max_iter,
+                    tol=tol,
+                    random_state=held_seed,
+                    verbose=verbose,
+                    _use_lax_loop=use_lax_loop,
+                    metric=manifold_metric,
+                    period=manifold_period,
+                )
+                model_h.fit(Xh_train, Yh_train, sample_weight=wh_train)
+                metrics_h = model_h.evaluate_metrics(Xh_test, Yh_test, weights=wh_test)
+                yh_pred_xy = model_h.predict(Xh_test, snap=True).astype(np.float32)
+                h_weights = model_h.coef_
+                h_intercepts = model_h.intercept_
+                h_n_iter = int(model_h.n_iter_)
+                h_converged = bool(model_h.converged_)
+                h_fit_time = float(model_h.fit_time_)
+
+            results[strategy]['heldout'] = {
+                'metrics': metrics_h,
+                'weights': h_weights,
+                'intercepts': h_intercepts,
+                'test_indices': _held_positions,
+                'y_true': Yh_test,
+                'w_test': wh_test,
+                'y_pred_xy': yh_pred_xy,
+                'n_iter': h_n_iter,
+                'converged': h_converged,
+                'fit_time': h_fit_time,
+                'selected_lambda_smooth': h_lambda_smooth,
+                'selected_l2_reg': h_l2_reg,
+                'hyperparam_grid_audit': h_grid_audit,
+                'hyperparams_tuned': h_tuned_flag,
+                'n_held_out_sessions': len(held_out_session_ids),
+                'n_held_out_events': int(Xh_test.shape[0]),
+            }
 
         # Standardized per-split lines (emitted after all strategies, which are
         # fit in separate passes): the geometry headline (dcor_xy on the torus,

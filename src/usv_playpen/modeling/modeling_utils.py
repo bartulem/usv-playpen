@@ -114,7 +114,7 @@ def prepare_modeling_sessions(modeling_settings: dict) -> list:
     """
     Seeds NumPy's global RNG (if requested) and loads the session-path list.
 
-    Reads the `model_params.random_seed` and `io.session_list_file` entries
+    Reads the `model_validation.random_seed` and `io.session_list_file` entries
     from the supplied settings dictionary, applies the seed (or resets it to
     a non-deterministic state when the seed is `None`), opens the session-list
     text file, and returns a list of configured absolute paths. Blank lines
@@ -124,7 +124,7 @@ def prepare_modeling_sessions(modeling_settings: dict) -> list:
     ----------
     modeling_settings : dict
         The modeling settings dictionary. Must contain
-        `modeling_settings['model_params']['random_seed']` and
+        `modeling_settings['model_validation']['random_seed']` and
         `modeling_settings['io']['session_list_file']`.
 
     Returns
@@ -143,9 +143,9 @@ def prepare_modeling_sessions(modeling_settings: dict) -> list:
         For any other I/O failure while reading the session-list file.
     """
 
-    if modeling_settings['model_params']['random_seed'] is not None:
-        np.random.seed(modeling_settings['model_params']['random_seed'])
-        print(f"Random seed set to: {modeling_settings['model_params']['random_seed']}")
+    if modeling_settings['model_validation']['random_seed'] is not None:
+        np.random.seed(modeling_settings['model_validation']['random_seed'])
+        print(f"Random seed set to: {modeling_settings['model_validation']['random_seed']}")
     else:
         np.random.seed(None)
         print("Random seed not set.")
@@ -169,6 +169,148 @@ def prepare_modeling_sessions(modeling_settings: dict) -> list:
         raise RuntimeError(f"Error reading session paths: {e}")
 
     return txt_modeling_sessions
+
+
+def seeded_session_holdout(session_ids: list,
+                           held_out_test_proportion: float,
+                           random_seed: int) -> list:
+    """
+    Deterministically reserves a session-grain held-out test set.
+
+    Selects a fixed subset of whole sessions to be reserved as the held-out
+    test set for honest final-model evaluation. The reserved sessions are never
+    used for feature nomination, cross-validation, selection, or regularisation
+    tuning at any modeling stage; they are scored exactly once by the final
+    (development-refit) model. Selection is deterministic: the same
+    ``session_ids``, ``held_out_test_proportion``, and ``random_seed`` always
+    yield the same reserved set, so every stage (univariate + selection) that
+    reads the recorded set operates on an identical partition and no leakage
+    can occur.
+
+    The count of reserved sessions is ``floor(len(session_ids) *
+    held_out_test_proportion)``. A proportion of ``0`` reserves nothing (the
+    held-out mechanism is disabled and the pipeline behaves exactly as before).
+    The reserved sessions are drawn without replacement from the sorted session
+    list using a ``numpy.random.default_rng(random_seed)`` permutation, so the
+    result is invariant to the input order and to the global NumPy RNG state.
+
+    Parameters
+    ----------
+    session_ids : list
+        The full list of session identifiers in play for this run (order
+        irrelevant; the function sorts internally for reproducibility).
+    held_out_test_proportion : float
+        Fraction of whole sessions to reserve as the held-out test set, in
+        ``[0, 1)``. ``0`` disables the holdout (returns an empty list).
+    random_seed : int
+        Seed for the deterministic draw. ``None`` is treated as ``0``.
+
+    Returns
+    -------
+    list of str
+        The sorted list of reserved (held-out) session identifiers. Empty when
+        ``held_out_test_proportion`` is ``0``.
+
+    Raises
+    ------
+    ValueError
+        If ``held_out_test_proportion`` is not in ``[0, 1)``, or if a positive
+        proportion would reserve either zero or all sessions (leaving no valid
+        development set).
+    """
+
+    if not (0.0 <= held_out_test_proportion < 1.0):
+        raise ValueError(
+            f"`held_out_test_proportion` must be in [0, 1); got "
+            f"{held_out_test_proportion!r}."
+        )
+
+    if held_out_test_proportion == 0.0:
+        return []
+
+    sorted_sessions = sorted(session_ids)
+    n_sessions = len(sorted_sessions)
+    n_held_out = int(np.floor(n_sessions * held_out_test_proportion))
+
+    if n_held_out <= 0 or n_held_out >= n_sessions:
+        raise ValueError(
+            f"`held_out_test_proportion`={held_out_test_proportion} reserves "
+            f"{n_held_out}/{n_sessions} sessions; it must reserve at least one "
+            f"session and leave at least one development session."
+        )
+
+    rng = np.random.default_rng(int(random_seed) if random_seed is not None else 0)
+    held_out_positions = rng.permutation(n_sessions)[:n_held_out]
+    held_out_sessions = sorted(sorted_sessions[pos] for pos in held_out_positions)
+
+    return held_out_sessions
+
+
+def held_out_session_ids_from_metadata(input_metadata: dict) -> list:
+    """
+    Extracts the reserved held-out session list from an ``_input_metadata`` block.
+
+    Returns the ``held_out_session_ids`` recorded by the data-extraction stage
+    (see :func:`seeded_session_holdout`). This is the single source of truth for
+    the held-out partition: every downstream stage (univariate + selection) reads
+    it from here so all stages share an identical reserved set and no leakage can
+    occur. Backward-compatible with schema-v1 input pickles that predate the
+    held-out mechanism: if the field is absent, an empty list is returned, so the
+    caller simply behaves as before (no session is reserved).
+
+    Parameters
+    ----------
+    input_metadata : dict
+        The ``_input_metadata`` block from a modeling input / univariate pickle.
+
+    Returns
+    -------
+    list
+        The sorted list of reserved session identifiers, or an empty list when
+        the field is absent (schema-v1) or the holdout was disabled.
+    """
+
+    if not isinstance(input_metadata, dict) or 'held_out_session_ids' not in input_metadata:
+        return []
+    held_out = input_metadata['held_out_session_ids']
+    return list(held_out) if held_out is not None else []
+
+
+def development_heldout_masks(groups, held_out_session_ids) -> tuple:
+    """
+    Splits a per-event session-id array into development vs held-out boolean masks.
+
+    Given the per-row session identifiers (``groups``, one entry per event/row of
+    the pooled ``X`` / ``Y``) and the reserved ``held_out_session_ids``, returns
+    two boolean masks over the rows: the development mask (rows whose session is
+    NOT reserved — used for all cross-validation, screening, selection, and
+    regularisation tuning) and the held-out mask (rows whose session IS reserved —
+    scored exactly once by the final development-refit model). When
+    ``held_out_session_ids`` is empty the development mask is all-True and the
+    held-out mask is all-False, so the caller behaves exactly as it did before the
+    held-out mechanism existed.
+
+    Parameters
+    ----------
+    groups : array-like
+        Per-row session identifiers, length equal to the number of pooled rows.
+    held_out_session_ids : list
+        The reserved session identifiers (see :func:`seeded_session_holdout`).
+
+    Returns
+    -------
+    tuple of numpy.ndarray
+        ``(development_mask, held_out_mask)`` — boolean arrays of shape
+        ``(len(groups),)`` that are exact complements of each other.
+    """
+
+    groups_arr = np.asarray(groups)
+    if not held_out_session_ids:
+        held_out_mask = np.zeros(groups_arr.shape[0], dtype=bool)
+    else:
+        held_out_mask = np.isin(groups_arr, np.asarray(list(held_out_session_ids)))
+    development_mask = ~held_out_mask
+    return development_mask, held_out_mask
 
 
 def resolve_mouse_roles(modeling_settings: dict,
@@ -1789,7 +1931,7 @@ def run_predictor_audits(processed_beh_dict: dict,
         listed event classes — matching the balanced design that
         binary-classification pipelines (e.g. the bout-onset GAM)
         actually train on. Subsampling is deterministic via a NumPy
-        `default_rng` seeded with `settings['model_params']['random_seed']`
+        `default_rng` seeded with `settings['model_validation']['random_seed']`
         (or `0` when that field is None). When False (default), the
         wrapper concatenates every per-key array verbatim, which is
         appropriate for pipelines whose event classes have
@@ -1887,7 +2029,7 @@ def run_predictor_audits(processed_beh_dict: dict,
 
             if balance_event_keys and len(per_key_arrays) >= 2:
                 if balance_rng is None:
-                    seed_raw = settings['model_params']['random_seed']
+                    seed_raw = settings['model_validation']['random_seed']
                     balance_rng = np.random.default_rng(
                         int(seed_raw) if seed_raw is not None else 0
                     )
@@ -2017,7 +2159,7 @@ def run_predictor_audits(processed_beh_dict: dict,
                     f"`diagnostics.timescale_signal_min_run_seconds` must be "
                     f"strictly positive (got {signal_min_run_seconds!r})."
                 )
-            random_seed = settings['model_params']['random_seed'] if settings['model_params']['random_seed'] is not None else 0
+            random_seed = settings['model_validation']['random_seed'] if settings['model_validation']['random_seed'] is not None else 0
 
             # Bout-onset times for the timescale audit's binary `Y`
             # trace. Built here (inside the timescale audit's

@@ -41,6 +41,9 @@ from .modeling_metadata import (
 from .load_input_files import _calculate_ibi_threshold
 from .modeling_utils import (
     prepare_modeling_sessions,
+    seeded_session_holdout,
+    held_out_session_ids_from_metadata,
+    development_heldout_masks,
     resolve_mouse_roles,
     select_kinematic_columns,
     build_vocal_signal_columns,
@@ -61,7 +64,7 @@ from ..os_utils import resolve_modeling_setting
 # Initial spatial-CV session-split matching tolerance (auto-widens at runtime)
 # and the Expected-Calibration-Error histogram bin count, read from the settings
 # blocks rather than bare 0.05 / 10 literals.
-_SESSION_SPLIT_INITIAL_TOLERANCE = resolve_modeling_setting('model_params', 'session_split_initial_tolerance')
+_SESSION_SPLIT_INITIAL_TOLERANCE = resolve_modeling_setting('model_validation', 'session_split_initial_tolerance')
 _ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 
 
@@ -910,6 +913,13 @@ class MultinomialModelingPipeline(FeatureZoo):
             for sid, targets in multinomial_targets.items()
         }
 
+        _sorted_session_ids = sorted(processed_beh_data.keys())
+        held_out_session_ids = seeded_session_holdout(
+            session_ids=_sorted_session_ids,
+            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
+            random_seed=self.modeling_settings['model_validation']['random_seed'],
+        )
+
         input_metadata = build_input_metadata(
             modeling_settings=self.modeling_settings,
             analysis_type='multinomial',
@@ -918,8 +928,9 @@ class MultinomialModelingPipeline(FeatureZoo):
             target_idx=targ_idx,
             predictor_idx=pred_idx,
             n_sessions_used=len(processed_beh_data),
-            session_ids=sorted(processed_beh_data.keys()),
+            session_ids=_sorted_session_ids,
             n_events_per_session=n_events_per_session_md,
+            held_out_session_ids=held_out_session_ids,
             feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
             feature_zoo_kept=feature_zoo_kept_md,
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
@@ -1351,12 +1362,12 @@ class MultinomialModelRunner:
 
         # Strict dictionary lookups (No .get() allowed)
         hp = self.modeling_settings['hyperparameters']['jax_linear']['multinomial_logistic']
-        n_splits = self.modeling_settings['model_params']['split_num']
-        split_strategy = self.modeling_settings['model_params']['split_strategy']
-        test_prop = self.modeling_settings['model_params']['test_proportion']
+        n_splits = self.modeling_settings['model_validation']['n_cv_folds']
+        split_strategy = self.modeling_settings['model_validation']['split_strategy']
+        test_prop = self.modeling_settings['model_validation']['cv_validation_proportion']
         bin_size = hp['bin_resizing_factor']
         balance_train = hp['balance_train_bool']
-        base_seed = self.modeling_settings['model_params']['random_seed']
+        base_seed = self.modeling_settings['model_validation']['random_seed']
         # Coalesce a None `random_seed` to 0 so the null-branch RNGs below do not crash
         # on `None + fold` (matches `run_predictor_audits`).
         if base_seed is None:
@@ -1415,19 +1426,46 @@ class MultinomialModelRunner:
         groups = feat_data['groups']
         n_time = feat_data['n_time_bins']
 
-        mp = self.modeling_settings['model_params']
-        cv_folds, fold_tolerances = get_stratified_group_splits_stable(
-            groups=groups,
-            y=feat_data['y'],
+        # Reserve the held-out sessions carved ONCE at extraction time and shipped
+        # in `_input_metadata.held_out_session_ids`. They are dropped from every
+        # CV fold below (development-only folds, indices remapped to full-array
+        # space) and instead scored once, after the strategy loop, by refitting
+        # the accepted model on all development sessions -- the honest, selection-
+        # leakage-free number. An empty list (holdout disabled or a pre-v2 pickle)
+        # makes `dev_mask` all-True and `held_positions` empty, so the whole path
+        # is an exact no-op and legacy inputs still run.
+        held_out_session_ids = held_out_session_ids_from_metadata(_input_md)
+        dev_mask, held_mask = development_heldout_masks(groups, held_out_session_ids)
+        dev_positions = np.where(dev_mask)[0]
+        held_positions = np.where(held_mask)[0]
+
+        # Fold the DEVELOPMENT sessions only, then remap the dev-relative indices
+        # the splitter returns back into full-array index space via
+        # `dev_positions`. Every fold index stays a valid row of the full
+        # `X`/`groups`/`y` arrays while no held-out row can enter a train or
+        # validation split. With holdout disabled `dev_positions` is the identity
+        # map, so this is byte-identical to the pre-holdout behaviour.
+        cv_folds_dev, fold_tolerances = get_stratified_group_splits_stable(
+            groups=groups[dev_mask],
+            y=feat_data['y'][dev_mask],
             split_strategy=split_strategy,
             test_prop=test_prop,
             n_splits=n_splits,
             random_seed=base_seed,
             n_categories=n_categories_total,
-            max_total_attempts=mp['session_split_max_attempts'],
-            widen_step=mp['session_split_widen_step'],
-            widen_every=mp['session_split_widen_every']
+            max_total_attempts=self.modeling_settings['model_validation']['session_split_max_attempts'],
+            widen_step=self.modeling_settings['model_validation']['session_split_widen_step'],
+            widen_every=self.modeling_settings['model_validation']['session_split_widen_every']
         )
+        cv_folds = [
+            (dev_positions[tr_idx], dev_positions[te_idx])
+            for (tr_idx, te_idx) in cv_folds_dev
+        ]
+        if held_positions.size > 0:
+            print(
+                f"Held-out reserve: {len(held_out_session_ids)} session(s), "
+                f"{held_positions.size} event(s) excluded from CV; scored once after the fold loop."
+            )
 
         # Project-wide canonical class ordering so per-fold proportion arrays are
         # directly comparable across folds and strategies even when a fold happens
@@ -1708,6 +1746,191 @@ class MultinomialModelRunner:
                     strategy_data['classes'] = model_classes
 
             combined_results[strategy] = strategy_data
+
+        # Honest held-out score. For every strategy, refit on ALL development
+        # sessions and score once on the reserved held-out block, mirroring the
+        # per-fold fit above with train := development and test := held-out. This
+        # is the only number untouched by fold selection or lambda-tuning (all of
+        # which saw development data only). Skipped when holdout is disabled
+        # (`held_positions` empty), so `combined_results[strategy]` then carries
+        # no `heldout` key -- exactly the pre-holdout schema.
+        if held_positions.size > 0:
+            X_dev_full = X[dev_positions]
+            X_held = X[held_positions]
+            y_dev_true = feat_data['y'][dev_positions]
+            y_held = feat_data['y'][held_positions]
+            groups_dev = groups[dev_positions]
+            # Distinct-but-deterministic seeds for the final refit: offset the
+            # fold seeds by `n_splits` so the held-out pass never collides with a
+            # fold's model-init or null-permutation RNG.
+            held_null_rng = np.random.default_rng(base_seed + 9_973 + n_splits + 1)
+
+            for strategy in strategies:
+                # Re-derive the development labels exactly as the CV loop did for
+                # this strategy so the held-out model matches the strategy under
+                # test: 'actual' keeps true labels; 'null' shuffles labels within
+                # each development session; 'null_model_free' keeps true labels
+                # but predicts the empirical development prior for every trial.
+                y_dev = y_dev_true.copy()
+                if strategy == 'null':
+                    for sess_id in np.unique(groups_dev):
+                        sess_mask = (groups_dev == sess_id)
+                        sess_labels = y_dev[sess_mask].copy()
+                        held_null_rng.shuffle(sess_labels)
+                        y_dev[sess_mask] = sess_labels
+
+                held_weights = None
+                held_intercepts = None
+
+                if strategy == 'null_model_free':
+                    # Empirical class priors from the development set; predict that
+                    # same distribution for every held-out trial (the chance floor).
+                    unique_classes, counts = np.unique(y_dev, return_counts=True)
+                    class_priors = counts / float(np.sum(counts))
+                    probabilities = np.tile(class_priors, (len(y_held), 1))
+                    majority_class = unique_classes[np.argmax(class_priors)]
+                    predictions = np.full(len(y_held), majority_class)
+                    model_classes = unique_classes
+                    held_n_iter = 0
+                    held_converged = True
+                    held_fit_time = 0.0
+                    held_lambda_smooth = float('nan')
+                    held_l2_reg = float('nan')
+                    held_grid_audit = {
+                        'grid_scores': {}, 'grid_ses': {},
+                        'argmax_pair': None,
+                        'one_se_applied': False, 'one_se_threshold': None,
+                    }
+                    held_tuned_flag = False
+                    p_train_labels = y_dev
+                else:
+                    # Mirror the fold body: when sample-level balancing is on, zero
+                    # the focal-gamma / uniform class weights and balance the
+                    # development rows before fitting.
+                    if balance_train:
+                        effective_focal_gamma = 0.0
+                        use_uniform_weights = True
+                        balance_rng = np.random.default_rng(base_seed + n_splits + 1)
+                        dev_train_idx = _balance_multinomial_train_indices(
+                            np.arange(len(y_dev)), y_dev, balance_rng
+                        )
+                    else:
+                        effective_focal_gamma = hp['focal_loss_gamma']
+                        use_uniform_weights = False
+                        dev_train_idx = np.arange(len(y_dev))
+
+                    X_dev = X_dev_full[dev_train_idx]
+                    y_dev_fit = y_dev[dev_train_idx]
+                    p_train_labels = y_dev_fit
+
+                    if tune_regularization_bool:
+                        held_lambda_smooth, held_l2_reg, held_grid_audit = _tune_multinomial_regularization(
+                            X_train=X_dev,
+                            y_train=y_dev_fit,
+                            lambda_smooth_grid=lambda_smooth_grid,
+                            l2_reg_grid=l2_reg_grid,
+                            inner_cv_folds=inner_cv_folds,
+                            inner_cv_scoring_metric=inner_cv_scoring_metric,
+                            inner_cv_use_one_se_rule=inner_cv_use_one_se_rule,
+                            n_features=1,
+                            n_time_bins=n_time,
+                            smoothness_derivative_order=smoothness_order,
+                            focal_gamma=effective_focal_gamma,
+                            uniform_class_weights=use_uniform_weights,
+                            learning_rate=hp['learning_rate'],
+                            inner_max_iter=inner_max_iter,
+                            tol=hp['tol'],
+                            random_state=hp['random_state'] + n_splits,
+                            verbose=hp['verbose'],
+                            use_lax_loop=False,
+                            regressor_cls=SmoothMultinomialLogisticRegression,
+                        )
+                        held_tuned_flag = True
+                    else:
+                        held_lambda_smooth = float(lam_smooth_fixed)
+                        held_l2_reg = float(lam_l2_fixed)
+                        held_grid_audit = {
+                            'grid_scores': {}, 'grid_ses': {},
+                            'argmax_pair': None,
+                            'one_se_applied': False, 'one_se_threshold': None,
+                        }
+                        held_tuned_flag = False
+
+                    model = SmoothMultinomialLogisticRegression(
+                        n_features=1,
+                        n_time_bins=n_time,
+                        lambda_smooth=held_lambda_smooth,
+                        l2_reg=held_l2_reg,
+                        smoothness_derivative_order=smoothness_order,
+                        focal_gamma=effective_focal_gamma,
+                        uniform_class_weights=use_uniform_weights,
+                        learning_rate=hp['learning_rate'],
+                        max_iter=hp['max_iter'],
+                        tol=hp['tol'],
+                        random_state=hp['random_state'] + n_splits,
+                        verbose=hp['verbose'],
+                        _use_lax_loop=use_lax_loop,
+                    )
+                    model.fit(X_dev, y_dev_fit)
+                    probabilities = model.predict_proba(X_held, balanced=hp['balance_predictions_bool'])
+                    predictions = model.predict(X_held, balanced=hp['balance_predictions_bool'])
+                    model_classes = model.classes_
+                    held_weights = model.coef_
+                    held_intercepts = model.intercept_
+                    held_n_iter = int(model.n_iter_)
+                    held_converged = bool(model.converged_)
+                    held_fit_time = float(model.fit_time_)
+
+                eps = 1e-15
+                probabilities_clipped = np.clip(probabilities, eps, 1 - eps)
+                h_score = balanced_accuracy_score(y_held, predictions)
+                try:
+                    h_ll = log_loss(y_held, probabilities_clipped, labels=model_classes)
+                except ValueError:
+                    h_ll = np.nan
+                try:
+                    h_auc = roc_auc_score(y_held, probabilities, multi_class='ovr', average='macro', labels=model_classes)
+                except ValueError:
+                    h_auc = np.nan
+                probs_canonical = align_probs_to_canonical(probabilities, model_classes, canonical_classes)
+                try:
+                    h_brier = brier_score_multi(y_held, probs_canonical, canonical_classes)
+                except Exception as e:
+                    h_brier = np.nan
+                    print(f"[warn] held-out diagnostic metric could not be recorded: {e}")
+                try:
+                    h_ece = expected_calibration_error(y_held, predictions, probs_canonical, n_bins=_ECE_N_BINS)
+                except Exception as e:
+                    h_ece = np.nan
+                    print(f"[warn] held-out diagnostic metric could not be recorded: {e}")
+                h_mcc = safe_matthews_corrcoef(y_held, predictions)
+
+                combined_results[strategy]['heldout'] = {
+                    'metrics': {
+                        'score': h_score, 'll': h_ll, 'auc': h_auc,
+                        'recall': recall_score(y_held, predictions, average='macro', zero_division=0),
+                        'f1': f1_score(y_held, predictions, average='macro', zero_division=0),
+                        'brier': h_brier, 'ece': h_ece, 'mcc': h_mcc,
+                    },
+                    'weights': held_weights,
+                    'intercepts': held_intercepts,
+                    'y_true': y_held,
+                    'y_pred': predictions,
+                    'y_probs': probabilities,
+                    'test_indices': held_positions,
+                    'p_train': _class_proportions(p_train_labels),
+                    'p_test': _class_proportions(y_held),
+                    'confusion_matrix': safe_confusion_matrix(y_held, predictions, labels=canonical_classes),
+                    'n_iter': held_n_iter,
+                    'converged': held_converged,
+                    'fit_time': held_fit_time,
+                    'selected_lambda_smooth': held_lambda_smooth,
+                    'selected_l2_reg': held_l2_reg,
+                    'hyperparam_grid_audit': held_grid_audit,
+                    'hyperparams_tuned': held_tuned_flag,
+                    'n_held_out_sessions': len(held_out_session_ids),
+                    'n_held_out_events': int(held_positions.size),
+                }
 
         # Standardized per-split lines: ACTUAL vs NULL vs NULL-MF headline
         # metrics per split (bal-acc, macro AUC, LL). The three strategies are

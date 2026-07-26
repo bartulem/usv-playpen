@@ -340,9 +340,9 @@ class TestUnivariateDispatcher:
         branch = payload[feat_key]['actual']
         for metric in ('ll', 'auc', 'score', 'brier', 'ece', 'mcc'):
             assert metric in branch
-            assert branch[metric].shape == (settings['model_params']['split_num'],)
+            assert branch[metric].shape == (settings['model_validation']['n_cv_folds'],)
         assert branch['filter_shapes'].shape == (
-            settings['model_params']['split_num'], HISTORY_FRAMES,
+            settings['model_validation']['n_cv_folds'], HISTORY_FRAMES,
         )
         # The strong-signal pickle yields at least one finite (fitted) fold.
         assert np.isfinite(branch['ll']).any()

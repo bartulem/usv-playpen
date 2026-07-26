@@ -750,9 +750,9 @@ class TestUnivariateCategoryDispatcher:
             branch = payload[feat_key][branch_name]
             for metric in ('ll', 'auc', 'score', 'brier', 'ece', 'mcc', 'f1', 'recall'):
                 assert metric in branch
-                assert branch[metric].shape == (settings['model_params']['split_num'],)
+                assert branch[metric].shape == (settings['model_validation']['n_cv_folds'],)
         assert payload[feat_key]['actual']['filter_shapes'].shape == (
-            settings['model_params']['split_num'], HISTORY_FRAMES,
+            settings['model_validation']['n_cv_folds'], HISTORY_FRAMES,
         )
         # At least one fold across actual + null is finite (fitted), proving the
         # category split / fit path actually ran rather than failing every fold.
@@ -800,7 +800,7 @@ class TestUnivariateCategoryDispatcher:
             payload = pickle.load(fh)
         feat_key = next(k for k in payload if not k.startswith('_'))
         assert payload[feat_key]['actual']['auc'].shape == (
-            settings['model_params']['split_num'],
+            settings['model_validation']['n_cv_folds'],
         )
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
@@ -838,9 +838,9 @@ class TestUnivariateCategoryDispatcher:
 
         assert fn == 'self.speed'
         for metric in ('ll', 'auc', 'score', 'brier', 'mcc', 'f1', 'recall'):
-            assert res['actual'][metric].shape == (settings['model_params']['split_num'],)
+            assert res['actual'][metric].shape == (settings['model_validation']['n_cv_folds'],)
         assert res['actual']['filter_shapes'].shape == (
-            settings['model_params']['split_num'], HISTORY_FRAMES,
+            settings['model_validation']['n_cv_folds'], HISTORY_FRAMES,
         )
         # The pygam branch fitted at least one fold (proves the GAM path ran).
         assert np.isfinite(res['actual']['ll']).any()
@@ -1157,12 +1157,20 @@ def _minimal_category_settings(
         'io': {'camera_sampling_rate': CAMERA_FPS, 'csv_separator': ','},
         'model_params': {
             'filter_history': FILTER_HISTORY,
-            'split_strategy': split_strategy,
-            'split_num': split_num,
-            'test_proportion': test_proportion,
-            'random_seed': random_seed,
             'model_engine': model_engine,
         },
+        # The data-splitting dials moved into `model_validation` (the pipeline
+        # reads them exclusively from there); `split_num` -> `n_cv_folds` and
+        # `test_proportion` -> `cv_validation_proportion`. `held_out_test_proportion`
+        # is 0.0 so no session is reserved for these minimal fixtures.
+        'model_validation': {
+            'split_strategy': split_strategy,
+            'n_cv_folds': split_num,
+            'cv_validation_proportion': test_proportion,
+            'random_seed': random_seed,
+            'held_out_test_proportion': 0.0,
+        },
+        'diagnostics': {'binary_decision_threshold': 0.5},
         'hyperparameters': {
             'classical': {
                 'logistic_regression': {

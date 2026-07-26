@@ -845,7 +845,7 @@ class TestMultinomialUnivariateRunner:
         )
 
         assert feat_name == 'self.speed'
-        n_splits = settings['model_params']['split_num']
+        n_splits = settings['model_validation']['n_cv_folds']
         metric_keys = {'auc', 'score', 'recall', 'f1', 'll', 'brier', 'ece', 'mcc'}
         for strategy in ('actual', 'null', 'null_model_free'):
             assert strategy in results
@@ -944,7 +944,7 @@ class TestMultinomialModelSelection:
         univ_pkl = str(build_univariate_ranking_pickle(
             save_path=tmp_path / 'univariate_combined.pkl',
             feature_names=feature_names,
-            n_splits=settings['model_params']['split_num'],
+            n_splits=settings['model_validation']['n_cv_folds'],
         ))
 
         settings_json = tmp_path / 'settings.json'
@@ -964,7 +964,7 @@ class TestMultinomialModelSelection:
         step_pkls = sorted(ms_dir.glob('model_selection_multinomial_*_step_*.pkl'))
         assert len(step_pkls) >= 1, "expected at least the Step-0 baseline pickle"
 
-        n_splits = settings['model_params']['split_num']
+        n_splits = settings['model_validation']['n_cv_folds']
         accepted_counts = []
         saw_baseline = False
         for p in step_pkls:
@@ -1018,7 +1018,7 @@ class TestMultinomialModelSelection:
         univ_pkl = str(build_univariate_ranking_pickle(
             save_path=tmp_path / 'univariate_combined.pkl',
             feature_names=feature_names,
-            n_splits=settings['model_params']['split_num'],
+            n_splits=settings['model_validation']['n_cv_folds'],
         ))
 
         settings_json = tmp_path / 'settings.json'
@@ -1369,7 +1369,7 @@ class TestMultinomialRunnerExtraBranches:
             pkl_path=input_pkl, feat_name='self.speed'
         )
 
-        n_splits = settings['model_params']['split_num']
+        n_splits = settings['model_validation']['n_cv_folds']
         for strategy in ('actual', 'null'):
             folds = results[strategy]['folds']
             assert folds['balanced_train'] is True

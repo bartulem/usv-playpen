@@ -209,7 +209,7 @@ class TestMultinomialFoldFailure:
         univ_pkl = str(build_univariate_ranking_pickle(
             save_path=tmp_path / 'univariate_combined.pkl',
             feature_names=feature_names,
-            n_splits=settings['model_params']['split_num'],
+            n_splits=settings['model_validation']['n_cv_folds'],
         ))
 
         ms_dir = tmp_path / 'model_selection'
@@ -277,7 +277,7 @@ class TestMultinomialFoldFailure:
         univ_pkl = str(build_univariate_ranking_pickle(
             save_path=tmp_path / 'univariate_combined.pkl',
             feature_names=feature_names,
-            n_splits=settings['model_params']['split_num'],
+            n_splits=settings['model_validation']['n_cv_folds'],
         ))
 
         ms_dir = tmp_path / 'model_selection'

@@ -55,7 +55,8 @@ from .modeling_bases_functions import (raised_cosine, bsplines, identity,
                                       laplacian_pyramid, _normalizecols)
 from .modeling_metadata import (build_run_metadata, inject_metadata, RESERVED_METADATA_KEYS)
 from .modeling_utils import (format_run_header, format_run_summary,
-                             extract_univariate_headline)
+                             extract_univariate_headline,
+                             held_out_session_ids_from_metadata)
 
 def get_basis_matrix_standardized(
         settings: dict,
@@ -283,8 +284,8 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
         feature=feature_name,
         input_files={'input data': args.input_data, 'settings': settings_path},
         output_directory=args.output_dir,
-        split_strategy=settings['model_params']['split_strategy'],
-        n_splits=int(settings['model_params']['split_num']),
+        split_strategy=settings['model_validation']['split_strategy'],
+        n_splits=int(settings['model_validation']['n_cv_folds']),
     ))
 
     # 3. Execution Routing
@@ -295,21 +296,32 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
         # CATEGORY A: CPU-based Modeling (Onset, Category, Params)
         if args.analysis_type in ['onset', 'category', 'params']:
 
+            # Held-out session reserve carved once at extraction time and recorded
+            # in `_input_metadata.held_out_session_ids`. Passed explicitly to each
+            # CPU run method (rather than injected into `feat_data`, whose shape
+            # differs per pipeline -- flat X/y/groups for params, a per-session
+            # dict for onset/category) so those sessions are excluded from every CV
+            # fold and scored once at the end. Empty list -- holdout disabled or a
+            # legacy pickle without the field.
+            held_out_ids = held_out_session_ids_from_metadata(
+                input_metadata if input_metadata is not None else {}
+            )
+
             if args.analysis_type == 'onset':
 
                 pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
                 basis = get_basis_matrix_standardized(settings, pipeline.history_frames, args.output_dir)
 
                 if settings['model_params']['model_engine'] == 'sklearn':
-                    fn, res = pipeline._run_model_for_feature_sklearn(feature_name, feat_data, basis)
+                    fn, res = pipeline._run_model_for_feature_sklearn(feature_name, feat_data, basis, held_out_session_ids=held_out_ids)
                 else:
-                    fn, res = pipeline._run_model_for_feature_pygam(feature_name, feat_data, None)
+                    fn, res = pipeline._run_model_for_feature_pygam(feature_name, feat_data, None, held_out_session_ids=held_out_ids)
 
             elif args.analysis_type == 'category':
 
                 pipeline = VocalCategoryModelingPipeline(modeling_settings_dict=settings)
                 basis = get_basis_matrix_standardized(settings, pipeline.history_frames, args.output_dir)
-                fn, res = pipeline._run_modeling_category(feature_name, feat_data, basis)
+                fn, res = pipeline._run_modeling_category(feature_name, feat_data, basis, held_out_session_ids=held_out_ids)
 
             elif args.analysis_type == 'params':
 
@@ -317,9 +329,9 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
                 basis = get_basis_matrix_standardized(settings, pipeline.history_frames, args.output_dir)
 
                 if settings['model_params']['model_engine'] == 'sklearn':
-                    fn, res = pipeline._run_model_for_feature_sklearn(feature_name, feat_data, basis)
+                    fn, res = pipeline._run_model_for_feature_sklearn(feature_name, feat_data, basis, held_out_session_ids=held_out_ids)
                 else:
-                    fn, res = pipeline._run_model_for_feature_pygam(feature_name, feat_data, None)
+                    fn, res = pipeline._run_model_for_feature_pygam(feature_name, feat_data, None, held_out_session_ids=held_out_ids)
 
             results = {fn: res}
 
@@ -357,14 +369,14 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
         return
 
     # 4. Build run-level metadata
-    # `n_outer_folds` and `split_strategy` come straight from the model_params
+    # `n_outer_folds` and `split_strategy` come straight from the model_validation
     # block — both are the values the runner actually consulted.
     run_metadata = build_run_metadata(
         modeling_settings=settings,
         analysis_type=args.analysis_type,
         null_strategy='x_history_shuffle',
-        n_outer_folds=int(settings['model_params']['split_num']),
-        split_strategy=settings['model_params']['split_strategy'],
+        n_outer_folds=int(settings['model_validation']['n_cv_folds']),
+        split_strategy=settings['model_validation']['split_strategy'],
         settings_path=settings_path,
     )
 

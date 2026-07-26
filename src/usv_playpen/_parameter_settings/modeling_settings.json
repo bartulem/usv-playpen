@@ -15,15 +15,6 @@
     "model_predictor_mouse_index": 1,
     "model_target_vocal_type": "bout",
     "model_target_variable": "bout_durations",
-    "random_seed": 0,
-    "spatial_cluster_num": 20,
-    "split_strategy": "mixed",
-    "split_num": 10,
-    "test_proportion": 0.2,
-    "session_split_initial_tolerance": 0.05,
-    "session_split_max_attempts": 50000,
-    "session_split_widen_step": 0.02,
-    "session_split_widen_every": 1000,
     "selection_p_val": 0.01,
     "selection_effect_floor": 0.1,
     "selection_n_bootstrap": 1000,
@@ -31,6 +22,19 @@
     "usv_bout_time": 2,
     "usv_per_bout_floor": 2,
     "onset_target_category": null
+  },
+
+  "model_validation": {
+    "held_out_test_proportion": 0.1,
+    "split_strategy": "session",
+    "n_cv_folds": 10,
+    "cv_validation_proportion": 0.1,
+    "random_seed": 0,
+    "spatial_cluster_num": 20,
+    "session_split_initial_tolerance": 0.05,
+    "session_split_max_attempts": 50000,
+    "session_split_widen_step": 0.02,
+    "session_split_widen_every": 1000
   },
 
   "kinematic_features": {

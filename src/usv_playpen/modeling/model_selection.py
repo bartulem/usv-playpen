@@ -13,7 +13,7 @@ import warnings
 from collections import defaultdict
 from pathlib import Path
 from pygam import LogisticGAM, GAM, te
-from scipy.stats import spearmanr, wilcoxon
+from scipy.stats import spearmanr
 from sklearn.linear_model import LogisticRegressionCV, GammaRegressor
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit, ShuffleSplit, GridSearchCV
 from sklearn.metrics import (log_loss, roc_auc_score, f1_score, recall_score,
@@ -35,6 +35,8 @@ from .modeling_utils import (
     format_run_header,
     format_run_summary,
     format_selection_step,
+    held_out_session_ids_from_metadata,
+    development_heldout_masks,
 )
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_multinomial import (
@@ -722,6 +724,23 @@ def vocal_onset_model_selection(univariate_results_path: str,
         common_sessions = common_sessions.intersection(set(all_feature_data[feat].keys()))
     all_sessions = sorted(list(common_sessions))
 
+    # Held-out reserve carved ONCE at extraction time and shipped in the
+    # univariate `_input_metadata.held_out_session_ids`. Restrict every selection
+    # fold and the pooled-feature cache below to DEVELOPMENT sessions; the held-out
+    # sessions are scored exactly once at finalization by refitting the accepted
+    # model on all development data (the honest, selection-leakage-free number).
+    # An empty list -- holdout disabled or a pre-v2 pickle -- makes
+    # `dev_sessions == all_sessions` and `held_sessions` empty, an exact no-op.
+    _held_out_session_ids = held_out_session_ids_from_metadata(_input_md if _input_md is not None else {})
+    _held_set = set(_held_out_session_ids)
+    dev_sessions = [s for s in all_sessions if s not in _held_set]
+    held_sessions = [s for s in all_sessions if s in _held_set]
+    if held_sessions:
+        print(
+            f"Held-out reserve: {len(held_sessions)} session(s) excluded from "
+            f"selection; scored once at finalization."
+        )
+
     pygam_params = settings['hyperparameters']['classical']['pygam']
     n_splines_time = pygam_params['n_splines_time']
     n_splines_value = pygam_params['n_splines_value']
@@ -733,12 +752,11 @@ def vocal_onset_model_selection(univariate_results_path: str,
         'lam': lam_penalty
     }
 
-    model_ops = settings['model_params']
-    split_strategy = model_ops['split_strategy']
-    n_splits_selection = model_ops['split_num']
-    test_prop = model_ops['test_proportion']
+    split_strategy = settings['model_validation']['split_strategy']
+    n_splits_selection = settings['model_validation']['n_cv_folds']
+    test_prop = settings['model_validation']['cv_validation_proportion']
 
-    random_seed = settings['model_params']['random_seed']
+    random_seed = settings['model_validation']['random_seed']
     print(format_run_header(
         task='SELECTION:ONSET',
         engine=settings['model_params']['model_engine'],
@@ -773,6 +791,11 @@ def vocal_onset_model_selection(univariate_results_path: str,
             'p_val': float(p_val),
             'n_splines_time': int(n_splines_time),
             'n_splines_value': int(n_splines_value),
+            # Held-out provenance (also in the embedded `_input_metadata` sibling);
+            # duplicated here so the selection run-metadata is self-describing.
+            'held_out_test_proportion': float(settings['model_validation']['held_out_test_proportion']),
+            'held_out_session_ids': list(_held_out_session_ids),
+            'n_held_out_sessions': len(held_sessions),
         },
         settings_path=settings_path,
     )
@@ -780,15 +803,17 @@ def vocal_onset_model_selection(univariate_results_path: str,
 
     cv_folds = []
     if split_strategy == 'session':
-        all_sessions_arr = np.array(all_sessions)
-        ss = ShuffleSplit(n_splits=n_splits_selection, test_size=bounded_test_proportion(test_prop, len(all_sessions)), random_state=random_seed)
+        all_sessions_arr = np.array(dev_sessions)
+        ss = ShuffleSplit(n_splits=n_splits_selection, test_size=bounded_test_proportion(test_prop, len(dev_sessions)), random_state=random_seed)
         for train_idx, test_idx in ss.split(all_sessions_arr):
             cv_folds.append({'train_sessions': all_sessions_arr[train_idx], 'test_sessions': all_sessions_arr[test_idx], 'type': 'session'})
     elif split_strategy == 'mixed':
         # Stratified split over the *unbalanced* pool: preserves the natural class
         # ratio in both train and test indices. Per-fold, training will be balanced
-        # 50/50 inside the loop; test retains the natural class prior.
-        X_p_all, X_n_all = pool_session_arrays(all_feature_data[anchor_feature], all_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
+        # 50/50 inside the loop; test retains the natural class prior. Pool over
+        # DEVELOPMENT sessions only so the mixed-fold event indices never reference
+        # a held-out row (the pooled-feature cache below is keyed to the same set).
+        X_p_all, X_n_all = pool_session_arrays(all_feature_data[anchor_feature], dev_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=pipeline.history_frames)
         n_pos_total = X_p_all.shape[0]
         n_neg_total = X_n_all.shape[0]
         y_full = np.concatenate((np.ones(n_pos_total), np.zeros(n_neg_total)))
@@ -811,7 +836,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
     for _feat_name in ranked_features:
         _X_p, _X_n = pool_session_arrays(
             all_feature_data[_feat_name],
-            all_sessions,
+            dev_sessions,
             pos_key="usv_feature_arr",
             neg_key="no_usv_feature_arr",
             n_frames=pipeline.history_frames,
@@ -1286,6 +1311,71 @@ def vocal_onset_model_selection(univariate_results_path: str,
             f"to a single line (expected {len(cv_folds)} folds)."
         )
 
+    # Honest held-out score (onset). Refit the accepted feature set on ALL
+    # development sessions (balanced training pool) and score it once on the
+    # reserved held-out sessions at their natural class prior (LL), mirroring the
+    # session-strategy fold fit, plus a shuffled-label null control for the
+    # held-out chance floor. This is the only number untouched by screening,
+    # greedy acceptance, or the per-fold balancing. Skipped when holdout is
+    # disabled (`held_sessions` empty), no feature was accepted, or the pooled
+    # data is degenerate -- leaving `heldout` None so no-holdout runs match before.
+    heldout_result = None
+    if held_sessions and len(current_model_features) > 0:
+        p_dev_by_feat, n_dev_by_feat, test_by_feat = [], [], []
+        n_p_held = n_n_held = None
+        for f_name in current_model_features:
+            p_dev, n_dev = pool_session_arrays(all_feature_data[f_name], dev_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
+            p_held, n_held = pool_session_arrays(all_feature_data[f_name], held_sessions, pos_key="usv_feature_arr", neg_key="no_usv_feature_arr", n_frames=history_frames)
+            p_dev_by_feat.append(p_dev)
+            n_dev_by_feat.append(n_dev)
+            test_by_feat.append(np.concatenate((p_held, n_held)))
+            if n_p_held is None:
+                n_p_held, n_n_held = p_held.shape[0], n_held.shape[0]
+        n_keep = min(p_dev_by_feat[0].shape[0], n_dev_by_feat[0].shape[0])
+        heldout_result = {
+            'features': list(current_model_features),
+            'n_held_out_sessions': len(held_sessions),
+            'n_held_out_events': int(n_p_held + n_n_held),
+        }
+        if n_keep > 0 and (n_p_held + n_n_held) > 0:
+            gam_terms_final = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+            for i in range(1, len(current_model_features)):
+                gam_terms_final += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+            y_held_test = np.concatenate((np.ones(n_p_held), np.zeros(n_n_held)))
+            y_te_int = y_held_test.astype(int)
+            X_te_gam = get_unrolled_X_for_multivariate(test_by_feat, history_frames)
+            # Distinct-but-deterministic seed for the balanced development draw and
+            # the null permutation; offset the fold seeds by `n_splits_selection`.
+            held_rng = np.random.default_rng(random_seed + n_splits_selection + 1)
+            idx_p = held_rng.choice(p_dev_by_feat[0].shape[0], n_keep, replace=False)
+            idx_n = held_rng.choice(n_dev_by_feat[0].shape[0], n_keep, replace=False)
+            X_train_list = [
+                np.concatenate((p_dev_by_feat[k][idx_p], n_dev_by_feat[k][idx_n]))
+                for k in range(len(current_model_features))
+            ]
+            X_tr_gam = get_unrolled_X_for_multivariate(X_train_list, history_frames)
+            y_tr_bal = np.concatenate((np.ones(n_keep), np.zeros(n_keep)))
+            for branch in ('actual', 'null'):
+                y_tr_use = y_tr_bal if branch == 'actual' else held_rng.permutation(y_tr_bal)
+                rec = {'ll': np.nan, 'auc': np.nan, 'score': np.nan,
+                       'deviance_explained': np.nan, 'brier': np.nan}
+                try:
+                    gam = LogisticGAM(gam_terms_final, **gam_kwargs).fit(
+                        X_tr_gam, np.repeat(y_tr_use.astype(float), history_frames)
+                    )
+                    y_proba_tiled = gam.predict_proba(X_te_gam)
+                    y_proba_mean = np.mean(y_proba_tiled.reshape(len(y_held_test), history_frames), axis=1)
+                    y_pred_mean = (y_proba_mean >= settings['diagnostics']['binary_decision_threshold']).astype(int)
+                    rec['ll'] = log_loss(y_te_int, np.clip(y_proba_mean, 1e-15, 1 - 1e-15))
+                    rec['deviance_explained'] = 1.0 - rec['ll'] / np.log(2)
+                    rec['score'] = balanced_accuracy_score(y_te_int, y_pred_mean)
+                    rec['brier'] = float(brier_score_loss(y_te_int, y_proba_mean))
+                    if len(np.unique(y_te_int)) > 1:
+                        rec['auc'] = roc_auc_score(y_te_int, y_proba_mean)
+                except Exception as e:
+                    print(f"Held-out refit failed (onset {branch}): {e}")
+                heldout_result[branch] = rec
+
     with open(last_file, 'rb') as f:
         data = pickle.load(f)
 
@@ -1297,16 +1387,22 @@ def vocal_onset_model_selection(univariate_results_path: str,
     data.update({
         'final_model_features': current_model_features,
         'filter_shapes': final_fold_shapes,
+        'heldout': heldout_result,
         'univariate_results_path': univariate_results_path,
         'input_data_path': input_data_path,
     })
 
     with open(last_file, 'wb') as f:
         pickle.dump(_wrap_step(data), f)
+    metrics_by_strategy = {'Final': {'LL': best_current_score},
+                           'Chance': {'LL': chance_ll}}
+    # Held-out LL (development-refit, scored once) -- the honest number alongside
+    # the optimistic development-CV `Final`.
+    if heldout_result is not None and 'actual' in heldout_result:
+        metrics_by_strategy['Held-out'] = {'LL': heldout_result['actual']['ll']}
     print(format_run_summary(
         label=f"onset model-selection ({len(current_model_features)} features)",
-        metrics_by_strategy={'Final': {'LL': best_current_score},
-                             'Chance': {'LL': chance_ll}},
+        metrics_by_strategy=metrics_by_strategy,
         out_path=str(last_file),
     ))
 
@@ -1582,6 +1678,26 @@ def vocal_category_model_selection(
     if len(all_sessions_arr) < 2:
         raise ValueError("Not enough common sessions for cross-validation.")
 
+    # Held-out reserve carved ONCE at extraction time and shipped in the
+    # univariate `_input_metadata.held_out_session_ids`. Restrict every selection
+    # fold (and the 'mixed' pooled cache) to DEVELOPMENT sessions by shrinking
+    # `all_sessions_arr`; the held-out sessions are kept aside in
+    # `held_sessions_arr` and scored exactly once at finalization by refitting the
+    # accepted model on all development data. An empty list -- holdout disabled or
+    # a pre-v2 pickle -- leaves `all_sessions_arr` unchanged and `held_sessions_arr`
+    # empty, an exact no-op.
+    _held_out_session_ids = held_out_session_ids_from_metadata(_input_md if _input_md is not None else {})
+    _held_set = set(_held_out_session_ids)
+    held_sessions_arr = np.array([s for s in all_sessions_arr if s in _held_set])
+    all_sessions_arr = np.array([s for s in all_sessions_arr if s not in _held_set])
+    if held_sessions_arr.size > 0:
+        print(
+            f"Held-out reserve: {held_sessions_arr.size} session(s) excluded from "
+            f"selection; scored once at finalization."
+        )
+    if len(all_sessions_arr) < 2:
+        raise ValueError("Not enough development sessions for cross-validation after reserving the held-out block.")
+
     # Strict Dictionary Access Only (No .get())
     camera_rate = settings['io']['camera_sampling_rate']
     filter_history_sec = settings['model_params']['filter_history']
@@ -1589,10 +1705,10 @@ def vocal_category_model_selection(
 
     model_ops = settings['model_params']
     model_type = model_ops['model_engine']
-    n_splits = model_ops['split_num']
-    test_prop = model_ops['test_proportion']
-    split_strategy = model_ops['split_strategy']
-    random_seed = settings['model_params']['random_seed']
+    n_splits = settings['model_validation']['n_cv_folds']
+    test_prop = settings['model_validation']['cv_validation_proportion']
+    split_strategy = settings['model_validation']['split_strategy']
+    random_seed = settings['model_validation']['random_seed']
 
     basis_matrix = None
     gam_kwargs = {}
@@ -1721,6 +1837,11 @@ def vocal_category_model_selection(
             'n_splines_value': int(n_splines_value),
             'target_category': target_category,
             'target_condition': target_condition,
+            # Held-out provenance (also in the embedded `_input_metadata` sibling);
+            # duplicated here so the selection run-metadata is self-describing.
+            'held_out_test_proportion': float(settings['model_validation']['held_out_test_proportion']),
+            'held_out_session_ids': list(_held_out_session_ids),
+            'n_held_out_sessions': int(held_sessions_arr.size),
         },
         settings_path=settings_path,
     )
@@ -2201,9 +2322,86 @@ def vocal_category_model_selection(
 
             gc.collect()
 
+        # Honest held-out score (category). Refit the accepted feature set on ALL
+        # development sessions (balanced target-vs-other training pool) and score
+        # it once on the reserved held-out sessions at their natural class prior
+        # (LL), mirroring the finalization fold fit for the active engine, plus a
+        # shuffled-label null control for the held-out chance floor. This is the
+        # only number untouched by screening, greedy acceptance, or the per-fold
+        # balancing. Skipped when holdout is disabled (`held_sessions_arr` empty),
+        # no feature was accepted, or the pooled data is degenerate -- leaving
+        # `heldout` None so no-holdout runs are byte-identical to before.
+        heldout_result = None
+        if held_sessions_arr.size > 0 and len(current_model_features) > 0:
+            dev_t_raw, dev_o_raw = _pool_category_features(
+                all_feature_data, current_model_features, all_sessions_arr, history_frames
+            )
+            held_t_raw, held_o_raw = _pool_category_features(
+                all_feature_data, current_model_features, held_sessions_arr, history_frames
+            )
+            # Distinct-but-deterministic seed for the balanced development draw and
+            # the null permutation; offset the fold seeds by `n_splits`.
+            held_seed = random_seed + n_splits + 1
+            X_tr_t, X_tr_o, y_tr_t, y_tr_o = _balance_multivariate_arrays(dev_t_raw, dev_o_raw, held_seed)
+            n_held_targ = held_t_raw[0].shape[0] if held_t_raw else 0
+            n_held_other = held_o_raw[0].shape[0] if held_o_raw else 0
+            heldout_result = {
+                'features': list(current_model_features),
+                'n_held_out_sessions': int(held_sessions_arr.size),
+                'n_held_out_events': int(n_held_targ + n_held_other),
+            }
+            if X_tr_t and n_held_targ > 0 and n_held_other > 0:
+                X_tr_list = [np.concatenate([t, o], axis=0) for t, o in zip(X_tr_t, X_tr_o)]
+                y_tr_bal = np.concatenate([y_tr_t, y_tr_o])
+                X_te_list = [np.concatenate([t, o], axis=0) for t, o in zip(held_t_raw, held_o_raw)]
+                y_test_held = np.concatenate([np.ones(n_held_targ), np.zeros(n_held_other)])
+                y_te_int = y_test_held.astype(int)
+                held_rng = np.random.default_rng(held_seed)
+                for branch in ('actual', 'null'):
+                    y_tr = y_tr_bal if branch == 'actual' else held_rng.permutation(y_tr_bal)
+                    rec = {'ll': np.nan, 'auc': np.nan, 'score': np.nan,
+                           'deviance_explained': np.nan, 'brier': np.nan}
+                    try:
+                        if model_type == 'sklearn':
+                            X_tr_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_tr_list])
+                            X_te_stacked = np.hstack([np.dot(x, basis_matrix) for x in X_te_list])
+                            model = LogisticRegressionCV(
+                                penalty=lr_params['penalty'],
+                                Cs=lr_params['cs'],
+                                cv=lr_params['cv'],
+                                class_weight='balanced',
+                                solver=lr_params['solver'],
+                                max_iter=lr_params['max_iter'],
+                                random_state=random_seed
+                            ).fit(X_tr_stacked, y_tr)
+                            y_prob = model.predict_proba(X_te_stacked)[:, 1]
+                            y_pred = model.predict(X_te_stacked)
+                        else:
+                            X_gam_tr = get_unrolled_X_for_multivariate(X_tr_list, history_frames)
+                            y_gam_tr = np.repeat(y_tr.astype(float), history_frames)
+                            gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+                            for i in range(1, len(current_model_features)):
+                                gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+                            gam = LogisticGAM(gam_terms, **gam_kwargs).fit(X_gam_tr, y_gam_tr)
+                            X_gam_te = get_unrolled_X_for_multivariate(X_te_list, history_frames)
+                            y_prob_frame = gam.predict_proba(X_gam_te)
+                            y_prob = np.mean(y_prob_frame.reshape(len(y_test_held), history_frames), axis=1)
+                            y_pred = (y_prob >= settings['diagnostics']['binary_decision_threshold']).astype(int)
+                        y_prob_clipped = np.clip(y_prob, 1e-15, 1 - 1e-15)
+                        rec['ll'] = log_loss(y_te_int, y_prob_clipped)
+                        rec['deviance_explained'] = 1.0 - rec['ll'] / np.log(2)
+                        rec['score'] = balanced_accuracy_score(y_te_int, y_pred)
+                        rec['brier'] = float(brier_score_loss(y_te_int, y_prob))
+                        if len(np.unique(y_te_int)) > 1:
+                            rec['auc'] = roc_auc_score(y_te_int, y_prob)
+                    except Exception as e:
+                        print(f"Held-out refit failed (category {branch}): {e}")
+                    heldout_result[branch] = rec
+
         final_res = {
             'final_model_features': current_model_features,
             'filter_shapes': final_fold_shapes,
+            'heldout': heldout_result,
             'univariate_results_path': univariate_results_path,
             'input_data_path': input_data_path
         }
@@ -2218,10 +2416,15 @@ def vocal_category_model_selection(
         with open(last_file, 'wb') as f:
             pickle.dump(_wrap_step(data), f)
 
+        metrics_by_strategy = {'Final': {'LL': best_current_score},
+                               'Chance': {'LL': chance_ll}}
+        # Held-out LL (development-refit, scored once) -- the honest number
+        # alongside the optimistic development-CV `Final`.
+        if heldout_result is not None and 'actual' in heldout_result:
+            metrics_by_strategy['Held-out'] = {'LL': heldout_result['actual']['ll']}
         print(format_run_summary(
             label=f"category model-selection ({len(current_model_features)} features)",
-            metrics_by_strategy={'Final': {'LL': best_current_score},
-                                 'Chance': {'LL': chance_ll}},
+            metrics_by_strategy=metrics_by_strategy,
             out_path=str(last_file),
         ))
 
@@ -2417,10 +2620,27 @@ def bout_parameter_model_selection(
     # Strict Dictionary Lookup
     model_ops = settings['model_params']
     model_type = model_ops['model_engine']
-    split_strategy = model_ops['split_strategy']
-    n_splits = model_ops['split_num']
-    test_prop = model_ops['test_proportion']
-    random_seed = settings['model_params']['random_seed']
+    split_strategy = settings['model_validation']['split_strategy']
+    n_splits = settings['model_validation']['n_cv_folds']
+    test_prop = settings['model_validation']['cv_validation_proportion']
+    random_seed = settings['model_validation']['random_seed']
+
+    # Reserve the held-out sessions carved ONCE at extraction time and shipped in
+    # the univariate `_input_metadata.held_out_session_ids`. They are dropped from
+    # every greedy cv_fold and every candidate fit; the accepted feature set is
+    # then refit on the development sessions and scored on this block once in the
+    # finalization stage (the honest, selection-leakage-free number). An empty
+    # list -- holdout disabled or a pre-v2 pickle -- makes `_dev_mask` all-True
+    # and `_held_positions` empty, so the path is an exact no-op.
+    _held_out_session_ids = held_out_session_ids_from_metadata(_input_md if _input_md is not None else {})
+    _dev_mask, _held_mask = development_heldout_masks(groups_global, _held_out_session_ids)
+    _dev_positions = np.where(_dev_mask)[0]
+    _held_positions = np.where(_held_mask)[0]
+    if _held_positions.size > 0:
+        print(
+            f"Held-out reserve: {len(_held_out_session_ids)} session(s), "
+            f"{_held_positions.size} event(s) excluded from selection; scored once at finalization."
+        )
 
     print(format_run_header(
         task='SELECTION:PARAMS',
@@ -2490,8 +2710,17 @@ def bout_parameter_model_selection(
         y_binned = np.digitize(y_global, bins[1:-1])
 
     # 4. Generate Splits
+    #
+    # Fold the DEVELOPMENT rows only, then remap the dev-relative indices each
+    # splitter returns back into full-array index space via `_dev_positions`, so
+    # every fold index stays a valid row of the full `y_global`/`groups_global`/
+    # `binned_data` arrays while no held-out row enters a train or validation
+    # split. With holdout disabled `_dev_positions` is the identity map, so this
+    # is byte-identical to the pre-holdout behaviour.
     cv_folds = []
     n_folds_mc = max(2, int(round(1.0 / test_prop)))
+    _y_binned_dev = y_binned[_dev_mask]
+    _groups_dev = groups_global[_dev_mask]
 
     if split_strategy == 'session':
         print(f"  > Generating {n_splits} Monte Carlo Session Splits (Test Prop: {test_prop})...")
@@ -2499,17 +2728,27 @@ def bout_parameter_model_selection(
             current_seed = random_seed + i
             stratified_group_k_fold = StratifiedGroupKFold(n_splits=n_folds_mc, shuffle=True, random_state=current_seed)
             try:
-                train_idx, test_idx = next(stratified_group_k_fold.split(np.zeros(len(y_global)), y_binned, groups=groups_global))
-                cv_folds.append((train_idx, test_idx))
+                tr_dev, te_dev = next(stratified_group_k_fold.split(np.zeros(len(_y_binned_dev)), _y_binned_dev, groups=_groups_dev))
+                cv_folds.append((_dev_positions[tr_dev], _dev_positions[te_dev]))
             except StopIteration:
                 pass
     elif split_strategy == 'mixed':
         print(f"  > Generating {n_splits} Monte Carlo Mixed Splits (Test Prop: {test_prop})...")
         sss = StratifiedShuffleSplit(n_splits=n_splits, test_size=test_prop, random_state=random_seed)
-        for train_idx, test_idx in sss.split(np.zeros(len(y_global)), y_binned):
-            cv_folds.append((train_idx, test_idx))
+        for tr_dev, te_dev in sss.split(np.zeros(len(_y_binned_dev)), _y_binned_dev):
+            cv_folds.append((_dev_positions[tr_dev], _dev_positions[te_dev]))
     else:
         raise ValueError("split_strategy in settings must be either 'session' or 'mixed'.")
+
+    # Leak guard: no held-out event may appear in any greedy fold (train or test).
+    if _held_positions.size > 0:
+        _held_set = set(_held_positions.tolist())
+        for _tr_idx, _te_idx in cv_folds:
+            if _held_set.intersection(_tr_idx.tolist()) or _held_set.intersection(_te_idx.tolist()):
+                raise AssertionError(
+                    "Held-out session events leaked into a bout-parameter selection "
+                    "CV fold; the development/held-out split is inconsistent."
+                )
 
     # Resume Logic
     current_model_features = []
@@ -2546,6 +2785,12 @@ def bout_parameter_model_selection(
             'n_splines_time': int(n_splines_time),
             'n_splines_value': int(n_splines_value),
             'target_condition': target_condition,
+            # Held-out provenance (also in the embedded `_input_metadata` sibling);
+            # duplicated here so the selection run-metadata is self-describing.
+            'held_out_test_proportion': float(settings['model_validation']['held_out_test_proportion']),
+            'held_out_session_ids': list(_held_out_session_ids),
+            'n_held_out_sessions': len(_held_out_session_ids),
+            'n_held_out_events': int(_held_positions.size),
         },
         settings_path=settings_path,
     )
@@ -2984,9 +3229,81 @@ def bout_parameter_model_selection(
             final_fold_shapes.append(fold_res)
             gc.collect()
 
+        # Honest held-out score (bout parameters). Refit the accepted feature set
+        # on ALL development rows and score it once on the reserved held-out rows
+        # (D^2 = explained Gamma deviance), mirroring the finalization fold fit for
+        # the active engine, plus a shuffled-label null control for the held-out
+        # chance floor. This is the only number untouched by screening, greedy
+        # acceptance, or inner-CV alpha selection. Skipped when holdout is disabled
+        # (`_held_positions` empty) or no feature was accepted, leaving `heldout`
+        # None so no-holdout runs are byte-identical to before.
+        heldout_result = None
+        if _held_positions.size > 0 and len(current_model_features) > 0:
+            y_dev = y_global[_dev_positions]
+            y_held = y_global[_held_positions]
+            # Distinct-but-deterministic seed for the held-out null permutation;
+            # offset the fold seeds by `n_splits` so it never collides with a fold.
+            held_rng = np.random.default_rng(random_seed + n_splits + 1)
+
+            heldout_result = {
+                'engine': model_type,
+                'features': list(current_model_features),
+                'n_held_out_sessions': int(len(np.unique(groups_global[_held_positions]))),
+                'n_held_out_events': int(_held_positions.size),
+            }
+            for branch in ('actual', 'null'):
+                y_dev_use = y_dev if branch == 'actual' else held_rng.permutation(y_dev)
+                rec = {'explained_deviance': np.nan, 'residual_deviance': np.nan}
+                try:
+                    if model_type == 'sklearn':
+                        X_dev_stacked = np.hstack(
+                            [np.dot(all_feature_data[f]['X'][_dev_positions], basis_matrix)
+                             for f in current_model_features]
+                        )
+                        X_held_stacked = np.hstack(
+                            [np.dot(all_feature_data[f]['X'][_held_positions], basis_matrix)
+                             for f in current_model_features]
+                        )
+                        y_dev_pos = np.maximum(y_dev_use, 1e-6)
+                        held_model = GridSearchCV(
+                            GammaRegressor(),
+                            {'alpha': list(lr_params['alphas'])},
+                            cv=lr_params['cv'],
+                            scoring='neg_mean_gamma_deviance',
+                        ).fit(X_dev_stacked, y_dev_pos)
+                        y_pred = held_model.best_estimator_.predict(X_held_stacked)
+                    else:
+                        X_dev_gam = get_unrolled_X_for_multivariate(
+                            [all_feature_data[f]['X'][_dev_positions] for f in current_model_features],
+                            history_frames,
+                        )
+                        X_held_gam = get_unrolled_X_for_multivariate(
+                            [all_feature_data[f]['X'][_held_positions] for f in current_model_features],
+                            history_frames,
+                        )
+                        y_dev_gam = np.repeat(y_dev_use + 1e-6, history_frames)
+                        gam_terms = te(0, 1, n_splines=[n_splines_value, n_splines_time])
+                        for i in range(1, len(current_model_features)):
+                            gam_terms += te(i * 2, i * 2 + 1, n_splines=[n_splines_value, n_splines_time])
+                        held_gam = GAM(gam_terms, distribution='gamma', link='log', **gam_kwargs).fit(X_dev_gam, y_dev_gam)
+                        y_pred_tiled = held_gam.predict(X_held_gam)
+                        y_pred = np.mean(y_pred_tiled.reshape(len(y_held), history_frames), axis=1)
+
+                    y_held_safe = np.maximum(y_held, 1e-6)
+                    y_pred_safe = np.maximum(y_pred, 1e-6)
+                    y_null_pred = np.full_like(y_held_safe, np.mean(y_held_safe))
+                    res_dev = mean_gamma_deviance(y_held_safe, y_pred_safe)
+                    null_dev = mean_gamma_deviance(y_held_safe, y_null_pred)
+                    rec['residual_deviance'] = res_dev
+                    rec['explained_deviance'] = 0.0 if null_dev == 0 else 1 - (res_dev / null_dev)
+                except Exception as e:
+                    print(f"Held-out refit failed (params {branch}): {e}")
+                heldout_result[branch] = rec
+
         final_res = {
             'final_model_features': current_model_features,
             'filter_shapes': final_fold_shapes,
+            'heldout': heldout_result,
             'univariate_results_path': univariate_results_path,
             'input_data_path': input_data_path
         }
@@ -3001,10 +3318,15 @@ def bout_parameter_model_selection(
         with open(last_file, 'wb') as save_pkl_file:
             pickle.dump(_wrap_step(data), save_pkl_file)
 
+        metrics_by_strategy = {'Final': {'D^2': best_current_score},
+                               'Baseline': {'D^2': 0.0}}
+        # Held-out D^2 (development-refit, scored once) -- the honest number
+        # alongside the optimistic development-CV `Final`.
+        if heldout_result is not None:
+            metrics_by_strategy['Held-out'] = {'D^2': heldout_result['actual']['explained_deviance']}
         print(format_run_summary(
             label=f"params model-selection ({len(current_model_features)} features)",
-            metrics_by_strategy={'Final': {'D^2': best_current_score},
-                                 'Baseline': {'D^2': 0.0}},
+            metrics_by_strategy=metrics_by_strategy,
             out_path=str(last_file),
         ))
 
@@ -3145,8 +3467,8 @@ def multinomial_vocal_category_model_selection(
                      'input data': input_data_path,
                      'settings': settings_path},
         output_directory=str(model_selection_dir),
-        split_strategy=settings['model_params']['split_strategy'],
-        n_splits=int(settings['model_params']['split_num']),
+        split_strategy=settings['model_validation']['split_strategy'],
+        n_splits=int(settings['model_validation']['n_cv_folds']),
     ))
 
     with open(univariate_results_path, 'rb') as f:
@@ -3240,12 +3562,28 @@ def multinomial_vocal_category_model_selection(
     del raw_data
     gc.collect()
 
-    model_ops = settings['model_params']
-    split_strategy = model_ops['split_strategy']
-    n_splits = model_ops['split_num']
-    test_prop = model_ops['test_proportion']
-    random_seed = settings['model_params']['random_seed']
+    split_strategy = settings['model_validation']['split_strategy']
+    n_splits = settings['model_validation']['n_cv_folds']
+    test_prop = settings['model_validation']['cv_validation_proportion']
+    random_seed = settings['model_validation']['random_seed']
     balance_train = hp['balance_train_bool']
+
+    # Reserve the held-out sessions carved ONCE at extraction time and shipped in
+    # the univariate `_input_metadata.held_out_session_ids`. They are dropped from
+    # every greedy cv_fold and every candidate fit; the accepted feature set is
+    # then refit on the development sessions and scored on this block once in the
+    # finalization stage (the honest, selection-leakage-free number). An empty
+    # list -- holdout disabled or a pre-v2 pickle -- makes `_dev_mask` all-True
+    # and `_held_positions` empty, so the path is an exact no-op.
+    _held_out_session_ids = held_out_session_ids_from_metadata(_input_md if _input_md is not None else {})
+    _dev_mask, _held_mask = development_heldout_masks(groups_global, _held_out_session_ids)
+    _dev_positions = np.where(_dev_mask)[0]
+    _held_positions = np.where(_held_mask)[0]
+    if _held_positions.size > 0:
+        print(
+            f"Held-out reserve: {len(_held_out_session_ids)} session(s), "
+            f"{_held_positions.size} event(s) excluded from selection; scored once at finalization."
+        )
 
     # Both `'session'` and `'mixed'` go through the shared splitter so
     # the cohort-wide and per-fold class-coverage guards apply
@@ -3256,18 +3594,36 @@ def multinomial_vocal_category_model_selection(
     # `extract_and_save_multinomial_input_data`), so there is no
     # hand-set JSON literal that could go stale if
     # `usv_category_column_name` or `usv_noise_categories` change.
-    cv_folds, _ = get_stratified_group_splits_stable(
-        groups=groups_global,
-        y=y_global,
+    #
+    # Fold the DEVELOPMENT sessions only, then remap the dev-relative indices the
+    # splitter returns back into full-array index space via `_dev_positions`, so
+    # every fold index stays a valid row of the full arrays while no held-out row
+    # enters a train or validation split. With holdout disabled `_dev_positions`
+    # is the identity map, so this is byte-identical to the pre-holdout behaviour.
+    cv_folds_dev, _ = get_stratified_group_splits_stable(
+        groups=groups_global[_dev_mask],
+        y=y_global[_dev_mask],
         split_strategy=split_strategy,
         test_prop=test_prop,
         n_splits=n_splits,
         random_seed=random_seed,
         n_categories=int(_input_md['analysis_specific']['usv_category_number']),
-        max_total_attempts=model_ops['session_split_max_attempts'],
-        widen_step=model_ops['session_split_widen_step'],
-        widen_every=model_ops['session_split_widen_every'],
+        max_total_attempts=settings['model_validation']['session_split_max_attempts'],
+        widen_step=settings['model_validation']['session_split_widen_step'],
+        widen_every=settings['model_validation']['session_split_widen_every'],
     )
+    cv_folds = [
+        (_dev_positions[tr_idx], _dev_positions[te_idx])
+        for (tr_idx, te_idx) in cv_folds_dev
+    ]
+    if _held_positions.size > 0:
+        _held_set = set(_held_positions.tolist())
+        for _tr_idx, _te_idx in cv_folds:
+            if _held_set.intersection(_tr_idx.tolist()) or _held_set.intersection(_te_idx.tolist()):
+                raise AssertionError(
+                    "Held-out session events leaked into a multinomial selection "
+                    "CV fold; the development/held-out split is inconsistent."
+                )
 
     # When balance_train_bool is active the learned-model paths (anchor,
     # forward-selection trials) down-sample each training fold per-class and
@@ -3419,6 +3775,12 @@ def multinomial_vocal_category_model_selection(
             'p_val': float(p_val),
             'bin_resizing_factor': int(bin_size),
             'target_condition': target_condition,
+            # Held-out provenance (also in the embedded `_input_metadata` sibling);
+            # duplicated here so the selection run-metadata is self-describing.
+            'held_out_test_proportion': float(settings['model_validation']['held_out_test_proportion']),
+            'held_out_session_ids': list(_held_out_session_ids),
+            'n_held_out_sessions': len(_held_out_session_ids),
+            'n_held_out_events': int(_held_positions.size),
         },
         settings_path=settings_path,
     )
@@ -4060,10 +4422,150 @@ def multinomial_vocal_category_model_selection(
         else:
             reshaped_weights = None
 
+        # Honest held-out score: refit the accepted feature set on ALL
+        # development sessions and score it once on the reserved held-out block,
+        # mirroring the per-fold candidate fit (train := development, test :=
+        # held-out). This is the only number untouched by screening, greedy
+        # acceptance, or lambda-tuning -- every one of those saw development data
+        # only. When the winner is `null_model_free` the honest model is the
+        # empirical development prior. Skipped when holdout is disabled
+        # (`_held_positions` empty), leaving `heldout` None so no-holdout runs are
+        # byte-identical to before.
+        heldout_result = None
+        if _held_positions.size > 0:
+            y_dev = y_global[_dev_positions]
+            y_held = y_global[_held_positions]
+            held_seed_mn = int(hp['random_state']) + n_splits + 1
+
+            if winner != 'null_model_free' and len(current_model_features) > 0:
+                n_final_feats = len(current_model_features)
+                X_dev = np.hstack([binned_data[f][_dev_positions] for f in current_model_features])
+                X_held = np.hstack([binned_data[f][_held_positions] for f in current_model_features])
+
+                # Mirror the fold body's optional class balancing on the training
+                # (development) rows.
+                if balance_train:
+                    balance_rng = np.random.default_rng(held_seed_mn)
+                    dev_train_idx = _balance_multinomial_train_indices(
+                        np.arange(len(y_dev)), y_dev, balance_rng
+                    )
+                    X_dev_fit = X_dev[dev_train_idx]
+                    y_dev_fit = y_dev[dev_train_idx]
+                else:
+                    X_dev_fit = X_dev
+                    y_dev_fit = y_dev
+
+                final_lambda_smooth, final_l2_reg, final_grid_audit, final_tuned_flag = (
+                    _pick_multinomial_fold_hyperparams(
+                        X_dev_fit, y_dev_fit,
+                        n_feats_=n_final_feats,
+                        fold_idx_=n_splits,
+                    )
+                )
+                held_model = SmoothMultinomialLogisticRegression(
+                    n_features=n_final_feats, n_time_bins=n_time_bins,
+                    lambda_smooth=final_lambda_smooth,
+                    l2_reg=final_l2_reg,
+                    smoothness_derivative_order=smoothness_order,
+                    focal_gamma=model_focal_gamma,
+                    uniform_class_weights=model_uniform_weights,
+                    learning_rate=hp['learning_rate'],
+                    max_iter=hp['max_iter'],
+                    tol=hp['tol'],
+                    random_state=held_seed_mn,
+                    _use_lax_loop=use_lax_loop_mn,
+                )
+                held_model.fit(X_dev_fit, y_dev_fit)
+                y_proba = held_model.predict_proba(X_held, balanced=hp['balance_predictions_bool'])
+                y_pred = held_model.predict(X_held, balanced=hp['balance_predictions_bool'])
+                model_classes = held_model.classes_
+                held_weights = held_model.coef_
+                held_intercepts = held_model.intercept_
+                held_n_iter = int(held_model.n_iter_)
+                held_converged = bool(held_model.converged_)
+                held_fit_time = float(held_model.fit_time_)
+                p_train_labels = y_dev_fit
+                model_type = 'multinomial_logistic'
+            else:
+                # No feature accepted: the empirical development prior is the model.
+                unique_classes, counts = np.unique(y_dev, return_counts=True)
+                class_priors = counts / float(np.sum(counts))
+                y_proba = np.tile(class_priors, (len(y_held), 1))
+                majority_class = unique_classes[np.argmax(class_priors)]
+                y_pred = np.full(len(y_held), majority_class)
+                model_classes = unique_classes
+                held_weights = None
+                held_intercepts = None
+                held_n_iter = 0
+                held_converged = True
+                held_fit_time = 0.0
+                final_lambda_smooth = float('nan')
+                final_l2_reg = float('nan')
+                final_grid_audit = {
+                    'grid_scores': {}, 'grid_ses': {},
+                    'argmax_pair': None,
+                    'one_se_applied': False, 'one_se_threshold': None,
+                }
+                final_tuned_flag = False
+                p_train_labels = y_dev
+                model_type = 'null_model_free'
+
+            eps = 1e-15
+            y_proba_clipped = np.clip(y_proba, eps, 1 - eps)
+            h_score = balanced_accuracy_score(y_held, y_pred)
+            try:
+                h_ll = log_loss(y_held, y_proba_clipped, labels=model_classes)
+            except ValueError:
+                h_ll = np.nan
+            try:
+                h_auc = roc_auc_score(y_held, y_proba, multi_class='ovr', average='macro', labels=model_classes)
+            except ValueError:
+                h_auc = np.nan
+            probs_canonical = align_probs_to_canonical(y_proba, model_classes, canonical_classes)
+            try:
+                h_brier = brier_score_multi(y_held, probs_canonical, canonical_classes)
+            except Exception:
+                h_brier = np.nan
+            try:
+                h_ece = expected_calibration_error(y_held, y_pred, probs_canonical, n_bins=_ECE_N_BINS)
+            except Exception:
+                h_ece = np.nan
+            h_mcc = safe_matthews_corrcoef(y_held, y_pred)
+
+            heldout_result = {
+                'model_type': model_type,
+                'features': list(current_model_features),
+                'metrics': {
+                    'score': h_score, 'll': h_ll, 'auc': h_auc,
+                    'recall': recall_score(y_held, y_pred, average='macro', zero_division=0),
+                    'f1': f1_score(y_held, y_pred, average='macro', zero_division=0),
+                    'brier': h_brier, 'ece': h_ece, 'mcc': h_mcc,
+                },
+                'weights': held_weights,
+                'intercepts': held_intercepts,
+                'y_true': y_held,
+                'y_pred': y_pred,
+                'y_probs': y_proba,
+                'test_indices': _held_positions,
+                'p_train': _class_proportions(p_train_labels),
+                'p_test': _class_proportions(y_held),
+                'confusion_matrix': safe_confusion_matrix(y_held, y_pred, labels=canonical_classes),
+                'n_iter': held_n_iter,
+                'converged': held_converged,
+                'fit_time': held_fit_time,
+                'selected_lambda_smooth': final_lambda_smooth,
+                'selected_l2_reg': final_l2_reg,
+                'hyperparam_grid_audit': final_grid_audit,
+                'hyperparams_tuned': final_tuned_flag,
+                'n_held_out_sessions': len(_held_out_session_ids),
+                'n_held_out_events': int(_held_positions.size),
+            }
+
         step_data.update({
             'final_model_features': current_model_features,
             'weights_reshaped': reshaped_weights,
-            'classes': winning_cand_data['classes']
+            'classes': winning_cand_data['classes'],
+            'heldout': heldout_result,
         })
         for _k in RESERVED_METADATA_KEYS:
             step_data.pop(_k, None)
@@ -4077,10 +4579,15 @@ def multinomial_vocal_category_model_selection(
                 _step0 = pickle.load(f)
             if 'baseline_score' in _step0:
                 baseline_score = _step0['baseline_score']
+        metrics_by_strategy = {'Final': {'AUC': best_current_score},
+                               'Baseline': {'AUC': baseline_score}}
+        # Held-out AUC (development-refit, scored once) -- the honest number
+        # alongside the optimistic development-CV `Final`.
+        if heldout_result is not None:
+            metrics_by_strategy['Held-out'] = {'AUC': heldout_result['metrics']['auc']}
         print(format_run_summary(
             label=f"multinomial model-selection ({len(current_model_features)} features)",
-            metrics_by_strategy={'Final': {'AUC': best_current_score},
-                                 'Baseline': {'AUC': baseline_score}},
+            metrics_by_strategy=metrics_by_strategy,
             out_path=str(last_file_path),
         ))
     except Exception as e:
@@ -4224,8 +4731,8 @@ def continuous_vocal_manifold_model_selection(
                      'input data': input_data_path,
                      'settings': settings_path},
         output_directory=str(model_selection_dir),
-        split_strategy=settings['model_params']['split_strategy'],
-        n_splits=int(settings['model_params']['split_num']),
+        split_strategy=settings['model_validation']['split_strategy'],
+        n_splits=int(settings['model_validation']['n_cv_folds']),
     ))
 
     with open(univariate_results_path, 'rb') as f:
@@ -4322,7 +4829,7 @@ def continuous_vocal_manifold_model_selection(
     print(f"Screening {num_features} features (session-grain paired dcor margin, "
           f"BH-FDR q={p_val:.2g}, effect floor={_SELECTION_EFFECT_FLOOR:.2g} x top driver)...")
 
-    _screen_seed = settings['model_params']['random_seed']
+    _screen_seed = settings['model_validation']['random_seed']
 
     # PASS 1: per-feature session-margin bootstrap.
     screen_rows = []
@@ -4454,12 +4961,36 @@ def continuous_vocal_manifold_model_selection(
     del raw_data
     gc.collect()
 
-    model_ops = settings['model_params']
-    n_splits = model_ops['split_num']
-    test_prop = model_ops['test_proportion']
-    n_clusters = model_ops['spatial_cluster_num']
-    split_strategy = model_ops['split_strategy']
-    random_seed = settings['model_params']['random_seed']
+    n_splits = settings['model_validation']['n_cv_folds']
+    test_prop = settings['model_validation']['cv_validation_proportion']
+    n_clusters = settings['model_validation']['spatial_cluster_num']
+    split_strategy = settings['model_validation']['split_strategy']
+    random_seed = settings['model_validation']['random_seed']
+
+    # Reserve the held-out sessions carved ONCE at extraction time and shipped
+    # verbatim in the univariate `_input_metadata.held_out_session_ids`. They are
+    # dropped from every greedy cv_fold, every candidate fit, and (transitively,
+    # because the acceptance bootstrap keys off each fold's `test_indices`) the
+    # forward-selection acceptance gate; the accepted feature set is then refit on
+    # the development sessions and scored on this block exactly once in the
+    # finalization stage (the honest, selection-leakage-free number). An empty
+    # list -- holdout disabled (`held_out_test_proportion=0`) or a pre-v2 pickle
+    # without the field -- makes `_dev_mask` all-True and `_held_positions` empty,
+    # so the whole path is an exact no-op and legacy inputs still run.
+    #
+    # PASS-1 screen (above/below) needs no masking: it recomputes margins from the
+    # univariate stage's stored fold predictions, whose `test_indices` already
+    # exclude held-out sessions (carved there too), so `event_to_session` -- built
+    # from the full session map -- is only ever indexed at development events.
+    _held_out_session_ids = held_out_session_ids_from_metadata(_input_md if _input_md is not None else {})
+    _dev_mask, _held_mask = development_heldout_masks(groups_global, _held_out_session_ids)
+    _dev_positions = np.where(_dev_mask)[0]
+    _held_positions = np.where(_held_mask)[0]
+    if _held_positions.size > 0:
+        print(
+            f"Held-out reserve: {len(_held_out_session_ids)} session(s), "
+            f"{_held_positions.size} event(s) excluded from selection; scored once at finalization."
+        )
 
     # The session-grain gate below (both the screen and forward-selection
     # acceptance) bootstraps the PER-SESSION dcor margin, which assumes whole-
@@ -4536,20 +5067,41 @@ def continuous_vocal_manifold_model_selection(
     # (wound-aware), euclidean runs keep the unchanged coordinate model.
     manifold_regressor_cls = resolve_manifold_regressor_cls(manifold_metric)
 
-    cv_folds = get_stratified_spatial_splits_stable(
-        groups=groups_global,
-        Y=y_global,
+    # Generate the greedy CV folds on the DEVELOPMENT sessions only, then remap
+    # the dev-relative indices the splitter returns back into full-array index
+    # space via `_dev_positions`. This keeps every `cv_folds` index a valid row of
+    # the full `binned_data`/`y_global`/`groups_global` arrays (so the candidate
+    # fits and the acceptance bootstrap still index them directly) while
+    # guaranteeing no held-out row ever enters a train or validation split. With
+    # holdout disabled `_dev_mask` is all-True and `_dev_positions` is the
+    # identity map, so this is byte-identical to the pre-holdout behaviour.
+    _cv_folds_dev = get_stratified_spatial_splits_stable(
+        groups=groups_global[_dev_mask],
+        Y=y_global[_dev_mask],
         n_clusters=n_clusters,
         test_prop=test_prop,
         n_splits=n_splits,
         split_strategy=split_strategy,
         random_seed=random_seed,
-        max_total_attempts=model_ops['session_split_max_attempts'],
-        widen_step=model_ops['session_split_widen_step'],
-        widen_every=model_ops['session_split_widen_every'],
+        max_total_attempts=settings['model_validation']['session_split_max_attempts'],
+        widen_step=settings['model_validation']['session_split_widen_step'],
+        widen_every=settings['model_validation']['session_split_widen_every'],
         metric=manifold_metric,
         period=manifold_period,
     )
+    cv_folds = [
+        (_dev_positions[tr_idx], _dev_positions[te_idx])
+        for (tr_idx, te_idx) in _cv_folds_dev
+    ]
+    # Leak guard: no held-out event may appear in any greedy fold (train or test).
+    if _held_positions.size > 0:
+        _held_set = set(_held_positions.tolist())
+        for _tr_idx, _te_idx in cv_folds:
+            if _held_set.intersection(_tr_idx.tolist()) or _held_set.intersection(_te_idx.tolist()):
+                raise AssertionError(
+                    "Held-out session events leaked into a selection CV fold; "
+                    "the development/held-out split is inconsistent."
+                )
 
     current_model_features = []
     # R^2 is higher-is-better, so the pre-Step-0 "best" is `-inf` (any
@@ -4591,6 +5143,14 @@ def continuous_vocal_manifold_model_selection(
             'bin_resizing_factor': int(bin_size),
             'screening_metric': SCREENING_METRIC,
             'target_condition': target_condition,
+            # Held-out provenance. `held_out_session_ids` also lives verbatim in
+            # the embedded `_input_metadata` sibling; duplicating the summary here
+            # makes the selection run-metadata self-describing about whether this
+            # run reserved a honest test block (and, if so, how large).
+            'held_out_test_proportion': float(settings['model_validation']['held_out_test_proportion']),
+            'held_out_session_ids': list(_held_out_session_ids),
+            'n_held_out_sessions': len(_held_out_session_ids),
+            'n_held_out_events': int(_held_positions.size),
         },
         settings_path=settings_path,
     )
@@ -5275,6 +5835,106 @@ def continuous_vocal_manifold_model_selection(
             'input_data_path': input_data_path
         }
 
+        # Honest held-out score: refit the accepted feature set on ALL development
+        # sessions and score it once on the reserved held-out block. This is the
+        # only number in the run untouched by feature nomination, screening,
+        # greedy acceptance, or lambda-tuning -- every one of those saw
+        # development data only. Hyperparameters are chosen on the development set
+        # via the same `_pick_fold_hyperparams` the folds use (on the torus this
+        # returns the fixed centres, since tuning is disabled there). When no
+        # feature was accepted the honest model is the same empirical-density draw
+        # that defines the Step-0 baseline, drawn from development Y. When holdout
+        # is disabled (`_held_positions` empty, i.e. `held_out_test_proportion=0`
+        # or a pre-v2 pickle) the block is skipped and `heldout` stays None, so
+        # legacy / no-holdout runs are byte-identical to before.
+        heldout_result = None
+        if _held_positions.size > 0:
+            Y_dev = y_global[_dev_positions]
+            w_dev = w_global[_dev_positions]
+            Y_held = y_global[_held_positions]
+            w_held = w_global[_held_positions]
+            held_seed = int(hp['random_state']) + n_splits + 1
+
+            if len(current_model_features) > 0:
+                X_dev = np.hstack([binned_data[f][_dev_positions] for f in current_model_features])
+                X_held = np.hstack([binned_data[f][_held_positions] for f in current_model_features])
+                groups_dev = groups_global[_dev_positions]
+                n_feats_final = len(current_model_features)
+
+                final_lambda_smooth, final_l2_reg, final_grid_audit, final_tuned_flag = (
+                    _pick_fold_hyperparams(
+                        X_dev, Y_dev, w_dev, groups_dev,
+                        n_feats_=n_feats_final,
+                        fold_idx_=n_splits,
+                    )
+                )
+                held_model = manifold_regressor_cls(
+                    n_features=n_feats_final, n_time_bins=n_time_bins,
+                    lambda_smooth=final_lambda_smooth, l2_reg=final_l2_reg,
+                    smoothness_derivative_order=smoothness_order,
+                    huber_delta=hp['huber_delta'],
+                    learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
+                    tol=hp['tol'], random_state=held_seed,
+                    _use_lax_loop=use_lax_loop,
+                    metric=manifold_metric, period=manifold_period,
+                )
+                held_model.fit(X_dev, Y_dev, sample_weight=w_dev)
+                held_metrics = held_model.evaluate_metrics(X_held, Y_held, weights=w_held)
+                held_pred_xy = held_model.predict(X_held, snap=True).astype(np.float32)
+                heldout_result = {
+                    'model_type': 'manifold_regressor',
+                    'features': list(current_model_features),
+                    'metrics': {_mk: float(held_metrics[_mk]) for _mk in MANIFOLD_METRIC_KEYS},
+                    'weights': held_model.coef_,
+                    'intercept': held_model.intercept_,
+                    'test_indices': _held_positions,
+                    'y_true': Y_held,
+                    'w_test': w_held,
+                    'y_pred_xy': held_pred_xy,
+                    'n_iter': int(held_model.n_iter_),
+                    'converged': bool(held_model.converged_),
+                    'fit_time': float(held_model.fit_time_),
+                    'selected_lambda_smooth': final_lambda_smooth,
+                    'selected_l2_reg': final_l2_reg,
+                    'hyperparam_grid_audit': final_grid_audit,
+                    'hyperparams_tuned': final_tuned_flag,
+                    'n_held_out_sessions': len(_held_out_session_ids),
+                    'n_held_out_events': int(_held_positions.size),
+                }
+            else:
+                # No feature survived selection: the honest held-out model is the
+                # empirical-density draw (the Step-0 baseline) from development Y,
+                # scored on the held-out block -- the same chance floor used above.
+                w_cov = w_dev / (np.sum(w_dev) + 1e-12)
+                mu = circular_mean(
+                    Y_dev, metric=manifold_metric, period=manifold_period, weights=w_cov
+                )
+                diff_dev = signed_diff(
+                    Y_dev, mu[None, :], metric=manifold_metric, period=manifold_period
+                )
+                cov_dev = (w_cov[:, None] * diff_dev).T @ diff_dev
+                cov_inv = np.linalg.pinv(cov_dev)
+                draw_rng = np.random.default_rng(held_seed)
+                draw_idx = draw_rng.choice(len(Y_dev), size=len(Y_held), replace=True)
+                held_pred_xy = Y_dev[draw_idx].astype(np.float32)
+                held_bundle = manifold_prediction_metrics(
+                    Y_held, held_pred_xy, w_held,
+                    metric=manifold_metric, period=manifold_period,
+                    train_cov_inv=cov_inv, random_state=held_seed,
+                )
+                heldout_result = {
+                    'model_type': 'null_model_free',
+                    'features': [],
+                    'metrics': {_mk: float(held_bundle[_mk]) for _mk in MANIFOLD_METRIC_KEYS},
+                    'y_pred_xy': held_pred_xy,
+                    'y_true': Y_held,
+                    'w_test': w_held,
+                    'test_indices': _held_positions,
+                    'n_held_out_sessions': len(_held_out_session_ids),
+                    'n_held_out_events': int(_held_positions.size),
+                }
+            final_res['heldout'] = heldout_result
+
         for _k in RESERVED_METADATA_KEYS:
             step_data.pop(_k, None)
         step_data.update(final_res)
@@ -5292,12 +5952,20 @@ def continuous_vocal_manifold_model_selection(
                 _step0 = pickle.load(f)
             if 'baseline_score' in _step0:
                 baseline_score = _step0['baseline_score']
+        metrics_by_strategy = {
+            'Final': {SELECTION_SCORE_KEY: best_current_score},
+            'Baseline': {SELECTION_SCORE_KEY: baseline_score},
+        }
+        # The held-out row (development-refit, scored once on the reserved block)
+        # is the honest, selection-leakage-free number; it sits alongside the
+        # optimistic development-CV `Final` for a direct at/below sanity check.
+        if heldout_result is not None:
+            metrics_by_strategy['Held-out'] = {
+                SELECTION_SCORE_KEY: heldout_result['metrics'][SELECTION_SCORE_KEY]
+            }
         print(format_run_summary(
             label=f"continuous model-selection ({len(current_model_features)} features)",
-            metrics_by_strategy={
-                'Final': {SELECTION_SCORE_KEY: best_current_score},
-                'Baseline': {SELECTION_SCORE_KEY: baseline_score},
-            },
+            metrics_by_strategy=metrics_by_strategy,
             out_path=str(last_file_path),
         ))
 
