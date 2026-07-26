@@ -323,10 +323,10 @@ class TestManifoldFoldFailure:
         writes at least the Step-0 baseline plus a forward step pickle.
         """
 
-        # Session-holdout with a large session panel: the session-grain screen
-        # bootstraps SESSIONS, so the signal feature only clears the gate (and the
-        # anchor/forward failure paths this test exercises are only reached) with
-        # enough sessions for a tight bootstrap CI.
+        # Session-holdout with a healthy session panel: the fold-grain screen
+        # bootstraps FOLDS, so the signal feature only clears the gate (and the
+        # anchor/forward failure paths this test exercises are only reached) when
+        # each of the CV folds has enough events for a tight bootstrap CI.
         gate_n_sessions = 25
         settings, _ = _build_manifold_settings(
             tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
@@ -337,9 +337,10 @@ class TestManifoldFoldFailure:
         input_md = {
             'analysis_type': 'continuous',
             'analysis_tag': 'manifold_vae_supercategory',
-            # `session_ids` + `n_events_per_session` are required by the manifold
-            # session-grain screen (each session owns a contiguous 60-event block,
-            # matching `_build_signal_continuous_pickle`'s default `n_per_session`).
+            # `session_ids` + `n_events_per_session` are carried as realistic
+            # univariate metadata (each session owns a contiguous 60-event block,
+            # matching `_build_signal_continuous_pickle`'s default `n_per_session`);
+            # the fold-grain gate no longer reads them, but downstream provenance does.
             'session_ids': session_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {

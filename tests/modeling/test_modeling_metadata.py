@@ -486,6 +486,10 @@ def _full_modeling_settings(model_engine='sklearn',
             'usv_predictor_partner_only': True,
             'usv_predictor_smoothing_sd': 0.1,
             'usv_noise_categories': [0],
+            # Manifold geometry: drives the geometry-determined continuous
+            # inner-CV metric recorded by build_run_metadata (`vm_logscore` on
+            # the torus, `dcor_xy` on euclidean).
+            'usv_manifold_metric': 'torus',
         },
         'kinematic_features': {
             'egocentric': ['speed', 'neck_elevation'],
@@ -943,13 +947,16 @@ class TestBuildRunMetadata:
 
     def test_continuous_jax_block_with_tuning(self, mocker):
         """``continuous`` with tuning on emits the bivariate inner-CV
-        grid (the tuning branch for the non-multinomial JAX path)."""
+        grid (the tuning branch for the non-multinomial JAX path). The recorded
+        `inner_cv_scoring_metric` is the GEOMETRY-DERIVED objective (the fixture
+        is torus, so `vm_logscore`), not any settings string -- it is not a knob
+        for the manifold path."""
 
         settings = _full_modeling_settings(tune_regularization=True)
         md = self._build(settings, 'continuous', mocker)
         tp = md['jax_hyperparameters']['tune_regularization_params']
         assert tp['lambda_smooth_decades_each_side'] == 4
-        assert tp['inner_cv_scoring_metric'] == 'r2'
+        assert tp['inner_cv_scoring_metric'] == 'vm_logscore'
         assert tp['inner_cv_use_one_se_rule'] is False
 
     def test_multinomial_jax_block_without_tuning(self, mocker):

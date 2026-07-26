@@ -95,6 +95,7 @@ from .manifold_metric import (
     total_dispersion,
     torus_embed,
     dcor_prediction_truth,
+    macro_von_mises_logscore,
     _validate_metric_period,
 )
 
@@ -850,7 +851,8 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             return self.Y_train_[idx]
         return raw
 
-    def evaluate_metrics(self, X: np.ndarray, Y_true: np.ndarray, weights: Optional[np.ndarray] = None) -> dict:
+    def evaluate_metrics(self, X: np.ndarray, Y_true: np.ndarray, weights: Optional[np.ndarray] = None,
+                         region_labels: Optional[np.ndarray] = None, min_region_events: int = 1) -> dict:
         """
         Evaluates the fitted model on test data and returns a metric bundle
         aligned with the univariate runner and the forward-selection routine.
@@ -894,34 +896,29 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
           snapped predictions and truth.
         - `pearson_x`, `pearson_y` : per-axis linear correlation on the
           natural scale.
-        - `dcor_xy` : wrap-aware **distance correlation** between the decoded
-          prediction and the truth (subsampled; see
-          `manifold_metric.dcor_prediction_truth`). **This is the
-          feature-selection score on the TORUS (`metric='torus'`);
-          `r2_spatial` remains the score on Euclidean (VAE/UMAP) manifolds, so
-          it is computed only on the torus path and is `nan` otherwise.** The
-          reason is geometric. The QLVM torus is a *near-uniform, fully-covered
-          periodic* latent space (a Quasi-Monte-Carlo / Fibonacci-lattice code,
-          not a UMAP scatter): one axis is essentially uniform, the other only
-          mildly structured, with density modulations but no spatial gaps. On
-          such a target the circular centroid is ill-defined and the total
-          dispersion is near-maximal, so `r2_spatial` — a centroid-referenced
-          *squared-geodesic* score — is structurally inverted: a weak predictor
-          that commits to a coordinate is punished *harder* than the do-nothing
-          centroid, so real signal reads more negative than junk. Distance
-          correlation instead measures *dependence* between the prediction and
-          truth (any linear or non-linear association), is robust to that
-          squared-error pathology, and — because it is scale-invariant and the
-          prediction is `atan2`-decoded — is insensitive to ridge magnitude, so
-          no regularisation tuning is needed on this path. Validated on the real
-          100-fold cluster output (neck, nose-nose, allo-yaw clear a
-          within-session-shuffle null at p<1e-4 .. 3e-4 under Wilcoxon +
-          Bonferroni; `usv_cat` controls fail) — the same predictions on which
-          `r2_spatial` found nothing. The screen therefore compares the torus
-          `dcor_xy` against the **`null` (within-session-shuffle)** strategy,
-          not the `null_model_free` empirical-density draw (which is
-          independent of the per-trial truth, so its `dcor_xy` is only the
-          finite-sample chance floor, not a confound-controlled baseline).
+        - `vm_logscore` : the **feature-selection score on the TORUS**
+          (`metric='torus'`), and `nan` on Euclidean. The macro (per-region)
+          **product-von-Mises log-likelihood** of the decoded prediction
+          (`manifold_metric.macro_von_mises_logscore`): a single global
+          concentration `kappa`, the per-point angular log-likelihood averaged
+          within each acoustic region and then macro-averaged (equal weight)
+          across regions, so a feature that rescues a badly-predicted rare region
+          is rewarded. `region_labels` supplies the per-event region; when omitted
+          the pooled single-region score is returned (the objective the inner-CV
+          regularisation tuner uses). It replaced distance correlation as the
+          torus score because dcor is non-negative, has no genuine zero, and is
+          (by scale-invariance) flat in the ridge/smoothness strength — so it
+          could neither be tuned nor compared to a real chance level. The von
+          Mises log-likelihood is signed, has a true zero, and responds to the
+          smoothness penalty, which is why per-fold regularisation tuning is
+          re-enabled on the torus and the reflective-boundary smoothing is now
+          selectable. The screen compares it against the **`null`
+          (within-session-shuffle)** strategy (a confound-controlled baseline).
+        - `dcor_xy` : the **feature-selection score on EUCLIDEAN** (VAE/UMAP)
+          manifolds — the wrap-aware **distance correlation**
+          (`manifold_metric.dcor_prediction_truth`, subsampled). It is `nan` on
+          the torus, where it is uninformative (see `vm_logscore`).
+          `r2_spatial` remains a reported descriptor on both geometries.
 
         Parameters
         ----------
@@ -933,6 +930,15 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         weights : np.ndarray, optional
             Inverse-density sample weights for `euclidean_mae_weighted`.
             Ignored by the unweighted metrics.
+        region_labels : np.ndarray, optional
+            Length-`n_samples` per-event acoustic-region labels (e.g.
+            supercategory) used for the torus macro von Mises `dcor_xy`; `None`
+            (default) yields the pooled single-region score. Ignored on
+            Euclidean.
+        min_region_events : int, optional
+            Minimum labelled events a region must contribute to enter the torus
+            macro average. Ignored on Euclidean and when `region_labels` is
+            `None`.
 
         Returns
         -------
@@ -1042,21 +1048,34 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         spearman_x = _spearman(Y_true[:, 0], Y_pred[:, 0])
         spearman_y = _spearman(Y_true[:, 1], Y_pred[:, 1])
 
-        # Wrap-aware distance correlation between the decoded prediction and
-        # the truth — the manifold selection score on BOTH geometries (see the
-        # metrics glossary). It is O(n^2) and subsampled; `dcor_prediction_truth`
-        # reduces to ordinary Euclidean distances on `metric='euclidean'` and to
-        # the wrap-aware geodesic on `metric='torus'`, so it is computed
-        # unconditionally now that euclidean also selects on `dcor_xy` (the
-        # former torus-only gate would leave the euclidean baseline and forward
-        # search reading an all-NaN score, failing every fold). The
-        # `null_model_free` baseline is an empirical-density draw (not a constant
-        # centroid), so its `dcor_xy` is computed the same way and lands at the
-        # finite-sample chance floor.
-        dcor_xy = dcor_prediction_truth(
-            Y_pred, Y_true, metric=self.metric, period=self.period,
-            random_state=self.random_state,
-        )
+        # The manifold selection score under a geometry-specific, honestly-named
+        # key (the inactive one is NaN so the bundle is schema-stable):
+        #   - torus: `vm_logscore`, the macro (per-region) product-von-Mises
+        #     log-likelihood on the decoded prediction. Signed, has a real zero,
+        #     and responds to the smoothness penalty (unlike distance correlation,
+        #     which is flat in lambda on the torus). `region_labels` supplies the
+        #     per-event acoustic region for the macro average; `None` falls back to
+        #     the pooled score (used by the inner-CV regularisation tuner).
+        #     `dcor_xy` is NOT computed on the torus (uninformative) -> NaN.
+        #   - euclidean: `dcor_xy`, the wrap-aware distance correlation (O(n^2),
+        #     subsampled); `vm_logscore` is torus-only -> NaN.
+        # Both are computed on the same `Y_pred` used by the rest of the bundle
+        # (snapped on euclidean; decoded raw on the torus, where snapping is
+        # inert). The `null_model_free` baseline is scored through the sibling
+        # `manifold_prediction_metrics`, so it lands at the matching chance floor.
+        if self.metric == 'torus':
+            vm_logscore = macro_von_mises_logscore(
+                Y_pred, Y_true, region_labels,
+                metric=self.metric, period=self.period,
+                min_region_events=min_region_events,
+            )
+            dcor_xy = float('nan')
+        else:
+            dcor_xy = dcor_prediction_truth(
+                Y_pred, Y_true, metric=self.metric, period=self.period,
+                random_state=self.random_state,
+            )
+            vm_logscore = float('nan')
 
         # `r2_spatial` numerator: sum of squared wrap-aware residuals.
         # Denominator: total wrap-aware dispersion of `Y_true` around
@@ -1082,4 +1101,5 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             'spearman_x': spearman_x,
             'spearman_y': spearman_y,
             'dcor_xy': dcor_xy,
+            'vm_logscore': vm_logscore,
         }

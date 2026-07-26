@@ -1761,9 +1761,9 @@ def extract_univariate_headline(analysis_type: str, res: dict) -> dict:
     - ``multinomial``          : balanced accuracy + macro AUC
                                  (``res[strategy]['folds']['metrics']['score']``
                                  and ``['auc']``).
-    - ``continuous``           : ``dcor_xy`` when it is finite on the ``actual``
-                                 strategy (the torus geometry), else
-                                 ``r2_spatial`` (euclidean); read from
+    - ``continuous``           : ``vm_logscore`` when finite on the ``actual``
+                                 strategy (the torus geometry), else ``dcor_xy``
+                                 (euclidean), else ``r2_spatial``; read from
                                  ``res[strategy]['folds']['metrics']``.
 
     Parameters
@@ -1803,16 +1803,26 @@ def extract_univariate_headline(analysis_type: str, res: dict) -> dict:
                     'AUC': _safe_fold_mean(metrics['auc']),
                 }
     elif analysis_type == 'continuous':
-        # Geometry selects the headline: dcor_xy is finite only on the torus
-        # (it is NaN on euclidean/VAE), where r2_spatial is the score instead.
-        # Guard the unconditional `actual` read so a malformed / minimal result
-        # dict (e.g. a mocked dispatcher test) yields an empty summary rather
-        # than raising.
+        # Geometry selects the headline: `vm_logscore` is finite only on the
+        # torus (NaN on euclidean/VAE), `dcor_xy` only on euclidean (NaN on the
+        # torus), else `r2_spatial`. Guard the unconditional `actual` read so a
+        # malformed / minimal result dict (e.g. a mocked dispatcher test) yields
+        # an empty summary rather than raising.
         if 'actual' in res and 'folds' in res['actual'] and 'metrics' in res['actual']['folds']:
             actual_metrics = res['actual']['folds']['metrics']
-            dcor_vals = (np.asarray(actual_metrics['dcor_xy'], dtype=np.float64)
-                         if 'dcor_xy' in actual_metrics else np.asarray([], dtype=np.float64))
-            key = 'dcor_xy' if (dcor_vals.size and np.any(np.isfinite(dcor_vals))) else 'r2_spatial'
+
+            def _finite(metric_key):
+                if metric_key not in actual_metrics:
+                    return False
+                vals = np.asarray(actual_metrics[metric_key], dtype=np.float64)
+                return bool(vals.size and np.any(np.isfinite(vals)))
+
+            if _finite('vm_logscore'):
+                key = 'vm_logscore'
+            elif _finite('dcor_xy'):
+                key = 'dcor_xy'
+            else:
+                key = 'r2_spatial'
             for strategy in ('actual', 'null', 'null_model_free'):
                 if strategy in res:
                     out[_STRATEGY_SUMMARY_LABELS[strategy]] = {

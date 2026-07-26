@@ -1162,11 +1162,11 @@ class TestMultinomialAndManifoldAborts:
 
     def test_manifold_no_significant_features_aborts(self, tmp_path):
         """
-        When no feature's per-session paired dcor margin is significant (here
-        both ``actual`` and ``null`` predictions are drawn independently of the
-        truth, so every session margin scatters around 0) the manifold selector's
-        session-grain screen admits no candidate, prints its abort line, and
-        returns before loading the input data — no step pickle written.
+        When no feature's per-fold paired dcor margin is significant (here both
+        ``actual`` and ``null`` predictions are drawn independently of the truth,
+        so every fold margin scatters around 0) the manifold selector's fold-grain
+        screen admits no candidate, prints its abort line, and returns before
+        loading the input data — no step pickle written.
         """
 
         settings, _ = _build_settings(tmp_path, model_engine='sklearn',
@@ -1179,7 +1179,7 @@ class TestMultinomialAndManifoldAborts:
 
         def _noise_folds():
             # Leave-one-session-out folds; predictions are independent of the
-            # truth so the per-session dcor margin is null.
+            # truth so the per-fold dcor margin is null.
             folds = {'metrics': {'dcor_xy': [0.1, 0.1, 0.1, 0.1]},
                      'y_pred_xy': [], 'y_true': [], 'test_indices': []}
             for session_index in range(n_sessions):

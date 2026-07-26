@@ -10,7 +10,6 @@ import re
 import gc
 import time
 import warnings
-from collections import defaultdict
 from pathlib import Path
 from pygam import LogisticGAM, GAM, te
 from scipy.stats import spearmanr
@@ -51,6 +50,8 @@ from .manifold_metric import (
     manifold_prediction_metrics,
     resolve_manifold_metric,
     signed_diff,
+    macro_von_mises_logscore,
+    inverse_region_frequency_weights,
 )
 from .modeling_usv_manifold_position import (
     get_stratified_spatial_splits_stable,
@@ -69,11 +70,12 @@ from ..os_utils import resolve_modeling_setting
 # literals so a single shipped value drives every selector / calibration call.
 _SELECTION_P_VAL = resolve_modeling_setting('model_params', 'selection_p_val')
 _ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
-# Session-grain manifold selection gate (behaviour -> acoustic-manifold position).
-# The screen recomputes a per-SESSION paired dcor margin (actual - shuffle-null) and
-# bootstraps the sessions; a feature is kept only if the margin is consistently > 0 across
-# sessions AND is at least `_SELECTION_EFFECT_FLOOR` of the top surviving driver's margin
-# (a relative floor that ports across manifolds and kills trivial-but-consistent passes).
+# Fold-grain manifold selection gate (behaviour -> acoustic-manifold position).
+# The screen recomputes a per-FOLD paired score margin (actual - shuffle-null; macro von
+# Mises log-lik on the torus, distance correlation on euclidean) and bootstraps the folds;
+# a feature is kept only if the margin is consistently > 0 across folds AND is at least
+# `_SELECTION_EFFECT_FLOOR` of the top surviving driver's margin (a relative floor that
+# ports across manifolds and kills trivial-but-consistent passes).
 _SELECTION_EFFECT_FLOOR = resolve_modeling_setting('model_params', 'selection_effect_floor')
 _SELECTION_N_BOOTSTRAP = resolve_modeling_setting('model_params', 'selection_n_bootstrap')
 _SELECTION_CI_LEVEL = resolve_modeling_setting('model_params', 'selection_ci_level')
@@ -171,88 +173,50 @@ def _make_step_wrapper(input_md: dict, univariate_md: dict, run_md: dict):
     return wrap
 
 
-def _build_event_to_session(input_metadata: dict) -> np.ndarray:
-    """
-    Description
-    -----------
-    Build a per-event -> session-index lookup for the manifold selection gate.
-
-    The global vocalization events fed to the manifold pipeline are the
-    per-session event blocks concatenated in ``session_ids`` order, so the
-    cumulative ``n_events_per_session`` counts give each session's contiguous
-    slice of global indices. This maps every global event index (the values
-    stored in each fold's ``test_indices``) onto the session it came from, which
-    is the independent unit for the session-grain paired-margin bootstrap.
-
-    A coverage assertion guards the concatenation-order assumption: the summed
-    per-session counts must equal the total event count, so if a future input
-    ever concatenates sessions in a different order (or drops/duplicates events)
-    this fails loudly here instead of silently mis-labelling events.
-
-    Parameters
-    ----------
-    input_metadata (dict)
-        The univariate file's ``_input_metadata`` block. Must carry
-        ``session_ids`` (ordered list) and ``n_events_per_session`` (either
-        ``{session: count}`` or ``{session: {'usv': count}}``).
-
-    Returns
-    -------
-    event_to_session (np.ndarray)
-        A ``(n_events,)`` int array; ``event_to_session[i]`` is the 0-based
-        session index of global event ``i``.
-    """
-    session_ids = list(input_metadata['session_ids'])
-    n_events_per_session = input_metadata['n_events_per_session']
-    counts = []
-    for sess in session_ids:
-        entry = n_events_per_session[sess]
-        counts.append(int(entry['usv'] if isinstance(entry, dict) else entry))
-    bounds = np.cumsum([0] + counts)
-    n_events = int(bounds[-1])
-    event_to_session = np.empty(n_events, dtype=np.int64)
-    for session_index in range(len(session_ids)):
-        event_to_session[bounds[session_index]:bounds[session_index + 1]] = session_index
-    return event_to_session
-
-
-def _session_paired_margin_bootstrap(
+def _fold_paired_margin_bootstrap(
         actual_folds: dict,
         null_folds: dict,
-        event_to_session: np.ndarray,
         *,
         metric: str,
         period: float,
         n_bootstrap: int,
         ci_level: float,
         random_state: int,
-        min_session_events: int = 30) -> dict:
+        event_to_region: np.ndarray = None,
+        min_region_events: int = 1,
+        min_fold_events: int = 30) -> dict:
     """
     Description
     -----------
-    Session-grain significance of a manifold predictor via a paired dcor margin.
+    Fold-grain significance of a manifold predictor via a paired score margin.
 
-    This is the operative statistic for the manifold selection gate. For every
-    session it recomputes the wrap-aware distance correlation between the decoded
-    manifold position and the truth, for both the ``actual`` fit and the
-    within-session-shuffle ``null``, and takes the difference (the *within-
-    session* behaviour->position signal, with the between-session structure that
-    both share cancelled by the pairing). Sessions -- not folds, not individual
-    vocalizations -- are the independent unit, so significance is assessed by
-    bootstrapping the per-session margins.
+    This is the operative statistic for the manifold selection gate. Each CV
+    fold yields one predictive score for the ``actual`` fit and one for the
+    within-session-shuffle ``null`` fit, computed on that fold's genuine
+    out-of-sample test predictions; the per-fold ``actual - null`` difference is
+    the *within-fold* behaviour->position signal, with the structure both share
+    cancelled by the pairing. **Folds -- not sessions, not individual
+    vocalizations -- are the unit**, and significance is assessed by
+    bootstrapping the per-fold margins (percentile CI at ``ci_level`` plus a
+    one-sided bootstrap probability that the mean margin is <= 0).
 
-    Per-session aggregation is PER-FOLD-THEN-AVERAGE: under session holdout a
-    session appears in the test set of every fold that held it out, so for each
-    such fold its within-session dcor is computed on that fold's genuine
-    predictions, and those per-fold values are averaged into one dcor per
-    session (for ``actual`` and ``null`` separately). This uses the real
-    per-fold predictions rather than an ensemble-averaged prediction.
+    Why fold-grain. On the torus the per-fold score is the macro (per-region)
+    von Mises log-likelihood (:func:`manifold_metric.macro_von_mises_logscore`),
+    which equal-weights acoustic regions so that a feature rescuing a rare,
+    badly-predicted region is rewarded. A macro average is only meaningful when
+    every region is populated well enough for a stable per-region mean; pooling
+    all sessions within a fold guarantees that, whereas scoring one session at a
+    time starves most regions below any sensible per-region floor and collapses
+    the macro signal. The concentration ``kappa`` is fit per fold on that fold's
+    pooled angular residuals (each fold carries thousands of events, so the
+    estimate is stable), matching the validated Arc-1 methodology.
 
-    Distance correlation is non-negative and finite-sample biased, so an
-    absolute dcor is uninterpretable; the paired margin is the meaningful
-    quantity and it cancels the bias empirically (``actual`` and ``null`` share
-    each session's events, hence the same bias, which subtracts out). No
-    analytical bias correction is therefore needed.
+    On euclidean the per-fold score is the wrap-aware distance correlation
+    (:func:`manifold_metric.dcor_prediction_truth`), unchanged. Distance
+    correlation is non-negative and finite-sample biased, so an absolute dcor is
+    uninterpretable; the paired margin is the meaningful quantity and it cancels
+    the bias empirically (``actual`` and ``null`` share each fold's events, hence
+    the same bias, which subtracts out). No analytical bias correction is needed.
 
     Parameters
     ----------
@@ -261,73 +225,89 @@ def _session_paired_margin_bootstrap(
         ``test_indices``, ``y_pred_xy`` and ``y_true`` lists.
     null_folds (dict)
         The within-session-shuffle ``null`` block's ``folds`` dict (same keys).
-    event_to_session (np.ndarray)
-        Per-event session index from :func:`_build_event_to_session`.
     metric (str)
-        ``'torus'`` or ``'euclidean'`` -- the manifold geometry for the dcor.
+        ``'torus'`` or ``'euclidean'`` -- the manifold geometry for the score.
     period (float)
         Per-axis wrap period (used on the torus; ignored on euclidean).
     n_bootstrap (int)
-        Number of session bootstrap resamples.
+        Number of fold bootstrap resamples.
     ci_level (float)
-        Central confidence level for the reported interval (e.g. ``0.95``).
+        Central confidence level for the reported percentile interval (e.g.
+        ``0.99``).
     random_state (int)
-        Seed for the deterministic session bootstrap.
-    min_session_events (int)
-        Sessions contributing fewer than this many events to a fold are skipped
-        for that fold (too few points for a stable dcor).
+        Seed for the deterministic fold bootstrap.
+    event_to_region (np.ndarray)
+        Per-event acoustic-region (supercategory) label, aligned to the same
+        full-event index space as each fold's ``test_indices``. Required for the
+        torus macro von Mises score; pass ``None`` to score with the pooled
+        (label-free) von Mises log-likelihood (the coarse pre-screen path, which
+        runs before the input pickle -- hence the region map -- is loaded).
+        Ignored on euclidean.
+    min_region_events (int)
+        Minimum events a region must contribute within a fold to enter that
+        fold's torus macro average. Ignored on euclidean and when
+        ``event_to_region`` is ``None`` (pooled scoring has a single region).
+    min_fold_events (int)
+        Folds contributing fewer than this many test events are skipped (too few
+        points for a stable per-fold score).
 
     Returns
     -------
     result (dict)
-        Keys: ``mean_margin`` (mean per-session margin), ``ci_low`` /
-        ``ci_high`` (bootstrap percentile interval), ``p_value`` (one-sided
-        bootstrap probability that the mean margin is <= 0), and
-        ``n_sessions`` (number of sessions with a usable margin). If fewer than
-        two sessions are usable, ``mean_margin`` is ``nan`` and ``p_value`` is
-        ``1.0`` so the feature cannot pass.
+        Keys: ``mean_margin`` (mean per-fold margin), ``ci_low`` / ``ci_high``
+        (bootstrap percentile interval at ``ci_level``), ``p_value`` (one-sided
+        bootstrap probability that the mean margin is <= 0), and ``n_folds``
+        (number of folds with a usable margin). If fewer than two folds are
+        usable, ``mean_margin`` is ``nan`` and ``p_value`` is ``1.0`` so the
+        feature cannot pass.
     """
-    def _per_session_dcor(folds: dict) -> dict:
-        # session index -> list of per-fold within-session dcor values
-        per_session = defaultdict(list)
+    # One score PER FOLD. On the TORUS it is the macro (per-region) von Mises
+    # log-likelihood with a per-fold concentration `kappa` (each fold pools all
+    # sessions, so every region is well populated and the estimate is stable); on
+    # EUCLIDEAN it is the wrap-aware distance correlation. Both are reduced to one
+    # number per fold and the paired actual-minus-null margin is bootstrapped over
+    # folds.
+    def _fold_scores(folds: dict) -> np.ndarray:
+        scores = []
         for test_indices, y_pred_xy, y_true in zip(
                 folds['test_indices'], folds['y_pred_xy'], folds['y_true']):
             test_indices = np.asarray(test_indices)
-            if test_indices.size == 0:
-                continue
-            sessions = event_to_session[test_indices]
             y_pred_xy = np.asarray(y_pred_xy)
             y_true = np.asarray(y_true)
-            for session_index in np.unique(sessions):
-                mask = sessions == session_index
-                if int(mask.sum()) < min_session_events:
-                    continue
-                per_session[int(session_index)].append(
-                    dcor_prediction_truth(
-                        y_pred_xy[mask], y_true[mask],
-                        metric=metric, period=period,
-                        # A single session's events are well under the default
-                        # subsample cap, so no subsampling occurs and the repeat
-                        # averaging (`n_rep`) would only recompute the identical
-                        # full-sample dcor -- fix it at 1 to avoid that waste
-                        # across the many per-(session, fold) evaluations.
-                        n_rep=1,
-                    )
+            if y_pred_xy.shape[0] < min_fold_events:
+                # Too few test points in this fold for a stable score; drop it so
+                # it neither enters the margin nor destabilises the per-fold kappa.
+                scores.append(float('nan'))
+                continue
+            if metric == 'torus':
+                regions = (event_to_region[test_indices]
+                           if event_to_region is not None else None)
+                score = macro_von_mises_logscore(
+                    y_pred_xy, y_true, regions,
+                    metric=metric, period=period,
+                    min_region_events=min_region_events, kappa=None,
                 )
-        return per_session
+            else:
+                score = dcor_prediction_truth(
+                    y_pred_xy, y_true,
+                    metric=metric, period=period,
+                    # A single fold's events are well under the default subsample
+                    # cap, so no subsampling occurs and the repeat averaging
+                    # (`n_rep`) would only recompute the identical full-sample
+                    # dcor -- fix it at 1 to avoid that waste.
+                    n_rep=1,
+                )
+            scores.append(score)
+        return np.asarray(scores, dtype=float)
 
-    actual_by_session = _per_session_dcor(actual_folds)
-    null_by_session = _per_session_dcor(null_folds)
-
-    margins = []
-    for session_index in actual_by_session:
-        if session_index not in null_by_session:
-            continue
-        margins.append(
-            float(np.mean(actual_by_session[session_index]))
-            - float(np.mean(null_by_session[session_index]))
-        )
-    margins = np.asarray(margins, dtype=float)
+    actual_scores = _fold_scores(actual_folds)
+    null_scores = _fold_scores(null_folds)
+    n_paired = min(actual_scores.size, null_scores.size)
+    margins = actual_scores[:n_paired] - null_scores[:n_paired]
+    # A fold whose macro-vM has no region clearing the per-region floor returns
+    # NaN; drop it so it neither enters the margin nor crashes the bootstrap
+    # (dcor is always finite, so euclidean is unaffected by this guard).
+    margins = margins[np.isfinite(margins)]
 
     if margins.size < 2:
         return {
@@ -335,7 +315,7 @@ def _session_paired_margin_bootstrap(
             'ci_low': float('nan'),
             'ci_high': float('nan'),
             'p_value': 1.0,
-            'n_sessions': int(margins.size),
+            'n_folds': int(margins.size),
         }
 
     rng = np.random.default_rng(random_state)
@@ -351,7 +331,7 @@ def _session_paired_margin_bootstrap(
         'ci_high': float(ci_high),
         # One-sided bootstrap p: fraction of resampled means at or below zero.
         'p_value': float(np.mean(boot_means <= 0.0)),
-        'n_sessions': int(margins.size),
+        'n_folds': int(margins.size),
     }
 
 
@@ -4743,27 +4723,35 @@ def continuous_vocal_manifold_model_selection(
     _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
     univariate_data.pop('_consolidation_metadata', None)
 
-    # Geometry-conditional selection score. The QLVM torus is a near-uniform,
-    # fully-covered periodic latent space, so the centroid-referenced
-    # squared-geodesic `r2_spatial` is structurally inverted there (real signal
-    # reads more negative than junk). Wrap-aware distance correlation `dcor_xy`
-    # (see SmoothBivariateRegression.evaluate_metrics / manifold_metric for the
-    # full rationale + validation) recovers it. Euclidean (VAE/UMAP) manifolds
-    # are well-behaved, so `r2_spatial` remains the score there. The substitution
-    # is torus-only and drives the screen and every candidate/baseline score
-    # below; on both geometries the score is screened against the within-session
-    # `null` (see SCREEN_BASELINE_STRATEGY below).
+    # Per-region event floor for the torus macro von Mises score (settings read
+    # only -- no input pickle is touched here, so the screen below can still abort
+    # or raise without ever loading `input_data_path`, the contract two abort
+    # tests rely on). The raw input pickle (and the per-event `region_global` it
+    # provides) is loaded AFTER the screen, right before the binning loop.
+    _min_region_events = settings['vocal_features']['usv_manifold_min_region_events']
+
+    # Geometry-conditional selection score, carried under the reused numeric key
+    # `dcor_xy` (schema stability) but with geometry-dependent CONTENTS:
+    #   - torus: the macro (per-region) von Mises log-likelihood
+    #     (`macro_von_mises_logscore`). The QLVM torus is a near-uniform,
+    #     fully-covered periodic latent space, so the centroid-referenced
+    #     `r2_spatial` is structurally inverted there; distance correlation
+    #     recovers signal but is non-negative, has no true zero, and is flat in
+    #     the ridge/smoothness strength (so it can be neither tuned nor compared
+    #     to a real chance level). The von Mises log-lik is signed, has a genuine
+    #     zero, rewards rescuing badly-predicted rare regions (macro averaging),
+    #     and responds to the smoothness penalty (so regularisation tuning and the
+    #     reflective-boundary smoothing are now meaningful).
+    #   - euclidean (VAE/UMAP): the wrap-aware distance correlation, unchanged;
+    #     `r2_spatial` is a reported descriptor only.
+    # The score drives the greedy candidate/baseline ranking and (via the
+    # per-fold paired margin) the accept gate; on both geometries it is
+    # screened against the within-session `null` (see SCREEN_BASELINE_STRATEGY).
     _selection_manifold_metric, _selection_manifold_period = resolve_manifold_metric(settings)
-    # `dcor_xy` (wrap-aware distance correlation) is the selection score on BOTH
-    # geometries now. dcor scores DEPENDENCE (does the behaviour-driven
-    # prediction co-vary with the truth) which is the claim we test -- behaviour
-    # coarsely biases acoustic content rather than decoding it. `r2_spatial` is
-    # kept as a reported decodability DESCRIPTOR only, not the gate: on the torus
-    # its centroid is degenerate (structurally inverted), and on euclidean it
-    # answers the "can behaviour decode position" question (~0 here) rather than
-    # the dependence question. Using one metric for both geometries also makes
-    # the two manifolds commensurable.
-    SELECTION_SCORE_KEY = 'dcor_xy'
+    # Honestly-named, geometry-specific selection key: the torus selects on the
+    # von Mises log-score (`vm_logscore`), euclidean on distance correlation
+    # (`dcor_xy`). The inactive key is NaN in every metric bundle.
+    SELECTION_SCORE_KEY = 'vm_logscore' if _selection_manifold_metric == 'torus' else 'dcor_xy'
     # The screen tests `actual` against the within-session-shuffle `null`
     # baseline on BOTH geometries: the shuffle preserves session-level structure
     # and destroys the trial-level X->Y pairing, so beating it isolates genuine
@@ -4778,31 +4766,20 @@ def continuous_vocal_manifold_model_selection(
     # recomputes dcor from the stored predictions rather than reading this key.
     SCREENING_METRIC = SELECTION_SCORE_KEY
 
-    # ---- Session-grain paired-margin screen ---------------------------------
-    # The old gate ran a per-fold Wilcoxon of `actual` vs `null` dcor over the CV
-    # folds. Those folds resample the same sessions, so they are not independent
-    # and the fold count inflates the test (it passed features whose per-session
-    # margin was actually zero or negative -- carried by between-session
-    # structure). This gate instead recomputes the paired dcor margin PER SESSION
-    # (the independent unit) and bootstraps the sessions: a feature is kept only
-    # if its within-session margin is consistently > 0 across sessions (BH-FDR
-    # corrected) AND is at least `_SELECTION_EFFECT_FLOOR` of the top surviving
-    # driver's margin (a relative effect floor that kills trivial-but-consistent
-    # passes and ports across manifolds).
+    # ---- Fold-grain paired-margin screen ------------------------------------
+    # The gate recomputes the paired `actual` vs `null` score margin PER CV FOLD
+    # (the macro von Mises log-likelihood on the torus; the wrap-aware distance
+    # correlation on euclidean) and bootstraps the folds: a feature is kept only
+    # if its per-fold margin is consistently > 0 across folds (BH-FDR corrected)
+    # AND is at least `_SELECTION_EFFECT_FLOOR` of the top surviving driver's
+    # margin (a relative effect floor that kills trivial-but-consistent passes
+    # and ports across manifolds). Fold-grain -- not session-grain -- is used
+    # because the macro average equal-weights acoustic regions, which is only
+    # stable when every region is well populated; pooling all sessions within a
+    # fold guarantees that, whereas scoring one session at a time starves most
+    # regions below the per-region floor and collapses the macro signal.
 
-    # Event -> session map for the per-session dcor. Required from the univariate
-    # `_input_metadata`; fail loudly rather than silently skip every feature.
-    if (_input_pre_md_from_univ is None
-            or 'session_ids' not in _input_pre_md_from_univ
-            or 'n_events_per_session' not in _input_pre_md_from_univ):
-        raise ValueError(
-            "The manifold session-grain screen needs 'session_ids' and "
-            "'n_events_per_session' in the univariate _input_metadata; they are "
-            "absent. Re-run the univariate stage so the metadata is written."
-        )
-    event_to_session = _build_event_to_session(_input_pre_md_from_univ)
-
-    # Schema guard: the gate recomputes dcor from stored PREDICTIONS, so it needs
+    # Schema guard: the gate recomputes the score from stored PREDICTIONS, so it needs
     # per-fold `y_pred_xy` / `y_true` / `test_indices` in BOTH `actual` and
     # `null`. A ranking that predates prediction-saving lacks these; fail loudly
     # instead of mis-reporting the schema mismatch as "no significant features".
@@ -4820,39 +4797,45 @@ def continuous_vocal_manifold_model_selection(
     )
     if num_features > 0 and not _pred_keys_present:
         raise ValueError(
-            "The manifold session-grain screen needs per-fold predictions "
+            "The manifold fold-grain screen needs per-fold predictions "
             f"({', '.join(_required_fold_keys)}) in both 'actual' and "
             f"'{SCREEN_BASELINE_STRATEGY}', but the univariate results do not "
             "carry them. Re-run the univariate stage with prediction-saving on."
         )
 
-    print(f"Screening {num_features} features (session-grain paired dcor margin, "
+    print(f"Screening {num_features} features (fold-grain paired score margin "
+          f"[torus: pooled von Mises log-lik; euclidean: dcor], "
           f"BH-FDR q={p_val:.2g}, effect floor={_SELECTION_EFFECT_FLOOR:.2g} x top driver)...")
 
     _screen_seed = settings['model_validation']['random_seed']
 
-    # PASS 1: per-feature session-margin bootstrap.
+    # PASS 1: per-feature fold-margin bootstrap.
     screen_rows = []
     for feat_name, payload in univariate_data.items():
         results = payload[1] if isinstance(payload, tuple) and len(payload) == 2 else payload
         if not _has_pred_keys(results):
             continue
-        stat = _session_paired_margin_bootstrap(
+        stat = _fold_paired_margin_bootstrap(
             results['actual']['folds'],
             results[SCREEN_BASELINE_STRATEGY]['folds'],
-            event_to_session,
             metric=_selection_manifold_metric,
             period=_selection_manifold_period,
             n_bootstrap=_SELECTION_N_BOOTSTRAP,
             ci_level=_SELECTION_CI_LEVEL,
             random_state=_screen_seed,
+            # The screen runs before the input pickle is loaded, so no per-event
+            # region map is available; it uses the POOLED von Mises score
+            # (`event_to_region=None`) as a coarse pre-filter. The greedy gate
+            # below uses the per-region MACRO score once `region_global` exists.
+            event_to_region=None,
+            min_region_events=_min_region_events,
         )
-        if stat['n_sessions'] < 2:
+        if stat['n_folds'] < 2:
             continue
         screen_rows.append({'feature': feat_name, **stat})
 
     # BH-FDR on the one-sided bootstrap p-values -- the multiplicity-correct form
-    # of "the per-session margin is consistently > 0". `ci_low` / `ci_high` are
+    # of "the per-fold margin is consistently > 0". `ci_low` / `ci_high` are
     # reported for transparency; the significance decision uses this FDR test.
     bh_significant = set()
     if screen_rows:
@@ -4883,13 +4866,14 @@ def continuous_vocal_manifold_model_selection(
         if keep:
             candidates.append({
                 'feature': r['feature'],
-                # `mean_r2` is the downstream ranking key; it now carries the
-                # session-mean paired dcor margin.
+                # `mean_r2` is the downstream ranking key; it carries the
+                # fold-mean paired score margin (macro von Mises log-lik on the
+                # torus, distance correlation on euclidean).
                 'mean_r2': r['mean_margin'],
                 'p_val': r['p_value'],
                 'ci_low': r['ci_low'],
                 'ci_high': r['ci_high'],
-                'n_sessions': r['n_sessions'],
+                'n_folds': r['n_folds'],
             })
         else:
             reason = ('not BH-significant' if r['feature'] not in bh_significant
@@ -4898,25 +4882,29 @@ def continuous_vocal_manifold_model_selection(
                 'Screen', feature=r['feature'], decision='DROP',
                 detail=(f"{reason} (margin {r['mean_margin']:+.4f}, "
                         f"CI [{r['ci_low']:+.4f}, {r['ci_high']:+.4f}], p={r['p_value']:.3g}, "
-                        f"sessions={r['n_sessions']})")))
+                        f"folds={r['n_folds']})")))
 
     # Rank by descending margin (best features first).
     candidates.sort(key=lambda x: x['mean_r2'], reverse=True)
     ranked_features = [x['feature'] for x in candidates]
 
     if not ranked_features:
-        print("No significant features found (session-grain paired margin + effect floor). Aborting.")
+        print("No significant features found (fold-grain paired margin + effect floor). Aborting.")
         return
 
     print(f"Identified {len(ranked_features)} significant candidates "
           f"(effect floor {_effect_floor:.4f} = {_SELECTION_EFFECT_FLOOR:.2g} x top margin "
           f"{_top_margin:.4f}). Top: {ranked_features[0]}")
 
+    # Load the raw input pickle only NOW, after the screen has confirmed there is
+    # something to fit -- so the abort / stale-ranking-raise paths above never
+    # touch `input_data_path` (the contract two abort tests rely on).
     print("Loading and binning raw continuous input data...")
     with open(input_data_path, 'rb') as f:
         raw_data = pickle.load(f)
 
-    # Final upstream-metadata harvest.
+    # Final upstream-metadata harvest: prefer the univariate copy, fall back to
+    # the input pickle's own block for legacy runs.
     _input_md = _input_pre_md_from_univ
     if _input_md is None and '_input_metadata' in raw_data:
         _input_md = raw_data.pop('_input_metadata')
@@ -4931,15 +4919,23 @@ def continuous_vocal_manifold_model_selection(
 
     binned_data = {}
     y_global, w_global, groups_global = None, None, None
+    region_global = None
     n_time_bins = None
 
     for feat in ranked_features:
-        X_list, y_list, w_list, g_list = [], [], [], []
+        X_list, y_list, w_list, g_list, region_list = [], [], [], [], []
         sessions = sorted(list(raw_data[feat].keys()))
         for sess_id in sessions:
             X_s = raw_data[feat][sess_id]['X']
             y_s = raw_data[feat][sess_id]['Y']
             w_s = raw_data[feat][sess_id]['w']
+            # Per-event acoustic-region (supercategory) labels, row-aligned to Y;
+            # NaN when a pickle carried no labels (torus score then degrades to
+            # the pooled form, reweighting to uniform).
+            if 'supercategory' in raw_data[feat][sess_id]:
+                region_s = np.asarray(raw_data[feat][sess_id]['supercategory'], dtype=np.float32)
+            else:
+                region_s = np.full(len(y_s), np.nan, dtype=np.float32)
 
             N, T = X_s.shape
             if bin_size > 1:
@@ -4950,16 +4946,25 @@ def continuous_vocal_manifold_model_selection(
             y_list.append(y_s)
             w_list.append(w_s)
             g_list.append(np.full(len(y_s), sess_id))
+            region_list.append(region_s)
 
         binned_data[feat] = np.vstack(X_list).astype(np.float32)
         if y_global is None:
             y_global = np.vstack(y_list).astype(np.float32)
             w_global = np.concatenate(w_list).astype(np.float32)
             groups_global = np.concatenate(g_list)
+            region_global = np.concatenate(region_list)
             n_time_bins = binned_data[feat].shape[1]
 
     del raw_data
     gc.collect()
+
+    # `region_global` is aligned to the same full-event index space as
+    # `groups_global` (sorted-session order), so it doubles as the
+    # `event_to_region` map the greedy gate indexes by each fold's test_indices.
+    # (The screen above used the pooled -- label-free -- von Mises score, so it did
+    # not need this and could abort before the input pickle was loaded.)
+    event_to_region = region_global
 
     n_splits = settings['model_validation']['n_cv_folds']
     test_prop = settings['model_validation']['cv_validation_proportion']
@@ -4980,8 +4985,8 @@ def continuous_vocal_manifold_model_selection(
     #
     # PASS-1 screen (above/below) needs no masking: it recomputes margins from the
     # univariate stage's stored fold predictions, whose `test_indices` already
-    # exclude held-out sessions (carved there too), so `event_to_session` -- built
-    # from the full session map -- is only ever indexed at development events.
+    # exclude held-out sessions (carved there too), so the greedy gate's
+    # `event_to_region` map is only ever indexed at development events.
     _held_out_session_ids = held_out_session_ids_from_metadata(_input_md if _input_md is not None else {})
     _dev_mask, _held_mask = development_heldout_masks(groups_global, _held_out_session_ids)
     _dev_positions = np.where(_dev_mask)[0]
@@ -4992,23 +4997,26 @@ def continuous_vocal_manifold_model_selection(
             f"{_held_positions.size} event(s) excluded from selection; scored once at finalization."
         )
 
-    # The session-grain gate below (both the screen and forward-selection
-    # acceptance) bootstraps the PER-SESSION dcor margin, which assumes whole-
-    # session holdout: under `split_strategy='session'` a held-out session's
-    # events are all in one test fold, so its margin is a clean out-of-sample
-    # quantity. Under `'mixed'` a session's events are scattered across train and
-    # test, so the per-session margin is partly in-sample (leaky) and each
-    # session contributes very few test events per fold -- the gate still runs but
-    # its CI is optimistic. Warn (do NOT block: 'mixed' stays a valid option), so
-    # the choice is deliberate and visible in the log.
+    # The fold-grain gate below (both the screen and forward-selection
+    # acceptance) bootstraps the PER-FOLD score margin. Each fold's score is
+    # computed on that fold's held-out test predictions, so it is out-of-sample
+    # regardless of the split strategy. Under `split_strategy='session'` whole
+    # sessions are held out per fold, so there is no within-session leakage.
+    # Under `'mixed'` a session's events are scattered across train and test, so
+    # within-session temporal autocorrelation leaks into every fold's score;
+    # the leakage inflates the `actual` and `null` sides alike and the paired
+    # margin cancels most of it, but the CI is still mildly optimistic. Warn (do
+    # NOT block: 'mixed' stays a valid option), so the choice is deliberate and
+    # visible in the log.
     if split_strategy == 'mixed':
         warnings.warn(
             "continuous_vocal_manifold_model_selection: split_strategy='mixed' "
-            "with the session-grain acceptance gate. The per-session dcor margin "
-            "assumes whole-session holdout; under 'mixed' it is partly in-sample "
-            "(leaky) and each session has few test events per fold, so the "
-            "bootstrap CI is optimistic. Prefer split_strategy='session' for a "
-            "clean session-grain test.",
+            "with the fold-grain acceptance gate. Each fold's score is still "
+            "out-of-sample, but under 'mixed' a session's events span train and "
+            "test, so within-session autocorrelation leaks into both the 'actual' "
+            "and 'null' sides; the paired per-fold margin cancels most of it yet "
+            "the bootstrap CI stays mildly optimistic. Prefer "
+            "split_strategy='session' for a leakage-free test.",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -5032,14 +5040,15 @@ def continuous_vocal_manifold_model_selection(
         decades_each_side=tune_params['l2_reg_decades_each_side'],
     )
     inner_cv_folds = tune_params['inner_cv_folds']
-    inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
-    if _selection_manifold_metric == 'torus':
-        # Disable regularisation tuning on the torus: the selection score
-        # `dcor_xy` is decode-/scale-invariant and verified flat across l2 and
-        # lambda_smooth, so tuning would only fit subsample noise on a flat
-        # surface (and running dCor in the inner-CV loop is needlessly
-        # expensive). The fixed settings-level lambda_smooth / l2 are used.
-        tune_regularization_bool = False
+    # Regularisation tuning is honored on BOTH geometries. The inner-CV objective
+    # is the geometry's own selection score (`SELECTION_SCORE_KEY`): `vm_logscore`
+    # (the POOLED, label-free von Mises log-lik, via evaluate_metrics with no
+    # region_labels) on the torus, `dcor_xy` on euclidean -- so it responds to the
+    # smoothness penalty and the tuner selects a meaningful (lambda_smooth,
+    # l2_reg) rather than fitting noise on a flat surface. The outer ranking / gate
+    # use the per-region MACRO form. This is geometry-determined science, not a
+    # settings knob. `tune_regularization_bool` follows the settings flag as-is.
+    inner_cv_scoring_metric = SELECTION_SCORE_KEY
     inner_cv_use_one_se_rule = tune_params['inner_cv_use_one_se_rule']
     inner_max_iter = tune_params['inner_max_iter']
     use_lax_loop = hp['use_lax_loop']
@@ -5143,6 +5152,15 @@ def continuous_vocal_manifold_model_selection(
             'bin_resizing_factor': int(bin_size),
             'screening_metric': SCREENING_METRIC,
             'target_condition': target_condition,
+            # Selection-score provenance. On the torus the numeric key `dcor_xy`
+            # holds the macro von Mises log-likelihood (not distance correlation);
+            # record the human-readable descriptor + the per-region floor so a
+            # reader of the saved pickle is not misled by the reused key name.
+            'selection_score': (
+                'von_mises_macro_logscore' if _selection_manifold_metric == 'torus'
+                else 'distance_correlation'
+            ),
+            'usv_manifold_min_region_events': int(_min_region_events),
             # Held-out provenance. `held_out_session_ids` also lives verbatim in
             # the embedded `_input_metadata` sibling; duplicating the summary here
             # makes the selection run-metadata self-describing about whether this
@@ -5257,6 +5275,7 @@ def continuous_vocal_manifold_model_selection(
         'spearman_x',
         'spearman_y',
         'dcor_xy',
+        'vm_logscore',
     ]
 
     # Calculate Model-Free Baseline (Step 0) if starting fresh.
@@ -5315,6 +5334,7 @@ def continuous_vocal_manifold_model_selection(
                 Y_te, y_pred_xy, w_te,
                 metric=manifold_metric, period=manifold_period,
                 train_cov_inv=cov_inv, random_state=random_seed + fold_idx,
+                region_labels=region_global[te_idx], min_region_events=_min_region_events,
             )
             f_met = baseline_data['folds']['metrics']
             for _k, _v in bundle.items():
@@ -5355,13 +5375,13 @@ def continuous_vocal_manifold_model_selection(
         baseline_data['mean_r2'] = best_current_score
         baseline_data['se_r2'] = best_current_se
 
-        # Session-grain acceptance reference. The "current model" begins as the
+        # Fold-grain acceptance reference. The "current model" begins as the
         # model-free density draw; a feature (anchor or later candidate) is
-        # accepted only when it improves the PER-SESSION dcor margin over the
+        # accepted only when it improves the PER-FOLD score margin over the
         # current model with a bootstrap CI that excludes 0 -- a consistent-
-        # across-sessions improvement -- rather than a fold-level 1-SE bump in
-        # the absolute score. `best_current_score` is kept purely for the logged
-        # running-best figure; the accept decision is the session bootstrap.
+        # across-folds improvement -- rather than a bare 1-SE bump in the
+        # absolute score. `best_current_score` is kept purely for the logged
+        # running-best figure; the accept decision is the fold bootstrap.
         current_model_folds = baseline_data['folds']
 
         step_0_res = {
@@ -5428,7 +5448,7 @@ def continuous_vocal_manifold_model_selection(
         cand_data_['folds']['hyperparam_grid_audit'].append(_empty_grid_audit())
         cand_data_['folds']['hyperparams_tuned'].append(False)
 
-    def _pick_fold_hyperparams(X_tr_, Y_tr_, w_tr_, groups_tr_, n_feats_, fold_idx_):
+    def _pick_fold_hyperparams(X_tr_, Y_tr_, w_tr_, groups_tr_, n_feats_, fold_idx_, region_tr_=None):
         """
         Returns `(lambda_smooth, l2_reg, grid_audit, tuned_flag)` for this
         fold and trial feature set.
@@ -5441,7 +5461,10 @@ def continuous_vocal_manifold_model_selection(
         rescaled by `1 / sqrt(n_features)` so the search window tracks
         the same effective regularisation strength as the fixed fallback.
         The 1-SE interpretability rule is forwarded via
-        `inner_cv_use_one_se_rule`.
+        `inner_cv_use_one_se_rule`. `region_tr_` (per-row acoustic-region
+        labels for the training rows) forwards the equal-region fit reweighting
+        into the inner-CV fits on the torus so the tuned pair is chosen under the
+        same reweighted objective the outer fit uses; `None` on euclidean.
         """
         if not tune_regularization_bool:
             lam_sm = float(hp['lambda_smooth_fixed'])
@@ -5481,6 +5504,7 @@ def continuous_vocal_manifold_model_selection(
             regressor_cls=manifold_regressor_cls,
             metric=manifold_metric,
             period=manifold_period,
+            region_train=region_tr_,
         )
         return lam_sm_win, lam_l2_win, grid_audit_, True
 
@@ -5497,12 +5521,22 @@ def continuous_vocal_manifold_model_selection(
                 Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
                 w_tr, w_te = w_global[tr_idx], w_global[te_idx]
                 groups_tr = groups_global[tr_idx]
+                region_tr, region_te = region_global[tr_idx], region_global[te_idx]
+
+                # Equal-region fit reweighting (torus only): weight training rows
+                # by inverse acoustic-region frequency so common regions don't
+                # dominate the fit. Euclidean keeps the raw weights (byte-identical).
+                if manifold_metric == 'torus':
+                    w_tr_fit = w_tr * inverse_region_frequency_weights(region_tr)
+                else:
+                    w_tr_fit = w_tr
 
                 fold_lambda_smooth, fold_l2_reg, fold_grid_audit, fold_tuned_flag = (
                     _pick_fold_hyperparams(
                         X_tr, Y_tr, w_tr, groups_tr,
                         n_feats_=1,
                         fold_idx_=fold_idx,
+                        region_tr_=region_tr,
                     )
                 )
 
@@ -5516,9 +5550,12 @@ def continuous_vocal_manifold_model_selection(
                     _use_lax_loop=use_lax_loop,
                     metric=manifold_metric, period=manifold_period,
                 )
-                model.fit(X_tr, Y_tr, sample_weight=w_tr)
+                model.fit(X_tr, Y_tr, sample_weight=w_tr_fit)
 
-                metrics = model.evaluate_metrics(X_te, Y_te, weights=w_te)
+                metrics = model.evaluate_metrics(
+                    X_te, Y_te, weights=w_te,
+                    region_labels=region_te, min_region_events=_min_region_events,
+                )
                 y_pred_xy = model.predict(X_te, snap=True).astype(np.float32)
 
                 f_met = cand_data['folds']['metrics']
@@ -5574,23 +5611,24 @@ def continuous_vocal_manifold_model_selection(
             cand_data['mean_r2'] = mean_anc
             cand_data['se_r2'] = se_anc
 
-            # Session-grain acceptance: accept the anchor only if its PER-SESSION
-            # dcor improvement over the current (baseline) model is consistently
-            # positive -- the bootstrap CI lower bound is > 0 -- rather than a
-            # fold-level 1-SE bump (which resamples the same sessions and so
-            # overstates the evidence).
-            anchor_improvement = _session_paired_margin_bootstrap(
-                cand_data['folds'], current_model_folds, event_to_session,
+            # Fold-grain acceptance: accept the anchor only if its PER-FOLD macro
+            # von Mises (torus) / dcor (euclidean) improvement over the current
+            # (baseline) model is consistently positive -- the bootstrap CI lower
+            # bound is > 0 -- so a feature that helps in only one or two folds
+            # cannot pass on the strength of a favourable fold split alone.
+            anchor_improvement = _fold_paired_margin_bootstrap(
+                cand_data['folds'], current_model_folds,
                 metric=_selection_manifold_metric, period=_selection_manifold_period,
                 n_bootstrap=_SELECTION_N_BOOTSTRAP, ci_level=_SELECTION_CI_LEVEL,
                 random_state=random_seed,
+                event_to_region=event_to_region, min_region_events=_min_region_events,
             )
-            cand_data['session_improvement'] = anchor_improvement
+            cand_data['fold_improvement'] = anchor_improvement
             if anchor_improvement['ci_low'] > 0.0:
                 print(format_selection_step(
                     'Anchor', feature=anchor, decision='ACCEPT',
                     metrics={SELECTION_SCORE_KEY: mean_anc},
-                    detail=(f"session improvement +{anchor_improvement['mean_margin']:.4f} "
+                    detail=(f"fold improvement +{anchor_improvement['mean_margin']:.4f} "
                             f"CI [{anchor_improvement['ci_low']:+.4f}, {anchor_improvement['ci_high']:+.4f}]")))
                 best_current_score = mean_anc
                 best_current_se = se_anc
@@ -5608,7 +5646,7 @@ def continuous_vocal_manifold_model_selection(
             else:
                 print(format_selection_step(
                     'Anchor', feature=anchor, decision='REJECT',
-                    detail=(f"session-improvement CI includes 0 "
+                    detail=(f"fold-improvement CI includes 0 "
                             f"(+{anchor_improvement['mean_margin']:.4f} "
                             f"CI [{anchor_improvement['ci_low']:+.4f}, {anchor_improvement['ci_high']:+.4f}]); "
                             f"continuing from empty model")))
@@ -5672,6 +5710,13 @@ def continuous_vocal_manifold_model_selection(
                     Y_tr, Y_te = y_global[tr_idx], y_global[te_idx]
                     w_tr, w_te = w_global[tr_idx], w_global[te_idx]
                     groups_tr = groups_global[tr_idx]
+                    region_tr, region_te = region_global[tr_idx], region_global[te_idx]
+
+                    # Equal-region fit reweighting (torus only), as in the anchor.
+                    if manifold_metric == 'torus':
+                        w_tr_fit = w_tr * inverse_region_frequency_weights(region_tr)
+                    else:
+                        w_tr_fit = w_tr
 
                     # Per-fold hyperparameters. When tuning is off,
                     # `_pick_fold_hyperparams` returns the fixed centres
@@ -5685,6 +5730,7 @@ def continuous_vocal_manifold_model_selection(
                             X_tr_stacked, Y_tr, w_tr, groups_tr,
                             n_feats_=n_trial_feats,
                             fold_idx_=fold_idx,
+                            region_tr_=region_tr,
                         )
                     )
 
@@ -5698,9 +5744,12 @@ def continuous_vocal_manifold_model_selection(
                         _use_lax_loop=use_lax_loop,
                         metric=manifold_metric, period=manifold_period,
                     )
-                    model.fit(X_tr_stacked, Y_tr, sample_weight=w_tr)
+                    model.fit(X_tr_stacked, Y_tr, sample_weight=w_tr_fit)
 
-                    metrics = model.evaluate_metrics(X_te_stacked, Y_te, weights=w_te)
+                    metrics = model.evaluate_metrics(
+                        X_te_stacked, Y_te, weights=w_te,
+                        region_labels=region_te, min_region_events=_min_region_events,
+                    )
                     y_pred_xy = model.predict(X_te_stacked, snap=True).astype(np.float32)
 
                     f_met = cand_data['folds']['metrics']
@@ -5765,31 +5814,31 @@ def continuous_vocal_manifold_model_selection(
             if mean_score > best_cand_score:
                 best_cand_score, best_cand_se, best_cand = mean_score, se_score, feat
 
-        # Session-grain acceptance for the step winner. Candidates were ranked
-        # above by the (cheap) fold-mean score, which is a monotone proxy for the
-        # per-session improvement: within a step the current-model term is
-        # constant, so the highest-scoring candidate is also the largest-margin
-        # one. The ACCEPT decision then rests on that winner's PER-SESSION dcor
-        # improvement over the current model -- the bootstrap CI lower bound must
-        # exceed 0 (a consistent-across-sessions gain) -- instead of a fold-level
-        # 1-SE bump that resamples the same sessions and overstates the evidence.
+        # Fold-grain acceptance for the step winner. Candidates were ranked above
+        # by the (cheap) fold-mean score, which is a monotone proxy for the
+        # per-fold improvement: within a step the current-model term is constant,
+        # so the highest-scoring candidate is also the largest-margin one. The
+        # ACCEPT decision then rests on that winner's PER-FOLD macro von Mises
+        # (torus) / dcor (euclidean) improvement over the current model -- the
+        # bootstrap CI lower bound must exceed 0 (a consistent-across-folds gain).
         # The bootstrap is run once per step (on the winner only) to keep the
         # cost bounded.
         step_improvement = None
         if best_cand is not None:
             best_cand_folds = step_results['candidates_summary'][best_cand]['folds']
-            step_improvement = _session_paired_margin_bootstrap(
-                best_cand_folds, current_model_folds, event_to_session,
+            step_improvement = _fold_paired_margin_bootstrap(
+                best_cand_folds, current_model_folds,
                 metric=_selection_manifold_metric, period=_selection_manifold_period,
                 n_bootstrap=_SELECTION_N_BOOTSTRAP, ci_level=_SELECTION_CI_LEVEL,
                 random_state=random_seed,
+                event_to_region=event_to_region, min_region_events=_min_region_events,
             )
-            step_results['candidates_summary'][best_cand]['session_improvement'] = step_improvement
+            step_results['candidates_summary'][best_cand]['fold_improvement'] = step_improvement
 
         if step_improvement is not None and step_improvement['ci_low'] > 0.0:
             print(format_selection_step(
                 f"Step {step_counter}", feature=best_cand, decision='ACCEPT',
-                detail=(f"session improvement +{step_improvement['mean_margin']:.4f} "
+                detail=(f"fold improvement +{step_improvement['mean_margin']:.4f} "
                         f"CI [{step_improvement['ci_low']:+.4f}, {step_improvement['ci_high']:+.4f}]")))
             step_results['selected_feature'] = best_cand
             current_model_features.append(best_cand)
@@ -5805,7 +5854,7 @@ def continuous_vocal_manifold_model_selection(
             if step_improvement is not None:
                 print(format_selection_step(
                     f"Step {step_counter}", feature=best_cand, decision='REJECT',
-                    detail=(f"session-improvement CI includes 0 "
+                    detail=(f"fold-improvement CI includes 0 "
                             f"(+{step_improvement['mean_margin']:.4f} "
                             f"CI [{step_improvement['ci_low']:+.4f}, {step_improvement['ci_high']:+.4f}]); "
                             f"selection finished")))
@@ -5840,8 +5889,10 @@ def continuous_vocal_manifold_model_selection(
         # only number in the run untouched by feature nomination, screening,
         # greedy acceptance, or lambda-tuning -- every one of those saw
         # development data only. Hyperparameters are chosen on the development set
-        # via the same `_pick_fold_hyperparams` the folds use (on the torus this
-        # returns the fixed centres, since tuning is disabled there). When no
+        # via the same `_pick_fold_hyperparams` the folds use (with torus tuning
+        # now re-enabled, this runs the inner-CV pooled-vM search on development).
+        # Equal-region reweighting is applied to the development fit on the torus,
+        # and the held-out score is the per-region macro von Mises log-lik. When no
         # feature was accepted the honest model is the same empirical-density draw
         # that defines the Step-0 baseline, drawn from development Y. When holdout
         # is disabled (`_held_positions` empty, i.e. `held_out_test_proportion=0`
@@ -5853,7 +5904,14 @@ def continuous_vocal_manifold_model_selection(
             w_dev = w_global[_dev_positions]
             Y_held = y_global[_held_positions]
             w_held = w_global[_held_positions]
+            region_dev = region_global[_dev_positions]
+            region_held = region_global[_held_positions]
             held_seed = int(hp['random_state']) + n_splits + 1
+
+            if manifold_metric == 'torus':
+                w_dev_fit = w_dev * inverse_region_frequency_weights(region_dev)
+            else:
+                w_dev_fit = w_dev
 
             if len(current_model_features) > 0:
                 X_dev = np.hstack([binned_data[f][_dev_positions] for f in current_model_features])
@@ -5866,6 +5924,7 @@ def continuous_vocal_manifold_model_selection(
                         X_dev, Y_dev, w_dev, groups_dev,
                         n_feats_=n_feats_final,
                         fold_idx_=n_splits,
+                        region_tr_=region_dev,
                     )
                 )
                 held_model = manifold_regressor_cls(
@@ -5878,8 +5937,11 @@ def continuous_vocal_manifold_model_selection(
                     _use_lax_loop=use_lax_loop,
                     metric=manifold_metric, period=manifold_period,
                 )
-                held_model.fit(X_dev, Y_dev, sample_weight=w_dev)
-                held_metrics = held_model.evaluate_metrics(X_held, Y_held, weights=w_held)
+                held_model.fit(X_dev, Y_dev, sample_weight=w_dev_fit)
+                held_metrics = held_model.evaluate_metrics(
+                    X_held, Y_held, weights=w_held,
+                    region_labels=region_held, min_region_events=_min_region_events,
+                )
                 held_pred_xy = held_model.predict(X_held, snap=True).astype(np.float32)
                 heldout_result = {
                     'model_type': 'manifold_regressor',
@@ -5921,6 +5983,7 @@ def continuous_vocal_manifold_model_selection(
                     Y_held, held_pred_xy, w_held,
                     metric=manifold_metric, period=manifold_period,
                     train_cov_inv=cov_inv, random_state=held_seed,
+                    region_labels=region_held, min_region_events=_min_region_events,
                 )
                 heldout_result = {
                     'model_type': 'null_model_free',

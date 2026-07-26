@@ -1163,12 +1163,17 @@ def test_extract_univariate_headline_per_task():
     assert multi_out['Mean Actual'] == {'bal-acc': 0.4, 'AUC': 0.6}
     assert set(multi_out) == {'Mean Actual', 'Mean Null', 'Mean Null-MF'}
 
-    # torus geometry: dcor_xy is finite -> it is the headline.
-    torus_res = {s: {'folds': {'metrics': {'dcor_xy': [0.3], 'r2_spatial': [-0.1]}}}
+    # torus geometry: vm_logscore is finite -> it is the headline.
+    torus_res = {s: {'folds': {'metrics': {'vm_logscore': [0.3], 'dcor_xy': [float('nan')], 'r2_spatial': [-0.1]}}}
                  for s in ('actual', 'null', 'null_model_free')}
-    assert extract_univariate_headline('continuous', torus_res)['Mean Actual'] == {'dcor_xy': 0.3}
+    assert extract_univariate_headline('continuous', torus_res)['Mean Actual'] == {'vm_logscore': 0.3}
 
-    # euclidean geometry: dcor_xy all-NaN -> r2_spatial is the headline.
+    # euclidean geometry: vm_logscore all-NaN, dcor_xy finite -> dcor_xy headline.
+    euclid_dcor_res = {s: {'folds': {'metrics': {'vm_logscore': [float('nan')], 'dcor_xy': [0.25], 'r2_spatial': [0.1]}}}
+                       for s in ('actual', 'null', 'null_model_free')}
+    assert extract_univariate_headline('continuous', euclid_dcor_res)['Mean Actual'] == {'dcor_xy': 0.25}
+
+    # both selection scores all-NaN -> r2_spatial is the headline.
     euclid_res = {s: {'folds': {'metrics': {'dcor_xy': [float('nan')], 'r2_spatial': [0.2]}}}
                   for s in ('actual', 'null', 'null_model_free')}
     assert extract_univariate_headline('continuous', euclid_res)['Mean Actual'] == {'r2_spatial': 0.2}

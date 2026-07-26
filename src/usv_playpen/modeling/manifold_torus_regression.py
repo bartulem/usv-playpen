@@ -135,13 +135,25 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
         """
         Description
         -----------
-        Build the temporal-smoothness penalty matrix ``S = D_k^T D_k`` applied
-        to each output column of the filter, where ``D_k`` is the
+        Build the temporal-smoothness penalty matrix ``S = D^T D`` applied to
+        each output column of the filter, where ``D`` is the
         ``smoothness_derivative_order``-th finite-difference operator along the
         ``n_time_bins`` time axis. For ``n_features > 1`` the penalty is
-        block-diagonal (one identical block per feature), matching the
-        per-feature temporal-smoothness term of the coordinate model's loss
-        (``jnp.diff(W.reshape(n_feats, n_time, .), n=order, axis=1)``).
+        block-diagonal (one identical block per feature).
+
+        Boundary handling (order 2): the plain interior second-difference
+        operator ``np.diff(np.eye(p), n=2)`` has only ``p - 2`` rows and leaves
+        the first and last time bins' curvature unpenalised, so the filter edges
+        float free and force compensating wiggle in the middle — capping how hard
+        the smoothness penalty can flatten the filter. This method uses
+        **reflective (Neumann) boundary conditions**: a first-difference (slope)
+        row is prepended and appended, penalising the edge slope as if the filter
+        were mirrored at each boundary (``w_{-1}=w_0``, ``w_p=w_{p-1}``). The
+        operator becomes ``(p, p)`` and a larger ``lambda_smooth`` can now flatten
+        the whole filter, edges included, without the ends blowing up. This is a
+        deliberate torus-path divergence from the coordinate model's open-boundary
+        ``jnp.diff`` penalty. Order 1 (already a first-difference operator) is
+        left unchanged.
 
         Parameters
         ----------
@@ -153,8 +165,23 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
         """
 
         p = int(self.n_time_bins)
-        d_k = np.diff(np.eye(p), n=int(self.smoothness_derivative_order), axis=0)
-        block = d_k.T @ d_k
+        order = int(self.smoothness_derivative_order)
+        d_k = np.diff(np.eye(p), n=order, axis=0)   # interior operator, (p - order, p)
+        if order == 2 and p >= 2:
+            # Reflective (Neumann) edge rows: penalise the filter SLOPE at each
+            # end (first difference). Mirroring the filter at the boundary makes
+            # the edge second difference equal the edge slope, so this is the
+            # natural extension of the interior 2nd-difference to the endpoints.
+            left_edge = np.zeros((1, p))
+            left_edge[0, 0] = -1.0
+            left_edge[0, 1] = 1.0
+            right_edge = np.zeros((1, p))
+            right_edge[0, -2] = 1.0
+            right_edge[0, -1] = -1.0
+            d_operator = np.vstack([left_edge, d_k, right_edge])   # (p, p)
+        else:
+            d_operator = d_k
+        block = d_operator.T @ d_operator
         if int(self.n_features) == 1:
             return block
         return block_diag(*([block] * int(self.n_features)))

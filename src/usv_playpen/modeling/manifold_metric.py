@@ -36,6 +36,8 @@ floating-point noise.
 import numpy as np
 import jax.numpy as jnp
 from scipy.stats import spearmanr
+from scipy.special import i0e, i1e
+from scipy.optimize import brentq
 
 
 VALID_METRICS = ('euclidean', 'torus')
@@ -347,11 +349,213 @@ def dcor_prediction_truth(Y_pred: np.ndarray, Y_true: np.ndarray, *,
     return float(np.mean(vals)) if vals else float('nan')
 
 
+def _fit_von_mises_kappa(r: np.ndarray) -> float:
+    """
+    Maximum-likelihood von Mises concentration ``kappa`` from centred residuals.
+
+    Given angular residuals ``r`` (radians), already centred at zero by
+    construction (they are wrap-aware prediction-minus-truth differences, so a
+    perfect predictor gives ``r == 0`` and the mean resultant direction is 0),
+    the von Mises MLE for the concentration solves ``A(kappa) = I1(kappa) /
+    I0(kappa) = Rbar``, where ``Rbar = mean(cos r)`` is the mean resultant length
+    (because the residuals are centred, ``Rbar`` is just the average cosine). A
+    single scalar is fit by pooling ALL residuals passed in (both torus
+    coordinates, all regions), so a hard-to-predict region cannot lower its own
+    concentration to flatter itself — the concentration is a shared, global
+    property of the fit.
+
+    The ratio ``I1 / I0`` is evaluated with the exponentially-scaled Bessel
+    functions ``i1e`` / ``i0e`` (``I_n(k) = i_ne(k) * exp(k)``), so the ``exp(k)``
+    factors cancel and the solve stays overflow-safe for large ``kappa``. The
+    root is bracketed on ``[1e-6, 1e6]`` and found with Brent's method.
+
+    Parameters
+    ----------
+    r : np.ndarray
+        Angular residuals in radians (any shape; flattened internally).
+
+    Returns
+    -------
+    float
+        The MLE concentration ``kappa``. Returns ``0.0`` (uniform — no
+        concentration) when the mean resultant length is essentially zero or the
+        solve fails, and ``1e6`` (a numerically-saturated upper bound) when the
+        residuals are essentially all zero (a near-perfect fit).
+    """
+
+    r = np.asarray(r, dtype=np.float64).ravel()
+    if r.size == 0:
+        return 0.0
+    r_bar = float(np.mean(np.cos(r)))
+    if r_bar <= 1e-6:
+        return 0.0
+    if r_bar >= 1.0 - 1e-9:
+        return 1e6
+    a_func = lambda k: i1e(k) / i0e(k) - r_bar
+    try:
+        return float(brentq(a_func, 1e-6, 1e6, maxiter=200))
+    except Exception:
+        return 0.0
+
+
+def _log_i0(kappa: float) -> float:
+    """
+    Numerically-stable natural log of the modified Bessel function ``I0(kappa)``.
+
+    Uses ``log I0(kappa) = kappa + log(i0e(kappa))`` where ``i0e`` is the
+    exponentially-scaled variant (``I0(k) = i0e(k) * exp(k)``); this avoids the
+    overflow of ``I0`` itself for large ``kappa``.
+
+    Parameters
+    ----------
+    kappa : float
+        Von Mises concentration (>= 0).
+
+    Returns
+    -------
+    float
+        ``log I0(kappa)``.
+    """
+
+    return float(kappa) + float(np.log(i0e(kappa)))
+
+
+def macro_von_mises_logscore(Y_pred: np.ndarray, Y_true: np.ndarray,
+                             region_labels: np.ndarray = None, *,
+                             metric: str, period: float,
+                             min_region_events: int = 1,
+                             kappa: float = None) -> float:
+    """
+    Macro (per-region) product-von-Mises log-likelihood of manifold predictions.
+
+    This is the torus model-selection score. It scores how well ``Y_pred``
+    predicts the true torus positions ``Y_true`` as a product of two univariate
+    von Mises densities (one per torus coordinate) sharing a single global
+    concentration ``kappa``. The per-point log-likelihood is
+
+        ``kappa * (cos r_x + cos r_y) - 2 * (log 2*pi + log I0(kappa))``
+
+    where ``(r_x, r_y)`` is the wrap-aware angular residual (radians). Higher is
+    better; the score is signed and has a genuine zero, unlike distance
+    correlation.
+
+    When ``region_labels`` is given, the per-point log-likelihood is averaged
+    within each acoustic region (a supercategory label) and those per-region
+    means are then **macro-averaged with equal weight** across regions that carry
+    at least ``min_region_events`` labelled events. This rewards a feature that
+    rescues badly-predicted (often rare) regions rather than only sharpening the
+    already-dominant one. Rows with a NaN region label are excluded from the
+    per-region averaging. When ``region_labels`` is ``None`` the plain pooled
+    mean over all points is returned (one implicit region) — the cheap,
+    label-free objective used by the inner-CV regularisation tuner.
+
+    Parameters
+    ----------
+    Y_pred : np.ndarray
+        ``(n, 2)`` predicted torus coordinates.
+    Y_true : np.ndarray
+        ``(n, 2)`` true torus coordinates.
+    region_labels : np.ndarray, optional
+        Length-``n`` per-event acoustic-region labels (e.g. supercategory);
+        NaN marks an unlabelled event. ``None`` -> pooled (single-region) score.
+    metric : str
+        Manifold geometry; this score is meaningful only for ``'torus'`` (the
+        angular residual is scaled by ``2*pi / period``). Callers gate on torus.
+    period : float
+        Per-axis wrap period.
+    min_region_events : int
+        Minimum labelled events a region must contribute to enter the macro
+        average. Ignored when ``region_labels`` is ``None``.
+    kappa : float, optional
+        Pre-fit global concentration to reuse (e.g. a stable kappa fit once on
+        pooled residuals across sessions). When ``None`` it is fit here from the
+        residuals of this call via :func:`_fit_von_mises_kappa`.
+
+    Returns
+    -------
+    float
+        The (macro or pooled) von Mises log-likelihood; higher is better.
+        ``nan`` when no region clears ``min_region_events`` (macro) or the input
+        is empty (pooled).
+    """
+
+    Y_pred = np.asarray(Y_pred, dtype=np.float64)
+    Y_true = np.asarray(Y_true, dtype=np.float64)
+    # Wrap-aware angular residual in radians (shortest-wrap direction per axis).
+    r = signed_diff(Y_true, Y_pred, metric=metric, period=period) * (2.0 * np.pi / period)
+    if kappa is None:
+        kappa = _fit_von_mises_kappa(r.ravel())
+    log_z = np.log(2.0 * np.pi) + _log_i0(kappa)              # per-coordinate normaliser
+    per_point = kappa * np.cos(r).sum(axis=1) - 2.0 * log_z   # product over the 2 coords -> (n,)
+
+    if region_labels is None:
+        return float(np.mean(per_point)) if per_point.size else float('nan')
+
+    region_labels = np.asarray(region_labels, dtype=np.float64)
+    labelled = ~np.isnan(region_labels)
+    if not labelled.any():
+        # No usable region labels (e.g. a torus run on a pickle that predates
+        # supercategory storage) -> degrade to the pooled single-region score
+        # rather than returning NaN, so the score stays defined and the run
+        # proceeds (identical to `region_labels=None`).
+        return float(np.mean(per_point)) if per_point.size else float('nan')
+    region_means = []
+    for region_id in np.unique(region_labels[labelled]):
+        region_mask = region_labels == region_id
+        if int(region_mask.sum()) < int(min_region_events):
+            continue
+        region_mean = float(np.mean(per_point[region_mask]))
+        if np.isfinite(region_mean):
+            region_means.append(region_mean)
+    return float(np.mean(region_means)) if region_means else float('nan')
+
+
+def inverse_region_frequency_weights(region_labels: np.ndarray) -> np.ndarray:
+    """
+    Per-row inverse-region-frequency multipliers for equal-region fit reweighting.
+
+    Returns a length-``n`` factor array to multiply into a training sample-weight
+    vector so that every acoustic region (supercategory) contributes roughly
+    equal total weight to the fit, preventing a few dominant regions from drowning
+    the rare ones. Each labelled row's factor is ``1 / count[its region]``;
+    unlabelled (NaN-region) rows receive the median labelled factor so they are
+    neither dropped nor over-weighted. The downstream estimator normalises the
+    final sample-weight vector to unit mean, so only the relative factors matter
+    here (no absolute scaling is applied).
+
+    Parameters
+    ----------
+    region_labels : np.ndarray
+        Length-``n`` per-event acoustic-region labels; NaN marks an unlabelled
+        event.
+
+    Returns
+    -------
+    np.ndarray
+        Length-``n`` float multipliers (all ``1.0`` when no row is labelled).
+    """
+
+    region_labels = np.asarray(region_labels, dtype=np.float64)
+    n_rows = region_labels.shape[0]
+    factor = np.ones(n_rows, dtype=np.float64)
+    labelled = ~np.isnan(region_labels)
+    if labelled.any():
+        unique_regions, region_counts = np.unique(region_labels[labelled], return_counts=True)
+        count_map = {float(u): int(c) for u, c in zip(unique_regions, region_counts)}
+        labelled_factors = np.array([1.0 / count_map[float(r)] for r in region_labels[labelled]])
+        factor[labelled] = labelled_factors
+        if int(labelled.sum()) < n_rows:
+            factor[~labelled] = float(np.median(labelled_factors))
+    return factor
+
+
 def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
                                 weights: np.ndarray = None, *,
                                 metric: str, period: float,
                                 train_cov_inv: np.ndarray = None,
-                                random_state: int = 0) -> dict:
+                                random_state: int = 0,
+                                region_labels: np.ndarray = None,
+                                min_region_events: int = 1) -> dict:
     """
     Description
     -----------
@@ -368,12 +572,14 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
 
     Every euclidean-named quantity is built from the wrap-aware signed
     residual, so on ``metric='torus'`` it is the geodesic distance and on
-    ``metric='euclidean'`` it reduces to the ordinary plane distance.
-    ``dcor_xy`` is the wrap-aware distance correlation between prediction and
-    truth and is computed on BOTH geometries -- it is the model-selection score
-    on the torus AND on euclidean (``dcor_prediction_truth`` reduces to ordinary
-    Euclidean distances when ``metric='euclidean'``). ``r2_spatial`` is retained
-    as a reported descriptor on both, never as the selection score.
+    ``metric='euclidean'`` it reduces to the ordinary plane distance. The
+    model-selection score lives under a geometry-specific, honestly-named key:
+    on ``'torus'`` it is ``vm_logscore``, the macro (per-region)
+    product-von-Mises log-likelihood (:func:`macro_von_mises_logscore`), and
+    ``dcor_xy`` is ``nan`` (distance correlation is uninformative there); on
+    ``'euclidean'`` it is ``dcor_xy``, the wrap-aware distance correlation
+    (:func:`dcor_prediction_truth`), and ``vm_logscore`` is ``nan``.
+    ``r2_spatial`` is a reported descriptor on both, never the selection score.
 
     Parameters
     ----------
@@ -392,7 +598,15 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         ``(2, 2)`` inverse training covariance for ``mahalanobis_mae``; the
         metric is ``nan`` when ``None``.
     random_state (int)
-        Seed for the subsampled ``dcor_xy`` draw.
+        Seed for the subsampled ``dcor_xy`` draw (euclidean only).
+    region_labels (np.ndarray)
+        Length-``n`` per-event acoustic-region labels used for the torus macro
+        von Mises score; ``None`` (default) yields the pooled single-region
+        score. Ignored on euclidean.
+    min_region_events (int)
+        Minimum labelled events a region must contribute to enter the torus
+        macro average. Ignored on euclidean and when ``region_labels`` is
+        ``None``.
 
     Returns
     -------
@@ -400,7 +614,8 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         The metric bundle: ``r2_spatial``, ``euclidean_mae``,
         ``euclidean_rmse``, ``euclidean_mae_weighted``, ``euclidean_mae_raw``,
         ``mahalanobis_mae``, ``mae_x``, ``mae_y``, ``pearson_x``,
-        ``pearson_y``, ``spearman_x``, ``spearman_y``, ``dcor_xy``.
+        ``pearson_y``, ``spearman_x``, ``spearman_y``, ``dcor_xy``,
+        ``vm_logscore``.
     """
 
     Y_true = np.asarray(Y_true, dtype=np.float64)
@@ -437,15 +652,28 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         value = spearmanr(a, b)[0]
         return float(value) if np.isfinite(value) else float('nan')
 
-    # `dcor_xy` is the model-selection score on BOTH geometries, so it is
-    # computed unconditionally: `dcor_prediction_truth` reduces to ordinary
-    # Euclidean distances on `metric='euclidean'` and to the wrap-aware geodesic
-    # on `metric='torus'`. (It was previously torus-only, back when euclidean
-    # selected on `r2_spatial`; that gate would now leave the euclidean baseline
-    # and forward-search reading an all-NaN score.)
-    dcor_xy = dcor_prediction_truth(
-        Y_pred, Y_true, metric=metric, period=period, random_state=random_state,
-    )
+    # Two honestly-named selection-score keys, one per geometry (the inactive one
+    # is NaN, so the metric dict is schema-stable across geometries):
+    #   - torus: `vm_logscore` = the macro (per-region) product-von-Mises
+    #     log-likelihood (`macro_von_mises_logscore`) -- signed, has a real zero,
+    #     rewards rescuing badly-predicted rare regions, and responds to the
+    #     smoothness penalty. `region_labels=None` yields the pooled score; the
+    #     callers pass per-event region labels for the true macro score.
+    #     `dcor_xy` is NOT computed on the torus (distance correlation is
+    #     scale-invariant and flat there, i.e. uninformative) -> NaN.
+    #   - euclidean: `dcor_xy` = the wrap-aware distance correlation
+    #     (`dcor_prediction_truth`); `vm_logscore` is torus-only -> NaN.
+    if metric == 'torus':
+        vm_logscore = macro_von_mises_logscore(
+            Y_pred, Y_true, region_labels,
+            metric=metric, period=period, min_region_events=min_region_events,
+        )
+        dcor_xy = float('nan')
+    else:
+        dcor_xy = dcor_prediction_truth(
+            Y_pred, Y_true, metric=metric, period=period, random_state=random_state,
+        )
+        vm_logscore = float('nan')
 
     # ss_res reuses the already-computed per-row squared Euclidean distance
     # (euclidean_dist == sqrt(dx**2 + dy**2)), so squaring it recovers
@@ -471,6 +699,7 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         'spearman_x': _spear(Y_true[:, 0], Y_pred[:, 0]),
         'spearman_y': _spear(Y_true[:, 1], Y_pred[:, 1]),
         'dcor_xy': dcor_xy,
+        'vm_logscore': vm_logscore,
     }
 
 

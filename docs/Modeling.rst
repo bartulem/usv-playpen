@@ -145,7 +145,7 @@ cross-validation splitting.
 * **session_split_initial_tolerance** — the starting class-balance tolerance for the ``'session'`` strategy's held-out-set search, before it begins widening (default ``0.05``).
 * **session_split_max_attempts** / **session_split_widen_step** / **session_split_widen_every** — tuning for the ``'session'`` strategy's search for balanced held-out session sets (max attempts, plus how much / how often the balance tolerance is relaxed).
 * **selection_p_val** — the significance level gating whether a candidate feature is admitted during forward-stepwise model selection (default ``0.01``); on the acoustic-manifold target it is the Benjamini–Hochberg FDR ``q`` used to screen candidates.
-* **selection_effect_floor** / **selection_n_bootstrap** / **selection_ci_level** — the acoustic-manifold selection's **session-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-session paired distance-correlation margin over the shuffle null is consistently positive across recordings. ``selection_effect_floor`` is the relative effect floor a screened feature must clear — a fraction of the top surviving driver's margin (default ``0.1`` = 10%); ``selection_n_bootstrap`` is the number of session bootstrap resamples (default ``1000``); ``selection_ci_level`` is the bootstrap confidence level whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (default ``0.99``). These three apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone.
+* **selection_effect_floor** / **selection_n_bootstrap** / **selection_ci_level** — the acoustic-manifold selection's **fold-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds. ``selection_effect_floor`` is the relative effect floor a screened feature must clear — a fraction of the top surviving driver's margin (default ``0.1`` = 10%); ``selection_n_bootstrap`` is the number of fold bootstrap resamples (default ``1000``); ``selection_ci_level`` is the bootstrap confidence level whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (default ``0.99``). These three apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone.
 * **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout'`` mode: a candidate silent-epoch onset is kept only if no USV (from any source) starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
 * **usv_per_bout_floor** — the minimum number of USVs a positive bout must contain (``'bout'`` mode).
 * **onset_target_category** — restrict positive onsets to a single USV category (``'individual'`` mode only); ``null`` pools all categories (see the single-category note under :ref:`Modeling input data <modeling-extract>`).
@@ -605,19 +605,23 @@ top univariate feature; ``p_val`` is the per-step acceptance threshold.
 .. note::
 
    **Significance and acceptance for the acoustic-manifold target.** The
-   continuous-manifold selection scores dependence with the wrap-aware distance
-   correlation ``dcor_xy`` (on both the euclidean and torus geometries) and
-   decides acceptance at the **session** grain rather than the fold grain — the
-   CV folds resample the same recordings, so the fold count inflates
-   significance. A feature is screened in only when its per-session paired
-   ``dcor_xy`` margin over the shuffle null is consistently positive across
-   recordings — Benjamini–Hochberg-FDR-controlled at ``q = selection_p_val`` and
-   clearing the relative ``selection_effect_floor`` (a fraction of the top
-   surviving driver's margin) — and an anchor / forward step is admitted only
-   when its per-session improvement over the current model has a
-   ``selection_ci_level`` session-bootstrap CI (``selection_n_bootstrap``
-   resamples) whose lower bound exceeds ``0``. This replaced an earlier
-   fold-level Wilcoxon / one-standard-error gate.
+   continuous-manifold selection scores each fold's out-of-sample predictions
+   with a geometry-specific measure — the **macro von Mises log-likelihood**
+   (``vm_logscore``, equal-weighting acoustic regions so a feature that rescues a
+   rare, badly-predicted region is rewarded) on the torus, and the wrap-aware
+   distance correlation (``dcor_xy``) on euclidean — and decides acceptance at
+   the **fold** grain. Fold-grain (rather than session-grain) is used because the
+   macro average is only stable when every acoustic region is well populated:
+   pooling all sessions within a fold guarantees that, whereas scoring one
+   session at a time starves most regions below the per-region floor and
+   collapses the macro signal. A feature is screened in only when its per-fold
+   paired margin over the shuffle null is consistently positive across folds —
+   Benjamini–Hochberg-FDR-controlled at ``q = selection_p_val`` and clearing the
+   relative ``selection_effect_floor`` (a fraction of the top surviving driver's
+   margin) — and an anchor / forward step is admitted only when its per-fold
+   improvement over the current model has a ``selection_ci_level`` fold-bootstrap
+   CI (``selection_n_bootstrap`` resamples) whose lower bound exceeds ``0``. This
+   replaced an earlier fold-level Wilcoxon / one-standard-error gate.
 
 Run on a single node from the notebook:
 

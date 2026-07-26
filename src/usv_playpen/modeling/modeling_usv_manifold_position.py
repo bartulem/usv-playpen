@@ -82,6 +82,7 @@ from .manifold_metric import (
     torus_embed,
     resolve_manifold_metric,
     manifold_prediction_metrics,
+    inverse_region_frequency_weights,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import resolve_modeling_setting
@@ -423,7 +424,8 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                                   use_lax_loop: bool,
                                   regressor_cls,
                                   metric: str,
-                                  period: float) -> tuple:
+                                  period: float,
+                                  region_train: np.ndarray = None) -> tuple:
     """
     Selects `(lambda_smooth, l2_reg)` jointly by inner cross-validation on
     the supplied training fold, with an optional 1-SE rule biased toward
@@ -460,8 +462,8 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     includes the full grid of mean scores *and* the argmax pair so a
     reader can see how much the 1-SE rule softened the choice.
 
-    The scoring direction is inferred from the metric name: `dcor_xy`,
-    `r2_spatial`, `pearson_*`, and `spearman_*` are higher-is-better;
+    The scoring direction is inferred from the metric name: `vm_logscore`,
+    `dcor_xy`, `r2_spatial`, `pearson_*`, and `spearman_*` are higher-is-better;
     everything else is treated as lower-is-better (MAE / RMSE / Mahalanobis
     variants).
 
@@ -512,6 +514,13 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     period : float
         Per-axis wrap period used by the torus geometry; forwarded to the
         inner splitter and inner fits, ignored when `metric='euclidean'`.
+    region_train : np.ndarray, optional
+        Per-row acoustic-region labels (aligned to `X_train`) for equal-region
+        fit reweighting of the inner-training rows on the torus, mirroring the
+        outer fit so the tuned `(lambda_smooth, l2_reg)` is chosen under the same
+        reweighted objective. `None` (default) or `metric='euclidean'` -> no
+        reweighting (inner fits use the raw `w_train`). The inner-CV SCORING
+        objective is unaffected (it uses the pooled, label-free von Mises score).
 
     Returns
     -------
@@ -541,6 +550,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         'pearson_x', 'pearson_y',
         'spearman_x', 'spearman_y',
         'dcor_xy',
+        'vm_logscore',
     }
     higher_is_better = inner_cv_scoring_metric in higher_is_better_metrics
 
@@ -604,7 +614,15 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                         metric=metric,
                         period=period,
                     )
-                    model.fit(X_train[in_tr], Y_train[in_tr], sample_weight=w_train[in_tr])
+                    # Equal-region fit reweighting (torus only) on the inner
+                    # training rows, mirroring the outer fit so the tuned
+                    # (lambda_smooth, l2_reg) is chosen under the same reweighted
+                    # objective the outer model is fit with. No-op on euclidean or
+                    # when no region labels are threaded in.
+                    _w_in_tr = w_train[in_tr]
+                    if region_train is not None and metric == 'torus':
+                        _w_in_tr = _w_in_tr * inverse_region_frequency_weights(region_train[in_tr])
+                    model.fit(X_train[in_tr], Y_train[in_tr], sample_weight=_w_in_tr)
                     # A non-finite coefficient matrix means the optimiser
                     # diverged on this inner sub-fold. Such a (lambda_smooth,
                     # l2_reg) is numerically unusable, so flag the whole pair as
@@ -1252,12 +1270,18 @@ class ContinuousModelRunner:
     - `r2_spatial` — pooled spatial variance explained by the predictions;
       bounded above by 1. **Selection score on Euclidean / VAE / UMAP
       manifolds** (higher is better).
+    - `vm_logscore` — macro (per-region) product-von-Mises log-likelihood of
+      the decoded prediction (see `manifold_metric.macro_von_mises_logscore`).
+      **Selection score on the TORUS manifold** (higher is better); `nan` on
+      Euclidean manifolds. Used because the QLVM torus is near-uniform and
+      periodic, where the centroid-referenced `r2_spatial` is structurally
+      inverted and distance correlation is scale-invariant / flat in lambda;
+      the von Mises log-lik is signed, has a true zero, rewards rescuing rare
+      acoustic regions, and responds to the smoothness penalty.
     - `dcor_xy` — wrap-aware distance correlation between the decoded
       prediction and the truth (subsampled; see
-      `manifold_metric.dcor_prediction_truth`). **Selection score on the
-      TORUS manifold** (higher is better); `nan` on Euclidean manifolds.
-      Used because the QLVM torus is near-uniform and periodic, where the
-      centroid-referenced `r2_spatial` is structurally inverted.
+      `manifold_metric.dcor_prediction_truth`). **Selection score on Euclidean
+      manifolds**; `nan` on the torus (uninformative there).
     - `euclidean_mae` — mean Euclidean distance between snapped predictions
       and truth, in native UMAP units. Interpretable headline error.
     - `euclidean_rmse` — root-mean-squared Euclidean distance; a large
@@ -1392,13 +1416,22 @@ class ContinuousModelRunner:
         data_blocks = {}
 
         for feat in sorted_features:
-            X_list, Y_list, w_list, groups_list = [], [], [], []
+            X_list, Y_list, w_list, groups_list, region_list = [], [], [], [], []
             sessions = sorted(list(raw_data[feat].keys()))
 
             for sess_id in sessions:
                 X_sess = raw_data[feat][sess_id]['X']
                 Y_sess = raw_data[feat][sess_id]['Y']
                 w_sess = raw_data[feat][sess_id]['w']
+                # Per-event acoustic-region label (supercategory), row-aligned to
+                # Y; NaN when the source pickle carried no labels (legacy pickle),
+                # which makes the torus von Mises macro score fall back to the
+                # pooled form and the equal-region reweighting fall back to
+                # uniform. Read via `in` (not `.get`) per the strict-lookup style.
+                if 'supercategory' in raw_data[feat][sess_id]:
+                    region_sess = np.asarray(raw_data[feat][sess_id]['supercategory'], dtype=np.float32)
+                else:
+                    region_sess = np.full(len(Y_sess), np.nan, dtype=np.float32)
 
                 N, T = X_sess.shape
                 if bin_size > 1:
@@ -1422,12 +1455,14 @@ class ContinuousModelRunner:
                 Y_list.append(Y_sess)
                 w_list.append(w_sess)
                 groups_list.append(np.full(len(Y_sess), sess_id))
+                region_list.append(region_sess)
 
             data_blocks[feat] = {
                 'X': np.vstack(X_list).astype(np.float32),
                 'Y': np.vstack(Y_list).astype(np.float32),
                 'w': np.concatenate(w_list).astype(np.float32),
                 'groups': np.concatenate(groups_list),
+                'region': np.concatenate(region_list),
                 'n_time_bins': X_list[0].shape[1],
                 'held_out_session_ids': _held_out_session_ids,
             }
@@ -1564,7 +1599,14 @@ class ContinuousModelRunner:
         Y = feat_data['Y']
         w = feat_data['w']
         groups = feat_data['groups']
+        region = feat_data['region']
         n_time_bins = feat_data['n_time_bins']
+
+        # Per-region-floor for the torus macro von Mises score (a region must
+        # contribute at least this many labelled events to enter the macro
+        # average). Read once here; ignored on euclidean and by the pooled
+        # (inner-CV) objective.
+        min_region_events = self.modeling_settings['vocal_features']['usv_manifold_min_region_events']
 
         # Reserve the held-out sessions from every fold, the inner-CV tuning, and
         # the null baselines. Folds are generated over the DEVELOPMENT sessions
@@ -1605,7 +1647,10 @@ class ContinuousModelRunner:
             decades_each_side=tune_params['l2_reg_decades_each_side'],
         )
         inner_cv_folds = tune_params['inner_cv_folds']
-        inner_cv_scoring_metric = tune_params['inner_cv_scoring_metric']
+        # `inner_cv_scoring_metric` is NOT read from settings for the manifold: the
+        # inner-CV objective is geometry-determined (set just below, once the
+        # manifold metric is resolved) -- `vm_logscore` on the torus, `dcor_xy` on
+        # euclidean -- so it always matches the outer selection score.
         inner_cv_use_one_se_rule = tune_params['inner_cv_use_one_se_rule']
         inner_max_iter = tune_params['inner_max_iter']
 
@@ -1624,16 +1669,16 @@ class ContinuousModelRunner:
         # sin-cos embedding ridge (wound-aware); euclidean runs keep the
         # unchanged coordinate model, so they stay byte-identical.
         regressor_cls = resolve_manifold_regressor_cls(manifold_metric)
-        if manifold_metric == 'torus':
-            # The torus selection score is wrap-aware distance correlation
-            # (`dcor_xy`), which is decode-/scale-invariant and therefore
-            # insensitive to the regularisation strength (verified: dCor is flat
-            # across l2 in [1e-3, 1e6] and lambda_smooth in [0, 1e8], far past
-            # where they bite the data term). Tuning would only fit subsample
-            # noise on a flat surface, so it is disabled on the torus path: the
-            # fixed settings-level lambda_smooth / l2 are used as-is
-            # (lambda_smooth shapes the interpretable filter, not the score).
-            tune_regularization_bool = False
+        # Regularisation tuning is honored on BOTH geometries now. The inner-CV
+        # objective is the geometry's own selection score -- `vm_logscore` (the
+        # POOLED, label-free von Mises log-lik) on the torus, `dcor_xy` on
+        # euclidean -- which responds to the smoothness penalty, so the tuner
+        # selects a meaningful `(lambda_smooth, l2_reg)` rather than fitting noise
+        # on a flat surface. The outer ranking / gate use the per-region MACRO
+        # form. The inner-CV objective is geometry-determined (not a settings
+        # knob), so it always equals the geometry's selection score.
+        # `tune_regularization_bool` follows the settings flag as-is.
+        inner_cv_scoring_metric = 'vm_logscore' if manifold_metric == 'torus' else 'dcor_xy'
 
         print("Generating deterministic, spatially-stratified folds...")
         _folds_dev = get_stratified_spatial_splits_stable(
@@ -1660,7 +1705,8 @@ class ContinuousModelRunner:
         # both to initialise the per-fold metric dict and to summarise at
         # the end so the two stay in lockstep. `r2_spatial` is first
         # because it is the selection score on Euclidean/VAE/UMAP manifolds
-        # (on the torus the selection score is `dcor_xy`).
+        # (on the torus the selection score is `vm_logscore`; `dcor_xy` is NaN
+        # there and `vm_logscore` is NaN on euclidean).
         metric_keys = [
             'r2_spatial',
             'euclidean_mae',
@@ -1675,6 +1721,7 @@ class ContinuousModelRunner:
             'spearman_x',
             'spearman_y',
             'dcor_xy',
+            'vm_logscore',
         ]
 
         results = {}
@@ -1783,6 +1830,18 @@ class ContinuousModelRunner:
                 Y_train, Y_test = Y[train_idx], Y[test_idx]
                 w_train, w_test = w[train_idx], w[test_idx]
                 groups_train = groups[train_idx]
+                region_train, region_test = region[train_idx], region[test_idx]
+
+                # Equal-region fit reweighting (torus only): weight training rows
+                # by inverse acoustic-region frequency so common regions don't
+                # dominate the fit. Region labels come from the (unshuffled) Y, so
+                # the within-session X-shuffle `null` uses the same weights as
+                # `actual` -- the paired comparison is not confounded by weights.
+                # Euclidean keeps the raw weights, so it stays byte-identical.
+                if manifold_metric == 'torus':
+                    w_train_fit = w_train * inverse_region_frequency_weights(region_train)
+                else:
+                    w_train_fit = w_train
 
                 if strategy == 'null':
                     # Within-session X-history shuffle: each training
@@ -1820,6 +1879,7 @@ class ContinuousModelRunner:
                         Y_test, y_pred_xy, w_test,
                         metric=manifold_metric, period=manifold_period,
                         train_cov_inv=cov_inv, random_state=random_seed + fold_idx,
+                        region_labels=region_test, min_region_events=min_region_events,
                     )
 
                     fold_weights, fold_intercepts = None, None
@@ -1879,6 +1939,7 @@ class ContinuousModelRunner:
                             regressor_cls=regressor_cls,
                             metric=manifold_metric,
                             period=manifold_period,
+                            region_train=region_train,
                         )
                         fold_tuned_flag = True
                     else:
@@ -1909,8 +1970,11 @@ class ContinuousModelRunner:
                         metric=manifold_metric,
                         period=manifold_period,
                     )
-                    model.fit(X_train, Y_train, sample_weight=w_train)
-                    metrics = model.evaluate_metrics(X_test, Y_test, weights=w_test)
+                    model.fit(X_train, Y_train, sample_weight=w_train_fit)
+                    metrics = model.evaluate_metrics(
+                        X_test, Y_test, weights=w_test,
+                        region_labels=region_test, min_region_events=min_region_events,
+                    )
 
                     y_pred_xy = model.predict(X_test, snap=True).astype(np.float32)
                     fold_weights = model.coef_
@@ -1964,6 +2028,16 @@ class ContinuousModelRunner:
             Xh_test = X[_held_positions]
             Yh_test = Y[_held_positions]
             wh_test = w[_held_positions]
+            region_dev = region[_dev_positions]
+            region_held = region[_held_positions]
+
+            # Equal-region fit reweighting (torus only) on the development rows,
+            # mirroring the per-fold fit. Region labels come from the unshuffled Y,
+            # so `null` (X-shuffled) shares `actual`'s weights.
+            if manifold_metric == 'torus':
+                wh_train_fit = wh_train * inverse_region_frequency_weights(region_dev)
+            else:
+                wh_train_fit = wh_train
 
             if strategy == 'null':
                 shuffle_rng = np.random.default_rng(held_seed + 1)
@@ -1984,6 +2058,7 @@ class ContinuousModelRunner:
                     Yh_test, yh_pred_xy, wh_test,
                     metric=manifold_metric, period=manifold_period,
                     train_cov_inv=cov_inv, random_state=held_seed,
+                    region_labels=region_held, min_region_events=min_region_events,
                 )
                 h_weights, h_intercepts = None, None
                 h_n_iter, h_converged, h_fit_time = 0, True, 0.0
@@ -2023,6 +2098,7 @@ class ContinuousModelRunner:
                         regressor_cls=regressor_cls,
                         metric=manifold_metric,
                         period=manifold_period,
+                        region_train=region_dev,
                     )
                     h_tuned_flag = True
                 else:
@@ -2053,8 +2129,11 @@ class ContinuousModelRunner:
                     metric=manifold_metric,
                     period=manifold_period,
                 )
-                model_h.fit(Xh_train, Yh_train, sample_weight=wh_train)
-                metrics_h = model_h.evaluate_metrics(Xh_test, Yh_test, weights=wh_test)
+                model_h.fit(Xh_train, Yh_train, sample_weight=wh_train_fit)
+                metrics_h = model_h.evaluate_metrics(
+                    Xh_test, Yh_test, weights=wh_test,
+                    region_labels=region_held, min_region_events=min_region_events,
+                )
                 yh_pred_xy = model_h.predict(Xh_test, snap=True).astype(np.float32)
                 h_weights = model_h.coef_
                 h_intercepts = model_h.intercept_
@@ -2082,12 +2161,21 @@ class ContinuousModelRunner:
             }
 
         # Standardized per-split lines (emitted after all strategies, which are
-        # fit in separate passes): the geometry headline (dcor_xy on the torus,
-        # else r2_spatial) plus MAE, for ACTUAL vs NULL vs NULL-MF per split.
-        act_dcor = (np.asarray(results['actual']['folds']['metrics']['dcor_xy'], dtype=float)
-                    if 'dcor_xy' in results['actual']['folds']['metrics']
-                    else np.asarray([], dtype=float))
-        split_key = 'dcor_xy' if (act_dcor.size and np.any(np.isfinite(act_dcor))) else 'r2_spatial'
+        # fit in separate passes): the geometry headline (vm_logscore on the
+        # torus, dcor_xy on euclidean, else r2_spatial) plus MAE, for ACTUAL vs
+        # NULL vs NULL-MF per split.
+        def _has_finite_metric(key):
+            metrics = results['actual']['folds']['metrics']
+            if key not in metrics:
+                return False
+            arr = np.asarray(metrics[key], dtype=float)
+            return bool(arr.size and np.any(np.isfinite(arr)))
+        if _has_finite_metric('vm_logscore'):
+            split_key = 'vm_logscore'
+        elif _has_finite_metric('dcor_xy'):
+            split_key = 'dcor_xy'
+        else:
+            split_key = 'r2_spatial'
         n_ran = len(results['actual']['folds']['metrics']['r2_spatial'])
         for fold_idx in range(n_ran):
             line_groups = {}
@@ -2105,7 +2193,7 @@ class ContinuousModelRunner:
         # accordingly.
         higher_is_better = {
             'r2_spatial', 'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y',
-            'dcor_xy',
+            'dcor_xy', 'vm_logscore',
         }
 
         print("\n" + "=" * 90)

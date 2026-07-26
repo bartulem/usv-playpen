@@ -34,6 +34,9 @@ from usv_playpen.modeling.manifold_metric import (
     sin_cos_encode_jax,
     torus_embed,
     total_dispersion,
+    _fit_von_mises_kappa,
+    macro_von_mises_logscore,
+    inverse_region_frequency_weights,
 )
 
 
@@ -450,6 +453,7 @@ class TestManifoldPredictionMetrics:
         'r2_spatial', 'euclidean_mae', 'euclidean_rmse', 'euclidean_mae_weighted',
         'euclidean_mae_raw', 'mahalanobis_mae', 'mae_x', 'mae_y',
         'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y', 'dcor_xy',
+        'vm_logscore',
     }
 
     def test_bundle_keys_and_raw_equals_mae(self):
@@ -464,7 +468,10 @@ class TestManifoldPredictionMetrics:
 
     def test_perfect_prediction(self):
         """An exact prediction scores `r2_spatial == 1`, zero error, and unit
-        per-axis / distance correlation."""
+        per-axis correlation. On the torus the selection score is `vm_logscore`
+        (the von Mises log-likelihood), which an exact prediction MAXIMISES (a
+        large, finite value -- not pinned at 1.0), so it must comfortably exceed a
+        shuffled prediction's score; `dcor_xy` is `nan` on the torus."""
 
         rng = np.random.default_rng(1)
         Y = rng.random((300, 2))
@@ -472,34 +479,38 @@ class TestManifoldPredictionMetrics:
         assert bundle['r2_spatial'] == pytest.approx(1.0, abs=1e-9)
         assert bundle['euclidean_mae'] == pytest.approx(0.0, abs=1e-9)
         assert bundle['pearson_x'] == pytest.approx(1.0, abs=1e-9)
-        assert bundle['dcor_xy'] == pytest.approx(1.0, abs=1e-9)
+        assert np.isnan(bundle['dcor_xy'])          # dcor is not computed on the torus
+        shuffled = Y[rng.permutation(len(Y))]
+        vm_shuffled = manifold_prediction_metrics(Y, shuffled, metric='torus', period=1.0)['vm_logscore']
+        assert np.isfinite(bundle['vm_logscore'])
+        assert bundle['vm_logscore'] > vm_shuffled
 
-    def test_dcor_computed_on_both_geometries(self):
-        """`dcor_xy` is the model-selection score on BOTH geometries, so it is a
-        finite distance correlation on euclidean AND torus (it used to be gated
-        torus-only, which left the euclidean baseline/forward-search reading an
-        all-NaN score once euclidean also selected on `dcor_xy`)."""
+    def test_selection_score_key_by_geometry(self):
+        """The selection score lives under a geometry-specific, honestly-named
+        key: `dcor_xy` (real distance correlation) on euclidean with `vm_logscore`
+        NaN, and `vm_logscore` (von Mises log-lik) on the torus with `dcor_xy`
+        NaN."""
 
         rng = np.random.default_rng(2)
         Y = rng.random((200, 2)); Yp = rng.random((200, 2))
-        assert np.isfinite(
-            manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)['dcor_xy']
-        )
-        assert np.isfinite(
-            manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0)['dcor_xy']
-        )
+        euc = manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)
+        assert np.isfinite(euc['dcor_xy'])
+        assert np.isnan(euc['vm_logscore'])
+        tor = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0)
+        assert np.isfinite(tor['vm_logscore'])
+        assert np.isnan(tor['dcor_xy'])
 
     def test_density_draw_correlations_are_finite(self):
-        """A uniform draw has real geometry, so the per-axis correlations and
-        `dcor_xy` are defined finite-sample chance values — unlike the old
-        constant-centroid baseline, whose correlations were NaN and whose
-        `dcor_xy` was a degenerate 0."""
+        """A uniform draw has real geometry, so the per-axis correlations and the
+        torus selection score `vm_logscore` are defined finite-sample chance
+        values — unlike the old constant-centroid baseline, whose correlations
+        were NaN."""
 
         rng = np.random.default_rng(3)
         Y = rng.random((400, 2))
         draw = Y[rng.choice(len(Y), size=len(Y), replace=True)]
         bundle = manifold_prediction_metrics(Y, draw, metric='torus', period=1.0)
-        for key in ('pearson_x', 'pearson_y', 'spearman_x', 'spearman_y', 'dcor_xy'):
+        for key in ('pearson_x', 'pearson_y', 'spearman_x', 'spearman_y', 'vm_logscore'):
             assert np.isfinite(bundle[key])
 
     def test_mahalanobis_requires_cov(self):
@@ -516,3 +527,121 @@ class TestManifoldPredictionMetrics:
                 Y, Yp, metric='euclidean', period=1.0, train_cov_inv=np.eye(2),
             )['mahalanobis_mae']
         )
+
+
+class TestFitVonMisesKappa:
+    """The global von Mises concentration MLE (`_fit_von_mises_kappa`)."""
+
+    def test_recovers_known_concentration(self):
+        """Sampling residuals from a von Mises(0, kappa) and re-fitting recovers
+        kappa to within sampling tolerance."""
+        rng = np.random.default_rng(0)
+        for true_kappa in (0.5, 4.0, 20.0):
+            residuals = rng.vonmises(0.0, true_kappa, size=40000)
+            est = _fit_von_mises_kappa(residuals)
+            assert est == pytest.approx(true_kappa, rel=0.15)
+
+    def test_zero_concentration_for_uniform_residuals(self):
+        """Uniform (fully dispersed) residuals have ~zero mean resultant length,
+        so the MLE returns 0 (no concentration)."""
+        rng = np.random.default_rng(1)
+        uniform = rng.uniform(-np.pi, np.pi, size=40000)
+        assert _fit_von_mises_kappa(uniform) == pytest.approx(0.0, abs=0.05)
+
+    def test_saturates_for_near_perfect_residuals(self):
+        """Essentially-zero residuals (a near-perfect fit) saturate kappa at the
+        numerical upper bound rather than diverging."""
+        assert _fit_von_mises_kappa(np.zeros(1000)) == 1e6
+
+    def test_empty_returns_zero(self):
+        """An empty residual array returns 0 (no data -> no concentration)."""
+        assert _fit_von_mises_kappa(np.empty(0)) == 0.0
+
+
+class TestMacroVonMisesLogscore:
+    """The macro (per-region) von Mises log-score (`macro_von_mises_logscore`)."""
+
+    def test_higher_for_better_prediction(self):
+        """A prediction closer to the truth scores strictly higher (higher is
+        better) than a poorer one."""
+        rng = np.random.default_rng(2)
+        Y = rng.random((400, 2))
+        good = (Y + rng.normal(0, 0.01, Y.shape)) % 1.0
+        poor = (Y + rng.normal(0, 0.2, Y.shape)) % 1.0
+        s_good = macro_von_mises_logscore(good, Y, None, metric='torus', period=1.0)
+        s_poor = macro_von_mises_logscore(poor, Y, None, metric='torus', period=1.0)
+        assert np.isfinite(s_good) and np.isfinite(s_poor)
+        assert s_good > s_poor
+
+    def test_pooled_when_no_labels(self):
+        """`region_labels=None` and an all-NaN label array both fall back to the
+        pooled single-region score (identical value)."""
+        rng = np.random.default_rng(3)
+        Y = rng.random((300, 2))
+        Yp = (Y + rng.normal(0, 0.05, Y.shape)) % 1.0
+        pooled = macro_von_mises_logscore(Yp, Y, None, metric='torus', period=1.0)
+        all_nan = macro_von_mises_logscore(
+            Yp, Y, np.full(len(Y), np.nan), metric='torus', period=1.0)
+        assert pooled == pytest.approx(all_nan, abs=1e-9)
+
+    def test_macro_drops_regions_below_floor(self):
+        """A region with fewer than `min_region_events` labelled events is
+        excluded from the macro average (so the score reflects only well-sampled
+        regions)."""
+        rng = np.random.default_rng(4)
+        Y = rng.random((300, 2))
+        Yp = (Y + rng.normal(0, 0.05, Y.shape)) % 1.0
+        labels = np.zeros(300)
+        labels[:5] = 1.0                 # region 1 has only 5 events
+        # Share one kappa across both calls (otherwise each re-fits it on its own
+        # sample and the two disagree by sampling noise). With a floor of 50,
+        # region 1 is dropped -> macro == the pooled mean over the region-0 events.
+        r = signed_diff(Y, Yp, metric='torus', period=1.0) * (2 * np.pi)
+        kappa = _fit_von_mises_kappa(r.ravel())
+        macro = macro_von_mises_logscore(
+            Yp, Y, labels, metric='torus', period=1.0, min_region_events=50, kappa=kappa)
+        region0_only = macro_von_mises_logscore(
+            Yp[5:], Y[5:], None, metric='torus', period=1.0, kappa=kappa)
+        assert macro == pytest.approx(region0_only, abs=1e-9)
+
+    def test_kappa_reuse(self):
+        """Passing a pre-fit `kappa` reuses it instead of re-fitting (the two
+        paths agree when the passed kappa equals the fitted one)."""
+        rng = np.random.default_rng(5)
+        Y = rng.random((200, 2))
+        Yp = (Y + rng.normal(0, 0.05, Y.shape)) % 1.0
+        r = signed_diff(Y, Yp, metric='torus', period=1.0) * (2 * np.pi)
+        kappa = _fit_von_mises_kappa(r.ravel())
+        auto = macro_von_mises_logscore(Yp, Y, None, metric='torus', period=1.0)
+        reused = macro_von_mises_logscore(Yp, Y, None, metric='torus', period=1.0, kappa=kappa)
+        assert auto == pytest.approx(reused, abs=1e-9)
+
+
+class TestInverseRegionFrequencyWeights:
+    """The equal-region reweighting factors (`inverse_region_frequency_weights`)."""
+
+    def test_inverse_frequency(self):
+        """Each labelled row's factor is 1 / count[its region]."""
+        labels = np.array([0.0, 0.0, 0.0, 1.0])   # region 0 x3, region 1 x1
+        factors = inverse_region_frequency_weights(labels)
+        np.testing.assert_allclose(factors, [1 / 3, 1 / 3, 1 / 3, 1.0])
+
+    def test_equal_total_weight_per_region(self):
+        """Summing the factors within each region gives the same total across
+        regions (the whole point: no region dominates the fit)."""
+        labels = np.array([0.0] * 10 + [1.0] * 2)
+        factors = inverse_region_frequency_weights(labels)
+        assert factors[labels == 0.0].sum() == pytest.approx(factors[labels == 1.0].sum())
+
+    def test_unlabelled_get_median_factor(self):
+        """NaN-region rows receive the median labelled factor (neither dropped
+        nor over-weighted)."""
+        labels = np.array([0.0, 0.0, 0.0, 1.0, np.nan])
+        factors = inverse_region_frequency_weights(labels)
+        assert factors[-1] == pytest.approx(np.median([1 / 3, 1 / 3, 1 / 3, 1.0]))
+
+    def test_all_unlabelled_is_uniform(self):
+        """With no labelled rows the factors are all 1.0 (uniform -> no
+        reweighting)."""
+        factors = inverse_region_frequency_weights(np.full(6, np.nan))
+        np.testing.assert_array_equal(factors, np.ones(6))

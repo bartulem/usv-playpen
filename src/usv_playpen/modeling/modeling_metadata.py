@@ -85,8 +85,13 @@ RESERVED_METADATA_KEYS = ('_input_metadata', '_run_metadata',
 #: the on-disk shape of that block changes incompatibly.
 SCHEMA_VERSIONS = {
     'input': 2,
-    'run': 2,
-    'selection': 1,
+    # run/selection bumped when the torus manifold selection score changed from
+    # distance correlation to the macro von Mises log-likelihood (the numeric key
+    # `dcor_xy` is reused but its torus semantics differ), with equal-region fit
+    # reweighting and re-enabled regularisation tuning. Pickles at the new version
+    # are NOT score-comparable to older ones on the torus.
+    'run': 3,
+    'selection': 2,
     'consolidation': 1,
 }
 
@@ -674,11 +679,21 @@ def build_run_metadata(modeling_settings: dict,
             metadata['jax_hyperparameters']['balance_train_bool'] = bool(jax_block['balance_train_bool'])
         if jax_block['tune_regularization_bool']:
             tp = jax_block['tune_regularization_params']
+            # The continuous (bivariate) inner-CV objective is GEOMETRY-DETERMINED,
+            # not a settings knob: the von Mises log-score `vm_logscore` on the
+            # torus, distance correlation `dcor_xy` on euclidean. Record the value
+            # actually used, not a stale settings string. The multinomial path
+            # keeps its own real `inner_cv_scoring_metric` knob (e.g. 'auc').
+            if analysis_type == 'continuous':
+                _manifold_metric = modeling_settings['vocal_features']['usv_manifold_metric']
+                _inner_cv_metric = 'vm_logscore' if _manifold_metric == 'torus' else 'dcor_xy'
+            else:
+                _inner_cv_metric = tp['inner_cv_scoring_metric']
             metadata['jax_hyperparameters']['tune_regularization_params'] = {
                 'lambda_smooth_decades_each_side': int(tp['lambda_smooth_decades_each_side']),
                 'l2_reg_decades_each_side': int(tp['l2_reg_decades_each_side']),
                 'inner_cv_folds': int(tp['inner_cv_folds']),
-                'inner_cv_scoring_metric': tp['inner_cv_scoring_metric'],
+                'inner_cv_scoring_metric': _inner_cv_metric,
                 'inner_cv_use_one_se_rule': bool(tp['inner_cv_use_one_se_rule']),
                 'inner_max_iter': int(tp['inner_max_iter']),
             }

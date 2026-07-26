@@ -166,6 +166,12 @@ CONTRACTS: tuple[SettingsContract, ...] = (
                 settings_file="modeling_settings.json",
                 path=("hyperparameters", "jax_linear", "bivariate",
                       "tune_regularization_params"),
+                exempt=frozenset({"inner_cv_scoring_metric"}),
+                reason="the continuous (bivariate) inner-CV objective is "
+                       "geometry-determined (vm_logscore on the torus, dcor_xy on "
+                       "euclidean), not a settings knob, so build_run_metadata "
+                       "derives it; the `tp['inner_cv_scoring_metric']` read fires "
+                       "only on the multinomial branch",
             ),
             FeedingBlock(
                 settings_file="modeling_settings.json",

@@ -110,8 +110,21 @@ def _manual_closed_form(X, Y, sample_weight, n_features, n_time_bins,
     x_c = X - x_mean
     e_c = emb - e_mean
 
+    # Mirror the estimator's reflective (Neumann) boundary penalty: for order 2
+    # the interior second-difference operator is augmented with a first-difference
+    # (edge-slope) row at each end, giving a (p, p) operator.
     d_k = np.diff(np.eye(n_time_bins), n=order, axis=0)
-    block = d_k.T @ d_k
+    if order == 2 and n_time_bins >= 2:
+        left_edge = np.zeros((1, n_time_bins))
+        left_edge[0, 0] = -1.0
+        left_edge[0, 1] = 1.0
+        right_edge = np.zeros((1, n_time_bins))
+        right_edge[0, -2] = 1.0
+        right_edge[0, -1] = -1.0
+        d_op = np.vstack([left_edge, d_k, right_edge])
+    else:
+        d_op = d_k
+    block = d_op.T @ d_op
     penalty_s = block if n_features == 1 else block_diag(*([block] * n_features))
 
     x_cw = x_c * w[:, None]

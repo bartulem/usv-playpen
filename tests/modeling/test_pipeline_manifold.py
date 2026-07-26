@@ -575,10 +575,10 @@ class TestManifoldModelSelection:
         records the ``null_model_free`` empirical-density baseline.
         """
 
-        # The session-grain screen bootstraps SESSIONS, so its statistical power
-        # comes from the session count (not the fold count). Use a larger session
-        # panel under session-holdout -- the split the gate is designed for -- so
-        # the strong-signal feature's per-session margin clears the bootstrap CI.
+        # The fold-grain screen bootstraps FOLDS, so its statistical power comes
+        # from the fold count. Use a healthy session panel under session-holdout
+        # so each of the CV folds carries enough events for a stable per-fold
+        # score and the strong-signal feature's per-fold margin clears the CI.
         gate_n_sessions = 25
         settings, _save_dir = _build_manifold_settings(
             tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
@@ -677,10 +677,10 @@ class TestManifoldModelSelection:
         estimator via the factory and pass ``metric``/``period``.
         """
 
-        # Session-holdout with a large session panel: the session-grain gate
-        # bootstraps SESSIONS, so its power scales with the session count, and it
-        # assumes whole-session holdout (a per-session margin is only leak-free
-        # when the session's events are all in the test fold).
+        # Session-holdout with a healthy session panel: the fold-grain gate
+        # bootstraps FOLDS, so its power scales with the fold count, and
+        # session-holdout keeps each fold's per-fold score leak-free (a session's
+        # events are all in one test fold, none leaking from its own training).
         gate_n_sessions = 25
         settings, _save_dir = _build_manifold_settings(
             tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
@@ -755,17 +755,17 @@ class TestManifoldModelSelection:
         with step_pkls[-1].open('rb') as fh:
             final_step = pickle.load(fh)
         assert 'self.speed' in final_step['current_features']
-        # The torus path screens/scores on dcor_xy, not r2_spatial.
-        assert final_step['_run_metadata']['selection_metric'] == 'dcor_xy'
+        # The torus path screens/scores on the von Mises log-score, not r2_spatial.
+        assert final_step['_run_metadata']['selection_metric'] == 'vm_logscore'
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_stale_ranking_raises(self, tmp_path):
         """
-        On a torus run the selection screens on the session-grain paired-dcor
-        margin, which needs `session_ids` / `n_events_per_session` in the
-        univariate `_input_metadata` and per-fold predictions in each result. A
-        stale ranking that predates that schema (only `r2_spatial` fold metrics,
-        no session metadata) must raise a clear, actionable error rather than
+        On a torus run the selection screens on the fold-grain paired score
+        margin, which recomputes the score from per-fold predictions and so needs
+        `y_pred_xy` / `y_true` / `test_indices` in each result's `folds`. A stale
+        ranking that predates that schema (only `r2_spatial` fold metrics, no
+        stored predictions) must raise a clear, actionable error rather than
         silently skipping every feature and mis-reporting the schema mismatch as
         "no significant features found" (a misleading false null).
         """
@@ -790,7 +790,7 @@ class TestManifoldModelSelection:
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
 
-        with pytest.raises(ValueError, match="session_ids"):
+        with pytest.raises(ValueError, match="per-fold predictions"):
             continuous_vocal_manifold_model_selection(
                 univariate_results_path=str(ranking_pkl),
                 input_data_path=str(tmp_path / 'does_not_need_to_exist.pkl'),
@@ -804,12 +804,12 @@ class TestManifoldModelSelection:
     def test_selection_torus_resume_metric_mismatch_restarts_fresh(self, tmp_path, capsys):
         """
         Resuming a checkpoint scored on a different selection metric (the
-        manifold metric was flipped between runs, so r2_spatial and dcor_xy
+        manifold metric was flipped between runs, so r2_spatial and vm_logscore
         live on different scales) must discard it and restart fresh rather than
         compare incompatible scores. Run the torus selection, tamper the latest
         checkpoint's recorded selection_metric to 'r2_spatial', re-run, and
         assert the resume announces the mismatch and finalises afresh on
-        dcor_xy.
+        vm_logscore.
         """
 
         gate_n_sessions = 25
@@ -872,7 +872,7 @@ class TestManifoldModelSelection:
         assert "different scales" in out and "starting fresh" in out
         final = sorted(ms_dir.glob('*_step_*.pkl'))[-1]
         with final.open('rb') as fh:
-            assert pickle.load(fh)['_run_metadata']['selection_metric'] == 'dcor_xy'
+            assert pickle.load(fh)['_run_metadata']['selection_metric'] == 'vm_logscore'
 
     def test_metric_aware_centroid_and_r2_math(self):
         """
