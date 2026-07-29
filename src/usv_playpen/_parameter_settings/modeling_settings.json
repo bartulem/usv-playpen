@@ -244,5 +244,24 @@
         "plot_bool": true
       }
     }
+  },
+  "glm_hmm": {
+    "emission_type": "manifold",
+    "transition_mode": "static",
+    "history_frames": 75,
+    "cv_folds": 5,
+    "n_states_min": 2,
+    "n_states_max": 6,
+    "n_em_iters": 100,
+    "n_lbfgs": 500,
+    "n_restarts": 5,
+    "em_tol": 0.0001,
+    "transition_pseudocount": 1.0,
+    "lambda_smooth": 100.0,
+    "input_driven_lambda_smooth": 0.05,
+    "l2_reg": 0.1,
+    "multinomial_target": "supercategory",
+    "focal_gamma": 0.0,
+    "multinomial_max_iter": 2000
   }
 }

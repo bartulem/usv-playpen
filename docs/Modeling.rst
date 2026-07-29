@@ -263,17 +263,60 @@ The regularisation controls (shared by both ``jax_linear`` sub-blocks) look like
 .. note::
 
    **Regularisation tuning on the torus manifold.** For the continuous
-   manifold target with ``usv_manifold_metric = 'torus'``, this inner-loop
-   regularisation CV is unnecessary and is switched off automatically: the
-   selection score (wrap-aware distance correlation ``dcor_xy``) is
-   regularisation-invariant through the ``atan2`` decode, so the pipeline
-   forces ``hyperparameters.jax_linear.bivariate.tune_regularization_bool``
-   to ``False`` regardless of its configured value. Leave tuning off and use
-   the advised fixed values ``lambda_smooth_fixed = 1.0`` and
-   ``l2_reg_fixed = 0.01`` — ``lambda_smooth`` no longer moves the score but
-   still shapes the interpretable published filter, so it is not a free
-   parameter for visualisation. On euclidean / VAE / UMAP manifolds (where
-   the score is ``r2_spatial``) tuning is honoured as configured.
+   manifold target with ``usv_manifold_metric = 'torus'`` the selection score is
+   the macro von Mises log-likelihood (``vm_logscore``), which — unlike the
+   distance correlation the score used to be — *does* respond to the smoothness
+   penalty, so the inner-loop regularisation CV is meaningful and is honoured as
+   configured: set ``hyperparameters.jax_linear.bivariate.tune_regularization_bool``
+   to ``true`` to pick ``lambda_smooth`` / ``l2_reg`` per fold (the inner-CV
+   objective is the pooled von Mises log-likelihood, derived from the geometry,
+   not a configured knob). The torus smoothness penalty uses reflective (Neumann)
+   boundary rows, so a higher ``lambda_smooth`` cleans the interpretable filter's
+   middle without its edges floating free. On euclidean / VAE / UMAP manifolds
+   the selection score is the wrap-aware distance correlation ``dcor_xy`` (with
+   ``r2_spatial`` reported as a descriptor) and tuning is likewise honoured as
+   configured.
+
+**glm_hmm** — the GLM-HMM over latent vocal states (see
+:ref:`Latent vocal states <modeling-glm-hmm>` below).
+
+.. code-block:: json
+
+    "glm_hmm": {
+        "emission_type": "manifold",
+        "transition_mode": "static",
+        "history_frames": 75,
+        "cv_folds": 5,
+        "n_states_min": 2,
+        "n_states_max": 6,
+        "n_em_iters": 100,
+        "n_lbfgs": 500,
+        "n_restarts": 5,
+        "em_tol": 0.0001,
+        "transition_pseudocount": 1.0,
+        "lambda_smooth": 100.0,
+        "input_driven_lambda_smooth": 0.05,
+        "l2_reg": 0.1,
+        "multinomial_target": "supercategory",
+        "focal_gamma": 0.0,
+        "multinomial_max_iter": 2000
+    }
+
+* **emission_type** — the per-state observation model: ``'manifold'`` (behaviour → 2-D acoustic-manifold position, von Mises density) or ``'multinomial'`` (behaviour → discrete USV category, categorical density).
+* **transition_mode** — ``'static'`` fits the EM-based engine with a stationary ``K × K`` transition matrix; ``'input_driven'`` fits a direct-marginal engine whose transition *into* each time bin is a per-state GLM of the behavioural design (Calhoun/Pillow/Murthy), validated on the Coen-2014 fly to reproduce its state-selection without the state collapse the EM engine suffers on weakly-identified data. Input-driven is defined for both emissions (categorical → reference-coded ``InputDrivenGLMHMM``; manifold → torus product-von-Mises ``InputDrivenManifoldGLMHMM``, which requires a torus manifold).
+* **history_frames** — number of most-recent behavioural-history frames kept per feature (the emission's temporal-filter length ``n_time_bins``).
+* **cv_folds** — number of cross-validation folds over the development sessions used to select the state count.
+* **n_states_min** / **n_states_max** — inclusive range of latent state counts ``K`` swept during selection.
+* **n_em_iters** — maximum Baum-Welch EM iterations per restart (``'static'`` engine only).
+* **n_lbfgs** — L-BFGS iterations per restart for the ``'input_driven'`` direct-marginal engines.
+* **n_restarts** — number of random-initialisation restarts; the best (by held-out, else training, log-likelihood) is kept.
+* **em_tol** — relative EM convergence tolerance (``'static'`` engine only).
+* **transition_pseudocount** — Laplace pseudocount smoothing the static transition and initial-state expected counts (``'static'`` engine only).
+* **lambda_smooth** / **l2_reg** — the temporal-smoothness and ridge penalties on each state's *static-engine* emission GLM.
+* **input_driven_lambda_smooth** — the first-difference temporal-smoothness coefficient ``r`` for the *input-driven* engines (a separate key because its scale, ``~0.05``, differs from the static-engine ``lambda_smooth`` by orders of magnitude).
+* **multinomial_target** — the categorical label column read as the target when ``emission_type='multinomial'`` (e.g. ``'supercategory'``); events whose label is NaN are dropped.
+* **focal_gamma** — focal-loss focusing parameter of the static multinomial emission (``0.0`` = plain cross-entropy).
+* **multinomial_max_iter** — optimiser iterations for the static multinomial emission's per-state classifier.
 
 .. _modeling-extract:
 
@@ -755,6 +798,54 @@ diagnostics computed once across folds:
 * **``cross_validation``** — a list, one dict per spatial-CV fold. Each holds the fold's test-set ground truth ``Y_true`` ``(N, 2)`` and the three strategies' predictions ``Y_pred_actual`` / ``Y_pred_null`` / ``Y_pred_null_model_free`` (all ``(N, 2)``), plus the scalar wrap-aware ``error_actual`` / ``error_null`` / ``error_null_model_free`` that feed the skill-score and permutation test.
 * **``feature_importance``** — permutation importance evaluated on ``best_fold_idx``: per-feature ``means`` / ``stds`` / ``snrs`` (mean Δerror, its spread, and the signal-to-noise ratio), ``ranked_features`` (sorted), and ``significant_features`` (SNR-thresholded).
 * **``saliency_maps``** (optional) — one entry per acoustic cluster (keyed ``<segmentation>_<label>``, e.g. ``supercategory_0``), each with a ``contrastive_saliency`` tensor (Input×Gradient over features × time) and the cluster ``centroid`` / ``radius``. **``cluster_geometry``** (optional) records the cluster centroids, radii, and nearest-neighbour distances that place the saliency insets.
+
+.. _modeling-glm-hmm:
+
+Latent vocal states (GLM-HMM)
+-----------------------------
+A GLM-HMM treats the animal as switching between a small number of latent
+"behaviour → vocalization rules": each latent state owns its own GLM mapping the
+recent behavioural history to the vocalization, and the animal transitions between
+states over a bout of calling. The pipeline reads the behaviours to emit from —
+the manifold selection's ``final_model_features`` (``model_selection_path``), so the
+GLM-HMM always emits from exactly the features that selection kept — turns each
+session into one temporally-ordered observation sequence, fits the model across the
+``n_states_min`` … ``n_states_max`` range, and selects the state count by
+cross-validated held-out log-likelihood.
+
+Two engines are available, chosen by ``transition_mode``:
+
+* **``'static'``** — the classic Baum-Welch EM engine with a stationary ``K × K``
+  transition matrix, for either ``emission_type``.
+* **``'input_driven'``** — a direct-marginal engine whose transition into each time
+  bin is itself a per-state GLM of the behavioural design (input-driven transitions,
+  after Calhoun/Pillow/Murthy). This engine was validated on the Coen-2014 *Drosophila*
+  courtship benchmark to reproduce its state-selection curve *without* the state
+  collapse the EM engine suffers on weakly-identified categorical data, and is the
+  recommended engine for a trustworthy state count. It fits the reference-coded
+  categorical model (``emission_type='multinomial'``) or the torus product-von-Mises
+  manifold model (``emission_type='manifold'``, torus only) by maximising the
+  regularised marginal likelihood with L-BFGS under the ``input_driven_lambda_smooth``
+  first-difference filter penalty.
+
+Run on a single node from the notebook:
+
+.. code-block:: python
+
+    from usv_playpen.modeling.modeling_glm_hmm import run_glm_hmm_state_selection
+
+    run_glm_hmm_state_selection(
+        input_data_path="/mnt/falkner/Bartul/modeling/modeling_manifold_<...>.pkl",
+        settings_path="/mnt/falkner/Bartul/modeling/modeling_settings.json",
+        output_directory="/mnt/falkner/Bartul/modeling/glm_hmm_results/<...>",
+        model_selection_path="/mnt/falkner/Bartul/modeling/model_selection_results/<...>",
+    )
+
+The saved results dict carries ``selected_n_states``, the per-``K`` ``selection_table``
+(cross-validated log-likelihood plus a diagnostic BIC), ``log_pi`` and
+``transition_matrix`` (a mean over events for the input-driven engines, whose
+transitions vary per time bin), the per-session Viterbi ``state_paths``, and a
+``metadata`` block recording the emission type, transition mode, and features used.
 
 Notebook
 --------

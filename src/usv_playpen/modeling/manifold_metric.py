@@ -349,7 +349,7 @@ def dcor_prediction_truth(Y_pred: np.ndarray, Y_true: np.ndarray, *,
     return float(np.mean(vals)) if vals else float('nan')
 
 
-def _fit_von_mises_kappa(r: np.ndarray) -> float:
+def _fit_von_mises_kappa(r: np.ndarray, weights: np.ndarray = None) -> float:
     """
     Maximum-likelihood von Mises concentration ``kappa`` from centred residuals.
 
@@ -364,6 +364,12 @@ def _fit_von_mises_kappa(r: np.ndarray) -> float:
     concentration to flatter itself — the concentration is a shared, global
     property of the fit.
 
+    When ``weights`` is given (a non-negative per-residual weight broadcastable
+    to ``r``), the mean resultant length becomes the **weighted** average cosine
+    ``Rbar = sum(w * cos r) / sum(w)``. This is the responsibility-weighted MLE
+    used by the GLM-HMM manifold emission's M-step: each latent state fits its
+    own concentration on the residuals of its state-assignment-weighted events.
+
     The ratio ``I1 / I0`` is evaluated with the exponentially-scaled Bessel
     functions ``i1e`` / ``i0e`` (``I_n(k) = i_ne(k) * exp(k)``), so the ``exp(k)``
     factors cancel and the solve stays overflow-safe for large ``kappa``. The
@@ -372,21 +378,35 @@ def _fit_von_mises_kappa(r: np.ndarray) -> float:
     Parameters
     ----------
     r : np.ndarray
-        Angular residuals in radians (any shape; flattened internally).
+        Angular residuals in radians (any shape; the mean is taken over all
+        elements, so a raveled or ``(n, 2)`` array give the same unweighted fit).
+    weights : np.ndarray, optional
+        Non-negative weights broadcastable to ``r`` (e.g. per-event state
+        responsibilities passed as ``(n, 1)`` so they weight both torus
+        coordinates). ``None`` -> the plain unweighted mean resultant length.
 
     Returns
     -------
     float
         The MLE concentration ``kappa``. Returns ``0.0`` (uniform — no
-        concentration) when the mean resultant length is essentially zero or the
-        solve fails, and ``1e6`` (a numerically-saturated upper bound) when the
-        residuals are essentially all zero (a near-perfect fit).
+        concentration) when the mean resultant length is essentially zero, the
+        weights sum to zero, or the solve fails, and ``1e6`` (a numerically-
+        saturated upper bound) when the residuals are essentially all zero (a
+        near-perfect fit).
     """
 
-    r = np.asarray(r, dtype=np.float64).ravel()
+    r = np.asarray(r, dtype=np.float64)
     if r.size == 0:
         return 0.0
-    r_bar = float(np.mean(np.cos(r)))
+    cos_r = np.cos(r)
+    if weights is None:
+        r_bar = float(np.mean(cos_r))
+    else:
+        weights = np.broadcast_to(np.asarray(weights, dtype=np.float64), r.shape)
+        total = float(weights.sum())
+        if total <= 0.0:
+            return 0.0
+        r_bar = float((weights * cos_r).sum() / total)
     if r_bar <= 1e-6:
         return 0.0
     if r_bar >= 1.0 - 1e-9:
@@ -396,6 +416,77 @@ def _fit_von_mises_kappa(r: np.ndarray) -> float:
         return float(brentq(a_func, 1e-6, 1e6, maxiter=200))
     except Exception:
         return 0.0
+
+
+def _von_mises_logpdf_from_residual(r: np.ndarray, kappa: float) -> np.ndarray:
+    """
+    Per-sample product-von-Mises log-density from a wrap-aware angular residual.
+
+    Given the ``(n, 2)`` angular residual ``r`` (radians, one column per torus
+    coordinate) and a concentration ``kappa``, returns the length-``n`` vector of
+    per-sample log-densities of a product of two univariate von Mises densities
+    sharing ``kappa``:
+
+        ``kappa * (cos r_x + cos r_y) - 2 * (log 2*pi + log I0(kappa))``.
+
+    This is the shared kernel behind both the aggregated selection score
+    (:func:`macro_von_mises_logscore`) and the GLM-HMM manifold emission's
+    per-sample log-likelihood, so the density formula lives in exactly one place.
+
+    Parameters
+    ----------
+    r : np.ndarray
+        ``(n, 2)`` wrap-aware angular residual in radians.
+    kappa : float
+        Von Mises concentration (>= 0).
+
+    Returns
+    -------
+    np.ndarray
+        ``(n,)`` per-sample log-density; higher is better.
+    """
+
+    log_z = np.log(2.0 * np.pi) + _log_i0(kappa)              # per-coordinate normaliser
+    return kappa * np.cos(np.asarray(r, dtype=np.float64)).sum(axis=1) - 2.0 * log_z
+
+
+def von_mises_logpdf_per_point(Y_pred: np.ndarray, Y_true: np.ndarray, *,
+                               metric: str, period: float,
+                               kappa: float) -> np.ndarray:
+    """
+    Per-sample product-von-Mises log-density of manifold predictions.
+
+    Scores how well each predicted torus position ``Y_pred`` matches the true
+    position ``Y_true`` as the log-density of a product of two univariate von
+    Mises densities (one per coordinate) sharing the concentration ``kappa``.
+    Unlike :func:`macro_von_mises_logscore` (which aggregates to a single number),
+    this returns the full length-``n`` vector — the per-event emission
+    log-likelihood the GLM-HMM needs in its forward-backward E-step.
+
+    Parameters
+    ----------
+    Y_pred : np.ndarray
+        ``(n, 2)`` predicted torus coordinates (a state's GLM mean prediction).
+    Y_true : np.ndarray
+        ``(n, 2)`` observed torus coordinates.
+    metric : str
+        Manifold geometry; the angular residual is scaled by ``2*pi / period``
+        (meaningful only for ``'torus'``).
+    period : float
+        Per-axis wrap period.
+    kappa : float
+        The state's von Mises concentration (fit on its weighted residuals).
+
+    Returns
+    -------
+    np.ndarray
+        ``(n,)`` per-sample von Mises log-density.
+    """
+
+    Y_pred = np.asarray(Y_pred, dtype=np.float64)
+    Y_true = np.asarray(Y_true, dtype=np.float64)
+    r = signed_diff(Y_true, Y_pred, metric=metric, period=period) * (2.0 * np.pi / period)
+    return _von_mises_logpdf_from_residual(r, kappa)
 
 
 def _log_i0(kappa: float) -> float:
@@ -485,8 +576,8 @@ def macro_von_mises_logscore(Y_pred: np.ndarray, Y_true: np.ndarray,
     r = signed_diff(Y_true, Y_pred, metric=metric, period=period) * (2.0 * np.pi / period)
     if kappa is None:
         kappa = _fit_von_mises_kappa(r.ravel())
-    log_z = np.log(2.0 * np.pi) + _log_i0(kappa)              # per-coordinate normaliser
-    per_point = kappa * np.cos(r).sum(axis=1) - 2.0 * log_z   # product over the 2 coords -> (n,)
+    # Per-sample product-von-Mises log-density (shared kernel, one place).
+    per_point = _von_mises_logpdf_from_residual(r, kappa)
 
     if region_labels is None:
         return float(np.mean(per_point)) if per_point.size else float('nan')

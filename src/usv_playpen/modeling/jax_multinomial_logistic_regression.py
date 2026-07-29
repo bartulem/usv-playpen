@@ -33,6 +33,7 @@ def _multinomial_loss_static(
         params,
         X,
         Y_onehot,
+        sample_weight,
         n_feats: int,
         n_time: int,
         lam_smooth,
@@ -49,6 +50,11 @@ def _multinomial_loss_static(
     Avoids per-instance closure capture of regularisation scalars and
     design-matrix arrays — the JIT cache is then keyed on shape +
     static integers only.
+
+    ``sample_weight`` is a per-sample non-negative weight (shape ``(n_samples,)``)
+    folded into the focal term as a weighted mean, so a caller (e.g. the GLM-HMM
+    M-step) can fit the emission on responsibility-weighted events. A vector of
+    ones recovers the plain mean.
     """
 
     W, b = params
@@ -60,7 +66,7 @@ def _multinomial_loss_static(
     focal_modulator = (1.0 - pt) ** focal_gamma
     alpha_t = jnp.sum(Y_onehot * class_weights, axis=1)
     focal_loss = alpha_t * focal_modulator * ce_loss
-    mean_focal_loss = jnp.mean(focal_loss)
+    mean_focal_loss = jnp.sum(sample_weight * focal_loss) / (jnp.sum(sample_weight) + 1e-12)
 
     l2_loss = 0.5 * lam_l2 * jnp.sum(W ** 2)
 
@@ -81,6 +87,7 @@ def _multinomial_train_loop_jit(
         opt_state_init,
         X,
         Y_onehot,
+        sample_weight,
         class_weights,
         lambda_smooth,
         l2_reg,
@@ -129,7 +136,7 @@ def _multinomial_train_loop_jit(
 
     def step(params, opt_state):
         grads = jax.grad(_multinomial_loss_static)(
-            params, X, Y_onehot,
+            params, X, Y_onehot, sample_weight,
             n_feats, n_time,
             lambda_smooth, l2_reg,
             class_weights, focal_gamma,
@@ -182,6 +189,7 @@ def _multinomial_default_step(
         opt_state,
         X_batch,
         Y_batch,
+        sample_weight,
         class_weights,
         lambda_smooth,
         l2_reg,
@@ -218,6 +226,9 @@ def _multinomial_default_step(
         Design matrix of shape ``(n_samples, n_features * n_time)``.
     Y_batch : jnp.ndarray
         One-hot target matrix of shape ``(n_samples, n_classes)``.
+    sample_weight : jnp.ndarray
+        Per-sample non-negative weight of shape ``(n_samples,)`` folded into
+        the focal term as a weighted mean (ones -> plain mean).
     class_weights : jnp.ndarray
         Unit-mean per-class weight vector of shape ``(n_classes,)``.
     lambda_smooth : float
@@ -255,7 +266,7 @@ def _multinomial_default_step(
         optax.adam(scheduler),
     )
     grads = jax.grad(loss_fn)(
-        params, X_batch, Y_batch,
+        params, X_batch, Y_batch, sample_weight,
         n_feats, n_time,
         lambda_smooth, l2_reg,
         class_weights, focal_gamma,
@@ -470,11 +481,12 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         return W, b
 
     @staticmethod
-    @partial(jax.jit, static_argnums=(3, 4, 9))
+    @partial(jax.jit, static_argnums=(4, 5, 10))
     def _loss_fn(
             params: Tuple[jnp.ndarray, jnp.ndarray],
             X: jnp.ndarray,
             Y_onehot: jnp.ndarray,
+            sample_weight: jnp.ndarray,
             n_feats: int,
             n_time: int,
             lam_smooth: float,
@@ -511,6 +523,11 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             One-hot-encoded class labels of shape
             `(n_samples, n_classes)`; acts as the true-class mask that
             selects `p_t` from the full softmax probability row.
+        sample_weight : jnp.ndarray
+            Per-sample non-negative weight of shape `(n_samples,)`, folded
+            into the focal term as a weighted mean so a caller can fit on
+            responsibility-weighted events (the GLM-HMM M-step). A vector of
+            ones recovers the plain mean.
         n_feats : int
             Number of distinct physical behavioural features. Static
             JIT argument — used to reshape `W` back into
@@ -569,8 +586,8 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         # 6. Combine: Alpha-balanced Focal Loss
         focal_loss = alpha_t * focal_modulator * ce_loss
 
-        # Take the mean across the batch
-        mean_focal_loss = jnp.mean(focal_loss)
+        # Weighted mean across the batch (per-sample `sample_weight`; ones -> plain mean).
+        mean_focal_loss = jnp.sum(sample_weight * focal_loss) / (jnp.sum(sample_weight) + 1e-12)
 
         # L2 Penalty
         l2_loss = 0.5 * lam_l2 * jnp.sum(W ** 2)
@@ -592,7 +609,8 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
 
         return mean_focal_loss + l2_loss + smooth_loss
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "SmoothMultinomialLogisticRegression":
+    def fit(self, X: np.ndarray, y: np.ndarray,
+            sample_weight: np.ndarray = None) -> "SmoothMultinomialLogisticRegression":
         """
         Fits the model to the training data using JAX/Optax optimization.
 
@@ -602,6 +620,15 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             Training vectors, shape (n_samples, n_features * n_time_bins).
         y : np.ndarray
             Target values, shape (n_samples,).
+        sample_weight : np.ndarray, optional
+            Per-sample non-negative weight, shape (n_samples,). Folded into the
+            focal loss as a weighted mean (normalised to unit mean internally, so
+            it changes the *relative* emphasis of samples, not the overall loss
+            scale — this keeps `lambda_smooth` / `l2_reg` comparable to an
+            unweighted fit). ``None`` -> a vector of ones (plain mean). This is the
+            channel the GLM-HMM's responsibility-weighted M-step uses; pair it
+            with ``uniform_class_weights=True`` so responsibilities, not
+            inverse-frequency class balancing, drive the per-state fit.
 
         Returns
         -------
@@ -631,6 +658,25 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
 
         X_j = jnp.array(X)
         Y_j = jnp.array(Y_onehot)
+
+        # Per-sample weights (unit-mean normalised so the loss scale, and hence
+        # the effective regularisation strength, is unchanged vs an unweighted
+        # fit). A vector of ones recovers the plain-mean focal loss exactly.
+        if sample_weight is None:
+            sw_j = jnp.ones(X.shape[0], dtype=jnp.float32)
+        else:
+            sample_weight = np.asarray(sample_weight, dtype=np.float64)
+            if sample_weight.shape[0] != X.shape[0]:
+                raise ValueError(
+                    f"sample_weight has {sample_weight.shape[0]} entries but X has "
+                    f"{X.shape[0]} rows."
+                )
+            mean_sw = float(np.mean(sample_weight))
+            if mean_sw <= 0.0:
+                raise ValueError("sample_weight must have a positive mean.")
+            # float32 (NOT Y_onehot's int dtype) so fractional responsibilities are
+            # not truncated to 0/1.
+            sw_j = jnp.asarray(sample_weight / mean_sw, dtype=jnp.float32)
 
         class_counts = jnp.sum(Y_j, axis=0)
         if self.uniform_class_weights:
@@ -692,7 +738,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             completed_iter = 0
             for i in range(self.max_iter):
                 params, opt_state = _multinomial_default_step(
-                    params, opt_state, X_j, Y_j, c_weights,
+                    params, opt_state, X_j, Y_j, sw_j, c_weights,
                     self.lambda_smooth, self.l2_reg, self.focal_gamma, self.learning_rate,
                     self.grad_clip_norm,
                     self._loss_fn, self.n_features, self.n_time_bins,
@@ -711,7 +757,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
 
                     if self.verbose and i % 500 == 0:
                         current_loss = self._loss_fn(
-                            params, X_j, Y_j,
+                            params, X_j, Y_j, sw_j,
                             self.n_features, self.n_time_bins,
                             self.lambda_smooth, self.l2_reg,
                             c_weights, self.focal_gamma,
@@ -733,7 +779,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             params, completed_iter_j, converged_j = _multinomial_train_loop_jit(
                 params,
                 opt_state,
-                X_j, Y_j, c_weights,
+                X_j, Y_j, sw_j, c_weights,
                 jnp.asarray(self.lambda_smooth, dtype=jnp.float32),
                 jnp.asarray(self.l2_reg, dtype=jnp.float32),
                 jnp.asarray(self.focal_gamma, dtype=jnp.float32),
