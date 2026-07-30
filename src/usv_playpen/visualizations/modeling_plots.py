@@ -1136,7 +1136,7 @@ def _make_feature_pretty(feature_label_overrides: dict | None,
 
 def plot_model_selection_results(
         selection_results_path: str,
-        metric_secondary: str = 'auc',
+        metric_secondary: str = None,
         save_plots: bool = False,
         output_dir: str = None,
         feature_label_overrides: dict = None,
@@ -1178,10 +1178,13 @@ def plot_model_selection_results(
         file itself or a directory containing one (the latest by mtime
         wins when multiple are present). The legacy per-step layout is
         no longer supported by the loader.
-    metric_secondary : str, default 'auc'
-        The key for the secondary metric to plot in the right panel of
-        the summary figure (typical values: ``'auc'``, ``'score'``,
-        ``'f1'``).
+    metric_secondary : str, optional
+        The key for the secondary metric shown in the right panel. When None
+        (the default) it is chosen by the artifact's ``analysis_type`` --
+        ``'score'`` for onset, ``'auc'`` for category, ``'spearman_r'`` for
+        params -- falling back to the first available metric if that key is
+        absent. Pass an explicit key (e.g. ``'auc'``, ``'pearson_r'``) to
+        override.
     save_plots : bool, default False
         Whether to save the figures to disk.
     output_dir : str, optional
@@ -1256,18 +1259,24 @@ def plot_model_selection_results(
 
     print(f"Primary Metric Detected: {metric_label}")
 
-    # Secondary-metric panel selection. Honor the requested ``metric_secondary``
-    # when the candidates carry it; otherwise fall back to the first available
-    # metric from a preference list, so a regression run (which has no 'auc')
-    # gets a rank-correlation panel instead of an empty one. The chance floor and
-    # axis label are metric-appropriate (AUC / accuracy: chance 0.5; correlations:
-    # chance 0).
+    # Secondary-metric panel selection. When ``metric_secondary`` is not given
+    # explicitly (None), it defaults per analysis type -- onset -> 'score',
+    # category -> 'auc', params -> 'spearman_r' -- so each run shows its natural
+    # companion metric. A requested/defaulted metric absent from the candidates
+    # falls back to the first available one, so no panel renders empty. The chance
+    # floor and axis label are metric-appropriate (score / AUC / accuracy: chance
+    # 0.5; correlations: chance 0).
     _secondary_spec = {'auc': (0.5, 'AUC'), 'accuracy': (0.5, 'Accuracy'),
+                       'score': (0.5, 'Score'),
                        'spearman_r': (0.0, 'Spearman ρ'),
                        'pearson_r': (0.0, 'Pearson r')}
+    _analysis_type = ((selection_metadata or {}).get('_input_metadata') or {}).get('analysis_type')
+    _default_by_type = {'onset': 'score', 'category': 'auc', 'params': 'spearman_r'}
+    if metric_secondary is None:
+        metric_secondary = _default_by_type.get(_analysis_type, 'auc')
     _first_metrics = first_cands[next(iter(first_cands))] if first_cands else {}
     if metric_secondary not in _first_metrics:
-        for _candidate_metric in ('spearman_r', 'pearson_r', 'auc', 'accuracy'):
+        for _candidate_metric in ('score', 'auc', 'spearman_r', 'pearson_r', 'accuracy'):
             if _candidate_metric in _first_metrics:
                 metric_secondary = _candidate_metric
                 break
