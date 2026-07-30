@@ -381,17 +381,18 @@ class TestPlotSignificantFiltersGrid:
 
 def _selection_step(rng, feature_names, selected, n_folds: int = 6,
                     n_time: int = 12, with_filters: bool = False,
-                    baseline: float | None = None) -> dict:
+                    baseline: float | None = None, regression: bool = False) -> dict:
     """
     Build one forward-selection step dict for ``plot_model_selection_results``.
 
     The step mirrors the consolidated ``selection_*.pkl`` step schema the
-    plotter reads: a ``candidates`` mapping ``feature -> {'ll': per-fold,
-    'auc': per-fold, 'explained_deviance': per-fold}``, the
-    ``selected_feature`` (``None`` marks a rejection step), an optional
-    ``baseline_score`` (the chance NLL on the first step), and an optional
-    ``filter_shapes`` block (list of per-fold ``{feature: array}`` dicts)
-    used by the final-model filter grid.
+    plotter reads: a ``candidates`` mapping ``feature -> {metric: per-fold}``
+    (classification metrics ``ll`` / ``auc`` by default, or regression metrics
+    ``explained_deviance`` / ``spearman_r`` / ``pearson_r`` when ``regression``
+    is True), the ``selected_feature`` (``None`` marks a rejection step), an
+    optional ``baseline_score`` (the chance value on the first step), and an
+    optional ``filter_shapes`` block (list of per-fold ``{feature: array}``
+    dicts) used by the final-model filter grid.
 
     Parameters
     ----------
@@ -410,6 +411,10 @@ def _selection_step(rng, feature_names, selected, n_folds: int = 6,
         block keyed by ``selected``-plus-anchor features.
     baseline : float or None, default None
         When not None, stored under ``baseline_score`` (step 0 only).
+    regression : bool, default False
+        When True the candidates carry regression metrics
+        (``explained_deviance`` / ``spearman_r`` / ``pearson_r``) instead of the
+        classification ``ll`` / ``auc`` metrics.
 
     Returns
     -------
@@ -419,11 +424,21 @@ def _selection_step(rng, feature_names, selected, n_folds: int = 6,
 
     candidates = {}
     for f in feature_names:
-        candidates[f] = {
-            'll': rng.uniform(0.2, 0.6, size=n_folds),
-            'auc': rng.uniform(0.55, 0.8, size=n_folds),
-            'explained_deviance': rng.uniform(0.05, 0.3, size=n_folds),
-        }
+        if regression:
+            # A params / regression selection: a maximized primary (explained
+            # deviance) and correlation secondaries -- no 'll' / 'auc', matching
+            # a real bout-parameter artifact.
+            candidates[f] = {
+                'explained_deviance': rng.uniform(0.05, 0.3, size=n_folds),
+                'spearman_r': rng.uniform(0.10, 0.40, size=n_folds),
+                'pearson_r': rng.uniform(0.10, 0.40, size=n_folds),
+            }
+        else:
+            # A classification selection: a minimized primary (NLL) + AUC secondary.
+            candidates[f] = {
+                'll': rng.uniform(0.2, 0.6, size=n_folds),
+                'auc': rng.uniform(0.55, 0.8, size=n_folds),
+            }
     step = {'candidates': candidates, 'selected_feature': selected}
     if baseline is not None:
         step['baseline_score'] = float(baseline)
@@ -467,6 +482,37 @@ def _write_selection_pickle(tmp_path, rng) -> str:
     return str(out)
 
 
+def _write_params_selection_pickle(tmp_path, rng) -> str:
+    """
+    Write a synthetic **params / regression** consolidated selection pickle.
+
+    Mirrors a real bout-parameter artifact: candidates carry a MAXIMIZED primary
+    (``explained_deviance``) and correlation secondaries (``spearman_r`` /
+    ``pearson_r``) with NO ``ll`` / ``auc``, and step 0's ``baseline_score`` is
+    0.0 (chance D^2). Two accepted steps plus a rejection exercise the
+    maximized-metric trajectory geometry, the spearman_r secondary-panel
+    fallback, and the rejected-row primary-metric lookup.
+
+    Returns
+    -------
+    str
+        Absolute path to the written pickle.
+    """
+
+    feats = ['self.speed', 'other.speed', 'nose-nose']
+    steps = [
+        _selection_step(rng, feats, selected='nose-nose',
+                        baseline=0.0, regression=True),
+        _selection_step(rng, ['self.speed', 'other.speed'],
+                        selected='self.speed', with_filters=True, regression=True),
+        _selection_step(rng, ['other.speed'], selected=None, regression=True),
+    ]
+    out = tmp_path / "selection_params_bout_male_hist4.0s.pkl"
+    with out.open('wb') as fh:
+        pickle.dump({'steps': steps}, fh)
+    return str(out)
+
+
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
 class TestPlotModelSelectionResults:
     """Figure-emission tests for ``plot_model_selection_results``."""
@@ -504,6 +550,30 @@ class TestPlotModelSelectionResults:
             feature_label_overrides={'self.speed': 'Own speed'},
         )
         assert len(list(out_dir.glob(f"model_selection_trajectory_*.{_FIGURE_FORMAT}"))) == 1
+
+    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+    def test_writes_params_trajectory_and_filter_grid(self, tmp_path, capsys):
+        """A params / regression selection (maximized explained-deviance primary,
+        spearman_r secondary, no 'll' / 'auc') renders both figures: the primary
+        is detected as Explained Deviance and the secondary panel falls back to
+        Spearman rho (regression targets carry no AUC)."""
+
+        rng = np.random.default_rng(19)
+        pkl = _write_params_selection_pickle(tmp_path, rng)
+        out_dir = tmp_path / "params_sel_out"
+        out_dir.mkdir()
+        # No metric_secondary passed: the default 'auc' is absent for a params
+        # run, so the plotter must auto-fall-back to spearman_r.
+        plot_model_selection_results(
+            selection_results_path=pkl,
+            save_plots=True,
+            output_dir=str(out_dir),
+        )
+        assert len(list(out_dir.glob(f"model_selection_trajectory_*.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"model_selection_final_model_filters_*.{_FIGURE_FORMAT}"))) == 1
+        _out = capsys.readouterr().out
+        assert 'Explained Deviance' in _out   # maximized primary detected
+        assert 'Spearman' in _out             # secondary auto-fallback (no AUC)
 
 
 def _multinomial_feature_entry(rng, n_classes: int, sig: bool,
