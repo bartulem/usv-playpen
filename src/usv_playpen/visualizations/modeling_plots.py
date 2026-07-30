@@ -106,6 +106,11 @@ _GLOBAL_CMAP = _VIZ_SETTINGS["figures"]["cmap"]
 # than hard-coded at every `plt.subplots(...)` / `savefig(...)` / estimator call.
 _FIGURE_DPI = _VIZ_SETTINGS["figures"]["dpi"]
 _FIGURE_SEED = _VIZ_SETTINGS["figures"]["seed"]
+# Output format for every saved figure, read from the same `figures` block so the
+# format is configured in ONE place and never hard-coded at a `savefig(...)` call or
+# in a filename extension. Users choose it via
+# `visualizations_settings.json` -> `figures.fig_format` (e.g. 'png', 'svg', 'pdf').
+_FIGURE_FORMAT = _VIZ_SETTINGS["figures"]["fig_format"]
 
 def plot_feature_ranking(
         results_file_loc: str,
@@ -340,7 +345,7 @@ def plot_feature_ranking(
         if save_plot:
             if output_dir is None:
                 output_dir = results_path.parent
-            out_name = pathlib.Path(output_dir) / f"{results_path.stem}_{metric_key}_ranking.svg"
+            out_name = pathlib.Path(output_dir) / f"{results_path.stem}_{metric_key}_ranking.{_FIGURE_FORMAT}"
             fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI)
             print(f"Plot saved to {out_name}")
 
@@ -501,7 +506,7 @@ def plot_significant_filters(
         if save_plot:
             if output_dir is None: output_dir = results_path.parent
             safe_name = feature.replace('.', '_')
-            out_name = pathlib.Path(output_dir) / f"{results_path.stem}_filter_{safe_name}.svg"
+            out_name = pathlib.Path(output_dir) / f"{results_path.stem}_filter_{safe_name}.{_FIGURE_FORMAT}"
             fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor='#FFFFFF', transparent=False)
             print(f"Saved: {out_name.name}")
 
@@ -780,7 +785,7 @@ def plot_significant_filters_grid(
 
     if save_plot:
         if output_dir is None: output_dir = pathlib.Path(results_file_loc).parent
-        out_name = pathlib.Path(output_dir) / f"{pathlib.Path(results_file_loc).stem}_filter_grid.svg"
+        out_name = pathlib.Path(output_dir) / f"{pathlib.Path(results_file_loc).stem}_filter_grid.{_FIGURE_FORMAT}"
         fig_grid.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor='#FFFFFF', transparent=False)
         print(f"Saved: {out_name.name}")
         plt.close(fig_grid)
@@ -828,7 +833,7 @@ def plot_raw_feature_difference(
     n_bootstraps : int, default 1000
         The number of bootstrap iterations to perform for confidence interval estimation.
     save_plots : bool, default False
-        If True, saves the resulting average plot (.svg) and heatmap (.png) to disk.
+        If True, saves the resulting average plot and heatmap to disk (both in the configured figures.fig_format).
     output_dir : str, optional
         The directory where plots will be saved. If None, defaults to the
         parent directory of the input pickle file.
@@ -1032,10 +1037,10 @@ def plot_raw_feature_difference(
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        avg_path = output_dir / f"{figure_name_label}_{feature_key}_zscored_data_avg_bootstrap.svg"
+        avg_path = output_dir / f"{figure_name_label}_{feature_key}_zscored_data_avg_bootstrap.{_FIGURE_FORMAT}"
         fig_avg.savefig(avg_path, dpi=_FIGURE_DPI)
 
-        heat_path = output_dir / f"{figure_name_label}_{feature_key}_zscored_data_heatmap.svg"
+        heat_path = output_dir / f"{figure_name_label}_{feature_key}_zscored_data_heatmap.{_FIGURE_FORMAT}"
         fig_heat.savefig(heat_path, bbox_inches='tight', dpi=_FIGURE_DPI)
 
 
@@ -1593,7 +1598,7 @@ def plot_model_selection_results(
             _out_dir = _fallback.parent if _fallback.is_file() else _fallback
         else:
             _out_dir = pathlib.Path(output_dir)
-        out_traj = _out_dir / "model_selection_trajectory.svg"
+        out_traj = _out_dir / f"model_selection_trajectory.{_FIGURE_FORMAT}"
         fig_traj.savefig(out_traj, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
         print(f"Saved trajectory figure to: {out_traj}")
@@ -1673,15 +1678,16 @@ def plot_model_selection_results(
 
                     if not np.all(np.isnan(feat_matrix)):
                         mean_filter = np.nanmean(feat_matrix, axis=0)
-                        # Per-timepoint mean +/- SEM across CV folds.
+                        # Per-timepoint mean +/- 2.58*SEM across CV folds = a
+                        # 99% confidence band (normal approximation; z_0.995 = 2.58).
                         # SEM = sample-std / sqrt(n_valid_folds);
                         # nan folds (failed fits) are excluded from
                         # both the count and the moments.
                         n_valid = np.sum(~np.isnan(feat_matrix), axis=0)
                         fold_std = np.nanstd(feat_matrix, axis=0, ddof=1)
                         fold_sem = fold_std / np.sqrt(np.maximum(n_valid, 1))
-                        p_low = mean_filter - fold_sem
-                        p_high = mean_filter + fold_sem
+                        p_low = mean_filter - (2.58 * fold_sem)
+                        p_high = mean_filter + (2.58 * fold_sem)
 
             else:
                 # 2. Legacy/Single Fit
@@ -1738,7 +1744,7 @@ def plot_model_selection_results(
             # at the file path itself.
             _fallback = pathlib.Path(selection_results_path)
             output_dir = _fallback.parent if _fallback.is_file() else _fallback
-        out_name = pathlib.Path(output_dir) / "model_selection_final_model_filters.svg"
+        out_name = pathlib.Path(output_dir) / f"model_selection_final_model_filters.{_FIGURE_FORMAT}"
         fig_grid.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor=BG_COLOR, transparent=False)
         print(f"Saved final model filter grid to: {out_name}")
 
@@ -1964,7 +1970,7 @@ def plot_univariate_multinomial_performance(
     if save_plot:
         out_dir = pathlib.Path(output_dir) if output_dir else results_path.parent
         out_dir.mkdir(parents=True, exist_ok=True)
-        ranking_out = out_dir / f"{results_path.stem}_{evaluation_metric}_ranking.svg"
+        ranking_out = out_dir / f"{results_path.stem}_{evaluation_metric}_ranking.{_FIGURE_FORMAT}"
         fig_ranking.savefig(
             ranking_out,
             bbox_inches='tight',
@@ -2042,7 +2048,7 @@ def plot_univariate_multinomial_performance(
         plt.suptitle(f"Categorical Diagnosis: {top_sig_feat['name']}", fontsize=16, y=1.05, color=TEXT_COLOR)
 
         if save_plot:
-            trio_out = out_dir / f"{results_path.stem}_{top_sig_feat['name'].replace('.', '_')}_confusion_trio.svg"
+            trio_out = out_dir / f"{results_path.stem}_{top_sig_feat['name'].replace('.', '_')}_confusion_trio.{_FIGURE_FORMAT}"
             fig_trio.savefig(trio_out, bbox_inches='tight', facecolor='#FFFFFF')
             print(f"Confusion Trio plot saved to: {trio_out.name}")
 
@@ -2244,7 +2250,7 @@ def plot_univariate_multinomial_filters_grid(
     if save_plot:
         out_dir = pathlib.Path(output_dir) if output_dir else results_path.parent
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_name = out_dir / f"{results_path.stem}_multinomial_filters_grid.svg"
+        out_name = out_dir / f"{results_path.stem}_multinomial_filters_grid.{_FIGURE_FORMAT}"
         fig.savefig(out_name, bbox_inches='tight', facecolor='#FFFFFF')
         print(f"Filter grid saved to: {out_name.name}")
 
@@ -2743,7 +2749,7 @@ def plot_multinomial_selection_trajectory(
         else:
             condition = 'unknown'
         fname = (f"multinomial_selection_trajectory_{condition}_"
-                 f"{metric_primary}.svg")
+                 f"{metric_primary}.{_FIGURE_FORMAT}")
         save_path = _out_dir / fname
         fig_traj.savefig(save_path, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
@@ -2979,7 +2985,7 @@ def plot_multinomial_multivariate_filters(
             if _fallback.is_file():
                 _fallback = _fallback.parent
             out_dir = pathlib.Path(output_dir) if output_dir else _fallback
-            fname = f"model_selection_multinomial_usv_category_{condition}_filters_final.svg"
+            fname = f"model_selection_multinomial_usv_category_{condition}_filters_final.{_FIGURE_FORMAT}"
             fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches=None)
 
         plt.show()
@@ -3213,7 +3219,7 @@ def plot_multinomial_selection_diagnosis(
     if save_plot:
         out_dir = _resolve_out_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
-        fname = f"multinomial_pairwise_auc_{condition}.svg"
+        fname = f"multinomial_pairwise_auc_{condition}.{_FIGURE_FORMAT}"
         fig_auc.savefig(out_dir / fname, bbox_inches='tight', dpi=_FIGURE_DPI,
                         facecolor=BG_COLOR, transparent=False)
         print(f"Pairwise AUC figure saved to: {out_dir / fname}")
@@ -3253,7 +3259,7 @@ def plot_multinomial_selection_diagnosis(
     if save_plot:
         out_dir = _resolve_out_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
-        fname = f"multinomial_per_class_recall_{condition}.svg"
+        fname = f"multinomial_per_class_recall_{condition}.{_FIGURE_FORMAT}"
         fig_rec.savefig(out_dir / fname, bbox_inches='tight', dpi=_FIGURE_DPI,
                         facecolor=BG_COLOR, transparent=False)
         print(f"Per-class recall figure saved to: {out_dir / fname}")
@@ -3716,7 +3722,7 @@ def plot_manifold_selection_trajectory(
         else:
             condition = 'unknown'
         fname = (f"manifold_selection_trajectory_{condition}_"
-                 f"{metric_primary}.svg")
+                 f"{metric_primary}.{_FIGURE_FORMAT}")
         save_path = _out_dir / fname
         fig_traj.savefig(save_path, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
@@ -3928,7 +3934,7 @@ def plot_manifold_multivariate_filters(
                 _fallback = _fallback.parent
             out_dir = pathlib.Path(output_dir) if output_dir else _fallback
             out_dir.mkdir(parents=True, exist_ok=True)
-            fname = f"model_selection_manifold_{condition}_filters_final.svg"
+            fname = f"model_selection_manifold_{condition}_filters_final.{_FIGURE_FORMAT}"
             fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches=None)
             print(f"Manifold filters plot saved to: {out_dir / fname}")
 
@@ -4054,7 +4060,7 @@ class DeepResultsVisualizer:
         output_dir : str, optional
             Override for the default save directory.
         file_format : str
-            The file extension/format (defaults to svg).
+            The file extension/format (defaults to the figures.fig_format setting).
         """
         if not save_plot:
             return
@@ -4064,7 +4070,7 @@ class DeepResultsVisualizer:
         target_dir = pathlib.Path(output_dir) if output_dir else pathlib.Path(self.save_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
 
-        ext = file_format.strip('.') if file_format else 'svg'
+        ext = file_format.strip('.') if file_format else _FIGURE_FORMAT
         save_path = target_dir / f"{name}.{ext}"
 
         fig.savefig(save_path, dpi=_FIGURE_DPI, bbox_inches='tight', facecolor='#FFFFFF')
@@ -4080,7 +4086,7 @@ class DeepResultsVisualizer:
                               n_bootstraps: int = 1000,
                               save_plot: bool = False,
                               output_dir: str = None,
-                              file_format: str = 'svg') -> None:
+                              file_format: str = _FIGURE_FORMAT) -> None:
         """
         Plots the bootstrapped permutation test histograms to prove model validity.
 
@@ -4117,7 +4123,7 @@ class DeepResultsVisualizer:
             If True, exports the figure to disk.
         output_dir : str, optional
             Path to save the figure.
-        file_format : str, default 'svg'
+        file_format : str, default: the figures.fig_format setting
             Format for the saved file.
         """
 
@@ -4297,7 +4303,7 @@ class DeepResultsVisualizer:
                                 figsize: tuple = (4, 6),
                                 save_plot: bool = False,
                                 output_dir: Optional[str] = None,
-                                file_format: str = 'svg') -> None:
+                                file_format: str = _FIGURE_FORMAT) -> None:
         r"""
         Visualizes Post-Hoc Permutation feature importance with dynamic Signal-to-Noise Ratio (SNR) thresholding.
 
@@ -4328,7 +4334,7 @@ class DeepResultsVisualizer:
             If True, exports the figure to disk.
         output_dir : str, optional
             Path to save the figure.
-        file_format : str, default 'svg'
+        file_format : str, default: the figures.fig_format setting
             Format for the saved file.
 
         Returns
@@ -4425,7 +4431,7 @@ class DeepResultsVisualizer:
                                     grid_shape: Optional[tuple] = None,
                                     save_plot: bool = False,
                                     output_dir: Optional[str] = None,
-                                    file_format: str = 'svg') -> None:
+                                    file_format: str = _FIGURE_FORMAT) -> None:
         """
         Generates a tiled grid of 'Hero Shot' panels focusing on representative regions across the manifold.
 
@@ -4473,7 +4479,7 @@ class DeepResultsVisualizer:
             If True, exports the generated figure to disk.
         output_dir : str, optional
             Directory for exported files.
-        file_format : str, default 'svg'
+        file_format : str, default: the figures.fig_format setting
             Image format for saving (e.g., 'svg', 'png', 'pdf').
 
         Returns
@@ -4892,7 +4898,7 @@ class DeepResultsVisualizer:
                              figsize: tuple = (12, 5),
                              save_plot: bool = False,
                              output_dir: Optional[str] = None,
-                             file_format: str = 'svg') -> None:
+                             file_format: str = _FIGURE_FORMAT) -> None:
         """
         Visualizes the spatial distribution of prediction errors and error reduction for the CNN.
 
@@ -4924,7 +4930,7 @@ class DeepResultsVisualizer:
             If True, exports the figure to disk.
         output_dir : str, optional
             Path to save the figure.
-        file_format : str, default 'svg'
+        file_format : str, default: the figures.fig_format setting
             Format for the saved file.
         """
 
@@ -5031,7 +5037,7 @@ class DeepResultsVisualizer:
                                      smoothing_sigma: float = 60.0,
                                      save_plot: bool = False,
                                      output_dir: Optional[str] = None,
-                                     file_format: str = 'svg') -> None:
+                                     file_format: str = _FIGURE_FORMAT) -> None:
         """
         Visualizes regional manifold dynamics for one pre-computed
         saliency region. The region is defined by the (centroid,
@@ -5100,7 +5106,7 @@ class DeepResultsVisualizer:
             If True, saves the figure to ``output_dir``.
         output_dir : str, optional
             Export directory. Defaults to the visualizer's save_dir.
-        file_format : str, default 'svg'
+        file_format : str, default: the figures.fig_format setting
             File format for the export.
 
         Returns
@@ -5740,12 +5746,12 @@ def _signal_outer_run_marker(rho,
     return (int(end_idx), int(sign_val), bool(end_idx == idx_max))
 
 
-def _save_audit_figure(fig, out_dir: str, basename: str, file_format: str = 'svg') -> str:
+def _save_audit_figure(fig, out_dir: str, basename: str, file_format: str = _FIGURE_FORMAT) -> str:
     """
     Writes an audit figure to disk in the requested format and returns the
-    absolute path. Defaults to SVG (vector, lossless) so the diagnostic
-    plots remain publication-ready by default; pass `file_format='png'` /
-    `'pdf'` to override.
+    absolute path. The format defaults to the project ``figures.fig_format``
+    setting (`visualizations_settings.json`); pass an explicit ``file_format``
+    (e.g. ``'png'`` / ``'svg'`` / ``'pdf'``) to override it per call.
 
     Parameters
     ----------
@@ -5755,7 +5761,7 @@ def _save_audit_figure(fig, out_dir: str, basename: str, file_format: str = 'svg
         Output directory; created if missing.
     basename : str
         Filename stem (no extension).
-    file_format : str, default 'svg'
+    file_format : str, default: the figures.fig_format setting
         Matplotlib `savefig` format.
 
     Returns
@@ -5773,7 +5779,7 @@ def _save_audit_figure(fig, out_dir: str, basename: str, file_format: str = 'svg
 def plot_collinearity_audit(audit_pkl_path: str,
                             save_dir: str = None,
                             save_plot_bool: bool = True,
-                            plot_format: str = 'svg',
+                            plot_format: str = _FIGURE_FORMAT,
                             cmap: str = 'RdBu_r',
                             outline_threshold: float = 0.7,
                             outline_color: str = '#000000') -> dict:
@@ -5844,9 +5850,9 @@ def plot_collinearity_audit(audit_pkl_path: str,
         `_save_audit_figure` and closed. When False, the figure is
         neither saved nor closed (suitable for inline display in
         a notebook), matching the timescale-plot convention.
-    plot_format : str, default 'svg'
-        Matplotlib `savefig` format. SVG is the project default
-        for publication-quality output. Only consulted when
+    plot_format : str, default: the figures.fig_format setting
+        Matplotlib `savefig` format, defaulting to the project
+        ``figures.fig_format`` setting. Only consulted when
         `save_plot_bool` is True.
     cmap : str, default 'RdBu_r'
         Matplotlib colormap name for the Spearman ρ heatmap. Must
@@ -6232,7 +6238,7 @@ def _compute_timescale_horizons(payload: dict,
 def plot_timescale_audit(timescale_pkl_path: str,
                          save_dir: str = None,
                          save_plot_bool: bool = True,
-                         plot_format: str = 'svg',
+                         plot_format: str = _FIGURE_FORMAT,
                          signal_smooth_window: int = 0) -> dict:
     """
     Cohort-level summary companion to `plot_timescale_audit_per_feature`.
@@ -6303,7 +6309,7 @@ def plot_timescale_audit(timescale_pkl_path: str,
         When True (default), the figure is written to disk via
         `_save_audit_figure` and closed. When False, the figure is
         neither saved nor closed.
-    plot_format : str, default 'svg'
+    plot_format : str, default: the figures.fig_format setting
         Matplotlib `savefig` format. Only consulted when
         `save_plot_bool` is True.
     signal_smooth_window : int, default 0
@@ -6525,7 +6531,7 @@ def plot_timescale_audit(timescale_pkl_path: str,
 def plot_timescale_audit_per_feature(timescale_pkl_path: str,
                                      save_dir: str = None,
                                      save_plot_bool: bool = True,
-                                     plot_format: str = 'svg',
+                                     plot_format: str = _FIGURE_FORMAT,
                                      signal_smooth_window: int = 0) -> dict:
     """
     Renders the timescale audit as a small-multiples grid: one row per
@@ -6602,7 +6608,7 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
         neither saved nor closed — the caller can display it inline
         (notebook) or further customise it. `figure_path` in the
         returned dict is `''` in that case.
-    plot_format : str, default 'svg'
+    plot_format : str, default: the figures.fig_format setting
         Matplotlib `savefig` format. Only consulted when
         `save_plot_bool` is True.
     signal_smooth_window : int, default 0
