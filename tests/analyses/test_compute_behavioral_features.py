@@ -52,12 +52,13 @@ class TestResolveFeatureLabel:
         assert FeatureZoo.resolve_feature_label('nose-TTI', 'male', 'female') == 'nose-TTI distance'
 
     def test_dyadic_angle_forward_and_reverse(self):
-        """Forward angle is ``{self}-partner``; reverse is ``partner-{self}``;
-        the ``-TTI`` variant shares wording with the ``-nose`` variant."""
+        """Both key orders (``allo_*-X`` and ``X-allo_*``) are labelled
+        ``{self}-partner`` (self first); the ``-TTI`` variant shares wording
+        with the ``-nose`` variant."""
 
         assert FeatureZoo.resolve_feature_label('allo_yaw-nose', 'male', 'female') == 'male-partner yaw'
         assert FeatureZoo.resolve_feature_label('allo_yaw-TTI', 'male', 'female') == 'male-partner yaw'
-        assert FeatureZoo.resolve_feature_label('nose-allo_yaw', 'male', 'female') == 'partner-male yaw'
+        assert FeatureZoo.resolve_feature_label('nose-allo_yaw', 'male', 'female') == 'male-partner yaw'
         assert FeatureZoo.resolve_feature_label('allo_pitch-nose', 'female', 'male') == 'female-partner pitch'
 
     def test_sei_engagement(self):

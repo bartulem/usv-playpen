@@ -1723,7 +1723,15 @@ def plot_model_selection_results(
                 ax.set_xlabel("Time relative to bout onset (s)", fontsize=8, color=TEXT_COLOR)
                 ax.set_ylabel("Partial dependence (ΔP)", fontsize=8, color=TEXT_COLOR)
 
-                ax.axhline(0, color=NEUTRAL_COLOR, ls='--', lw=0.5, zorder=0)
+                # Draw the zero reference only when the filter's own value range spans
+                # 0. An axhline autoscales the axis to include it, so forcing 0 in
+                # otherwise squashes filters that never cross it (e.g. a strictly
+                # positive partial dependence) into a thin band. The CI band sets the
+                # range when present; the mean line sets it for a single fit.
+                span_lo = float(np.nanmin(p_low if p_low is not None else mean_filter))
+                span_hi = float(np.nanmax(p_high if p_high is not None else mean_filter))
+                if span_lo <= 0.0 <= span_hi:
+                    ax.axhline(0, color=NEUTRAL_COLOR, ls='--', lw=0.5, zorder=0)
                 ax.set_title(_pretty(feature), fontsize=9, color=TEXT_COLOR)
                 ax.tick_params(axis='both', colors=TEXT_COLOR, labelsize=7)
                 for spine in ax.spines.values():

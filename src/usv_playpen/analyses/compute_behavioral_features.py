@@ -1335,15 +1335,17 @@ class FeatureZoo:
         "TTI-TTI": "TTI-TTI distance",
         "nose-TTI": "nose-TTI distance",
         "TTI-nose": "TTI-nose distance",
-        # dyadic angles (self -> partner; reverse orientation is partner -> self)
+        # dyadic angles -- both key orders (``allo_*-X`` and ``X-allo_*``) now render
+        # as "{self}-partner" (self first), so the display label no longer encodes the
+        # self->partner vs partner->self feature direction (the two therefore share a label)
         "allo_yaw-nose": "{self}-partner yaw",
         "allo_yaw-TTI": "{self}-partner yaw",
         "allo_pitch-nose": "{self}-partner pitch",
         "allo_pitch-TTI": "{self}-partner pitch",
-        "nose-allo_yaw": "partner-{self} yaw",
-        "TTI-allo_yaw": "partner-{self} yaw",
-        "nose-allo_pitch": "partner-{self} pitch",
-        "TTI-allo_pitch": "partner-{self} pitch",
+        "nose-allo_yaw": "{self}-partner yaw",
+        "TTI-allo_yaw": "{self}-partner yaw",
+        "nose-allo_pitch": "{self}-partner pitch",
+        "TTI-allo_pitch": "{self}-partner pitch",
         # dyadic engagement (Social Engagement Index)
         "orofacial-sei": "orofacial SEI",
         "anogenital-sei": "anogenital SEI",
