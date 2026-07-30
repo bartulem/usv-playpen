@@ -324,7 +324,7 @@ class TestPlotFeatureRanking:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        svgs = list(out_dir.glob(f"*_ranking.{_FIGURE_FORMAT}"))
+        svgs = list(out_dir.glob(f"*_ranking_*.{_FIGURE_FORMAT}"))
         assert len(svgs) == 2
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
@@ -376,7 +376,7 @@ class TestPlotSignificantFiltersGrid:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"*_filter_grid.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"*_filter_grid_*.{_FIGURE_FORMAT}"))) == 1
 
 
 def _selection_step(rng, feature_names, selected, n_folds: int = 6,
@@ -486,8 +486,8 @@ class TestPlotModelSelectionResults:
             save_plots=True,
             output_dir=str(out_dir),
         )
-        assert (out_dir / f"model_selection_trajectory.{_FIGURE_FORMAT}").is_file()
-        assert (out_dir / f"model_selection_final_model_filters.{_FIGURE_FORMAT}").is_file()
+        assert len(list(out_dir.glob(f"model_selection_trajectory_*.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"model_selection_final_model_filters_*.{_FIGURE_FORMAT}"))) == 1
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     def test_label_overrides_accepted(self, tmp_path):
@@ -503,7 +503,7 @@ class TestPlotModelSelectionResults:
             output_dir=str(out_dir),
             feature_label_overrides={'self.speed': 'Own speed'},
         )
-        assert (out_dir / f"model_selection_trajectory.{_FIGURE_FORMAT}").is_file()
+        assert len(list(out_dir.glob(f"model_selection_trajectory_*.{_FIGURE_FORMAT}"))) == 1
 
 
 def _multinomial_feature_entry(rng, n_classes: int, sig: bool,
@@ -595,8 +595,8 @@ class TestPlotUnivariateMultinomialPerformance:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"*_ranking.{_FIGURE_FORMAT}"))) == 1
-        assert len(list(out_dir.glob(f"*_confusion_trio.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"*_ranking_*.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"*_confusion_trio_*.{_FIGURE_FORMAT}"))) == 1
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     @pytest.mark.filterwarnings("ignore:This figure includes Axes:UserWarning")
@@ -639,7 +639,7 @@ class TestPlotUnivariateMultinomialPerformance:
         plot_univariate_multinomial_performance(
             results_file_loc=str(pkl), save_plot=True, output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"*_confusion_trio.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"*_confusion_trio_*.{_FIGURE_FORMAT}"))) == 1
 
 
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
@@ -680,8 +680,8 @@ class TestPlotRawFeatureDifference:
             save_plots=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"*avg_bootstrap.{_FIGURE_FORMAT}"))) == 1
-        assert len(list(out_dir.glob(f"*heatmap.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"*avg_bootstrap_*.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"*heatmap_*.{_FIGURE_FORMAT}"))) == 1
 
     def test_empty_condition_skips_without_crash(self, tmp_path):
         """A feature where one condition contributes zero epochs must skip the plot
@@ -748,8 +748,8 @@ class TestPlotRawFeatureDifference:
             save_plots=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"*avg_bootstrap.{_FIGURE_FORMAT}"))) == 1
-        assert len(list(out_dir.glob(f"*heatmap.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"*avg_bootstrap_*.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"*heatmap_*.{_FIGURE_FORMAT}"))) == 1
 
     def test_missing_feature_key_returns_without_drawing(self, tmp_path):
         """A ``feature_key`` absent from the pickle short-circuits with a
@@ -1046,7 +1046,7 @@ class TestPlotUnivariateMultinomialFiltersGrid:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"*_multinomial_filters_grid.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"*_multinomial_filters_grid_*.{_FIGURE_FORMAT}"))) == 1
 
 
 def _multinomial_candidate(rng, n_classes: int, n_folds: int = 6) -> dict:
@@ -1144,7 +1144,7 @@ class TestPlotMultinomialSelectionTrajectory:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"multinomial_selection_trajectory_*_auc.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"multinomial_selection_trajectory_*_auc_*.{_FIGURE_FORMAT}"))) == 1
 
 
 def _manifold_candidate(rng, n_folds: int = 6) -> dict:
@@ -1239,7 +1239,7 @@ class TestPlotManifoldSelectionTrajectory:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"manifold_selection_trajectory_*_r2_spatial.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"manifold_selection_trajectory_*_r2_spatial_*.{_FIGURE_FORMAT}"))) == 1
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     def test_writes_trajectory_svg_lower_is_better(self, tmp_path):
@@ -1257,7 +1257,7 @@ class TestPlotManifoldSelectionTrajectory:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"manifold_selection_trajectory_*_euclidean_mae.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"manifold_selection_trajectory_*_euclidean_mae_*.{_FIGURE_FORMAT}"))) == 1
 
 
 def _write_multinomial_multivariate_pickle(tmp_path, rng, n_classes: int = 3,
@@ -1317,7 +1317,7 @@ class TestPlotMultinomialMultivariateFilters:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"model_selection_multinomial_usv_category_*_filters_final.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"model_selection_multinomial_usv_category_*_filters_final_*.{_FIGURE_FORMAT}"))) == 1
 
 
 def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
@@ -1378,7 +1378,7 @@ class TestPlotManifoldMultivariateFilters:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"model_selection_manifold_*_filters_final.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"model_selection_manifold_*_filters_final_*.{_FIGURE_FORMAT}"))) == 1
 
 
 def _write_multinomial_diagnosis_pickle(tmp_path, rng, n_classes: int = 3,
@@ -1696,7 +1696,7 @@ class TestDeepResultsVisualizer:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"cnn_precision_grid_*_density.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"cnn_precision_grid_*_density_*.{_FIGURE_FORMAT}"))) == 1
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     @pytest.mark.filterwarnings("ignore:Glyph:UserWarning")
@@ -1794,7 +1794,7 @@ class TestDeepResultsVisualizer:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"cnn_precision_grid_*_density.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"cnn_precision_grid_*_density_*.{_FIGURE_FORMAT}"))) == 1
 
 
 def _write_cnn_torus_results_pickle(tmp_path, rng, n_folds: int = 6,
@@ -1938,7 +1938,7 @@ class TestDeepResultsVisualizerTorus:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"cnn_precision_grid_*_torus_{plot_type}.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"cnn_precision_grid_*_torus_{plot_type}_*.{_FIGURE_FORMAT}"))) == 1
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     @pytest.mark.filterwarnings("ignore:Glyph:UserWarning")
@@ -1968,7 +1968,7 @@ class TestDeepResultsVisualizerTorus:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert len(list(out_dir.glob(f"cnn_precision_grid_*_torus_density.{_FIGURE_FORMAT}"))) == 1
+        assert len(list(out_dir.glob(f"cnn_precision_grid_*_torus_density_*.{_FIGURE_FORMAT}"))) == 1
 
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     def test_error_landscape_torus_writes_svg(self, tmp_path):

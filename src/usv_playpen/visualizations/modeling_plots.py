@@ -42,6 +42,7 @@ import cmasher as cmr
 import json
 import math
 import warnings
+from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.transforms as mtransforms
@@ -111,6 +112,37 @@ _FIGURE_SEED = _VIZ_SETTINGS["figures"]["seed"]
 # in a filename extension. Users choose it via
 # `visualizations_settings.json` -> `figures.fig_format` (e.g. 'png', 'svg', 'pdf').
 _FIGURE_FORMAT = _VIZ_SETTINGS["figures"]["fig_format"]
+# Whether to append a timestamp to every saved figure filename (same `figures`
+# block), so repeated runs never silently overwrite each other's output.
+_FIGURE_TIMESTAMP_IN_NAME = _VIZ_SETTINGS["figures"]["timestamp_in_name"]
+
+
+def _figure_filename(stem: str, file_format: str = None) -> str:
+    """
+    Assemble a figure filename ``<stem>[_<timestamp>].<format>``.
+
+    ``file_format`` defaults to the project ``figures.fig_format`` setting; a
+    ``YYYYmmdd_HHMMSS`` timestamp is appended when ``figures.timestamp_in_name``
+    is set, so re-running a plotting routine writes a NEW file instead of silently
+    overwriting the previous one. No call site hard-codes the extension or the
+    timestamp.
+
+    Parameters
+    ----------
+    stem (str)
+        Filename stem, without extension or timestamp.
+    file_format (str)
+        Output format; defaults to the ``figures.fig_format`` setting when None.
+
+    Returns
+    -------
+    str
+        The assembled filename.
+    """
+    fmt = file_format if file_format else _FIGURE_FORMAT
+    if _FIGURE_TIMESTAMP_IN_NAME:
+        return f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{fmt}"
+    return f"{stem}.{fmt}"
 
 def plot_feature_ranking(
         results_file_loc: str,
@@ -345,7 +377,7 @@ def plot_feature_ranking(
         if save_plot:
             if output_dir is None:
                 output_dir = results_path.parent
-            out_name = pathlib.Path(output_dir) / f"{results_path.stem}_{metric_key}_ranking.{_FIGURE_FORMAT}"
+            out_name = pathlib.Path(output_dir) / _figure_filename(f"{results_path.stem}_{metric_key}_ranking")
             fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI)
             print(f"Plot saved to {out_name}")
 
@@ -506,7 +538,7 @@ def plot_significant_filters(
         if save_plot:
             if output_dir is None: output_dir = results_path.parent
             safe_name = feature.replace('.', '_')
-            out_name = pathlib.Path(output_dir) / f"{results_path.stem}_filter_{safe_name}.{_FIGURE_FORMAT}"
+            out_name = pathlib.Path(output_dir) / _figure_filename(f"{results_path.stem}_filter_{safe_name}")
             fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor='#FFFFFF', transparent=False)
             print(f"Saved: {out_name.name}")
 
@@ -785,7 +817,7 @@ def plot_significant_filters_grid(
 
     if save_plot:
         if output_dir is None: output_dir = pathlib.Path(results_file_loc).parent
-        out_name = pathlib.Path(output_dir) / f"{pathlib.Path(results_file_loc).stem}_filter_grid.{_FIGURE_FORMAT}"
+        out_name = pathlib.Path(output_dir) / _figure_filename(f"{pathlib.Path(results_file_loc).stem}_filter_grid")
         fig_grid.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor='#FFFFFF', transparent=False)
         print(f"Saved: {out_name.name}")
         plt.close(fig_grid)
@@ -1037,10 +1069,10 @@ def plot_raw_feature_difference(
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        avg_path = output_dir / f"{figure_name_label}_{feature_key}_zscored_data_avg_bootstrap.{_FIGURE_FORMAT}"
+        avg_path = output_dir / _figure_filename(f"{figure_name_label}_{feature_key}_zscored_data_avg_bootstrap")
         fig_avg.savefig(avg_path, dpi=_FIGURE_DPI)
 
-        heat_path = output_dir / f"{figure_name_label}_{feature_key}_zscored_data_heatmap.{_FIGURE_FORMAT}"
+        heat_path = output_dir / _figure_filename(f"{figure_name_label}_{feature_key}_zscored_data_heatmap")
         fig_heat.savefig(heat_path, bbox_inches='tight', dpi=_FIGURE_DPI)
 
 
@@ -1598,7 +1630,7 @@ def plot_model_selection_results(
             _out_dir = _fallback.parent if _fallback.is_file() else _fallback
         else:
             _out_dir = pathlib.Path(output_dir)
-        out_traj = _out_dir / f"model_selection_trajectory.{_FIGURE_FORMAT}"
+        out_traj = _out_dir / _figure_filename(f"model_selection_trajectory")
         fig_traj.savefig(out_traj, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
         print(f"Saved trajectory figure to: {out_traj}")
@@ -1752,7 +1784,7 @@ def plot_model_selection_results(
             # at the file path itself.
             _fallback = pathlib.Path(selection_results_path)
             output_dir = _fallback.parent if _fallback.is_file() else _fallback
-        out_name = pathlib.Path(output_dir) / f"model_selection_final_model_filters.{_FIGURE_FORMAT}"
+        out_name = pathlib.Path(output_dir) / _figure_filename(f"model_selection_final_model_filters")
         fig_grid.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor=BG_COLOR, transparent=False)
         print(f"Saved final model filter grid to: {out_name}")
 
@@ -1978,7 +2010,7 @@ def plot_univariate_multinomial_performance(
     if save_plot:
         out_dir = pathlib.Path(output_dir) if output_dir else results_path.parent
         out_dir.mkdir(parents=True, exist_ok=True)
-        ranking_out = out_dir / f"{results_path.stem}_{evaluation_metric}_ranking.{_FIGURE_FORMAT}"
+        ranking_out = out_dir / _figure_filename(f"{results_path.stem}_{evaluation_metric}_ranking")
         fig_ranking.savefig(
             ranking_out,
             bbox_inches='tight',
@@ -2056,7 +2088,7 @@ def plot_univariate_multinomial_performance(
         plt.suptitle(f"Categorical Diagnosis: {top_sig_feat['name']}", fontsize=16, y=1.05, color=TEXT_COLOR)
 
         if save_plot:
-            trio_out = out_dir / f"{results_path.stem}_{top_sig_feat['name'].replace('.', '_')}_confusion_trio.{_FIGURE_FORMAT}"
+            trio_out = out_dir / _figure_filename(f"{results_path.stem}_{top_sig_feat['name'].replace('.', '_')}_confusion_trio")
             fig_trio.savefig(trio_out, bbox_inches='tight', facecolor='#FFFFFF')
             print(f"Confusion Trio plot saved to: {trio_out.name}")
 
@@ -2258,7 +2290,7 @@ def plot_univariate_multinomial_filters_grid(
     if save_plot:
         out_dir = pathlib.Path(output_dir) if output_dir else results_path.parent
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_name = out_dir / f"{results_path.stem}_multinomial_filters_grid.{_FIGURE_FORMAT}"
+        out_name = out_dir / _figure_filename(f"{results_path.stem}_multinomial_filters_grid")
         fig.savefig(out_name, bbox_inches='tight', facecolor='#FFFFFF')
         print(f"Filter grid saved to: {out_name.name}")
 
@@ -2756,8 +2788,7 @@ def plot_multinomial_selection_trajectory(
             condition = 'male'
         else:
             condition = 'unknown'
-        fname = (f"multinomial_selection_trajectory_{condition}_"
-                 f"{metric_primary}.{_FIGURE_FORMAT}")
+        fname = _figure_filename(f"multinomial_selection_trajectory_{condition}_{metric_primary}")
         save_path = _out_dir / fname
         fig_traj.savefig(save_path, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
@@ -2993,7 +3024,7 @@ def plot_multinomial_multivariate_filters(
             if _fallback.is_file():
                 _fallback = _fallback.parent
             out_dir = pathlib.Path(output_dir) if output_dir else _fallback
-            fname = f"model_selection_multinomial_usv_category_{condition}_filters_final.{_FIGURE_FORMAT}"
+            fname = _figure_filename(f"model_selection_multinomial_usv_category_{condition}_filters_final")
             fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches=None)
 
         plt.show()
@@ -3227,7 +3258,7 @@ def plot_multinomial_selection_diagnosis(
     if save_plot:
         out_dir = _resolve_out_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
-        fname = f"multinomial_pairwise_auc_{condition}.{_FIGURE_FORMAT}"
+        fname = _figure_filename(f"multinomial_pairwise_auc_{condition}")
         fig_auc.savefig(out_dir / fname, bbox_inches='tight', dpi=_FIGURE_DPI,
                         facecolor=BG_COLOR, transparent=False)
         print(f"Pairwise AUC figure saved to: {out_dir / fname}")
@@ -3267,7 +3298,7 @@ def plot_multinomial_selection_diagnosis(
     if save_plot:
         out_dir = _resolve_out_dir()
         out_dir.mkdir(parents=True, exist_ok=True)
-        fname = f"multinomial_per_class_recall_{condition}.{_FIGURE_FORMAT}"
+        fname = _figure_filename(f"multinomial_per_class_recall_{condition}")
         fig_rec.savefig(out_dir / fname, bbox_inches='tight', dpi=_FIGURE_DPI,
                         facecolor=BG_COLOR, transparent=False)
         print(f"Per-class recall figure saved to: {out_dir / fname}")
@@ -3729,8 +3760,7 @@ def plot_manifold_selection_trajectory(
             condition = 'male'
         else:
             condition = 'unknown'
-        fname = (f"manifold_selection_trajectory_{condition}_"
-                 f"{metric_primary}.{_FIGURE_FORMAT}")
+        fname = _figure_filename(f"manifold_selection_trajectory_{condition}_{metric_primary}")
         save_path = _out_dir / fname
         fig_traj.savefig(save_path, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
@@ -3942,7 +3972,7 @@ def plot_manifold_multivariate_filters(
                 _fallback = _fallback.parent
             out_dir = pathlib.Path(output_dir) if output_dir else _fallback
             out_dir.mkdir(parents=True, exist_ok=True)
-            fname = f"model_selection_manifold_{condition}_filters_final.{_FIGURE_FORMAT}"
+            fname = _figure_filename(f"model_selection_manifold_{condition}_filters_final")
             fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches=None)
             print(f"Manifold filters plot saved to: {out_dir / fname}")
 
@@ -4079,7 +4109,7 @@ class DeepResultsVisualizer:
         target_dir.mkdir(parents=True, exist_ok=True)
 
         ext = file_format.strip('.') if file_format else _FIGURE_FORMAT
-        save_path = target_dir / f"{name}.{ext}"
+        save_path = target_dir / _figure_filename(name, ext)
 
         fig.savefig(save_path, dpi=_FIGURE_DPI, bbox_inches='tight', facecolor='#FFFFFF')
         print(f"[+] Figure saved: {save_path}")
@@ -5779,7 +5809,7 @@ def _save_audit_figure(fig, out_dir: str, basename: str, file_format: str = _FIG
     """
 
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f"{basename}.{file_format}")
+    out_path = os.path.join(out_dir, _figure_filename(basename, file_format))
     fig.savefig(out_path, format=file_format, bbox_inches='tight')
     return out_path
 
