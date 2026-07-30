@@ -29,6 +29,7 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
     from usv_playpen.modeling.jax_multinomial_logistic_regression import (
         SmoothMultinomialLogisticRegression,
+        _multinomial_loss_static,
     )
 
 
@@ -373,3 +374,112 @@ class TestLaxLoopPath:
         model = SmoothMultinomialLogisticRegression(**kwargs).fit(X, y)
         assert model.converged_ is True
         assert model.n_iter_ < 600
+
+
+class TestSmoothnessBoundary:
+    """The order-2 temporal-smoothness penalty uses reflective (Neumann)
+    boundary conditions: in addition to the interior second-differences it
+    penalises the filter's edge SLOPE at each end (as if the filter were
+    mirrored beyond the window). This constrains the endpoints exactly like the
+    interior and removes the open-boundary edge blow-up, mirroring
+    ``SmoothTorusManifoldRegression._smoothness_penalty``.
+    """
+
+    @staticmethod
+    def _isolated_smooth_loss(W, b, n_feats, n_time, lam_smooth, class_weights, order):
+        """Return the smoothness term of the multinomial loss in isolation.
+
+        Evaluating ``_multinomial_loss_static`` with an all-zero design matrix
+        makes every logit equal to the bias ``b`` regardless of ``W``, so the
+        focal data term is W-independent; with ``l2_reg=0`` the only remaining
+        W-dependent term is the smoothness penalty. Because
+        ``smooth_loss(0) == 0``, the difference ``loss(W) - loss(0)`` equals
+        ``smooth_loss(W)`` exactly, letting the reflective-boundary formula be
+        checked without reaching into the private penalty expression.
+
+        Parameters
+        ----------
+        W : np.ndarray
+            Weight matrix of shape ``(n_feats * n_time, n_classes)``.
+        b : np.ndarray
+            Bias vector of shape ``(n_classes,)``.
+        n_feats, n_time : int
+            Filter grid dimensions used to reshape ``W`` along the time axis.
+        lam_smooth : float
+            Smoothness regularisation strength.
+        class_weights : np.ndarray
+            Per-class weights of shape ``(n_classes,)`` applied to the penalty.
+        order : int
+            Derivative order of the smoothness penalty (1 or 2).
+
+        Returns
+        -------
+        float
+            The isolated ``smooth_loss(W)`` value.
+        """
+
+        n_obs, n_classes = 8, W.shape[1]
+        X = jnp.zeros((n_obs, n_feats * n_time), dtype=jnp.float32)
+        rng = np.random.default_rng(0)
+        Y = jnp.asarray(
+            np.eye(n_classes)[rng.integers(0, n_classes, n_obs)], dtype=jnp.float32
+        )
+        sample_weight = jnp.ones(n_obs, dtype=jnp.float32)
+        cw = jnp.asarray(class_weights, dtype=jnp.float32)
+        W_j = jnp.asarray(W, dtype=jnp.float32)
+        b_j = jnp.asarray(b, dtype=jnp.float32)
+        args = (X, Y, sample_weight, n_feats, n_time,
+                float(lam_smooth), 0.0, cw, 0.0, order)
+        loss_w = float(_multinomial_loss_static((W_j, b_j), *args))
+        loss_0 = float(_multinomial_loss_static((jnp.zeros_like(W_j), b_j), *args))
+        return loss_w - loss_0
+
+    def test_order2_penalises_edge_slopes(self):
+        """For order 2 the isolated smoothness penalty equals the reflective
+        operator's value -- interior second-differences PLUS the two edge
+        slopes -- and strictly exceeds the interior-only (open-boundary) value,
+        proving the endpoints are genuinely constrained."""
+
+        n_feats, n_time, n_classes = 2, 6, 3
+        rng = np.random.default_rng(7)
+        W = rng.standard_normal((n_feats * n_time, n_classes))
+        b = rng.standard_normal(n_classes)
+        class_weights = np.array([1.0, 0.7, 1.5])
+        lam_smooth = 3.0
+
+        actual = self._isolated_smooth_loss(
+            W, b, n_feats, n_time, lam_smooth, class_weights, order=2
+        )
+
+        W_grid = W.reshape(n_feats, n_time, n_classes)
+        interior = (np.diff(W_grid, n=2, axis=1) ** 2).sum(axis=(0, 1))
+        left_slope = ((W_grid[:, 1, :] - W_grid[:, 0, :]) ** 2).sum(axis=0)
+        right_slope = ((W_grid[:, -2, :] - W_grid[:, -1, :]) ** 2).sum(axis=0)
+        reflective = interior + left_slope + right_slope
+        expected = 0.5 * lam_smooth * float((reflective * class_weights).sum())
+        interior_only = 0.5 * lam_smooth * float((interior * class_weights).sum())
+
+        assert np.isclose(actual, expected, rtol=1e-4, atol=1e-5)
+        assert actual > interior_only + 1e-6
+
+    def test_order1_has_no_boundary_augmentation(self):
+        """The reflective augmentation is order-2 specific; a first-order
+        penalty remains the plain forward-difference energy with no extra edge
+        term, so the isolated loss matches the open-boundary formula exactly."""
+
+        n_feats, n_time, n_classes = 1, 5, 2
+        rng = np.random.default_rng(11)
+        W = rng.standard_normal((n_feats * n_time, n_classes))
+        b = rng.standard_normal(n_classes)
+        class_weights = np.array([1.0, 1.0])
+        lam_smooth = 2.0
+
+        actual = self._isolated_smooth_loss(
+            W, b, n_feats, n_time, lam_smooth, class_weights, order=1
+        )
+
+        W_grid = W.reshape(n_feats, n_time, n_classes)
+        first_diff = (np.diff(W_grid, n=1, axis=1) ** 2).sum(axis=(0, 1))
+        expected = 0.5 * lam_smooth * float((first_diff * class_weights).sum())
+
+        assert np.isclose(actual, expected, rtol=1e-4, atol=1e-5)

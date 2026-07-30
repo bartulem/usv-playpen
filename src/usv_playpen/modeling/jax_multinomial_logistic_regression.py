@@ -73,6 +73,16 @@ def _multinomial_loss_static(
     W_reshaped = W.reshape(n_feats, n_time, -1)
     dW = jnp.diff(W_reshaped, n=smoothness_derivative_order, axis=1)
     class_smooth_penalties = jnp.sum(dW ** 2, axis=(0, 1))
+    if smoothness_derivative_order == 2:
+        # Reflective (Neumann) boundary: also penalise the edge SLOPE at each end
+        # (as if the filter were mirrored, w_{-1}=w_0 / w_p=w_{p-1}), so the
+        # endpoints are constrained like the interior instead of floating free --
+        # matching SmoothTorusManifoldRegression._smoothness_penalty and removing the
+        # open-boundary edge blow-up. `smoothness_derivative_order` is a static arg.
+        left_slope = W_reshaped[:, 1, :] - W_reshaped[:, 0, :]
+        right_slope = W_reshaped[:, -2, :] - W_reshaped[:, -1, :]
+        class_smooth_penalties = class_smooth_penalties + jnp.sum(
+            left_slope ** 2 + right_slope ** 2, axis=0)
     smooth_loss = 0.5 * lam_smooth * jnp.sum(class_smooth_penalties * class_weights)
 
     return mean_focal_loss + l2_loss + smooth_loss
@@ -601,6 +611,16 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
 
         # Sum the penalty across features (axis=0) and time (axis=1), leaving shape (n_classes,)
         class_smooth_penalties = jnp.sum(dW ** 2, axis=(0, 1))
+
+        # Reflective (Neumann) boundary for order 2: also penalise the edge SLOPE at
+        # each end (as if the filter were mirrored), so the endpoints are constrained
+        # like the interior instead of floating free -- matching
+        # SmoothTorusManifoldRegression and removing the open-boundary edge blow-up.
+        if smoothness_derivative_order == 2:
+            left_slope = W_reshaped[:, 1, :] - W_reshaped[:, 0, :]
+            right_slope = W_reshaped[:, -2, :] - W_reshaped[:, -1, :]
+            class_smooth_penalties = class_smooth_penalties + jnp.sum(
+                left_slope ** 2 + right_slope ** 2, axis=0)
 
         # Scale the per-class smoothing penalty by the inverse-frequency class weight:
         # rare classes receive a larger weight, so their filters are regularised more
