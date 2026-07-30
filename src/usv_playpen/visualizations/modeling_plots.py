@@ -1256,6 +1256,25 @@ def plot_model_selection_results(
 
     print(f"Primary Metric Detected: {metric_label}")
 
+    # Secondary-metric panel selection. Honor the requested ``metric_secondary``
+    # when the candidates carry it; otherwise fall back to the first available
+    # metric from a preference list, so a regression run (which has no 'auc')
+    # gets a rank-correlation panel instead of an empty one. The chance floor and
+    # axis label are metric-appropriate (AUC / accuracy: chance 0.5; correlations:
+    # chance 0).
+    _secondary_spec = {'auc': (0.5, 'AUC'), 'accuracy': (0.5, 'Accuracy'),
+                       'spearman_r': (0.0, 'Spearman ρ'),
+                       'pearson_r': (0.0, 'Pearson r')}
+    _first_metrics = first_cands[next(iter(first_cands))] if first_cands else {}
+    if metric_secondary not in _first_metrics:
+        for _candidate_metric in ('spearman_r', 'pearson_r', 'auc', 'accuracy'):
+            if _candidate_metric in _first_metrics:
+                metric_secondary = _candidate_metric
+                break
+    chance_secondary, secondary_label = _secondary_spec.get(
+        metric_secondary, (0.0, metric_secondary))
+    print(f"Secondary Metric: {secondary_label}")
+
     for i, data in enumerate(valid_steps_for_plot):
         candidates = data.get('candidates', data.get('candidates_summary', {}))
         if not candidates: continue
@@ -1376,8 +1395,8 @@ def plot_model_selection_results(
         chance_nll = float(np.log(2.0))
     cum_nlls = [float(d['prim_mean']) for d in steps_data]
 
-    # Right-panel data: secondary-metric bars
-    chance_secondary = 0.5
+    # Right-panel data: secondary-metric bars (chance_secondary + secondary_label
+    # were resolved above from the effective secondary metric).
     first_step = valid_steps_for_plot[0]
     if 'candidates_summary' in first_step:
         first_cands_all = first_step['candidates_summary']
@@ -1430,7 +1449,7 @@ def plot_model_selection_results(
                     best_rej_feat = _f
             if best_rej_feat is not None:
                 _ll_v = np.array(
-                    rej_cands[best_rej_feat]['ll'], dtype=float
+                    rej_cands[best_rej_feat][primary_metric], dtype=float
                 )
                 _ll_v = _ll_v[~np.isnan(_ll_v)]
                 rej_ll_mean = float(np.mean(_ll_v)) if _ll_v.size > 0 else float('nan')
@@ -1463,43 +1482,47 @@ def plot_model_selection_results(
         light_color = _lighten(base_color, factor=0.65)
         prev_nll = cum_nlls[row_idx - 1] if row_idx > 0 else chance_nll
         cur_nll = cum_nlls[row_idx]
-        delta = prev_nll - cur_nll  # positive NLL reduction
+        # Signed improvement over the previous cumulative value (positive = better)
+        # in the metric's own direction: a reduction for a minimized metric (NLL),
+        # an increase for a maximized one (explained deviance).
+        delta = (prev_nll - cur_nll) if is_minimization else (cur_nll - prev_nll)
 
-        # Light segment: from prev_nll RIGHTWARD to chance_nll
-        # (represents the cumulative improvement BEFORE this feature).
-        if chance_nll > prev_nll:
-            ax_traj.barh(y, chance_nll - prev_nll, left=prev_nll,
-                         height=bar_height, color=light_color,
-                         edgecolor='none')
-        # Dark tip: from cur_nll RIGHTWARD to prev_nll (THIS step's
-        # contribution; further leftward extension of the bar).
-        if prev_nll > cur_nll:
-            ax_traj.barh(y, prev_nll - cur_nll, left=cur_nll,
-                         height=bar_height, color=base_color,
-                         edgecolor='none')
+        # The bar spans from the chance baseline to this step's cumulative value,
+        # split at the previous value: a light segment for the improvement BEFORE
+        # this feature (chance -> prev) and a dark tip for THIS step (prev -> cur).
+        # Expressed as min-edge + width so it renders correctly whether the metric
+        # decreases (minimized) or increases (maximized) away from chance.
+        light_left, light_width = min(chance_nll, prev_nll), abs(prev_nll - chance_nll)
+        dark_left, dark_width = min(prev_nll, cur_nll), abs(cur_nll - prev_nll)
+        if light_width > 0:
+            ax_traj.barh(y, light_width, left=light_left,
+                         height=bar_height, color=light_color, edgecolor='none')
+        if dark_width > 0:
+            ax_traj.barh(y, dark_width, left=dark_left,
+                         height=bar_height, color=base_color, edgecolor='none')
 
-        ax_traj.text(cur_nll - 0.003, y,
-                     f"{cur_nll:.3f}  (Δ -{delta:.3f})",
-                     ha='left', va='center', fontsize=7,
-                     color=TEXT_COLOR)
+        ax_traj.text(cur_nll, y, f"{cur_nll:.3f}  (Δ {delta:+.3f})",
+                     ha='left' if is_minimization else 'right',
+                     va='center', fontsize=7, color=TEXT_COLOR)
 
     if rejection_row is not None and not np.isnan(rejection_row['ll_mean']):
         rejected_light = '#D7D7D7'
         rejected_dark = '#9A9A9A'
         prev_nll = cum_nlls[-1]
         cur_nll = rejection_row['ll_mean']
-        if chance_nll > prev_nll:
-            ax_traj.barh(rej_y, chance_nll - prev_nll, left=prev_nll,
-                         height=bar_height, color=rejected_light,
-                         edgecolor='none')
-        if prev_nll > cur_nll:
-            ax_traj.barh(rej_y, prev_nll - cur_nll, left=cur_nll,
-                         height=bar_height, color=rejected_dark,
-                         edgecolor='none')
-        ax_traj.text(cur_nll - 0.003, rej_y,
-                     f"{cur_nll:.3f}  (Δ -{prev_nll - cur_nll:.3f}, ns)",
-                     ha='left', va='center', fontsize=7,
-                     color=NEUTRAL_COLOR, style='italic')
+        _rl, _rlw = min(chance_nll, prev_nll), abs(prev_nll - chance_nll)
+        _rd, _rdw = min(prev_nll, cur_nll), abs(cur_nll - prev_nll)
+        if _rlw > 0:
+            ax_traj.barh(rej_y, _rlw, left=_rl, height=bar_height,
+                         color=rejected_light, edgecolor='none')
+        if _rdw > 0:
+            ax_traj.barh(rej_y, _rdw, left=_rd, height=bar_height,
+                         color=rejected_dark, edgecolor='none')
+        _rej_delta = (prev_nll - cur_nll) if is_minimization else (cur_nll - prev_nll)
+        ax_traj.text(cur_nll, rej_y,
+                     f"{cur_nll:.3f}  (Δ {_rej_delta:+.3f}, ns)",
+                     ha='left' if is_minimization else 'right',
+                     va='center', fontsize=7, color=NEUTRAL_COLOR, style='italic')
 
     ytick_positions = list(y_positions)
     ytick_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
@@ -1521,17 +1544,20 @@ def plot_model_selection_results(
     all_left_edges = list(cum_nlls)
     if rejection_row is not None and not np.isnan(rejection_row['ll_mean']):
         all_left_edges.append(rejection_row['ll_mean'])
-    nll_span = chance_nll - min(all_left_edges)
-    x_left = min(all_left_edges) - 0.30 * nll_span
-    x_right = chance_nll + 0.015
-    ax_traj.set_xlim(x_left, x_right)
-    # Invert the x-axis so chance NLL is on the LEFT (start) and lower
-    # (better) NLL is on the RIGHT (end). Matches the right panel's
-    # "further from chance = better" reading direction; the cost is
-    # numeric x-tick labels decreasing left-to-right, which is the
-    # expected convention for a "lower is better" metric.
-    ax_traj.invert_xaxis()
-    ax_traj.set_xlabel("Negative log-likelihood (held-out data)",
+    # Orient the axis so the chance baseline sits on the LEFT and "better" is on
+    # the RIGHT for either metric direction. A minimized metric (NLL) has its best
+    # value at the smallest number and the axis is inverted (chance high on the
+    # left); a maximized metric (deviance) has its best value at the largest and
+    # the axis is left as-is (chance 0 on the left).
+    if is_minimization:
+        nll_span = chance_nll - min(all_left_edges)
+        ax_traj.set_xlim(min(all_left_edges) - 0.30 * nll_span, chance_nll + 0.015)
+        ax_traj.invert_xaxis()
+    else:
+        best_edge = max(all_left_edges)
+        val_span = abs(best_edge - chance_nll) or 1.0
+        ax_traj.set_xlim(chance_nll - 0.05 * val_span, best_edge + 0.30 * val_span)
+    ax_traj.set_xlabel(f"{metric_label} (held-out data)",
                        fontsize=9, color=TEXT_COLOR)
     ax_traj.spines['top'].set_visible(False)
     ax_traj.spines['right'].set_visible(False)
@@ -1575,20 +1601,23 @@ def plot_model_selection_results(
                     color=seg_color, edgecolor='none')
         _bottom += marginal
 
-    # Y-axis: 0.5 floor; visible labels up to 0.95; ceiling extended
-    # if necessary to give room for the feature-label stack above the
-    # tallest bar.
+    # Y-axis: floor at the metric's chance level; ceiling extended if needed to
+    # clear the feature-label stack above the tallest bar. An AUC/accuracy-like
+    # metric (chance 0.5) keeps the fixed ~0.97 ceiling and 0.5..0.95 ticks; a
+    # correlation-like metric (chance 0) scales to its own data.
     bar_tops = [best_univariate_value, final_score]
-    y_data_max = max(bar_tops)
-    label_line_spacing = 0.018
-    label_y_start_offset = 0.010
+    y_data_max = float(np.nanmax(bar_tops))
+    _auc_like = chance_secondary >= 0.5
+    label_line_spacing = 0.018 if _auc_like else max(0.006, 0.05 * y_data_max)
+    label_y_start_offset = 0.010 if _auc_like else max(0.004, 0.03 * y_data_max)
     label_fontsize = 8
     max_label_lines = len(steps_data)
     label_stack_top = (y_data_max + label_y_start_offset
                        + (max_label_lines + 1) * label_line_spacing)
-    y_top = max(0.97, label_stack_top)
+    y_top = max(0.97 if _auc_like else 0.0, label_stack_top)
     ax_bars.set_ylim(chance_secondary, y_top)
-    visible_ticks = np.arange(0.5, 0.951, 0.05)
+    _tick_top = 0.95 if _auc_like else y_data_max
+    visible_ticks = np.arange(chance_secondary, _tick_top + 1e-9, 0.05)
     ax_bars.set_yticks(visible_ticks)
     ax_bars.set_yticklabels([f"{t:.2f}" for t in visible_ticks],
                             fontsize=8, color=TEXT_COLOR)
@@ -1596,7 +1625,7 @@ def plot_model_selection_results(
     ax_bars.set_xticks(bar_x_positions)
     ax_bars.set_xticklabels(bar_group_labels, fontsize=7, color=TEXT_COLOR)
     ax_bars.set_xlim(-0.6, len(bar_group_labels) - 0.4)
-    ax_bars.set_ylabel("Accuracy (held-out data)",
+    ax_bars.set_ylabel(f"{secondary_label} (held-out data)",
                        fontsize=9, color=TEXT_COLOR)
 
     final_feat_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
