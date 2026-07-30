@@ -1609,13 +1609,13 @@ class TestDeepResultsVisualizer:
     @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
     def test_permutation_test_writes_svg(self, tmp_path):
         """The bootstrapped permutation-test broken-axis figure writes a
-        single SVG into the override output directory."""
+        single figure (in the configured format) into the override output directory."""
 
         rng = np.random.default_rng(67)
         pkl = _write_cnn_results_pickle(tmp_path, rng)
         viz = DeepResultsVisualizer(
             results_pkl_path=pkl,
-            modeling_settings={"model_params": {"random_seed": 0}},
+            modeling_settings={"model_validation": {"random_seed": 0}},
             visualization_settings={},
         )
         out_dir = tmp_path / "cnn_perm_out"
