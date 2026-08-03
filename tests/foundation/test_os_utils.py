@@ -678,7 +678,7 @@ def test_resolve_modeling_setting_reads_block_key():
 
     assert float(os_utils.resolve_modeling_setting('model_params', 'selection_p_val')) == 0.01
     assert int(os_utils.resolve_modeling_setting('diagnostics', 'ece_n_bins')) == 10
-    assert float(os_utils.resolve_modeling_setting('model_params', 'session_split_initial_tolerance')) == 0.05
+    assert float(os_utils.resolve_modeling_setting('model_validation', 'session_split_initial_tolerance')) == 0.05
 
 
 def test_rebase_experimenter_in_paths_rewrites_bounded_components_only():
