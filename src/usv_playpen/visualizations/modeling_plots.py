@@ -90,6 +90,8 @@ NEUTRAL_COLOR = "#D3D3D3"
 MEAN_LINE_COLOR = '#DCB400'
 TEXT_COLOR = '#202020'
 REFERENCE_LINE_COLOR = "#808080"    # dashed zero / chance reference lines (was 'gray')
+MANIFOLD_X_COLOR = '#2C7FB8'        # manifold-x (torus output dim 0) bars in the last-bin filter summary
+MANIFOLD_Y_COLOR = '#E6550D'        # manifold-y (torus output dim 1) bars in the last-bin filter summary
 
 # Timescale-audit palette overrides: zero / axis lines stay black, so
 # social/dyadic gets the canonical social colour (distinct from the
@@ -3807,6 +3809,100 @@ def plot_manifold_selection_trajectory(
     plt.show()
 
 
+def _extract_manifold_final_bivariate_weights(selection_results_path):
+    """
+    Load the converged multivariate manifold (bivariate-regression) model
+    from a ``continuous_vocal_manifold_model_selection`` artifact and return
+    its fold-averaged weight tensor together with the ordered feature list.
+
+    This is the shared front-end for the two manifold filter figures --
+    ``plot_manifold_multivariate_filters`` (the full 4 s temporal atlas) and
+    ``plot_manifold_last_bin_filters`` (the most-recent-bin summary) -- so
+    both read the final accepted selection step, drop the anchor duplicate,
+    reshape the raw ``(n_folds, n_features * n_time_bins, 2)`` weight block,
+    and fold-average it in exactly the same way. Every failure mode prints a
+    human-readable reason and yields ``None`` so the callers can bail without
+    raising.
+
+    Parameters
+    ----------
+    selection_results_path : str
+        Path (already routed through ``configure_path`` by the caller) to the
+        consolidated ``model_selection_final_*.pkl`` artifact, or a directory
+        containing one (latest mtime wins). Passed straight to
+        ``load_selection_results``.
+
+    Returns
+    -------
+    tuple or None
+        ``(mean_weights, features, n_time_bins, selection_metadata)`` where
+
+        * ``mean_weights`` is the fold-averaged ``(n_features, n_time_bins,
+          2)`` weight tensor; the trailing axis is the manifold output
+          dimension (index 0 = manifold-x, index 1 = manifold-y),
+        * ``features`` is the ordered list of feature names for the converged
+          model (anchor duplicate removed),
+        * ``n_time_bins`` is the behavioural-history bin count, and
+        * ``selection_metadata`` is the metadata block from
+          ``load_selection_results`` (cohort sexes etc., for pretty labels).
+
+        Returns ``None`` -- after printing why -- when there are no selection
+        steps, no accepted feature step, or the weight block has an
+        unexpected shape / non-divisible column count.
+    """
+
+    selection_steps, _, selection_metadata = load_selection_results(selection_results_path)
+    if not selection_steps:
+        print(f"No manifold selection step data found in {selection_results_path}")
+        return None
+
+    # Last step with an actual selected feature -- skips the
+    # rejection / null marker steps so we always render the final
+    # accepted multivariate model.
+    valid_data = None
+    for data in reversed(selection_steps):
+        sel = data['selected_feature']
+        if sel is not None and sel != 'null_model_free':
+            valid_data = data
+            break
+    if valid_data is None:
+        print("No accepted feature steps in this run.")
+        return None
+
+    winner = valid_data['selected_feature']
+    features = list(valid_data['current_features']) + [winner]
+    if features and features[0] == winner and len(features) > 1 and features.count(winner) > 1:
+        # Anchor step writes the same feature into both
+        # ``current_features`` and ``selected_feature``; drop the
+        # duplicate so the filter block isn't doubled.
+        features = list(valid_data['current_features'])
+    winner_data = valid_data['candidates_summary'][winner]
+
+    raw_weights = np.array(winner_data['folds']['weights'])
+    if raw_weights.ndim != 3 or raw_weights.shape[-1] != 2:
+        print(
+            f"Unexpected weight shape {raw_weights.shape}; expected "
+            f"(n_folds, n_features*n_time_bins, 2). Aborting."
+        )
+        return None
+    n_folds, n_total_inputs, _ = raw_weights.shape
+    n_features = len(features)
+    if n_features == 0 or n_total_inputs % n_features != 0:
+        print(
+            f"Cannot reshape weights: {n_total_inputs} columns is not "
+            f"divisible by {n_features} features. Aborting."
+        )
+        return None
+    n_time_bins = n_total_inputs // n_features
+    weights = raw_weights.reshape(n_folds, n_features, n_time_bins, 2)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        mean_weights = np.nanmean(weights, axis=0)
+
+    return mean_weights, features, n_time_bins, selection_metadata
+
+
 def plot_manifold_multivariate_filters(
         selection_results_path: str,
         history_window_sec: float = 4.0,
@@ -3881,54 +3977,11 @@ def plot_manifold_multivariate_filters(
     plt.rcParams.update(_rcp_override)
 
     try:
-        selection_steps, _, _ = load_selection_results(selection_results_path)
-        if not selection_steps:
-            print(f"No manifold selection step data found in {selection_results_path}")
+        _extracted = _extract_manifold_final_bivariate_weights(selection_results_path)
+        if _extracted is None:
             return
-
-        # Last step with an actual selected feature -- skips the
-        # rejection / null marker steps so we always render the final
-        # accepted multivariate model.
-        valid_data = None
-        for data in reversed(selection_steps):
-            sel = data['selected_feature']
-            if sel is not None and sel != 'null_model_free':
-                valid_data = data
-                break
-        if valid_data is None:
-            print("No accepted feature steps in this run.")
-            return
-
-        winner = valid_data['selected_feature']
-        features = list(valid_data['current_features']) + [winner]
-        if features and features[0] == winner and len(features) > 1 and features.count(winner) > 1:
-            # Anchor step writes the same feature into both
-            # ``current_features`` and ``selected_feature``; drop the
-            # duplicate so the filter atlas isn't doubled.
-            features = list(valid_data['current_features'])
-        winner_data = valid_data['candidates_summary'][winner]
-
-        raw_weights = np.array(winner_data['folds']['weights'])
-        if raw_weights.ndim != 3 or raw_weights.shape[-1] != 2:
-            print(
-                f"Unexpected weight shape {raw_weights.shape}; expected "
-                f"(n_folds, n_features*n_time_bins, 2). Aborting."
-            )
-            return
-        n_folds, n_total_inputs, _ = raw_weights.shape
+        mean_weights, features, n_time_bins, _ = _extracted
         n_features = len(features)
-        if n_features == 0 or n_total_inputs % n_features != 0:
-            print(
-                f"Cannot reshape weights: {n_total_inputs} columns is not "
-                f"divisible by {n_features} features. Aborting."
-            )
-            return
-        n_time_bins = n_total_inputs // n_features
-        weights = raw_weights.reshape(n_folds, n_features, n_time_bins, 2)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            mean_weights = np.nanmean(weights, axis=0)
 
         ncols = 3
         nrows = math.ceil(n_features / ncols)
@@ -4017,6 +4070,147 @@ def plot_manifold_multivariate_filters(
         plt.show()
     finally:
         plt.rcParams.update(_saved_rcp)
+
+
+def plot_manifold_last_bin_filters(
+        selection_results_path: str,
+        save_plot: bool = False,
+        output_dir: str = None,
+        feature_label_overrides: dict = None,
+) -> None:
+    """
+    Compact per-feature summary of the converged multivariate manifold model
+    at the MOST-RECENT history bin (t approximately 0, immediately before USV
+    onset) -- the instantaneous behavioural drive on torus position.
+
+    Where ``plot_manifold_multivariate_filters`` renders each feature's full
+    4 s temporal filter as a two-row (manifold-x / manifold-y) heatmap, this
+    collapses every feature to its final time bin only and draws a grouped
+    horizontal bar chart: one row per feature, two bars per feature giving
+    that feature's partial weight on manifold-x and manifold-y at t = 0. A
+    positive bar pushes the predicted USV torus location toward the +axis of
+    that coordinate, a negative bar toward the -axis; the bars are coloured by
+    manifold axis (not by sign), and features are ordered by their overall
+    last-bin magnitude so the strongest instantaneous driver sits at the top.
+
+    This is the "torus in the last bin" view: it answers "right before the
+    animal vocalises, which behavioural features are actively displacing the
+    predicted acoustic location, and along which torus coordinate?" without
+    the full temporal filter's visual load.
+
+    Data layout
+    -----------
+    The shared loader ``_extract_manifold_final_bivariate_weights`` returns
+    the fold-averaged ``(n_features, n_time_bins, 2)`` weight tensor; this
+    function slices ``[:, -1, :]`` to the most-recent bin, giving one
+    ``(manifold-x, manifold-y)`` weight pair per feature.
+
+    Parameters
+    ----------
+    selection_results_path : str
+        Path to the consolidated ``model_selection_final_*.pkl`` artifact
+        produced by ``continuous_vocal_manifold_model_selection``. May be the
+        file itself or a directory containing one (latest mtime wins). Routed
+        through ``configure_path``.
+    save_plot : bool, default False
+        If True, writes the figure to disk (format / timestamp per the shared
+        figure settings).
+    output_dir : str, optional
+        Directory for saving the figure. Defaults to the parent dir of
+        ``selection_results_path`` (or to the path itself if a directory was
+        supplied).
+    feature_label_overrides : dict, optional
+        Mapping from raw feature names to presentation-friendly labels. Raw
+        names not in the map fall back to
+        ``FeatureZoo.resolve_feature_label`` with the cohort sexes read from
+        the artifact metadata, matching the other selection plotters.
+
+    Returns
+    -------
+    None
+        Displays (and optionally saves) the Matplotlib figure.
+    """
+
+    selection_results_path = configure_path(str(selection_results_path))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
+
+    extracted = _extract_manifold_final_bivariate_weights(selection_results_path)
+    if extracted is None:
+        return
+    mean_weights, features, n_time_bins, selection_metadata = extracted
+    _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
+
+    # Most-recent history bin (t ~ 0, immediately before USV onset): the
+    # instantaneous behavioural drive on the two torus coordinates.
+    last_bin = mean_weights[:, -1, :]                      # (n_features, 2)
+
+    # Order features by their overall last-bin magnitude (max |weight| across
+    # the two coordinates), so the strongest instantaneous driver ends up at
+    # the top of the horizontal bar chart.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        magnitude = np.nanmax(np.abs(last_bin), axis=1)
+    order = np.argsort(magnitude)                          # ascending -> strongest on top
+    x_weights = last_bin[order, 0]
+    y_weights = last_bin[order, 1]
+    labels = [_pretty(features[i]) for i in order]
+
+    n_features = len(features)
+    y_pos = np.arange(n_features)
+    bar_h = 0.38
+
+    fig_h = max(2.4, 0.55 * n_features + 1.6)
+    fig, ax = plt.subplots(figsize=(9.0, fig_h), dpi=_FIGURE_DPI)
+    fig.patch.set_facecolor('#FFFFFF')
+    ax.set_facecolor('#FFFFFF')
+
+    ax.barh(y_pos + bar_h / 2.0, x_weights, height=bar_h,
+            color=MANIFOLD_X_COLOR, edgecolor='#000000', linewidth=0.6,
+            label='manifold x', zorder=3)
+    ax.barh(y_pos - bar_h / 2.0, y_weights, height=bar_h,
+            color=MANIFOLD_Y_COLOR, edgecolor='#000000', linewidth=0.6,
+            label='manifold y', zorder=3)
+
+    ax.axvline(0.0, color='#000000', lw=1.0, zorder=2)
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels, color=TEXT_COLOR, fontsize=10)
+    ax.set_ylim(-0.7, n_features - 0.3)
+    ax.set_xlabel(
+        "Partial weight at t ≈ 0 (most-recent history bin)\n"
+        "− pushes toward −axis      +  pushes toward +axis",
+        color=TEXT_COLOR, fontsize=11, labelpad=8,
+    )
+    ax.set_title(
+        "Instantaneous behavioural drive on torus position\n"
+        "(converged multivariate manifold model, final history bin)",
+        color=TEXT_COLOR, fontsize=12, fontweight='bold', pad=12,
+    )
+
+    for side in ('top', 'right'):
+        ax.spines[side].set_visible(False)
+    for side in ('bottom', 'left'):
+        ax.spines[side].set_edgecolor('#000000')
+        ax.spines[side].set_linewidth(1.0)
+    ax.tick_params(axis='both', color='#000000', labelcolor=TEXT_COLOR)
+    ax.legend(loc='lower right', frameon=False, fontsize=10)
+
+    fig.tight_layout()
+
+    if save_plot:
+        path_str = str(selection_results_path).lower()
+        condition = 'male_mute_partner' if 'male_mute_partner' in path_str else \
+            ('female' if 'female' in path_str else 'male')
+        _fallback = pathlib.Path(selection_results_path)
+        if _fallback.is_file():
+            _fallback = _fallback.parent
+        out_dir = pathlib.Path(output_dir) if output_dir else _fallback
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fname = _figure_filename(f"model_selection_manifold_{condition}_filters_last_bin")
+        fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches='tight')
+        print(f"Manifold last-bin filters plot saved to: {out_dir / fname}")
+
+    plt.show()
 
 
 class DeepResultsVisualizer:

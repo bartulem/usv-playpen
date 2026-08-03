@@ -42,6 +42,7 @@ with warnings.catch_warnings():
         _rolling_mean_1d,
         plot_collinearity_audit,
         plot_feature_ranking,
+        plot_manifold_last_bin_filters,
         plot_manifold_multivariate_filters,
         plot_manifold_selection_trajectory,
         plot_model_selection_results,
@@ -1449,6 +1450,24 @@ class TestPlotManifoldMultivariateFilters:
             output_dir=str(out_dir),
         )
         assert len(list(out_dir.glob(f"model_selection_manifold_*_filters_final_*.{_FIGURE_FORMAT}"))) == 1
+
+    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+    def test_writes_last_bin_filters(self, tmp_path):
+        """The most-recent-bin variant collapses the same bivariate weight
+        block to a grouped horizontal bar chart (manifold-x / manifold-y
+        instantaneous drive per feature) and emits a distinct file."""
+
+        rng = np.random.default_rng(60)
+        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3)
+        out_dir = tmp_path / "mflb_out"
+        out_dir.mkdir()
+        plot_manifold_last_bin_filters(
+            selection_results_path=pkl,
+            save_plot=True,
+            output_dir=str(out_dir),
+            feature_label_overrides={'self.speed': 'male speed'},
+        )
+        assert len(list(out_dir.glob(f"model_selection_manifold_*_filters_last_bin_*.{_FIGURE_FORMAT}"))) == 1
 
 
 def _write_multinomial_diagnosis_pickle(tmp_path, rng, n_classes: int = 3,
