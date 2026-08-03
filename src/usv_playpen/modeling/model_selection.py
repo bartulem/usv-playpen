@@ -60,6 +60,11 @@ from .modeling_usv_manifold_position import (
 )
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from .manifold_torus_regression import resolve_manifold_regressor_cls
+from .modeling_torus_geodesics import (
+    build_torus_geodesic_context,
+    geodesic_mae_columns,
+    make_qlvm_decode_fn_from_npz,
+)
 from .modeling_metadata import (
     build_selection_metadata, inject_metadata, RESERVED_METADATA_KEYS,
 )
@@ -5276,7 +5281,46 @@ def continuous_vocal_manifold_model_selection(
         'spearman_y',
         'dcor_xy',
         'vm_logscore',
+        'density_geodesic_mae',
+        'pullback_geodesic_mae',
     ]
+
+    # Precompute the torus geodesic "reference map" ONCE (fold-independent, like
+    # the flat metric): the density-ratio and decoder-Jacobian pullback geodesic
+    # geometries over a regular grid, from all embedded `Y` plus the frozen QLVM
+    # decoder. Per fold, each event's (prediction, truth) pair snaps to the grid
+    # and looks up its geodesic distance, giving the `density_geodesic_mae` /
+    # `pullback_geodesic_mae` columns. Torus-only; any failure (disabled, missing
+    # settings block, or unavailable decoder) degrades to NaN columns and never
+    # aborts the run.
+    geodesic_ctx = None
+    _vf_settings = settings['vocal_features']
+    if ('usv_manifold_geodesic_metrics' in _vf_settings
+            and manifold_metric == 'torus' and y_global is not None):
+        _geo_cfg = _vf_settings['usv_manifold_geodesic_metrics']
+        if _geo_cfg['compute']:
+            try:
+                _geo_decode_fn = None
+                _geo_weights_path = _geo_cfg['decoder_weights_npz_path']
+                if _geo_weights_path:
+                    try:
+                        _geo_decode_fn = make_qlvm_decode_fn_from_npz(_geo_weights_path)
+                    except Exception as _decode_err:
+                        print(f"    [geodesic] decoder unavailable ({_decode_err}); "
+                              f"pullback_geodesic_mae -> NaN")
+                geodesic_ctx = build_torus_geodesic_context(
+                    np.asarray(y_global, dtype=np.float64), decode_fn=_geo_decode_fn,
+                    n_per_dim=int(_geo_cfg['grid_n_per_dim']), period=manifold_period,
+                    k=int(_geo_cfg['graph_k']),
+                    density_exponent=float(_geo_cfg['density_exponent']),
+                )
+                print(f"    [geodesic] reference map built: "
+                      f"{int(_geo_cfg['grid_n_per_dim'])}^2 grid, "
+                      f"pullback={'on' if _geo_decode_fn is not None else 'off'}")
+            except Exception as _geo_err:
+                print(f"    [geodesic] geometry build failed ({_geo_err}); "
+                      f"geodesic MAE columns -> NaN")
+                geodesic_ctx = None
 
     # Calculate Model-Free Baseline (Step 0) if starting fresh.
     if not existing_steps:
@@ -5336,6 +5380,7 @@ def continuous_vocal_manifold_model_selection(
                 train_cov_inv=cov_inv, random_state=random_seed + fold_idx,
                 region_labels=region_global[te_idx], min_region_events=_min_region_events,
             )
+            bundle.update(geodesic_mae_columns(y_pred_xy, Y_te, geodesic_ctx))
             f_met = baseline_data['folds']['metrics']
             for _k, _v in bundle.items():
                 f_met[_k].append(_v)
@@ -5557,6 +5602,7 @@ def continuous_vocal_manifold_model_selection(
                     region_labels=region_te, min_region_events=_min_region_events,
                 )
                 y_pred_xy = model.predict(X_te, snap=True).astype(np.float32)
+                metrics.update(geodesic_mae_columns(y_pred_xy, Y_te, geodesic_ctx))
 
                 f_met = cand_data['folds']['metrics']
                 for _mk in f_met:
@@ -5751,6 +5797,7 @@ def continuous_vocal_manifold_model_selection(
                         region_labels=region_te, min_region_events=_min_region_events,
                     )
                     y_pred_xy = model.predict(X_te_stacked, snap=True).astype(np.float32)
+                    metrics.update(geodesic_mae_columns(y_pred_xy, Y_te, geodesic_ctx))
 
                     f_met = cand_data['folds']['metrics']
                     for _mk in f_met:
@@ -5943,6 +5990,7 @@ def continuous_vocal_manifold_model_selection(
                     region_labels=region_held, min_region_events=_min_region_events,
                 )
                 held_pred_xy = held_model.predict(X_held, snap=True).astype(np.float32)
+                held_metrics.update(geodesic_mae_columns(held_pred_xy, Y_held, geodesic_ctx))
                 heldout_result = {
                     'model_type': 'manifold_regressor',
                     'features': list(current_model_features),
@@ -5985,6 +6033,7 @@ def continuous_vocal_manifold_model_selection(
                     train_cov_inv=cov_inv, random_state=held_seed,
                     region_labels=region_held, min_region_events=_min_region_events,
                 )
+                held_bundle.update(geodesic_mae_columns(held_pred_xy, Y_held, geodesic_ctx))
                 heldout_result = {
                     'model_type': 'null_model_free',
                     'features': [],
