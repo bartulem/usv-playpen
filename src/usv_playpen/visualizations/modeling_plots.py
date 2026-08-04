@@ -3468,6 +3468,13 @@ def plot_manifold_selection_trajectory(
     is_minimization_primary = metric_primary in lower_is_better_set
     is_minimization_secondary = metric_secondary in lower_is_better_set
 
+    # Log-likelihood scores are higher-is-better but do NOT anchor at 0: a
+    # torus `vm_logscore` lives around the baseline empirical-density draw
+    # (~-3.68), so it must anchor at the step-0 baseline. Anchoring it at 0 makes
+    # the bars span 0 -> -3.6 with ~0.02 tips, which drives the auto-scaled
+    # x-axis off the data and renders the whole trajectory panel empty.
+    baseline_anchored_higher = {'vm_logscore'}
+
     def _fold_mean(folds_metrics: dict, key: str) -> float:
         if not folds_metrics or key not in folds_metrics:
             return float('nan')
@@ -3476,10 +3483,10 @@ def plot_manifold_selection_trajectory(
         return float(np.mean(arr)) if arr.size else float('nan')
 
     def _chance_value(metric_name: str, minimisation: bool) -> float:
-        """Higher-is-better metrics anchor at 0; for error metrics we
-        try to pull the null-model baseline from step 0, otherwise use
-        the worst observed mean across accepted steps."""
-        if not minimisation:
+        """Error metrics and log-likelihood scores (``vm_logscore``) anchor at
+        the step-0 null-model baseline (pulled from the first selection step);
+        the remaining higher-is-better metrics (r2 / correlation) anchor at 0."""
+        if not minimisation and metric_name not in baseline_anchored_higher:
             return 0.0
         null_step = selection_steps[0] if selection_steps else None
         if null_step is not None:
@@ -3708,7 +3715,11 @@ def plot_manifold_selection_trajectory(
     else:
         span = max(all_endpoints) - chance_primary
         span = span if span > 1e-9 else 1.0
-        x_left_lim = chance_primary - 0.015 * (1.0 if span < 0.1 else span)
+        # Pad PROPORTIONALLY to the data span. The old `0.015 * (1.0 if span <
+        # 0.1 ...)` injected a flat 0.015 of dead space whenever the span was
+        # small (e.g. a vm_logscore span of ~0.05), leaving a large empty gap
+        # before the first bar's baseline anchor.
+        x_left_lim = chance_primary - 0.03 * span
         x_right_lim = max(all_endpoints) + 0.30 * span
         ax_traj.set_xlim(x_left_lim, x_right_lim)
 
@@ -3720,60 +3731,41 @@ def plot_manifold_selection_trajectory(
     for spine in ax_traj.spines.values():
         spine.set_edgecolor(TEXT_COLOR)
 
-    # Right panel: 2 vertical bars (best univariate, final)
+    # Right panel: the secondary metric's IMPROVEMENT over the step-0 baseline
+    # (chance), drawn as two bars growing from 0 -- best univariate vs the final
+    # model. Lower-is-better error metrics are flipped so a positive height
+    # always means "better", making a taller bar unambiguously the stronger
+    # model. Bars anchor at 0 (no floating), and the per-feature labels are
+    # dropped here (they are the left panel's y-axis), so the comparison reads
+    # cleanly instead of being scrambled onto a stacked bar.
+    _dir = -1.0 if is_minimization_secondary else 1.0
+    anchor_gain = _dir * (best_univariate_value - chance_secondary)
+    final_gain = _dir * (final_score - chance_secondary)
+
     bar_width = 0.6
-    bar_x_positions = [0, 1]
     bar_group_labels = ['best univariate', 'final model']
+    ax_bars.bar(0, anchor_gain, width=bar_width, edgecolor='none', zorder=3,
+                color=(_category_color(best_univariate_feat)
+                       if best_univariate_feat else NEUTRAL_COLOR))
+    ax_bars.bar(1, final_gain, width=bar_width, edgecolor='none', zorder=3,
+                color=_category_color(steps_data[-1]['feature_name']))
+    ax_bars.axhline(0.0, color=TEXT_COLOR, lw=0.8, zorder=2)
 
-    bar1_color = _category_color(best_univariate_feat) if best_univariate_feat else NEUTRAL_COLOR
-    ax_bars.bar(0, best_univariate_value - chance_secondary,
-                bottom=chance_secondary, width=bar_width,
-                color=bar1_color, edgecolor='none')
+    _gmax = max(anchor_gain, final_gain, 0.0)
+    _gmin = min(anchor_gain, final_gain, 0.0)
+    _gspan = (_gmax - _gmin) if (_gmax - _gmin) > 1e-9 else 1.0
+    for _x, _g in ((0, anchor_gain), (1, final_gain)):
+        ax_bars.text(_x, _g + (0.03 * _gspan if _g >= 0 else -0.03 * _gspan),
+                     f"{_g:+.3f}", ha='center',
+                     va='bottom' if _g >= 0 else 'top',
+                     fontsize=8, color=TEXT_COLOR)
 
-    _bottom = chance_secondary
-    for d, marginal in zip(steps_data, sec_marginals):
-        seg_color = _category_color(d['feature_name'])
-        ax_bars.bar(1, marginal, bottom=_bottom, width=bar_width,
-                    color=seg_color, edgecolor='none')
-        _bottom += marginal
-
-    bar_tops = [best_univariate_value, final_score]
-    y_data_max = float(np.nanmax(bar_tops))
-    y_data_min = float(np.nanmin(bar_tops + [chance_secondary]))
-    label_line_spacing_data = max(0.006, 0.012 * abs(y_data_max - chance_secondary + 1e-9))
-    label_y_start_offset = max(0.005, 0.01 * abs(y_data_max - chance_secondary + 1e-9))
-    label_fontsize = 8
-    max_label_lines = len(steps_data)
-    label_stack_top = (y_data_max + label_y_start_offset
-                       + (max_label_lines + 1) * label_line_spacing_data)
-
-    # Generic axis sizing: pad ~25% above the highest bar (or label
-    # stack, whichever is taller) and ~5% below the chance baseline.
-    y_top = max(y_data_max + 0.25 * abs(y_data_max - chance_secondary + 1e-9),
-                label_stack_top)
-    y_bot = min(chance_secondary - 0.05 * abs(y_data_max - chance_secondary + 1e-9),
-                y_data_min - 0.05 * abs(y_data_max - chance_secondary + 1e-9))
-    ax_bars.set_ylim(y_bot, y_top)
-
-    ax_bars.set_xticks(bar_x_positions)
-    ax_bars.set_xticklabels(bar_group_labels, fontsize=7, color=TEXT_COLOR)
-    ax_bars.set_xlim(-0.6, len(bar_group_labels) - 0.4)
-    ax_bars.set_ylabel(f"{secondary_metric_name} (held-out data)",
+    ax_bars.set_ylim(_gmin - 0.12 * _gspan, _gmax + 0.20 * _gspan)
+    ax_bars.set_xticks([0, 1])
+    ax_bars.set_xticklabels(bar_group_labels, fontsize=8, color=TEXT_COLOR)
+    ax_bars.set_xlim(-0.6, 1.6)
+    ax_bars.set_ylabel(f"Δ {secondary_metric_name} vs baseline (held-out)",
                        fontsize=10, color=TEXT_COLOR)
-
-    final_feat_labels = [f"+{_pretty(d['feature_name'])}" for d in steps_data]
-
-    if best_univariate_feat is not None:
-        ax_bars.text(0, best_univariate_value + label_y_start_offset,
-                     _pretty(best_univariate_feat),
-                     ha='center', va='bottom',
-                     fontsize=label_fontsize, color=TEXT_COLOR)
-
-    for j, lab in enumerate(final_feat_labels):
-        ax_bars.text(1, final_score + label_y_start_offset
-                     + j * label_line_spacing_data,
-                     lab, ha='center', va='bottom',
-                     fontsize=label_fontsize, color=TEXT_COLOR)
 
     ax_bars.spines['top'].set_visible(False)
     ax_bars.spines['right'].set_visible(False)
@@ -3835,16 +3827,23 @@ def _extract_manifold_final_bivariate_weights(selection_results_path):
     Returns
     -------
     tuple or None
-        ``(mean_weights, features, n_time_bins, selection_metadata)`` where
+        ``(mean_weights, features, n_time_bins, selection_metadata,
+        is_magnitude)`` where
 
-        * ``mean_weights`` is the fold-averaged ``(n_features, n_time_bins,
-          2)`` weight tensor; the trailing axis is the manifold output
-          dimension (index 0 = manifold-x, index 1 = manifold-y),
+        * ``mean_weights`` is the fold-averaged ``(n_features, n_time_bins, 2)``
+          per-coordinate influence tensor (index 0 = manifold-x / θ1, index 1 =
+          manifold-y / θ2). For the euclidean coordinate model these are the raw
+          SIGNED partial weights; for the torus model the raw output is the 4-D
+          ``(sin θ1, cos θ1, sin θ2, cos θ2)`` embedding, collapsed here to the
+          non-negative per-coordinate magnitude ``sqrt(sin^2 + cos^2)``,
         * ``features`` is the ordered list of feature names for the converged
           model (anchor duplicate removed),
-        * ``n_time_bins`` is the behavioural-history bin count, and
+        * ``n_time_bins`` is the behavioural-history bin count,
         * ``selection_metadata`` is the metadata block from
-          ``load_selection_results`` (cohort sexes etc., for pretty labels).
+          ``load_selection_results`` (cohort sexes etc., for pretty labels), and
+        * ``is_magnitude`` is ``True`` for the torus (non-negative magnitude
+          influence) and ``False`` for the euclidean (signed) model, so callers
+          can pick a diverging vs sequential colour scale / bar convention.
 
         Returns ``None`` -- after printing why -- when there are no selection
         steps, no accepted feature step, or the weight block has an
@@ -3879,13 +3878,14 @@ def _extract_manifold_final_bivariate_weights(selection_results_path):
     winner_data = valid_data['candidates_summary'][winner]
 
     raw_weights = np.array(winner_data['folds']['weights'])
-    if raw_weights.ndim != 3 or raw_weights.shape[-1] != 2:
+    if raw_weights.ndim != 3 or raw_weights.shape[-1] not in (2, 4):
         print(
             f"Unexpected weight shape {raw_weights.shape}; expected "
-            f"(n_folds, n_features*n_time_bins, 2). Aborting."
+            f"(n_folds, n_features*n_time_bins, 2) for the euclidean coordinate "
+            f"model or (..., 4) for the torus sin/cos embedding. Aborting."
         )
         return None
-    n_folds, n_total_inputs, _ = raw_weights.shape
+    n_folds, n_total_inputs, output_dim = raw_weights.shape
     n_features = len(features)
     if n_features == 0 or n_total_inputs % n_features != 0:
         print(
@@ -3894,13 +3894,30 @@ def _extract_manifold_final_bivariate_weights(selection_results_path):
         )
         return None
     n_time_bins = n_total_inputs // n_features
-    weights = raw_weights.reshape(n_folds, n_features, n_time_bins, 2)
+    weights = raw_weights.reshape(n_folds, n_features, n_time_bins, output_dim)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
-        mean_weights = np.nanmean(weights, axis=0)
+        mean_weights_raw = np.nanmean(weights, axis=0)   # (n_features, n_time_bins, output_dim)
 
-    return mean_weights, features, n_time_bins, selection_metadata
+    if output_dim == 2:
+        # Euclidean coordinate model: the two columns ARE (manifold-x,
+        # manifold-y); keep them as signed partial weights.
+        mean_weights = mean_weights_raw
+        is_magnitude = False
+    else:
+        # Torus model: the four columns are (sin θ1, cos θ1, sin θ2, cos θ2)
+        # (the `sin_cos_encode` layout). Collapse each coordinate's (sin, cos)
+        # weight pair to its magnitude -- how strongly the feature displaces the
+        # θ1 (manifold-x) / θ2 (manifold-y) circle. A single SIGNED scalar is not
+        # well defined on the circle's tangent, so the per-coordinate influence
+        # is the non-negative magnitude.
+        mag_x = np.sqrt(mean_weights_raw[:, :, 0] ** 2 + mean_weights_raw[:, :, 1] ** 2)
+        mag_y = np.sqrt(mean_weights_raw[:, :, 2] ** 2 + mean_weights_raw[:, :, 3] ** 2)
+        mean_weights = np.stack([mag_x, mag_y], axis=-1)   # (n_features, n_time_bins, 2)
+        is_magnitude = True
+
+    return mean_weights, features, n_time_bins, selection_metadata, is_magnitude
 
 
 def plot_manifold_multivariate_filters(
@@ -3980,8 +3997,12 @@ def plot_manifold_multivariate_filters(
         _extracted = _extract_manifold_final_bivariate_weights(selection_results_path)
         if _extracted is None:
             return
-        mean_weights, features, n_time_bins, _ = _extracted
+        mean_weights, features, n_time_bins, _, is_magnitude = _extracted
         n_features = len(features)
+        # Torus per-coordinate influence is a non-negative magnitude -> a
+        # sequential scale anchored at 0; the euclidean signed weights keep the
+        # diverging `cmap`.
+        _heat_cmap = 'magma' if is_magnitude else cmap
 
         ncols = 3
         nrows = math.ceil(n_features / ncols)
@@ -4010,8 +4031,9 @@ def plot_manifold_multivariate_filters(
                 peak = np.nanmax(np.abs(feat_slice))
             max_amp = float(peak) if np.isfinite(peak) and peak > 0 else 1.0
 
-            ax.imshow(feat_slice, aspect='auto', cmap=cmap,
-                      vmin=-max_amp, vmax=max_amp, interpolation='nearest')
+            _vmin = 0.0 if is_magnitude else -max_amp
+            ax.imshow(feat_slice, aspect='auto', cmap=_heat_cmap,
+                      vmin=_vmin, vmax=max_amp, interpolation='nearest')
 
             tick_times = np.arange(-int(history_window_sec), 1)
             tick_locs = [
@@ -4030,7 +4052,9 @@ def plot_manifold_multivariate_filters(
             ax.set_ylabel("Output dim", color=TEXT_COLOR_LOCAL,
                           fontsize=11, fontweight='bold', labelpad=12)
 
-            ax.set_title(f"{features[i]}\nInfluence: ±{max_amp:.3f}",
+            _amp_label = (f"|Influence|: {max_amp:.3f}" if is_magnitude
+                          else f"Influence: ±{max_amp:.3f}")
+            ax.set_title(f"{features[i]}\n{_amp_label}",
                          color=TEXT_COLOR_LOCAL, fontsize=11,
                          fontweight='bold', pad=14)
 
@@ -4043,16 +4067,26 @@ def plot_manifold_multivariate_filters(
                            labelbottom=True, color=TEXT_COLOR_LOCAL, length=4)
 
         cbar_ax = fig.add_axes([0.92, 0.3, 0.012, 0.4])
-        sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=-1, vmax=1))
-        cbar = fig.colorbar(sm, cax=cbar_ax)
-        cbar.set_label(
-            'Per-feature partial weight (blue: -axis | red: +axis)',
-            color=TEXT_COLOR_LOCAL, fontsize=11, labelpad=12,
-        )
+        if is_magnitude:
+            sm = plt.cm.ScalarMappable(cmap=_heat_cmap, norm=plt.Normalize(vmin=0, vmax=1))
+            cbar = fig.colorbar(sm, cax=cbar_ax)
+            cbar.set_label(
+                'Per-feature influence magnitude (0 -> strong)',
+                color=TEXT_COLOR_LOCAL, fontsize=11, labelpad=12,
+            )
+            cbar.set_ticks([0, 1])
+            cbar.ax.set_yticklabels(['0', 'max'], color=TEXT_COLOR_LOCAL)
+        else:
+            sm = plt.cm.ScalarMappable(cmap=_heat_cmap, norm=plt.Normalize(vmin=-1, vmax=1))
+            cbar = fig.colorbar(sm, cax=cbar_ax)
+            cbar.set_label(
+                'Per-feature partial weight (blue: -axis | red: +axis)',
+                color=TEXT_COLOR_LOCAL, fontsize=11, labelpad=12,
+            )
+            cbar.set_ticks([-1, 0, 1])
+            cbar.ax.set_yticklabels(['-', '0', '+'], color=TEXT_COLOR_LOCAL)
         cbar.ax.yaxis.set_tick_params(color=TEXT_COLOR_LOCAL,
                                       labelcolor=TEXT_COLOR_LOCAL)
-        cbar.set_ticks([-1, 0, 1])
-        cbar.ax.set_yticklabels(['-', '0', '+'], color=TEXT_COLOR_LOCAL)
 
         if save_plot:
             path_str = str(selection_results_path).lower()
@@ -4138,7 +4172,7 @@ def plot_manifold_last_bin_filters(
     extracted = _extract_manifold_final_bivariate_weights(selection_results_path)
     if extracted is None:
         return
-    mean_weights, features, n_time_bins, selection_metadata = extracted
+    mean_weights, features, n_time_bins, selection_metadata, is_magnitude = extracted
     _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
 
     # Most-recent history bin (t ~ 0, immediately before USV onset): the
@@ -4176,11 +4210,16 @@ def plot_manifold_last_bin_filters(
     ax.set_yticks(y_pos)
     ax.set_yticklabels(labels, color=TEXT_COLOR, fontsize=10)
     ax.set_ylim(-0.7, n_features - 0.3)
-    ax.set_xlabel(
-        "Partial weight at t ≈ 0 (most-recent history bin)\n"
-        "− pushes toward −axis      +  pushes toward +axis",
-        color=TEXT_COLOR, fontsize=11, labelpad=8,
-    )
+    if is_magnitude:
+        # Torus: per-coordinate influence is the non-negative magnitude of the
+        # (sin, cos) weight pair -- sign is not a well-defined scalar on the
+        # circle's tangent.
+        _xlabel = ("Influence magnitude at t ≈ 0 (most-recent history bin)\n"
+                   "how strongly the feature displaces each torus coordinate")
+    else:
+        _xlabel = ("Partial weight at t ≈ 0 (most-recent history bin)\n"
+                   "− pushes toward −axis      +  pushes toward +axis")
+    ax.set_xlabel(_xlabel, color=TEXT_COLOR, fontsize=11, labelpad=8)
     ax.set_title(
         "Instantaneous behavioural drive on torus position\n"
         "(converged multivariate manifold model, final history bin)",

@@ -1247,6 +1247,9 @@ def _manifold_candidate(rng, n_folds: int = 6) -> dict:
                 'r2_spatial': rng.uniform(0.05, 0.4, size=n_folds),
                 'pearson_y': rng.uniform(0.1, 0.5, size=n_folds),
                 'euclidean_mae': rng.uniform(0.5, 1.5, size=n_folds),
+                # Torus selection score: a log-likelihood living near the
+                # baseline draw (~-3.6), NOT anchored at 0.
+                'vm_logscore': rng.uniform(-3.8, -3.5, size=n_folds),
             },
         },
     }
@@ -1330,6 +1333,27 @@ class TestPlotManifoldSelectionTrajectory:
         )
         assert len(list(out_dir.glob(f"manifold_selection_trajectory_*_euclidean_mae_*.{_FIGURE_FORMAT}"))) == 1
 
+    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+    def test_vm_logscore_anchors_at_baseline_not_zero(self, tmp_path):
+        """``vm_logscore`` is a log-likelihood (~-3.6), not anchored at 0. The
+        trajectory must anchor it at the step-0 baseline so the bars fall inside
+        the data range; with the old ``chance = 0`` logic the x-axis spanned
+        0 -> -3.6 (right edge ~0) and the panel rendered empty. Assert the
+        left-panel x-limits both sit in the vm_logscore range."""
+
+        rng = np.random.default_rng(71)
+        pkl = _write_manifold_selection_pickle(tmp_path, rng)
+        plot_manifold_selection_trajectory(
+            selection_results_path=pkl,
+            metric_primary='vm_logscore',
+            primary_metric_name='von Mises log-score',
+            metric_secondary='euclidean_mae',
+            secondary_metric_name='torus MAE',
+            save_plot=False,
+        )
+        x_lo, x_hi = plt.gcf().axes[0].get_xlim()
+        assert max(x_lo, x_hi) < -3.0
+
 
 def _write_multinomial_multivariate_pickle(tmp_path, rng, n_classes: int = 3,
                                            n_features: int = 3,
@@ -1392,7 +1416,8 @@ class TestPlotMultinomialMultivariateFilters:
 
 
 def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
-                                        n_time: int = 12, n_folds: int = 5) -> str:
+                                        n_time: int = 12, n_folds: int = 5,
+                                        output_dim: int = 2) -> str:
     """
     Write a synthetic consolidated manifold ``selection_*.pkl`` whose
     final accepted step carries the raw bivariate weight block, for
@@ -1401,8 +1426,11 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
     The final accepted step exposes ``selected_feature``,
     ``current_features`` (the non-anchor features), and
     ``candidates_summary[winner]['folds']['weights']`` shaped
-    ``(n_folds, n_features * n_time, 2)`` — the 2 being the manifold
-    output dimension. A trailing rejection step is appended.
+    ``(n_folds, n_features * n_time, output_dim)``. ``output_dim=2`` is the
+    euclidean coordinate model (signed manifold-x/y); ``output_dim=4`` is the
+    torus sin/cos embedding ``(sin θ1, cos θ1, sin θ2, cos θ2)``, which the
+    plotters collapse to per-coordinate magnitude. A trailing rejection step is
+    appended.
 
     Returns
     -------
@@ -1416,7 +1444,7 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
     # `features` inside the plotter = current + [winner]; weight columns
     # must equal len(features) * n_time.
     n_total = len(feats) * n_time
-    weights = rng.standard_normal((n_folds, n_total, 2))
+    weights = rng.standard_normal((n_folds, n_total, output_dim))
     accepted = {
         'selected_feature': winner,
         'current_features': current,
@@ -1466,6 +1494,39 @@ class TestPlotManifoldMultivariateFilters:
             save_plot=True,
             output_dir=str(out_dir),
             feature_label_overrides={'self.speed': 'male speed'},
+        )
+        assert len(list(out_dir.glob(f"model_selection_manifold_*_filters_last_bin_*.{_FIGURE_FORMAT}"))) == 1
+
+    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+    def test_writes_torus_atlas_from_4d_sincos(self, tmp_path):
+        """The torus regressor emits a 4-D ``(sin θ, cos θ)`` weight block; the
+        atlas must collapse it to per-coordinate magnitude and still render
+        (rather than aborting on the non-2 output dim)."""
+
+        rng = np.random.default_rng(83)
+        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4)
+        out_dir = tmp_path / "mfmv_torus_out"
+        out_dir.mkdir()
+        plot_manifold_multivariate_filters(
+            selection_results_path=pkl,
+            save_plot=True,
+            output_dir=str(out_dir),
+        )
+        assert len(list(out_dir.glob(f"model_selection_manifold_*_filters_final_*.{_FIGURE_FORMAT}"))) == 1
+
+    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+    def test_writes_torus_last_bin_from_4d_sincos(self, tmp_path):
+        """The last-bin summary renders from the 4-D torus weight block, using
+        the non-negative per-coordinate magnitude."""
+
+        rng = np.random.default_rng(84)
+        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4)
+        out_dir = tmp_path / "mflb_torus_out"
+        out_dir.mkdir()
+        plot_manifold_last_bin_filters(
+            selection_results_path=pkl,
+            save_plot=True,
+            output_dir=str(out_dir),
         )
         assert len(list(out_dir.glob(f"model_selection_manifold_*_filters_last_bin_*.{_FIGURE_FORMAT}"))) == 1
 
