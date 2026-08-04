@@ -15,6 +15,8 @@
     "dpi": 300,
     "timestamp_in_name": true,
     "cmap": "inferno",
+    "diverging_cmap": "RdBu_r",
+    "sequential_cmap": "magma",
     "seed": 0
   },
   "shared_resources": {
@@ -25,6 +27,7 @@
   "male_colors": ["#9AC0CD", "#8CA252"],
   "female_colors": ["#FF6347", "#B851B4"],
   "social_colors": ["#5A6470"],
+  "manifold_colors": ["#7B3FA0", "#C8860A"],
   "unassigned_colors": ["#C0C0C0"],
   "brain_area_colors": {
     "PAG": "#677470",

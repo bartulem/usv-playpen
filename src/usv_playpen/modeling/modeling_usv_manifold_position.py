@@ -551,6 +551,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         'spearman_x', 'spearman_y',
         'dcor_xy',
         'vm_logscore',
+        'vm_logscore_pooled',
     }
     higher_is_better = inner_cv_scoring_metric in higher_is_better_metrics
 
@@ -1722,6 +1723,7 @@ class ContinuousModelRunner:
             'spearman_y',
             'dcor_xy',
             'vm_logscore',
+            'vm_logscore_pooled',
         ]
 
         results = {}
@@ -2193,7 +2195,7 @@ class ContinuousModelRunner:
         # accordingly.
         higher_is_better = {
             'r2_spatial', 'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y',
-            'dcor_xy', 'vm_logscore',
+            'dcor_xy', 'vm_logscore', 'vm_logscore_pooled',
         }
 
         print("\n" + "=" * 90)

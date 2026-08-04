@@ -73,6 +73,8 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
 * **dpi** : default raster resolution applied to every ``fig.savefig`` callsite that goes through ``visualizations.figure_io.save_figure``.
 * **timestamp_in_name** : when ``true``, ``_YYYYMMDD_HHMMSS`` is appended to figure stems by default. Session-bound figures opt out of this with ``timestamp_in_name=false`` since their filenames already embed a session id or unit id.
 * **cmap** : default matplotlib colormap used by every heatmap / ratemap callsite (one of ``viridis``, ``cividis``, ``plasma``, ``inferno``, ``magma``); the ``make_behavioral_videos`` spectrogram subplot and the ``qlvm_torus_traversal_video`` spectrogram tiles also read it.
+* **diverging_cmap** : the diverging (blue-white-red) colormap for **signed** modeling-filter figures — the per-feature filter atlases, the selection-trajectory difference maps, and the ``e(theta).W`` torus-tuning field (``plot_manifold_torus_tuning``). Any Matplotlib diverging map (``RdBu_r``, ``coolwarm``, ``bwr``, …).
+* **sequential_cmap** : the sequential colormap for **non-negative magnitude** modeling-filter figures (the torus per-coordinate influence-magnitude atlas). Any Matplotlib sequential map (``magma``, ``viridis``, …).
 * **seed** : random seed for figure-side stochastic operations, for reproducibility.
 
 .. code-block:: json
@@ -83,6 +85,8 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
         "dpi": 300,
         "timestamp_in_name": true,
         "cmap": "inferno",
+        "diverging_cmap": "RdBu_r",
+        "sequential_cmap": "magma",
         "seed": 0
     }
 
@@ -96,6 +100,7 @@ maps.
 
 * **male_colors** / **female_colors** / **unassigned_colors** : per-emitter USV colours (male / female / no-emitter-assigned), used by the USV-timeline, spectrogram-overlay, embedding-scatter and modeling figures.
 * **social_colors** : the single colour for social / dyadic features (e.g. the social-feature ratemaps and the timescale-audit "social" trace).
+* **manifold_colors** : the two torus output-coordinate colours (manifold-x / manifold-y, index ``0`` / ``1``) for the last-bin manifold-filter bars; deliberately far from the male / female / social colours so a manifold axis never reads as an animal identity.
 * **brain_area_colors** : per-brain-region palette (a seven-bucket map: ``PAG`` / ``MRN`` / ``VTA`` / ``SC`` / ``CENT`` / ``MB`` / ``other``) shared by the behavioral-video overlays and the anatomy / tuning figures.
 * **cell_type_colors** : the mono-grey triad for the per-mouse cell-type stacked bars in the anatomy figures.
 * **coactivity_colors** : the ``group_a`` / ``group_b`` / ``null`` / ``threshold`` colours for the neuronal-coactivity figures (also the defaults the coactivity notebook may override inline).

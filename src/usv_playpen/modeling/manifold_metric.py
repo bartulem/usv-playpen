@@ -706,7 +706,8 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         ``euclidean_rmse``, ``euclidean_mae_weighted``, ``euclidean_mae_raw``,
         ``mahalanobis_mae``, ``mae_x``, ``mae_y``, ``pearson_x``,
         ``pearson_y``, ``spearman_x``, ``spearman_y``, ``dcor_xy``,
-        ``vm_logscore``.
+        ``vm_logscore`` (macro / region-balanced) and ``vm_logscore_pooled``
+        (the micro / event-weighted twin; both ``nan`` on euclidean).
     """
 
     Y_true = np.asarray(Y_true, dtype=np.float64)
@@ -759,12 +760,25 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
             Y_pred, Y_true, region_labels,
             metric=metric, period=period, min_region_events=min_region_events,
         )
+        # Pooled (micro) twin of the macro selection score: the SAME per-event
+        # von Mises densities (identical residuals and internally-fit kappa)
+        # averaged over all events with equal per-event weight, instead of
+        # macro-averaged with equal weight per acoustic region. Selected by
+        # passing `region_labels=None`. Logging both, per candidate, lets a
+        # macro-driven forward selection be checked against the feature a micro
+        # (event-weighted) objective would have preferred at each step -- at no
+        # extra model fit, since it only re-averages densities already computed.
+        vm_logscore_pooled = macro_von_mises_logscore(
+            Y_pred, Y_true, None,
+            metric=metric, period=period, min_region_events=min_region_events,
+        )
         dcor_xy = float('nan')
     else:
         dcor_xy = dcor_prediction_truth(
             Y_pred, Y_true, metric=metric, period=period, random_state=random_state,
         )
         vm_logscore = float('nan')
+        vm_logscore_pooled = float('nan')
 
     # ss_res reuses the already-computed per-row squared Euclidean distance
     # (euclidean_dist == sqrt(dx**2 + dy**2)), so squaring it recovers
@@ -791,6 +805,7 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         'spearman_y': _spear(Y_true[:, 1], Y_pred[:, 1]),
         'dcor_xy': dcor_xy,
         'vm_logscore': vm_logscore,
+        'vm_logscore_pooled': vm_logscore_pooled,
     }
 
 
@@ -1093,3 +1108,61 @@ def resolve_manifold_metric(modeling_settings: dict) -> tuple:
     period = float(voc['usv_manifold_period'])
     _validate_metric_period(metric, period)
     return metric, period
+
+
+def resolve_manifold_selection_score_key(modeling_settings: dict, metric: str) -> str:
+    """
+    Resolves the forward-selection objective key for the given manifold geometry.
+
+    The greedy forward-selection ranking and its fold-grain acceptance gate score
+    each candidate on a single geometry-specific key. On euclidean this is always
+    the wrap-aware distance correlation ``dcor_xy``. On the torus it is one of the
+    two von Mises log-scores, chosen by the optional
+    ``vocal_features.usv_manifold_selection_score`` knob:
+
+    * ``'macro'`` (default) -> ``'vm_logscore'``, the region-balanced (equal
+      weight per acoustic region) score that rewards a feature for rescuing rare,
+      badly-predicted regions;
+    * ``'micro'`` -> ``'vm_logscore_pooled'``, the event-weighted (equal weight
+      per event) pooled twin.
+
+    Both keys are always present in the per-fold metric bundle (the pooled twin is
+    logged for free alongside the macro objective), so switching the objective is
+    purely a change of which column drives selection — the candidate pool, the
+    region-reweighted fit, and every other reported metric are unchanged. The knob
+    is optional: an absent key resolves to ``'macro'`` (the historical behaviour),
+    matching the additive convention used for ``usv_manifold_geodesic_metrics``
+    rather than the strict access of :func:`resolve_manifold_metric` (a core key).
+
+    Parameters
+    ----------
+    modeling_settings : dict
+        Fully loaded ``modeling_settings.json``.
+    metric : str
+        The resolved manifold geometry (``'torus'`` or ``'euclidean'``), e.g. from
+        :func:`resolve_manifold_metric`.
+
+    Returns
+    -------
+    str
+        The metric-bundle key the selection ranks on: ``'dcor_xy'`` on euclidean,
+        or ``'vm_logscore'`` / ``'vm_logscore_pooled'`` on the torus.
+
+    Raises
+    ------
+    ValueError
+        If ``usv_manifold_selection_score`` is present but not ``'macro'`` or
+        ``'micro'``.
+    """
+
+    voc = modeling_settings['vocal_features']
+    if metric != 'torus':
+        return 'dcor_xy'
+    mode = (voc['usv_manifold_selection_score']
+            if 'usv_manifold_selection_score' in voc else 'macro')
+    if mode not in ('macro', 'micro'):
+        raise ValueError(
+            f"vocal_features.usv_manifold_selection_score must be 'macro' or "
+            f"'micro'; got {mode!r}."
+        )
+    return 'vm_logscore_pooled' if mode == 'micro' else 'vm_logscore'

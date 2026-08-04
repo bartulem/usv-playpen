@@ -49,6 +49,7 @@ from .manifold_metric import (
     dcor_prediction_truth,
     manifold_prediction_metrics,
     resolve_manifold_metric,
+    resolve_manifold_selection_score_key,
     signed_diff,
     macro_von_mises_logscore,
     inverse_region_frequency_weights,
@@ -4753,10 +4754,17 @@ def continuous_vocal_manifold_model_selection(
     # per-fold paired margin) the accept gate; on both geometries it is
     # screened against the within-session `null` (see SCREEN_BASELINE_STRATEGY).
     _selection_manifold_metric, _selection_manifold_period = resolve_manifold_metric(settings)
-    # Honestly-named, geometry-specific selection key: the torus selects on the
-    # von Mises log-score (`vm_logscore`), euclidean on distance correlation
-    # (`dcor_xy`). The inactive key is NaN in every metric bundle.
-    SELECTION_SCORE_KEY = 'vm_logscore' if _selection_manifold_metric == 'torus' else 'dcor_xy'
+    # Honestly-named, geometry-specific selection key: the torus selects on a
+    # von Mises log-score, euclidean on distance correlation (`dcor_xy`). On the
+    # torus the `vocal_features.usv_manifold_selection_score` knob chooses the
+    # region-balanced `vm_logscore` (macro, default) or the event-weighted
+    # `vm_logscore_pooled` (micro) twin; both are always present in the bundle, so
+    # switching only changes which column drives the greedy ranking and the
+    # accept gate (the candidate pool and the region-reweighted fit are
+    # unchanged). The inactive key is NaN in every metric bundle.
+    SELECTION_SCORE_KEY = resolve_manifold_selection_score_key(
+        settings, _selection_manifold_metric
+    )
     # The screen tests `actual` against the within-session-shuffle `null`
     # baseline on BOTH geometries: the shuffle preserves session-level structure
     # and destroys the trial-level X->Y pairing, so beating it isolates genuine
@@ -5281,6 +5289,7 @@ def continuous_vocal_manifold_model_selection(
         'spearman_y',
         'dcor_xy',
         'vm_logscore',
+        'vm_logscore_pooled',
         'density_geodesic_mae',
         'pullback_geodesic_mae',
     ]

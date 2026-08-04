@@ -128,8 +128,11 @@ def _manual_closed_form(X, Y, sample_weight, n_features, n_time_bins,
     penalty_s = block if n_features == 1 else block_diag(*([block] * n_features))
 
     x_cw = x_c * w[:, None]
-    a_mat = x_cw.T @ x_c + l2_reg * np.eye(X.shape[1]) + lambda_smooth * penalty_s
-    coef = np.linalg.solve(a_mat, x_cw.T @ e_c)
+    # Data term normalised to a weighted MEAN (divide by the effective sample
+    # count), mirroring the estimator so `l2_reg` / `lambda_smooth` are
+    # per-observation and n-independent.
+    a_mat = (x_cw.T @ x_c) / w_sum + l2_reg * np.eye(X.shape[1]) + lambda_smooth * penalty_s
+    coef = np.linalg.solve(a_mat, (x_cw.T @ e_c) / w_sum)
     intercept = e_mean - x_mean @ coef
     return coef, intercept
 
@@ -170,6 +173,33 @@ def test_closed_form_matches_normal_equations():
     )
     np.testing.assert_allclose(model.coef_, coef_ref, atol=1e-10, rtol=0)
     np.testing.assert_allclose(model.intercept_, intercept_ref, atol=1e-10, rtol=0)
+
+
+def test_smoothing_is_sample_count_invariant():
+    """The data term is a weighted MEAN, so a given ``lambda_smooth`` yields the
+    SAME fitted filter regardless of how many identically-distributed samples are
+    present: duplicating every event leaves ``coef_`` unchanged. This is the
+    regression guard for the sample-count normalisation — before it, the summed
+    data term scaled with ``n`` while the penalty did not, so doubling the data
+    halved the effective smoothing (``lambda_smooth / n``) and moved the solution
+    toward a rougher filter, which is exactly why the shared tuning grid was
+    ~``n``-times too weak on the real (~20k-event) data."""
+
+    n_features, n_time_bins = 2, 6
+    rng = np.random.default_rng(7)
+    X = rng.standard_normal((180, n_features * n_time_bins))
+    Y = rng.random((180, 2)) % 1.0
+    sw = rng.uniform(0.4, 2.0, size=180)
+
+    kw = _torus_kwargs(n_features, n_time_bins, l2_reg=0.02, lambda_smooth=25.0,
+                       smoothness_derivative_order=2)
+    single = SmoothTorusManifoldRegression(**kw).fit(X, Y, sample_weight=sw)
+    doubled = SmoothTorusManifoldRegression(**kw).fit(
+        np.vstack([X, X]), np.vstack([Y, Y]),
+        sample_weight=np.concatenate([sw, sw]),
+    )
+    np.testing.assert_allclose(single.coef_, doubled.coef_, atol=1e-9, rtol=0)
+    np.testing.assert_allclose(single.intercept_, doubled.intercept_, atol=1e-9, rtol=0)
 
 
 def test_fit_contract_and_shapes():

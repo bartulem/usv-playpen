@@ -45,6 +45,7 @@ import warnings
 from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+import matplotlib.patheffects as mpe
 import matplotlib.transforms as mtransforms
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Patch, Rectangle
@@ -90,8 +91,11 @@ NEUTRAL_COLOR = "#D3D3D3"
 MEAN_LINE_COLOR = '#DCB400'
 TEXT_COLOR = '#202020'
 REFERENCE_LINE_COLOR = "#808080"    # dashed zero / chance reference lines (was 'gray')
-MANIFOLD_X_COLOR = '#2C7FB8'        # manifold-x (torus output dim 0) bars in the last-bin filter summary
-MANIFOLD_Y_COLOR = '#E6550D'        # manifold-y (torus output dim 1) bars in the last-bin filter summary
+# Torus output-coordinate colours (manifold-x / manifold-y). Read from
+# ``manifold_colors`` in visualizations_settings.json; chosen far from the male /
+# female / social animal colours so neither manifold axis reads as an identity.
+MANIFOLD_X_COLOR = _VIZ_SETTINGS["manifold_colors"][0]        # manifold-x (torus output dim 0)
+MANIFOLD_Y_COLOR = _VIZ_SETTINGS["manifold_colors"][1]        # manifold-y (torus output dim 1)
 
 # Timescale-audit palette overrides: zero / axis lines stay black, so
 # social/dyadic gets the canonical social colour (distinct from the
@@ -103,6 +107,11 @@ TIMESCALE_NULL_COLOR = "#808080"   # circular-shift null fill / envelope (was 'g
 # Global default colormap — shared with `figures.cmap` so the
 # multinomial / continuous heatmap defaults match the rest of the repo.
 _GLOBAL_CMAP = _VIZ_SETTINGS["figures"]["cmap"]
+# Colormaps for the modeling filter figures, read from settings so nothing is
+# hard-coded: `diverging` for signed filter / tuning fields (blue-white-red),
+# `sequential` for non-negative magnitude fields.
+_DIVERGING_CMAP = _VIZ_SETTINGS["figures"]["diverging_cmap"]
+_SEQUENTIAL_CMAP = _VIZ_SETTINGS["figures"]["sequential_cmap"]
 
 # Global figure resolution and RNG seed, read from the same `figures` block so
 # the output dpi and any cosmetic randomness are configured in one place rather
@@ -1839,7 +1848,7 @@ def plot_univariate_multinomial_performance(
         secondary_metric_name: str = 'Balanced Accuracy',
         p_val_threshold: float = 0.01,
         base_cmap: str = 'mako',
-        diff_cmap: str = 'RdBu_r',
+        diff_cmap: str = _DIVERGING_CMAP,
         save_plot: bool = False,
         output_dir: str = None
 ) -> None:
@@ -2142,7 +2151,7 @@ def plot_univariate_multinomial_filters_grid(
         evaluation_metric: str = 'll',
         p_val_threshold: float = 0.01,
         history_window_sec: float = 4.0,
-        cmap: str = 'RdBu_r',
+        cmap: str = _DIVERGING_CMAP,
         save_plot: bool = False,
         output_dir: str = None
 ) -> None:
@@ -2840,7 +2849,7 @@ def plot_multinomial_selection_trajectory(
 def plot_multinomial_multivariate_filters(
         selection_results_path: str,
         history_window_sec: float = 4.0,
-        cmap: str = 'RdBu_r',
+        cmap: str = _DIVERGING_CMAP,
         save_plot: bool = False,
         output_dir: str = None
 ) -> None:
@@ -3472,8 +3481,11 @@ def plot_manifold_selection_trajectory(
     # torus `vm_logscore` lives around the baseline empirical-density draw
     # (~-3.68), so it must anchor at the step-0 baseline. Anchoring it at 0 makes
     # the bars span 0 -> -3.6 with ~0.02 tips, which drives the auto-scaled
-    # x-axis off the data and renders the whole trajectory panel empty.
-    baseline_anchored_higher = {'vm_logscore'}
+    # x-axis off the data and renders the whole trajectory panel empty. Its micro
+    # (event-weighted) twin `vm_logscore_pooled` — the selection objective when
+    # `usv_manifold_selection_score = 'micro'` — lives on the same scale and is
+    # anchored the same way.
+    baseline_anchored_higher = {'vm_logscore', 'vm_logscore_pooled'}
 
     def _fold_mean(folds_metrics: dict, key: str) -> float:
         if not folds_metrics or key not in folds_metrics:
@@ -3825,7 +3837,8 @@ def plot_manifold_selection_trajectory(
     plt.show()
 
 
-def _extract_manifold_final_bivariate_weights(selection_results_path):
+def _extract_manifold_final_bivariate_weights(selection_results_path,
+                                              collapse_magnitude: bool = True):
     """
     Load the converged multivariate manifold (bivariate-regression) model
     from a ``continuous_vocal_manifold_model_selection`` artifact and return
@@ -3847,6 +3860,13 @@ def _extract_manifold_final_bivariate_weights(selection_results_path):
         consolidated ``model_selection_final_*.pkl`` artifact, or a directory
         containing one (latest mtime wins). Passed straight to
         ``load_selection_results``.
+    collapse_magnitude : bool, default True
+        When True (the historical behaviour used by the temporal atlas and the
+        last-bin summary), a torus ``(sin, cos)`` weight pair is collapsed to its
+        non-negative per-coordinate magnitude. When False, the raw signed
+        per-coordinate weights are returned unchanged (2 columns on euclidean, 4
+        on the torus) for callers that need the signed filter itself -- e.g. the
+        ``e(theta).W`` torus-tuning field; ``is_magnitude`` is then always False.
 
     Returns
     -------
@@ -3924,6 +3944,14 @@ def _extract_manifold_final_bivariate_weights(selection_results_path):
         warnings.simplefilter("ignore", category=RuntimeWarning)
         mean_weights_raw = np.nanmean(weights, axis=0)   # (n_features, n_time_bins, output_dim)
 
+    if not collapse_magnitude:
+        # Return the RAW per-coordinate signed weights (2 columns for the
+        # euclidean coordinate model, 4 for the torus ``(sin,cos)`` embedding),
+        # for callers that need the signed filter itself rather than its
+        # magnitude -- e.g. the ``e(theta).W`` torus-tuning field, which decodes
+        # the final-bin 4-vector over the torus. ``is_magnitude`` is False.
+        return mean_weights_raw, features, n_time_bins, selection_metadata, False
+
     if output_dim == 2:
         # Euclidean coordinate model: the two columns ARE (manifold-x,
         # manifold-y); keep them as signed partial weights.
@@ -3947,7 +3975,7 @@ def _extract_manifold_final_bivariate_weights(selection_results_path):
 def plot_manifold_multivariate_filters(
         selection_results_path: str,
         history_window_sec: float = 4.0,
-        cmap: str = 'RdBu_r',
+        cmap: str = _DIVERGING_CMAP,
         save_plot: bool = False,
         output_dir: str = None,
 ) -> None:
@@ -4026,7 +4054,7 @@ def plot_manifold_multivariate_filters(
         # Torus per-coordinate influence is a non-negative magnitude -> a
         # sequential scale anchored at 0; the euclidean signed weights keep the
         # diverging `cmap`.
-        _heat_cmap = 'magma' if is_magnitude else cmap
+        _heat_cmap = _SEQUENTIAL_CMAP if is_magnitude else cmap
 
         ncols = 3
         nrows = math.ceil(n_features / ncols)
@@ -4272,6 +4300,321 @@ def plot_manifold_last_bin_filters(
         fname = _figure_filename(f"model_selection_manifold_{condition}_filters_last_bin")
         fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches='tight')
         print(f"Manifold last-bin filters plot saved to: {out_dir / fname}")
+
+    plt.show()
+
+
+def plot_manifold_filter_magnitude(
+        selection_results_path: str,
+        history_window_sec: float = None,
+        display_bins: int = 25,
+        save_plot: bool = False,
+        output_dir: str = None,
+        feature_label_overrides: dict = None,
+) -> None:
+    """
+    Per-feature temporal filter-magnitude profile of the converged multivariate
+    manifold model: one line per selected feature, ``|W(t)|`` versus time prior
+    to USV onset.
+
+    Purpose
+    -------
+    This is the "absolute importance through time" view. For each feature the
+    fold-averaged filter is collapsed to a single non-negative magnitude per time
+    bin — the L2 norm across the manifold output coordinates
+    (``sqrt(sum_k W_k(t)^2)``: on the torus this combines the two per-coordinate
+    ``(sin, cos)`` magnitudes, on euclidean the two signed partial weights) — and
+    plotted as a line, so the temporal envelope of each feature's drive is
+    directly comparable across features.
+
+    Because the underlying model is fit at 150 fps (``n_time_bins`` per-frame
+    weights over the history window), the raw magnitude line carries sub-0.1 s
+    structure that is mostly fit variance; the filter is therefore averaged into
+    ``display_bins`` equal-width **display** bins (a plotting choice only — the
+    model is unchanged) so the medium-scale envelope reads cleanly. The signed
+    filter itself is a smooth low-frequency shape once the smoothness prior is on
+    the correct (per-observation) scale; the residual magnitude ripple is the
+    rectification of that smooth signed filter plus fit noise.
+
+    Parameters
+    ----------
+    selection_results_path : str
+        Path to the consolidated ``model_selection_final_*.pkl`` artifact
+        produced by ``continuous_vocal_manifold_model_selection`` (or a directory
+        containing one; latest mtime wins). Routed through ``configure_path``.
+    history_window_sec : float, optional
+        Duration of the behavioural-history window (labels the time axis: bin 0
+        is ``-history_window_sec`` s, the last bin is ``t ~ 0``). ``None``
+        (default) reads it from the artifact's ``filter_history_seconds``
+        provenance, falling back to 4.0 s only for a legacy artifact.
+    display_bins : int, default 25
+        Number of equal-width display bins the ``n_time_bins`` filter magnitude
+        is averaged into for plotting (``0`` or ``None`` -> plot every model bin
+        raw). The model itself is never re-binned; this only smooths the display.
+    save_plot : bool, default False
+        If True, writes the figure (format / timestamp per the shared figure
+        settings).
+    output_dir : str, optional
+        Directory for saving; defaults to the parent dir of
+        ``selection_results_path`` (or the path itself if a directory).
+    feature_label_overrides : dict, optional
+        ``{raw_feature_name: display_label}`` overrides; unmapped names fall back
+        to ``FeatureZoo.resolve_feature_label`` with the cohort sexes from the
+        artifact metadata, matching the other selection plotters.
+
+    Returns
+    -------
+    None
+        Displays (and optionally saves) the Matplotlib figure.
+    """
+
+    selection_results_path = configure_path(str(selection_results_path))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
+
+    extracted = _extract_manifold_final_bivariate_weights(selection_results_path)
+    if extracted is None:
+        return
+    mean_weights, features, n_time_bins, selection_metadata, _ = extracted
+    _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
+
+    # Resolve the history-window duration from the artifact metadata rather than
+    # hard-coding it; fall back to 4.0 s only for a legacy artifact that predates
+    # the `filter_history_seconds` provenance field.
+    if history_window_sec is None:
+        _im = (selection_metadata['_input_metadata']
+               if selection_metadata and '_input_metadata' in selection_metadata else {})
+        history_window_sec = (float(_im['filter_history_seconds'])
+                              if 'filter_history_seconds' in _im else 4.0)
+
+    # Overall per-feature magnitude at each time bin: L2 norm across the output
+    # coordinates (the two per-coordinate magnitudes on the torus, the two signed
+    # partial weights on euclidean).
+    magnitude = np.sqrt(np.sum(mean_weights ** 2, axis=-1))   # (n_features, n_time_bins)
+    times = np.linspace(-float(history_window_sec), 0.0, n_time_bins)
+
+    n_disp = int(display_bins) if display_bins else n_time_bins
+    n_disp = max(1, min(n_disp, n_time_bins))
+    edges = np.linspace(0, n_time_bins, n_disp + 1).astype(int)
+    t_ctr = np.array([times[edges[k]:edges[k + 1]].mean() for k in range(n_disp)])
+
+    # Colour each feature's line by its behavioural category -- self (male/female
+    # by cohort), partner, or dyadic/social -- reusing the repo's animal/social
+    # palette; features sharing a category are separated by OPACITY only (never a
+    # new colour), so the category stays readable. Mirrors the trajectory
+    # plotter's `_category_color` convention.
+    _path_l = str(selection_results_path).lower()
+    if '_female_' in _path_l:
+        self_col, other_col = female_color, male_color
+    else:
+        self_col, other_col = male_color, female_color
+    _dyadic_kw = ("nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
+                  "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                  "allo_pitch-nose", "nose-allo_pitch", "allo_pitch-TTI",
+                  "TTI-allo_pitch")
+
+    def _cat_color(fname: str) -> str:
+        if any(_kw in fname for _kw in _dyadic_kw):
+            return DYADIC_COLOR
+        if '-sei' in fname or fname.startswith('self.') or 'self' in fname:
+            return self_col
+        return other_col
+
+    base_colors = [_cat_color(f) for f in features]
+    _counts = {c: base_colors.count(c) for c in set(base_colors)}
+    _seen: dict = {}
+    alphas = []
+    for _c in base_colors:
+        _k = _seen.get(_c, 0)
+        _seen[_c] = _k + 1
+        _n = _counts[_c]
+        alphas.append(1.0 if _n == 1 else 1.0 - 0.55 * (_k / (_n - 1)))
+
+    fig, ax = plt.subplots(figsize=(9.5, 5.4), dpi=_FIGURE_DPI)
+    fig.patch.set_facecolor('#FFFFFF')
+    ax.set_facecolor('#FFFFFF')
+    for i in range(len(features)):
+        mag = magnitude[i]
+        coarse = np.array([mag[edges[k]:edges[k + 1]].mean() for k in range(n_disp)])
+        ax.plot(t_ctr, coarse, lw=2.2, marker='o', markersize=4,
+                color=base_colors[i], alpha=alphas[i],
+                label=_pretty(features[i]), zorder=3)
+
+    ax.axvline(0.0, color=REFERENCE_LINE_COLOR, lw=0.9, ls='--', zorder=1)
+    ax.set_xlabel("time prior to USV onset (s)", color=TEXT_COLOR, fontsize=13, labelpad=8)
+    ax.set_ylabel("filter magnitude |W(t)|", color=TEXT_COLOR, fontsize=13, labelpad=8)
+    ax.set_ylim(bottom=0.0)
+    for side in ('top', 'right'):
+        ax.spines[side].set_visible(False)
+    for side in ('bottom', 'left'):
+        ax.spines[side].set_edgecolor('#000000')
+        ax.spines[side].set_linewidth(1.0)
+    ax.tick_params(axis='both', labelsize=11, color='#000000', labelcolor=TEXT_COLOR)
+    ax.legend(fontsize=10, frameon=False)
+    fig.tight_layout()
+
+    if save_plot:
+        path_str = str(selection_results_path).lower()
+        condition = 'male_mute_partner' if 'male_mute_partner' in path_str else \
+            ('female' if 'female' in path_str else 'male')
+        _fallback = pathlib.Path(selection_results_path)
+        if _fallback.is_file():
+            _fallback = _fallback.parent
+        out_dir = pathlib.Path(output_dir) if output_dir else _fallback
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fname = _figure_filename(f"model_selection_manifold_{condition}_filter_magnitude")
+        fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches='tight')
+        print(f"Manifold filter-magnitude plot saved to: {out_dir / fname}")
+
+    plt.show()
+
+
+def plot_manifold_torus_tuning(
+        selection_results_path: str,
+        supercategory_centroids: dict = None,
+        grid_n: int = 200,
+        period: float = 1.0,
+        ncols: int = 3,
+        cmap: str = _DIVERGING_CMAP,
+        save_plot: bool = False,
+        output_dir: str = None,
+        feature_label_overrides: dict = None,
+) -> None:
+    """
+    Per-feature "onset coefficient tuning" over the torus: for each selected
+    feature, the final-bin (``t ~ 0``) filter decoded as a signed field
+    ``e(theta) . W`` across the 2-D torus.
+
+    Purpose
+    -------
+    The torus regressor maps behaviour to the 4-D ``(cos t1, sin t1, cos t2,
+    sin t2)`` embedding of the vocal position. A feature's final-bin filter is a
+    4-vector ``r`` in that embedding space; its alignment with each torus
+    location ``(x, y)`` is the inner product with that location's embedding:
+
+        ``e(theta) . W = cos(2*pi*x) r0 + sin(2*pi*x) r1
+                       + cos(2*pi*y) r2 + sin(2*pi*y) r3``
+
+    rendered as a diverging (blue-white-red) field. **Red** = increasing this
+    feature just before onset drives the predicted vocalization TOWARD that
+    region of the torus; **blue** = away; white = no directional push. Because
+    the field is a sum of four sinusoids it is always a smooth dipole/saddle (one
+    "toward" hotspot and one "away" hotspot), independent of the temporal filter's
+    smoothness. The colour-bar magnitude (``peak``) is how strongly the feature
+    pushes -- small on a weak-signal manifold, but the direction is legible.
+
+    The column ordering ``(cos, sin, cos, sin)`` matches
+    ``SmoothTorusManifoldRegression._encode``. This view is torus-only; on a
+    euclidean/VAE run (2-D output) it prints why and returns.
+
+    Parameters
+    ----------
+    selection_results_path : str
+        Path to the consolidated ``model_selection_final_*.pkl`` artifact (or a
+        directory containing one; latest mtime wins). Routed through
+        ``configure_path``.
+    supercategory_centroids : dict, optional
+        ``{supercategory_id: (torus_x, torus_y)}`` centroid positions to overlay
+        as numbered labels (where each USV call-type cluster sits on the torus).
+        The artifact does not store per-event cluster labels, so these are supplied
+        by the caller (e.g. computed once from the QLVM reference or the input
+        catalogue). ``None`` -> no overlay.
+    grid_n : int, default 200
+        Resolution of the torus evaluation grid per axis.
+    period : float, default 1.0
+        Per-axis torus wrap period (1.0 for the native QLVM torus).
+    ncols : int, default 3
+        Number of subplot columns; rows follow from the feature count.
+    cmap : str, default from ``figures.diverging_cmap``
+        Diverging colormap for the signed ``e(theta).W`` field. Defaults to the
+        ``diverging_cmap`` entry in ``visualizations_settings.json`` (not
+        hard-coded); pass any Matplotlib diverging colormap name to override.
+    save_plot : bool, default False
+        If True, writes the figure (format / timestamp per the shared figure
+        settings).
+    output_dir : str, optional
+        Directory for saving; defaults to the parent dir of
+        ``selection_results_path`` (or the path itself if a directory).
+    feature_label_overrides : dict, optional
+        ``{raw_feature_name: display_label}`` overrides; unmapped names fall back
+        to ``FeatureZoo.resolve_feature_label`` with the cohort sexes from the
+        artifact metadata.
+
+    Returns
+    -------
+    None
+        Displays (and optionally saves) the Matplotlib figure.
+    """
+
+    selection_results_path = configure_path(str(selection_results_path))
+    if output_dir is not None:
+        output_dir = configure_path(str(output_dir))
+
+    extracted = _extract_manifold_final_bivariate_weights(
+        selection_results_path, collapse_magnitude=False)
+    if extracted is None:
+        return
+    raw_weights, features, n_time_bins, selection_metadata, _ = extracted
+    if raw_weights.shape[-1] != 4:
+        print(
+            f"Torus tuning needs the 4-D (sin, cos) embedding filter "
+            f"(metric='torus'); got last dim {raw_weights.shape[-1]}. This view "
+            f"is torus-only -- use plot_manifold_multivariate_filters on euclidean."
+        )
+        return
+    _pretty = _make_feature_pretty(feature_label_overrides, selection_metadata)
+    n_features = len(features)
+
+    # Torus evaluation grid; the (cos, sin, cos, sin) basis matches the
+    # estimator's `_encode`, so `field = e(theta) . r` for the final-bin filter r.
+    th = (np.arange(int(grid_n)) + 0.5) / int(grid_n) * float(period)
+    tx, ty = np.meshgrid(th, th, indexing='ij')
+    a_x = 2.0 * np.pi * tx / float(period)
+    a_y = 2.0 * np.pi * ty / float(period)
+    cos_x, sin_x, cos_y, sin_y = np.cos(a_x), np.sin(a_x), np.cos(a_y), np.sin(a_y)
+
+    nrows = math.ceil(n_features / int(ncols))
+    fig, axs = plt.subplots(nrows, int(ncols),
+                            figsize=(5.6 * int(ncols), 5.2 * nrows), squeeze=False)
+    fig.patch.set_facecolor('#FFFFFF')
+    for idx in range(nrows * int(ncols)):
+        ax = axs.ravel()[idx]
+        if idx >= n_features:
+            ax.axis('off')
+            continue
+        r = raw_weights[idx, -1, :]               # final (onset) time-bin 4-vector
+        field = cos_x * r[0] + sin_x * r[1] + cos_y * r[2] + sin_y * r[3]
+        peak = float(np.abs(field).max())
+        vmax = peak if peak > 0 else 1.0
+        im = ax.imshow(field.T, origin='lower', extent=[0, period, 0, period],
+                       cmap=cmap, norm=plt.Normalize(-vmax, vmax),
+                       aspect='equal', interpolation='bilinear')
+        if supercategory_centroids:
+            for _k, _xy in supercategory_centroids.items():
+                ax.text(_xy[0], _xy[1], str(_k), color='#FFFFFF', fontsize=18,
+                        fontweight='bold', ha='center', va='center',
+                        path_effects=[mpe.withStroke(linewidth=3.0, foreground='#000000')])
+        ax.set_title(f"{_pretty(features[idx])}  (peak +/-{peak:.4f})",
+                     color=TEXT_COLOR, fontsize=13, fontweight='bold')
+        ax.set_xlabel("torus x", color=TEXT_COLOR, fontsize=12)
+        ax.set_ylabel("torus y", color=TEXT_COLOR, fontsize=12)
+        ax.tick_params(labelsize=11, color='#000000', labelcolor=TEXT_COLOR)
+        cb = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cb.ax.tick_params(labelsize=10, labelcolor=TEXT_COLOR)
+    fig.tight_layout()
+
+    if save_plot:
+        path_str = str(selection_results_path).lower()
+        condition = 'male_mute_partner' if 'male_mute_partner' in path_str else \
+            ('female' if 'female' in path_str else 'male')
+        _fallback = pathlib.Path(selection_results_path)
+        if _fallback.is_file():
+            _fallback = _fallback.parent
+        out_dir = pathlib.Path(output_dir) if output_dir else _fallback
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fname = _figure_filename(f"model_selection_manifold_{condition}_torus_tuning")
+        fig.savefig(out_dir / fname, facecolor='#FFFFFF', bbox_inches='tight')
+        print(f"Manifold torus-tuning plot saved to: {out_dir / fname}")
 
     plt.show()
 
@@ -5224,7 +5567,7 @@ class DeepResultsVisualizer:
     def plot_error_landscape(self,
                              gridsize: int = 30,
                              cmap: str = _GLOBAL_CMAP,
-                             diff_cmap: str = 'RdBu_r',  # Reverting to RdBu_r for standard diverging look
+                             diff_cmap: str = _DIVERGING_CMAP,  # Reverting to RdBu_r for standard diverging look
                              vmax_percentile: float = 95.0,
                              title_fontsize: int = 10,
                              label_fontsize: int = 8,
@@ -6113,7 +6456,7 @@ def plot_collinearity_audit(audit_pkl_path: str,
                             save_dir: str = None,
                             save_plot_bool: bool = True,
                             plot_format: str = _FIGURE_FORMAT,
-                            cmap: str = 'RdBu_r',
+                            cmap: str = _DIVERGING_CMAP,
                             outline_threshold: float = 0.7,
                             outline_color: str = '#000000') -> dict:
     """

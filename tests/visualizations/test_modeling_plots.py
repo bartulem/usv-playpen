@@ -42,9 +42,11 @@ with warnings.catch_warnings():
         _rolling_mean_1d,
         plot_collinearity_audit,
         plot_feature_ranking,
+        plot_manifold_filter_magnitude,
         plot_manifold_last_bin_filters,
         plot_manifold_multivariate_filters,
         plot_manifold_selection_trajectory,
+        plot_manifold_torus_tuning,
         plot_model_selection_results,
         plot_multinomial_multivariate_filters,
         plot_multinomial_selection_diagnosis,
@@ -1461,6 +1463,74 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
     with out.open('wb') as fh:
         pickle.dump({'steps': [accepted, rejection]}, fh)
     return str(out)
+
+
+@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
+@pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+class TestPlotManifoldFilterMagnitude:
+    """Figure-emission tests for ``plot_manifold_filter_magnitude`` — the
+    per-feature ``|W(t)|`` magnitude line."""
+
+    def test_writes_filter_magnitude(self, tmp_path):
+        """The fold-averaged filter collapses to one magnitude line per feature
+        and emits a distinct ``*_filter_magnitude_*`` file; the torus 4-D
+        sin/cos block is handled like the euclidean 2-D block."""
+
+        rng = np.random.default_rng(71)
+        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4)
+        out_dir = tmp_path / "fmag_out"
+        out_dir.mkdir()
+        plot_manifold_filter_magnitude(
+            selection_results_path=pkl, save_plot=True, output_dir=str(out_dir))
+        assert len(list(out_dir.glob(
+            f"model_selection_manifold_*_filter_magnitude_*.{_FIGURE_FORMAT}"))) == 1
+
+    def test_display_bins_clamped_to_model_bins(self, tmp_path):
+        """Requesting more display bins than the model has time bins is clamped
+        (no crash) and still emits exactly one figure."""
+
+        rng = np.random.default_rng(72)
+        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=2, n_time=8, output_dim=4)
+        out_dir = tmp_path / "fmag_clamp"
+        out_dir.mkdir()
+        plot_manifold_filter_magnitude(
+            selection_results_path=pkl, display_bins=99, save_plot=True, output_dir=str(out_dir))
+        assert len(list(out_dir.glob(
+            f"model_selection_manifold_*_filter_magnitude_*.{_FIGURE_FORMAT}"))) == 1
+
+
+@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
+@pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+class TestPlotManifoldTorusTuning:
+    """Figure-emission tests for ``plot_manifold_torus_tuning`` — the
+    ``e(theta).W`` torus field (torus-only)."""
+
+    def test_writes_torus_tuning_with_centroids(self, tmp_path):
+        """The raw 4-D sin/cos final-bin filter decodes to a per-feature torus
+        field; optional supercategory centroids overlay and a distinct
+        ``*_torus_tuning_*`` file is emitted."""
+
+        rng = np.random.default_rng(73)
+        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=2, output_dim=4)
+        out_dir = tmp_path / "ttun_out"
+        out_dir.mkdir()
+        plot_manifold_torus_tuning(
+            selection_results_path=pkl, supercategory_centroids={1: (0.2, 0.3), 2: (0.7, 0.8)},
+            grid_n=40, save_plot=True, output_dir=str(out_dir))
+        assert len(list(out_dir.glob(
+            f"model_selection_manifold_*_torus_tuning_*.{_FIGURE_FORMAT}"))) == 1
+
+    def test_euclidean_2d_block_is_rejected(self, tmp_path):
+        """The tuning view is torus-only: a euclidean 2-D weight block prints why
+        and emits NO file (the e(theta).W decode needs the 4-D sin/cos embedding)."""
+
+        rng = np.random.default_rng(74)
+        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=2, output_dim=2)
+        out_dir = tmp_path / "ttun_euc"
+        out_dir.mkdir()
+        plot_manifold_torus_tuning(
+            selection_results_path=pkl, save_plot=True, output_dir=str(out_dir))
+        assert list(out_dir.glob(f"*.{_FIGURE_FORMAT}")) == []
 
 
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")

@@ -914,6 +914,14 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
           re-enabled on the torus and the reflective-boundary smoothing is now
           selectable. The screen compares it against the **`null`
           (within-session-shuffle)** strategy (a confound-controlled baseline).
+        - `vm_logscore_pooled` : the **micro (event-weighted) twin** of
+          `vm_logscore` on the torus (`nan` on Euclidean) — the identical
+          per-event von Mises densities (same residuals, same internally-fit
+          `kappa`) averaged over all events with equal per-event weight instead
+          of macro-averaged per region (`region_labels=None`). It is NOT a
+          selection objective; it is logged per candidate so a macro-driven
+          forward selection can be compared, at every step, against the feature a
+          micro objective would have preferred — at no extra model fit.
         - `dcor_xy` : the **feature-selection score on EUCLIDEAN** (VAE/UMAP)
           manifolds — the wrap-aware **distance correlation**
           (`manifold_metric.dcor_prediction_truth`, subsampled). It is `nan` on
@@ -1069,6 +1077,18 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
                 metric=self.metric, period=self.period,
                 min_region_events=min_region_events,
             )
+            # Pooled (micro) twin of the macro selection score: the SAME per-event
+            # von Mises densities (identical residuals and internally-fit kappa)
+            # averaged over all events with equal per-event weight, instead of
+            # macro-averaged with equal weight per acoustic region. Selected by
+            # `region_labels=None`. Logged per candidate so a macro-driven forward
+            # selection can be checked against the feature a micro (event-weighted)
+            # objective would prefer at each step, at no extra model fit.
+            vm_logscore_pooled = macro_von_mises_logscore(
+                Y_pred, Y_true, None,
+                metric=self.metric, period=self.period,
+                min_region_events=min_region_events,
+            )
             dcor_xy = float('nan')
         else:
             dcor_xy = dcor_prediction_truth(
@@ -1076,6 +1096,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
                 random_state=self.random_state,
             )
             vm_logscore = float('nan')
+            vm_logscore_pooled = float('nan')
 
         # `r2_spatial` numerator: sum of squared wrap-aware residuals.
         # Denominator: total wrap-aware dispersion of `Y_true` around
@@ -1102,4 +1123,5 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             'spearman_y': spearman_y,
             'dcor_xy': dcor_xy,
             'vm_logscore': vm_logscore,
+            'vm_logscore_pooled': vm_logscore_pooled,
         }

@@ -29,6 +29,7 @@ from usv_playpen.modeling.manifold_metric import (
     manifold_prediction_metrics,
     pairwise_distance,
     resolve_manifold_metric,
+    resolve_manifold_selection_score_key,
     signed_diff,
     signed_diff_jax,
     sin_cos_encode_jax,
@@ -374,6 +375,40 @@ class TestResolveManifoldMetric:
             resolve_manifold_metric({'vocal_features': {'usv_manifold_metric': 'torus'}})
 
 
+class TestResolveManifoldSelectionScoreKey:
+    """`resolve_manifold_selection_score_key` — the macro/micro objective knob."""
+
+    def test_euclidean_is_always_dcor(self):
+        """On euclidean the objective is the distance correlation regardless of
+        the (torus-only) ``usv_manifold_selection_score`` knob."""
+
+        for mode in ('macro', 'micro'):
+            settings = {'vocal_features': {'usv_manifold_selection_score': mode}}
+            assert resolve_manifold_selection_score_key(settings, 'euclidean') == 'dcor_xy'
+
+    def test_torus_macro_and_micro_select_the_right_key(self):
+        """On the torus ``'macro'`` selects ``vm_logscore`` and ``'micro'`` selects
+        its event-weighted twin ``vm_logscore_pooled``."""
+
+        macro = {'vocal_features': {'usv_manifold_selection_score': 'macro'}}
+        micro = {'vocal_features': {'usv_manifold_selection_score': 'micro'}}
+        assert resolve_manifold_selection_score_key(macro, 'torus') == 'vm_logscore'
+        assert resolve_manifold_selection_score_key(micro, 'torus') == 'vm_logscore_pooled'
+
+    def test_absent_key_defaults_to_macro(self):
+        """The knob is an optional additive setting: an absent key resolves to the
+        historical ``'macro'`` behaviour (``vm_logscore``), not a ``KeyError``."""
+
+        assert resolve_manifold_selection_score_key({'vocal_features': {}}, 'torus') == 'vm_logscore'
+
+    def test_invalid_mode_raises(self):
+        """A present-but-invalid mode is a settings-file bug and raises."""
+
+        bad = {'vocal_features': {'usv_manifold_selection_score': 'meso'}}
+        with pytest.raises(ValueError):
+            resolve_manifold_selection_score_key(bad, 'torus')
+
+
 # Distance correlation (the torus selection score)
 
 
@@ -453,7 +488,7 @@ class TestManifoldPredictionMetrics:
         'r2_spatial', 'euclidean_mae', 'euclidean_rmse', 'euclidean_mae_weighted',
         'euclidean_mae_raw', 'mahalanobis_mae', 'mae_x', 'mae_y',
         'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y', 'dcor_xy',
-        'vm_logscore',
+        'vm_logscore', 'vm_logscore_pooled',
     }
 
     def test_bundle_keys_and_raw_equals_mae(self):
@@ -499,6 +534,51 @@ class TestManifoldPredictionMetrics:
         tor = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0)
         assert np.isfinite(tor['vm_logscore'])
         assert np.isnan(tor['dcor_xy'])
+
+    def test_vm_logscore_pooled_is_micro_twin_of_macro(self):
+        """`vm_logscore_pooled` is the micro (event-weighted) twin of the macro
+        `vm_logscore`: the SAME per-event von Mises densities averaged over all
+        events with equal per-event weight instead of macro-averaged with equal
+        weight per region. It must (a) be NaN on euclidean like `vm_logscore`,
+        (b) equal the label-free (pooled) `vm_logscore` regardless of whether
+        region labels were supplied, and (c) genuinely differ from the macro
+        score when the regions are imbalanced and predicted with different
+        accuracy -- proving it is a real second averaging, not a copy."""
+
+        rng = np.random.default_rng(11)
+        # Imbalanced regions with region-dependent accuracy: a large, badly
+        # predicted majority region and a small, well predicted minority one.
+        # Pooled (event-weighted) is dominated by the bad majority; macro
+        # (equal weight per region) is pulled up by the good minority, so the
+        # two must differ and macro must exceed pooled.
+        n_major, n_minor = 180, 20
+        Y_major = rng.random((n_major, 2))
+        Y_minor = rng.random((n_minor, 2))
+        Y = np.vstack([Y_major, Y_minor])
+        Yp = np.vstack([
+            (Y_major + rng.normal(0.0, 0.20, size=Y_major.shape)) % 1.0,   # bad
+            (Y_minor + rng.normal(0.0, 0.002, size=Y_minor.shape)) % 1.0,  # good
+        ])
+        regions = np.concatenate([np.zeros(n_major), np.ones(n_minor)])
+
+        macro = manifold_prediction_metrics(
+            Y, Yp, metric='torus', period=1.0,
+            region_labels=regions, min_region_events=1)
+        nolabel = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0)
+
+        # (b) the pooled twin matches the label-free macro (which IS pooled),
+        #     whether or not region labels were passed to the macro call.
+        assert macro['vm_logscore_pooled'] == pytest.approx(nolabel['vm_logscore'])
+        assert macro['vm_logscore_pooled'] == pytest.approx(nolabel['vm_logscore_pooled'])
+        # (c) macro and its pooled twin are genuinely different here, and the
+        #     region-balanced macro rewards rescuing the rare region -> higher.
+        assert abs(macro['vm_logscore'] - macro['vm_logscore_pooled']) > 1e-3
+        assert macro['vm_logscore'] > macro['vm_logscore_pooled']
+
+        # (a) both NaN on euclidean, like `vm_logscore`.
+        euc = manifold_prediction_metrics(Y, Yp, metric='euclidean', period=1.0)
+        assert np.isnan(euc['vm_logscore'])
+        assert np.isnan(euc['vm_logscore_pooled'])
 
     def test_density_draw_correlations_are_finite(self):
         """A uniform draw has real geometry, so the per-axis correlations and the

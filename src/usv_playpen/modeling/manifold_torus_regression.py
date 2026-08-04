@@ -195,8 +195,13 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
         squared error on the embedding plus an L2 penalty and the
         temporal-smoothness penalty:
 
-            min_W  sum_i w_i ||E_i - (X_i W + b)||^2
+            min_W  (1 / sum_i w_i) * sum_i w_i ||E_i - (X_i W + b)||^2
                    + l2_reg * ||W||^2 + lambda_smooth * ||D_k W||^2
+
+        The squared-error data term is a **weighted mean** (divided by the
+        effective sample count ``sum_i w_i``), so ``l2_reg`` and
+        ``lambda_smooth`` are per-observation and n-independent, matching the
+        euclidean/multinomial JAX losses and Calhoun's GLM-HMM.
 
         solved exactly via the normal equations (the intercept is absorbed by
         weighted-centering ``X`` and ``E``). The same closed-form ``W`` (shape
@@ -221,9 +226,10 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
             ``(n_samples, 2)`` torus coordinates in ``[0, period)``.
         sample_weight (np.ndarray, optional)
             ``(n_samples,)`` inverse-density weights; defaults to uniform.
-            Normalised to unit mean internally (matching the coordinate model)
-            so ``l2_reg`` / ``lambda_smooth`` are decoupled from the weight
-            scale.
+            Normalised to unit mean internally (matching the coordinate model),
+            and the data term is additionally divided by the effective sample
+            count, so ``l2_reg`` / ``lambda_smooth`` are decoupled from BOTH the
+            weight scale AND the number of samples.
 
         Returns
         -------
@@ -270,12 +276,22 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
 
         penalty_s = self._smoothness_penalty()
         x_cw = x_c * w[:, None]
+        # Normalise the data term to a weighted MEAN (divide the summed
+        # cross-products by the effective sample count `w_sum`), so `l2_reg` and
+        # `lambda_smooth` are PER-OBSERVATION and independent of the number of
+        # events. This matches the euclidean JAX bivariate loss (`jnp.mean`), the
+        # multinomial loss (`sum(w.)/sum(w)`), and Calhoun-Pillow-Murthy's
+        # GLM-HMM emission/transition objective (`-loglik/totalT + penalty`).
+        # Without it the summed data term scales with n while the penalty does
+        # not, so the EFFECTIVE smoothing is `lambda_smooth / n` and the shared
+        # tuning grid is ~n-times too weak -- the filter stays jagged at every
+        # grid lambda (the smoothness-prior audit that traced this).
         a_mat = (
-            x_cw.T @ x_c
+            (x_cw.T @ x_c) / w_sum
             + float(self.l2_reg) * np.eye(n_inputs)
             + float(self.lambda_smooth) * penalty_s
         )
-        coef = np.linalg.solve(a_mat, x_cw.T @ e_c)
+        coef = np.linalg.solve(a_mat, (x_cw.T @ e_c) / w_sum)
         intercept = e_mean - x_mean @ coef
 
         self.coef_ = coef.astype(np.float64)

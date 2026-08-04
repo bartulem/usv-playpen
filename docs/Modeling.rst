@@ -100,8 +100,10 @@ parses it (e.g. ``behavioral_courtship_intact_partners_sessions_list.txt`` →
 ``intact_partners_female``, …) and embeds that label into every output filename,
 so artifacts from different cohorts never collide and each one is self-identifying.
 
-**model_params** — the prediction target, history window, model engine, and
-cross-validation splitting.
+**model_params** — the prediction target, history window, model engine,
+forward-selection acceptance thresholds, and bout definition. The
+cross-validation and held-out-test settings live in their own
+``model_validation`` block below.
 
 .. code-block:: json
 
@@ -114,15 +116,6 @@ cross-validation splitting.
         "model_predictor_mouse_index": 1,
         "model_target_vocal_type": "bout",
         "model_target_variable": "bout_durations",
-        "random_seed": 0,
-        "spatial_cluster_num": 20,
-        "split_strategy": "mixed",
-        "split_num": 10,
-        "test_proportion": 0.1,
-        "session_split_initial_tolerance": 0.05,
-        "session_split_max_attempts": 50000,
-        "session_split_widen_step": 0.02,
-        "session_split_widen_every": 1000,
         "selection_p_val": 0.01,
         "selection_effect_floor": 0.1,
         "selection_n_bootstrap": 1000,
@@ -139,16 +132,37 @@ cross-validation splitting.
 * **model_predictor_mouse_index** — which mouse (``0`` / ``1``) is the **partner**; the **target** — the mouse whose vocal behavior is being predicted — is defined as the other one. Both mice's kinematics enter the predictor set.
 * **model_target_vocal_type** — onset target mode, one of ``'bout'`` (clustered bout onsets, both positive and negative pre-event windows kept clean), ``'individual'`` (per-USV onsets), or ``'state'`` (the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent, with no clean-history requirement); used only by ``VocalOnsetModelingPipeline``.
 * **model_target_variable** — for ``BoutParameterPipeline``, which per-bout quantity to regress: ``'bout_durations'`` (first-to-last-USV span, seconds), ``'mean_mask_complexity'`` (per-USV mean spectrogram-mask complexity), or ``'total_mask_complexity'`` (summed over the bout).
-* **random_seed** — seeds every stochastic step (splits, permutations, initialisation) for reproducibility.
-* **spatial_cluster_num** — number of spatial clusters used to build the spatial-CV folds for the continuous manifold target.
-* **split_strategy** / **split_num** / **test_proportion** — cross-validation: ``'mixed'`` (stratified shuffle over the pooled data) or ``'session'`` (hold whole sessions out); ``split_num`` folds; ``test_proportion`` held out per fold.
-* **session_split_initial_tolerance** — the starting class-balance tolerance for the ``'session'`` strategy's held-out-set search, before it begins widening (default ``0.05``).
-* **session_split_max_attempts** / **session_split_widen_step** / **session_split_widen_every** — tuning for the ``'session'`` strategy's search for balanced held-out session sets (max attempts, plus how much / how often the balance tolerance is relaxed).
 * **selection_p_val** — the significance level gating whether a candidate feature is admitted during forward-stepwise model selection (default ``0.01``); on the acoustic-manifold target it is the Benjamini–Hochberg FDR ``q`` used to screen candidates.
 * **selection_effect_floor** / **selection_n_bootstrap** / **selection_ci_level** — the acoustic-manifold selection's **fold-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds. ``selection_effect_floor`` is the relative effect floor a screened feature must clear — a fraction of the top surviving driver's margin (default ``0.1`` = 10%); ``selection_n_bootstrap`` is the number of fold bootstrap resamples (default ``1000``); ``selection_ci_level`` is the bootstrap confidence level whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (default ``0.99``). These three apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone.
 * **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout'`` mode: a candidate silent-epoch onset is kept only if no USV (from any source) starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
 * **usv_per_bout_floor** — the minimum number of USVs a positive bout must contain (``'bout'`` mode).
 * **onset_target_category** — restrict positive onsets to a single USV category (``'individual'`` mode only); ``null`` pools all categories (see the single-category note under :ref:`Modeling input data <modeling-extract>`).
+
+**model_validation** — the held-out test set and cross-validation splitting.
+
+.. code-block:: json
+
+    "model_validation": {
+        "held_out_test_proportion": 0.1,
+        "split_strategy": "session",
+        "n_cv_folds": 10,
+        "cv_validation_proportion": 0.1,
+        "random_seed": 0,
+        "spatial_cluster_num": 20,
+        "session_split_initial_tolerance": 0.05,
+        "session_split_max_attempts": 50000,
+        "session_split_widen_step": 0.02,
+        "session_split_widen_every": 1000
+    }
+
+* **held_out_test_proportion** — the fraction of sessions carved off **once** as a final held-out test set that is excluded from every CV fold and the whole feature-selection search, then scored only by the refit final model — an honest last-look estimate untouched by selection. ``0`` disables the carve-out (the entire dataset enters CV); default ``0.1``.
+* **split_strategy** — the cross-validation scheme: ``'mixed'`` (stratified shuffle over the pooled data) or ``'session'`` (hold whole sessions out, so no session straddles train and test).
+* **n_cv_folds** — the number of outer cross-validation folds each candidate feature is scored across.
+* **cv_validation_proportion** — the fraction of data held out per CV fold as that fold's validation set.
+* **random_seed** — seeds every stochastic step (splits, permutations, initialisation) for reproducibility.
+* **spatial_cluster_num** — the number of spatial clusters used to build the spatial-CV folds for the continuous manifold target.
+* **session_split_initial_tolerance** — the starting class-balance tolerance for the ``'session'`` strategy's held-out-set search, before it begins widening (default ``0.05``).
+* **session_split_max_attempts** / **session_split_widen_step** / **session_split_widen_every** — tuning for the ``'session'`` strategy's search for balanced held-out session sets (max attempts, plus how much / how often the balance tolerance is relaxed).
 
 **kinematic_features** — which behavioral predictors enter the feature zoo.
 
@@ -189,7 +203,16 @@ cross-validation splitting.
         "usv_noise_categories": [0],
         "usv_manifold_column_names": ["vae_umap1", "vae_umap2"],
         "usv_manifold_metric": "euclidean",
-        "usv_manifold_period": 1.0
+        "usv_manifold_period": 1.0,
+        "usv_manifold_min_region_events": 20,
+        "usv_manifold_selection_score": "macro",
+        "usv_manifold_geodesic_metrics": {
+            "compute": true,
+            "grid_n_per_dim": 40,
+            "graph_k": 8,
+            "density_exponent": 1.0,
+            "decoder_weights_npz_path": "/mnt/cup/labs/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz"
+        }
     }
 
 * **usv_predictor_type** — which vocal-syntax predictor traces to build: ``'pooled_binary'`` (one pooled per-frame USV-event indicator), ``'pooled_rate'`` (one pooled USV-rate trace), ``'categories_rate'`` (one per-category USV-rate trace per ``usv_category_column_name`` category), or ``'all_rate'`` (the pooled rate plus the per-category rates). A falsy value builds no vocal predictors.
@@ -200,6 +223,9 @@ cross-validation splitting.
 * **usv_manifold_column_names** — the two catalog columns giving the 2-D manifold position (the ``ContinuousModelingPipeline`` target).
 * **usv_manifold_metric** — ``'euclidean'`` (plane) or ``'torus'`` (wrap-aware) distance on the manifold.
 * **usv_manifold_period** — the wrap period for the ``'torus'`` metric.
+* **usv_manifold_min_region_events** — the minimum number of labelled events an acoustic region (supercategory) must contain to enter the **macro** (region-balanced) von Mises average and the region-weighted MAE; sparser regions are dropped from those balanced statistics so a single under-sampled corner cannot dominate them (default ``20``). Ignored on euclidean and when no region labels are present.
+* **usv_manifold_selection_score** — on the ``'torus'`` metric, which von Mises log-score the forward selection ranks on: ``'macro'`` (default) uses the region-balanced ``vm_logscore``, ``'micro'`` uses the event-weighted ``vm_logscore_pooled`` twin. Both are always logged per candidate, so this only changes which column drives the greedy ranking and the acceptance gate — the candidate pool, the region-reweighted fit, and every other reported metric are identical — making a macro-vs-micro selection comparison a one-key flip. Ignored on euclidean (which always ranks on ``dcor_xy``); an absent key resolves to ``'macro'``.
+* **usv_manifold_geodesic_metrics** — the analysis-only *reference-map* geometry for the two torus **geodesic** prediction-error columns (``density_geodesic_mae``, ``pullback_geodesic_mae``), reported per fold alongside the flat-torus MAE on the ``'torus'`` metric (both ``NaN`` on euclidean). ``compute`` toggles the whole block; ``grid_n_per_dim`` sets the resolution of the regular torus grid the all-pairs geodesic distance matrices are precomputed on once (``40`` → a 40×40 node lattice, so per-event errors are cheap snap-to-grid look-ups); ``graph_k`` is the number of wrap-aware nearest neighbours per node in the k-NN graph the shortest paths run over; ``density_exponent`` is the inverse-aggregate-posterior-density exponent ``α`` weighting the density-ratio geodesic (``0`` recovers the flat graph metric, larger values push paths harder through dense regions); ``decoder_weights_npz_path`` is the frozen QLVM ConvTranspose decoder ``.npz`` whose Jacobian defines the pullback metric ``G = JᵀJ`` (an empty or unreadable path degrades ``pullback_geodesic_mae`` to ``NaN`` and the run proceeds).
 
 **diagnostics** — the predictor-collinearity and predictor-timescale audits (rendered in :ref:`Predictor diagnostics <modeling-diagnostics>`).
 
@@ -666,6 +692,44 @@ top univariate feature; ``p_val`` is the per-step acceptance threshold.
    CI (``selection_n_bootstrap`` resamples) whose lower bound exceeds ``0``. This
    replaced an earlier fold-level Wilcoxon / one-standard-error gate.
 
+.. note::
+
+   **What the acoustic-manifold selection reports per fold.** The macro von
+   Mises log-likelihood is the *objective*, but every candidate at every fold
+   also carries a full metric bundle for post-hoc comparison, so the selected
+   trajectory can be re-read under a different lens without re-running the
+   (day-scale) search:
+
+   * **Two von Mises scores** — the objective ``vm_logscore`` (**macro**: equal
+     weight per acoustic region) and its ``vm_logscore_pooled`` (**micro**: equal
+     weight per *event*) twin. Both use the identical per-event densities and a
+     single internally-fit concentration ``kappa`` and differ only in the
+     averaging, so logging both lets a macro-driven selection be checked, at
+     every step, against the feature a micro (event-weighted) objective would
+     have preferred — at no extra model fit (it only re-averages densities
+     already computed). ``vm_logscore_pooled`` is *not* a selection objective; it
+     is reported for that comparison only.
+   * **Three torus distance geometries** for the (prediction, truth) residual, in
+     the spirit of the QLVM paper's Appendix C: the **flat-torus** wrap-aware MAE
+     (``euclidean_mae``, the intrinsic metric of the periodic square), the
+     **density-ratio graph geodesic** MAE (``density_geodesic_mae``, shortest
+     paths on a wrap-aware k-NN grid whose edges are the flat length reweighted
+     by inverse aggregate-posterior density, so paths route through dense
+     corridors and pay to cross low-density valleys), and the
+     **decoder-Jacobian pullback geodesic** MAE (``pullback_geodesic_mae``, the
+     Arvanitidis pullback ``G = JᵀJ`` of the frozen QLVM decoder, measuring
+     distance in decoded-spectrogram change rather than in raw latent
+     coordinates). The two geodesic columns are ``NaN`` on euclidean manifolds
+     and when their reference map is disabled or the decoder is unavailable;
+     their absolute magnitudes are reweighted path-lengths (arbitrary scale), so
+     they are read as a **Δ-vs-baseline**, exactly like the flat MAE.
+   * **Region-weighted vs global MAE** — ``euclidean_mae_weighted`` (the macro,
+     region-balanced distance twin of ``vm_logscore``) alongside the global
+     ``euclidean_mae``, plus ``mahalanobis_mae``, ``r2_spatial``, the per-axis
+     MAEs and the pearson / spearman correlations. The fit itself is additionally
+     **region-reweighted** (inverse-region-frequency sample weights), so a few
+     dominant acoustic regions do not drown the rare ones during estimation.
+
 Run on a single node from the notebook:
 
 .. code-block:: python
@@ -743,6 +807,19 @@ Visualise the trajectory with ``plot_model_selection_results`` (binary / regress
 ``plot_manifold_selection_trajectory`` (continuous manifold): each reads the
 consolidated ``model_selection_final_*.pkl`` and shows the per-step held-out score
 gain and the retained-feature filters.
+
+For the acoustic-manifold model the converged filters have two dedicated views,
+both reading the same consolidated artifact: ``plot_manifold_filter_magnitude``
+draws the per-feature temporal filter magnitude ``|W(t)|`` over the history window
+(one line per feature, coloured by behavioural category with opacity separating
+features that share a category; averaged into display bins so the medium-scale
+envelope reads cleanly), and ``plot_manifold_torus_tuning`` decodes each feature's
+final-bin filter into the signed ``e(theta).W`` field over the torus (red = the
+feature drives the predicted vocalization toward that region, blue = away;
+optional supercategory centroids overlaid). Both take their colours / colormaps
+from ``visualizations_settings.json`` (``diverging_cmap`` / ``manifold_colors``),
+and the temporal filter's smoothness is governed by the per-observation
+``lambda_smooth`` prior (see the note above).
 
 CNN modeling
 ------------
