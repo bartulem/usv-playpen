@@ -1351,8 +1351,12 @@ class TestPlotManifoldSelectionTrajectory:
             secondary_metric_name='torus MAE',
             save_plot=False,
         )
-        x_lo, x_hi = plt.gcf().axes[0].get_xlim()
+        fig = plt.gcf()
+        x_lo, x_hi = fig.axes[0].get_xlim()
         assert max(x_lo, x_hi) < -3.0
+        # Right panel: anchor bar (1) + one stacked segment per accepted feature
+        # (the fixture has 2), so the final-model bar is genuinely stacked.
+        assert len(fig.axes[1].patches) >= 3
 
 
 def _write_multinomial_multivariate_pickle(tmp_path, rng, n_classes: int = 3,

@@ -3732,38 +3732,62 @@ def plot_manifold_selection_trajectory(
         spine.set_edgecolor(TEXT_COLOR)
 
     # Right panel: the secondary metric's IMPROVEMENT over the step-0 baseline
-    # (chance), drawn as two bars growing from 0 -- best univariate vs the final
+    # (chance), drawn as bars growing from 0 -- best univariate vs the final
     # model. Lower-is-better error metrics are flipped so a positive height
-    # always means "better", making a taller bar unambiguously the stronger
-    # model. Bars anchor at 0 (no floating), and the per-feature labels are
-    # dropped here (they are the left panel's y-axis), so the comparison reads
-    # cleanly instead of being scrambled onto a stacked bar.
+    # always means "better". Bars anchor at 0 (no floating); the final-model bar
+    # is STACKED by each feature's marginal contribution (coloured by feature,
+    # thin white separators), so a feature that WORSENS the metric shows as a
+    # segment crossing 0. The feature TEXT labels are dropped here (they are the
+    # left panel's y-axis) so the stack stays readable.
     _dir = -1.0 if is_minimization_secondary else 1.0
     anchor_gain = _dir * (best_univariate_value - chance_secondary)
     final_gain = _dir * (final_score - chance_secondary)
 
     bar_width = 0.6
+    _x_final = 1.6   # space the final-model bar out from the anchor so the two
+                     # group labels ('best univariate' / 'final model') don't collide
     bar_group_labels = ['best univariate', 'final model']
     ax_bars.bar(0, anchor_gain, width=bar_width, edgecolor='none', zorder=3,
                 color=(_category_color(best_univariate_feat)
                        if best_univariate_feat else NEUTRAL_COLOR))
-    ax_bars.bar(1, final_gain, width=bar_width, edgecolor='none', zorder=3,
-                color=_category_color(steps_data[-1]['feature_name']))
+    _seg_gains = [_dir * m for m in sec_marginals]
+    _bottom = 0.0
+    _seg_labels = []  # (mid_height, feature_label, colour) for right-side labels
+    for _i, (d, seg) in enumerate(zip(steps_data, _seg_gains)):
+        _col = _category_color(d['feature_name'])
+        # Earlier segments get a HIGHER zorder: a later positive segment drawn
+        # from a negative running-bottom would otherwise paint over an earlier
+        # (e.g. negative anchor) segment in the region where they overlap across
+        # zero, mis-colouring the negative part.
+        ax_bars.bar(_x_final, seg, bottom=_bottom, width=bar_width,
+                    zorder=3 + (len(_seg_gains) - _i),
+                    color=_col, edgecolor='#FFFFFF', linewidth=0.5)
+        _seg_labels.append((_bottom + seg / 2.0, _pretty(d['feature_name']), _col))
+        _bottom += seg
     ax_bars.axhline(0.0, color=TEXT_COLOR, lw=0.8, zorder=2)
 
-    _gmax = max(anchor_gain, final_gain, 0.0)
-    _gmin = min(anchor_gain, final_gain, 0.0)
+    # Name each stacked feature to the RIGHT of the final-model bar, at its
+    # segment's mid-height (coloured to match), so every feature is identified
+    # without crowding text onto the bar.
+    for _y, _name, _col in _seg_labels:
+        ax_bars.text(_x_final + 0.34, _y, _name, ha='left', va='center',
+                     fontsize=7, color=_col)
+
+    _stack_cum = (np.concatenate([[0.0], np.cumsum(_seg_gains)])
+                  if _seg_gains else np.array([0.0]))
+    _gmax = float(max(anchor_gain, final_gain, _stack_cum.max(), 0.0))
+    _gmin = float(min(anchor_gain, final_gain, _stack_cum.min(), 0.0))
     _gspan = (_gmax - _gmin) if (_gmax - _gmin) > 1e-9 else 1.0
-    for _x, _g in ((0, anchor_gain), (1, final_gain)):
+    for _x, _g in ((0, anchor_gain), (_x_final, final_gain)):
         ax_bars.text(_x, _g + (0.03 * _gspan if _g >= 0 else -0.03 * _gspan),
                      f"{_g:+.3f}", ha='center',
                      va='bottom' if _g >= 0 else 'top',
                      fontsize=8, color=TEXT_COLOR)
 
     ax_bars.set_ylim(_gmin - 0.12 * _gspan, _gmax + 0.20 * _gspan)
-    ax_bars.set_xticks([0, 1])
+    ax_bars.set_xticks([0, _x_final])
     ax_bars.set_xticklabels(bar_group_labels, fontsize=8, color=TEXT_COLOR)
-    ax_bars.set_xlim(-0.6, 1.6)
+    ax_bars.set_xlim(-0.7, _x_final + 2.2)
     ax_bars.set_ylabel(f"Δ {secondary_metric_name} vs baseline (held-out)",
                        fontsize=10, color=TEXT_COLOR)
 
