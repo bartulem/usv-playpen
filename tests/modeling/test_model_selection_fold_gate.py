@@ -34,6 +34,7 @@ with warnings.catch_warnings():
         _SELECTION_N_BOOTSTRAP,
         _SELECTION_CI_LEVEL,
     )
+    from usv_playpen.modeling.manifold_metric import macro_von_mises_logscore
 
 
 def _folds_from_predictions(n_folds, n_per_fold, prediction_fn, seed):
@@ -82,6 +83,38 @@ def test_fold_bootstrap_accepts_a_real_predictor():
     assert result['mean_margin'] > 0.0
     assert result['ci_low'] > 0.0
     assert result['p_value'] < 0.05
+
+
+def test_fold_bootstrap_honors_frozen_kappa():
+    """A supplied `kappa` is reused for every fold's torus score instead of the
+    per-fold self-refit, so the mean margin equals the fold-mean of the paired
+    pooled von Mises log-scores computed at that frozen kappa, and a different
+    kappa moves the margin (it is genuinely used)."""
+    actual = _folds_from_predictions(
+        n_folds=8, n_per_fold=200,
+        prediction_fn=lambda y, rng: np.mod(y + 0.05 * rng.standard_normal(y.shape), 1.0),
+        seed=0,
+    )
+    null = _paired_null(actual, seed=100)
+    k = 2.5
+    res = _fold_paired_margin_bootstrap(
+        actual, null, metric='torus', period=1.0,
+        n_bootstrap=200, ci_level=0.95, random_state=0, kappa=k,
+    )
+    # Manual per-fold paired margin at the SAME frozen kappa (pooled: no regions
+    # passed, so `_fold_scores` scores `macro_von_mises_logscore(..., None)`).
+    expected = float(np.mean([
+        macro_von_mises_logscore(ap, at, None, metric='torus', period=1.0, kappa=k)
+        - macro_von_mises_logscore(npred, at, None, metric='torus', period=1.0, kappa=k)
+        for ap, npred, at in zip(actual['y_pred_xy'], null['y_pred_xy'], actual['y_true'])
+    ]))
+    assert res['mean_margin'] == pytest.approx(expected)
+    # A different frozen kappa moves the margin.
+    res2 = _fold_paired_margin_bootstrap(
+        actual, null, metric='torus', period=1.0,
+        n_bootstrap=200, ci_level=0.95, random_state=0, kappa=0.5,
+    )
+    assert res2['mean_margin'] != pytest.approx(res['mean_margin'])
 
 
 def test_fold_bootstrap_rejects_a_null_predictor():

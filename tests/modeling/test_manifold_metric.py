@@ -535,6 +535,32 @@ class TestManifoldPredictionMetrics:
         assert np.isfinite(tor['vm_logscore'])
         assert np.isnan(tor['dcor_xy'])
 
+    def test_frozen_kappa_is_forwarded_to_vm_scores(self):
+        """A supplied `kappa` is reused for BOTH torus vM keys instead of the
+        per-call self-refit, so the bundle score equals
+        `macro_von_mises_logscore(..., kappa=k)` exactly, a different `k` moves the
+        score (it is genuinely used), and the default (`kappa=None`) self-refits to
+        a different value. `manifold_prediction_metrics` takes `(Y_true, Y_pred)`
+        but scores `macro_von_mises_logscore(Y_pred, Y_true, ...)`, so the manual
+        reference flips the argument order accordingly."""
+
+        rng = np.random.default_rng(7)
+        Y = rng.random((400, 2))
+        Yp = (Y + 0.05 * rng.standard_normal((400, 2))) % 1.0
+        k = 3.0
+        expected = macro_von_mises_logscore(Yp, Y, None, metric='torus', period=1.0, kappa=k)
+        bundle = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0, kappa=k)
+        # With no region labels both macro and pooled reduce to the same pooled
+        # score, computed at the FROZEN kappa (not a per-call refit).
+        assert bundle['vm_logscore'] == pytest.approx(expected)
+        assert bundle['vm_logscore_pooled'] == pytest.approx(expected)
+        # A different frozen kappa moves the score -> it is genuinely forwarded.
+        other = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0, kappa=0.5)
+        assert other['vm_logscore'] != pytest.approx(bundle['vm_logscore'])
+        # The default self-refits kappa from the residuals -> a different value.
+        refit = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0)['vm_logscore']
+        assert refit != pytest.approx(bundle['vm_logscore'])
+
     def test_vm_logscore_pooled_is_micro_twin_of_macro(self):
         """`vm_logscore_pooled` is the micro (event-weighted) twin of the macro
         `vm_logscore`: the SAME per-event von Mises densities averaged over all

@@ -1171,7 +1171,7 @@ class TestManifoldTuner:
             def fit(self, X, Y, sample_weight=None):
                 raise RuntimeError("forced inner-fit failure")
 
-            def evaluate_metrics(self, X, Y, weights=None):
+            def evaluate_metrics(self, X, Y, weights=None, **kwargs):
                 return {}
 
         # Two sessions, each covering both inner clusters, so the inner
@@ -1248,7 +1248,7 @@ class TestManifoldTuner:
             def fit(self, X, Y, sample_weight=None):
                 return self
 
-            def evaluate_metrics(self, X, Y, weights=None):
+            def evaluate_metrics(self, X, Y, weights=None, **kwargs):
                 idx = _FixedScore._call_counts.get(self._lam, 0)
                 _FixedScore._call_counts[self._lam] = idx + 1
                 return {'r2_spatial': score_table[self._lam][idx % 2]}
@@ -1315,7 +1315,7 @@ class TestManifoldTuner:
             def fit(self, X, Y, sample_weight=None):
                 return self
 
-            def evaluate_metrics(self, X, Y, weights=None):
+            def evaluate_metrics(self, X, Y, weights=None, **kwargs):
                 idx = _FixedScore._calls.get(self._lam, 0)
                 _FixedScore._calls[self._lam] = idx + 1
                 return {'r2_spatial': score_table[self._lam][idx % 2]}
@@ -1374,7 +1374,7 @@ class TestManifoldTuner:
             def fit(self, X, Y, sample_weight=None):
                 return self
 
-            def evaluate_metrics(self, X, Y, weights=None):
+            def evaluate_metrics(self, X, Y, weights=None, **kwargs):
                 idx = _FixedScore._calls.get(self._lam, 0)
                 _FixedScore._calls[self._lam] = idx + 1
                 return {'euclidean_mae': score_table[self._lam][idx % 2]}

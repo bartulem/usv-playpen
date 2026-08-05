@@ -425,7 +425,8 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                                   regressor_cls,
                                   metric: str,
                                   period: float,
-                                  region_train: np.ndarray = None) -> tuple:
+                                  region_train: np.ndarray = None,
+                                  kappa: float = None) -> tuple:
     """
     Selects `(lambda_smooth, l2_reg)` jointly by inner cross-validation on
     the supplied training fold, with an optional 1-SE rule biased toward
@@ -521,6 +522,12 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         reweighted objective. `None` (default) or `metric='euclidean'` -> no
         reweighting (inner fits use the raw `w_train`). The inner-CV SCORING
         objective is unaffected (it uses the pooled, label-free von Mises score).
+    kappa : float, optional
+        Frozen global von Mises concentration forwarded to the inner-CV
+        `evaluate_metrics` scoring (torus only), so the tuner ranks
+        `(lambda_smooth, l2_reg)` on the same dispersion scale as the outer gate.
+        `None` (default) preserves the historical per-inner-fold self-refit.
+        Ignored on euclidean.
 
     Returns
     -------
@@ -643,7 +650,8 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                         fold_scores.append(np.nan)
                         continue
                     metrics = model.evaluate_metrics(
-                        X_train[in_va], Y_train[in_va], weights=w_train[in_va]
+                        X_train[in_va], Y_train[in_va], weights=w_train[in_va],
+                        kappa=kappa,
                     )
                     fold_scores.append(metrics[inner_cv_scoring_metric])
                 except Exception as exc:
@@ -704,7 +712,21 @@ def _tune_manifold_regularization(X_train: np.ndarray,
         'one_se_threshold': None,
     }
 
+    def _warn_l2_grid_edge(chosen_l2: float) -> None:
+        # Flag a tuned l2 that rails to a grid endpoint (the tuned l2 is no longer
+        # interior, so the grid is mis-placed / too narrow and the optimum lies
+        # beyond it). Only meaningful when the l2 axis has more than one point, so
+        # fixed-l2 / single-point grids never false-positive. Emitted as a
+        # `print`, NOT `warnings.warn`: `pyproject.toml` sets
+        # `filterwarnings = ["error"]`, so a bare warning here would abort the
+        # test suite.
+        if l2_reg_grid.size > 1 and chosen_l2 in (float(l2_reg_grid[0]), float(l2_reg_grid[-1])):
+            print(f"        [tune] selected l2={chosen_l2:.3g} sits on the l2 grid "
+                  f"EDGE [{float(l2_reg_grid[0]):.3g}, {float(l2_reg_grid[-1]):.3g}] -- "
+                  f"widen l2_reg_decades_each_side.")
+
     if not inner_cv_use_one_se_rule:
+        _warn_l2_grid_edge(float(argmax_pair[1]))
         return float(argmax_pair[0]), float(argmax_pair[1]), audit
 
     # 1-SE rule: "smoothest pair whose mean score is within one SE of the
@@ -738,6 +760,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     winner = max(in_band, key=lambda p: (p[0], -p[1]))
     audit['one_se_applied'] = True
     audit['one_se_threshold'] = float(threshold)
+    _warn_l2_grid_edge(float(winner[1]))
     return float(winner[0]), float(winner[1]), audit
 
 

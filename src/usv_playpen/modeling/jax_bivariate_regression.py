@@ -852,7 +852,8 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         return raw
 
     def evaluate_metrics(self, X: np.ndarray, Y_true: np.ndarray, weights: Optional[np.ndarray] = None,
-                         region_labels: Optional[np.ndarray] = None, min_region_events: int = 1) -> dict:
+                         region_labels: Optional[np.ndarray] = None, min_region_events: int = 1,
+                         *, kappa: Optional[float] = None) -> dict:
         """
         Evaluates the fitted model on test data and returns a metric bundle
         aligned with the univariate runner and the forward-selection routine.
@@ -947,6 +948,14 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             Minimum labelled events a region must contribute to enter the torus
             macro average. Ignored on Euclidean and when `region_labels` is
             `None`.
+        kappa : float, optional, keyword-only
+            Pre-fit global von Mises concentration to reuse for both
+            `vm_logscore` keys (torus only). `None` (default) preserves the
+            historical per-call self-refit. A frozen `kappa` scores the fitted
+            model on the same dispersion scale as the non-fitted baseline and the
+            gate, so their paired margins are a proper scoring rule instead of a
+            mix of per-fold-refit concentrations. Ignored on Euclidean (the vM
+            branch is never entered).
 
         Returns
         -------
@@ -1071,11 +1080,18 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         # (snapped on euclidean; decoded raw on the torus, where snapping is
         # inert). The `null_model_free` baseline is scored through the sibling
         # `manifold_prediction_metrics`, so it lands at the matching chance floor.
+        # `kappa` (keyword-only, default None) forwards a frozen global
+        # concentration into both vM keys; None preserves the historical
+        # per-call self-refit. A frozen kappa puts the fitted `actual`/`null`
+        # strategies on the SAME dispersion scale as the non-fitted baseline
+        # (`manifold_prediction_metrics`) and the gate, so the paired margins are
+        # a proper scoring rule rather than a mix of per-fold-refit kappas.
         if self.metric == 'torus':
             vm_logscore = macro_von_mises_logscore(
                 Y_pred, Y_true, region_labels,
                 metric=self.metric, period=self.period,
                 min_region_events=min_region_events,
+                kappa=kappa,
             )
             # Pooled (micro) twin of the macro selection score: the SAME per-event
             # von Mises densities (identical residuals and internally-fit kappa)
@@ -1088,6 +1104,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
                 Y_pred, Y_true, None,
                 metric=self.metric, period=self.period,
                 min_region_events=min_region_events,
+                kappa=kappa,
             )
             dcor_xy = float('nan')
         else:

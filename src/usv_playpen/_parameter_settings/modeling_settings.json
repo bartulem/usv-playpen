@@ -84,6 +84,7 @@
     "usv_manifold_period": 1.0,
     "usv_manifold_min_region_events": 20,
     "usv_manifold_selection_score": "macro",
+    "freeze_selection_kappa": false,
     "usv_manifold_geodesic_metrics": {
       "compute": true,
       "grid_n_per_dim": 40,

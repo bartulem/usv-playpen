@@ -646,7 +646,8 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
                                 train_cov_inv: np.ndarray = None,
                                 random_state: int = 0,
                                 region_labels: np.ndarray = None,
-                                min_region_events: int = 1) -> dict:
+                                min_region_events: int = 1,
+                                kappa: float = None) -> dict:
     """
     Description
     -----------
@@ -698,6 +699,13 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         Minimum labelled events a region must contribute to enter the torus
         macro average. Ignored on euclidean and when ``region_labels`` is
         ``None``.
+    kappa (float)
+        Pre-fit global von Mises concentration to reuse for BOTH ``vm_logscore``
+        keys (torus only). ``None`` (default) preserves the historical behaviour
+        of self-refitting kappa per call. A frozen kappa makes this non-fitted
+        baseline scored on the SAME dispersion scale as the fitted strategies and
+        the gate, so their margins are a proper scoring rule. Ignored on
+        euclidean (the vM branch is never entered).
 
     Returns
     -------
@@ -759,6 +767,7 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         vm_logscore = macro_von_mises_logscore(
             Y_pred, Y_true, region_labels,
             metric=metric, period=period, min_region_events=min_region_events,
+            kappa=kappa,
         )
         # Pooled (micro) twin of the macro selection score: the SAME per-event
         # von Mises densities (identical residuals and internally-fit kappa)
@@ -771,6 +780,7 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
         vm_logscore_pooled = macro_von_mises_logscore(
             Y_pred, Y_true, None,
             metric=metric, period=period, min_region_events=min_region_events,
+            kappa=kappa,
         )
         dcor_xy = float('nan')
     else:

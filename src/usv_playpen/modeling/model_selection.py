@@ -52,6 +52,7 @@ from .manifold_metric import (
     resolve_manifold_selection_score_key,
     signed_diff,
     macro_von_mises_logscore,
+    _fit_von_mises_kappa,
     inverse_region_frequency_weights,
 )
 from .modeling_usv_manifold_position import (
@@ -190,7 +191,8 @@ def _fold_paired_margin_bootstrap(
         random_state: int,
         event_to_region: np.ndarray = None,
         min_region_events: int = 1,
-        min_fold_events: int = 30) -> dict:
+        min_fold_events: int = 30,
+        kappa: float = None) -> dict:
     """
     Description
     -----------
@@ -256,6 +258,13 @@ def _fold_paired_margin_bootstrap(
     min_fold_events (int)
         Folds contributing fewer than this many test events are skipped (too few
         points for a stable per-fold score).
+    kappa (float)
+        Pre-fit global von Mises concentration to reuse for every fold's torus
+        score (see the ``kappa`` note in the "Why fold-grain" paragraph). ``None``
+        (default) preserves the historical per-fold self-refit. Passing one frozen
+        concentration removes the per-fold-refit floor that can corrupt the margin
+        on weak folds and keeps ``actual`` / ``null`` on one dispersion scale.
+        Ignored on euclidean.
 
     Returns
     -------
@@ -291,7 +300,7 @@ def _fold_paired_margin_bootstrap(
                 score = macro_von_mises_logscore(
                     y_pred_xy, y_true, regions,
                     metric=metric, period=period,
-                    min_region_events=min_region_events, kappa=None,
+                    min_region_events=min_region_events, kappa=kappa,
                 )
             else:
                 score = dcor_prediction_truth(
@@ -5089,6 +5098,39 @@ def continuous_vocal_manifold_model_selection(
     # (wound-aware), euclidean runs keep the unchanged coordinate model.
     manifold_regressor_cls = resolve_manifold_regressor_cls(manifold_metric)
 
+    # Freeze the von Mises concentration ONCE on the development set when
+    # `freeze_selection_kappa` is on (torus only). Every torus score below --
+    # the empirical-density baseline, the fitted `actual`/`null`/candidate
+    # strategies, the held-out refit, and the acceptance-gate bootstrap -- then
+    # reuses this single `kappa_frozen` instead of self-refitting kappa on its
+    # own residuals. Self-refit floors the concentration on weak folds (the
+    # kappa->0 clamp gives the -2*log(2*pi) score floor), which corrupts the
+    # paired per-fold margin the gate bootstraps; a shared frozen kappa makes
+    # baseline, fitted and gate scores one comparable scoring rule. It is fit on
+    # DEVELOPMENT events only (never the held-out reserve) from the residuals of
+    # an intercept-only (circular-mean) predictor -- the marginal / null-predictor
+    # dispersion -- and UNWEIGHTED, matching the unweighted per-point von Mises
+    # scoring. `None` (the default / flag off) preserves the historical
+    # per-call self-refit at every site, so euclidean and legacy runs are
+    # byte-identical.
+    _vf = settings['vocal_features']
+    freeze_selection_kappa = (bool(_vf['freeze_selection_kappa'])
+                              if 'freeze_selection_kappa' in _vf else False)
+    kappa_frozen = None
+    if freeze_selection_kappa and manifold_metric == 'torus':
+        _y_dev = y_global[_dev_positions].astype(np.float64)
+        _w_dev = w_global[_dev_positions].astype(np.float64)
+        _w_cov_dev = _w_dev / (np.sum(_w_dev) + 1e-12)
+        _mu_dev = circular_mean(
+            _y_dev, metric=manifold_metric, period=manifold_period, weights=_w_cov_dev
+        )
+        _r_dev = signed_diff(
+            _y_dev, _mu_dev[None, :], metric=manifold_metric, period=manifold_period
+        ) * (2.0 * np.pi / manifold_period)
+        kappa_frozen = _fit_von_mises_kappa(_r_dev.ravel())
+        print(f"  Frozen selection kappa = {kappa_frozen:.4f} "
+              f"(dev events, marginal residuals, unweighted)")
+
     # Generate the greedy CV folds on the DEVELOPMENT sessions only, then remap
     # the dev-relative indices the splitter returns back into full-array index
     # space via `_dev_positions`. This keeps every `cv_folds` index a valid row of
@@ -5154,7 +5196,7 @@ def continuous_vocal_manifold_model_selection(
         test_proportion=float(test_prop),
         split_strategy=split_strategy,
         random_seed=int(random_seed),
-        one_se_rule_used=True,
+        one_se_rule_used=bool(inner_cv_use_one_se_rule),
         aic_termination_used=False,
         n_anchor_features=len(ranked_features),
         anchor_feature=ranked_features[0],
@@ -5174,6 +5216,12 @@ def continuous_vocal_manifold_model_selection(
                 else 'distance_correlation'
             ),
             'usv_manifold_min_region_events': int(_min_region_events),
+            # Frozen-kappa provenance: whether the torus von Mises concentration
+            # was frozen once on the development set (vs self-refit per call) and
+            # the fitted value, so a reader knows the dispersion scale every score
+            # in this run was computed against. `None` on euclidean / when off.
+            'freeze_selection_kappa': bool(freeze_selection_kappa),
+            'frozen_selection_kappa': (float(kappa_frozen) if kappa_frozen is not None else None),
             # Held-out provenance. `held_out_session_ids` also lives verbatim in
             # the embedded `_input_metadata` sibling; duplicating the summary here
             # makes the selection run-metadata self-describing about whether this
@@ -5388,6 +5436,7 @@ def continuous_vocal_manifold_model_selection(
                 metric=manifold_metric, period=manifold_period,
                 train_cov_inv=cov_inv, random_state=random_seed + fold_idx,
                 region_labels=region_global[te_idx], min_region_events=_min_region_events,
+                kappa=kappa_frozen,
             )
             bundle.update(geodesic_mae_columns(y_pred_xy, Y_te, geodesic_ctx))
             f_met = baseline_data['folds']['metrics']
@@ -5559,6 +5608,7 @@ def continuous_vocal_manifold_model_selection(
             metric=manifold_metric,
             period=manifold_period,
             region_train=region_tr_,
+            kappa=kappa_frozen,
         )
         return lam_sm_win, lam_l2_win, grid_audit_, True
 
@@ -5609,6 +5659,7 @@ def continuous_vocal_manifold_model_selection(
                 metrics = model.evaluate_metrics(
                     X_te, Y_te, weights=w_te,
                     region_labels=region_te, min_region_events=_min_region_events,
+                    kappa=kappa_frozen,
                 )
                 y_pred_xy = model.predict(X_te, snap=True).astype(np.float32)
                 metrics.update(geodesic_mae_columns(y_pred_xy, Y_te, geodesic_ctx))
@@ -5677,6 +5728,7 @@ def continuous_vocal_manifold_model_selection(
                 n_bootstrap=_SELECTION_N_BOOTSTRAP, ci_level=_SELECTION_CI_LEVEL,
                 random_state=random_seed,
                 event_to_region=event_to_region, min_region_events=_min_region_events,
+                kappa=kappa_frozen,
             )
             cand_data['fold_improvement'] = anchor_improvement
             if anchor_improvement['ci_low'] > 0.0:
@@ -5804,6 +5856,7 @@ def continuous_vocal_manifold_model_selection(
                     metrics = model.evaluate_metrics(
                         X_te_stacked, Y_te, weights=w_te,
                         region_labels=region_te, min_region_events=_min_region_events,
+                        kappa=kappa_frozen,
                     )
                     y_pred_xy = model.predict(X_te_stacked, snap=True).astype(np.float32)
                     metrics.update(geodesic_mae_columns(y_pred_xy, Y_te, geodesic_ctx))
@@ -5888,6 +5941,7 @@ def continuous_vocal_manifold_model_selection(
                 n_bootstrap=_SELECTION_N_BOOTSTRAP, ci_level=_SELECTION_CI_LEVEL,
                 random_state=random_seed,
                 event_to_region=event_to_region, min_region_events=_min_region_events,
+                kappa=kappa_frozen,
             )
             step_results['candidates_summary'][best_cand]['fold_improvement'] = step_improvement
 
@@ -5997,6 +6051,7 @@ def continuous_vocal_manifold_model_selection(
                 held_metrics = held_model.evaluate_metrics(
                     X_held, Y_held, weights=w_held,
                     region_labels=region_held, min_region_events=_min_region_events,
+                    kappa=kappa_frozen,
                 )
                 held_pred_xy = held_model.predict(X_held, snap=True).astype(np.float32)
                 held_metrics.update(geodesic_mae_columns(held_pred_xy, Y_held, geodesic_ctx))
@@ -6041,6 +6096,7 @@ def continuous_vocal_manifold_model_selection(
                     metric=manifold_metric, period=manifold_period,
                     train_cov_inv=cov_inv, random_state=held_seed,
                     region_labels=region_held, min_region_events=_min_region_events,
+                    kappa=kappa_frozen,
                 )
                 held_bundle.update(geodesic_mae_columns(held_pred_xy, Y_held, geodesic_ctx))
                 heldout_result = {

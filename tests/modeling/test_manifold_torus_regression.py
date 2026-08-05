@@ -295,6 +295,23 @@ def test_evaluate_metrics_bundle_inherited():
         assert np.isfinite(metrics[key])
 
 
+def test_evaluate_metrics_honors_frozen_kappa():
+    """A supplied `kappa` (keyword-only) is forwarded into both torus vM keys
+    instead of the per-call self-refit, so a frozen `kappa` moves `vm_logscore`
+    away from the default (self-refit) value and two different frozen kappas
+    disagree. The default call (no `kappa`) is byte-identical to before."""
+
+    n_features, n_time_bins = 1, 4
+    X, Y = _make_wrapped_torus_2d(n_samples=260, n_inputs=n_features * n_time_bins)
+    model = SmoothTorusManifoldRegression(**_torus_kwargs(n_features, n_time_bins)).fit(X, Y)
+    refit = model.evaluate_metrics(X, Y)['vm_logscore']
+    frozen_a = model.evaluate_metrics(X, Y, kappa=2.5)['vm_logscore']
+    frozen_b = model.evaluate_metrics(X, Y, kappa=0.5)['vm_logscore']
+    assert np.isfinite(frozen_a) and np.isfinite(frozen_b)
+    assert frozen_a != pytest.approx(refit)
+    assert frozen_a != pytest.approx(frozen_b)
+
+
 def test_wound_recovery_beats_coordinate_model():
     """The scientific justification: on a target that winds around the torus
     the embedding ridge recovers a near-perfect held-out ``r2_spatial`` while
