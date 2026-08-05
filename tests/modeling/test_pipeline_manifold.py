@@ -759,6 +759,78 @@ class TestManifoldModelSelection:
         assert final_step['_run_metadata']['selection_metric'] == 'vm_logscore'
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_selection_torus_frozen_kappa_runs(self, tmp_path, capsys):
+        """
+        With ``vocal_features.freeze_selection_kappa=True`` on a torus run, the
+        driver fits ONE von Mises concentration on the development set (an
+        intercept-only marginal predictor's residuals) and reuses it for every
+        score instead of self-refitting kappa per call. This drives the frozen-
+        kappa path end-to-end: the run reaches finalization, prints the fitted
+        concentration, and records it in the selection run-metadata provenance.
+        """
+
+        gate_n_sessions = 25
+        settings, _save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'torus'
+        # The path under test: freeze kappa once on the development set.
+        settings['vocal_features']['freeze_selection_kappa'] = True
+        settings['hyperparameters']['jax_linear']['bivariate']['bin_resizing_factor'] = 1
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
+        input_md = {
+            'analysis_type': 'continuous',
+            'analysis_tag': 'manifold_qlvm_supercategory',
+            'session_ids': session_ids,
+            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'analysis_specific': {
+                'usv_category_column_name': 'qlvm_supercategory',
+                'manifold_metric': 'torus',
+                'manifold_period': 1.0,
+            },
+        }
+        input_pkl = str(_build_signal_continuous_pickle(
+            save_path=tmp_path / 'manifold_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            input_metadata=input_md,
+            target_kind='wound_torus',
+        ))
+        runner = ContinuousModelRunner(
+            ContinuousModelingPipeline(modeling_settings_dict=settings)
+        )
+        combined = {f: runner.run_univariate_training(input_pkl, f) for f in feature_names}
+        combined['_input_metadata'] = input_md
+        combined_path = tmp_path / 'univariate_combined.pkl'
+        with combined_path.open('wb') as fh:
+            pickle.dump(combined, fh)
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+
+        continuous_vocal_manifold_model_selection(
+            univariate_results_path=str(combined_path),
+            input_data_path=input_pkl,
+            output_directory=str(ms_dir),
+            settings_path=str(settings_json),
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+
+        # The freeze block executed (torus + flag on) -> it printed the fitted kappa.
+        assert 'Frozen selection kappa' in capsys.readouterr().out
+        # ...and recorded the provenance in the selection run metadata (checked
+        # by presence anywhere in the serialised metadata, robust to nesting).
+        step_pkls = sorted(ms_dir.glob('model_selection_continuous_manifold_*_step_*.pkl'))
+        assert step_pkls
+        with step_pkls[-1].open('rb') as fh:
+            final_step = pickle.load(fh)
+        assert 'freeze_selection_kappa' in json.dumps(final_step['_run_metadata'], default=str)
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_stale_ranking_raises(self, tmp_path):
         """
         On a torus run the selection screens on the fold-grain paired score
@@ -1291,6 +1363,68 @@ class TestManifoldTuner:
         assert audit['one_se_applied'] is True
         assert audit['argmax_pair'][0] == 1.0   # raw argmax was the wigglier one
         assert audit['one_se_threshold'] is not None
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_l2_grid_edge_warning_fires_on_railed_l2(self, capsys):
+        """
+        A tuned l2 that lands on a **>1-point** l2 grid endpoint prints an
+        l2-grid-edge diagnostic (so a mis-placed / too-narrow grid is visible in
+        the log), while a **single-point** l2 grid never false-positives. The
+        score rises monotonically with l2, so with the one-SE rule off the tuner
+        rails to the largest l2 (the grid's upper edge).
+        """
+
+        l2_score = {0.01: 0.10, 0.1: 0.20, 1.0: 0.90}
+
+        class _L2Score:
+            """Stub whose ``r2_spatial`` depends only on ``l2_reg``."""
+
+            def __init__(self, **kwargs):
+                self._l2 = round(kwargs['l2_reg'], 6)
+
+            def fit(self, X, Y, sample_weight=None):
+                return self
+
+            def evaluate_metrics(self, X, Y, weights=None, **kwargs):
+                return {'r2_spatial': l2_score[self._l2]}
+
+        Y_list, groups_list = [], []
+        for sess in range(2):
+            Yc, _ = _spatial_blob(n_clusters=2, per_cluster=10, seed=sess)
+            Y_list.append(Yc)
+            groups_list.append(np.full(len(Yc), sess))
+        Y = np.vstack(Y_list)
+        groups = np.concatenate(groups_list)
+        X = np.zeros((len(Y), 1), dtype=np.float32)
+        w = np.ones(len(Y), dtype=np.float32)
+
+        common = dict(
+            inner_cv_folds=2, inner_cv_scoring_metric='r2_spatial',
+            inner_cv_use_one_se_rule=False, n_features=1, n_time_bins=1,
+            spatial_cluster_num=2, smoothness_derivative_order=1, huber_delta=1.0,
+            learning_rate=0.05, inner_max_iter=5, tol=0.01, random_state=0,
+            verbose=False, use_lax_loop=False, regressor_cls=_L2Score,
+            metric='euclidean', period=1.0,
+        )
+        # Multi-point l2 grid whose argmax rails to the upper edge -> warning fires.
+        _lam, best_l2, _audit = _tune_manifold_regularization(
+            X, Y, w, groups,
+            lambda_smooth_grid=np.array([1.0]),
+            l2_reg_grid=np.array([0.01, 0.1, 1.0]),
+            **common,
+        )
+        assert best_l2 == 1.0
+        out_edge = capsys.readouterr().out
+        assert 'l2 grid' in out_edge and 'EDGE' in out_edge
+
+        # A single-point l2 grid must NOT warn (no false positive on fixed l2).
+        _tune_manifold_regularization(
+            X, Y, w, groups,
+            lambda_smooth_grid=np.array([1.0]),
+            l2_reg_grid=np.array([0.1]),
+            **common,
+        )
+        assert 'EDGE' not in capsys.readouterr().out
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_argmax_returned_when_one_se_rule_off(self):
