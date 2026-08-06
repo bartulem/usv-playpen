@@ -211,7 +211,7 @@ cross-validation and held-out-test settings live in their own
             "grid_n_per_dim": 40,
             "graph_k": 8,
             "density_exponent": 1.0,
-            "decoder_weights_npz_path": "/mnt/cup/labs/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz"
+            "decoder_weights_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz"
         }
     }
 
