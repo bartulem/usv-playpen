@@ -222,13 +222,41 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
 
 * **npx_file_type** : Neuropixels 1.0 had "lf" and "ap" files, this field allows you to switch between them
 * **npx_ms_divergence_tolerance** : the maximum allowed difference between the video and e-phys recording duration in milliseconds; the default value is 12 ms but it can be tuned to whatever the user thinks is appropriate.
+* **apply_phase_shift** : if ``true`` (the default), each session's AP binary is de-skewed for the Neuropixels ADC sample-time offset (see the note below) as part of the sync check; ``"ap"`` band only.
 
 .. code-block:: json
 
     "validate_ephys_video_sync": {
             "npx_file_type": "ap",
-            "npx_ms_divergence_tolerance": 12.0
+            "npx_ms_divergence_tolerance": 12.0,
+            "apply_phase_shift": true
     }
+
+.. note::
+
+   **Neuropixels ADC phase-shift correction (**\ ``apply_phase_shift``\ **).** A
+   Neuropixels probe multiplexes its analog channels onto a small number of ADCs,
+   so within a single sample period the channels are digitised at slightly
+   staggered times (a fixed, per-channel fraction-of-a-sample delay). When
+   ``apply_phase_shift`` is ``true`` (the default), the e-phys/video sync check
+   additionally de-skews this offset on each session's AP binary with a Fourier
+   fractional-sample shift (SpikeInterface's ``phase_shift``), so every channel is
+   aligned to a common time base before any channel-combining step (referencing /
+   whitening / drift correction) in the sorter reads the data. The trailing
+   SpikeGLX sync channel is left bit-for-bit unchanged.
+
+   The correction is applied **in place**: each raw ``*.ap.bin`` is replaced at its
+   exact path (temporary file + atomic rename), so every downstream step that
+   expects a single ``*.ap.bin`` per ``imecN`` directory is unaffected. A
+   ``*_phase_shift_applied.json`` marker is written next to each corrected binary,
+   and a session that already carries this marker is skipped, so re-running the
+   check never double-shifts. **Because the raw binary is overwritten, keep an
+   untouched copy of the raw SpikeGLX data elsewhere** (this is standard practice).
+
+   **Run the e-phys/video sync check BEFORE concatenation.** The correction is done
+   per session, so concatenation then stitches already-corrected binaries. If you
+   concatenate first, the concatenated file is built from the raw, un-corrected
+   sessions.
 
 
 Concatenate e-phys files

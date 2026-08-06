@@ -486,6 +486,11 @@ def test_validate_ephys_video_sync_writes_changepoints(tmp_path, processing_sett
         "total_video_time_least": tracking_samples / sr,
     }))
 
+    # this test exercises the sync-check / changepoints path, not phase-shift; the
+    # synthetic .meta is too minimal for the probe geometry the phase-shift
+    # correction needs, so disable that orthogonal (default-on) step here
+    processing_settings['synchronize_files']['Synchronizer']['validate_ephys_video_sync']['apply_phase_shift'] = False
+
     sync = Synchronizer(
         root_directory=str(root),
         input_parameter_dict=processing_settings,
@@ -499,6 +504,82 @@ def test_validate_ephys_video_sync_writes_changepoints(tmp_path, processing_sett
     rec = info["20250919_155842.imec0"]
     assert rec["tracking_start_end"] == [50301, 50301 + tracking_samples]
     assert rec["total_num_channels"] == 5
+
+
+# ---------------------------------------------------------------------------
+# _phase_shift_correct_in_place — Neuropixels ADC sample-time de-skew
+# ---------------------------------------------------------------------------
+
+
+def test_phase_shift_correct_in_place_deskews_ap_preserves_sync_and_is_idempotent(
+        tmp_path, processing_settings, monkeypatch):
+    """
+    Description
+    -----------
+    In-place Neuropixels ADC phase-shift correction of a synthetic AP binary.
+    The per-channel sample shifts are monkeypatched to a known vector (so the
+    test needs no real SpikeGLX probe metadata), with the first AP channel at
+    shift 0. The correction must: leave the trailing sync channel and any
+    zero-shift channel bit-exact; change every non-zero-shift AP channel;
+    preserve the file size and each channel's RMS (a fractional-sample shift is
+    an all-pass filter); write a done-marker; and be a no-op on a second call.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp dir holding the synthetic binary + meta.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces the probe-metadata read and the sample-shift derivation with
+        stubs returning a fixed shift vector.
+
+    Returns
+    -------
+    None
+    """
+
+    from usv_playpen.processing import synchronize_files as sf
+
+    n_ch, n_samples = 8, 20000
+    # 7 AP channels (first at shift 0 -> untouched) + 1 trailing sync channel
+    ap_shifts = np.array([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6], dtype=float)
+    monkeypatch.setattr(sf.probeinterface, "read_spikeglx", lambda *_a, **_k: object())
+    monkeypatch.setattr(sf, "get_neuropixels_sample_shifts_from_probe", lambda *_a, **_k: ap_shifts)
+
+    rng = np.random.default_rng(0)
+    data = (rng.standard_normal((n_samples, n_ch)) * 200.0).astype(np.int16)
+    data[:, -1] = ((rng.random(n_samples) > 0.5) * 64).astype(np.int16)  # sync-like TTL channel
+    bin_path = tmp_path / "sess_g0_t0.imec0.ap.bin"
+    data.tofile(bin_path)
+    meta_path = tmp_path / "sess_g0_t0.imec0.ap.meta"
+    meta_path.write_text("dummy")
+    original = data.copy()
+    original_size = bin_path.stat().st_size
+
+    sync = _make_sync(tmp_path, processing_settings)
+    sync._phase_shift_correct_in_place(npx_recording=bin_path, meta_path=meta_path,
+                                       num_channels=n_ch, sampling_frequency=30000.0)
+    corrected = np.fromfile(bin_path, dtype=np.int16).reshape((n_samples, n_ch))
+
+    assert bin_path.stat().st_size == original_size
+    assert np.array_equal(corrected[:, -1], original[:, -1]), "sync channel must be bit-exact"
+    assert np.array_equal(corrected[:, 0], original[:, 0]), "zero-shift AP channel must be unchanged"
+    for c in range(1, n_ch - 1):
+        assert not np.array_equal(corrected[:, c], original[:, c]), f"channel {c} should be de-skewed"
+    for c in range(n_ch):
+        rms_old = np.sqrt(np.mean(original[:, c].astype(np.float64) ** 2))
+        rms_new = np.sqrt(np.mean(corrected[:, c].astype(np.float64) ** 2))
+        assert rms_new == pytest.approx(rms_old, rel=1e-2), f"channel {c} RMS not preserved (all-pass filter)"
+
+    marker = tmp_path / "sess_g0_t0.imec0_phase_shift_applied.json"
+    assert marker.is_file(), "phase-shift done-marker must be written"
+
+    # second call is a no-op (marker present)
+    snapshot = np.fromfile(bin_path, dtype=np.int16).copy()
+    sync._phase_shift_correct_in_place(npx_recording=bin_path, meta_path=meta_path,
+                                       num_channels=n_ch, sampling_frequency=30000.0)
+    assert np.array_equal(np.fromfile(bin_path, dtype=np.int16), snapshot), "re-run must not change the binary"
 
 
 def test_gather_px_information_writes_led_memmap(tmp_path, processing_settings):

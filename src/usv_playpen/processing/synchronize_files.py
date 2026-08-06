@@ -21,9 +21,13 @@ from datetime import datetime
 
 import cv2
 import numpy as np
+import probeinterface
 from imgstore import new_for_filename
 from numba import njit
 from scipy.io import wavfile
+from spikeinterface.extractors import read_binary
+from spikeinterface.extractors.neuropixels_utils import get_neuropixels_sample_shifts_from_probe
+from spikeinterface.preprocessing import phase_shift
 
 from ..os_utils import (
     ephys_base_for_data_root,
@@ -272,6 +276,125 @@ class Synchronizer:
 
         self.app_context_bool = is_gui_context()
 
+    def _phase_shift_correct_in_place(self,
+                                      npx_recording: pathlib.Path,
+                                      meta_path: pathlib.Path,
+                                      num_channels: int,
+                                      sampling_frequency: float) -> None:
+        """
+        Description
+        -----------
+        De-skew one session's Neuropixels AP binary in place (Neuropixels ADC
+        sample-time / phase-shift correction).
+
+        A Neuropixels probe multiplexes its analog channels onto a small number of
+        ADCs, so within a single sample period the channels are digitized at
+        slightly staggered times (a fixed, per-channel fraction-of-a-sample delay).
+        This method removes that skew from the AP channels with a Fourier
+        fractional-sample shift (SpikeInterface's ``phase_shift``, an
+        ``exp(-i 2 pi f tau)`` phase ramp), so that every channel is aligned to a
+        common time base before any channel-combining step (referencing /
+        whitening / drift correction) in the sorter reads the data. The trailing
+        SpikeGLX sync channel is given a shift of exactly zero, so it is left
+        bit-for-bit unchanged (it is a digital timing channel, not an analog
+        voltage, and must not be resampled).
+
+        The binary is replaced ON DISK at its exact original path, so every
+        downstream consumer that globs for a single ``*.ap.bin`` per probe
+        directory sees no change. To make the replacement safe, the corrected data
+        is first streamed to a temporary file and then atomically renamed over the
+        raw binary, so an interrupted run can never leave a half-written ``.bin``.
+        A JSON provenance / done-marker is written next to the binary; a session
+        that already carries this marker is skipped, so re-running the step can
+        never double-shift the same data.
+
+        Parameters
+        ----------
+        npx_recording (pathlib.Path)
+            Path to the raw per-session AP ``.bin`` (interleaved int16, samples x
+            channels) that is corrected in place.
+        meta_path (pathlib.Path)
+            Path to the matching SpikeGLX ``.ap.meta`` whose probe geometry yields
+            the per-channel ADC sample shifts.
+        num_channels (int)
+            Total channels per sample in the binary, INCLUDING the trailing sync
+            channel (e.g. 385 = 384 AP + 1 sync for a Neuropixels probe).
+        sampling_frequency (float)
+            Sampling rate (Hz) attached to the SpikeInterface recording object. The
+            correction is expressed in fractions of a sample, so this value does
+            not change the result.
+
+        Returns
+        -------
+        None
+            Replaces ``npx_recording`` with its phase-corrected version and writes
+            a ``*_phase_shift_applied.json`` provenance marker next to it.
+        """
+
+        # a session that already carries the done-marker is skipped, so re-running
+        # can never double-shift; the marker name avoids the 'ap.bin' substring so
+        # it is not picked up by the downstream '*ap.bin*' / '*ap.bin' globs
+        done_marker = npx_recording.parent / f"{npx_recording.name[:-7]}_phase_shift_applied.json"
+        if done_marker.is_file():
+            self.message_output(f"Phase-shift already applied to {npx_recording.name} (marker present); skipping.")
+            return
+
+        # per-channel AP sample shifts from this session's probe geometry; the
+        # trailing sync channel(s) get a zero shift so they pass through untouched
+        probe = probeinterface.read_spikeglx(meta_path)
+        ap_sample_shifts = get_neuropixels_sample_shifts_from_probe(probe)
+        if ap_sample_shifts is None:
+            raise ValueError(f"Could not derive Neuropixels sample shifts from {meta_path}; "
+                             f"the probe metadata lacks the required ADC fields.")
+        num_sync_channels = num_channels - int(ap_sample_shifts.shape[0])
+        if num_sync_channels < 0:
+            raise ValueError(f"{meta_path} implies {ap_sample_shifts.shape[0]} AP channels, which exceeds the "
+                             f"{num_channels} channels in {npx_recording.name}.")
+        inter_sample_shift = np.concatenate([ap_sample_shifts,
+                                             np.zeros(num_sync_channels, dtype=ap_sample_shifts.dtype)])
+
+        # de-skew the AP channels (sync channel left bit-exact), streaming to a temp
+        # file first, then atomically replace the raw binary and drop the marker
+        raw_recording = read_binary(str(npx_recording),
+                                    sampling_frequency=sampling_frequency,
+                                    dtype='int16',
+                                    num_channels=num_channels)
+        shifted_recording = phase_shift(raw_recording,
+                                        inter_sample_shift=inter_sample_shift,
+                                        dtype='int16')
+
+        # write the corrected traces to a temporary file, chunk by chunk, through an
+        # explicitly-closed handle. `phase_shift` fetches its own margin on every
+        # `get_traces` call, so chunked reads reproduce the whole-signal result; and
+        # closing the handle before the rename keeps a stray file descriptor from
+        # leaking (SpikeInterface's own `write_binary_recording` leaves it open) and
+        # lets the atomic replace succeed on Windows, where renaming a file with an
+        # open handle fails.
+        temp_path = npx_recording.parent / f"{npx_recording.name[:-7]}_phase_shift_tmp"
+        num_frames = shifted_recording.get_num_frames()
+        chunk_frames = 300_000
+        with open(temp_path, 'wb') as temp_file:
+            for start_frame in range(0, num_frames, chunk_frames):
+                end_frame = min(start_frame + chunk_frames, num_frames)
+                chunk_traces = shifted_recording.get_traces(start_frame=start_frame, end_frame=end_frame)
+                temp_file.write(np.ascontiguousarray(chunk_traces, dtype='int16').tobytes())
+
+        # release the read handles on the source before atomically replacing it, so
+        # no memory-mapped file object is left open across the rename
+        del shifted_recording, raw_recording
+        temp_path.replace(npx_recording)
+
+        with open(done_marker, 'w') as marker_file:
+            json.dump({'phase_shift_applied': True,
+                       'inter_sample_shift_source_meta': str(meta_path),
+                       'num_channels': int(num_channels),
+                       'num_ap_channels_shifted': int(ap_sample_shifts.shape[0]),
+                       'num_sync_channels_unshifted': int(num_sync_channels)},
+                      marker_file, indent=4)
+        self.message_output(f"Applied Neuropixels ADC phase-shift to {npx_recording.name} "
+                            f"({int(ap_sample_shifts.shape[0])} AP channels de-skewed, "
+                            f"{int(num_sync_channels)} sync channel(s) left unchanged).")
+
     def validate_ephys_video_sync(self) -> None:
         """
         Description
@@ -310,6 +433,11 @@ class Synchronizer:
             total_frame_number_least = camera_frame_count_dict['total_frame_number_least']
             total_video_time_least = camera_frame_count_dict['total_video_time_least']
 
+        # phase-shift correction toggle (Neuropixels ADC sample-time de-skew of the
+        # AP band, applied in place per session below); opt-in and AP-band only
+        npx_file_type = self.input_parameter_dict['validate_ephys_video_sync']['npx_file_type']
+        apply_phase_shift = bool(self.input_parameter_dict['validate_ephys_video_sync']['apply_phase_shift'])
+
         for npx_recording in sorted(pathlib.Path(self.root_directory).rglob(f"*{self.input_parameter_dict['validate_ephys_video_sync']['npx_file_type']}.bin")):
 
             # parse metadata file for channel and headstage information
@@ -341,6 +469,15 @@ class Synchronizer:
 
                 # save sync channel data
                 np.save(file=sync_ch_file, arr=sync_data)
+
+            # optionally de-skew this session's AP binary in place (Neuropixels ADC
+            # phase-shift); the sync channel extracted above is unchanged by the
+            # correction, so the tracking-sync logic below is unaffected. AP-band only.
+            if apply_phase_shift and npx_file_type == 'ap':
+                self._phase_shift_correct_in_place(npx_recording=npx_recording,
+                                                   meta_path=npx_recording.parent / (npx_recording.name[:-3] + 'meta'),
+                                                   num_channels=total_probe_ch,
+                                                   sampling_frequency=float(calibrated_sr_config['CalibratedHeadStages'][headstage_sn]))
 
             # search for tracking start and end
             ch_sync_data = np.load(file=f'{sync_ch_file}.npy')

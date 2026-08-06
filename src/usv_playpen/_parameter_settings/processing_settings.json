@@ -165,7 +165,8 @@
     "Synchronizer": {
       "validate_ephys_video_sync": {
         "npx_file_type": "ap",
-        "npx_ms_divergence_tolerance": 12.0
+        "npx_ms_divergence_tolerance": 12.0,
+        "apply_phase_shift": true
       },
       "find_audio_sync_trains": {
         "sync_ch_receiving_input": 2,
