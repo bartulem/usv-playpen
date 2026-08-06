@@ -648,13 +648,13 @@ def build_run_metadata(modeling_settings: dict,
     # `focal_loss_gamma` and the `balance_*` flags; both share the same
     # core hyperparameter names so we copy through whichever block
     # matches the analysis_type.
-    jax_root = hp_root['jax_linear']
+    jax_root = hp_root['linear_models']
     if analysis_type == 'multinomial':
         jax_block = jax_root['multinomial_logistic']
         jax_kind = 'multinomial_logistic'
     elif analysis_type == 'continuous':
-        jax_block = jax_root['bivariate']
-        jax_kind = 'bivariate'
+        jax_block = jax_root['manifold_regression']
+        jax_kind = 'manifold_regression'
     else:
         jax_block = None
         jax_kind = None

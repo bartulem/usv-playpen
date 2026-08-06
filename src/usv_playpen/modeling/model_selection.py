@@ -3349,7 +3349,7 @@ def multinomial_vocal_category_model_selection(
     The test fold always preserves the natural class prior of the source data
     (stratified in 'mixed' mode, within-tolerance of global in 'session' mode).
     The training fold follows one of two paths, selected by
-    `hyperparameters.jax_linear.multinomial_logistic.balance_train_bool`:
+    `hyperparameters.linear_models.multinomial_logistic.balance_train_bool`:
 
     - `false` (default): the training fold retains the natural class prior,
       and class imbalance is handled inside the JAX loss through softened
@@ -3525,7 +3525,7 @@ def multinomial_vocal_category_model_selection(
     raw_data.pop('_consolidation_metadata', None)
     _univariate_md = _univ_pre_md
 
-    hp = settings['hyperparameters']['jax_linear']['multinomial_logistic']
+    hp = settings['hyperparameters']['linear_models']['multinomial_logistic']
     bin_size = hp['bin_resizing_factor']
 
     binned_data = {}
@@ -4658,7 +4658,7 @@ def continuous_vocal_manifold_model_selection(
     fixed defaults `lambda_smooth_fixed = 1.0` and `l2_reg_fixed = 0.01`
     (`lambda_smooth` still shapes the interpretable filter even though it no
     longer moves the score). On Euclidean manifolds, when
-    `hyperparameters.jax_linear.bivariate.tune_regularization_bool` is
+    `hyperparameters.linear_models.bivariate.tune_regularization_bool` is
     `true`, every candidate fold (anchor + every forward-selection trial)
     runs its own joint inner CV over the log-spaced
     `(lambda_smooth, l2_reg)` grids before the outer fit. The l2 grid is
@@ -4936,7 +4936,7 @@ def continuous_vocal_manifold_model_selection(
     raw_data.pop('_consolidation_metadata', None)
     _univariate_md = _univ_pre_md
 
-    hp = settings['hyperparameters']['jax_linear']['bivariate']
+    hp = settings['hyperparameters']['linear_models']['manifold_regression']
     bin_size = hp['bin_resizing_factor']
 
     binned_data = {}

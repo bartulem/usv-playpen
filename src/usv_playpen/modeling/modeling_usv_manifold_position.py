@@ -1383,7 +1383,7 @@ class ContinuousModelRunner:
         bin_size : int, optional
             The resizing factor for temporal downsampling. A value of 10
             means every 10 frames are averaged into 1 bin. Default is 1,
-            matching `hyperparameters.jax_linear.bivariate.bin_resizing_factor`
+            matching `hyperparameters.linear_models.bivariate.bin_resizing_factor`
             in the settings file — any downstream caller should normally
             pass the settings value through rather than rely on this
             default.
@@ -1543,7 +1543,7 @@ class ContinuousModelRunner:
         shapes the (interpretable) published filter, so it is not a free
         parameter for visualisation. On Euclidean manifolds the pipeline
         instead honours
-        `hyperparameters.jax_linear.bivariate.tune_regularization_bool`:
+        `hyperparameters.linear_models.bivariate.tune_regularization_bool`:
 
         - `false` (default): every outer fold uses the fixed settings-
           level `lambda_smooth_fixed` and `l2_reg_fixed` values.
@@ -1605,7 +1605,7 @@ class ContinuousModelRunner:
 
         print(f"--- Starting Univariate Training: {feat_name} ---")
 
-        hp = self.modeling_settings['hyperparameters']['jax_linear']['bivariate']
+        hp = self.modeling_settings['hyperparameters']['linear_models']['manifold_regression']
         bin_size = hp['bin_resizing_factor']
 
         # Only bin the feature we're about to train. Mirrors the multinomial

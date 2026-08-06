@@ -1101,7 +1101,7 @@ class MultinomialModelRunner:
                      within a widening tolerance of the global class prior,
                      ensuring no session leaks between train and test.
     4. Optional train-fold balancing: when
-       `hyperparameters.jax_linear.multinomial_logistic.balance_train_bool`
+       `hyperparameters.linear_models.multinomial_logistic.balance_train_bool`
        is `true`, each training fold is per-class down-sampled to the minimum
        class count, and the JAX fit is switched to `focal_gamma=0` with
        uniform class weights so focal-alpha does not double-correct an already
@@ -1303,7 +1303,7 @@ class MultinomialModelRunner:
         The test fold always preserves the natural class prior of the source
         data (stratified in 'mixed' mode, natural-within-tolerance in 'session'
         mode). The training fold follows one of two paths, selected by
-        `hyperparameters.jax_linear.multinomial_logistic.balance_train_bool`:
+        `hyperparameters.linear_models.multinomial_logistic.balance_train_bool`:
 
         - `false` (default): the training fold retains the natural class prior,
           and class imbalance is handled inside the JAX loss through softened
@@ -1361,7 +1361,7 @@ class MultinomialModelRunner:
         """
 
         # Strict dictionary lookups (No .get() allowed)
-        hp = self.modeling_settings['hyperparameters']['jax_linear']['multinomial_logistic']
+        hp = self.modeling_settings['hyperparameters']['linear_models']['multinomial_logistic']
         n_splits = self.modeling_settings['model_validation']['n_cv_folds']
         split_strategy = self.modeling_settings['model_validation']['split_strategy']
         test_prop = self.modeling_settings['model_validation']['cv_validation_proportion']

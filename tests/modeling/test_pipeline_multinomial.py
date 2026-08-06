@@ -386,7 +386,7 @@ def _apply_multinomial_overrides(settings: dict) -> dict:
     -----------
     Mutates ``settings`` in place so the multinomial JAX estimator runs in a
     smoke-test-tiny regime: the
-    ``hyperparameters.jax_linear.multinomial_logistic`` block is replaced with
+    ``hyperparameters.linear_models.multinomial_logistic`` block is replaced with
     ``_MULTINOMIAL_HP_OVERRIDES`` (one binned column, few iters, tuning off),
     the vocal-predictor mode is disabled to keep the design matrix to the four
     kinematic features, and the per-session split rejection-sampler ceilings are
@@ -403,7 +403,7 @@ def _apply_multinomial_overrides(settings: dict) -> dict:
         The same dict, mutated, for call-site chaining.
     """
 
-    settings['hyperparameters']['jax_linear']['multinomial_logistic'] = dict(
+    settings['hyperparameters']['linear_models']['multinomial_logistic'] = dict(
         _MULTINOMIAL_HP_OVERRIDES
     )
     settings['vocal_features']['usv_predictor_type'] = None
@@ -1343,7 +1343,7 @@ class TestMultinomialRunnerExtraBranches:
             tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2,
             test_proportion=0.4,
         )
-        hp = settings['hyperparameters']['jax_linear']['multinomial_logistic']
+        hp = settings['hyperparameters']['linear_models']['multinomial_logistic']
         hp['balance_train_bool'] = True
         hp['tune_regularization_bool'] = True
         hp['tune_regularization_params'] = dict(hp['tune_regularization_params'])

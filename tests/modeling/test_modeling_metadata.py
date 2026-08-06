@@ -429,7 +429,7 @@ def _full_modeling_settings(model_engine='sklearn',
     The builders never use ``.get`` with defaults — each one indexes the
     settings dict directly — so every key the three builders touch
     (``io``, ``model_params``, ``vocal_features``, ``kinematic_features``,
-    and the ``hyperparameters`` sub-tree with its ``jax_linear``,
+    and the ``hyperparameters`` sub-tree with its ``linear_models``,
     ``classical``, and ``basis_functions`` blocks) must be present here.
 
     Parameters
@@ -514,7 +514,7 @@ def _full_modeling_settings(model_engine='sklearn',
                 'logistic_regression': {'C': 1.0, 'penalty': 'l2'},
                 'ridge_regression': {'alpha': 1.0},
             },
-            'jax_linear': {
+            'linear_models': {
                 'multinomial_logistic': {
                     'bin_resizing_factor': 2,
                     'lambda_smooth_fixed': 0.01,
@@ -538,7 +538,7 @@ def _full_modeling_settings(model_engine='sklearn',
                         'inner_max_iter': 200,
                     },
                 },
-                'bivariate': {
+                'manifold_regression': {
                     'bin_resizing_factor': 4,
                     'lambda_smooth_fixed': 0.02,
                     'l2_reg_fixed': 0.002,
@@ -937,7 +937,7 @@ class TestBuildRunMetadata:
         md = self._build(settings, 'continuous', mocker)
         self._common_assertions(md, 'continuous', 'sklearn', 'raised_cosine')
         jax = md['jax_hyperparameters']
-        assert jax['jax_block_kind'] == 'bivariate'
+        assert jax['jax_block_kind'] == 'manifold_regression'
         assert jax['bin_resizing_factor'] == 4
         assert jax['use_lax_loop'] is False
         assert jax['tune_regularization_bool'] is False

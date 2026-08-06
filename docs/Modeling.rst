@@ -256,52 +256,80 @@ cross-validation and held-out-test settings live in their own
 **hyperparameters** — per-engine model tuning, grouped into four sub-blocks:
 
 * **deep_learning.cnn_continuous** — the 1-D ResNet for the continuous manifold target (architecture, optimiser, spatial-CV, saliency), consumed by ``NeuralContinuousCNNRunner``. The ``block_channels`` list sets the per-block channel widths (and therefore the network depth); ``warmup_fraction`` is the fraction of total steps spent warming the learning rate up before the cosine decay.
-* **jax_linear.bivariate** / **jax_linear.multinomial_logistic** — the JAX smooth bivariate regression (continuous manifold) and multinomial-logistic (vocal categories) models. The multinomial estimator additionally exposes a ``grad_clip_norm`` hyperparameter (global-norm gradient clip, default ``1.0``) that bounds each optimiser step.
+* **linear_models.manifold_regression** / **linear_models.multinomial_logistic** — the JAX smooth bivariate regression (continuous manifold position) and multinomial-logistic (vocal categories) models. The multinomial estimator additionally exposes a ``grad_clip_norm`` hyperparameter (global-norm gradient clip, default ``1.0``) that bounds each optimiser step.
 * **classical.pygam** / **classical.logistic_regression** / **classical.ridge_regression** — the ``'pygam'`` / ``'sklearn'`` engine models (GAM splines; logistic-CV for binary targets; and, for the bout-parameter regression, an L2-penalized Gamma GLM whose penalty grid / CV come from the ``ridge_regression`` block — matching the pyGAM engine's Gamma likelihood so fit and Gamma-deviance score agree).
 * **basis_functions.raised_cosine** / **bspline** / **laplacian_pyramid** — parameters for each ``model_basis_function`` choice.
 
-The regularisation controls (shared by both ``jax_linear`` sub-blocks) look like:
+The regularisation controls (shared by both ``linear_models`` sub-blocks) look like:
 
 .. code-block:: json
 
-    "jax_linear": {
-        "bivariate": {
+    "linear_models": {
+        "manifold_regression": {
             "lambda_smooth_fixed": 1.0,
             "l2_reg_fixed": 0.01,
             "smoothness_derivative_order": 2,
             "learning_rate": 0.005,
             "max_iter": 20000,
-            "tune_regularization_bool": true,
+            "tune_regularization_bool": false,
             "tune_regularization_params": {
-                "lambda_smooth_decades_each_side": 3,
+                "lambda_smooth_decades_each_side": 0,
                 "l2_reg_decades_each_side": 4,
                 "inner_cv_folds": 5,
-                "inner_cv_scoring_metric": "dcor_xy",
-                "inner_cv_use_one_se_rule": true,
+                "inner_cv_use_one_se_rule": false,
                 "inner_max_iter": 2500
             }
         }
     }
 
-* **lambda_smooth_fixed** / **l2_reg_fixed** — the fixed smoothness and L2 penalties used when regularisation tuning is off.
-* **tune_regularization_bool** — if ``true``, run an inner-loop cross-validation to pick ``lambda_smooth`` / ``l2_reg`` (parameters in ``tune_regularization_params``: the search width in decades, inner-CV folds, scoring metric, and the one-standard-error rule).
+(The ``multinomial_logistic`` block mirrors this, plus an ``inner_cv_scoring_metric``
+key — e.g. ``"auc"`` — that the manifold block does not carry, because a torus
+manifold fit is always scored by the macro von Mises log-score ``vm_logscore``.)
+
+* **lambda_smooth_fixed** / **l2_reg_fixed** — the fixed smoothness and L2 penalties. These are the operative values for **both** linear models, whose ``tune_regularization_bool`` now defaults to ``false`` (see the note below).
+* **tune_regularization_bool** — if ``true``, run an inner-loop cross-validation to pick ``lambda_smooth`` / ``l2_reg`` per fold (parameters in ``tune_regularization_params``: the search width in decades, inner-CV folds, scoring metric, and the one-standard-error rule). When ``false``, ``tune_regularization_params`` is not read and the two ``*_fixed`` penalties are used directly.
 
 .. note::
 
-   **Regularisation tuning on the torus manifold.** For the continuous
-   manifold target with ``usv_manifold_metric = 'torus'`` the selection score is
-   the macro von Mises log-likelihood (``vm_logscore``), which — unlike the
-   distance correlation the score used to be — *does* respond to the smoothness
-   penalty, so the inner-loop regularisation CV is meaningful and is honoured as
-   configured: set ``hyperparameters.jax_linear.bivariate.tune_regularization_bool``
-   to ``true`` to pick ``lambda_smooth`` / ``l2_reg`` per fold (the inner-CV
-   objective is the pooled von Mises log-likelihood, derived from the geometry,
-   not a configured knob). The torus smoothness penalty uses reflective (Neumann)
-   boundary rows, so a higher ``lambda_smooth`` cleans the interpretable filter's
-   middle without its edges floating free. On euclidean / VAE / UMAP manifolds
-   the selection score is the wrap-aware distance correlation ``dcor_xy`` (with
-   ``r2_spatial`` reported as a descriptor) and tuning is likewise honoured as
-   configured.
+   **Regularisation is FIXED, not tuned, for the manifold model.** Empirically,
+   on the behaviour→manifold-position problem the prediction score is *flat*
+   across the smoothness penalty ``lambda_smooth`` over its entire range, and
+   *flat* across the ridge penalty ``l2_reg`` below ~1 (only degrading when
+   ``l2_reg`` is pushed much higher). The behavioural signal is real but weak and
+   low-dimensional, so a wide range of shrinkage settings all land on the same
+   answer — there is no interior optimum for an inner-CV to find. Tuning a flat
+   surface makes the one-standard-error rule rail the penalty to a grid edge,
+   which is exactly what produced an unstable feature count (a run selecting
+   several features flipping to zero on a re-run). ``manifold_regression`` therefore
+   ships with ``tune_regularization_bool = false``: ``lambda_smooth`` and ``l2_reg``
+   are fixed at their ``*_fixed`` values. ``lambda_smooth`` changes only how smooth
+   the interpretable filter *looks* (a constant filter scores the same as a
+   recent-lag one), never the selection; the torus smoothness penalty uses
+   reflective (Neumann) boundary rows so a higher fixed ``lambda_smooth`` cleans the
+   filter's middle without its edges floating free.
+
+   The multinomial-category model also ships with ``tune_regularization_bool =
+   false``, but for a different, more cautionary reason. It is an *iterative* GLM
+   (not the closed-form manifold solve) whose inner-CV was capped at
+   ``inner_max_iter = 2500`` while a *converged* multinomial fit needs
+   ~15000-18000 iterations — so its inner-CV was badly under-converged and its
+   earlier tuning choices (which railed ``lambda_smooth`` to the grid ceiling) were
+   a convergence artifact, not a real optimum. Tuning is therefore disabled here
+   too, pending a proper fix: raise ``inner_max_iter`` and investigate why the fit
+   needs so many iterations (the outer ``max_iter`` of 20000 is itself only
+   marginally sufficient). Until then ``lambda_smooth`` / ``l2_reg`` are fixed at
+   their ``*_fixed`` values.
+
+.. note::
+
+   **Frozen von Mises concentration.** On a torus manifold run, set
+   ``vocal_features.freeze_selection_kappa = true`` to fit the von Mises
+   concentration ``kappa`` once on the development set and reuse it for every
+   score (baseline, fitted candidates, held-out, and the acceptance-gate
+   bootstrap). The default (``false``) self-refits ``kappa`` per call, which floors
+   the score on weak folds (the ``kappa → 0`` clamp) and corrupts the gate's paired
+   per-fold margin; a single frozen ``kappa`` keeps every score on one dispersion
+   scale so the margins are a proper scoring rule.
 
 **glm_hmm** — the GLM-HMM over latent vocal states (see
 :ref:`Latent vocal states <modeling-glm-hmm>` below).
@@ -643,8 +671,10 @@ Model selection
 ---------------
 Greedy forward-stepwise selection stacks features on top of the univariate
 ranking, adding at each step the feature whose contribution most improves
-the held-out score (one-standard-error rule; see the source for the exact
-stopping criterion). ``use_top_rank_as_anchor=True`` seeds step 0 with the
+the held-out score, subject to the **fold-grain paired-margin acceptance gate**
+described in the note below (a step is kept only when its per-fold score-margin
+improvement over the shuffle null has a ``selection_ci_level`` bootstrap CI whose
+lower bound exceeds ``0``). ``use_top_rank_as_anchor=True`` seeds step 0 with the
 top univariate feature; ``p_val`` is the per-step acceptance threshold.
 
 .. note::
@@ -798,7 +828,7 @@ hoisted metadata blocks:
     }
 
 * **``steps``** — an ordered list, one entry per forward-selection step. ``step_idx`` is the iteration, ``current_features`` are those already chosen, ``baseline_score`` is their held-out score (the chance floor at step 0), and ``selected_feature`` is the feature accepted this step (``None`` marks the final, rejected step). For the multinomial and manifold selectors, step 0's ``selected_feature`` is the sentinel ``'null_model_free'`` baseline.
-* **``candidates_summary``** — under each step, every candidate feature tested that step mapped to its per-fold metrics. For the discrete / regression targets these are flat per-fold arrays (``ll``, ``auc``, ``score``, ``f1``, ``brier``, ``ece``, ``mcc``, ``confusion_matrix``, ``n_iter`` / ``converged`` / ``fit_time``) plus aggregate ``mean_ll`` / ``se_ll``; the multinomial and manifold selectors nest these under a ``folds.metrics`` sub-dict (with ``y_true`` / ``y_pred`` / ``y_probs`` / ``classes`` and the per-fold ``selected_lambda_smooth`` / ``selected_l2_reg`` regularisation choices).
+* **``candidates_summary``** — under each step, every candidate feature tested that step mapped to its per-fold metrics. For the discrete / regression targets these are flat per-fold arrays (``ll``, ``auc``, ``score``, ``f1``, ``brier``, ``ece``, ``mcc``, ``confusion_matrix``, ``n_iter`` / ``converged`` / ``fit_time``) plus aggregate ``mean_ll`` / ``se_ll``; the multinomial and manifold selectors nest these under a ``folds.metrics`` sub-dict (with ``y_true`` / ``y_pred`` / ``y_probs`` / ``classes`` and the per-fold ``selected_lambda_smooth`` / ``selected_l2_reg`` regularisation choices — equal to the fixed ``*_fixed`` penalties when ``tune_regularization_bool`` is ``false``).
 * **last accepted step** — additionally carries ``final_model_features`` (the cumulative selected set) and ``filter_shapes`` (the per-fold refit filters) of the published model.
 * **metadata blocks** — ``_input_metadata`` and ``_univariate_metadata`` carry the upstream extraction / univariate provenance, ``_run_metadata`` the selection config, and ``_consolidation_metadata`` the merge audit.
 

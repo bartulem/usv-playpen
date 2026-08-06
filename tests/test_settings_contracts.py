@@ -143,7 +143,7 @@ CONTRACTS: tuple[SettingsContract, ...] = (
         blocks=(
             FeedingBlock(
                 settings_file="modeling_settings.json",
-                path=("hyperparameters", "jax_linear", "bivariate"),
+                path=("hyperparameters", "linear_models", "manifold_regression"),
                 exempt=frozenset({
                     "focal_loss_gamma",
                     "balance_predictions_bool",
@@ -153,7 +153,7 @@ CONTRACTS: tuple[SettingsContract, ...] = (
             ),
             FeedingBlock(
                 settings_file="modeling_settings.json",
-                path=("hyperparameters", "jax_linear", "multinomial_logistic"),
+                path=("hyperparameters", "linear_models", "multinomial_logistic"),
             ),
         ),
     ),
@@ -164,7 +164,7 @@ CONTRACTS: tuple[SettingsContract, ...] = (
         blocks=(
             FeedingBlock(
                 settings_file="modeling_settings.json",
-                path=("hyperparameters", "jax_linear", "bivariate",
+                path=("hyperparameters", "linear_models", "manifold_regression",
                       "tune_regularization_params"),
                 exempt=frozenset({"inner_cv_scoring_metric"}),
                 reason="the continuous (bivariate) inner-CV objective is "
@@ -175,7 +175,7 @@ CONTRACTS: tuple[SettingsContract, ...] = (
             ),
             FeedingBlock(
                 settings_file="modeling_settings.json",
-                path=("hyperparameters", "jax_linear", "multinomial_logistic",
+                path=("hyperparameters", "linear_models", "multinomial_logistic",
                       "tune_regularization_params"),
             ),
         ),

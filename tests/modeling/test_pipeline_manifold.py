@@ -167,7 +167,7 @@ def _build_manifold_settings(tmp_path: Path, **overrides):
     settings['model_params']['usv_bout_time'] = 0.5
     settings['model_validation']['spatial_cluster_num'] = SPATIAL_CLUSTER_NUM
 
-    hp = settings['hyperparameters']['jax_linear']['bivariate']
+    hp = settings['hyperparameters']['linear_models']['manifold_regression']
     hp['bin_resizing_factor'] = 10        # 30 -> 3 temporal predictors
     hp['max_iter'] = 60
     hp['tune_regularization_bool'] = False
@@ -486,7 +486,7 @@ class TestContinuousModelRunner:
         )
         # Tiny tuning grids so the inner CV is cheap: a 3-point lambda_smooth
         # grid, a 1-point l2 grid, two inner folds, very few inner iterations.
-        hp = settings['hyperparameters']['jax_linear']['bivariate']
+        hp = settings['hyperparameters']['linear_models']['manifold_regression']
         hp['tune_regularization_bool'] = True
         tune_params = hp['tune_regularization_params']
         tune_params['lambda_smooth_decades_each_side'] = 1
@@ -689,7 +689,7 @@ class TestManifoldModelSelection:
         # No temporal binning: the wound-torus target is built from the full-width
         # projection, so the model must see the full-width design matrix to
         # recover it. The closed-form embedding ridge is fast at full width.
-        settings['hyperparameters']['jax_linear']['bivariate']['bin_resizing_factor'] = 1
+        settings['hyperparameters']['linear_models']['manifold_regression']['bin_resizing_factor'] = 1
         history_frames = HISTORY_FRAMES
         feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
         session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
@@ -776,7 +776,7 @@ class TestManifoldModelSelection:
         settings['vocal_features']['usv_manifold_metric'] = 'torus'
         # The path under test: freeze kappa once on the development set.
         settings['vocal_features']['freeze_selection_kappa'] = True
-        settings['hyperparameters']['jax_linear']['bivariate']['bin_resizing_factor'] = 1
+        settings['hyperparameters']['linear_models']['manifold_regression']['bin_resizing_factor'] = 1
         feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
         session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
         input_md = {
@@ -889,7 +889,7 @@ class TestManifoldModelSelection:
             tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
         )
         settings['vocal_features']['usv_manifold_metric'] = 'torus'
-        settings['hyperparameters']['jax_linear']['bivariate']['bin_resizing_factor'] = 1
+        settings['hyperparameters']['linear_models']['manifold_regression']['bin_resizing_factor'] = 1
         feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
         session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
         input_md = {
