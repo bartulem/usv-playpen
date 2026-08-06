@@ -5,7 +5,7 @@ on:
   pull_request:
   push:
     branches:
-      - "*"
+      - main
 
 # Least-privilege GITHUB_TOKEN for all jobs (CodeQL actions/missing-workflow-permissions):
 # both jobs only read the repo, and Codecov upload authenticates with CODECOV_TOKEN
