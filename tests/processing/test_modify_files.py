@@ -299,6 +299,71 @@ def test_concatenate_binary_files_writes_outputs(tmp_path, processing_settings, 
     assert "fileTimeSecs=" in meta_text
 
 
+def test_split_clusters_to_sessions_removes_duplicate_spikes(tmp_path, processing_settings, mocker):
+    """Duplicate-spike removal in split_clusters_to_sessions: with the toggle on, a
+    unit's near-coincident spikes are dropped before the per-session save (exactly
+    the injected duplicates), and the saved count never exceeds the toggle-off count."""
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+
+    headstage_sn = _headstage_sn()
+    ini = configparser.ConfigParser()
+    ini.read(pathlib.Path(usv_playpen.__file__).parent / "_config" / "calibrated_sample_rates_imec.ini")
+    sampling_rate = float(ini["CalibratedHeadStages"][headstage_sn])
+    censored_samples = round(0.3e-3 * sampling_rate)  # matches shipped duplicate_censored_period_ms
+
+    # one good unit: 10 well-separated spikes + 3 duplicates one sample after the
+    # first three (well inside the censored period) -> exactly 3 must be removed
+    base_spikes = np.arange(1, 11, dtype=np.int64) * 1000
+    duplicate_spikes = base_spikes[:3] + 1
+    assert censored_samples > 1  # the injected duplicates must fall inside the window
+    spike_times = np.sort(np.concatenate([base_spikes, duplicate_spikes]))
+    spike_clusters = np.zeros(spike_times.shape[0], dtype=np.int64)
+
+    root = tmp_path / "Data" / "20250101_120000"
+    (root / "ephys" / "imec0").mkdir(parents=True)
+    (root / "video").mkdir(parents=True)
+    (root / "video" / "sess_camera_frame_count_dict.json").write_text(
+        json.dumps({"median_empirical_camera_sr": 150.0, "total_frame_number_least": 100000})
+    )
+
+    ks_dir = tmp_path / "EPHYS" / "20250101_imec0" / "kilosort4"
+    ks_dir.mkdir(parents=True)
+    np.save(ks_dir / "spike_times.npy", spike_times)
+    np.save(ks_dir / "spike_clusters.npy", spike_clusters)
+    (ks_dir / "cluster_info.tsv").write_text("cluster_id\tch\tgroup\n0\t10\tgood\n")
+
+    changepoints = {
+        "20250101_120000.imec0": {
+            "session_start_end": [0, 20000],
+            "tracking_start_end": [0, 20000],
+            "largest_camera_break_duration": 0,
+            "file_duration_samples": 20000,
+            "root_directory": str(root),
+            "total_num_channels": 5,
+            "headstage_sn": headstage_sn,
+            "imec_probe_sn": "22420014283",
+        }
+    }
+    (ks_dir.parent / "changepoints_info_20250101_imec0.json").write_text(json.dumps(changepoints))
+
+    processing_settings['modify_files']['Operator']['get_spike_times']['min_spike_num'] = 0
+    saved_npy = root / "ephys" / "imec0" / "cluster_data" / "imec0_cl0000_ch010_good.npy"
+
+    def run_and_count(remove_duplicate_spikes):
+        processing_settings['modify_files']['Operator']['get_spike_times']['remove_duplicate_spikes'] = remove_duplicate_spikes
+        _make_operator([str(root)], processing_settings, []).split_clusters_to_sessions()
+        return int(np.load(saved_npy).shape[1])
+
+    off_count = run_and_count(False)
+    on_count = run_and_count(True)
+
+    assert off_count == spike_times.shape[0]        # nothing dropped when off
+    assert on_count == base_spikes.shape[0]         # the 3 duplicates removed when on
+    assert off_count - on_count == duplicate_spikes.shape[0]
+    assert on_count <= off_count                    # monotonic: dedup never adds spikes
+
+
 def test_concatenate_binary_files_two_sessions_chains_changepoints(tmp_path, processing_settings, mocker):
     """
     Description

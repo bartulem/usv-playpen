@@ -369,13 +369,39 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file also contai
 
 * **min_spike_num** : eliminate clusters with fewer spikes than this (set 0 if you want to keep all)
 * **kilosort_version** : Kilosort version in use
+* **remove_duplicate_spikes** : if ``true`` (the default), drop near-coincident duplicate spikes per unit before splitting into sessions (see the note below)
+* **duplicate_censored_period_ms** : two spikes of one unit closer than this (in ms) count as a duplicate (default ``0.3``)
 
 .. code-block:: json
 
     "get_spike_times": {
         "min_spike_num": 100,
-        "kilosort_version": "4"
+        "kilosort_version": "4",
+        "remove_duplicate_spikes": true,
+        "duplicate_censored_period_ms": 0.3
       },
+
+.. note::
+
+   **Duplicate-spike removal (**\ ``remove_duplicate_spikes``\ **).** When ``true``
+   (the default), each unit's spike train is passed through SpikeInterface's
+   ``find_duplicated_spikes`` (``keep_first_iterative``) before the split, dropping
+   the second of any spike pair closer than ``duplicate_censored_period_ms``.
+
+   This is **not** redundant with Kilosort's own duplicate removal. Kilosort
+   de-duplicates **per cluster, at sort time** (its ``duplicate_spike_ms``); but a
+   **Phy merge** combines two templates' detections of the *same* physical spike
+   into a single unit, and because those spikes lived in *different* clusters when
+   Kilosort ran, it never saw them as duplicates. They therefore survive into the
+   curated sort. Measured on a real four-session sort, these merge-induced
+   duplicates are ~0.03 % of all spikes but ~16 % of the sub-millisecond
+   refractory-period violations.
+
+   The removal cleans the per-session analysis spike files only. The spike-quality
+   metrics (``isi_violations`` / ``rp_violations`` in :ref:`Neuropixels`) are
+   deliberately computed on the **raw** curated trains: a duplicate-laden unit is a
+   real quality signal that those metrics should flag, so the quality stage is
+   intentionally left un-de-duplicated.
 
 Video processing
 ----------------

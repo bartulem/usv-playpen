@@ -28,6 +28,7 @@ import numpy as np
 import polars as pls
 from imgstore import new_for_filename
 from scipy.io import wavfile
+from spikeinterface.curation.curation_tools import find_duplicated_spikes
 from tqdm import tqdm
 
 from ..os_utils import (
@@ -112,6 +113,12 @@ class Operator:
         calibrated_sr_config = configparser.ConfigParser()
         calibrated_sr_config.read(pathlib.Path(__file__).parent.parent / '_config/calibrated_sample_rates_imec.ini')
 
+        # optional near-coincident duplicate-spike removal (e.g. from Phy merges that
+        # combine two templates' detections of the same physical spike); reuses the
+        # same SpikeInterface routine as the amplitude-CV quality metric
+        remove_duplicate_spikes = bool(self.input_parameter_dict['get_spike_times']['remove_duplicate_spikes'])
+        duplicate_censored_period_ms = float(self.input_parameter_dict['get_spike_times']['duplicate_censored_period_ms'])
+
         for one_root_dir in self.root_directory:
             _ephys_base = ephys_base_for_data_root(one_root_dir) / pathlib.Path(one_root_dir).name.split('_')[0]
             for ephys_dir in sorted(_ephys_base.parent.glob(f"{_ephys_base.name}_imec*")):
@@ -165,6 +172,13 @@ class Operator:
 
                     (pathlib.Path(root_dict[session_key]) / 'ephys' / probe_id / 'cluster_data').mkdir(parents=True, exist_ok=True)
 
+                # duplicate-removal censored period in samples, at this probe's
+                # calibrated headstage rate (shared across the probe's sessions)
+                if remove_duplicate_spikes:
+                    _dup_headstage_sn = binary_files_info[next(iter(binary_files_info))]['headstage_sn']
+                    _dup_sr = float(calibrated_sr_config['CalibratedHeadStages'][_dup_headstage_sn])
+                    duplicate_censored_period_samples = round(duplicate_censored_period_ms * 1e-3 * _dup_sr)
+
                 # load the Kilosort output files
                 ks_dir = ephys_dir / f"kilosort{self.input_parameter_dict['get_spike_times']['kilosort_version']}"
                 phy_curation_bool = (ks_dir / 'cluster_info.tsv').is_file()
@@ -208,6 +222,13 @@ class Operator:
                             else np.empty(0, dtype=cluster_order.dtype)
                         )
                         spike_events = np.take(spike_times, cluster_indices)
+
+                        # drop near-coincident duplicate spikes for this unit before
+                        # splitting into sessions (keeps the first of each violating pair)
+                        if remove_duplicate_spikes and spike_events.shape[0] > 1:
+                            duplicate_indices = find_duplicated_spikes(spike_events, duplicate_censored_period_samples,
+                                                                       method="keep_first_iterative")
+                            spike_events = np.delete(spike_events, duplicate_indices)
 
                         # filter spikes for each session
                         for session_key in binary_files_info.keys():

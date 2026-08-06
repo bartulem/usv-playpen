@@ -344,12 +344,14 @@ class Synchronizer:
         probe = probeinterface.read_spikeglx(meta_path)
         ap_sample_shifts = get_neuropixels_sample_shifts_from_probe(probe)
         if ap_sample_shifts is None:
-            raise ValueError(f"Could not derive Neuropixels sample shifts from {meta_path}; "
+            error_message = (f"Could not derive Neuropixels sample shifts from {meta_path}; "
                              f"the probe metadata lacks the required ADC fields.")
+            raise ValueError(error_message)
         num_sync_channels = num_channels - int(ap_sample_shifts.shape[0])
         if num_sync_channels < 0:
-            raise ValueError(f"{meta_path} implies {ap_sample_shifts.shape[0]} AP channels, which exceeds the "
+            error_message = (f"{meta_path} implies {ap_sample_shifts.shape[0]} AP channels, which exceeds the "
                              f"{num_channels} channels in {npx_recording.name}.")
+            raise ValueError(error_message)
         inter_sample_shift = np.concatenate([ap_sample_shifts,
                                              np.zeros(num_sync_channels, dtype=ap_sample_shifts.dtype)])
 
@@ -370,21 +372,29 @@ class Synchronizer:
         # leaking (SpikeInterface's own `write_binary_recording` leaves it open) and
         # lets the atomic replace succeed on Windows, where renaming a file with an
         # open handle fails.
+        # NB: this deliberately does not use ``os_utils.atomic_output_path`` -- its temp
+        # name (``.<name>.tmp-<pid>``) still contains the ``ap.bin`` substring, which the
+        # concatenation step's ``*ap.bin*`` glob would match if a crash left the temp
+        # behind; this temp name is glob-safe. The try/except replicates that helper's
+        # cleanup-on-failure so an interrupted write never leaves a partial file.
         temp_path = npx_recording.parent / f"{npx_recording.name[:-7]}_phase_shift_tmp"
         num_frames = shifted_recording.get_num_frames()
         chunk_frames = 300_000
-        with open(temp_path, 'wb') as temp_file:
-            for start_frame in range(0, num_frames, chunk_frames):
-                end_frame = min(start_frame + chunk_frames, num_frames)
-                chunk_traces = shifted_recording.get_traces(start_frame=start_frame, end_frame=end_frame)
-                temp_file.write(np.ascontiguousarray(chunk_traces, dtype='int16').tobytes())
+        try:
+            with temp_path.open('wb') as temp_file:
+                for start_frame in range(0, num_frames, chunk_frames):
+                    end_frame = min(start_frame + chunk_frames, num_frames)
+                    chunk_traces = shifted_recording.get_traces(start_frame=start_frame, end_frame=end_frame)
+                    temp_file.write(np.ascontiguousarray(chunk_traces, dtype='int16').tobytes())
+            # release the read handles on the source before the rename, so no memory-
+            # mapped file object is left open across it (also required on Windows)
+            del shifted_recording, raw_recording
+            temp_path.replace(npx_recording)
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
 
-        # release the read handles on the source before atomically replacing it, so
-        # no memory-mapped file object is left open across the rename
-        del shifted_recording, raw_recording
-        temp_path.replace(npx_recording)
-
-        with open(done_marker, 'w') as marker_file:
+        with done_marker.open('w') as marker_file:
             json.dump({'phase_shift_applied': True,
                        'inter_sample_shift_source_meta': str(meta_path),
                        'num_channels': int(num_channels),

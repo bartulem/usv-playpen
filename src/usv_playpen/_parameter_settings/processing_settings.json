@@ -84,7 +84,9 @@
     "Operator": {
       "get_spike_times": {
         "min_spike_num": 100,
-        "kilosort_version": "4"
+        "kilosort_version": "4",
+        "remove_duplicate_spikes": true,
+        "duplicate_censored_period_ms": 0.3
       },
       "concatenate_audio_files": {
         "concatenate_audio_format": "wav",

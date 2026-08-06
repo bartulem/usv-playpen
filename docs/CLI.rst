@@ -59,6 +59,8 @@ Process
 
     usage: split-clusters [-h] --root-directories TEXT,TEXT,...
                           [--min-spikes INTEGER] [--kilosort-version TEXT]
+                          [--remove-duplicate-spikes | --no-remove-duplicate-spikes]
+                          [--censored-period-ms FLOAT]
 
     required arguments:
       --root-directories    A comma-separated string of session root directory paths.
@@ -67,6 +69,9 @@ Process
       -h, --help            Show this help message and exit.
       --min-spikes          Minimum number of spikes for a cluster to be saved.
       --kilosort-version    Version of Kilosort used for spike sorting.
+      --remove-duplicate-spikes / --no-remove-duplicate-spikes
+                            Drop near-coincident duplicate spikes (e.g. from Phy merges) per unit.
+      --censored-period-ms  Censored period (in ms) for duplicate-spike removal.
 
 ``concatenate-video-files``
 ``concatenate-video-files`` is the command-line interface for concatenating video files.
@@ -184,6 +189,7 @@ Process
 
     usage: ev-sync-check [-h] --root-directory PATH [--file-type {ap,lf}]
                          [--tolerance FLOAT]
+                         [--apply-phase-shift | --no-apply-phase-shift]
 
     required arguments:
       --root-directory      Session root directory path.
@@ -192,6 +198,8 @@ Process
       -h, --help            Show this help message and exit.
       --file-type           Neuropixels file type (ap or lf).
       --tolerance           Divergence tolerance (in ms).
+      --apply-phase-shift / --no-apply-phase-shift
+                            De-skew each AP binary for the Neuropixels ADC sample-time offset (in place).
 
 ``hpss-audio``
 ``hpss-audio`` is the command-line interface for performing Harmonic-Percussive Source Separation (HPSS) on audio files.

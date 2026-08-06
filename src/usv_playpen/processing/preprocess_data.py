@@ -602,6 +602,7 @@ def av_sync_check_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--file-type', 'npx_file_type', type=click.Choice(['ap', 'lf'], case_sensitive=False), default=None, required=False, help='Neuropixels file type (ap or lf).')
 @click.option('--tolerance', 'npx_ms_divergence_tolerance', type=float, default=None, required=False, help='Divergence tolerance (in ms).')
+@click.option('--apply-phase-shift/--no-apply-phase-shift', 'apply_phase_shift', default=None, help='De-skew each AP binary for the Neuropixels ADC sample-time offset (in place).')
 @click.pass_context
 def ev_sync_check_cli(ctx, root_directory, **kwargs) -> None:
     """
@@ -1016,6 +1017,8 @@ def concatenate_binary_files_cli(root_directories):
 @click.option('--root-directories', type=str, required=True, help='A comma-separated string of session root directory paths.')
 @click.option('--min-spikes', 'min_spike_num', type=int, default=None, required=False, help='Minimum number of spikes for a cluster to be saved.')
 @click.option('--kilosort-version', type=str, default=None, required=False, help='Version of Kilosort used for spike sorting.')
+@click.option('--remove-duplicate-spikes/--no-remove-duplicate-spikes', 'remove_duplicate_spikes', default=None, help='Drop near-coincident duplicate spikes (e.g. from Phy merges) per unit.')
+@click.option('--censored-period-ms', 'duplicate_censored_period_ms', type=float, default=None, required=False, help='Censored period (in ms) for duplicate-spike removal.')
 @click.pass_context
 def split_clusters_to_sessions_cli(ctx, root_directories, **kwargs):
     """
