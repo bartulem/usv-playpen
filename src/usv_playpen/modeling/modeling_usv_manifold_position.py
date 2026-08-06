@@ -31,17 +31,19 @@ Key scientific capabilities:
     acoustic regions are proportionally represented in every train / test
     fold.
 4.  Rigorous null baselines: compares model performance against a
-    within-session **X-history shuffle** (`null`) and an empirical-density
+    within-session **target (Y) permutation** (`null`) and an empirical-density
     draw from the training-set `Y` (`null_model_free`, the chance floor).
-    The X-history shuffle is
-    the canonical permutation test for regression: trial `i`'s Y stays
-    where it is, but its kinematic history is replaced with the history
-    of another trial from the same session. This preserves session-level
-    biases and within-session vocal-repertoire autocorrelation — so a
+    The target permutation is
+    the canonical permutation test for regression: each trial's kinematic
+    history stays where it is, but its torus position (with its density
+    weight and acoustic region) is re-paired with another trial's from the
+    same session. Permuting *within* session preserves session-level
+    biases and each session's vocal repertoire — so a
     predictor that just memorises "this session tends to vocalise at
-    region R" cannot beat the null by accident — and isolates the
-    kinematics-to-manifold mapping as the only signal the actual model
-    can exploit.
+    region R" cannot beat the null by accident — while breaking the
+    kinematics-to-position pairing, isolating that mapping as the only
+    signal the actual model can exploit. (This matches the target-
+    permutation null used by the onset / category / bout selectors.)
 """
 
 import json
@@ -1503,13 +1505,13 @@ class ContinuousModelRunner:
         evaluated across three strategies:
 
         1. `actual` — fits the true kinematic-to-acoustic mapping.
-        2. `null` — within-session X-history shuffle. For the training
-           fold, every trial's kinematic history is replaced with the
-           history of another trial from the same session (seeded per
-           fold via `np.random.default_rng`); `Y_train` and `w_train`
-           stay in place. This is the classical permutation test for
-           regression and, crucially, preserves session-level vocal-
-           repertoire autocorrelation — so a predictor that exploits
+        2. `null` — within-session target (Y) permutation. For the training
+           fold, every trial's torus position (with its density weight and
+           acoustic region) is re-paired with another trial's from the same
+           session (seeded per fold via `np.random.default_rng`); `X_train`
+           stays in place. This is the classical permutation test for
+           regression and, because the permutation is within session, it
+           preserves each session's repertoire — so a predictor that exploits
            "this session tends to vocalise around region R" cannot beat
            the null accidentally. The test fold is left untouched so the
            null estimator is evaluated on the same real `(X_test,
@@ -1752,51 +1754,46 @@ class ContinuousModelRunner:
         results = {}
         strategies = ['actual', 'null', 'null_model_free']
 
-        def _shuffle_X_within_groups(X_block: np.ndarray,
-                                     groups_block: np.ndarray,
-                                     rng_: np.random.Generator) -> np.ndarray:
+        def _within_session_permutation(groups_block: np.ndarray,
+                                        rng_: np.random.Generator) -> np.ndarray:
             """
-            Returns `X_block` with its rows permuted inside each session
-            block, preserving cross-session structure.
+            Return a row-permutation index that reorders rows only *within* each
+            session block, so the caller can apply it to the prediction target
+            (torus position `Y`, its density weight, and acoustic-region label) to
+            break the kinematics->position pairing while preserving session-level
+            vocal-repertoire structure.
 
-            This implements the "within-session X-history shuffle" that
-            underpins the `null` permutation test: every trial's kinematic
-            history is re-paired with another trial's history from the
-            same session, while `Y_train` and `w_train` stay aligned to
-            the original row order at the call site. The permutation is
-            drawn independently per session so trials never cross session
-            boundaries (session-level vocal-repertoire autocorrelation is
-            preserved under the null) and single-trial sessions are left
-            untouched (a 1-element permutation is a no-op).
+            This is the within-session **target permutation** underpinning the
+            `null` control: every trial's torus position is re-paired with another
+            trial's from the same session (with its own weight/region moving with
+            it), matching the target-permutation nulls used by the onset / category
+            / bout selectors. The permutation is drawn independently per session so
+            trials never cross session boundaries, and single-trial sessions are
+            left untouched (a 1-element permutation is a no-op).
 
             Parameters
             ----------
-            X_block : np.ndarray
-                Flattened behavioural-history design matrix of shape
-                `(n_samples, n_features * n_time_bins)`. Row `i`
-                corresponds to the kinematic history preceding trial `i`.
             groups_block : np.ndarray
-                Session-ID label for each row of `X_block`, shape
-                `(n_samples,)`. Determines which rows may be shuffled
-                together.
+                Session-ID label for each row, shape `(n_samples,)`. Determines
+                which rows may be permuted together.
             rng_ : np.random.Generator
-                Seeded NumPy generator used to draw the per-session
-                permutations. Passed in from the caller so the null
-                strategy is deterministic per fold.
+                Seeded NumPy generator used to draw the per-session permutations.
+                Passed in from the caller so the null strategy is deterministic per
+                fold.
 
             Returns
             -------
-            X_shuffled : np.ndarray
-                Copy of `X_block` with rows permuted inside each session
-                block. Same shape and dtype as the input.
+            perm : np.ndarray
+                Integer index of shape `(n_samples,)`; `array[perm]` reorders rows
+                inside each session block. Same length as `groups_block`.
             """
-            perm = np.arange(len(X_block))
+            perm = np.arange(len(groups_block))
             for sess_id in np.unique(groups_block):
                 sess_positions = np.where(groups_block == sess_id)[0]
                 shuffled = sess_positions.copy()
                 rng_.shuffle(shuffled)
                 perm[sess_positions] = shuffled
-            return X_block[perm]
+            return perm
 
         for strategy in strategies:
 
@@ -1857,26 +1854,31 @@ class ContinuousModelRunner:
                 groups_train = groups[train_idx]
                 region_train, region_test = region[train_idx], region[test_idx]
 
+                if strategy == 'null':
+                    # Within-session target permutation: each training trial's torus
+                    # position -- with its density weight and acoustic region -- is
+                    # re-paired with another trial's from the same session, breaking
+                    # the kinematics->position link while preserving session-level
+                    # repertoire structure. X stays put and the (Y, w, region) unit
+                    # moves together (every position keeps its own weight), matching
+                    # the target-permutation `null` used by the onset / category /
+                    # bout selectors.
+                    null_perm = _within_session_permutation(
+                        groups_train, np.random.default_rng(random_seed + fold_idx + 1))
+                    Y_train = Y_train[null_perm]
+                    w_train = w_train[null_perm]
+                    region_train = region_train[null_perm]
+
                 # Equal-region fit reweighting (torus only): weight training rows
                 # by inverse acoustic-region frequency so common regions don't
-                # dominate the fit. Region labels come from the (unshuffled) Y, so
-                # the within-session X-shuffle `null` uses the same weights as
-                # `actual` -- the paired comparison is not confounded by weights.
-                # Euclidean keeps the raw weights, so it stays byte-identical.
+                # dominate the fit. Region labels track the (possibly permuted) Y,
+                # so every position keeps its own weight; the paired comparison is
+                # scored on identical test weights so it is not confounded by
+                # weights. Euclidean keeps the raw weights.
                 if manifold_metric == 'torus':
                     w_train_fit = w_train * inverse_region_frequency_weights(region_train)
                 else:
                     w_train_fit = w_train
-
-                if strategy == 'null':
-                    # Within-session X-history shuffle: each training
-                    # trial's kinematic history is swapped with another
-                    # trial's history from the same session. Session-level
-                    # vocal-repertoire structure is preserved, so the null
-                    # is strictly about "does the specific kinematic
-                    # signal matter?"
-                    shuffle_rng = np.random.default_rng(random_seed + fold_idx + 1)
-                    X_train = _shuffle_X_within_groups(X_train, groups_train, shuffle_rng)
 
                 if strategy == 'null_model_free':
                     # Empirical-density baseline: for every test trial predict a
@@ -1926,7 +1928,7 @@ class ContinuousModelRunner:
                 else:
                     # Pick the regularisation strengths for this outer fold.
                     # Tuning is strategy-agnostic: the within-session
-                    # X-history shuffled `null` is also tuned, so the
+                    # target-permuted `null` is also tuned, so the
                     # permutation test compares like-against-like
                     # hyperparameters rather than penalising the null by
                     # forcing it to use the actual model's fixed values.
@@ -2056,17 +2058,23 @@ class ContinuousModelRunner:
             region_dev = region[_dev_positions]
             region_held = region[_held_positions]
 
+            if strategy == 'null':
+                # Within-session target permutation (see the per-fold branch): the
+                # (Y, w, region) development unit is permuted within session while X
+                # stays, breaking the kinematics->position pairing.
+                null_perm = _within_session_permutation(
+                    groupsh_train, np.random.default_rng(held_seed + 1))
+                Yh_train = Yh_train[null_perm]
+                wh_train = wh_train[null_perm]
+                region_dev = region_dev[null_perm]
+
             # Equal-region fit reweighting (torus only) on the development rows,
-            # mirroring the per-fold fit. Region labels come from the unshuffled Y,
-            # so `null` (X-shuffled) shares `actual`'s weights.
+            # mirroring the per-fold fit. Region labels track the (possibly permuted)
+            # Y, so every position keeps its own weight.
             if manifold_metric == 'torus':
                 wh_train_fit = wh_train * inverse_region_frequency_weights(region_dev)
             else:
                 wh_train_fit = wh_train
-
-            if strategy == 'null':
-                shuffle_rng = np.random.default_rng(held_seed + 1)
-                Xh_train = _shuffle_X_within_groups(Xh_train, groupsh_train, shuffle_rng)
 
             if strategy == 'null_model_free':
                 w_cov = wh_train / (np.sum(wh_train) + 1e-12)

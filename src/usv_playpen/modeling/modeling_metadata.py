@@ -605,7 +605,7 @@ def build_run_metadata(modeling_settings: dict,
         `'category'`, `'params'`, `'multinomial'`, `'continuous'`.
     null_strategy : str
         Description of how the null distribution is built — typically
-        `'x_history_shuffle'` for the JAX paths.
+        `'y_permutation'` (within-session target permutation) for the JAX paths.
     n_outer_folds : int
         Number of outer CV splits used for the actual / null
         comparison. Pulled from the dispatcher / pipeline at run time.

@@ -54,7 +54,7 @@ and their kd-tree are stored on the fitted model, so `predict(snap=True)`
 returns only coordinates that the training manifold actually contained.
 This matters for the fairness of comparisons against the baselines:
 `null_model_free` predicts a uniform draw from the training `Y` and the
-candidate X-history shuffled `null` predicts on the same manifold
+candidate target-permuted `null` predicts on the same manifold
 support, so the active model must not be allowed to gain apparent
 accuracy by extrapolating off-manifold and then being penalised by a
 metric the baselines structurally cannot incur. `predict(snap=False)`
@@ -914,7 +914,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
           smoothness penalty, which is why per-fold regularisation tuning is
           re-enabled on the torus and the reflective-boundary smoothing is now
           selectable. The screen compares it against the **`null`
-          (within-session-shuffle)** strategy (a confound-controlled baseline).
+          (within-session Y-permutation)** strategy (a confound-controlled baseline).
         - `vm_logscore_pooled` : the **micro (event-weighted) twin** of
           `vm_logscore` on the torus (`nan` on Euclidean) — the identical
           per-event von Mises densities (same residuals, same internally-fit

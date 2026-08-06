@@ -200,7 +200,7 @@ def _fold_paired_margin_bootstrap(
 
     This is the operative statistic for the manifold selection gate. Each CV
     fold yields one predictive score for the ``actual`` fit and one for the
-    within-session-shuffle ``null`` fit, computed on that fold's genuine
+    within-session-permutation ``null`` fit, computed on that fold's genuine
     out-of-sample test predictions; the per-fold ``actual - null`` difference is
     the *within-fold* behaviour->position signal, with the structure both share
     cancelled by the pairing. **Folds -- not sessions, not individual
@@ -4625,8 +4625,8 @@ def continuous_vocal_manifold_model_selection(
     2. Wilcoxon screening (higher-is-better). Candidates are ranked by a
        Bonferroni-corrected one-sided Wilcoxon signed-rank test on the
        paired per-fold selection score of `actual` vs. the within-session
-       X-history shuffle `null` (`SCREEN_BASELINE_STRATEGY`) — on both
-       geometries. The shuffle removes the session-level confound while
+       Y-permutation `null` (`SCREEN_BASELINE_STRATEGY`) — on both
+       geometries. The permutation removes the session-level confound while
        leaving the trial-level dependence to test; on the torus it is the
        only meaningful baseline anyway (a constant prediction's `dcor_xy`
        is 0 by construction). A separate gate-1 (`score > 0`) keeps the

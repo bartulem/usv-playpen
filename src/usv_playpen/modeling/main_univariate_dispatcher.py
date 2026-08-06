@@ -374,7 +374,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
     run_metadata = build_run_metadata(
         modeling_settings=settings,
         analysis_type=args.analysis_type,
-        null_strategy='x_history_shuffle',
+        null_strategy='y_permutation',
         n_outer_folds=int(settings['model_validation']['n_cv_folds']),
         split_strategy=settings['model_validation']['split_strategy'],
         settings_path=settings_path,

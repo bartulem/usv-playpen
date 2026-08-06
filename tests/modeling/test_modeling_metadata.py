@@ -810,7 +810,7 @@ class TestBuildRunMetadata:
         assert md['analysis_type'] == analysis_type
         assert md['model_engine'] == engine
         assert md['basis_function'] == basis
-        assert md['null_strategy'] == 'x_history_shuffle'
+        assert md['null_strategy'] == 'y_permutation'
         assert md['n_outer_folds'] == 5
         assert md['split_strategy'] == 'mixed'
         assert md['random_seed_outer'] == 42
@@ -836,7 +836,7 @@ class TestBuildRunMetadata:
         return build_run_metadata(
             modeling_settings=settings,
             analysis_type=analysis_type,
-            null_strategy='x_history_shuffle',
+            null_strategy='y_permutation',
             n_outer_folds=5,
             split_strategy='mixed',
         )
