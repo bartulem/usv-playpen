@@ -86,6 +86,11 @@ from .manifold_metric import (
     manifold_prediction_metrics,
     inverse_region_frequency_weights,
 )
+from .modeling_torus_geodesics import (
+    build_torus_geodesic_context,
+    geodesic_mae_columns,
+    make_qlvm_decode_fn_from_npz,
+)
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import resolve_modeling_setting
 
@@ -1495,6 +1500,92 @@ class ContinuousModelRunner:
 
         return data_blocks
 
+    def _resolve_geodesic_context(self, pkl_path: str, Y: np.ndarray,
+                                  manifold_metric: str, manifold_period: float):
+        """
+        Description
+        -----------
+        Builds (once, then caches) the torus geodesic *reference map* the
+        univariate screen uses to report the two analysis-only distance columns
+        `density_geodesic_mae` and `pullback_geodesic_mae`, mirroring the
+        acoustic-manifold *selection* stage so the screen and the selection it
+        feeds report the same torus prediction-error geometry.
+
+        The map holds the density-ratio and decoder-Jacobian pullback geodesic
+        geometries over a regular torus grid, precomputed from all embedded `Y`
+        plus the frozen QLVM decoder. It is fold-independent AND feature-
+        independent -- it depends only on the acoustic positions `Y` (identical
+        across every behavioural feature of one input pickle) and the decoder --
+        so it is built a single time per input pickle and cached on the runner,
+        rather than rebuilt for each of the (potentially dozens of) univariate
+        features. Per fold, each event's (prediction, truth) pair snaps to the
+        grid and looks up its geodesic distance via `geodesic_mae_columns`.
+
+        Torus-only. Any failure mode -- the metric is not `'torus'`, the
+        `usv_manifold_geodesic_metrics` block is absent or its `compute` flag is
+        False, or the decoder `.npz` is missing/unreadable -- degrades the
+        affected column(s) to `NaN` and never aborts the run (the pullback column
+        alone degrades when only the decoder is unavailable).
+
+        Parameters
+        ----------
+        pkl_path (str)
+            The modeling-input pickle path; used as the cache key so the map is
+            reused across every feature of one run and rebuilt only for a new
+            input pickle.
+        Y (np.ndarray)
+            `(n_events, 2)` array of all embedded torus positions the reference
+            grid's density / pullback geometries are precomputed from.
+        manifold_metric (str)
+            The resolved manifold metric; the geodesic map is built only on
+            `'torus'` (any other value returns `None`, yielding NaN columns).
+        manifold_period (float)
+            The torus period (wrap length) the geodesic grid is defined over.
+
+        Returns
+        -------
+        geodesic_ctx (TorusGeodesicContext | None)
+            The precomputed geometry, or `None` when geodesic metrics are
+            disabled / unavailable (in which case `geodesic_mae_columns` returns
+            NaN columns).
+        """
+
+        if getattr(self, '_geodesic_ctx_key', None) == pkl_path:
+            return self._geodesic_ctx
+
+        geodesic_ctx = None
+        _vf_settings = self.modeling_settings['vocal_features']
+        if ('usv_manifold_geodesic_metrics' in _vf_settings
+                and manifold_metric == 'torus' and Y is not None):
+            _geo_cfg = _vf_settings['usv_manifold_geodesic_metrics']
+            if _geo_cfg['compute']:
+                try:
+                    _geo_decode_fn = None
+                    _geo_weights_path = _geo_cfg['decoder_weights_npz_path']
+                    if _geo_weights_path:
+                        try:
+                            _geo_decode_fn = make_qlvm_decode_fn_from_npz(_geo_weights_path)
+                        except Exception as _decode_err:
+                            print(f"    [geodesic] decoder unavailable ({_decode_err}); "
+                                  f"pullback_geodesic_mae -> NaN")
+                    geodesic_ctx = build_torus_geodesic_context(
+                        np.asarray(Y, dtype=np.float64), decode_fn=_geo_decode_fn,
+                        n_per_dim=int(_geo_cfg['grid_n_per_dim']), period=manifold_period,
+                        k=int(_geo_cfg['graph_k']),
+                        density_exponent=float(_geo_cfg['density_exponent']),
+                    )
+                    print(f"    [geodesic] reference map built: "
+                          f"{int(_geo_cfg['grid_n_per_dim'])}^2 grid, "
+                          f"pullback={'on' if _geo_decode_fn is not None else 'off'}")
+                except Exception as _geo_err:
+                    print(f"    [geodesic] geometry build failed ({_geo_err}); "
+                          f"geodesic MAE columns -> NaN")
+                    geodesic_ctx = None
+
+        self._geodesic_ctx_key = pkl_path
+        self._geodesic_ctx = geodesic_ctx
+        return geodesic_ctx
+
     def run_univariate_training(self, pkl_path: str, feat_name: str) -> dict:
         """
         Executes the cross-validation and statistical evaluation loop for a
@@ -1749,7 +1840,19 @@ class ContinuousModelRunner:
             'dcor_xy',
             'vm_logscore',
             'vm_logscore_pooled',
+            'density_geodesic_mae',
+            'pullback_geodesic_mae',
         ]
+
+        # Torus geodesic "reference map" for the two analysis-only distance
+        # columns (`density_geodesic_mae` / `pullback_geodesic_mae`), so the
+        # univariate screen reports the same torus prediction-error geometry as
+        # the acoustic-manifold selection it feeds. Built once per input pickle
+        # and cached on the runner (fold- and feature-independent); torus-only,
+        # NaN columns on any disabled / missing-decoder path (see the helper).
+        geodesic_ctx = self._resolve_geodesic_context(
+            pkl_path, Y, manifold_metric, manifold_period
+        )
 
         results = {}
         strategies = ['actual', 'null', 'null_model_free']
@@ -2010,6 +2113,12 @@ class ContinuousModelRunner:
                     fold_converged = bool(model.converged_)
                     fold_fit_time = float(model.fit_time_)
 
+                # Analysis-only torus geodesic columns from this fold's snapped
+                # prediction vs. truth; appended before the accumulation loop so
+                # every metric list (including the two geodesic ones) stays in
+                # lockstep with `metric_keys`. NaN columns when disabled/off-torus.
+                metrics.update(geodesic_mae_columns(y_pred_xy, Y_test, geodesic_ctx))
+
                 for m_key, m_val in metrics.items():
                     results[strategy]['folds']['metrics'][m_key].append(m_val)
 
@@ -2173,6 +2282,10 @@ class ContinuousModelRunner:
                 h_n_iter = int(model_h.n_iter_)
                 h_converged = bool(model_h.converged_)
                 h_fit_time = float(model_h.fit_time_)
+
+            # Same analysis-only torus geodesic columns for the honest held-out
+            # refit, mirroring the per-fold and selection sites.
+            metrics_h.update(geodesic_mae_columns(yh_pred_xy, Yh_test, geodesic_ctx))
 
             results[strategy]['heldout'] = {
                 'metrics': metrics_h,

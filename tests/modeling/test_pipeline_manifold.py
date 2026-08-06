@@ -557,6 +557,54 @@ class TestContinuousModelRunner:
         # The model-free density-draw baseline is unaffected (still a 0-iter "fit").
         assert all(it == 0 for it in results['null_model_free']['folds']['n_iter'])
 
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_run_univariate_training_torus_emits_geodesic_columns(self, tmp_path):
+        """
+        On a ``'torus'`` run with ``usv_manifold_geodesic_metrics.compute`` True
+        the univariate runner appends the two analysis-only geodesic prediction-
+        error columns -- ``density_geodesic_mae`` and ``pullback_geodesic_mae`` --
+        to every per-fold metric bundle across all three strategies, mirroring the
+        acoustic-manifold selection stage so the screen reports the same torus
+        metrics it will later be selected on. The reference map is built once and
+        cached on the runner. With no decoder ``.npz`` supplied (empty
+        ``decoder_weights_npz_path``), the density-ratio geodesic is still computed
+        from the embedded ``Y`` (finite), while the decoder-Jacobian pullback
+        column degrades to ``NaN`` -- the documented graceful fallback. The two
+        columns carry one entry per fold, in lockstep with every other metric.
+        """
+
+        settings, save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='mixed', split_num=2, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'torus'
+        # Small grid + no decoder keeps the reference-map build fast and the
+        # pullback column on its NaN fallback (its math is unit-tested separately).
+        settings['vocal_features']['usv_manifold_geodesic_metrics'] = {
+            'compute': True,
+            'grid_n_per_dim': 12,
+            'graph_k': 6,
+            'density_exponent': 1.0,
+            'decoder_weights_npz_path': '',
+        }
+        pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
+        pipeline.extract_and_save_continuous_data()
+        input_pkl = str(next(save_dir.glob('modeling_manifold_*.pkl')))
+
+        runner = ContinuousModelRunner(pipeline)
+        results = runner.run_univariate_training(input_pkl, 'self.speed')
+
+        n_splits = settings['model_validation']['n_cv_folds']
+        for strategy in ('actual', 'null', 'null_model_free'):
+            metrics = results[strategy]['folds']['metrics']
+            assert 'density_geodesic_mae' in metrics
+            assert 'pullback_geodesic_mae' in metrics
+            assert len(metrics['density_geodesic_mae']) == n_splits
+            assert len(metrics['pullback_geodesic_mae']) == n_splits
+        # Density-ratio geodesic needs no decoder -> at least one finite fold.
+        assert np.isfinite(results['actual']['folds']['metrics']['density_geodesic_mae']).any()
+        # No decoder supplied -> pullback column present but all-NaN (graceful).
+        assert not np.isfinite(results['actual']['folds']['metrics']['pullback_geodesic_mae']).any()
+
 
 class TestManifoldModelSelection:
     """The real forward-stepwise ``continuous_vocal_manifold_model_selection``."""
