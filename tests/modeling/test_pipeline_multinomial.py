@@ -861,6 +861,57 @@ class TestMultinomialUnivariateRunner:
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_run_univariate_training_holdout_populates_heldout_block(self, tmp_path):
+        """
+        Recording ``held_out_session_ids`` in the input pickle's
+        ``_input_metadata`` reserves those whole sessions from the CV
+        development pool and drives ``run_univariate_training``'s honest
+        held-out refit / scoring pass: every strategy (actual / null /
+        null_model_free) is refit on all development sessions and scored once on
+        the reserved held-out block. Asserts each strategy grows a ``heldout``
+        record reporting the reserved session/event counts, and that the
+        ``actual`` held-out refit recorded a finite fit time and macro AUC.
+        """
+
+        settings, _ = _build_extraction_settings(
+            tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2,
+            test_proportion=0.4,
+        )
+
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        input_pkl = build_multinomial_input_pickle(
+            save_path=tmp_path / 'modeling_multinomial_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            n_categories=N_CATEGORIES,
+            n_per_class_per_session=18,
+        )
+        # The data-extraction stage records the held-out reserve in the input
+        # pickle's `_input_metadata`; re-inject it here so the runner carves it.
+        with input_pkl.open('rb') as fh:
+            artifact = pickle.load(fh)
+        artifact['_input_metadata']['held_out_session_ids'] = [session_ids[-1]]
+        with input_pkl.open('wb') as fh:
+            pickle.dump(artifact, fh)
+
+        pipeline = MultinomialModelingPipeline(modeling_settings_dict=settings)
+        runner = MultinomialModelRunner(pipeline_instance=pipeline)
+        _feat_name, results = runner.run_univariate_training(
+            pkl_path=str(input_pkl), feat_name='self.speed'
+        )
+
+        for strategy in ('actual', 'null', 'null_model_free'):
+            assert 'heldout' in results[strategy]
+            assert results[strategy]['heldout']['n_held_out_sessions'] == 1
+            assert results[strategy]['heldout']['n_held_out_events'] > 0
+        assert np.isfinite(results['actual']['heldout']['fit_time'])
+        assert np.isfinite(results['actual']['heldout']['metrics']['auc'])
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
     def test_tune_multinomial_regularization_picks_pair(self):
         """
         ``_tune_multinomial_regularization`` runs an inner stratified CV over the
@@ -985,6 +1036,72 @@ class TestMultinomialModelSelection:
         assert saw_baseline, "Step-0 model-free baseline pickle was not written"
         # The forward search never drops an already-accepted feature.
         assert accepted_counts == sorted(accepted_counts)
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_multinomial_selection_holdout_refit_runs(self, tmp_path):
+        """
+        With ``held_out_test_proportion > 0`` and a ``held_out_session_ids`` block
+        recorded in the input pickle's ``_input_metadata`` (the multinomial
+        selector reads it from there, the ranking pickle carrying none), the
+        selector reserves those whole sessions out of CV and, after anchoring a
+        real feature, refits the smooth-multinomial model on all development
+        sessions and scores it once on the reserved block. Asserts the final step
+        pickle carries a populated ``heldout`` record with the reserved
+        session/event counts -- proof the held-out refit branch (skipped at
+        proportion 0) executed.
+        """
+
+        settings, _ = _build_extraction_settings(
+            tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2,
+            test_proportion=0.4,
+        )
+        settings['model_validation']['held_out_test_proportion'] = 0.25
+
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        input_pkl_path = build_multinomial_input_pickle(
+            save_path=tmp_path / 'modeling_multinomial_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            n_categories=N_CATEGORIES,
+            n_per_class_per_session=18,
+        )
+        with input_pkl_path.open('rb') as fh:
+            artifact = pickle.load(fh)
+        artifact['_input_metadata']['held_out_session_ids'] = [session_ids[-1]]
+        with input_pkl_path.open('wb') as fh:
+            pickle.dump(artifact, fh)
+        input_pkl = str(input_pkl_path)
+        univ_pkl = str(build_univariate_ranking_pickle(
+            save_path=tmp_path / 'univariate_combined.pkl',
+            feature_names=feature_names,
+            n_splits=settings['model_validation']['n_cv_folds'],
+        ))
+
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        multinomial_vocal_category_model_selection(
+            univariate_results_path=univ_pkl,
+            input_data_path=input_pkl,
+            settings_path=str(settings_json),
+            output_directory=str(ms_dir),
+            use_top_rank_as_anchor=True,
+            p_val=0.05,
+        )
+
+        step_pkls = sorted(ms_dir.glob('model_selection_multinomial_*_step_*.pkl'))
+        assert step_pkls
+        with step_pkls[-1].open('rb') as fh:
+            final = pickle.load(fh)
+        assert final['heldout'] is not None
+        assert final['heldout']['n_held_out_sessions'] == 1
+        assert final['heldout']['n_held_out_events'] > 0
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")

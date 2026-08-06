@@ -1147,3 +1147,62 @@ class TestPerFeatureFitFailureHandlers:
         _fn, res = pipeline._run_model_for_feature_pygam('self.speed', feature_data, None)
         assert np.allclose(res['actual']['explained_deviance'], 0.0)
         assert np.allclose(res['null']['explained_deviance'], 0.0)
+
+
+class TestPerFeatureHeldOut:
+    """
+    The honest held-out refit / scoring branch of both bout-parameter runners,
+    reached only when a non-empty ``held_out_session_ids`` reserves whole
+    sessions out of the CV development pool.
+    """
+
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
+    def test_sklearn_runner_holdout_populates_heldout_branch(self):
+        """
+        Passing ``held_out_session_ids`` reserves those whole sessions from the
+        CV development pool and drives the sklearn Gamma-GLM runner's held-out
+        branch: the model (and a shuffled-target null) is refit on all
+        development rows and scored once on the reserved rows. Asserts the
+        top-level ``results['heldout']`` record is materialized for both
+        branches, reports the reserved session/event counts, and records a
+        finite fit time (the refit actually executed).
+        """
+
+        pipeline = _minimal_bout_pipeline(split_strategy='mixed', split_num=2)
+        feature_data = _bout_feature_data(pipeline.history_frames, n_sessions=4)
+        basis = np.eye(pipeline.history_frames, 3, dtype=float)
+        _fn, res = pipeline._run_model_for_feature_sklearn(
+            'self.speed', feature_data, basis, held_out_session_ids=['session_3'],
+        )
+        assert 'heldout' in res
+        for branch in ('actual', 'null'):
+            assert res['heldout'][branch]['n_held_out_sessions'] == 1
+            assert res['heldout'][branch]['n_held_out_events'] > 0
+        assert np.isfinite(res['heldout']['actual']['fit_time'])
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
+    def test_pygam_runner_holdout_populates_heldout_branch(self):
+        """
+        The pyGAM counterpart: ``held_out_session_ids`` carves whole sessions
+        out of CV, then the tensor-product-spline Gamma-GAM (and its
+        shuffled-target null) refits on all development rows and scores once on
+        the reserved rows, with a fold-disjoint deterministic null seed. Asserts
+        the held-out record exists for both branches with the reserved
+        session/event counts and a finite fit time.
+        """
+
+        pipeline = _minimal_bout_pipeline(split_strategy='mixed', split_num=2)
+        feature_data = _bout_feature_data(pipeline.history_frames, n_sessions=4)
+        _fn, res = pipeline._run_model_for_feature_pygam(
+            'self.speed', feature_data, None, held_out_session_ids=['session_3'],
+        )
+        assert 'heldout' in res
+        for branch in ('actual', 'null'):
+            assert res['heldout'][branch]['n_held_out_sessions'] == 1
+            assert res['heldout'][branch]['n_held_out_events'] > 0
+        assert np.isfinite(res['heldout']['actual']['fit_time'])

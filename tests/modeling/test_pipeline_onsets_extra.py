@@ -406,6 +406,35 @@ class TestSklearnRunner:
         assert feat_name == 'self.speed'
         assert np.isnan(results['actual']['auc']).all()
 
+    def test_sklearn_runner_holdout_populates_heldout_branch(self, tmp_path):
+        """
+        Passing a non-empty ``held_out_session_ids`` carves those sessions out of
+        the development pool and drives the sklearn runner's held-out refit /
+        scoring branch: after the cross-validated development fit, the model (and
+        its label-shuffled null) is retrained on the pooled development sessions
+        and scored once on the pooled held-out sessions. Asserts the top-level
+        ``results['heldout']`` record is materialized, reports the reserved
+        session/event counts, and carries a finite fitted log-loss for the
+        ``actual`` branch (strong-signal, class-balanced synthetic data).
+        """
+
+        pipeline = _pipeline(tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2)
+        session_ids = [f'session_{i}' for i in range(4)]
+        feature_data = _make_feature_data(session_ids, n_usv=30, n_no_usv=60)
+        basis = np.eye(HISTORY_FRAMES, dtype=float)
+        feat_name, results = pipeline._run_model_for_feature_sklearn(
+            feature_name='self.speed', feature_data=feature_data, basis_matrix=basis,
+            held_out_session_ids=session_ids[3:],
+        )
+        assert feat_name == 'self.speed'
+        assert 'heldout' in results
+        held = results['heldout']
+        for branch in ('actual', 'null'):
+            assert held[branch]['n_held_out_sessions'] == 1
+            assert held[branch]['n_held_out_events'] > 0
+        assert np.isfinite(held['actual']['ll'])
+        assert np.isfinite(held['actual']['auc'])
+
 
 class TestPygamEngine:
     """The full ``_run_model_for_feature_pygam`` path (never run by the sklearn smoke suite)."""
@@ -435,6 +464,35 @@ class TestPygamEngine:
                 assert results[branch][metric].shape == (2,)
             assert results[branch]['filter_shapes'].shape == (2, HISTORY_FRAMES)
         assert np.isfinite(results['actual']['auc']).any()
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    def test_pygam_runner_holdout_populates_heldout_branch(self, tmp_path):
+        """
+        With a non-empty ``held_out_session_ids`` the pygam runner exercises its
+        held-out refit / scoring branch: a tensor-product-spline ``LogisticGAM``
+        (and a training-label-shuffled null) is fit on the pooled development
+        sessions and scored once on the pooled held-out sessions, using a
+        fold-disjoint deterministic seed for the held-out null permutation.
+        Asserts ``results['heldout']`` is present, records the reserved
+        session/event counts, and has a finite fitted log-loss for the
+        ``actual`` branch.
+        """
+
+        pipeline = _pipeline(tmp_path, model_engine='pygam', split_strategy='mixed', split_num=2)
+        session_ids = [f'session_{i}' for i in range(4)]
+        feature_data = _make_feature_data(session_ids, n_usv=24, n_no_usv=60)
+        feat_name, results = pipeline._run_model_for_feature_pygam(
+            feature_name='self.speed', feature_data=feature_data, basis_matrix=None,
+            held_out_session_ids=session_ids[3:],
+        )
+        assert feat_name == 'self.speed'
+        assert 'heldout' in results
+        held = results['heldout']
+        for branch in ('actual', 'null'):
+            assert held[branch]['n_held_out_sessions'] == 1
+            assert held[branch]['n_held_out_events'] > 0
+        assert np.isfinite(held['actual']['ll'])
+        assert np.isfinite(held['actual']['auc'])
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     def test_pygam_session_strategy_produces_branch_metrics(self, tmp_path):

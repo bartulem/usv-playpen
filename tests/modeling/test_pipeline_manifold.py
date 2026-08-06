@@ -664,6 +664,74 @@ class TestManifoldModelSelection:
         assert final_step['_run_metadata']['selection_metric'] == 'dcor_xy'
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_selection_held_out_refit_runs_when_proportion_positive(self, tmp_path):
+        """With ``held_out_test_proportion > 0`` the manifold selector carves a
+        held-out session set and refits/scores each accepted model on it — the
+        held-out evaluation branch skipped when the proportion is 0. Asserts the
+        run reserves a non-empty held-out session set (which means the held-out
+        refit/score branch executed)."""
+        gate_n_sessions = 25
+        settings, _save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
+        )
+        # A positive proportion in settings + a pre-carved held-out session set in
+        # the input metadata (the selector reads the set from `_input_metadata`,
+        # the upstream extraction carves it) so the held-out refit/score branch runs.
+        settings['model_validation']['held_out_test_proportion'] = 0.2
+        history_frames = HISTORY_FRAMES
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
+        held_out_ids = session_ids[:5]
+        input_md = {
+            'analysis_type': 'continuous',
+            'analysis_tag': 'manifold_vae_supercategory',
+            'session_ids': session_ids,
+            'held_out_session_ids': held_out_ids,
+            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'analysis_specific': {
+                'usv_category_column_name': 'vae_supercategory',
+                'manifold_metric': 'euclidean',
+                'manifold_period': 1.0,
+            },
+        }
+        input_pkl = str(_build_signal_continuous_pickle(
+            save_path=tmp_path / 'manifold_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=history_frames,
+            input_metadata=input_md,
+        ))
+        runner = ContinuousModelRunner(
+            ContinuousModelingPipeline(modeling_settings_dict=settings)
+        )
+        combined = {}
+        for feature in feature_names:
+            combined[feature] = runner.run_univariate_training(input_pkl, feature)
+        combined['_input_metadata'] = input_md
+        combined_path = tmp_path / 'univariate_combined.pkl'
+        with combined_path.open('wb') as fh:
+            pickle.dump(combined, fh)
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        continuous_vocal_manifold_model_selection(
+            univariate_results_path=str(combined_path),
+            input_data_path=input_pkl,
+            output_directory=str(ms_dir),
+            settings_path=str(settings_json),
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+        step_pkls = sorted(ms_dir.glob('model_selection_continuous_manifold_*_step_*.pkl'))
+        assert step_pkls, "expected at least the Step-0 pickle"
+        with step_pkls[-1].open('rb') as fh:
+            final_step = pickle.load(fh)
+        knobs = final_step['_run_metadata']['extra_knobs']
+        assert knobs['n_held_out_sessions'] > 0
+        assert len(knobs['held_out_session_ids']) == knobs['n_held_out_sessions']
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_metric_runs_forward_search(self, tmp_path):
         """
         The same end-to-end forward search on a ``metric='torus'`` run: with the

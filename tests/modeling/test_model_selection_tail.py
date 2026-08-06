@@ -507,6 +507,115 @@ class TestBoutOnsetSelectionBranches:
                 p_val=0.5,
             )
 
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    def test_onset_selection_holdout_refit_runs(self, tmp_path):
+        """
+        With ``held_out_test_proportion > 0`` and a matching
+        ``held_out_session_ids`` recorded in the univariate ranking's
+        ``_input_metadata`` (which the selector prefers over the input pickle's),
+        the onset selector reserves those whole sessions out of CV and, after
+        anchoring the top feature, refits the multivariate GAM (plus a
+        shuffled-label null) on all development sessions and scores it once on
+        the reserved sessions. Asserts the final step pickle carries a populated
+        ``heldout`` record reporting the reserved session/event counts -- proof
+        the held-out refit branch (skipped when the proportion is 0) executed.
+        """
+
+        settings, _ = _build_settings(tmp_path, model_engine='sklearn',
+                                      split_strategy='mixed', split_num=2)
+        settings['model_validation']['held_out_test_proportion'] = 0.25
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        held_ids = session_ids[-1:]
+        input_md = {'analysis_tag': 'bout', 'session_ids': session_ids,
+                    'held_out_session_ids': held_ids}
+        input_pkl = str(build_modeling_input_pickle(
+            save_path=tmp_path / 'modeling_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            n_usv=24, n_no_usv=40,
+            input_metadata=input_md,
+        ))
+        ranking_path = tmp_path / 'univariate_combined.pkl'
+        _write_onset_univariate_ranking(save_path=ranking_path, feature_names=feature_names)
+        with ranking_path.open('rb') as fh:
+            ranking = pickle.load(fh)
+        ranking['_input_metadata'] = input_md
+        with ranking_path.open('wb') as fh:
+            pickle.dump(ranking, fh)
+
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        vocal_onset_model_selection(
+            univariate_results_path=str(ranking_path),
+            input_data_path=input_pkl,
+            settings_path=_settings_json(tmp_path, settings),
+            output_directory=str(ms_dir),
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+        step_pkls = sorted(ms_dir.glob('*step*.pkl'))
+        assert step_pkls
+        with step_pkls[-1].open('rb') as fh:
+            final = pickle.load(fh)
+        assert final['heldout'] is not None
+        assert final['heldout']['n_held_out_sessions'] == 1
+        assert final['heldout']['n_held_out_events'] > 0
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    def test_onset_selection_holdout_refit_runs_pygam(self, tmp_path):
+        """
+        The ``pygam`` counterpart of the onset held-out selection path: under the
+        ``pygam`` engine the per-fold multivariate fit takes the tensor-product
+        ``LogisticGAM`` branch (rather than the sklearn logistic branch), and with
+        a held-out reserve recorded in the ranking's ``_input_metadata`` the
+        selector still refits and scores once on the reserved sessions. Asserts
+        the final step pickle carries a populated ``heldout`` record with the
+        reserved session/event counts.
+        """
+
+        settings, _ = _build_settings(tmp_path, model_engine='pygam',
+                                      split_strategy='mixed', split_num=2)
+        settings['model_validation']['held_out_test_proportion'] = 0.25
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        held_ids = session_ids[-1:]
+        input_md = {'analysis_tag': 'bout', 'session_ids': session_ids,
+                    'held_out_session_ids': held_ids}
+        input_pkl = str(build_modeling_input_pickle(
+            save_path=tmp_path / 'modeling_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            n_usv=24, n_no_usv=40,
+            input_metadata=input_md,
+        ))
+        ranking_path = tmp_path / 'univariate_combined.pkl'
+        _write_onset_univariate_ranking(save_path=ranking_path, feature_names=feature_names)
+        with ranking_path.open('rb') as fh:
+            ranking = pickle.load(fh)
+        ranking['_input_metadata'] = input_md
+        with ranking_path.open('wb') as fh:
+            pickle.dump(ranking, fh)
+
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        vocal_onset_model_selection(
+            univariate_results_path=str(ranking_path),
+            input_data_path=input_pkl,
+            settings_path=_settings_json(tmp_path, settings),
+            output_directory=str(ms_dir),
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+        step_pkls = sorted(ms_dir.glob('*step*.pkl'))
+        assert step_pkls
+        with step_pkls[-1].open('rb') as fh:
+            final = pickle.load(fh)
+        assert final['heldout'] is not None
+        assert final['heldout']['n_held_out_sessions'] == 1
+
 
 class TestPooledCacheMisalignment:
     """The pooled-feature-cache anchor-misalignment guard in bout-onset selection."""
@@ -864,6 +973,100 @@ class TestCategorySelectionBranches:
         )
         assert len(sorted(ms_dir.glob(f'{prefix}*.pkl'))) >= 2
 
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    def test_category_selection_holdout_refit_runs(self, tmp_path):
+        """
+        With ``held_out_test_proportion > 0`` and a ``held_out_session_ids`` block
+        added to the univariate ranking's ``_input_metadata`` (which the selector
+        prefers), the category selector reserves those whole sessions out of CV
+        and, after anchoring the top feature, refits the multivariate model (plus
+        a shuffled-label null) on the balanced development sessions and scores it
+        once on the reserved sessions. Asserts the final step pickle carries a
+        populated ``heldout`` record with the reserved session/event counts --
+        proof the held-out refit branch (skipped at proportion 0) executed.
+        """
+
+        settings, _ = _build_settings(tmp_path, model_engine='sklearn',
+                                      split_strategy='mixed', split_num=2)
+        settings['model_params']['model_type'] = 'sklearn'
+        settings['model_validation']['held_out_test_proportion'] = 0.25
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        held_ids = session_ids[-1:]
+        input_pkl = str(_write_category_input_pickle(
+            tmp_path / 'modeling_input.pkl', feature_names, session_ids))
+        ranking_path = tmp_path / 'univariate_combined.pkl'
+        _write_category_ranking(ranking_path, feature_names)
+        with ranking_path.open('rb') as fh:
+            ranking = pickle.load(fh)
+        ranking['_input_metadata']['held_out_session_ids'] = held_ids
+        with ranking_path.open('wb') as fh:
+            pickle.dump(ranking, fh)
+
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        vocal_category_model_selection(
+            univariate_results_path=str(ranking_path),
+            input_data_path=input_pkl,
+            settings_path=_settings_json(tmp_path, settings),
+            output_directory=str(ms_dir),
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+        step_pkls = sorted(ms_dir.glob('*step*.pkl'))
+        assert step_pkls
+        with step_pkls[-1].open('rb') as fh:
+            final = pickle.load(fh)
+        assert final['heldout'] is not None
+        assert final['heldout']['n_held_out_sessions'] == 1
+        assert final['heldout']['n_held_out_events'] > 0
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    def test_category_selection_holdout_refit_runs_pygam(self, tmp_path):
+        """
+        The ``pygam`` counterpart of the category held-out selection path: under
+        the ``pygam`` engine the per-fold multivariate fit and the held-out
+        refit both take the tensor-product ``LogisticGAM`` branch (rather than
+        the sklearn logistic branch). With a held-out reserve added to the
+        ranking's ``_input_metadata`` the selector refits and scores once on the
+        reserved sessions. Asserts the final step pickle carries a populated
+        ``heldout`` record with the reserved session/event counts.
+        """
+
+        settings, _ = _build_settings(tmp_path, model_engine='pygam',
+                                      split_strategy='mixed', split_num=2)
+        settings['model_params']['model_type'] = 'pygam'
+        settings['model_validation']['held_out_test_proportion'] = 0.25
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        held_ids = session_ids[-1:]
+        input_pkl = str(_write_category_input_pickle(
+            tmp_path / 'modeling_input.pkl', feature_names, session_ids))
+        ranking_path = tmp_path / 'univariate_combined.pkl'
+        _write_category_ranking(ranking_path, feature_names)
+        with ranking_path.open('rb') as fh:
+            ranking = pickle.load(fh)
+        ranking['_input_metadata']['held_out_session_ids'] = held_ids
+        with ranking_path.open('wb') as fh:
+            pickle.dump(ranking, fh)
+
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        vocal_category_model_selection(
+            univariate_results_path=str(ranking_path),
+            input_data_path=input_pkl,
+            settings_path=_settings_json(tmp_path, settings),
+            output_directory=str(ms_dir),
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+        step_pkls = sorted(ms_dir.glob('*step*.pkl'))
+        assert step_pkls
+        with step_pkls[-1].open('rb') as fh:
+            final = pickle.load(fh)
+        assert final['heldout'] is not None
+        assert final['heldout']['n_held_out_sessions'] == 1
+
 
 _TINY_RIDGE = {'alphas': [0.1, 1.0, 10.0], 'cv': 2, 'fit_intercept': True}
 
@@ -1121,6 +1324,54 @@ class TestBoutParameterSelectionBranches:
             p_val=0.5,
         )
         assert len(list(ms_dir.glob(f'{prefix}*.pkl'))) >= 1
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    def test_params_selection_holdout_refit_runs(self, tmp_path):
+        """
+        With ``held_out_test_proportion > 0`` and a ``held_out_session_ids`` block
+        added to the univariate ranking's ``_input_metadata`` (which the selector
+        prefers), the bout-parameter selector reserves those whole sessions out
+        of CV and, after anchoring the top feature, refits the multivariate
+        Gamma model (plus a shuffled-target null) on all development rows and
+        scores it once on the reserved rows. Asserts the final step pickle
+        carries a populated ``heldout`` record with the reserved session/event
+        counts -- proof the held-out refit branch (skipped at proportion 0) ran.
+        """
+
+        settings = _params_settings(tmp_path, model_engine='sklearn',
+                                    split_strategy='mixed', split_num=2)
+        settings['model_validation']['held_out_test_proportion'] = 0.25
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        held_ids = session_ids[-1:]
+        input_pkl = str(_build_params_input_pickle(
+            tmp_path / 'modeling_input.pkl', feature_names, session_ids))
+        ranking_path = tmp_path / 'univariate_combined.pkl'
+        _write_params_ranking(ranking_path, feature_names)
+        with ranking_path.open('rb') as fh:
+            ranking = pickle.load(fh)
+        ranking['_input_metadata']['held_out_session_ids'] = held_ids
+        with ranking_path.open('wb') as fh:
+            pickle.dump(ranking, fh)
+
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        bout_parameter_model_selection(
+            univariate_results_path=str(ranking_path),
+            input_data_path=input_pkl,
+            settings_path=_settings_json(tmp_path, settings),
+            output_directory=str(ms_dir),
+            target_variable='bout_durations',
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+        step_pkls = sorted(ms_dir.glob('*step*.pkl'))
+        assert step_pkls
+        with step_pkls[-1].open('rb') as fh:
+            final = pickle.load(fh)
+        assert final['heldout'] is not None
+        assert final['heldout']['n_held_out_sessions'] == 1
+        assert final['heldout']['n_held_out_events'] > 0
 
 
 class TestMultinomialAndManifoldAborts:

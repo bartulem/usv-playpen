@@ -1403,3 +1403,59 @@ class TestRunModelingCategoryHandlers:
         # ECE never recorded (its except swallowed every write), but AUC did.
         assert not np.isfinite(res['actual']['ece']).any()
         assert np.isfinite(res['actual']['auc']).any()
+
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.UndefinedMetricWarning")
+    def test_sklearn_holdout_populates_heldout_branch(self):
+        """
+        A non-empty ``held_out_session_ids`` reserves whole sessions from the CV
+        development pool and drives the sklearn category runner's held-out refit
+        / scoring branch: after the cross-validated development fit, the model
+        (and its shuffled-label null) is retrained on the balanced pooled
+        development sessions and scored once on the reserved sessions at their
+        natural class prior. Asserts the top-level ``results['heldout']`` record
+        is materialized for both branches, reports the reserved session/event
+        counts, and records a finite fit time (the refit actually ran).
+        """
+
+        settings = _minimal_category_settings(split_strategy='mixed', split_num=2)
+        pipeline = VocalCategoryModelingPipeline(modeling_settings_dict=settings)
+        feature_data = _category_feature_data(HISTORY_FRAMES)
+        basis = np.eye(HISTORY_FRAMES, 3, dtype=float)
+        fn, res = pipeline._run_modeling_category(
+            'self.speed', feature_data, basis, held_out_session_ids=['session_3'],
+        )
+        assert fn == 'self.speed'
+        assert 'heldout' in res
+        for branch in ('actual', 'null'):
+            assert res['heldout'][branch]['n_held_out_sessions'] == 1
+            assert res['heldout'][branch]['n_held_out_events'] > 0
+        assert np.isfinite(res['heldout']['actual']['fit_time'])
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.UndefinedMetricWarning")
+    def test_pygam_holdout_populates_heldout_branch(self, tmp_path):
+        """
+        The pyGAM counterpart of the held-out branch: with ``model_engine =
+        'pygam'`` and a non-empty ``held_out_session_ids``, a tensor-product
+        spline ``LogisticGAM`` (and its shuffled-label null) refits on the
+        balanced pooled development sessions and scores once on the reserved
+        sessions. Asserts the held-out record exists for both branches with the
+        reserved session/event counts and a finite fit time.
+        """
+
+        settings, _ = _build_category_settings(
+            tmp_path, model_engine='pygam', split_strategy='mixed', split_num=2,
+        )
+        pipeline = VocalCategoryModelingPipeline(modeling_settings_dict=settings)
+        feature_data = _category_feature_data(HISTORY_FRAMES)
+        fn, res = pipeline._run_modeling_category(
+            'self.speed', feature_data, basis_matrix=None, held_out_session_ids=['session_3'],
+        )
+        assert fn == 'self.speed'
+        assert 'heldout' in res
+        for branch in ('actual', 'null'):
+            assert res['heldout'][branch]['n_held_out_sessions'] == 1
+            assert res['heldout'][branch]['n_held_out_events'] > 0
+        assert np.isfinite(res['heldout']['actual']['fit_time'])
