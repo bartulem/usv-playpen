@@ -334,6 +334,14 @@ constraint-dependencies = [
     # We never build/ship sdists to untrusted parties, so practical exposure is nil and the
     # GPU regression is not worth it. Alert dismissed (tolerable_risk); revisit when torch's
     # setuptools ceiling lifts.
+    #
+    # 2026-08-10 -- Dependabot #78 (pymdown-extensions: exponential-backtracking ReDoS in the
+    # caret / tilde / betterem / magiclink inline processors -- a sub-50-byte untrusted Markdown
+    # line drives markdown.markdown() into unbounded CPU on the render thread; CWE-1333). DOCS-ONLY
+    # transitive dep (via mkdocs-material) and usv-playpen never renders untrusted Markdown, so
+    # practical exposure is nil; floored anyway because uv's sticky lock will not bump a transitive
+    # dep on its own (the lock still sits at 10.21.3 without this).
+    "pymdown-extensions>=11.0.1",
 ]
 
 [tool.uv.sources]
