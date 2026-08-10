@@ -42,11 +42,8 @@ with warnings.catch_warnings():
         _rolling_mean_1d,
         plot_collinearity_audit,
         plot_feature_ranking,
-        plot_manifold_filter_magnitude,
-        plot_manifold_last_bin_filters,
-        plot_manifold_multivariate_filters,
+        plot_manifold_filter_atlas,
         plot_manifold_selection_trajectory,
-        plot_manifold_torus_tuning,
         plot_model_selection_results,
         plot_multinomial_multivariate_filters,
         plot_multinomial_selection_diagnosis,
@@ -1427,7 +1424,7 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
     """
     Write a synthetic consolidated manifold ``selection_*.pkl`` whose
     final accepted step carries the raw bivariate weight block, for
-    ``plot_manifold_multivariate_filters``.
+    ``plot_manifold_filter_atlas``.
 
     The final accepted step exposes ``selected_feature``,
     ``current_features`` (the non-anchor features), and
@@ -1465,144 +1462,85 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
     return str(out)
 
 
+def _write_fake_qlvm_artifacts(tmp_path, rng):
+    """
+    Write minimal stand-in QLVM artifacts for ``plot_manifold_filter_atlas`` so
+    the atlas renders without the real ``/mnt`` reference files: a decoder
+    ``.npz`` whose arrays match the frozen QLVM decoder architecture (two Linear
+    layers 4 -> 2048 -> 4096, reshaped to (64, 8, 8), then four ConvTranspose2d
+    blocks 64 -> 32 -> 16 -> 8 -> 1) so ``decode_lattice_atlas`` runs, and an
+    ``arrays_coarse.npz`` carrying a 200 x 200 ``ws_labels_periodic`` watershed
+    with 7 supercategory regions for the boundary overlay.
+
+    Returns
+    -------
+    (str, str)
+        ``(decoder_weights_npz_path, supercategory_arrays_npz_path)``.
+    """
+
+    dec = {
+        'decoder.0.weight': rng.standard_normal((2048, 4)).astype(np.float32),
+        'decoder.0.bias': rng.standard_normal((2048,)).astype(np.float32),
+        'decoder.1.weight': rng.standard_normal((4096, 2048)).astype(np.float32),
+        'decoder.1.bias': rng.standard_normal((4096,)).astype(np.float32),
+        'decoder.3.weight': rng.standard_normal((64, 32, 3, 3)).astype(np.float32),
+        'decoder.3.bias': rng.standard_normal((32,)).astype(np.float32),
+        'decoder.5.weight': rng.standard_normal((32, 16, 3, 3)).astype(np.float32),
+        'decoder.5.bias': rng.standard_normal((16,)).astype(np.float32),
+        'decoder.7.weight': rng.standard_normal((16, 8, 3, 3)).astype(np.float32),
+        'decoder.7.bias': rng.standard_normal((8,)).astype(np.float32),
+        'decoder.9.weight': rng.standard_normal((8, 1, 3, 3)).astype(np.float32),
+        'decoder.9.bias': rng.standard_normal((1,)).astype(np.float32),
+    }
+    dec_path = tmp_path / "qmc_decoder_weights.npz"
+    np.savez(dec_path, **dec)
+
+    labels = rng.integers(1, 8, size=(200, 200)).astype(np.int16)
+    arr_path = tmp_path / "arrays_coarse.npz"
+    np.savez(arr_path, ws_labels_periodic=labels)
+    return str(dec_path), str(arr_path)
+
+
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
 @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
-class TestPlotManifoldFilterMagnitude:
-    """Figure-emission tests for ``plot_manifold_filter_magnitude`` — the
-    per-feature ``|W(t)|`` magnitude line."""
+class TestPlotManifoldFilterAtlas:
+    """Figure-emission tests for ``plot_manifold_filter_atlas`` — the combined
+    torus-only atlas (decoded vocal-space map + |W(t)| magnitude + per-feature
+    affinity filmstrips)."""
 
-    def test_writes_filter_magnitude(self, tmp_path):
-        """The fold-averaged filter collapses to one magnitude line per feature
-        and emits a distinct ``*_filter_magnitude_*`` file; the torus 4-D
-        sin/cos block is handled like the euclidean 2-D block."""
+    def test_writes_filter_atlas(self, tmp_path):
+        """A torus (4-D sin/cos) final step, with stand-in QLVM decoder and
+        supercategory arrays, emits exactly one ``*_filter_atlas_*`` figure."""
 
         rng = np.random.default_rng(71)
         pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4)
-        out_dir = tmp_path / "fmag_out"
+        dec_path, arr_path = _write_fake_qlvm_artifacts(tmp_path, rng)
+        out_dir = tmp_path / "atlas_out"
         out_dir.mkdir()
-        plot_manifold_filter_magnitude(
-            selection_results_path=pkl, save_plot=True, output_dir=str(out_dir))
+        plot_manifold_filter_atlas(
+            selection_results_path=pkl,
+            decoder_weights_npz_path=dec_path,
+            supercategory_arrays_npz_path=arr_path,
+            n_time_slices=4,
+            atlas_grid_n=2,
+            save_plot=True,
+            output_dir=str(out_dir),
+        )
         assert len(list(out_dir.glob(
-            f"model_selection_manifold_*_filter_magnitude_*.{_FIGURE_FORMAT}"))) == 1
-
-    def test_display_bins_clamped_to_model_bins(self, tmp_path):
-        """Requesting more display bins than the model has time bins is clamped
-        (no crash) and still emits exactly one figure."""
-
-        rng = np.random.default_rng(72)
-        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=2, n_time=8, output_dim=4)
-        out_dir = tmp_path / "fmag_clamp"
-        out_dir.mkdir()
-        plot_manifold_filter_magnitude(
-            selection_results_path=pkl, display_bins=99, save_plot=True, output_dir=str(out_dir))
-        assert len(list(out_dir.glob(
-            f"model_selection_manifold_*_filter_magnitude_*.{_FIGURE_FORMAT}"))) == 1
-
-
-@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
-@pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
-class TestPlotManifoldTorusTuning:
-    """Figure-emission tests for ``plot_manifold_torus_tuning`` — the
-    ``e(theta).W`` torus field (torus-only)."""
-
-    def test_writes_torus_tuning_with_centroids(self, tmp_path):
-        """The raw 4-D sin/cos final-bin filter decodes to a per-feature torus
-        field; optional supercategory centroids overlay and a distinct
-        ``*_torus_tuning_*`` file is emitted."""
-
-        rng = np.random.default_rng(73)
-        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=2, output_dim=4)
-        out_dir = tmp_path / "ttun_out"
-        out_dir.mkdir()
-        plot_manifold_torus_tuning(
-            selection_results_path=pkl, supercategory_centroids={1: (0.2, 0.3), 2: (0.7, 0.8)},
-            grid_n=40, save_plot=True, output_dir=str(out_dir))
-        assert len(list(out_dir.glob(
-            f"model_selection_manifold_*_torus_tuning_*.{_FIGURE_FORMAT}"))) == 1
+            f"model_selection_manifold_*_filter_atlas_*.{_FIGURE_FORMAT}"))) == 1
 
     def test_euclidean_2d_block_is_rejected(self, tmp_path):
-        """The tuning view is torus-only: a euclidean 2-D weight block prints why
-        and emits NO file (the e(theta).W decode needs the 4-D sin/cos embedding)."""
+        """The atlas is torus-only: a euclidean 2-D weight block prints why and
+        emits NO file. The guard returns before any QLVM artifact is touched, so
+        no decoder / arrays paths are needed."""
 
         rng = np.random.default_rng(74)
         pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=2, output_dim=2)
-        out_dir = tmp_path / "ttun_euc"
+        out_dir = tmp_path / "atlas_euc"
         out_dir.mkdir()
-        plot_manifold_torus_tuning(
+        plot_manifold_filter_atlas(
             selection_results_path=pkl, save_plot=True, output_dir=str(out_dir))
         assert list(out_dir.glob(f"*.{_FIGURE_FORMAT}")) == []
-
-
-@pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
-class TestPlotManifoldMultivariateFilters:
-    """Figure-emission tests for ``plot_manifold_multivariate_filters``."""
-
-    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
-    def test_writes_final_filters_svg(self, tmp_path):
-        """The reshaped bivariate weight block renders a per-feature
-        manifold-x / manifold-y filter atlas SVG."""
-
-        rng = np.random.default_rng(59)
-        pkl = _write_manifold_multivariate_pickle(tmp_path, rng)
-        out_dir = tmp_path / "mfmv_out"
-        out_dir.mkdir()
-        plot_manifold_multivariate_filters(
-            selection_results_path=pkl,
-            save_plot=True,
-            output_dir=str(out_dir),
-        )
-        assert len(list(out_dir.glob(f"model_selection_manifold_*_filters_final_*.{_FIGURE_FORMAT}"))) == 1
-
-    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
-    def test_writes_last_bin_filters(self, tmp_path):
-        """The most-recent-bin variant collapses the same bivariate weight
-        block to a grouped horizontal bar chart (manifold-x / manifold-y
-        instantaneous drive per feature) and emits a distinct file."""
-
-        rng = np.random.default_rng(60)
-        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3)
-        out_dir = tmp_path / "mflb_out"
-        out_dir.mkdir()
-        plot_manifold_last_bin_filters(
-            selection_results_path=pkl,
-            save_plot=True,
-            output_dir=str(out_dir),
-            feature_label_overrides={'self.speed': 'male speed'},
-        )
-        assert len(list(out_dir.glob(f"model_selection_manifold_*_filters_last_bin_*.{_FIGURE_FORMAT}"))) == 1
-
-    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
-    def test_writes_torus_atlas_from_4d_sincos(self, tmp_path):
-        """The torus regressor emits a 4-D ``(sin θ, cos θ)`` weight block; the
-        atlas must collapse it to per-coordinate magnitude and still render
-        (rather than aborting on the non-2 output dim)."""
-
-        rng = np.random.default_rng(83)
-        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4)
-        out_dir = tmp_path / "mfmv_torus_out"
-        out_dir.mkdir()
-        plot_manifold_multivariate_filters(
-            selection_results_path=pkl,
-            save_plot=True,
-            output_dir=str(out_dir),
-        )
-        assert len(list(out_dir.glob(f"model_selection_manifold_*_filters_final_*.{_FIGURE_FORMAT}"))) == 1
-
-    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
-    def test_writes_torus_last_bin_from_4d_sincos(self, tmp_path):
-        """The last-bin summary renders from the 4-D torus weight block, using
-        the non-negative per-coordinate magnitude."""
-
-        rng = np.random.default_rng(84)
-        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4)
-        out_dir = tmp_path / "mflb_torus_out"
-        out_dir.mkdir()
-        plot_manifold_last_bin_filters(
-            selection_results_path=pkl,
-            save_plot=True,
-            output_dir=str(out_dir),
-        )
-        assert len(list(out_dir.glob(f"model_selection_manifold_*_filters_last_bin_*.{_FIGURE_FORMAT}"))) == 1
 
 
 def _write_multinomial_diagnosis_pickle(tmp_path, rng, n_classes: int = 3,
