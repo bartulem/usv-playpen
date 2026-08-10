@@ -37,7 +37,7 @@ _VIZ_SETTINGS_PATH = (
 try:
     with _VIZ_SETTINGS_PATH.open() as _vf:
         _VIZ_FIGURES = json.load(_vf)["figures"]
-    _GLOBAL_CMAP = _VIZ_FIGURES["cmap"]
+    _GLOBAL_CMAP = _VIZ_FIGURES["sequential_cmap"]
 except FileNotFoundError:
     _VIZ_FIGURES = {}
     _GLOBAL_CMAP = "inferno"
@@ -1649,7 +1649,7 @@ def plot_category_local_fatigue_heatmap(
     The function applies a 1D Gaussian filter along the time axis to reduce
     stochastic noise in sparse categories, followed by row-wise normalization
     to isolate the fatigue 'shape' from absolute counts. The project default
-    colormap (`figures.cmap`, currently 'inferno') is used for high-contrast
+    colormap (`figures.sequential_cmap`, currently 'inferno') is used for high-contrast
     visualization of density.
 
     Parameters
@@ -1665,7 +1665,7 @@ def plot_category_local_fatigue_heatmap(
     smoothing_sigma : float, default 0.75
         The standard deviation for the Gaussian kernel applied along the
         time axis. Set to 0 to disable smoothing.
-    colormap : str, default `figures.cmap` (currently 'inferno')
+    colormap : str, default `figures.sequential_cmap` (currently 'inferno')
         The matplotlib colormap used for the heatmap intensity.
     facet_figsize : tuple[int, int], default (12, 10)
         The total size of the generated figure.
@@ -2210,7 +2210,7 @@ def plot_category_prevalence_and_embedding(
     Z = griddata((dim1_all, dim2_all), cat_codes, (xx, yy), method='nearest')
 
     # Build a custom "white-base" gradient by taking the project-wide
-    # default colormap (`figures.cmap`) and pre-pending a smooth ramp
+    # default colormap (`figures.sequential_cmap`) and pre-pending a smooth ramp
     # from white into its low-end colours.
     base_cmap = plt.get_cmap(_GLOBAL_CMAP)
     cmap_colors = base_cmap(np.linspace(0, 1, 256))

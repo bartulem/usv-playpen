@@ -116,7 +116,7 @@ def _settings(Path, json, resolve_consolidated_h5_path, resolve_experimenter_pat
         _viz = {}
 
     try:
-        global_cmap = _viz["figures"]["cmap"]
+        global_cmap = _viz["figures"]["sequential_cmap"]
     except KeyError:
         global_cmap = "inferno"
 

@@ -71,7 +71,7 @@ def _tiny_cfg(spectrograms_dir, peaks_only=False):
             "spectrograms_dir": str(spectrograms_dir),
         },
         "figures": {
-            "cmap": "inferno",
+            "sequential_cmap": "inferno",
         },
         "qlvm_torus_traversal_video": {
             "clustering": "coarse",

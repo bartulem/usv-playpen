@@ -2470,7 +2470,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
              unassigned-gray).
           2. Occupancy-normalized sig +VMI fraction — the local
              fraction of recorded cells that are sig +VMI, rendered
-             with the `figures.cmap` colormap from settings
+             with the `figures.sequential_cmap` colormap from settings
              (defaults to `inferno`).
           3. Occupancy-normalized sig -VMI fraction — same metric for
              the sig -VMI subpopulation, same colormap and axes extent.
@@ -4122,7 +4122,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             require_majority=require_majority,
         )
         region_colors = self._resolve_region_colors()
-        density_cmap = self.visualizations_parameter_dict["figures"]["cmap"]
+        density_cmap = self.visualizations_parameter_dict["figures"]["sequential_cmap"]
 
         n_classes = USV_CATEGORY_N_CLASSES[segmentation]
         class_ids = np.arange(1, n_classes + 1)
@@ -4927,7 +4927,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         # render
         fig, ax = plt.subplots(figsize=(7.5, 3.5))
-        cmap_name = self.visualizations_parameter_dict["figures"]["cmap"]
+        cmap_name = self.visualizations_parameter_dict["figures"]["sequential_cmap"]
         im = ax.imshow(
             fractions, aspect="auto", cmap=cmap_name, vmin=0.0, vmax=1.0,
         )
@@ -5678,7 +5678,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             else {}
         )
         ratemap_cmap = (
-            figures_settings["cmap"] if "cmap" in figures_settings else "inferno"
+            figures_settings["sequential_cmap"] if "sequential_cmap" in figures_settings else "inferno"
         )
         # behavioral occupancy threshold lives on the analyses side (it's
         # a tuning-curve config alongside usv_property_min_occupancy_seconds);
@@ -6681,7 +6681,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             else {}
         )
         ratemap_cmap = (
-            figures_settings["cmap"] if "cmap" in figures_settings else "inferno"
+            figures_settings["sequential_cmap"] if "sequential_cmap" in figures_settings else "inferno"
         )
 
         # build a sequential colormap for the occupancy watershed from

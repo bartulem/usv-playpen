@@ -14,9 +14,8 @@
     "fig_format": "png",
     "dpi": 300,
     "timestamp_in_name": true,
-    "cmap": "inferno",
     "diverging_cmap": "RdBu_r",
-    "sequential_cmap": "magma",
+    "sequential_cmap": "inferno",
     "seed": 0
   },
   "shared_resources": {

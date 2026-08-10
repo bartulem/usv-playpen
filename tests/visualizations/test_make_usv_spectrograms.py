@@ -144,7 +144,7 @@ def _base_settings(
     """
 
     return {
-        "figures": {"cmap": "inferno", "timestamp_in_name": False},
+        "figures": {"sequential_cmap": "inferno", "timestamp_in_name": False},
         "shared_resources": {
             "spectrograms_dir": spectrograms_dir,
         },

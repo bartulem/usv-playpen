@@ -69,7 +69,7 @@ def test_figure_dpi_seed_cmap_derive_from_settings():
 
     assert _FIGURE_DPI == _VIZ_SETTINGS["figures"]["dpi"]
     assert _FIGURE_SEED == _VIZ_SETTINGS["figures"]["seed"]
-    assert _GLOBAL_CMAP == _VIZ_SETTINGS["figures"]["cmap"]
+    assert _GLOBAL_CMAP == _VIZ_SETTINGS["figures"]["sequential_cmap"]
 
 
 # _classify_predictor_feature

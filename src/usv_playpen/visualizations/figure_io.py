@@ -12,7 +12,7 @@ The project's visualisations historically hard-coded one or more of
       "fig_format": "png",
       "dpi": 300,
       "timestamp_in_name": true,
-      "cmap": "inferno"
+      "sequential_cmap": "inferno"
     }
 
 Three entry points are provided:

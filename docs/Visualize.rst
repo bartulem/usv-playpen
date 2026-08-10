@@ -72,9 +72,8 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
 * **fig_format** : default output file format. For the per-cluster ratemap PDFs, ``pdf`` produces a single multi-page document; ``png`` / ``jpg`` / ``svg`` write one file per page.
 * **dpi** : default raster resolution applied to every ``fig.savefig`` callsite that goes through ``visualizations.figure_io.save_figure``.
 * **timestamp_in_name** : when ``true``, ``_YYYYMMDD_HHMMSS`` is appended to figure stems by default. Session-bound figures opt out of this with ``timestamp_in_name=false`` since their filenames already embed a session id or unit id.
-* **cmap** : default matplotlib colormap used by every heatmap / ratemap callsite (one of ``viridis``, ``cividis``, ``plasma``, ``inferno``, ``magma``); the ``make_behavioral_videos`` spectrogram subplot and the ``qlvm_torus_traversal_video`` spectrogram tiles also read it.
-* **diverging_cmap** : the diverging (blue-white-red) colormap for **signed** modeling-filter figures — the per-feature filter atlases, the selection-trajectory difference maps, and the ``e(theta).W`` torus-tuning field (``plot_manifold_torus_tuning``). Any Matplotlib diverging map (``RdBu_r``, ``coolwarm``, ``bwr``, …).
-* **sequential_cmap** : the sequential colormap for **non-negative magnitude** modeling-filter figures (the torus per-coordinate influence-magnitude atlas). Any Matplotlib sequential map (``magma``, ``viridis``, …).
+* **sequential_cmap** : the sequential (non-negative) colormap used by every heatmap / ratemap / spectrogram / density callsite (one of ``viridis``, ``cividis``, ``plasma``, ``inferno``, ``magma``) — the per-cluster ratemaps and neuronal-tuning densities, the ``make_behavioral_videos`` spectrogram subplot, the ``qlvm_torus_traversal_video`` spectrogram tiles, the USV-summary heatmaps, and the decoded-USV vocal-space atlas in ``plot_manifold_filter_atlas``. This is the colormap the GUI's colormap dropdown edits.
+* **diverging_cmap** : the diverging (blue-white-red) colormap for **signed** modeling-filter figures — the selection-trajectory difference maps and the ``e(theta).W`` torus affinity fields in the manifold filter atlas (``plot_manifold_filter_atlas``). Any Matplotlib diverging map (``RdBu_r``, ``coolwarm``, ``bwr``, …).
 * **seed** : random seed for figure-side stochastic operations, for reproducibility.
 
 .. code-block:: json
@@ -84,9 +83,8 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
         "fig_format": "png",
         "dpi": 300,
         "timestamp_in_name": true,
-        "cmap": "inferno",
         "diverging_cmap": "RdBu_r",
-        "sequential_cmap": "magma",
+        "sequential_cmap": "inferno",
         "seed": 0
     }
 

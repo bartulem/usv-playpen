@@ -1689,7 +1689,7 @@ def _make_aggregate_visualizations_parameters() -> dict:
         "male_colors":       ["#9AC0CD", "#8CA252"],
         "female_colors":     ["#FF6347", "#B851B4"],
         "social_colors":     ["#5A6470"],
-        "figures":           {"cmap": "inferno"},
+        "figures":           {"sequential_cmap": "inferno"},
     }
 
 

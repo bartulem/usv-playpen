@@ -375,7 +375,7 @@ entirely through ``modeling_settings.json`` and the per-section Parameters cells
         DeepResultsVisualizer,
         plot_collinearity_audit,
         plot_feature_ranking,
-        plot_manifold_multivariate_filters,
+        plot_manifold_filter_atlas,
         plot_manifold_selection_trajectory,
         plot_model_selection_results,
         plot_multinomial_multivariate_filters,
@@ -692,40 +692,46 @@ multinomial selection artifacts.
 * **mn_filters_results** — final selected filters (one panel per class × selected feature), shared diverging colormap.
 * **mn_diagnosis_results** — how far the multivariate selection departs from picking the top univariate feature per class (base + difference heatmaps).
 
-**6. Manifold visualisations.** These two plotters consume the consolidated artifact written by
+**6. Manifold visualisations.** These plotters consume the consolidated artifact written by
 ``continuous_vocal_manifold_model_selection`` (forward-stepwise selection for the
 2-D acoustic-manifold regression) — same ``selection_*.pkl`` schema as the
-multinomial plotters but with continuous regression metrics (``r2_spatial``,
-``mahalanobis_mae``, ``euclidean_mae*``, ``pearson_x/y``, ``spearman_x/y``) and a
-2-D output dim.
+multinomial plotters but with continuous regression metrics (torus: ``vm_logscore``,
+``euclidean_mae``, ``density_geodesic_mae``, ``pullback_geodesic_mae``;
+euclidean/VAE: ``r2_spatial``, ``mahalanobis_mae``, ``pearson_x/y``,
+``spearman_x/y``) and a 2-D output dim.
 
 .. code-block:: python
 
     man_trajectory_results = configure_path(
-        ".../model_selection_results/male/usv_manifold_vae_supercategory/model_selection_final_..._mixed_...Z.pkl"
+        ".../model_selection_results/model_selection_final_male_intact_partners_manifold_qlvm_supercategory_session_...Z.pkl"
     )
     man_filters_results = man_trajectory_results
 
+    # Torus (QLVM) run: primary = von Mises log-score; the two secondary panels
+    # show the per-feature "% improvement over chance" for the manifold-position
+    # error (euclidean_mae) and the acoustic error (pullback_geodesic_mae). Pass
+    # metric BASE names -- the panels append " (held-out data)" / " improvement (%)".
     plot_manifold_selection_trajectory(
         selection_results_path=man_trajectory_results,
-        metric_primary="r2_spatial",
-        primary_metric_name="R² (spatial, KDE-weighted)",
-        metric_secondary="pearson_y",
-        secondary_metric_name="Pearson r (manifold y)",
+        metric_primary="vm_logscore",
+        primary_metric_name="von Mises log-score",
+        metrics_secondary=[
+            ("euclidean_mae", "manifold-position error"),
+            ("pullback_geodesic_mae", "acoustic error"),
+        ],
+        secondary_as_pct_of_chance=True,
         save_plot=False,
         output_dir=figures_dir,
     )
 
-    plot_manifold_multivariate_filters(
+    plot_manifold_filter_atlas(
         selection_results_path=man_filters_results,
-        history_window_sec=4.0,
-        cmap="RdBu_r",
         save_plot=False,
         output_dir=figures_dir,
     )
 
-* **man_trajectory_results** — cumulative primary metric across forward-stepwise iterations plus secondary-metric bars for best-univariate vs the final stacked model.
-* **man_filters_results** — final-model per-feature temporal filter atlas (rows = manifold-x / manifold-y, columns = time bins), reusing the same path.
+* **man_trajectory_results** — cumulative primary metric (von Mises log-score) across forward-stepwise iterations, plus one "% improvement over chance" gain panel per secondary error metric (manifold-position / acoustic).
+* **man_filters_results** — the combined ``plot_manifold_filter_atlas`` (torus only): decoded vocal-space map + per-feature ``|W(t)|`` magnitude + per-feature ``e(theta).W`` affinity filmstrips, reusing the same path.
 
 **7. CNN pipeline.** A non-linear baseline (1-D ResNet) for the continuous manifold-position
 regression. Load the multivariate feature blocks into the ``(N, F, T)`` tensor the
@@ -1996,7 +2002,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
     plt.show()
 
 * **spectrogram_session_root** — a session directory holding a ``*_int16.mmap*`` audio file (and, for stitched mode, a ``*_usv_summary.csv`` 1:1 with the consolidated h5 entries). All other spectrogram knobs (mode, channel, ``time_window``, ``freq_limits``, ``nfft``, colorbar, save) live in the ``make_usv_spectrograms`` block of ``visualizations_settings.json``; override them on ``vis_settings``.
-* **spectrogram_cmap_choice** — ``'female'`` / ``'male'`` selects the matching per-sex colormap; ``None`` falls back to the project-wide ``vis_settings['figures']['cmap']``.
+* **spectrogram_cmap_choice** — ``'female'`` / ``'male'`` selects the matching per-sex colormap; ``None`` falls back to the project-wide ``vis_settings['figures']['sequential_cmap']``.
 
 **Cross-session summaries.** The second part pools many sessions. Its three ``make_usv_spectrograms`` helper figures each carry their own parameters (still the per-figure half of the hybrid layout); all three share the same noise filter, ``noise_col_id = 'vae_supercategory'`` with ``noise_categories = (0,)``, which drops noise rows before plotting.
 

@@ -42,7 +42,7 @@ def _settings(tmp_path: Path, **overrides) -> dict:
         "fig_format": "svg",
         "dpi": 300,
         "timestamp_in_name": True,
-        "cmap": "inferno",
+        "sequential_cmap": "inferno",
     }
     figures.update(overrides)
     return {"figures": figures}

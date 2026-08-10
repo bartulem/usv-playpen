@@ -74,7 +74,7 @@ apply_plot_style()
 # arguments (was two hard-coded `'inferno'` literals); the palettes feed the
 # module-level session-type / USV-timeline / manifold color constants below (was
 # hard-coded `#9AC0CD` / `#FF6347` / `#C0C0C0` literals). Class instances
-# continue to resolve their cmap via `_resolve_cmap` (also reads `figures.cmap`).
+# continue to resolve their cmap via `_resolve_cmap` (also reads `figures.sequential_cmap`).
 # These are required fields of the packaged settings file, so they are read by
 # direct key access; only the file-not-found case (e.g. a partial install) falls
 # back to literals so the module can still be imported.
@@ -85,7 +85,7 @@ _VIZ_SETTINGS_PATH = (
 try:
     with _VIZ_SETTINGS_PATH.open() as _vf:
         _VIZ_SETTINGS = json.load(_vf)
-    _GLOBAL_CMAP = _VIZ_SETTINGS["figures"]["cmap"]
+    _GLOBAL_CMAP = _VIZ_SETTINGS["figures"]["sequential_cmap"]
     _MALE_COLORS = _VIZ_SETTINGS["male_colors"]
     _FEMALE_COLORS = _VIZ_SETTINGS["female_colors"]
     _UNASSIGNED_COLORS = _VIZ_SETTINGS["unassigned_colors"]
@@ -252,7 +252,7 @@ class USVSpectrogramPlotter:
         ``matplotlib.colors.Colormap`` instance produced by
         ``visualizations.auxiliary_plot_functions.create_colormap``)
         that takes precedence over the string name in the project-wide
-        ``figures.cmap`` settings entry (read by direct key access — it
+        ``figures.sequential_cmap`` settings entry (read by direct key access — it
         is a required field of the settings dict). Either form is
         accepted by matplotlib's ``imshow`` / ``specshow`` ``cmap=``
         argument.
@@ -265,7 +265,7 @@ class USVSpectrogramPlotter:
 
         if getattr(self, "cmap_override", None) is not None:
             return self.cmap_override
-        return self.visualizations_parameter_dict["figures"]["cmap"]
+        return self.visualizations_parameter_dict["figures"]["sequential_cmap"]
 
     def _load_audio_memmap(self) -> tuple[np.memmap, int, int, int, str]:
         """
@@ -3700,7 +3700,7 @@ def plot_embedding_with_category_thumbnails(
     ax_female.set_xlabel("female emitted", fontsize=10)
 
     # Bottom row: duration / mean-frequency scatters colored by value
-    # (project default cmap from `figures.cmap`). Points are sorted
+    # (project default cmap from `figures.sequential_cmap`). Points are sorted
     # ascending by value so high (bright) values are drawn last and sit
     # on top of low (dark) ones, giving a legible gradient even with
     # overplotting.

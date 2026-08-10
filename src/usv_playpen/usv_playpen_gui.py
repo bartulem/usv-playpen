@@ -4655,7 +4655,7 @@ class USVPlaypenWindow(QMainWindow):
         default_cmap_label.move(10, 555)
         self.default_cmap_list = sorted(
             ['viridis', 'cividis', 'plasma', 'inferno', 'magma'],
-            key=lambda x: x == self.visualizations_input_dict['figures']['cmap'],
+            key=lambda x: x == self.visualizations_input_dict['figures']['sequential_cmap'],
             reverse=True,
         )
         self.default_cmap_cb = QComboBox(self.VisualizationsSettings)
@@ -5242,7 +5242,7 @@ class USVPlaypenWindow(QMainWindow):
         self.visualizations_input_dict['make_behavioral_videos']['view_angle'] = self.view_angle
 
         self.visualizations_input_dict['figures']['fig_format'] = self.default_fig_format
-        self.visualizations_input_dict['figures']['cmap'] = self.default_cmap
+        self.visualizations_input_dict['figures']['sequential_cmap'] = self.default_cmap
 
         self.visualizations_input_dict['make_behavioral_videos']['side_azimuth_start'] = int(_safe_literal_eval(self.side_azimuth_start.text()))
 
@@ -6108,7 +6108,7 @@ class USVPlaypenWindow(QMainWindow):
         Description
         -----------
         Project-wide default colormap combo box (writes to
-        ``figures.cmap``).
+        ``figures.sequential_cmap``).
 
         Parameters
         ----------
@@ -7595,7 +7595,7 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
                            'visualization_type_cb_bool': False, 'plot_theme': visualizations_input_dict['make_behavioral_videos']['plot_theme'],
                            'fig_format': visualizations_input_dict['make_behavioral_videos']['general_figure_specs']['fig_format'], 'view_angle': visualizations_input_dict['make_behavioral_videos']['view_angle'],
                            'default_fig_format': visualizations_input_dict['figures']['fig_format'],
-                           'default_cmap': visualizations_input_dict['figures']['cmap'],
+                           'default_cmap': visualizations_input_dict['figures']['sequential_cmap'],
                            'rotate_side_view_bool': False, 'history_cb_bool': False, 'speaker_cb_bool': False, 'spectrogram_cb_bool': False,
                            'spectrogram_ch': visualizations_input_dict['make_behavioral_videos']['spectrogram_ch'], 'raster_plot_cb_bool': False, 'spike_sound_cb_bool': False,
                            'beh_features_cb_bool': False, 'pitch_shifted_audio_cb_bool': False,

@@ -629,7 +629,7 @@ def plot_spectrogram(plot_axes: plt.Axes,
             Y-position of USV segments.
         spectrogram_cmap (str)
             Matplotlib colormap name for the spectrogram image; supplied from
-            the shared ``figures.cmap`` setting by the callers.
+            the shared ``figures.sequential_cmap`` setting by the callers.
 
     Returns
     -------
@@ -1971,7 +1971,7 @@ class Create3DVideo:
                                  stft_hop=stft_hop,
                                  half_window_size_sec=half_window_size_sec,
                                  cbar_bool=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_cbar_bool'],
-                                 spectrogram_cmap=self.visualizations_parameter_dict['figures']['cmap'],
+                                 spectrogram_cmap=self.visualizations_parameter_dict['figures']['sequential_cmap'],
                                  color_mode_preferences=color_mode_preferences,
                                  spectrogram_amplitude=spectrogram_amplitude,
                                  power_limit=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_power_limit'],
@@ -2231,7 +2231,7 @@ class Create3DVideo:
                                      stft_hop=stft_hop,
                                      half_window_size_sec=half_window_size_sec,
                                      cbar_bool=False,
-                                     spectrogram_cmap=self.visualizations_parameter_dict['figures']['cmap'],
+                                     spectrogram_cmap=self.visualizations_parameter_dict['figures']['sequential_cmap'],
                                      color_mode_preferences=color_mode_preferences,
                                      spectrogram_amplitude=spectrogram_amplitude,
                                      power_limit=self.visualizations_parameter_dict['make_behavioral_videos']['subplot_specs']['spectrogram_power_limit'],

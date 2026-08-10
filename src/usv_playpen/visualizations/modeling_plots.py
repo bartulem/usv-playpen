@@ -106,14 +106,13 @@ TIMESCALE_SOCIAL_COLOR = DYADIC_COLOR
 TIMESCALE_AXIS_COLOR = "#000000"   # zero / spine reference lines (was 'black')
 TIMESCALE_NULL_COLOR = "#808080"   # circular-shift null fill / envelope (was 'gray')
 
-# Global default colormap — shared with `figures.cmap` so the
+# Global default colormap — shared with `figures.sequential_cmap` so the
 # multinomial / continuous heatmap defaults match the rest of the repo.
-_GLOBAL_CMAP = _VIZ_SETTINGS["figures"]["cmap"]
-# Colormaps for the modeling filter figures, read from settings so nothing is
-# hard-coded: `diverging` for signed filter / tuning fields (blue-white-red),
-# `sequential` for non-negative magnitude fields.
+_GLOBAL_CMAP = _VIZ_SETTINGS["figures"]["sequential_cmap"]
+# Diverging (blue-white-red) colormap for the SIGNED modeling-filter figures
+# (selection-difference heatmaps, the e(theta).W torus affinity fields in the
+# manifold filter atlas), read from settings so nothing is hard-coded.
 _DIVERGING_CMAP = _VIZ_SETTINGS["figures"]["diverging_cmap"]
-_SEQUENTIAL_CMAP = _VIZ_SETTINGS["figures"]["sequential_cmap"]
 
 # Global figure resolution and RNG seed, read from the same `figures` block so
 # the output dpi and any cosmetic randomness are configured in one place rather
@@ -4069,7 +4068,7 @@ def plot_manifold_filter_atlas(
     * **Top-left -- vocal-space atlas.** A tiled ``atlas_grid_n`` x
       ``atlas_grid_n`` grid of torus positions is decoded through the frozen
       QLVM decoder (``decode_lattice_atlas``) into canonical USV spectrograms,
-      each drawn as a small ``figures.cmap`` (inferno) image on a black
+      each drawn as a small ``figures.sequential_cmap`` (inferno) image on a black
       background at its torus location and **normalised to its own peak** so the
       contour shape reads at every position regardless of absolute intensity.
       The 7 supercategory regions are overlaid as thin white boundaries. This is
@@ -4788,7 +4787,7 @@ class DeepResultsVisualizer:
         snr_threshold : float, default 3.0
             The minimum Signal-to-Noise Ratio required for a feature to be considered
             statistically significant relative to permutation noise.
-        cmap : str, default `figures.cmap` (currently 'inferno')
+        cmap : str, default `figures.sequential_cmap` (currently 'inferno')
             Colormap applied to the bars of statistically significant features.
         error_bar_color : str, default '#000000'
             Color for the standard deviation error bars representing variance across folds.
@@ -5382,7 +5381,7 @@ class DeepResultsVisualizer:
         ----------
         gridsize : int, default 30
             The number of hexagons in the x-direction. Controls spatial resolution.
-        cmap : str, default `figures.cmap` (currently 'inferno')
+        cmap : str, default `figures.sequential_cmap` (currently 'inferno')
             Colormap for the absolute error landscape.
         diff_cmap : str, default 'RdBu_r'
             Diverging colormap for the Error Reduction panel.

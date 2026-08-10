@@ -838,18 +838,26 @@ Visualise the trajectory with ``plot_model_selection_results`` (binary / regress
 consolidated ``model_selection_final_*.pkl`` and shows the per-step held-out score
 gain and the retained-feature filters.
 
-For the acoustic-manifold model the converged filters have two dedicated views,
-both reading the same consolidated artifact: ``plot_manifold_filter_magnitude``
-draws the per-feature temporal filter magnitude ``|W(t)|`` over the history window
+For the acoustic-manifold model the converged filters have a single dedicated
+view, ``plot_manifold_filter_atlas`` (torus runs only), reading the same
+consolidated artifact — a three-panel figure. The **vocal-space atlas** panel
+tiles the torus with canonical USVs decoded through the frozen QLVM decoder
+(inferno on black, each icon peak-normalised, the supercategory watershed
+boundaries overlaid in white) as the key for the fields. The **filter magnitude**
+panel draws the per-feature temporal magnitude ``|W(t)|`` over the history window
 (one line per feature, coloured by behavioural category with opacity separating
 features that share a category; averaged into display bins so the medium-scale
-envelope reads cleanly), and ``plot_manifold_torus_tuning`` decodes each feature's
-final-bin filter into the signed ``e(theta).W`` field over the torus (red = the
-feature drives the predicted vocalization toward that region, blue = away;
-optional supercategory centroids overlaid). Both take their colours / colormaps
-from ``visualizations_settings.json`` (``diverging_cmap`` / ``manifold_colors``),
-and the temporal filter's smoothness is governed by the per-observation
-``lambda_smooth`` prior (see the note above).
+envelope reads cleanly). The **affinity filmstrips** panel samples each feature's
+filter at ``n_time_slices`` instants from ``-history_window_sec`` to onset and
+decodes each into the signed ``e(theta).W`` field over the torus (red = a +1 SD
+increase in the feature just before onset drives the predicted vocalization toward
+that region, blue = away), on a shared diverging scale. The QLVM decoder and
+supercategory-boundary ``.npz`` paths default from ``modeling_settings.json``
+(``usv_manifold_geodesic_metrics.decoder_weights_npz_path``, with
+``arrays_coarse.npz`` taken from the same directory); colours come from
+``visualizations_settings.json`` (``sequential_cmap`` / ``diverging_cmap``), and the temporal
+filter's smoothness is governed by the per-observation ``lambda_smooth`` prior (see
+the note above).
 
 CNN modeling
 ------------

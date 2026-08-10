@@ -224,7 +224,7 @@ def test_gui_settings_dicts_have_expected_top_level_keys(qtbot, monkeypatch, tmp
     # visualizations_input_dict:
     assert "figures" in win.visualizations_input_dict
     fig_block = win.visualizations_input_dict["figures"]
-    assert "fig_format" in fig_block and "cmap" in fig_block
+    assert "fig_format" in fig_block and "sequential_cmap" in fig_block
     win.close()
 
 

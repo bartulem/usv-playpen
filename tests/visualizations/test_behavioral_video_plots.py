@@ -188,7 +188,7 @@ def test_plot_spectrogram_renders_with_usv_segments_and_cbar():
 
 def test_plot_spectrogram_honors_spectrogram_cmap():
     """The spectrogram colormap is supplied by the caller (from the shared
-    ``figures.cmap`` setting) rather than hard-coded, so passing an explicit
+    ``figures.sequential_cmap`` setting) rather than hard-coded, so passing an explicit
     ``spectrogram_cmap`` must be reflected in the rendered mesh's colormap."""
 
     rng = np.random.default_rng(2)

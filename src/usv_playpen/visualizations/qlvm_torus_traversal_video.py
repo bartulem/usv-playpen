@@ -454,11 +454,11 @@ class QLVMTorusTraversalVideo:
                 )
             self.message_output(f"Pooled {n_samples} latents, {K} clusters ({clustering}).")
 
-            # Spectrogram colormap, read from the shared `figures.cmap` so it
+            # Spectrogram colormap, read from the shared `figures.sequential_cmap` so it
             # matches the rest of the repo rather than a module-level hard-coded
             # "inferno". Resolved here (after the qlvm_dim validation) so a store
             # lacking latents still surfaces that error first.
-            spec_cmap = self.input_parameter_dict['figures']['cmap']
+            spec_cmap = self.input_parameter_dict['figures']['sequential_cmap']
 
             n_neighbors_max = min(max(m + 1, boundary_neighbors, 1), n_samples)
             nn_index = NearestNeighbors(n_neighbors=n_neighbors_max,
