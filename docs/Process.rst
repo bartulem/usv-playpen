@@ -1072,7 +1072,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 
 Curate DAS outputs
 ~~~~~~~~~~~~~~~~~~
-As explained above, DAS is run on every channel separately, such that a need arises to systematize different channel detections in one singular table. This code identifies the same detections across different channels and creates a single CSV file with the start and end times of each detected vocalization.
+As explained above, DAS is run on every channel separately, such that a need arises to systematize different channel detections in one singular table. This code identifies the same detections across different channels and creates a single CSV file with the start and end times of each detected vocalization. Detections are combined by a coverage-watershed merge: at every moment the number of channels agreeing that a call is present forms a coverage profile, each peak of which becomes one USV and the valleys between peaks set the boundaries. Because every channel contributes at most one vote, a single spuriously long or jittery detection on one channel cannot fuse distinct calls into one, while quiet calls seen on only a few channels are still preserved (Phase-4 noise rejection, below, decides which detections to keep).
 
 To run, you need to list the root directories of interest, select *Curate DAS outputs*, click *Next* and then *Process*:
 
@@ -1145,6 +1145,9 @@ The *usv_signal_correlation_histogram.svg* file contains a histogram of [1] mean
 The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section not modifiable in the GUI, but it can be modified manually:
 
 * **filter_putative_noise_bool** : whether to run the Phase-4 amplitude/spectrogram noise rejection; when ``false``, every merged detection is kept and the summary CSV is written as-is (peak/mean amplitude channels left at 0)
+* **peak_min** : coverage-watershed merge — minimum number of distinct channels for a coverage peak to count as a call (gates splitting; quiet few-channel calls are kept whole)
+* **valley_frac** : coverage-watershed merge — relative valley depth (0-1) that both splits a gap between two calls and trims each USV's edges
+* **coverage_bin_ms** : coverage-watershed merge — coverage-grid bin width in milliseconds (temporal resolution / implicit smoothing)
 * **len_win_signal** : STFT window length
 * **low_freq_cutoff** : frequency cutoff for filtering (in Hz)
 * **noise_corr_cutoff_min** : minimum correlation coefficient for noise
@@ -1154,6 +1157,9 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 
      "summarize_das_findings": {
         "filter_putative_noise_bool": true,
+        "peak_min": 8,
+        "valley_frac": 0.5,
+        "coverage_bin_ms": 1.0,
         "len_win_signal": 512,
         "low_freq_cutoff": 30000,
         "noise_corr_cutoff_min": 0.15,

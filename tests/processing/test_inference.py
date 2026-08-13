@@ -23,7 +23,11 @@ import pytest
 import matplotlib
 matplotlib.use("Agg")
 
-from usv_playpen.processing.das_inference import FindMouseVocalizations, _DAS_ANNOTATION_FILE_RE
+from usv_playpen.processing.das_inference import (
+    FindMouseVocalizations,
+    _DAS_ANNOTATION_FILE_RE,
+    _watershed_merge_segments,
+)
 from usv_playpen.processing.assign_vocalizations import Vocalocator
 from usv_playpen.processing.assign_vocalizations_utils import are_points_in_conf_set
 
@@ -646,6 +650,90 @@ def test_summarize_das_findings_missing_mmap_reports_real_cause(
     # "no annotations" wording.
     assert "filenotfounderror" in joined
     assert "no das annotations found" not in joined
+
+
+# ===========================================================================
+# _watershed_merge_segments — coverage-watershed DAS merge
+# ===========================================================================
+
+
+def _channel_segments(calls_by_channel: dict) -> list:
+    """Flatten a ``{channel: [(start, stop), ...]}`` mapping into the
+    ``(start, stop, channel)`` tuple list ``_watershed_merge_segments`` expects."""
+    return [(start, stop, ch)
+            for ch, intervals in calls_by_channel.items()
+            for (start, stop) in intervals]
+
+
+def test_watershed_merge_empty_returns_empty():
+    """No segments in, no USVs out (the early-return guard)."""
+    assert _watershed_merge_segments([], peak_min=8, valley_frac=0.5, coverage_bin_ms=1.0) == []
+
+
+def test_watershed_merge_single_call_is_one_usv():
+    """A single call detected on many channels is one USV, bounded to the call
+    and carrying every detecting channel."""
+    segs = _channel_segments({ch: [(0.10, 0.15)] for ch in range(10)})
+    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
+    assert len(merged) == 1
+    usv = merged[0]
+    assert usv["start"] == pytest.approx(0.10, abs=2e-3)
+    assert usv["stop"] == pytest.approx(0.15, abs=2e-3)
+    assert usv["chs_detected"] == set(range(10))
+
+
+def test_watershed_merge_two_separated_calls_are_two_usvs():
+    """Two temporally separated calls (a true silent gap between them) are two
+    distinct USVs."""
+    segs = _channel_segments({ch: [(0.10, 0.15), (0.50, 0.55)] for ch in range(10)})
+    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
+    assert len(merged) == 2
+
+
+def test_watershed_merge_long_bridge_segment_does_not_merge_calls():
+    """The signature failure of the old greedy merge: two real calls plus one
+    channel whose single long segment spans the gap between them. Greedy would
+    chain them into one giant USV; the watershed keeps them separate because
+    that lone bridging channel is worth only one vote and cannot fill the
+    multi-channel valley."""
+    segs = _channel_segments({ch: [(0.10, 0.15), (0.30, 0.35)] for ch in range(10)})
+    segs.append((0.10, 0.35, 99))  # one channel over-merges the two calls
+    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
+    assert len(merged) == 2
+    # neither USV spans the whole 0.10-0.35 bridge
+    assert all((usv["stop"] - usv["start"]) < 0.20 for usv in merged)
+
+
+def test_watershed_merge_partial_merge_splits_on_relative_valley():
+    """Three real calls A/B/C, cleanly separated on ten channels, but four
+    additional channels over-merge B and C into one segment. The B-C gap
+    therefore sits at four channels while B and C peak at fourteen: a relative
+    valley the watershed splits (an absolute floor could not)."""
+    segs = _channel_segments({ch: [(0.10, 0.15), (0.20, 0.25), (0.30, 0.35)] for ch in range(10)})
+    segs += _channel_segments({100 + k: [(0.20, 0.35)] for k in range(4)})
+    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
+    assert len(merged) == 3
+
+
+def test_watershed_merge_quiet_few_channel_call_is_kept_whole():
+    """A quiet call detected on fewer than peak_min channels never reaches a
+    significant peak, so it is neither dropped nor shattered -- it is kept as a
+    single USV (Phase 4 still applies its own noise rejection downstream)."""
+    segs = _channel_segments({ch: [(0.10, 0.15)] for ch in range(3)})
+    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
+    assert len(merged) == 1
+
+
+def test_watershed_merge_output_is_sorted_and_schema_complete():
+    """Every merged dict carries the keys the summary writer / Phase 4 expect,
+    and the list is ordered by start time regardless of input order."""
+    segs = _channel_segments({ch: [(0.50, 0.55), (0.10, 0.15)] for ch in range(10)})
+    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
+    assert [u["start"] for u in merged] == sorted(u["start"] for u in merged)
+    for usv in merged:
+        assert set(usv) >= {"start", "stop", "chs_detected", "peak_amp_ch", "mean_amp_ch"}
+        assert usv["peak_amp_ch"] == 0.0
+        assert usv["mean_amp_ch"] == 0.0
 
 
 def _build_prepare_for_vocalocator_layout(tmp_path, settings):

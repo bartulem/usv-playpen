@@ -955,6 +955,9 @@ def das_command_line_inference_cli(ctx, root_directory, **kwargs):
 @click.option('--corr-cutoff', 'noise_corr_cutoff_min', type=float, default=None, required=False, help='Minimum noise correlation cutoff.')
 @click.option('--var-cutoff', 'noise_var_cutoff_max', type=float, default=None, required=False, help='Maximum noise variance cutoff.')
 @click.option('--filter-putative-noise/--no-filter-putative-noise', 'filter_putative_noise_bool', default=None, required=False, help='Run the Phase-4 amplitude/spectrogram noise rejection (default: enabled). Pass --no-filter-putative-noise to keep every merged detection and write the summary CSV as-is.')
+@click.option('--peak-min', 'peak_min', type=int, default=None, required=False, help='Watershed merge: minimum distinct channels for a coverage peak to count as a call.')
+@click.option('--valley-frac', 'valley_frac', type=float, default=None, required=False, help='Watershed merge: relative valley depth (0-1) that both splits at a gap and trims each USV edge.')
+@click.option('--coverage-bin-ms', 'coverage_bin_ms', type=float, default=None, required=False, help='Watershed merge: coverage-grid bin width in milliseconds (temporal resolution).')
 @click.pass_context
 def summarize_das_findings_cli(ctx, root_directory, **kwargs):
     """
