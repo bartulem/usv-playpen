@@ -6,11 +6,13 @@ Run USV inference on WAV files and create annotations.
 from __future__ import annotations
 
 import json
+import math
 import os
 import pathlib
 import re
 import shutil
 import subprocess
+from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime
 
@@ -18,6 +20,7 @@ import librosa
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
+from scipy.signal import find_peaks
 from tqdm import tqdm
 
 from ..os_utils import configure_path, first_match_or_raise, wait_for_subprocesses
@@ -73,6 +76,141 @@ def _write_usv_summary_csv(merged: list, out_path: pathlib.Path) -> None:
         "chs_detected": [str(u['chs_detected']) for u in merged],
         "emitter": [None] * len(merged),
     }).write_csv(file=out_path)
+
+
+def _watershed_merge_segments(
+    all_segments: list,
+    peak_min: int,
+    valley_frac: float,
+    coverage_bin_ms: float,
+) -> list:
+    """Merge per-channel DAS detections into USVs by watershed on channel coverage.
+
+    Replaces the previous greedy interval-union merge, whose transitive
+    overlap-chaining collapsed a run of close calls (or a single pathological
+    long segment) into one giant USV. Here a USV is a *peak of multi-channel
+    agreement* and USVs are cut at the *valleys* between peaks, so no single
+    channel -- however long or jittery its segment -- can force a merge.
+
+    The algorithm operates purely on the segment endpoints (times, in seconds):
+
+    1. Coverage. A uniform time grid of bin width ``coverage_bin_ms`` is laid over
+       the recording, and ``coverage[t]`` is the number of *distinct* channels with
+       a segment covering bin ``t`` (each channel votes at most once per bin).
+    2. Active regions. The timeline is cut into maximal runs where
+       ``coverage >= 1``; each is processed independently, so true silence
+       (``coverage == 0``) is never crossed.
+    3. Watershed split. Within a region, significant peaks (``coverage >=
+       peak_min``) are located; the region is cut at the valley between two
+       consecutive significant peaks whenever that valley drops below
+       ``valley_frac`` times the smaller of the two peaks. Regions with fewer than
+       two significant peaks (including quiet, few-channel calls) are kept whole.
+    4. Boundaries. Each resulting piece is trimmed to the contiguous span around
+       its peak where ``coverage >= valley_frac * peak``, so the USV hugs its call
+       and the low-coverage inter-call shoulders remain real gaps.
+
+    Because every channel contributes at most one vote, a single long or jittery
+    segment can neither create a peak nor fill a valley, which is precisely the
+    over-merge failure mode of the greedy union it replaces.
+
+    Parameters
+    ----------
+    all_segments : list
+        Flat list of ``(start_seconds, stop_seconds, channel_index)`` tuples
+        pooled across all channels (the Phase 1 output).
+    peak_min : int
+        Minimum number of distinct channels for a coverage peak to count as a
+        confident call; gates splitting and thereby preserves quiet calls.
+    valley_frac : float
+        Relative valley depth (in ``(0, 1]``) that both triggers a split and
+        defines each USV's edges: a gap splits when it falls below ``valley_frac``
+        times the smaller flanking peak, and each USV spans the region around its
+        peak where coverage stays at or above ``valley_frac * peak``.
+    coverage_bin_ms : float
+        Width (milliseconds) of the coverage-grid bin; sets the temporal
+        resolution and the implicit smoothing (sub-bin gaps/peaks vanish).
+
+    Returns
+    -------
+    merged : list
+        List of merged USV interval dicts, each with ``start``/``stop`` (seconds),
+        ``chs_detected`` (a set of channel indices active within the USV), and the
+        ``peak_amp_ch``/``mean_amp_ch`` placeholders (filled by Phase 4), sorted by
+        ``start``. Empty when ``all_segments`` is empty.
+    """
+    if not all_segments:
+        return []
+
+    dt = coverage_bin_ms / 1000.0
+    t0 = min(seg[0] for seg in all_segments)
+    t1 = max(seg[1] for seg in all_segments)
+    n_bins = math.ceil((t1 - t0) / dt) + 2
+
+    # Per-channel coverage masks (a channel votes at most once per bin), summed
+    # across channels into the integer coverage profile.
+    segments_by_channel = defaultdict(list)
+    for start, stop, ch_idx in all_segments:
+        segments_by_channel[ch_idx].append((start, stop))
+
+    channel_masks = {}
+    coverage = np.zeros(n_bins, dtype=np.int32)
+    for ch_idx, channel_segments in segments_by_channel.items():
+        mask = np.zeros(n_bins, dtype=bool)
+        for start, stop in channel_segments:
+            bin_start = int((start - t0) / dt)
+            bin_stop = math.ceil((stop - t0) / dt)
+            mask[bin_start:bin_stop] = True
+        channel_masks[ch_idx] = mask
+        coverage += mask
+
+    # Active regions: maximal runs where coverage >= 1.
+    padded = np.concatenate(([0], (coverage >= 1).astype(np.int8), [0]))
+    region_edges = np.flatnonzero(np.diff(padded))
+    active_regions = list(zip(region_edges[0::2], region_edges[1::2], strict=False))
+
+    # Watershed split each active region at valleys between consecutive
+    # significant peaks. The region coverage is zero-padded on both ends (the
+    # true coverage just outside an active region is 0), so a call sitting at the
+    # very start or end of a region -- whose peak would otherwise be a boundary
+    # sample find_peaks cannot see -- is still detected.
+    pieces = []
+    for region_start, region_stop in active_regions:
+        padded_coverage = np.concatenate(([0], coverage[region_start:region_stop], [0]))
+        peaks, _ = find_peaks(padded_coverage, height=peak_min)
+        if len(peaks) <= 1:
+            pieces.append((region_start, region_stop))
+            continue
+        peak_heights = padded_coverage[peaks]
+        split_bins = []
+        for i in range(len(peaks) - 1):
+            lo, hi = peaks[i], peaks[i + 1]
+            valley_offset = lo + int(np.argmin(padded_coverage[lo:hi + 1]))
+            if padded_coverage[valley_offset] < valley_frac * min(peak_heights[i], peak_heights[i + 1]):
+                # map the padded index back to a global coverage-bin index
+                split_bins.append(region_start + valley_offset - 1)
+        boundaries = [region_start, *split_bins, region_stop]
+        pieces.extend((boundaries[i], boundaries[i + 1]) for i in range(len(boundaries) - 1))
+
+    # Trim each piece to its call extent and assign detected channels.
+    merged = []
+    for piece_start, piece_stop in pieces:
+        piece_coverage = coverage[piece_start:piece_stop]
+        level = valley_frac * int(piece_coverage.max())
+        above = np.flatnonzero(piece_coverage >= level)
+        left = piece_start + int(above[0])
+        right = piece_start + int(above[-1])
+        chs_detected = {ch_idx for ch_idx, mask in channel_masks.items()
+                        if mask[left:right + 1].any()}
+        merged.append({
+            'start': t0 + left * dt,
+            'stop': t0 + (right + 1) * dt,
+            'chs_detected': chs_detected,
+            'peak_amp_ch': 0.0,
+            'mean_amp_ch': 0.0,
+        })
+
+    merged.sort(key=lambda usv: usv['start'])
+    return merged
 
 
 class FindMouseVocalizations:
@@ -296,26 +434,23 @@ class FindMouseVocalizations:
             # Phase 2: sort all segments by start time
             all_segments.sort(key=lambda seg: seg[0])
 
-            # Phase 3: greedy interval merge across all channels
-            # Two intervals (a_start, a_stop) and (b_start, b_stop) overlap (open-ended) when:
-            #   a_start < b_stop  and  b_start < a_stop
-            # Since segments are sorted by start, only the running stop needs comparing.
-            # Each merged entry is a dict with start, stop, chs_detected (set), and placeholder fields.
-            merged = []
-            for start, stop, ch_idx in all_segments:
-                if merged and start < merged[-1]['stop']:
-                    # overlaps with current merged interval: extend and record channel
-                    merged[-1]['stop'] = max(merged[-1]['stop'], stop)
-                    merged[-1]['chs_detected'].add(ch_idx)
-                else:
-                    # no overlap: start a new merged interval
-                    merged.append({
-                        'start': start,
-                        'stop': stop,
-                        'chs_detected': {ch_idx},
-                        'peak_amp_ch': 0.0,
-                        'mean_amp_ch': 0.0,
-                    })
+            # Phase 3: watershed merge across channels.
+            # The greedy interval-union this replaced chained any transitively
+            # overlapping segments, so one pathological long segment -- or a run of
+            # close calls with jittery per-channel boundaries -- collapsed into a
+            # single giant USV. The watershed instead segments the multi-channel
+            # agreement profile: a USV is a peak of channel coverage, and USVs are
+            # cut at the valleys between peaks, so no single channel can force a
+            # merge (see _watershed_merge_segments for the full algorithm).
+            peak_min = self.input_parameter_dict["summarize_das_findings"]["peak_min"]
+            valley_frac = self.input_parameter_dict["summarize_das_findings"]["valley_frac"]
+            coverage_bin_ms = self.input_parameter_dict["summarize_das_findings"]["coverage_bin_ms"]
+            merged = _watershed_merge_segments(
+                all_segments=all_segments,
+                peak_min=peak_min,
+                valley_frac=valley_frac,
+                coverage_bin_ms=coverage_bin_ms,
+            )
 
             # Convert channel sets to sorted lists and compute counts
             for usv in merged:
@@ -613,10 +748,10 @@ class FindMouseVocalizations:
             elif not filter_putative_noise_bool and n_usv >= 1:
                 # Putative-noise filtering disabled: keep every merged interval
                 # without amplitude/spectrogram rejection. The intervals are
-                # already start-sorted (Phase 2 sorts the raw detections and the
-                # greedy merge preserves that order), so the peak/mean amplitude
-                # channels stay at their 0.0 placeholders and the summary CSV is
-                # written directly from the merged list.
+                # already start-sorted (the Phase-3 watershed merge returns its
+                # USVs ordered by start), so the peak/mean amplitude channels
+                # stay at their 0.0 placeholders and the summary CSV is written
+                # directly from the merged list.
                 self.message_output(
                     f"Putative-noise filtering disabled; {len(merged)} USVs kept without amplitude/spectrogram checks."
                 )
