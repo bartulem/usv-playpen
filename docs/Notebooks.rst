@@ -1621,7 +1621,7 @@ Inter-USV interval analyses
 the distribution of inter-USV intervals (in seconds, log-transformed) across one
 or more sessions. Compute is split from plotting: the compute cells build a master
 interval DataFrame, run an information criterion (IC) sweep and a bootstrap likelihood-ratio test (LRT) over candidate component
-counts for the selected mixture family (Gaussian or Student-t, per ``model_class``), and persist everything to a single
+counts for the selected mixture family (Gaussian, Student-t or inverse-Gaussian, per ``model_class``), and persist everything to a single
 self-describing HDF5 archive. The plot cells then read that archive back, so figures
 can be re-rendered without refitting — even across kernel restarts.
 
@@ -1686,7 +1686,7 @@ change what gets analysed.
 * **output_directory** — where the HDF5 archive is written and where the plot cells look for the newest run.
 * **session_lists** — the configured session-list files, each ``configure_path``-resolved to the host OS.
 * **interval_types** / **mode_label** — the two interval definitions (``s2s`` start-to-start, ``e2s`` end-to-start) and their human-readable titles; every compute and plot cell loops over these.
-* **model_class** — ``"gauss"`` or ``"t"``, selecting the Gaussian or Student-t mixture family for the whole run.
+* **model_class** — ``"gauss"``, ``"t"`` or ``"ig"``, selecting the Gaussian, Student-t or inverse-Gaussian mixture family for the whole run. The inverse-Gaussian is fit in linear time and scored in the shared log-space measure, so BIC/AIC/ICL/CV remain cross-family comparable.
 * **plot_log_xlims** / **bins_per_sex** — plot-only knobs read straight from JSON (not archived in the HDF5); **tau** is likewise read from JSON but *is* archived in the HDF5.
 
 **Compute the fits.** Run once. First, walk every session in the list, read its ``*_usv_summary.csv``,
@@ -1741,6 +1741,7 @@ components (the step-up selection rule is applied later, at save time):
             n_init_boot=max(1, usv_interval_cfg["mixture_model_n_init"] - 7),
             reg_covar=usv_interval_cfg["mixture_model_reg_covar"],
             seed=usv_interval_cfg["random_seed_base"],
+            n_jobs=usv_interval_cfg["bootstrap_lrt_n_jobs"],
         )
 
 Finally, bundle the master DataFrame, the IC sweep, the LRT results, and the

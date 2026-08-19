@@ -14,6 +14,7 @@ from __future__ import annotations
 import h5py
 import numpy as np
 import polars as pls
+import yaml
 
 from usv_playpen.processing.generate_spectrograms import (
     SpectrogramGenerator,
@@ -137,3 +138,30 @@ def test_generate_session_spectrograms_invalid_usv_is_placeholder(tmp_path, mock
         assert grp["durations"][:].tolist() == [0]
         assert not grp["spectrograms"][0].any()  # all-zero placeholder
         assert f.attrs["valid_spectrograms"] == 0
+
+
+def test_generate_session_spectrograms_drops_metadata_excluded_channels(tmp_path, mocker):
+    """Channels listed in the session metadata's excluded_channels must be
+    dropped from the variance-weighted average: the segment reaching
+    compute_usv_spectrogram has correspondingly fewer columns."""
+    root, session_id, _n_usv = _build_session(tmp_path, n_channels=4, n_usv=2)
+    meta = {"Equipment": {"audio_Avisoft": {"excluded_channels": ["m_ch02"]}}}
+    (root / f"{session_id}_metadata.yaml").write_text(yaml.dump(meta))
+
+    mocker.patch("usv_playpen.processing.generate_spectrograms.smart_wait")
+    spy = mocker.patch(
+        "usv_playpen.processing.generate_spectrograms.compute_usv_spectrogram",
+        return_value=(np.zeros((128, 128), dtype=np.float32), 10),
+    )
+    gen = SpectrogramGenerator(
+        root_directory=str(root),
+        input_parameter_dict={"generate_spectrograms": dict(_SPEC_PARAMS)},
+        message_output=lambda *_a, **_kw: None,
+    )
+    gen.generate_session_spectrograms()
+
+    assert spy.call_count == 2
+    for call in spy.call_args_list:
+        segment = call.kwargs["audio_segment_channels"]
+        # 4 fixture channels minus the excluded m_ch02 (column 1)
+        assert segment.shape[1] == 3

@@ -201,7 +201,7 @@ cross-validation and held-out-test settings live in their own
         "usv_category_column_name": "vae_supercategory",
         "usv_noise_column": "vae_supercategory",
         "usv_noise_categories": [0],
-        "usv_manifold_column_names": ["vae_umap1", "vae_umap2"],
+        "usv_manifold_column_names": ["vae1", "vae2"],
         "usv_manifold_metric": "euclidean",
         "usv_manifold_period": 1.0,
         "usv_manifold_min_region_events": 20,

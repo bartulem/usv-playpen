@@ -61,7 +61,8 @@
     "bootstrap_lrt_B": 1000,
     "bootstrap_lrt_n_subsample": 15000,
     "bootstrap_lrt_alpha": 0.05,
-    "bootstrap_lrt_bonferroni": false
+    "bootstrap_lrt_bonferroni": false,
+    "bootstrap_lrt_n_jobs": 1
   },
   "send_email": {
     "analyses_pc_list": [

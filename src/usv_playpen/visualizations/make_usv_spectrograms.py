@@ -1261,7 +1261,7 @@ class USVSpectrogramPlotter:
 
         embedding = seq_cfg["embedding"]
         x_col, y_col = (
-            ("vae_umap1", "vae_umap2") if embedding == "vae" else ("qlvm_dim1", "qlvm_dim2")
+            ("vae1", "vae2") if embedding == "vae" else ("qlvm1", "qlvm2")
         )
         if x_col not in usv_df.columns or y_col not in usv_df.columns:
             msg = (
@@ -2273,10 +2273,10 @@ def plot_session_usv_timeline(
 # maps live side-by-side: VAE-based UMAP and QLVM-based UMAP. Both
 # carry a category and a supercategory integer label.
 EMBEDDING_COORD_COLS = (
-    "vae_umap1",
-    "vae_umap2",
-    "qlvm_dim1",
-    "qlvm_dim2",
+    "vae1",
+    "vae2",
+    "qlvm1",
+    "qlvm2",
 )
 EMBEDDING_LABEL_COLS = (
     "vae_category",
@@ -2321,7 +2321,7 @@ def build_pooled_embeddings_df(
     across every session listed in ``sessions_txt_path``. The returned
     DataFrame is the master table consumed by the marimo embedding
     explorer notebook: it carries the four UMAP coordinate columns
-    (``vae_umap1/2``, ``qlvm_dim1/2``), the four label columns
+    (``vae1/2``, ``qlvm1/2``), the four label columns
     (``vae_category``, ``vae_supercategory``, ``qlvm_category``,
     ``qlvm_supercategory``), and — critically — a ``(session_id,
     row_index)`` pair per row that keys directly back into the
@@ -2366,9 +2366,9 @@ def build_pooled_embeddings_df(
         Schema:
             session_id (Utf8)
             row_index (UInt32)
-            vae_umap1, vae_umap2 (Float64)
+            vae1, vae2 (Float64)
             vae_category, vae_supercategory (Int64)
-            qlvm_dim1, qlvm_dim2 (Float64)
+            qlvm1, qlvm2 (Float64)
             qlvm_category, qlvm_supercategory (Int64)
             emitter (Utf8)
             sex (Utf8)
@@ -2580,7 +2580,7 @@ def build_vae_density_npz(
     cohort table.
 
     The output carries three arrays:
-    ``heatmap`` — a 2-D histogram density of ``(vae_umap1, vae_umap2)`` over the
+    ``heatmap`` — a 2-D histogram density of ``(vae1, vae2)`` over the
     cohort's coordinate range (optionally Gaussian-smoothed into a KDE-like density
     estimate), oriented ``[row=y, col=x]`` for ``origin="lower"``;
     ``ws_labels_periodic`` — the category field on the same grid, assigned by a
@@ -2628,9 +2628,9 @@ def build_vae_density_npz(
     pooled = build_pooled_embeddings_df(
         sessions_txt_path, cache_path=cache_path, message_output=message_output
     )
-    sub = pooled.select(["vae_umap1", "vae_umap2", label_col]).drop_nulls()
-    coords_x = sub["vae_umap1"].to_numpy().astype(np.float64)
-    coords_y = sub["vae_umap2"].to_numpy().astype(np.float64)
+    sub = pooled.select(["vae1", "vae2", label_col]).drop_nulls()
+    coords_x = sub["vae1"].to_numpy().astype(np.float64)
+    coords_y = sub["vae2"].to_numpy().astype(np.float64)
     point_labels = sub[label_col].to_numpy()
 
     x0, x1 = float(coords_x.min()), float(coords_x.max())
@@ -3297,8 +3297,8 @@ def plot_embedding_with_category_thumbnails(
     pooled_df (pls.DataFrame | None)
         Optionally pass a pre-built pooled-embeddings DataFrame to
         skip the loader. Must contain ``session_id``, ``row_index``,
-        the embedding coordinate columns (``vae_umap1/2`` or
-        ``qlvm_dim1/2``) and the category column.
+        the embedding coordinate columns (``vae1/2`` or
+        ``qlvm1/2``) and the category column.
     embeddings_cache_path (str | None)
         Parquet cache path passed to ``build_pooled_embeddings_df``.
     rebuild_embeddings_cache (bool)
@@ -3342,12 +3342,12 @@ def plot_embedding_with_category_thumbnails(
         )
         raise ValueError(msg)
 
-    # The QLVM torus coordinates are named qlvm_dim1/qlvm_dim2 (they are not a
+    # The QLVM torus coordinates are named qlvm1/qlvm2 (they are not a
     # UMAP); only the VAE embedding uses the _umap1/_umap2 suffix.
     if map_prefix == "qlvm":
-        x_col, y_col = "qlvm_dim1", "qlvm_dim2"
+        x_col, y_col = "qlvm1", "qlvm2"
     else:
-        x_col, y_col = "vae_umap1", "vae_umap2"
+        x_col, y_col = "vae1", "vae2"
     cat_col = f"{map_prefix}_{category_col_suffix}"
 
     if pooled_df is None:

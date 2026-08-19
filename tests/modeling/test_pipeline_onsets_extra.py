@@ -752,7 +752,7 @@ class TestExtractionGuards:
         BOTH the category column name and the index (so VAE-vs-QLVM and
         category-vs-supercategory are unambiguous downstream), and
         ``analysis_specific`` records the category provenance. The synthetic
-        summaries write ``vae_supercategory == 1`` for every USV, so targeting
+        summaries write ``qlvm_supercategory == 1`` for every USV, so targeting
         category 1 keeps every onset and both sessions survive.
         """
 
@@ -785,7 +785,7 @@ class TestExtractionGuards:
 
         pkls = list(save_dir.glob('modeling_*.pkl'))
         assert len(pkls) == 1
-        expected_tag = 'individual_cat_vae_supercategory_1'
+        expected_tag = 'individual_cat_qlvm_supercategory_1'
         assert expected_tag in pkls[0].name
 
         with pkls[0].open('rb') as fh:
@@ -793,4 +793,4 @@ class TestExtractionGuards:
         md = artifact['_input_metadata']
         assert md['analysis_tag'] == expected_tag
         assert md['analysis_specific']['onset_target_category'] == 1
-        assert md['analysis_specific']['usv_category_column_name'] == 'vae_supercategory'
+        assert md['analysis_specific']['usv_category_column_name'] == 'qlvm_supercategory'

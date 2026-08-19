@@ -493,12 +493,12 @@ def _scatter_chart(
             return None, None, None, None
 
         map_prefix = "vae" if map_dropdown.value == "VAE" else "qlvm"
-        # QLVM torus coords are qlvm_dim1/qlvm_dim2 (not a UMAP); only VAE uses
+        # QLVM torus coords are qlvm1/qlvm2 (not a UMAP); only VAE uses
         # the _umap1/_umap2 suffix.
         if map_prefix == "qlvm":
-            x_col, y_col = "qlvm_dim1", "qlvm_dim2"
+            x_col, y_col = "qlvm1", "qlvm2"
         else:
-            x_col, y_col = "vae_umap1", "vae_umap2"
+            x_col, y_col = "vae1", "vae2"
 
         # Color source: category/supercategory/session_type categorical; emitter
         # colors the derived sex column; density is computed below from the 2D

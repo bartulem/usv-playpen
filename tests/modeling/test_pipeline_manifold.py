@@ -364,11 +364,11 @@ class TestContinuousInputExtraction:
 
         md = artifact['_input_metadata']
         assert md['analysis_type'] == 'continuous'
-        assert md['analysis_tag'] == 'manifold_vae_supercategory'
+        assert md['analysis_tag'] == 'manifold_qlvm_supercategory'
         spec = md['analysis_specific']
-        assert spec['manifold_metric'] == 'euclidean'
-        assert spec['usv_category_column_name'] == 'vae_supercategory'
-        assert list(spec['usv_manifold_column_names']) == ['vae_umap1', 'vae_umap2']
+        assert spec['manifold_metric'] == 'torus'
+        assert spec['usv_category_column_name'] == 'qlvm_supercategory'
+        assert list(spec['usv_manifold_column_names']) == ['qlvm1', 'qlvm2']
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_extraction_torus_metric(self, tmp_path):
@@ -405,7 +405,7 @@ class TestContinuousInputExtraction:
         """
 
         settings, _ = _build_manifold_settings(tmp_path)
-        settings['vocal_features']['usv_manifold_column_names'] = ['vae_umap1']
+        settings['vocal_features']['usv_manifold_column_names'] = ['vae1']
         pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
         with pytest.raises(ValueError, match="at least"):
             pipeline.extract_and_save_continuous_data()
@@ -418,7 +418,7 @@ class TestContinuousInputExtraction:
 
         settings, _ = _build_manifold_settings(tmp_path)
         settings['vocal_features']['usv_manifold_column_names'] = [
-            'vae_umap1', 'vae_umap2', 'vae_umap3',
+            'vae1', 'vae2', 'vae3',
         ]
         pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
         with pytest.raises(ValueError, match="2-D target"):
@@ -637,11 +637,11 @@ class TestManifoldModelSelection:
 
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_vae_supercategory',
+            'analysis_tag': 'manifold_qlvm_supercategory',
             'session_ids': session_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'vae_supercategory',
+                'usv_category_column_name': 'qlvm_supercategory',
                 'manifold_metric': 'euclidean',
                 'manifold_period': 1.0,
             },
@@ -709,7 +709,7 @@ class TestManifoldModelSelection:
             final_step = pickle.load(fh)
         assert 'self.speed' in final_step['current_features']
         # dcor_xy is the selection score on BOTH geometries now.
-        assert final_step['_run_metadata']['selection_metric'] == 'dcor_xy'
+        assert final_step['_run_metadata']['selection_metric'] == 'vm_logscore'
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_held_out_refit_runs_when_proportion_positive(self, tmp_path):
@@ -732,12 +732,12 @@ class TestManifoldModelSelection:
         held_out_ids = session_ids[:5]
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_vae_supercategory',
+            'analysis_tag': 'manifold_qlvm_supercategory',
             'session_ids': session_ids,
             'held_out_session_ids': held_out_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'vae_supercategory',
+                'usv_category_column_name': 'qlvm_supercategory',
                 'manifold_metric': 'euclidean',
                 'manifold_period': 1.0,
             },

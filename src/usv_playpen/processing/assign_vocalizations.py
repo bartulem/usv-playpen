@@ -68,7 +68,11 @@ class Vocalocator:
         """
         Description
         -----------
-        Prepares the root directory for vocalocator inference.
+        Prepares the root directory for vocalocator inference. The ``dset.h5``
+        bundle includes a per-call ``animal_id`` field of per-animal SEX codes
+        (0 = male, 1 = female), derived from the session metadata's
+        ``Subjects`` matched to the track names -- an input feature of the
+        Vocalocator identity model.
 
         Parameters
         ----------
@@ -171,8 +175,56 @@ class Vocalocator:
                 "video_fps": video_frame_rate,
                 "arena_dims": arena_dimensions}
 
-            num_animals = tracks.shape[1]
-            animal_ids = np.arange(num_animals, dtype=np.int32)
+            # Vocalocator's `animal_id` field is a SEX code per candidate animal
+            # (0 = male, 1 = female), in the tracks-array animal order -- an
+            # input feature of the identity model, not an animal index.
+            # np.arange only coincidentally produced the right codes for
+            # male/female (courtship) sessions; female-female sessions need
+            # [1, 1] and male-male [0, 0], so the codes are derived from the
+            # session metadata's Subjects, matched to the track names.
+            with h5py.File(track_file_path, mode='r') as track_file:
+                # some track h5 files carry stray whitespace in track names
+                # (e.g. ' 158800_0'); strip before matching against Subjects
+                track_names = [item.decode('utf-8').strip() for item in list(track_file['track_names'])]
+            if len(track_names) != tracks.shape[1]:
+                err_msg = (
+                    f"Track h5 '{track_file_path}' is inconsistent: {len(track_names)} track_names "
+                    f"but {tracks.shape[1]} animals on the tracks array."
+                )
+                raise ValueError(err_msg)
+            session_metadata, _ = load_session_metadata(self.root_directory, logger=self.message_output)
+            if session_metadata is None or 'Subjects' not in session_metadata or not session_metadata['Subjects']:
+                err_msg = (
+                    f"Session metadata of '{self.root_directory}' has no Subjects; cannot derive "
+                    f"the per-animal sex codes Vocalocator's animal_id field requires."
+                )
+                raise ValueError(err_msg)
+            subject_sex_by_id = {
+                str(subject['subject_id']): subject['sex']
+                for subject in session_metadata['Subjects']
+            }
+            sex_to_code = {'male': 0, 'female': 1}
+            animal_id_codes = []
+            for track_name in track_names:
+                if track_name not in subject_sex_by_id:
+                    err_msg = (
+                        f"Track '{track_name}' has no matching subject_id in the session metadata "
+                        f"Subjects of '{self.root_directory}'; cannot derive its sex code."
+                    )
+                    raise ValueError(err_msg)
+                subject_sex = subject_sex_by_id[track_name]
+                if subject_sex not in sex_to_code:
+                    err_msg = (
+                        f"Unrecognized sex '{subject_sex}' for subject '{track_name}' in the session "
+                        f"metadata of '{self.root_directory}'; expected 'male' or 'female'."
+                    )
+                    raise ValueError(err_msg)
+                animal_id_codes.append(sex_to_code[subject_sex])
+            animal_ids = np.array(animal_id_codes, dtype=np.int32)
+            self.message_output(
+                "Vocalocator animal_id sex codes (0=male, 1=female): "
+                + ", ".join(f"{name}={code}" for name, code in zip(track_names, animal_id_codes, strict=True))
+            )
 
             write_to_h5(output_path=output_path_file,
                         audio=audio,
@@ -294,7 +346,7 @@ class Vocalocator:
 
         # get assignment results into the usv_summary file
         with h5py.File(name=track_file_path, mode='r') as f:
-            track_names = [item.decode('utf-8') for item in list(f['track_names'])]
+            track_names = [item.decode('utf-8').strip() for item in list(f['track_names'])]
 
         usv_summary_df = pls.read_csv(str(usv_summary_file_path))
 
@@ -401,7 +453,7 @@ class Vocalocator:
 
         # load track IDs and the usv_summary file
         with h5py.File(name=track_file_path, mode='r') as f:
-            track_names = [item.decode('utf-8') for item in list(f['track_names'])]
+            track_names = [item.decode('utf-8').strip() for item in list(f['track_names'])]
 
         usv_summary_df = pls.read_csv(str(usv_summary_file_path))
 

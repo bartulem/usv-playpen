@@ -1104,10 +1104,10 @@ def _write_embedding_session(root: pathlib.Path, session_id: str):
     _write_usv_summary_csv(
         root / "audio",
         {
-            "vae_umap1": [0.1, 0.2, 0.3, 0.4],
-            "vae_umap2": [0.5, 0.6, 0.7, 0.8],
-            "qlvm_dim1": [1.1, 1.2, 1.3, 1.4],
-            "qlvm_dim2": [1.5, 1.6, 1.7, 1.8],
+            "vae1": [0.1, 0.2, 0.3, 0.4],
+            "vae2": [0.5, 0.6, 0.7, 0.8],
+            "qlvm1": [1.1, 1.2, 1.3, 1.4],
+            "qlvm2": [1.5, 1.6, 1.7, 1.8],
             "vae_category": [1, 2, 1, 2],
             "vae_supercategory": [0, 1, 1, 2],
             "qlvm_category": [1, 1, 2, 2],
@@ -1167,7 +1167,7 @@ def test_build_pooled_embeddings_df_skips_empty_session(tmp_path):
     _write_usv_summary_csv(
         empty / "audio",
         {c: [] for c in (
-            "vae_umap1", "vae_umap2", "qlvm_dim1", "qlvm_dim2",
+            "vae1", "vae2", "qlvm1", "qlvm2",
             "vae_category", "vae_supercategory", "qlvm_category", "qlvm_supercategory",
             "emitter", "duration", "mean_freq_hz", "peak_freq_hz",
             "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "spectral_entropy")},
@@ -1188,10 +1188,10 @@ def test_build_pooled_embeddings_df_coerces_string_numeric_columns(tmp_path):
     _write_usv_summary_csv(
         weird / "audio",
         {
-            "vae_umap1": [None, None],  # all-null -> CSV-inferred as String/Null
-            "vae_umap2": [None, None],
-            "qlvm_dim1": [1.0, 2.0],
-            "qlvm_dim2": [1.0, 2.0],
+            "vae1": [None, None],  # all-null -> CSV-inferred as String/Null
+            "vae2": [None, None],
+            "qlvm1": [1.0, 2.0],
+            "qlvm2": [1.0, 2.0],
             "vae_category": [1, 2],
             "vae_supercategory": [1, 2],
             "qlvm_category": [1, 2],
@@ -1229,7 +1229,7 @@ def test_build_vae_density_npz(tmp_path):
     assert np.isfinite(arr["heatmap"]).all()
     assert arr["ws_labels_periodic"].shape == (32, 32)
     assert arr["extent"].shape == (4,)
-    # extent covers the pooled (noise-filtered) vae_umap coordinates
+    # extent covers the pooled (noise-filtered) vae1/vae2 coordinates
     x0, x1, y0, y1 = (float(v) for v in arr["extent"])
     assert x0 <= 0.2 and x1 >= 0.4 and y0 <= 0.6 and y1 >= 0.8
 
@@ -1449,12 +1449,12 @@ def _make_pooled_df(session_id: str = "sessA", n_per_cat: int = 6) -> pls.DataFr
         {
             "session_id": [session_id] * n,
             "row_index": list(range(n)),
-            "vae_umap1": rng.random(n) + np.array(cats, dtype=float),
-            "vae_umap2": rng.random(n) - np.array(cats, dtype=float),
+            "vae1": rng.random(n) + np.array(cats, dtype=float),
+            "vae2": rng.random(n) - np.array(cats, dtype=float),
             "vae_category": cats,
             "vae_supercategory": cats,
-            "qlvm_dim1": rng.random(n),
-            "qlvm_dim2": rng.random(n),
+            "qlvm1": rng.random(n),
+            "qlvm2": rng.random(n),
             "qlvm_category": cats,
             "qlvm_supercategory": cats,
             "sex": (["male", "female"] * n)[:n],
@@ -1489,7 +1489,7 @@ def test_plot_umap_thumbnails_random(tmp_path):
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
 def test_plot_umap_thumbnails_qlvm_uses_dim_columns(tmp_path):
-    """map_type='qlvm' reads the qlvm_dim1/qlvm_dim2 torus coordinates (not the
+    """map_type='qlvm' reads the qlvm1/qlvm2 torus coordinates (not the
     nonexistent qlvm_umap1/2): the figure renders rather than raising a Polars
     ColumnNotFoundError, which guards the qlvm coord-name regression."""
     pooled = _make_pooled_df("sessQ", n_per_cat=6)
@@ -1608,8 +1608,8 @@ def test_plot_umap_thumbnails_no_categories(tmp_path):
         {
             "session_id": ["s", "s"],
             "row_index": [0, 1],
-            "vae_umap1": [0.1, 0.2],
-            "vae_umap2": [0.3, 0.4],
+            "vae1": [0.1, 0.2],
+            "vae2": [0.3, 0.4],
             "vae_supercategory": [0, 0],
         }
     )
@@ -1724,12 +1724,12 @@ def _write_sequence_session(
         "emitter": ["male_x", "female_y", "male_x", "other_z"],
         # per-USV loudest channel (0-indexed, < channel_num=3); ch 1 is the mode
         "peak_amp_ch": [1.0, 1.0, 0.0, 2.0],
-        "qlvm_dim1": [0.2, 0.4, 0.6, 0.8],
-        "qlvm_dim2": [0.3, 0.5, 0.7, 0.2],
+        "qlvm1": [0.2, 0.4, 0.6, 0.8],
+        "qlvm2": [0.3, 0.5, 0.7, 0.2],
     }
     if with_vae:
-        rows["vae_umap1"] = [1.0, 2.0, 3.0, 4.0]
-        rows["vae_umap2"] = [-1.0, 0.0, 1.0, 2.0]
+        rows["vae1"] = [1.0, 2.0, 3.0, 4.0]
+        rows["vae2"] = [-1.0, 0.0, 1.0, 2.0]
     _write_usv_summary_csv(audio_dir, rows, name=f"{session_id}_usv_summary.csv")
     _write_tracking_h5(
         root / "video",
@@ -1891,8 +1891,8 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
     rows = {
         "start": [0.001, 0.003], "stop": [0.002, 0.004],
         "emitter": ["male_x", "male_x"],
-        "qlvm_dim1": [0.95, 0.05], "qlvm_dim2": [0.5, 0.5],  # opposite x-edges -> wraps
-        "vae_umap1": [0.95, 0.05], "vae_umap2": [0.5, 0.5],
+        "qlvm1": [0.95, 0.05], "qlvm2": [0.5, 0.5],  # opposite x-edges -> wraps
+        "vae1": [0.95, 0.05], "vae2": [0.5, 0.5],
     }
     _write_usv_summary_csv(root / "audio", rows, name=f"{session_id}_usv_summary.csv")
     _write_tracking_h5(
@@ -1922,7 +1922,7 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
 def test_plot_sequence_vae_missing_coords_raises(tmp_path):
-    """Choosing VAE for a session whose CSV lacks vae_umap columns raises a clear,
+    """Choosing VAE for a session whose CSV lacks vae1/vae2 columns raises a clear,
     session-named ValueError."""
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id, with_vae=False)

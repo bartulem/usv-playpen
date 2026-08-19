@@ -12,13 +12,13 @@ import yaml
 
 from usv_playpen.yaml_utils import (
     SmartDumper,
-    load_session_metadata,
-    save_session_metadata,
-    sync_equipment_dynamic_fields,
-    set_sync_LEDs_device_port,
     _set_block_field_in_position,
+    load_session_metadata,
+    read_excluded_audio_channels,
+    save_session_metadata,
+    set_sync_LEDs_device_port,
+    sync_equipment_dynamic_fields,
 )
-
 
 # ---------------------------------------------------------------------------
 # SmartDumper.represent_list — flow vs block style
@@ -418,3 +418,38 @@ def test_set_sync_LEDs_device_port_no_op_when_block_missing():
 def test_set_sync_LEDs_device_port_no_op_when_metadata_not_dict():
     """Defensive: non-dict metadata → no-op, no error."""
     set_sync_LEDs_device_port("garbage", "COM9")  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# read_excluded_audio_channels — per-session hardware-excluded microphones
+# ---------------------------------------------------------------------------
+
+
+def _write_metadata(tmp_path, audio_block):
+    """Write a minimal session metadata yaml whose audio_Avisoft block is ``audio_block``."""
+    meta = {"Session": {"session_id": tmp_path.name}, "Equipment": {"audio_Avisoft": audio_block}}
+    (tmp_path / f"{tmp_path.name}_metadata.yaml").write_text(yaml.dump(meta))
+
+
+def test_read_excluded_audio_channels_returns_listed_channels(tmp_path):
+    """A present excluded_channels field is returned verbatim."""
+    _write_metadata(tmp_path, {"excluded_channels": ["m_ch02", "m_ch08", "s_ch11"]})
+    assert read_excluded_audio_channels(str(tmp_path)) == ["m_ch02", "m_ch08", "s_ch11"]
+
+
+def test_read_excluded_audio_channels_absent_key_means_healthy(tmp_path):
+    """A session without the field (the healthy default) yields no exclusions."""
+    _write_metadata(tmp_path, {"sensor_count": 24})
+    assert read_excluded_audio_channels(str(tmp_path)) == []
+
+
+def test_read_excluded_audio_channels_missing_metadata_means_healthy(tmp_path):
+    """A session with no metadata yaml at all yields no exclusions."""
+    assert read_excluded_audio_channels(str(tmp_path)) == []
+
+
+def test_read_excluded_audio_channels_malformed_entry_fails_loud(tmp_path):
+    """A present-but-invalid channel name must raise, not silently pass through."""
+    _write_metadata(tmp_path, {"excluded_channels": ["m_ch02", "x_ch99"]})
+    with pytest.raises(ValueError, match="x_ch99"):
+        read_excluded_audio_channels(str(tmp_path))

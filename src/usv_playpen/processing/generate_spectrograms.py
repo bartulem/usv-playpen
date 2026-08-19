@@ -7,7 +7,9 @@ DAS ``*_usv_summary.csv``, computes a spectrogram for every USV segment, and
 writes them to ``audio/spectrograms/<session>_spectrograms.h5``. Each USV's
 spectrogram is the **variance-weighted average across all audio channels** (so
 the channels carrying the most signal energy dominate), matching the
-representation the QLVM was trained on.
+representation the QLVM was trained on. Channels listed in the session
+metadata's ``Equipment -> audio_Avisoft -> excluded_channels`` (hardware-
+compromised microphones) are dropped from the average.
 
 This module is the in-house, torch-free port of the external
 ``generate_spectrograms.py`` + ``spec_func.get_spec_librosa``; the spectrogram
@@ -38,6 +40,7 @@ from click.core import ParameterSource
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import read_excluded_audio_channels
 
 # Numerical floor reused from the original spectrogram code for normalization.
 _NORMALIZE_EPS = 1e-6
@@ -280,6 +283,24 @@ class SpectrogramGenerator:
             shape=(sample_num, channel_num),
         )
 
+        # Hardware-excluded microphones for this session (per-session metadata
+        # record, ``Equipment -> audio_Avisoft -> excluded_channels``; empty
+        # for healthy sessions) are dropped from the variance-weighted average
+        # so artifact energy on a compromised channel cannot dominate it.
+        # 'm_chNN'/'s_chNN' -> mmap column: the master device occupies columns
+        # 0-11 and the slave device columns 12-23 (the concatenated-audio
+        # channel layout, matching das_inference's channel map).
+        excluded_channels = read_excluded_audio_channels(self.root_directory, logger=self.message_output)
+        excluded_channel_indices = {
+            (12 if channel_name.startswith('s') else 0) + int(channel_name[-2:]) - 1
+            for channel_name in excluded_channels
+        }
+        eligible_channel_indices = [ch for ch in range(channel_num) if ch not in excluded_channel_indices]
+        if excluded_channel_indices:
+            self.message_output(
+                f"Excluding audio channel(s) {excluded_channels} from the spectrogram average per session metadata."
+            )
+
         # The spectrogram array is 1:1 with usv_summary.csv rows: row ``i`` is the
         # spectrogram of USV ``i``, in original on-disk order with NO skipping.
         # This is the index convention the consolidated-store readers rely on
@@ -310,6 +331,8 @@ class SpectrogramGenerator:
             original_time_bins = 0
             if s1 > s0:
                 segment = np.asarray(audio_file_data[s0:s1, :])
+                if excluded_channel_indices:
+                    segment = segment[:, eligible_channel_indices]
                 spectrogram, original_time_bins = compute_usv_spectrogram(
                     audio_segment_channels=segment,
                     sampling_rate=audio_sampling_rate,

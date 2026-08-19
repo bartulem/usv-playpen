@@ -20,6 +20,8 @@ Key Capabilities:
 
 import h5py
 import numpy as np
+from scipy.stats import invgauss, norm
+import re
 from pathlib import Path
 import pickle
 import polars as pls
@@ -428,13 +430,23 @@ def find_onset_epochs(root_directories: list = None,
                 params = female_mixture_model_params
                 sex_label = 'female'
 
+            # Legacy blocks carry log-space lognormal 'means'/'sds'; an
+            # inverse-Gaussian block declares itself via 'model_class': 'ig'
+            # and carries linear-time 'mus'/'lambdas' instead.
             try:
-                comp_mean = params['means'][mixture_model_component_index]
-                comp_sd = params['sds'][mixture_model_component_index]
+                if 'model_class' in params and params['model_class'] == 'ig':
+                    comp_mu = params['mus'][mixture_model_component_index]
+                    comp_lam = params['lambdas'][mixture_model_component_index]
+                else:
+                    comp_mean = params['means'][mixture_model_component_index]
+                    comp_sd = params['sds'][mixture_model_component_index]
             except IndexError:
                 raise ValueError(f"Invalid mixture_model_component_index {mixture_model_component_index} for {sex_label}.")
 
-            ibi_threshold = _calculate_ibi_threshold(comp_mean, comp_sd, mixture_model_z_score)
+            if 'model_class' in params and params['model_class'] == 'ig':
+                ibi_threshold = _calculate_ibi_threshold_ig(comp_mu, comp_lam, mixture_model_z_score)
+            else:
+                ibi_threshold = _calculate_ibi_threshold(comp_mean, comp_sd, mixture_model_z_score)
 
             # Finds start and stop times of USVs for this particular mouse.
             # Sort by `start` so downstream IBI-gap and bout-indexing logic
@@ -853,13 +865,13 @@ def find_usv_categories(root_directories: list = None,
                     # Per-USV supercategory and category labels. Used by
                     # downstream region-conditioned analyses (CNN saliency,
                     # cluster-circle membership). Derived from the manifold
-                    # prefix: e.g., 'vae_umap1' -> 'vae' -> 'vae_supercategory',
+                    # prefix: e.g., 'vae1' -> 'vae' -> 'vae_supercategory',
                     # 'vae_category'. Stored as plain numpy arrays aligned
                     # 1:1 with continuous_onsets / continuous_targets above.
                     # Stored only when the columns are present in the source
                     # CSV; absent label arrays signal "this USV summary
                     # predates supercategory/category labelling."
-                    manifold_prefix = manifold_column_names[0].rsplit('_', 1)[0]
+                    manifold_prefix = re.sub(r'\d+$', '', manifold_column_names[0])
                     super_col = f"{manifold_prefix}_supercategory"
                     cat_col = f"{manifold_prefix}_category"
                     if super_col in mouse_usvs.columns:
@@ -897,6 +909,36 @@ def _calculate_ibi_threshold(log_mean: float, log_sd: float, z_score: float) -> 
     """
     log_cutoff = log_mean + (z_score * log_sd)
     return np.exp(log_cutoff)
+
+
+def _calculate_ibi_threshold_ig(mu: float, lam: float, z_score: float) -> float:
+    """
+    Calculates the Inter-Bout Interval (IBI) threshold from an inverse-Gaussian
+    first component. The z-score cutoff convention is preserved by mapping z to
+    its Gaussian upper-tail probability (e.g. 2.58 -> 99.5%) and taking that
+    quantile of the IG component:
+
+    IBI = F_IG^{-1}( Phi(z); mu, lambda )
+
+    Parameters
+    ----------
+    mu : float
+        The inverse-Gaussian mean of the first component (seconds).
+    lam : float
+        The inverse-Gaussian shape parameter of the first component (seconds).
+    z_score : float
+        The statistical cutoff (e.g., 2.58 for 99.5%), mapped through the
+        standard-normal CDF to a quantile level.
+
+    Returns
+    -------
+    float
+        The calculated time threshold in seconds.
+    """
+    q = float(norm.cdf(z_score))
+    # scipy's invgauss(mu_s, scale=s) has mean mu_s * s and shape s, so
+    # (mu_s = mu/lam, scale = lam) is IG(mu, lam).
+    return float(invgauss.ppf(q, mu / lam, scale=lam))
 
 
 def find_variable_length_bouts(root_directories: list = None,
@@ -1043,13 +1085,23 @@ def find_variable_length_bouts(root_directories: list = None,
                 params = female_mixture_model_params
                 sex_label = 'female'
 
+            # Legacy blocks carry log-space lognormal 'means'/'sds'; an
+            # inverse-Gaussian block declares itself via 'model_class': 'ig'
+            # and carries linear-time 'mus'/'lambdas' instead.
             try:
-                comp_mean = params['means'][mixture_model_component_index]
-                comp_sd = params['sds'][mixture_model_component_index]
+                if 'model_class' in params and params['model_class'] == 'ig':
+                    comp_mu = params['mus'][mixture_model_component_index]
+                    comp_lam = params['lambdas'][mixture_model_component_index]
+                else:
+                    comp_mean = params['means'][mixture_model_component_index]
+                    comp_sd = params['sds'][mixture_model_component_index]
             except IndexError:
                 raise ValueError(f"Invalid mixture_model_component_index {mixture_model_component_index} for {sex_label}.")
 
-            ibi_threshold = _calculate_ibi_threshold(comp_mean, comp_sd, mixture_model_z_score)
+            if 'model_class' in params and params['model_class'] == 'ig':
+                ibi_threshold = _calculate_ibi_threshold_ig(comp_mu, comp_lam, mixture_model_z_score)
+            else:
+                ibi_threshold = _calculate_ibi_threshold(comp_mean, comp_sd, mixture_model_z_score)
 
             usv_data_dict[session_id][mouse_name] = {
                 'bout_onsets': [],
