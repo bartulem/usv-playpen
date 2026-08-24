@@ -2537,6 +2537,13 @@ def build_pooled_embeddings_df(
     # keeps it stable.
     fill_dtypes = {c: pls.Float64 for c in ("duration",) + EMBEDDING_FEATURE_COLS}
     fill_dtypes["sex"] = pls.Utf8
+    # An embedding family absent from every session's summary (e.g. vae_* while
+    # VAE inference is skipped) would otherwise be dropped from the pooled frame
+    # while the cache validator above still requires it, so a written cache would
+    # fail its own check and rebuild on every load. Filling the family with typed
+    # nulls keeps the cache valid and the schema stable.
+    fill_dtypes.update({c: pls.Float64 for c in EMBEDDING_COORD_COLS})
+    fill_dtypes.update({c: pls.Int64 for c in EMBEDDING_LABEL_COLS})
     missing_fills = [
         pls.lit(None, dtype=dtype).alias(c)
         for c, dtype in fill_dtypes.items()
