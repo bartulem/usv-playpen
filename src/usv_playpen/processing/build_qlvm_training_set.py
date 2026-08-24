@@ -389,11 +389,15 @@ class QLVMTrainingSetBuilder:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Resolve each session root to its per-session spectrogram H5
-        # (audio/spectrograms/<session>_spectrograms.h5).
+        # (audio/spectrograms/<session>_spectrograms.h5). The pattern is
+        # session-keyed rather than "*_spectrograms.h5" because a session can
+        # hold other files ending in that suffix (e.g. a sonic-band
+        # "<session>_3_30khz_spectrograms.h5"), which a wildcard may select
+        # ahead of the real one.
         spectrogram_h5_paths = [
             str(first_match_or_raise(
                 root=pathlib.Path(root_directory) / "audio" / "spectrograms",
-                pattern="*_spectrograms.h5",
+                pattern=f"{pathlib.Path(root_directory).name}_spectrograms.h5",
                 label="per-session spectrogram H5",
             ))
             for root_directory in self.root_directories

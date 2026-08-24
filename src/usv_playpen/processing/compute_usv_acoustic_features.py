@@ -361,9 +361,13 @@ class USVAcousticFeatureExtractor:
         high_energy_frac = cfg['high_energy_frac']
 
         root = pathlib.Path(self.root_directory)
+        # Session-keyed, NOT "*_spectrograms.h5": a session can hold other files
+        # ending in that suffix (e.g. a sonic-band
+        # "<session>_3_30khz_spectrograms.h5"), which a wildcard may select
+        # ahead of the real one.
         h5_loc = first_match_or_raise(
             root=root / "audio" / "spectrograms",
-            pattern="*_spectrograms.h5",
+            pattern=f"{root.name}_spectrograms.h5",
             label="per-session spectrogram H5",
         )
         mask_group_key = f"mask/{root.name}"
