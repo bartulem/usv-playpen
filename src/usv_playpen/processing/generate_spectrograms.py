@@ -7,7 +7,9 @@ DAS ``*_usv_summary.csv``, computes a spectrogram for every USV segment, and
 writes them to ``audio/spectrograms/<session>_spectrograms.h5``. Each USV's
 spectrogram is the **variance-weighted average across all audio channels** (so
 the channels carrying the most signal energy dominate), matching the
-representation the QLVM was trained on.
+representation the QLVM was trained on. Channels listed in the session
+metadata's ``Equipment -> audio_Avisoft -> excluded_channels`` (hardware-
+compromised microphones) are dropped from the average.
 
 This module is the in-house, torch-free port of the external
 ``generate_spectrograms.py`` + ``spec_func.get_spec_librosa``; the spectrogram
@@ -38,6 +40,7 @@ from click.core import ParameterSource
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import read_excluded_audio_channels
 
 # Numerical floor reused from the original spectrogram code for normalization.
 _NORMALIZE_EPS = 1e-6
@@ -217,7 +220,78 @@ class SpectrogramGenerator:
         self.message_output = message_output if message_output is not None else print
         self.app_context_bool = is_gui_context()
 
-    def generate_session_spectrograms(self) -> None:
+    def _patch_session_spectrogram_rows(
+        self,
+        h5_file_path: pathlib.Path,
+        session_id: str,
+        computed_specs: dict[int, np.ndarray],
+        computed_durations: dict[int, int],
+        expected_rows: int,
+    ) -> None:
+        """
+        Description
+        -----------
+        Overwrites individual spectrogram rows in an existing session HDF5 file
+        in place, leaving every other row -- and the session's ``mask/`` group --
+        untouched.
+
+        Used by the ``row_subset`` mode of :meth:`generate_session_spectrograms`
+        to refresh only the USVs whose ``start``/``stop`` changed (e.g. after the
+        DAS seam-snapped boundary repair), instead of rewriting the whole file.
+        The ``spectrograms`` / ``durations`` datasets keep their shapes because
+        row counts never change, so each row is a direct assignment; the
+        file-level ``valid_spectrograms`` attribute is recounted afterwards.
+
+        Parameters
+        ----------
+        h5_file_path (pathlib.Path)
+            Existing ``<session>_spectrograms.h5`` to patch.
+        session_id (str)
+            Session identifier keying the ``spectrogram/<session>`` group.
+        computed_specs (dict[int, np.ndarray])
+            Mapping ``row index -> (F, T)`` float32 spectrogram to write.
+        computed_durations (dict[int, int])
+            Mapping ``row index -> original time-bin count`` to write.
+        expected_rows (int)
+            Row count of the session's ``*_usv_summary.csv``; the stored
+            datasets must match it, otherwise the file is stale and patching
+            would silently misalign rows.
+
+        Returns
+        -------
+        None
+        """
+
+        if not h5_file_path.is_file():
+            msg = (
+                f"Cannot patch spectrogram rows: '{h5_file_path}' does not exist; "
+                "run a full generate_session_spectrograms pass for this session first"
+            )
+            raise FileNotFoundError(msg)
+
+        with h5py.File(h5_file_path, "r+") as h5_file:
+            group_key = f"spectrogram/{session_id}"
+            if group_key not in h5_file:
+                msg = f"Cannot patch spectrogram rows: group '{group_key}' missing from '{h5_file_path}'"
+                raise KeyError(msg)
+            spectrograms_dset = h5_file[group_key]["spectrograms"]
+            durations_dset = h5_file[group_key]["durations"]
+            if spectrograms_dset.shape[0] != expected_rows or durations_dset.shape[0] != expected_rows:
+                msg = (
+                    f"Stored spectrogram rows ({spectrograms_dset.shape[0]}) do not match the USV summary "
+                    f"({expected_rows}) for session '{session_id}'; regenerate the file instead of patching"
+                )
+                raise ValueError(msg)
+            for row_index in sorted(computed_specs):
+                spectrograms_dset[row_index] = computed_specs[row_index]
+                durations_dset[row_index] = computed_durations[row_index]
+            h5_file.attrs["valid_spectrograms"] = int(np.count_nonzero(durations_dset[:] > 0))
+
+        self.message_output(
+            f"Patched {len(computed_specs)} spectrogram row(s) for session {session_id} -> {h5_file_path}."
+        )
+
+    def generate_session_spectrograms(self, row_subset: set[int] | None = None) -> None:
         """
         Description
         -----------
@@ -232,8 +306,21 @@ class SpectrogramGenerator:
         ``duration == 0``. File-level attrs: ``created``, ``total_spectrograms``,
         ``valid_spectrograms``.
 
+        With ``row_subset`` the method switches to patch mode: only those rows
+        are recomputed and written **in place** into the existing file, so the
+        session's ``mask/`` group survives (a full pass opens the file with mode
+        ``"w"`` and necessarily drops it, which is why masks are regenerated
+        after a full pass). Because a row's spectrogram depends solely on that
+        row's own ``start``/``stop``, patch mode is equivalent to a full pass for
+        the patched rows and provably leaves every other row byte-identical.
+
         Parameters
         ----------
+        row_subset (set[int] | None)
+            When None (default), every USV in the summary is computed and the
+            file is written from scratch. When a set of ``usv_summary.csv`` row
+            indices, only those rows are recomputed and patched into the
+            existing file; an out-of-range index raises ``ValueError``.
 
         Returns
         -------
@@ -280,6 +367,24 @@ class SpectrogramGenerator:
             shape=(sample_num, channel_num),
         )
 
+        # Hardware-excluded microphones for this session (per-session metadata
+        # record, ``Equipment -> audio_Avisoft -> excluded_channels``; empty
+        # for healthy sessions) are dropped from the variance-weighted average
+        # so artifact energy on a compromised channel cannot dominate it.
+        # 'm_chNN'/'s_chNN' -> mmap column: the master device occupies columns
+        # 0-11 and the slave device columns 12-23 (the concatenated-audio
+        # channel layout, matching das_inference's channel map).
+        excluded_channels = read_excluded_audio_channels(self.root_directory, logger=self.message_output)
+        excluded_channel_indices = {
+            (12 if channel_name.startswith('s') else 0) + int(channel_name[-2:]) - 1
+            for channel_name in excluded_channels
+        }
+        eligible_channel_indices = [ch for ch in range(channel_num) if ch not in excluded_channel_indices]
+        if excluded_channel_indices:
+            self.message_output(
+                f"Excluding audio channel(s) {excluded_channels} from the spectrogram average per session metadata."
+            )
+
         # The spectrogram array is 1:1 with usv_summary.csv rows: row ``i`` is the
         # spectrogram of USV ``i``, in original on-disk order with NO skipping.
         # This is the index convention the consolidated-store readers rely on
@@ -292,12 +397,29 @@ class SpectrogramGenerator:
         n_time = int(spec_params['num_time_bins'])
         blank_spec = np.zeros((n_freq, n_time), dtype=np.float32)
 
-        all_specs: list[np.ndarray] = []
-        all_durations: list[int] = []
+        computed_specs: dict[int, np.ndarray] = {}
+        computed_durations: dict[int, int] = {}
+
+        # Row-local by construction: a row's window is derived from ITS OWN
+        # start/stop only (plus the fixed ``offset`` padding) and read from the
+        # concatenated mmap, so recomputing a subset reproduces exactly what a
+        # full-session run would write for those rows. Full and subset modes
+        # therefore share this single computation path.
+        if row_subset is None:
+            target_indices = list(range(usv_summary_df.height))
+        else:
+            out_of_range = [idx for idx in row_subset if idx < 0 or idx >= usv_summary_df.height]
+            if out_of_range:
+                msg = (
+                    f"row_subset contains out-of-range rows {sorted(out_of_range)[:5]} for "
+                    f"'{usv_summary_loc.name}' with {usv_summary_df.height} USVs"
+                )
+                raise ValueError(msg)
+            target_indices = sorted(row_subset)
 
         starts = usv_summary_df["start"].to_numpy()
         stops = usv_summary_df["stop"].to_numpy()
-        for usv_idx in range(usv_summary_df.height):
+        for usv_idx in target_indices:
             t0 = float(starts[usv_idx]) - offset
             t1 = float(stops[usv_idx]) + offset
             # Match the DAS segment-bound convention (das_inference: floor the
@@ -310,6 +432,8 @@ class SpectrogramGenerator:
             original_time_bins = 0
             if s1 > s0:
                 segment = np.asarray(audio_file_data[s0:s1, :])
+                if excluded_channel_indices:
+                    segment = segment[:, eligible_channel_indices]
                 spectrogram, original_time_bins = compute_usv_spectrogram(
                     audio_segment_channels=segment,
                     sampling_rate=audio_sampling_rate,
@@ -317,11 +441,27 @@ class SpectrogramGenerator:
                     normalize=normalize,
                 )
             if spectrogram is None:
-                all_specs.append(blank_spec)
-                all_durations.append(0)
+                computed_specs[usv_idx] = blank_spec
+                computed_durations[usv_idx] = 0
             else:
-                all_specs.append(spectrogram.astype(np.float32))
-                all_durations.append(int(original_time_bins))
+                computed_specs[usv_idx] = spectrogram.astype(np.float32)
+                computed_durations[usv_idx] = int(original_time_bins)
+
+        if row_subset is not None:
+            self._patch_session_spectrogram_rows(
+                h5_file_path=root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5",
+                session_id=session_id,
+                computed_specs=computed_specs,
+                computed_durations=computed_durations,
+                expected_rows=usv_summary_df.height,
+            )
+            self.message_output(
+                f"Spectrogram generation ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
+            )
+            return
+
+        all_specs = [computed_specs[idx] for idx in target_indices]
+        all_durations = [computed_durations[idx] for idx in target_indices]
 
         if not all_specs:
             self.message_output(

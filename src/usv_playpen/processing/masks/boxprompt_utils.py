@@ -184,6 +184,7 @@ def process_single_spec_boxprompt(
     detect_fn=None,
     mask_intensity_floor: float = 0.0,
     min_box_area: int = 0,
+    min_detect_width: int = 0,
     logger: Optional[logging.Logger] = None,
 ) -> List[Dict]:
     """Detect boxes, prompt SAM2 per box, return one instance mask dict per kept box.
@@ -205,6 +206,13 @@ def process_single_spec_boxprompt(
     By default (``drop_below_iou=False``) a mask is kept even if its predicted IoU is
     below ``iou_floor``; set ``drop_below_iou=True`` to discard those. Near-empty masks
     (< ``tiny_mask_floor_px``) are always dropped.
+
+    ``min_detect_width`` widens the working window with silence when the call is
+    shorter than it. The window is otherwise exactly ``duration`` columns, so a
+    15 ms call becomes an 8-column image that the detector then resizes to its
+    square input -- a sixteen-fold horizontal stretch, far outside anything it was
+    trained on. Padding to a floor keeps the aspect ratio sane; the returned masks
+    are cropped back to ``duration`` so the stored geometry is unchanged.
     """
     if logger is None:
         logger = logging.getLogger("sam2_processing")
@@ -212,8 +220,13 @@ def process_single_spec_boxprompt(
     height, width = spec.shape
 
     # --- working region (mirror the grid path's zero-padded crop) ---
+    # Columns at or beyond ``duration`` in the stored spectrogram hold a constant
+    # 1.0 (the top of the normalized range), so the window must never reach into
+    # them; any widening pads with the call's own minimum instead, i.e. silence.
     if duration <= width:
-        working_spec = np.zeros((height, duration), dtype=spec.dtype)
+        window_width = max(int(duration), int(min_detect_width)) if min_detect_width else int(duration)
+        window_width = min(window_width, width)
+        working_spec = np.full((height, window_width), spec[:, :duration].min(), dtype=spec.dtype)
         working_spec[:, :duration] = spec[:, :duration]
     else:
         working_spec = spec
@@ -228,7 +241,9 @@ def process_single_spec_boxprompt(
     image = (cmap(spec_norm)[:, :, :3] * 255).astype(np.uint8)
 
     img_w = image.shape[1]
-    eff_duration = min(int(duration), img_w)
+    # The detector searches the whole padded window: a box is allowed to sit
+    # anywhere in it, and masks are cropped back to ``duration`` on the way out.
+    eff_duration = img_w
 
     # --- detect first-pass boxes on the SAME flipped space SAM sees ---
     # detect_fn (learned detector, e.g. yolo) takes the UNFLIPPED working spec, flips +
@@ -322,6 +337,22 @@ def process_single_spec_boxprompt(
     if n_low_iou:
         logger.debug(f"{n_low_iou} mask(s) below iou_floor={iou_floor} "
                      f"({'dropped' if drop_below_iou else 'kept'})")
+
+    # Crop back to the call's own window so stored masks keep the (F, duration)
+    # geometry ``flatten_session_masks`` writes into the fixed-width frame.
+    if working_spec.shape[1] != int(duration):
+        cropped: List[Dict] = []
+        for mask in masks_out:
+            seg = mask["segmentation"][:, :int(duration)]
+            area = int(seg.sum())
+            if area < tiny_mask_floor_px:
+                continue
+            cropped_mask = dict(mask)
+            cropped_mask["segmentation"] = seg
+            cropped_mask["area"] = area
+            cropped_mask["bbox"] = get_bbox(seg)
+            cropped.append(cropped_mask)
+        masks_out = cropped
 
     return masks_out
 

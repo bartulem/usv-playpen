@@ -1072,7 +1072,37 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 
 Curate DAS outputs
 ~~~~~~~~~~~~~~~~~~
-As explained above, DAS is run on every channel separately, such that a need arises to systematize different channel detections in one singular table. This code identifies the same detections across different channels and creates a single CSV file with the start and end times of each detected vocalization. Detections are combined by a coverage-watershed merge: at every moment the number of channels agreeing that a call is present forms a coverage profile, each peak of which becomes one USV and the valleys between peaks set the boundaries. Because every channel contributes at most one vote, a single spuriously long or jittery detection on one channel cannot fuse distinct calls into one, while quiet calls seen on only a few channels are still preserved (Phase-4 noise rejection, below, decides which detections to keep).
+As explained above, DAS is run on every channel separately, such that a need arises to systematize different channel detections in one singular table. This code identifies the same detections across different channels and creates a single CSV file with the start and end times of each detected vocalization. Detections are combined by a greedy interval union: segments are sorted by start time and any two that overlap are merged, transitively, so one USV spans the full extent of every per-channel detection that belongs to it. Boundaries therefore follow the outermost channel that heard the call, which keeps the faint onsets and offsets registered by only the nearest few microphones (Phase-4 noise rejection, below, decides which detections to keep). A coverage-watershed merge was used between August 2026 and this release; it trimmed each USV to the span where a fixed fraction of its peak channel count still agreed, which clipped exactly those faint edges, and it has been reverted. Microphones recorded as hardware-compromised for a session -- the ``excluded_channels`` list under ``Equipment -> audio_Avisoft`` in the session's ``*_metadata.yaml`` -- are skipped outright: their annotation files never enter the merge. The field is absent on healthy sessions (no exclusions).
+
+.. note::
+
+   **Excluding a compromised microphone (**\ ``excluded_channels``\ **).** A
+   microphone that was broken, unplugged or noisy for a given recording is
+   excluded **per session, from that session's metadata** -- not from
+   ``processing_settings.json``, which has no exclusion key. Add the channel
+   names by hand under ``Equipment -> audio_Avisoft`` in the session's
+   ``*_metadata.yaml``:
+
+   .. code-block:: yaml
+
+        Equipment:
+          audio_Avisoft:
+            excluded_channels:
+              - m_ch02
+              - m_ch08
+              - s_ch11
+
+   There is deliberately no GUI field or CLI flag for this: an exclusion
+   describes the *recording*, not the analysis run, so it travels with the
+   session rather than with the settings of whoever processes it. Two steps
+   honour the list -- ``das-summarize`` (the excluded channels' annotation
+   files never enter the merge) and
+   ``generate-usv-spectrograms`` (they are dropped from the variance-weighted
+   average) -- so a channel excluded after those steps have run only takes
+   effect when they are re-run. Names must be ``m_chNN`` / ``s_chNN`` with
+   ``NN`` in ``01``-``12``; a malformed entry fails loud rather than being
+   silently ignored. The field is absent in healthy sessions, which simply
+   means nothing is excluded.
 
 To run, you need to list the root directories of interest, select *Curate DAS outputs*, click *Next* and then *Process*:
 
@@ -1132,7 +1162,7 @@ The *usv_summary.csv* file should look similar to an example table below:
     └────────┴─────────────┴─────────────┴──────────┴───┴─────────────┴───────────┴─────────────────────────────────┴──────────┘
 
 
-The *usv_signal_correlation_histogram.svg* file contains a histogram of [1] mean spectrogram correlations between channels and its noise/signal cutoff, and [2] the histogram of normalized spectral variance for single channel detections and its noise/signal cutoff (an example of which is shown below). The assumption is that noise correlates poorly across channels and has a smaller variance (as it is largely low volume).
+The *usv_signal_correlation_histogram.svg* file contains a histogram of [1] mean spectrogram correlations across each candidate's detected channels and its absolute cutoff, and [2] the histogram of spatial coherences (mean pairwise correlation across the loudest in-band channels of the array) and its absolute cutoff (an example of which is shown below). A candidate must clear both cutoffs to be kept: noise correlates poorly across the detecting channels, and a localized artifact's pattern is absent from the array's loudest channels.
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/usv_signal_correlation_histogram_example.png
    :align: center
@@ -1145,26 +1175,53 @@ The *usv_signal_correlation_histogram.svg* file contains a histogram of [1] mean
 The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section not modifiable in the GUI, but it can be modified manually:
 
 * **filter_putative_noise_bool** : whether to run the Phase-4 amplitude/spectrogram noise rejection; when ``false``, every merged detection is kept and the summary CSV is written as-is (peak/mean amplitude channels left at 0)
-* **peak_min** : coverage-watershed merge — minimum number of distinct channels for a coverage peak to count as a call (gates splitting; quiet few-channel calls are kept whole)
-* **valley_frac** : coverage-watershed merge — relative valley depth (0-1) that both splits a gap between two calls and trims each USV's edges
-* **coverage_bin_ms** : coverage-watershed merge — coverage-grid bin width in milliseconds (temporal resolution / implicit smoothing)
 * **len_win_signal** : STFT window length
 * **low_freq_cutoff** : frequency cutoff for filtering (in Hz)
-* **noise_corr_cutoff_min** : minimum correlation coefficient for noise
-* **noise_var_cutoff_max** : maximum variance for noise
+* **noise_corr_cutoff_min** : absolute cutoff on the cross-channel spectral correlation across a candidate's DAS-detected channels; a multi-channel candidate below it is dropped. Absolute rather than session-relative, because percentile rules overshoot on clean candidate pools and undershoot on noise-dominated ones (empirically, cohort-wide, noise sits at correlation ~0.25 and verified real calls at >=0.30)
+* **coherence_cutoff_min** : absolute cutoff on the spatial coherence -- the mean pairwise spectral correlation across the loudest in-band channels of the whole array, detection status ignored. A genuine call dominates the in-band soundscape at its moment, so its loudest channels share one time-frequency pattern; a localized artifact's pattern appears nowhere else. Candidates below the cutoff are dropped; single-channel candidates (no defined detected-channel correlation) are gated by coherence alone
+* **coherence_channel_count** : number of loudest in-band channels the spatial coherence is computed over
+* **seam_repair_bool** : whether to run the post-summary seam check-and-repair (below); when ``false``, seam-snapped boundaries are left as detected
+* **seam_repair_legacy_stride_samples** : window-stitching stride (in samples) of the legacy non-overlapping DAS model whose seam artifact is checked for (``8128`` for the lab's 2024-03-25 model at 250 kHz)
+* **seam_repair_max_rung** : highest stride multiple tested for the seam-ladder fingerprint
+* **seam_repair_ladder_tolerance_samples** : maximum deviation (in samples) from the exact ``k * stride + 1`` ladder fingerprint for a raw-annotation gap to count as seam-snapped
+* **seam_repair_width_tolerance_below_ms** : merged-gap width gate reach below each stride multiple (in ms); merged gaps can sit slightly off the exact raw ladder values because the union takes the outermost edge across channels
+* **seam_repair_width_tolerance_above_ms** : merged-gap width gate reach above each stride multiple (in ms)
+* **seam_repair_raw_stop_tolerance_s** : maximum distance (in s) between a merged pair's stop and a raw ladder-gap stop for the pair to count as corroborated
+* **seam_repair_snippet_margin_s** : audio margin (in s) excised around each flagged pair for re-detection
+* **seam_repair_max_boundary_shift_s** : maximum outward correction (in s) permitted per call edge; mechanistically one legacy stride
 
 .. code-block:: json
 
      "summarize_das_findings": {
         "filter_putative_noise_bool": true,
-        "peak_min": 8,
-        "valley_frac": 0.5,
-        "coverage_bin_ms": 1.0,
         "len_win_signal": 512,
         "low_freq_cutoff": 30000,
-        "noise_corr_cutoff_min": 0.15,
-        "noise_var_cutoff_max": 0.001
+        "noise_corr_cutoff_min": 0.3,
+        "coherence_cutoff_min": 0.2,
+        "coherence_channel_count": 3,
+        "seam_repair_bool": true,
+        "seam_repair_legacy_stride_samples": 8128,
+        "seam_repair_max_rung": 6,
+        "seam_repair_ladder_tolerance_samples": 2,
+        "seam_repair_width_tolerance_below_ms": 3.0,
+        "seam_repair_width_tolerance_above_ms": 1.0,
+        "seam_repair_raw_stop_tolerance_s": 0.01,
+        "seam_repair_snippet_margin_s": 0.05,
+        "seam_repair_max_boundary_shift_s": 0.034
      }
+
+Seam check-and-repair
+~~~~~~~~~~~~~~~~~~~~~
+DAS models inferring with non-overlapping window tiling (stride equal to the window length minus a 32-sample edge trim, i.e. ``stride: 8128`` / ``nb_hist: 8192`` at 250 kHz) judge each stitched span without acoustic context from its neighbours. The consequence is a boundary artifact on *real inter-call pauses*: the faint edges of the calls flanking a pause that straddles window seams are clipped exactly to the seam positions, so the pause is recorded with a width of exactly ``k`` stride multiples (a "ladder" at 32.5 / 65.0 / 97.5 ... ms, sample-exact in the raw annotations) and the flanking calls lose up to one stride of quiet edge material. Nothing is split or duplicated -- the audio between the recorded endpoints is genuinely silent -- but the affected gap widths are quantized (which corrupts inter-USV interval statistics) and the adjacent onsets/offsets are misplaced by up to ~32 ms.
+
+After every summary build (and standalone, by calling ``repair_seam_snapped_boundaries`` on an existing summary -- the standalone path never rebuilds the summary, so enrichment columns like ``emitter`` and the ``qlvm_*`` set survive), the tool:
+
+#. flags consecutive summary pairs whose gap falls inside the width-gate window around a stride multiple **and** is corroborated by a sample-exact ladder gap in at least one channel's raw DAS annotations at that location -- the joint criterion keeps width-window innocents out, and any that do slip through are re-confirmed unchanged by construction;
+#. excises a snippet around each flagged pair from the corroborating channel's HPSS-filtered WAV into ``audio/seam_repair_snippets`` (removed afterwards);
+#. re-runs ``das predict`` once on the snippet folder with the model configured under ``das_command_line_inference`` -- the current model tiles with overlapping windows (``stride: 4096`` / ``data_padding: 2048``, i.e. >=8 ms of real context for every kept sample), so no seam is judged context-blind;
+#. replaces each pair's facing edges with the re-detected ones, **outward-only** (the artifact only ever clips edges, so true edges lie inside the recorded gap; inward suggestions are single-channel-versus-merge convention differences and clamp to the recorded boundary) and capped at ``seam_repair_max_boundary_shift_s`` per edge, updating ``start`` / ``stop`` / ``duration``.
+
+The summary CSV is rewritten atomically with every other column preserved, and a sidecar ``*_seam_repair_report.json`` in the session's ``audio`` directory records the settings used and the outcome for every flagged pair (``repaired`` / ``no_change`` / ``skipped:*``). Sessions inferred with the overlap-tiled model produce no ladder fingerprints, so the check is a no-op there by construction. Note that per-USV spectrograms, masks, and acoustic-feature columns generated *before* a repair reflect the old boundaries of repaired rows -- regenerate them for those rows (the report lists them) if an analysis depends on exact call edges.
 
 Prepare and run USV assignment
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1279,7 +1336,9 @@ Once the curated *usv_summary.csv* exists (see *Curate DAS outputs* above), an i
 
    <br>
 
-The *Generate spectrograms* step computes a variance-weighted, multi-channel spectrogram of every USV; *Generate masks* runs a YOLO box detector and prompts SAM2 to segment each call; *Compute USV features* derives per-USV spectral and amplitude features; and *Infer QLVM latents* embeds each spectrogram into the trained QLVM torus and assigns it a vocal category. The mask and latent steps run on the GPU and rely on two pre-trained models (see *Train spectrogram-pipeline models* below). The spectrogram and mask arrays are written to a new *spectrograms* subdirectory, while the acoustic features and QLVM latents are merged into *usv_summary.csv*:
+The *Generate spectrograms* step computes a variance-weighted, multi-channel spectrogram of every USV (channels listed in the session metadata's ``excluded_channels`` are dropped from the average); *Generate masks* runs a YOLO box detector and prompts SAM2 to segment each call; *Compute USV features* derives per-USV spectral and amplitude features; and *Infer QLVM latents* embeds each spectrogram into the trained QLVM torus and assigns it a vocal category. The mask and latent steps run on the GPU and rely on two pre-trained models (see *Train spectrogram-pipeline models* below). The spectrogram and mask arrays are written to a new *spectrograms* subdirectory, while the acoustic features and QLVM latents are merged into *usv_summary.csv*. After a cohort of sessions has been processed, ``consolidate-spectrogram-store`` merges the per-session H5 files into one multi-session store under ``spectrograms_root`` (shared ``frequency_bins``, per-session ``spectrogram/<session>`` and ``mask/<session>`` groups, and a per-session ``qlvm_dim`` latent dataset injected from each summary's ``qlvm1``/``qlvm2``); the newest ``spectrograms_*.h5`` is picked up automatically by every consumer.
+
+The acoustic-feature and QLVM columns:
 
 .. parsed-literal::
 
@@ -1345,14 +1404,14 @@ The *Compute USV features* and *Infer QLVM latents* steps add columns to *usv_su
 
 *Infer QLVM latents* adds:
 
-* **qlvm_dim1** / **qlvm_dim2** : the two torus (latent) coordinates
+* **qlvm1** / **qlvm2** : the two torus (latent) coordinates
 * **qlvm_category** : the FINE watershed cluster label (vocal category)
 * **qlvm_supercategory** : the COARSE watershed cluster label (``0`` = background / noise)
 
 .. parsed-literal::
 
     ┌────────┬───┬───────────┬───────────┬───────────────┬────────────────────┐
-    │ usv_id ┆ … ┆ qlvm_dim1 ┆ qlvm_dim2 ┆ qlvm_category ┆ qlvm_supercategory │
+    │ usv_id ┆ … ┆ qlvm1 ┆ qlvm2 ┆ qlvm_category ┆ qlvm_supercategory │
     │ ---    ┆   ┆ ---       ┆ ---       ┆ ---           ┆ ---                │
     │ i64    ┆   ┆ f64       ┆ f64       ┆ i64           ┆ i64                │
     ╞════════╪═══╪═══════════╪═══════════╪═══════════════╪════════════════════╡
@@ -1409,11 +1468,11 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains th
 * **yolo_iou** : YOLO NMS IoU (raise to keep stacked calls)
 * **yolo_imgsz** : YOLO inference image size (px)
 * **mask_cmap** : colormap used to render each spectrogram to RGB before detection
-* **duration_min** : minimum USV duration (time bins) to segment; shorter rows are skipped
+* **duration_min** : minimum USV duration to segment, in SPECTROGRAM TIME BINS (not milliseconds); shorter rows are skipped without any detection attempt and end up with ``mask_number`` 0. At the shipped spectrogram settings the grid runs at ~0.5 bins/ms, so a value of 10 silently excluded every USV under ~20 ms — well above DAS's own 15 ms ``segment_minlen``, so genuine calls were discarded. Set to 5 (~10 ms)
 * **batch_size** : number of spectrograms per SAM2 batch
 * **multimask_output** : whether SAM2 returns multiple candidate masks per box (the best is kept)
-* **iou_floor** : minimum SAM2 predicted-IoU quality for a mask
-* **drop_below_iou** : if true, drop masks below ``iou_floor`` (else keep)
+* **iou_floor** : SAM2 self-predicted-IoU threshold used by ``drop_below_iou``. Set to 0.30 (not 0.70): the mask population is strongly good-quality (median 0.925) and its low tail is continuous, so only the 0-0.30 band is unambiguously broken
+* **drop_below_iou** : if true, drop masks whose SAM2 self-predicted IoU is below ``iou_floor`` (else keep them). Enabled, but paired with a low ``iou_floor``: measured over 1,209 masks the predicted-IoU distribution has median 0.925 with no gap in its low tail, so the original 0.70 floor cut through a continuum -- 28% of what it removed sat within 0.05 of the line. A 0.30 floor removes only the ~18% of low-IoU masks SAM2 rates as outright wrong and leaves the grey zone intact
 * **split_disconnected** : split a mask with disconnected components into separate instances
 * **max_iters** : maximum SAM2 prompt-refinement iterations per box
 * **merge_instances** : merge overlapping per-box mask instances
@@ -1436,11 +1495,11 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains th
         "yolo_iou": 0.7,
         "yolo_imgsz": 128,
         "mask_cmap": "viridis",
-        "duration_min": 10,
+        "duration_min": 5,
         "batch_size": 12,
         "multimask_output": true,
-        "iou_floor": 0.7,
-        "drop_below_iou": false,
+        "iou_floor": 0.3,
+        "drop_below_iou": true,
         "split_disconnected": true,
         "max_iters": 1,
         "merge_instances": true,

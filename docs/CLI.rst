@@ -380,10 +380,18 @@ Process
 
     usage: das-summarize [-h] --root-directory PATH
                          [--filter-putative-noise | --no-filter-putative-noise]
-                         [--peak-min INTEGER] [--valley-frac FLOAT]
-                         [--coverage-bin-ms FLOAT]
                          [--win-len INTEGER] [--freq-cutoff INTEGER]
-                         [--corr-cutoff FLOAT] [--var-cutoff FLOAT]
+                         [--corr-cutoff FLOAT] [--coherence-cutoff FLOAT]
+                         [--coherence-channel-count INTEGER]
+                         [--seam-repair | --no-seam-repair]
+                         [--seam-repair-legacy-stride-samples INTEGER]
+                         [--seam-repair-max-rung INTEGER]
+                         [--seam-repair-ladder-tolerance-samples INTEGER]
+                         [--seam-repair-width-tolerance-below-ms FLOAT]
+                         [--seam-repair-width-tolerance-above-ms FLOAT]
+                         [--seam-repair-raw-stop-tolerance-s FLOAT]
+                         [--seam-repair-snippet-margin-s FLOAT]
+                         [--seam-repair-max-boundary-shift-s FLOAT]
 
     required arguments:
       --root-directory      Session root directory path.
@@ -392,13 +400,30 @@ Process
       -h, --help            Show this help message and exit.
       --filter-putative-noise / --no-filter-putative-noise
                             Run the Phase-4 amplitude/spectrogram noise rejection (default: enabled); pass --no-filter-putative-noise to keep every merged detection.
-      --peak-min            Watershed merge: minimum distinct channels for a coverage peak to count as a call.
-      --valley-frac         Watershed merge: relative valley depth (0-1) that both splits at a gap and trims each USV edge.
-      --coverage-bin-ms     Watershed merge: coverage-grid bin width in milliseconds (temporal resolution).
       --win-len             Window length of the signal.
       --freq-cutoff         Low frequency cutoff (Hz).
-      --corr-cutoff         Minimum noise correlation cutoff.
-      --var-cutoff          Maximum noise variance cutoff.
+      --corr-cutoff         Absolute detected-channel correlation cutoff (drop below).
+      --coherence-cutoff    Absolute top-K spatial-coherence cutoff (drop below).
+      --coherence-channel-count
+                            Number of loudest in-band channels the spatial coherence is computed over.
+      --seam-repair / --no-seam-repair
+                            Run the post-summary seam check-and-repair (default: enabled); pass --no-seam-repair to leave seam-snapped USV boundaries as detected.
+      --seam-repair-legacy-stride-samples
+                            Seam repair: window-stitching stride (samples) of the legacy DAS model whose seam artifact is checked for.
+      --seam-repair-max-rung
+                            Seam repair: highest stride multiple tested for the seam-ladder fingerprint.
+      --seam-repair-ladder-tolerance-samples
+                            Seam repair: maximum deviation (samples) from the exact ladder fingerprint in raw annotations.
+      --seam-repair-width-tolerance-below-ms
+                            Seam repair: merged-gap width gate reach below each stride multiple (ms).
+      --seam-repair-width-tolerance-above-ms
+                            Seam repair: merged-gap width gate reach above each stride multiple (ms).
+      --seam-repair-raw-stop-tolerance-s
+                            Seam repair: maximum distance (s) between a merged stop and a raw ladder-gap stop for corroboration.
+      --seam-repair-snippet-margin-s
+                            Seam repair: audio margin (s) excised around each flagged pair for re-detection.
+      --seam-repair-max-boundary-shift-s
+                            Seam repair: maximum outward correction (s) permitted per call edge.
 
 ``prepare-vcl-assign``
 ``prepare-vcl-assign`` is the command-line interface for preparing data for vocalization assignment using the Vocalocator sound-source localizer.
@@ -488,6 +513,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
                             [--sam2-model-path TEXT] [--yolo-weights TEXT]
                             [--yolo-conf FLOAT] [--yolo-iou FLOAT]
                             [--method TEXT] [--yolo-imgsz INTEGER]
+                            [--deterministic | --no-deterministic]
                             [--mask-cmap TEXT] [--duration-min INTEGER]
                             [--batch-size INTEGER]
                             [--multimask-output | --no-multimask-output]
@@ -514,6 +540,12 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --yolo-iou                  YOLO NMS IoU (raise to keep stacked calls).
       --method                    Mask-generation method; only 'boxprompt' (SAM2 box-prompt path) is supported.
       --yolo-imgsz                YOLO detector input image size in px (native spectrogram size is 128).
+      --deterministic / --no-deterministic
+                                  Disable cuDNN's autotuner so masks reproduce across
+                                  processes (default: enabled). With it on, algorithm
+                                  selection depends on the GPU state at process start and
+                                  borderline faint calls fall on either side of the
+                                  detector's confidence gate.
       --mask-cmap                 Matplotlib colormap used to render each spectrogram to RGB before SAM2 prompting.
       --duration-min              Minimum USV duration (time bins) to segment; shorter/placeholder (duration==0) rows are skipped.
       --batch-size                Number of spectrograms processed per batch before a memory-cleanup pass.
@@ -548,6 +580,21 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       -h, --help            Show this help message and exit.
       --low-energy-frac     Lower edge of the bandwidth energy band.
       --high-energy-frac    Upper edge of the bandwidth energy band.
+
+``consolidate-spectrogram-store``
+``consolidate-spectrogram-store`` merges per-session spectrogram/mask H5 files into one multi-session store under ``spectrograms_root`` (shared ``frequency_bins`` axis, per-session ``spectrogram/<session>`` and ``mask/<session>`` groups, and a per-session ``qlvm_dim`` latent dataset injected from each summary's ``qlvm1``/``qlvm2`` columns). The store is written atomically as ``spectrograms_sam2masks_<S>sessions_<N>vocalizations_<timestamp>.h5``; consumers resolve the newest such file automatically.
+
+.. code-block:: text
+
+    usage: consolidate-spectrogram-store [-h] --root-directories TEXT
+                                         [--spectrograms-root PATH]
+
+    required arguments:
+      --root-directories    Comma-separated string of session root directory paths, in store order.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --spectrograms-root   Output directory the consolidated store is written to.
 
 ``build-qlvm-training-set``
 ``build-qlvm-training-set`` aggregates a list of session root directories into a single curated ``.npz`` training set (``train_data.npz`` + ``val_data.npz``, or ``full_data.npz``) for the QLVM. With ``--masking-type sam`` (default), each kept spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group (background zeroed; a call with no detected mask keeps an all-ones mask); ``--masking-type none`` keeps raw spectrograms.
@@ -614,7 +661,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --num-workers         DataLoader worker processes (0 = load in the main process).
 
 ``infer-qlvm-latents``
-``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm_dim1`` / ``qlvm_dim2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``. With ``--masking-type sam`` (default) each spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group before embedding -- matching how the decoder was trained by ``build-qlvm-training-set`` (embedding raw spectrograms into a masked-trained decoder is out-of-distribution); ``--masking-type none`` embeds raw spectrograms.
+``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm1`` / ``qlvm2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``. With ``--masking-type sam`` (default) each spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group before embedding -- matching how the decoder was trained by ``build-qlvm-training-set`` (embedding raw spectrograms into a masked-trained decoder is out-of-distribution); ``--masking-type none`` embeds raw spectrograms.
 
 .. code-block:: text
 
@@ -826,8 +873,9 @@ The command writes a single self-describing HDF5 archive ``usv_interval_analysis
                             [--cv-n-folds INTEGER] [--cv-n-init INTEGER]
                             [--mixture-model-n-init INTEGER] [--mixture-model-reg-covar FLOAT]
                             [--tau FLOAT] [--figures-directory PATH]
-                            [--model-class {gauss,t}]
+                            [--model-class {gauss,t,ig}]
                             [--bootstrap-lrt-B INTEGER]
+                            [--bootstrap-lrt-n-jobs INTEGER]
                             [--bootstrap-lrt-n-subsample INTEGER]
                             [--bootstrap-lrt-alpha FLOAT]
                             [--bootstrap-lrt-bonferroni | --no-bootstrap-lrt-bonferroni]
@@ -863,15 +911,26 @@ The command writes a single self-describing HDF5 archive ``usv_interval_analysis
       --model-class               Mixture class. 't' = Student-t mixture
                                   (default; one heavy-tailed component
                                   absorbs the long-pause tail). 'gauss' =
-                                  log-Gaussian mixture (classical).
+                                  log-Gaussian mixture (classical). 'ig' =
+                                  inverse-Gaussian mixture in linear time
+                                  (first-passage-time family for waiting
+                                  times).
       --bootstrap-lrt-B           Number of parametric bootstrap replicates
                                   per pairwise LRT. Default 1000.
+      --bootstrap-lrt-n-jobs      Number of parallel workers for the bootstrap
+                                  LRT replicates (1 = sequential legacy path).
       --bootstrap-lrt-n-subsample Subsample size for both observed and
                                   bootstrap fits. Default 15000.
       --bootstrap-lrt-alpha       Significance threshold for the step-up
-                                  rule. Default 0.05.
-      --bootstrap-lrt-bonferroni  Divide alpha by the number of pairwise
-                                  tests before applying the step-up rule.
+                                  rule. Default 0.01.
+      --bootstrap-lrt-bonferroni / --no-bootstrap-lrt-bonferroni
+                                  Divide alpha by the number of pairwise
+                                  tests before applying the step-up rule
+                                  (default: enabled). With the shipped
+                                  K range there are four comparisons per
+                                  sex and interval type, so the effective
+                                  per-comparison threshold is 0.01 / 4 =
+                                  0.0025.
 
 ``generate-rm``
 ``generate-rm`` is the command-line interface for calculating per-cluster neuronal tuning curves (behavioral + vocal in one pass). Behavioral tuning runs when the session's ``*_behavioral_features.csv`` exists; vocal tuning runs when the ``*_usv_summary.csv`` and synced spike data exist. Sessions missing both inputs return cleanly without producing any tuning files.

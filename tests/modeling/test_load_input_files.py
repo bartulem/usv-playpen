@@ -794,15 +794,15 @@ class TestFindUsvCategories:
             'stop': [2.05, 3.05],
             'usv_category': [1, 2],
             'usv_supercategory': [1, 1],
-            'vae_umap1': [0.1, 0.2],
-            'vae_umap2': [0.3, 0.4],
+            'vae1': [0.1, 0.2],
+            'vae2': [0.3, 0.4],
             'vae_supercategory': [10, 11],
             'vae_category': [20, 21],
         }
         out = find_usv_categories(target_category=None, filter_history=1.0,
                                   vocal_output_type='all_rate',
                                   proportion_smoothing_sd=2.0,
-                                  manifold_column_names=['vae_umap1', 'vae_umap2'],
+                                  manifold_column_names=['vae1', 'vae2'],
                                   **self._kwargs(tmp_path, rows))
         male = out['sess_D']['male']
         np.testing.assert_allclose(male['continuous_onsets'], [2.0, 3.0])

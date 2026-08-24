@@ -46,7 +46,8 @@ import numpy as np
 import polars as pls
 from scipy.optimize import brentq
 from scipy.special import digamma, gammaln
-from scipy.stats import norm, t as t_dist
+from scipy.stats import invgauss, norm, t as t_dist
+from joblib import Parallel, delayed
 from sklearn.cluster import KMeans
 from sklearn.mixture import GaussianMixture
 from sklearn.model_selection import KFold
@@ -124,6 +125,7 @@ def plot_gmm_fit(
     histtype: str = 'stepfilled',
     show_components: bool = False,
     legend: bool = True,
+    density_as_bin_means: bool = False,
 ) -> tuple[plt.Figure, plt.Axes]:
     """
     Description
@@ -161,6 +163,12 @@ def plot_gmm_fit(
     show_components (bool)
         If True, overlay each posterior-weighted component density;
         defaults to False.
+    density_as_bin_means (bool)
+        When True the mixture is drawn as the bar heights it predicts -- its
+        density averaged over each histogram bin -- instead of the point-wise
+        curve. Bars are bin averages, so this puts model and data on the same
+        footing; the point-wise curve necessarily rises above the bars wherever
+        a bin straddles a peak. Defaults to False (the point-wise curve).
     legend (bool)
         If True, render the matplotlib legend; defaults to True.
 
@@ -183,9 +191,29 @@ def plot_gmm_fit(
     pdf = np.exp(logprob)
 
     f, ax = plt.subplots(figsize=figsize)
-    ax.hist(x, bins=bins, density=True, alpha=1, color=color,
-            histtype=histtype, edgecolor=edge_color)
-    ax.plot(xx, pdf, '-k', lw=2, label='mixture')
+    _, bin_edges, _ = ax.hist(x, bins=bins, density=True, alpha=1, color=color,
+                              histtype=histtype, edgecolor=edge_color)
+    if density_as_bin_means:
+        # A histogram bar is the density AVERAGED over its bin, while a plain
+        # mixture curve is the density AT a point. Where a bin straddles the
+        # peak the average is necessarily the smaller of the two, so the
+        # point-wise curve rides above the bars and reads as an overshoot the
+        # fit does not actually have (on the male e2s K=3 fit the apex sat
+        # +14% above the tallest bar but -0.1% once averaged over that bin).
+        # Plotting the density smoothed by a moving average one bin wide keeps
+        # a smooth curve while putting it on the bars' footing: its height at
+        # x is what a bar centred on x would show.
+        bin_width = float(bin_edges[1] - bin_edges[0])
+        pad = bin_width / 2.0
+        dense_grid = np.linspace(val_min - pad, val_max + pad, 4000)
+        dense_pdf = np.exp(model.score_samples(dense_grid.reshape(-1, 1)))
+        window = max(1, int(round(bin_width / (dense_grid[1] - dense_grid[0]))))
+        kernel = np.ones(window, dtype=float) / window
+        smoothed = np.convolve(dense_pdf, kernel, mode='same')
+        inside = (dense_grid >= val_min) & (dense_grid <= val_max)
+        ax.plot(dense_grid[inside], smoothed[inside], '-k', lw=2, label='mixture')
+    else:
+        ax.plot(xx, pdf, '-k', lw=2, label='mixture')
 
     if show_components:
         responsibilities = model.predict_proba(xx)
@@ -1365,6 +1393,90 @@ class TMixture:
         return -2.0 * log_lik_total + 2.0 * self._n_params()
 
 
+def thin_seam_ladder_surplus(
+    intervals_sec: np.ndarray,
+    stride_samples: int,
+    sampling_rate: int,
+    half_width_ms: float,
+    max_rung: int,
+    seed: int = 0,
+) -> np.ndarray:
+    """
+    Description
+    -----------
+    Removes the inter-USV intervals a non-overlapping DAS window tiling adds at
+    exact multiples of its stride, returning a boolean keep-mask.
+
+    A legacy DAS model that tiled its input without overlap judged each window
+    without acoustic context from its neighbours, so the faint edges of calls
+    flanking a real pause were clipped to the window seams. Every such pause is
+    recorded with a width close to a whole number of strides, which piles a
+    surplus of intervals onto a ladder of discrete values -- for the shipped
+    model, multiples of 32.512 ms. The surplus is an instrument artifact, and a
+    mixture model fitted to the raw intervals will spend a component describing
+    it: at ``K = 4`` the male end-to-start distribution otherwise places a
+    1.7%-weight component 3 ms from the main peak, on the ladder's second rung.
+
+    Whole rung windows must NOT simply be deleted. The second rung falls inside
+    the main peak of the distribution, so cutting a window out of it removes a
+    slice of the very feature being measured and the fit responds by straddling
+    the hole. Instead each rung window is thinned down to the density of the
+    region either side of it: only the measured excess is dropped, at random,
+    and the rest is kept, so the peak keeps its shape.
+
+    Parameters
+    ----------
+    intervals_sec (np.ndarray)
+        Strictly positive inter-USV intervals, in seconds.
+    stride_samples (int)
+        Window-stitching stride (samples) of the model that produced the
+        annotations -- the same value the seam repair keys on.
+    sampling_rate (int)
+        Audio sampling rate (Hz) the stride refers to.
+    half_width_ms (float)
+        Half-width (ms) of the window taken around each rung.
+    max_rung (int)
+        Highest stride multiple corrected.
+    seed (int)
+        Seed for choosing which of a rung's intervals to drop. The components
+        recovered are stable across seeds; the seed only fixes which individual
+        intervals go.
+
+    Returns
+    -------
+    keep (np.ndarray)
+        Boolean mask over ``intervals_sec``; ``False`` marks an interval
+        removed as ladder surplus.
+    """
+
+    milliseconds = np.asarray(intervals_sec, dtype=float) * 1000.0
+    rung_spacing_ms = (stride_samples / sampling_rate) * 1000.0
+    generator = np.random.default_rng(seed)
+    keep = np.ones(milliseconds.size, dtype=bool)
+
+    for multiple in range(1, max_rung + 1):
+        rung = rung_spacing_ms * multiple
+        in_window = np.flatnonzero((milliseconds >= rung - half_width_ms) &
+                                   (milliseconds <= rung + half_width_ms))
+        if in_window.size == 0:
+            continue
+        # Local background: equal-width windows offset either side of the rung,
+        # far enough not to overlap it but close enough to share its density.
+        background = float(np.mean([
+            ((milliseconds >= rung + offset - half_width_ms) &
+             (milliseconds <= rung + offset + half_width_ms)).sum()
+            for offset in (-3.0 * half_width_ms, -2.0 * half_width_ms,
+                           2.0 * half_width_ms, 3.0 * half_width_ms)
+        ]))
+        surplus = int(round(in_window.size - background))
+        if surplus <= 0:
+            continue
+        keep[generator.choice(in_window, size=min(surplus, in_window.size),
+                              replace=False)] = False
+
+    return keep
+
+
 def fit_log_t_mixture(
     x: np.ndarray,
     n_components: int,
@@ -1427,10 +1539,19 @@ def fit_log_t_mixture(
     best_ll = -np.inf
 
     for ii in range(n_init):
-        km = KMeans(n_clusters=n_components, random_state=seed + ii, n_init=10).fit(log_x.reshape(-1, 1))
-        labels = km.labels_
-        mu = km.cluster_centers_.flatten()
-        sigma2 = np.array([max(np.var(log_x[labels == k]), reg_covar) for k in range(n_components)])
+        # Same restart-diversity scheme as fit_log_ig_mixture: KMeans once,
+        # seeded quantile-drawn centers for the remaining restarts (KMeans is
+        # seed-insensitive on large samples, collapsing multi-start to one).
+        if ii == 0:
+            km = KMeans(n_clusters=n_components, random_state=seed, n_init=10).fit(log_x.reshape(-1, 1))
+            labels = km.labels_
+            mu = km.cluster_centers_.flatten()
+        else:
+            rng_init = np.random.default_rng((seed, ii))
+            qs = np.sort(rng_init.uniform(0.02, 0.98, size=n_components))
+            mu = np.quantile(log_x, qs)
+            labels = np.argmin(np.abs(log_x[:, None] - mu[None, :]), axis=1)
+        sigma2 = np.array([max(np.var(log_x[labels == k]) if np.any(labels == k) else np.var(log_x), reg_covar) for k in range(n_components)])
         nu = np.full(n_components, 10.0)
         w = np.array([np.mean(labels == k) for k in range(n_components)])
         w = np.where(w < 1e-3, 1e-3, w)
@@ -1813,6 +1934,669 @@ def summarize_best_t_mixture(
     }
 
 
+
+def _ig_logpdf_linear(x: np.ndarray, mu: float, lam: float) -> np.ndarray:
+    """
+    Description
+    -----------
+    Log-density of the inverse-Gaussian (Wald) distribution
+    ``IG(mu, lam)`` evaluated at linear-time points ``x``:
+
+        log p(x) = 0.5 * [log(lam) - log(2 pi) - 3 log(x)]
+                   - lam * (x - mu)^2 / (2 mu^2 x)
+
+    The inverse-Gaussian is the first-passage-time distribution of a
+    drifting diffusion to a fixed threshold.
+
+    Parameters
+    ----------
+    x (np.ndarray)
+        Strictly positive evaluation points (seconds), any shape.
+    mu (float)
+        Component mean (seconds).
+    lam (float)
+        Component shape parameter (seconds); larger = narrower.
+
+    Returns
+    -------
+    log_pdf (np.ndarray)
+        Log-density at ``x``, same shape as ``x``.
+    """
+
+    x = np.asarray(x, dtype=float)
+    return 0.5 * (np.log(lam) - np.log(2.0 * np.pi) - 3.0 * np.log(x)) \
+        - lam * (x - mu) ** 2 / (2.0 * mu ** 2 * x)
+
+
+def _ig_mode(mu: float, lam: float) -> float:
+    """
+    Description
+    -----------
+    Closed-form mode of the inverse-Gaussian distribution:
+
+        mode = mu * [ sqrt(1 + 9 mu^2 / (4 lam^2)) - 3 mu / (2 lam) ]
+
+    Parameters
+    ----------
+    mu (float)
+        Component mean (seconds).
+    lam (float)
+        Component shape parameter (seconds).
+
+    Returns
+    -------
+    mode (float)
+        The component's linear-time mode (seconds).
+    """
+
+    r = mu / lam
+    return mu * (np.sqrt(1.0 + 2.25 * r ** 2) - 1.5 * r)
+
+
+class IGMixture:
+    """
+    Description
+    -----------
+    Lightweight 1D inverse-Gaussian (Wald) mixture model with the same
+    sklearn-compatible method surface as :class:`TMixture`
+    (``score_samples``, ``score``, ``predict_proba``, ``bic``,
+    ``aic``). CRITICAL calling convention: like the rest of this
+    module, every public method takes **log-space** inputs ``log_x``
+    and returns densities **of log X** (the linear-time IG density
+    times the Jacobian ``exp(log_x)``), so LR statistics, BIC/AIC/ICL
+    and cross-validated log-likelihoods are directly comparable with
+    the Gaussian and Student-t families fitted in log-space.
+
+    True parameters live in ``mus_`` (component means, seconds) and
+    ``lambdas_`` (shape parameters, seconds). For the family-agnostic
+    plot helpers, ``means_`` exposes the per-component LOG-SPACE MODE
+    locations (shape ``(K, 1)``) -- the points where each component's
+    log-axis density peaks -- and ``covariances_`` carries the
+    linear-time component variances ``mu^3 / lam`` (shape
+    ``(K, 1, 1)``; informational, not consumed by shared code paths).
+
+    The class is fit via :func:`fit_log_ig_mixture`; constructing it
+    directly from parameter arrays is also supported for testing and
+    archive reconstruction.
+    """
+
+    def __init__(
+        self,
+        weights: np.ndarray,
+        mus: np.ndarray,
+        lambdas: np.ndarray,
+    ):
+        """
+        Description
+        -----------
+        Construct an ``IGMixture`` directly from fitted parameter
+        arrays.
+
+        Parameters
+        ----------
+        weights (np.ndarray, shape (K,))
+            Component mixing weights; should sum to 1.
+        mus (np.ndarray, shape (K,))
+            Per-component inverse-Gaussian means (seconds).
+        lambdas (np.ndarray, shape (K,))
+            Per-component inverse-Gaussian shape parameters (seconds).
+
+        Returns
+        -------
+        None
+        """
+
+        self.weights_ = np.asarray(weights, dtype=float).ravel()
+        self.mus_ = np.asarray(mus, dtype=float).ravel()
+        self.lambdas_ = np.asarray(lambdas, dtype=float).ravel()
+        K = self.weights_.size
+        self.n_components = K
+        self.covariance_type = "full"
+        modes = np.array([_ig_mode(self.mus_[k], self.lambdas_[k]) for k in range(K)])
+        # log-space peak locations for the family-agnostic plot helpers
+        self.means_ = np.log(modes).reshape(K, 1)
+        self.covariances_ = (self.mus_ ** 3 / self.lambdas_).reshape(K, 1, 1)
+
+    def _log_w_pdf(self, log_x: np.ndarray) -> np.ndarray:
+        """
+        Description
+        -----------
+        Per-component ``log(w_k) + log p_k(log_x)`` where ``p_k`` is
+        the density of ``log X`` under component k (linear-time IG
+        density times the Jacobian ``exp(log_x)``). Shape ``(K, N)``.
+        Internal helper used by every other public method.
+
+        Parameters
+        ----------
+        log_x (np.ndarray)
+            Log-space evaluation points, shape ``(N,)`` or ``(N, 1)``.
+
+        Returns
+        -------
+        log_w_pdf (np.ndarray)
+            A (K, N) shape array.
+        """
+
+        y = np.asarray(log_x, dtype=float).ravel()
+        x = np.exp(y)
+        K = self.n_components
+        return np.array([
+            np.log(self.weights_[k]) + _ig_logpdf_linear(x, self.mus_[k], self.lambdas_[k]) + y
+            for k in range(K)
+        ])
+
+    def score_samples(self, log_x: np.ndarray) -> np.ndarray:
+        """
+        Description
+        -----------
+        Per-sample log-likelihood of ``log X`` under the mixture,
+        matching ``sklearn.mixture.GaussianMixture.score_samples``.
+
+        Parameters
+        ----------
+        log_x (np.ndarray)
+            Log-space evaluation points, shape ``(N,)`` or ``(N, 1)``.
+
+        Returns
+        -------
+        log_lik (np.ndarray)
+            Shape ``(N,)``.
+        """
+
+        return np.logaddexp.reduce(self._log_w_pdf(log_x), axis=0)
+
+    def score(self, log_x: np.ndarray) -> float:
+        """
+        Description
+        -----------
+        Mean log-likelihood per sample, matching
+        ``GaussianMixture.score``.
+
+        Parameters
+        ----------
+        log_x (np.ndarray)
+            Log-space evaluation points.
+
+        Returns
+        -------
+        mean_log_lik (float)
+            Mean of ``score_samples(log_x)``.
+        """
+
+        return float(np.mean(self.score_samples(log_x)))
+
+    def predict_proba(self, log_x: np.ndarray) -> np.ndarray:
+        """
+        Description
+        -----------
+        Posterior responsibilities ``z_ik = P(component k | x_i)``,
+        shape ``(N, K)`` to match ``GaussianMixture.predict_proba``.
+        Posterior odds are invariant to the (shared) Jacobian term, so
+        these equal the linear-space responsibilities.
+
+        Parameters
+        ----------
+        log_x (np.ndarray)
+            Log-space evaluation points.
+
+        Returns
+        -------
+        z (np.ndarray)
+            A (N, K) shape ndarray.
+        """
+
+        log_w_pdf = self._log_w_pdf(log_x)
+        log_norm = np.logaddexp.reduce(log_w_pdf, axis=0)
+        return np.exp(log_w_pdf - log_norm).T
+
+    def _n_params(self) -> int:
+        """
+        Description
+        -----------
+        Number of free parameters: per component (mu, lam, w), minus 1
+        because the weights sum to 1. Used by :meth:`bic` and
+        :meth:`aic`. One parameter FEWER per component than the
+        Student-t (no degrees-of-freedom).
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        n_params (int)
+            ``3K - 1`` for a K-component 1D mixture.
+        """
+
+        return 3 * self.n_components - 1
+
+    def bic(self, log_x: np.ndarray) -> float:
+        """
+        Description
+        -----------
+        Bayesian Information Criterion, matching
+        ``GaussianMixture.bic``: ``-2 * loglik + n_params * log(N)``,
+        computed in the shared log-space measure so values are
+        directly comparable across the module's mixture families.
+
+        Parameters
+        ----------
+        log_x (np.ndarray)
+            Log-space evaluation points.
+
+        Returns
+        -------
+        bic (float)
+            Lower is better.
+        """
+
+        x = np.asarray(log_x).ravel()
+        N = x.size
+        log_lik_total = float(np.sum(self.score_samples(x)))
+        return -2.0 * log_lik_total + self._n_params() * np.log(N)
+
+    def aic(self, log_x: np.ndarray) -> float:
+        """
+        Description
+        -----------
+        Akaike Information Criterion, matching
+        ``GaussianMixture.aic``: ``-2 * loglik + 2 * n_params``.
+
+        Parameters
+        ----------
+        log_x (np.ndarray)
+            Log-space evaluation points.
+
+        Returns
+        -------
+        aic (float)
+            Lower is better.
+        """
+
+        x = np.asarray(log_x).ravel()
+        log_lik_total = float(np.sum(self.score_samples(x)))
+        return -2.0 * log_lik_total + 2.0 * self._n_params()
+
+
+def fit_log_ig_mixture(
+    x: np.ndarray,
+    n_components: int,
+    seed: int = 0,
+    n_init: int = 5,
+    max_iter: int = 300,
+    tol: float = 1e-5,
+    reg_covar: float = 1e-4,
+) -> tuple[IGMixture, np.ndarray]:
+    """
+    Description
+    -----------
+    Fits a 1D inverse-Gaussian (Wald) mixture to strictly positive
+    interval data by EM in linear time. Best-of-``n_init`` KMeans
+    (on ``log x``) initialisations is kept, matching the multi-start
+    convention of :func:`fit_log_gmm` / :func:`fit_log_t_mixture`.
+    Both M-step updates are closed-form (``mu_k`` = responsibility-
+    weighted mean; ``1/lam_k`` = weighted mean of ``1/x - 1/mu_k``),
+    which makes the IG sweep considerably faster than the Student-t's
+    per-component ``nu`` root-finding.
+
+    The signature and return contract mirror
+    :func:`fit_log_t_mixture` exactly so the bootstrap-LRT machinery
+    (:func:`bootstrap_lrt`, :func:`select_n_components_step_up_lrt`)
+    consumes this fitter unchanged.
+
+    Parameters
+    ----------
+    x (np.ndarray)
+        A (n_samples,) shape ndarray of strictly positive interval
+        values (in seconds).
+    n_components (int)
+        Number of IG components to fit.
+    seed (int)
+        Random seed forwarded to KMeans; defaults to 0.
+    n_init (int)
+        Number of random KMeans initialisations; defaults to 5.
+    max_iter (int)
+        Maximum EM iterations per init; defaults to 300.
+    tol (float)
+        Convergence tolerance on log-likelihood; defaults to 1e-5.
+    reg_covar (float)
+        Floor on the per-component mean-inverse residual
+        ``1/lam`` (i.e. a ceiling ``lam <= 1/reg_covar``), preventing
+        a component from collapsing onto a point mass; defaults to
+        1e-4 (accepted for interface parity with the other fitters).
+
+    Returns
+    -------
+    model (IGMixture)
+        The best-of-``n_init`` fitted IG mixture.
+    order (np.ndarray)
+        Indices that sort components by ascending component mean
+        ``mu`` (the analog of the other fitters'
+        ``mixture_model_order``).
+    """
+
+    x = np.asarray(x, dtype=float).ravel()
+    log_x = np.log(x)
+    N = x.size
+
+    best_model: IGMixture | None = None
+    best_ll = -np.inf
+
+    for ii in range(n_init):
+        # Restart 0 uses KMeans; later restarts draw component centers from
+        # seeded random data quantiles. KMeans on large samples converges to
+        # the same centroids for every random_state, so KMeans-only restarts
+        # are one restart in disguise -- quantile draws restore genuine
+        # multi-start diversity (deterministic per (seed, ii)).
+        if ii == 0:
+            km = KMeans(n_clusters=n_components, random_state=seed, n_init=10).fit(log_x.reshape(-1, 1))
+            labels = km.labels_
+        else:
+            rng_init = np.random.default_rng((seed, ii))
+            qs = np.sort(rng_init.uniform(0.02, 0.98, size=n_components))
+            centers = np.quantile(log_x, qs)
+            labels = np.argmin(np.abs(log_x[:, None] - centers[None, :]), axis=1)
+        mu = np.empty(n_components)
+        lam = np.empty(n_components)
+        for k in range(n_components):
+            xk = x[labels == k] if np.any(labels == k) else x
+            m = float(np.mean(xk))
+            v = float(np.var(xk)) + 1e-12
+            mu[k] = m
+            lam[k] = min(m ** 3 / v, 1.0 / reg_covar)
+        w = np.array([np.mean(labels == k) for k in range(n_components)])
+        w = np.where(w < 1e-3, 1e-3, w)
+        w = w / w.sum()
+
+        prev_ll = -np.inf
+        for it in range(max_iter):
+            log_w_pdf = np.array([
+                np.log(w[k]) + _ig_logpdf_linear(x, mu[k], lam[k])
+                for k in range(n_components)
+            ])
+            log_norm = np.logaddexp.reduce(log_w_pdf, axis=0)
+            ll = float(np.sum(log_norm))
+            z = np.exp(log_w_pdf - log_norm)
+
+            n_k = np.maximum(z.sum(axis=1), 1e-10)
+            mu_new = (z * x).sum(axis=1) / n_k
+            inv_resid = (z * (1.0 / x)).sum(axis=1) / n_k - 1.0 / np.maximum(mu_new, 1e-12)
+            lam_new = 1.0 / np.maximum(inv_resid, reg_covar)
+            w_new = n_k / N
+
+            mu, lam, w = mu_new, lam_new, w_new
+
+            if abs(ll - prev_ll) < tol:
+                break
+            prev_ll = ll
+
+        # ``ll`` above is one M-step stale relative to the final parameters
+        # (same convention as fit_log_t_mixture); recompute so restart ranking
+        # matches the returned model exactly.
+        final_log_w_pdf = np.array([
+            np.log(w[k]) + _ig_logpdf_linear(x, mu[k], lam[k])
+            for k in range(n_components)
+        ])
+        final_ll = float(np.sum(np.logaddexp.reduce(final_log_w_pdf, axis=0)))
+
+        if final_ll > best_ll:
+            best_ll = final_ll
+            best_model = IGMixture(weights=w, mus=mu, lambdas=lam)
+
+    if best_model is None:
+        raise RuntimeError("fit_log_ig_mixture: EM did not produce a valid fit.")
+
+    order = np.argsort(best_model.mus_)
+    return best_model, order
+
+
+def ig_mixture_icl(model: IGMixture, log_x: np.ndarray) -> float:
+    """
+    Description
+    -----------
+    Integrated Completed Likelihood for a fitted IG mixture:
+    BIC plus twice the total assignment entropy, matching
+    :func:`gmm_icl` / :func:`t_mixture_icl` so ICL values are
+    comparable across the module's mixture families.
+
+    Parameters
+    ----------
+    model (IGMixture)
+        A fitted IG mixture.
+    log_x (np.ndarray)
+        Log-space sample points.
+
+    Returns
+    -------
+    icl (float)
+        ICL value; lower is better.
+    """
+
+    bic = model.bic(log_x)
+    z = model.predict_proba(log_x)
+    z_safe = np.clip(z, 1e-300, 1.0)
+    entropy = float(-np.sum(z_safe * np.log(z_safe)))
+    return bic + 2.0 * entropy
+
+
+def ig_mixture_cv_neg_loglik(
+    intervals_sec: np.ndarray,
+    n_components: int,
+    seed: int = 0,
+    n_folds: int = 5,
+    n_init: int = 3,
+    reg_covar: float = 1e-4,
+) -> float:
+    """
+    Description
+    -----------
+    K-fold cross-validated negative log-likelihood for the IG
+    mixture, deviance-scaled (``-2 * sum_held_out_loglik`` in the
+    shared log-space measure) so it sits on the same scale as
+    BIC / AIC / ICL: lower is better. Mirrors
+    :func:`t_mixture_cv_neg_loglik`.
+
+    Parameters
+    ----------
+    intervals_sec (np.ndarray)
+        Strictly positive interval values (seconds).
+    n_components (int)
+        Number of IG components.
+    seed (int)
+        Seed for the shuffled KFold split and per-fold fits.
+    n_folds (int)
+        Number of CV folds; defaults to 5.
+    n_init (int)
+        EM restarts per fold; defaults to 3.
+    reg_covar (float)
+        Forwarded to :func:`fit_log_ig_mixture`.
+
+    Returns
+    -------
+    cv_neg_loglik (float)
+        ``-2 *`` total held-out log-likelihood across folds.
+    """
+
+    x = np.asarray(intervals_sec, dtype=float).ravel()
+    kf = KFold(n_splits=n_folds, shuffle=True, random_state=seed)
+    total_heldout_ll = 0.0
+    for fold_idx, (train_idx, test_idx) in enumerate(kf.split(x)):
+        model, _ = fit_log_ig_mixture(
+            x[train_idx], n_components=n_components,
+            seed=seed + fold_idx, n_init=n_init, reg_covar=reg_covar,
+        )
+        total_heldout_ll += float(np.sum(model.score_samples(np.log(x[test_idx]))))
+    return -2.0 * total_heldout_ll
+
+
+def report_ig_mixture_stats(
+    model: IGMixture,
+    order: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Per-component summary for a fitted IG mixture, ordered by
+    ``order`` (typically ascending component mean): log of the
+    component means, shape parameters ``lambda``, weights, log-space
+    component MODE locations, and the mixture log-axis density at
+    each mode (for placing component-peak triangles on rendered
+    fits). The structural analog of :func:`report_t_mixture_stats`.
+
+    Parameters
+    ----------
+    model (IGMixture)
+        A fitted IG mixture.
+    order (np.ndarray)
+        Indices that sort components in the desired order (typically
+        ascending ``mu``).
+
+    Returns
+    -------
+    log_mus (np.ndarray)
+        Log of per-component means ``mu`` (seconds), shape ``(K,)``.
+    lambdas (np.ndarray)
+        Per-component shape parameters (seconds), shape ``(K,)``.
+    weights (np.ndarray)
+        Per-component weights, shape ``(K,)``.
+    modes_log (np.ndarray)
+        Log-space component mode locations, shape ``(K,)``.
+    densities_at_modes (np.ndarray)
+        Mixture log-axis density at each component's mode, shape
+        ``(K,)``.
+    """
+
+    log_mus = np.log(model.mus_[order])
+    lambdas = model.lambdas_[order]
+    weights = model.weights_[order]
+    modes_log = model.means_.flatten()[order]
+    densities_at_modes = np.exp(model.score_samples(modes_log))
+    return log_mus, lambdas, weights, modes_log, densities_at_modes
+
+
+def summarize_best_ig_mixture(
+    model: IGMixture,
+    order: np.ndarray,
+) -> dict:
+    """
+    Description
+    -----------
+    Convenience wrapper around :func:`report_ig_mixture_stats` that
+    returns the per-component summary in the notebook-friendly dict
+    shape shared by :func:`summarize_best_gmm` /
+    :func:`summarize_best_t_mixture`, so plotting code can dispatch
+    on the model class without re-shaping the returned object.
+    ``logmeans`` carries ``log(mu_k)`` -- the log-space component MEAN
+    locations -- so the figure's triangle anchors and text legend state
+    the same values as the archive columns (``logmean_k``) and any
+    reported component means. The skewed IG component's mode lies below
+    its mean; the mode locations remain available under ``modes_log``.
+    Boundaries are left empty, matching the Student-t convention (no
+    closed form; not rendered).
+
+    Parameters
+    ----------
+    model (IGMixture)
+        A fitted IG mixture.
+    order (np.ndarray)
+        Component ordering (typically ascending ``mu``).
+
+    Returns
+    -------
+    summary (dict)
+        Keys ``logmeans``, ``logsds``, ``weights``, ``medians_sec``,
+        ``modes_log``, ``densities``, ``boundaries_log``,
+        ``boundaries_sec``.
+    """
+
+    log_mus, lambdas, weights, modes_log, densities = report_ig_mixture_stats(model, order)
+    return {
+        "logmeans": log_mus,
+        "logsds": np.sqrt(np.log1p(model.mus_[order] / lambdas)),
+        "weights": weights,
+        "medians_sec": model.mus_[order],
+        "modes_log": modes_log,
+        "densities": densities,
+        "boundaries_log": np.array([]),
+        "boundaries_sec": np.array([]),
+    }
+
+
+def ig_mixture_cdf_logspace(x: np.ndarray | float, model: IGMixture) -> np.ndarray:
+    """
+    Description
+    -----------
+    Mixture CDF evaluated at LOG-space points, matching the calling
+    convention of :func:`gmm_cdf_logspace` /
+    :func:`t_mixture_cdf_logspace`. Uses the closed-form IG CDF
+
+        F(t) = Phi(sqrt(lam/t) (t/mu - 1))
+             + exp(2 lam / mu) * Phi(-sqrt(lam/t) (t/mu + 1))
+
+    with the second term evaluated in log-space
+    (``exp(2 lam/mu + log Phi(.))``) so large ``lam/mu`` ratios do not
+    overflow.
+
+    Parameters
+    ----------
+    x (np.ndarray | float)
+        Log-space evaluation points.
+    model (IGMixture)
+        A fitted IG mixture.
+
+    Returns
+    -------
+    cdf (np.ndarray)
+        Mixture CDF values in ``[0, 1]``, shape like ``x``.
+    """
+
+    y = np.atleast_1d(np.asarray(x, dtype=float))
+    t = np.exp(y)
+    out = np.zeros_like(t)
+    for k in range(model.n_components):
+        mu = model.mus_[k]
+        lam = model.lambdas_[k]
+        rt = np.sqrt(lam / t)
+        term1 = norm.cdf(rt * (t / mu - 1.0))
+        term2 = np.exp(2.0 * lam / mu + norm.logcdf(-rt * (t / mu + 1.0)))
+        out += model.weights_[k] * (term1 + term2)
+    return np.clip(out, 0.0, 1.0)
+
+
+def ig_mixture_quantile_logspace(q: np.ndarray, model: IGMixture) -> np.ndarray:
+    """
+    Description
+    -----------
+    Quantile function (inverse CDF) of the IG mixture, returned in
+    LOG-space to match :func:`gmm_quantile_logspace` /
+    :func:`t_mixture_quantile_logspace`. Solved by bracketed
+    root-finding (Brent) on :func:`ig_mixture_cdf_logspace`.
+
+    Parameters
+    ----------
+    q (np.ndarray)
+        Quantile levels in ``(0, 1)``.
+    model (IGMixture)
+        A fitted IG mixture.
+
+    Returns
+    -------
+    log_q (np.ndarray)
+        Log-space quantiles, shape like ``q``.
+    """
+
+    q = np.atleast_1d(np.asarray(q, dtype=float))
+    lo = float(np.log(model.mus_.min()) - 20.0)
+    hi = float(np.log(model.mus_.max()) + 20.0)
+
+    def _cdf_scalar(v: float) -> float:
+        return float(ig_mixture_cdf_logspace(v, model)[0])
+
+    out = np.empty(q.size)
+    for i, qi in enumerate(q):
+        out[i] = brentq(lambda v: _cdf_scalar(v) - qi, lo, hi, xtol=1e-10)
+    return out
+
+
 # =====================================================================
 # Parametric bootstrap likelihood-ratio test (LRT) for the number of
 # mixture components.
@@ -1842,8 +2626,8 @@ def _sample_from_mixture(model, N: int, rng: np.random.Generator) -> np.ndarray:
     Description
     -----------
     Draws ``N`` 1D samples from a fitted mixture in log-space.
-    Dispatches on model type (``TMixture`` vs sklearn's
-    ``GaussianMixture``); both are sampled by first drawing a
+    Dispatches on model type (``IGMixture`` / ``TMixture`` / sklearn's
+    ``GaussianMixture``); all are sampled by first drawing a
     component assignment from the categorical(weights) distribution,
     then drawing from the chosen component's distribution.
 
@@ -1877,7 +2661,22 @@ def _sample_from_mixture(model, N: int, rng: np.random.Generator) -> np.ndarray:
     comp = rng.choice(K, size=N, p=weights)
     out = np.empty(N)
 
-    if isinstance(model, TMixture):
+    if isinstance(model, IGMixture):
+        for k in range(K):
+            idx = comp == k
+            n_k = int(idx.sum())
+            if n_k == 0:
+                continue
+            # scipy's invgauss(mu_s, scale=s) has mean mu_s * s and shape s,
+            # so (mu_s = mu/lam, scale = lam) yields IG(mu, lam) draws.
+            draws = invgauss.rvs(
+                float(model.mus_[k] / model.lambdas_[k]),
+                scale=float(model.lambdas_[k]),
+                size=n_k,
+                random_state=rng,
+            )
+            out[idx] = np.log(draws)
+    elif isinstance(model, TMixture):
         for k in range(K):
             idx = comp == k
             n_k = int(idx.sum())
@@ -1938,6 +2737,69 @@ def _lr_statistic(model_null, model_alt, log_x: np.ndarray) -> float:
     return -2.0 * (ll_null - ll_alt)
 
 
+
+def _bootstrap_lrt_replicate(
+    b: int,
+    seed: int,
+    model_null_obs,
+    fit_fn,
+    K_null: int,
+    K_alt: int,
+    N_sub: int,
+    n_init_boot: int,
+    reg_covar: float,
+) -> float:
+    """
+    Description
+    -----------
+    One parametric-bootstrap LRT replicate, self-contained for parallel
+    execution: draws a null sample of size ``N_sub`` from the fitted
+    null model using a per-replicate deterministic RNG seeded by
+    ``(seed, b)``, refits null and alternative models with fit seed
+    ``seed + b`` (identical to the sequential path's fit seeds), and
+    returns the replicate's LR statistic.
+
+    Parameters
+    ----------
+    b (int)
+        Replicate index.
+    seed (int)
+        Base seed of the enclosing :func:`bootstrap_lrt` call.
+    model_null_obs
+        The observed-data null-model fit to resample from.
+    fit_fn (Callable)
+        Family fitter (``fit_log_gmm`` / ``fit_log_t_mixture`` /
+        ``fit_log_ig_mixture``).
+    K_null (int)
+        Null component count.
+    K_alt (int)
+        Alternative component count.
+    N_sub (int)
+        Sample size per replicate.
+    n_init_boot (int)
+        EM restarts per replicate fit.
+    n_jobs (int)
+        Number of parallel workers for the bootstrap replicates;
+        defaults to 1 (the legacy sequential path, bit-identical to
+        prior runs). With ``n_jobs > 1`` each replicate uses its own
+        deterministic RNG seeded by ``(seed, b)``.
+    reg_covar (float)
+        Forwarded to the fitter.
+
+    Returns
+    -------
+    lr (float)
+        The replicate's ``-2 * (logL_null - logL_alt)`` statistic.
+    """
+
+    rng_b = np.random.default_rng((seed, b))
+    log_x_b = _sample_from_mixture(model_null_obs, N_sub, rng_b)
+    x_b = np.exp(log_x_b)
+    m_null_b, _ = fit_fn(x_b, K_null, seed=seed + b, n_init=n_init_boot, reg_covar=reg_covar)
+    m_alt_b, _ = fit_fn(x_b, K_alt, seed=seed + b, n_init=n_init_boot, reg_covar=reg_covar)
+    return _lr_statistic(m_null_b, m_alt_b, log_x_b)
+
+
 def bootstrap_lrt(
     intervals_sec: np.ndarray,
     K_null: int,
@@ -1947,6 +2809,7 @@ def bootstrap_lrt(
     model_class: str = "t",
     n_init_obs: int = 10,
     n_init_boot: int = 3,
+    n_jobs: int = 1,
     reg_covar: float = 1e-4,
     seed: int = 0,
     message_output=None,
@@ -1974,7 +2837,7 @@ def bootstrap_lrt(
          LR_obs. Small p_value rejects ``K_null`` in favor of
          ``K_alt``.
 
-    The dispatch on ``model_class`` (``'gauss'`` or ``'t'``) selects
+    The dispatch on ``model_class`` (``'gauss'``, ``'t'`` or ``'ig'``) selects
     the fit / sampling functions but the procedure is identical.
 
     Parameters
@@ -2026,9 +2889,11 @@ def bootstrap_lrt(
         fit_fn = fit_log_gmm
     elif model_class == "t":
         fit_fn = fit_log_t_mixture
+    elif model_class == "ig":
+        fit_fn = fit_log_ig_mixture
     else:
         raise ValueError(
-            f"bootstrap_lrt: model_class must be 'gauss' or 't', got {model_class!r}."
+            f"bootstrap_lrt: model_class must be 'gauss', 't' or 'ig', got {model_class!r}."
         )
 
     rng = np.random.default_rng(seed)
@@ -2044,17 +2909,44 @@ def bootstrap_lrt(
     m_null_obs, _ = fit_fn(intervals_sub, K_null, seed=seed, n_init=n_init_obs, reg_covar=reg_covar)
     m_alt_obs, _ = fit_fn(intervals_sub, K_alt, seed=seed, n_init=n_init_obs, reg_covar=reg_covar)
     lr_obs = _lr_statistic(m_null_obs, m_alt_obs, log_x)
+    # A materially negative observed LR is impossible for correctly optimized
+    # nested mixtures (K_alt can always emulate K_null): it means the
+    # alternative's EM landed in a worse local optimum, which would silently
+    # bias the step-up selection toward K_null. Fail loud instead.
+    if lr_obs < -1e-6 * abs(float(np.sum(m_null_obs.score_samples(log_x.reshape(-1, 1))))):
+        msg = (
+            f"bootstrap_lrt: observed LR is negative ({lr_obs:.2f}) for "
+            f"K_null={K_null} vs K_alt={K_alt} -- the K_alt fit is worse than "
+            "the nested K_null fit, indicating an EM optimization failure; "
+            "increase n_init_obs or fix the initialization."
+        )
+        raise RuntimeError(msg)
 
-    # Bootstrap null distribution
+    # Bootstrap null distribution. n_jobs == 1 preserves the legacy sequential
+    # path bit-for-bit (one shared resampling RNG stream); n_jobs > 1 runs the
+    # replicates in parallel with per-replicate deterministic RNGs seeded by
+    # (seed, b) -- statistically equivalent and fully reproducible for a given
+    # (seed, B), but not bit-identical to the sequential stream.
     lr_null = np.empty(B)
-    for b in range(B):
-        log_x_b = _sample_from_mixture(m_null_obs, N_sub, rng)
-        x_b = np.exp(log_x_b)
-        m_null_b, _ = fit_fn(x_b, K_null, seed=seed + b, n_init=n_init_boot, reg_covar=reg_covar)
-        m_alt_b, _ = fit_fn(x_b, K_alt, seed=seed + b, n_init=n_init_boot, reg_covar=reg_covar)
-        lr_null[b] = _lr_statistic(m_null_b, m_alt_b, log_x_b)
-        if message_output is not None and (b + 1) % 10 == 0:
-            message_output(f"      bootstrap [{b + 1}/{B}]")
+    if n_jobs == 1:
+        for b in range(B):
+            log_x_b = _sample_from_mixture(m_null_obs, N_sub, rng)
+            x_b = np.exp(log_x_b)
+            m_null_b, _ = fit_fn(x_b, K_null, seed=seed + b, n_init=n_init_boot, reg_covar=reg_covar)
+            m_alt_b, _ = fit_fn(x_b, K_alt, seed=seed + b, n_init=n_init_boot, reg_covar=reg_covar)
+            lr_null[b] = _lr_statistic(m_null_b, m_alt_b, log_x_b)
+            if message_output is not None and (b + 1) % 10 == 0:
+                message_output(f"      bootstrap [{b + 1}/{B}]")
+    else:
+        if message_output is not None:
+            message_output(f"      bootstrap: {B} replicates across {n_jobs} workers")
+        lr_list = Parallel(n_jobs=n_jobs)(
+            delayed(_bootstrap_lrt_replicate)(
+                b, seed, m_null_obs, fit_fn, K_null, K_alt, N_sub, n_init_boot, reg_covar,
+            )
+            for b in range(B)
+        )
+        lr_null[:] = np.asarray(lr_list, dtype=float)
 
     return {
         "K_null": int(K_null),
