@@ -475,6 +475,7 @@ def plot_best_fit_with_annotations(
     auto_inset_below_legend: bool = False,
     auto_inset_size: tuple = (0.34, 0.30),
     show_components: bool = False,
+    density_as_bin_means: bool = False,
 ) -> tuple[plt.Figure, plt.Axes, dict]:
     """
     Description
@@ -540,6 +541,12 @@ def plot_best_fit_with_annotations(
         ``(width, height)`` in axes fractions used when
         ``auto_inset_below_legend`` is True. Defaults to
         ``(0.34, 0.30)``.
+    density_as_bin_means (bool)
+        Draw the mixture as the bar heights it predicts (its density averaged
+        over each histogram bin) rather than as the point-wise curve. Bars are
+        bin averages, so the point-wise curve rides above them wherever a bin
+        straddles a peak -- an artifact of the comparison, not a misfit. Passed
+        through to :func:`mixture_model_utils.plot_gmm_fit`; defaults to False.
     show_components (bool)
         If True, overlay each individual mixture component's pdf
         (weighted by its mixing weight) on the histogram. Each
@@ -573,6 +580,7 @@ def plot_best_fit_with_annotations(
         edge_color=edge_color,
         show_components=False,
         legend=False,
+        density_as_bin_means=density_as_bin_means,
     )
 
     # Reserve ~18% headroom above the densest histogram bar / curve

@@ -125,6 +125,7 @@ def plot_gmm_fit(
     histtype: str = 'stepfilled',
     show_components: bool = False,
     legend: bool = True,
+    density_as_bin_means: bool = False,
 ) -> tuple[plt.Figure, plt.Axes]:
     """
     Description
@@ -162,6 +163,12 @@ def plot_gmm_fit(
     show_components (bool)
         If True, overlay each posterior-weighted component density;
         defaults to False.
+    density_as_bin_means (bool)
+        When True the mixture is drawn as the bar heights it predicts -- its
+        density averaged over each histogram bin -- instead of the point-wise
+        curve. Bars are bin averages, so this puts model and data on the same
+        footing; the point-wise curve necessarily rises above the bars wherever
+        a bin straddles a peak. Defaults to False (the point-wise curve).
     legend (bool)
         If True, render the matplotlib legend; defaults to True.
 
@@ -184,9 +191,29 @@ def plot_gmm_fit(
     pdf = np.exp(logprob)
 
     f, ax = plt.subplots(figsize=figsize)
-    ax.hist(x, bins=bins, density=True, alpha=1, color=color,
-            histtype=histtype, edgecolor=edge_color)
-    ax.plot(xx, pdf, '-k', lw=2, label='mixture')
+    _, bin_edges, _ = ax.hist(x, bins=bins, density=True, alpha=1, color=color,
+                              histtype=histtype, edgecolor=edge_color)
+    if density_as_bin_means:
+        # A histogram bar is the density AVERAGED over its bin, while a plain
+        # mixture curve is the density AT a point. Where a bin straddles the
+        # peak the average is necessarily the smaller of the two, so the
+        # point-wise curve rides above the bars and reads as an overshoot the
+        # fit does not actually have (on the male e2s K=3 fit the apex sat
+        # +14% above the tallest bar but -0.1% once averaged over that bin).
+        # Plotting the density smoothed by a moving average one bin wide keeps
+        # a smooth curve while putting it on the bars' footing: its height at
+        # x is what a bar centred on x would show.
+        bin_width = float(bin_edges[1] - bin_edges[0])
+        pad = bin_width / 2.0
+        dense_grid = np.linspace(val_min - pad, val_max + pad, 4000)
+        dense_pdf = np.exp(model.score_samples(dense_grid.reshape(-1, 1)))
+        window = max(1, int(round(bin_width / (dense_grid[1] - dense_grid[0]))))
+        kernel = np.ones(window, dtype=float) / window
+        smoothed = np.convolve(dense_pdf, kernel, mode='same')
+        inside = (dense_grid >= val_min) & (dense_grid <= val_max)
+        ax.plot(dense_grid[inside], smoothed[inside], '-k', lw=2, label='mixture')
+    else:
+        ax.plot(xx, pdf, '-k', lw=2, label='mixture')
 
     if show_components:
         responsibilities = model.predict_proba(xx)
@@ -1364,6 +1391,90 @@ class TMixture:
         x = np.asarray(log_x).ravel()
         log_lik_total = float(np.sum(self.score_samples(x)))
         return -2.0 * log_lik_total + 2.0 * self._n_params()
+
+
+def thin_seam_ladder_surplus(
+    intervals_sec: np.ndarray,
+    stride_samples: int,
+    sampling_rate: int,
+    half_width_ms: float,
+    max_rung: int,
+    seed: int = 0,
+) -> np.ndarray:
+    """
+    Description
+    -----------
+    Removes the inter-USV intervals a non-overlapping DAS window tiling adds at
+    exact multiples of its stride, returning a boolean keep-mask.
+
+    A legacy DAS model that tiled its input without overlap judged each window
+    without acoustic context from its neighbours, so the faint edges of calls
+    flanking a real pause were clipped to the window seams. Every such pause is
+    recorded with a width close to a whole number of strides, which piles a
+    surplus of intervals onto a ladder of discrete values -- for the shipped
+    model, multiples of 32.512 ms. The surplus is an instrument artifact, and a
+    mixture model fitted to the raw intervals will spend a component describing
+    it: at ``K = 4`` the male end-to-start distribution otherwise places a
+    1.7%-weight component 3 ms from the main peak, on the ladder's second rung.
+
+    Whole rung windows must NOT simply be deleted. The second rung falls inside
+    the main peak of the distribution, so cutting a window out of it removes a
+    slice of the very feature being measured and the fit responds by straddling
+    the hole. Instead each rung window is thinned down to the density of the
+    region either side of it: only the measured excess is dropped, at random,
+    and the rest is kept, so the peak keeps its shape.
+
+    Parameters
+    ----------
+    intervals_sec (np.ndarray)
+        Strictly positive inter-USV intervals, in seconds.
+    stride_samples (int)
+        Window-stitching stride (samples) of the model that produced the
+        annotations -- the same value the seam repair keys on.
+    sampling_rate (int)
+        Audio sampling rate (Hz) the stride refers to.
+    half_width_ms (float)
+        Half-width (ms) of the window taken around each rung.
+    max_rung (int)
+        Highest stride multiple corrected.
+    seed (int)
+        Seed for choosing which of a rung's intervals to drop. The components
+        recovered are stable across seeds; the seed only fixes which individual
+        intervals go.
+
+    Returns
+    -------
+    keep (np.ndarray)
+        Boolean mask over ``intervals_sec``; ``False`` marks an interval
+        removed as ladder surplus.
+    """
+
+    milliseconds = np.asarray(intervals_sec, dtype=float) * 1000.0
+    rung_spacing_ms = (stride_samples / sampling_rate) * 1000.0
+    generator = np.random.default_rng(seed)
+    keep = np.ones(milliseconds.size, dtype=bool)
+
+    for multiple in range(1, max_rung + 1):
+        rung = rung_spacing_ms * multiple
+        in_window = np.flatnonzero((milliseconds >= rung - half_width_ms) &
+                                   (milliseconds <= rung + half_width_ms))
+        if in_window.size == 0:
+            continue
+        # Local background: equal-width windows offset either side of the rung,
+        # far enough not to overlap it but close enough to share its density.
+        background = float(np.mean([
+            ((milliseconds >= rung + offset - half_width_ms) &
+             (milliseconds <= rung + offset + half_width_ms)).sum()
+            for offset in (-3.0 * half_width_ms, -2.0 * half_width_ms,
+                           2.0 * half_width_ms, 3.0 * half_width_ms)
+        ]))
+        surplus = int(round(in_window.size - background))
+        if surplus <= 0:
+            continue
+        keep[generator.choice(in_window, size=min(surplus, in_window.size),
+                              replace=False)] = False
+
+    return keep
 
 
 def fit_log_t_mixture(

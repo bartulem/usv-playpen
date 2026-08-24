@@ -1686,7 +1686,9 @@ change what gets analysed.
 * **output_directory** — where the HDF5 archive is written and where the plot cells look for the newest run.
 * **session_lists** — the configured session-list files, each ``configure_path``-resolved to the host OS.
 * **interval_types** / **mode_label** — the two interval definitions (``s2s`` start-to-start, ``e2s`` end-to-start) and their human-readable titles; every compute and plot cell loops over these.
+* **density_as_bin_means** — when ``true`` the best-fit overlay draws the mixture as the bar heights it *predicts* (its density averaged over each histogram bin) rather than as the point-wise curve. A histogram bar is a bin average while the curve is a point density, so a point-wise curve necessarily rides above the bars wherever a bin straddles the peak and reads as an overshoot the fit does not have — on the male end-to-start ``K=3`` fit the apex sat 14% above the tallest bar but 0.1% below it once averaged over that same bin. Set ``false`` to restore the point-wise curve.
 * **model_class** — ``"gauss"``, ``"t"`` or ``"ig"``, selecting the Gaussian, Student-t or inverse-Gaussian mixture family for the whole run. The inverse-Gaussian is fit in linear time and scored in the shared log-space measure, so BIC/AIC/ICL/CV remain cross-family comparable.
+* **seam_ladder_thin_bool** / **seam_ladder_stride_samples** / **seam_ladder_half_width_ms** / **seam_ladder_max_rung** / **seam_ladder_seed** — correction for the inter-USV intervals a non-overlapping DAS window tiling manufactures at exact multiples of its stride. The legacy model judged each window without acoustic context from its neighbours, clipping the faint edges of calls that flank a real pause to the window seams, so those pauses are recorded at a ladder of discrete widths (multiples of 32.512 ms at ``stride_samples`` 8128 and 250 kHz). Left in place the surplus is fitted rather than ignored: at ``K=4`` the male end-to-start mixture spends a 1.7%-weight component 3 ms from the main peak, sitting on the ladder's second rung, and the component that should describe the ~185 ms bump is never resolved. Each rung window is therefore thinned to the density of the regions either side of it — only the measured excess is dropped, at random under ``seam_ladder_seed``, about 1.9% of intervals — so the main peak, which the second rung falls inside, keeps its shape. Deleting whole rung windows instead cuts a slice out of that peak and the fit straddles the hole. The recovered components are stable across seeds and across independent draws.
 * **plot_log_xlims** / **bins_per_sex** — plot-only knobs read straight from JSON (not archived in the HDF5); **tau** is likewise read from JSON but *is* archived in the HDF5.
 
 **Compute the fits.** Run once. First, walk every session in the list, read its ``*_usv_summary.csv``,
@@ -1747,7 +1749,14 @@ components (the step-up selection rule is applied later, at save time):
 Finally, bundle the master DataFrame, the IC sweep, the LRT results, and the
 best-fit models into one ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5`` archive
 (the step-up rule is applied here, so the per-mode selected-``K`` attrs match the
-alpha / bonferroni settings):
+alpha / bonferroni settings). The shipped settings test each consecutive
+``(K, K+1)`` pair at ``bootstrap_lrt_alpha = 0.01`` with
+``bootstrap_lrt_bonferroni = true``, i.e. the threshold is divided by the number
+of pairwise comparisons (four over the shipped ``K`` range), giving an effective
+per-comparison alpha of ``0.0025``. Because the step-up rule is applied at
+archive-write time, changing either setting requires re-writing the archive for
+the stored ``K_selected_*`` attrs to reflect it -- the pairwise ``p``-values
+themselves are unaffected:
 
 .. code-block:: python
 

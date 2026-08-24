@@ -28,6 +28,8 @@ from sklearn.mixture import GaussianMixture
 # Headless matplotlib in case any imported helper touches a backend.
 matplotlib.use("Agg")
 
+import matplotlib.pyplot as plt
+
 from usv_playpen.analyses.mixture_model_utils import (
     IGMixture,
     TMixture,
@@ -39,6 +41,8 @@ from usv_playpen.analyses.mixture_model_utils import (
     gmm_modes,
     ig_mixture_cdf_logspace,
     ig_mixture_quantile_logspace,
+    plot_gmm_fit,
+    thin_seam_ladder_surplus,
 )
 
 
@@ -540,3 +544,113 @@ def test_bootstrap_lrt_parallel_deterministic_and_finite():
     # observed statistic does not depend on the bootstrap path
     res_seq = bootstrap_lrt(n_jobs=1, **kwargs)
     np.testing.assert_allclose(res_seq["lr_obs"], res1["lr_obs"])
+
+
+
+def test_plot_gmm_fit_bin_means_are_below_the_point_wise_apex():
+    """A bar is the density AVERAGED over its bin; the mixture curve is the
+    density AT a point. Wherever a bin straddles the peak the average must be
+    the smaller of the two, which is why a point-wise curve reads as an
+    overshoot against a histogram even for a perfect fit -- and the gap widens
+    with bin width, so it is a property of the drawing, not of the model."""
+    rng = np.random.default_rng(0)
+    x = rng.normal(0.0, 0.25, 20000)
+    model = GaussianMixture(n_components=1, random_state=0).fit(x.reshape(-1, 1))
+    apex = float(np.exp(model.score_samples(np.array([[0.0]])))[0])
+
+    def peak_bin_mean(n_bins: int) -> float:
+        """Model density averaged over whichever bin contains the mode."""
+        edges = np.histogram_bin_edges(x, bins=n_bins)
+        idx = int(np.searchsorted(edges, 0.0) - 1)
+        fine = np.linspace(edges[idx], edges[idx + 1], 256)
+        return float(np.trapezoid(np.exp(model.score_samples(fine.reshape(-1, 1))), fine)
+                     / (edges[idx + 1] - edges[idx]))
+
+    coarse, fine_bins = peak_bin_mean(8), peak_bin_mean(80)
+    # the bin average never reaches the apex, and closes on it as bins narrow
+    assert coarse < apex
+    assert fine_bins < apex
+    assert coarse < fine_bins
+
+    # both draw modes render without disturbing the axes contract
+    for as_bin_means in (False, True):
+        fig, ax = plot_gmm_fit(model=model, x=x, bins=40,
+                               density_as_bin_means=as_bin_means)
+        assert ax.get_ylabel() == "Density"
+        plt.close(fig)
+
+
+def test_plot_gmm_fit_bin_means_conserve_probability_mass():
+    """The per-bin heights must integrate to the model's mass in that range,
+    so the step is a faithful redrawing of the density rather than a rescaling."""
+    rng = np.random.default_rng(1)
+    x = np.concatenate([rng.normal(-1.0, 0.3, 6000), rng.normal(1.0, 0.5, 4000)])
+    model = GaussianMixture(n_components=2, random_state=0).fit(x.reshape(-1, 1))
+
+    edges = np.histogram_bin_edges(x, bins=30)
+    widths = np.diff(edges)
+    bin_means = np.array([
+        float(np.trapezoid(
+            np.exp(model.score_samples(np.linspace(edges[i], edges[i + 1], 128).reshape(-1, 1))),
+            np.linspace(edges[i], edges[i + 1], 128),
+        ) / widths[i])
+        for i in range(edges.size - 1)
+    ])
+    grid = np.linspace(edges[0], edges[-1], 4000)
+    exact = float(np.trapezoid(np.exp(model.score_samples(grid.reshape(-1, 1))), grid))
+    assert float(np.sum(bin_means * widths)) == pytest.approx(exact, rel=1e-3)
+
+    fig, _ = plot_gmm_fit(model=model, x=x, bins=30, density_as_bin_means=True)
+    plt.close(fig)
+
+
+# ===========================================================================
+# thin_seam_ladder_surplus — seam-ladder correction
+# ===========================================================================
+
+_STRIDE_SAMPLES = 8128
+_SAMPLING_RATE = 250000
+_RUNG_MS = (_STRIDE_SAMPLES / _SAMPLING_RATE) * 1000.0   # 32.512 ms
+
+
+def _intervals_with_ladder(background_per_window: int, surplus_at_rung2: int) -> np.ndarray:
+    """Flat interval background plus an injected surplus on the second rung."""
+    rng = np.random.default_rng(0)
+    # Uniform background across 10-230 ms so every rung has comparable support.
+    background = rng.uniform(10.0, 230.0, size=background_per_window * 220)
+    rung = 2 * _RUNG_MS
+    surplus = rng.uniform(rung - 1.0, rung + 1.0, size=surplus_at_rung2)
+    return np.concatenate([background, surplus]) / 1000.0
+
+
+def test_thin_seam_ladder_removes_injected_surplus():
+    """An injected pile-up on a rung is removed, leaving the background intact."""
+    intervals = _intervals_with_ladder(background_per_window=6, surplus_at_rung2=400)
+    keep = thin_seam_ladder_surplus(
+        intervals, stride_samples=_STRIDE_SAMPLES, sampling_rate=_SAMPLING_RATE,
+        half_width_ms=1.5, max_rung=6, seed=0)
+    removed = int((~keep).sum())
+    # The injected surplus dominates what is dropped; the estimate is a count
+    # against a sampled background, so it is not expected to be exact.
+    assert 300 < removed < 500
+    assert keep.sum() == intervals.size - removed
+
+
+def test_thin_seam_ladder_is_a_noop_without_a_ladder():
+    """A distribution with no rung excess loses at most a negligible fraction."""
+    rng = np.random.default_rng(1)
+    intervals = rng.uniform(10.0, 230.0, size=20000) / 1000.0
+    keep = thin_seam_ladder_surplus(
+        intervals, stride_samples=_STRIDE_SAMPLES, sampling_rate=_SAMPLING_RATE,
+        half_width_ms=1.5, max_rung=6, seed=0)
+    assert (~keep).mean() < 0.01
+
+
+def test_thin_seam_ladder_keeps_mask_shape_and_dtype():
+    """The return is a boolean mask aligned to the input array."""
+    intervals = _intervals_with_ladder(background_per_window=3, surplus_at_rung2=50)
+    keep = thin_seam_ladder_surplus(
+        intervals, stride_samples=_STRIDE_SAMPLES, sampling_rate=_SAMPLING_RATE,
+        half_width_ms=1.5, max_rung=6, seed=3)
+    assert keep.dtype == bool
+    assert keep.shape == intervals.shape

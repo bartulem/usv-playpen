@@ -540,6 +540,12 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --yolo-iou                  YOLO NMS IoU (raise to keep stacked calls).
       --method                    Mask-generation method; only 'boxprompt' (SAM2 box-prompt path) is supported.
       --yolo-imgsz                YOLO detector input image size in px (native spectrogram size is 128).
+      --deterministic / --no-deterministic
+                                  Disable cuDNN's autotuner so masks reproduce across
+                                  processes (default: enabled). With it on, algorithm
+                                  selection depends on the GPU state at process start and
+                                  borderline faint calls fall on either side of the
+                                  detector's confidence gate.
       --mask-cmap                 Matplotlib colormap used to render each spectrogram to RGB before SAM2 prompting.
       --duration-min              Minimum USV duration (time bins) to segment; shorter/placeholder (duration==0) rows are skipped.
       --batch-size                Number of spectrograms processed per batch before a memory-cleanup pass.
@@ -916,9 +922,15 @@ The command writes a single self-describing HDF5 archive ``usv_interval_analysis
       --bootstrap-lrt-n-subsample Subsample size for both observed and
                                   bootstrap fits. Default 15000.
       --bootstrap-lrt-alpha       Significance threshold for the step-up
-                                  rule. Default 0.05.
-      --bootstrap-lrt-bonferroni  Divide alpha by the number of pairwise
-                                  tests before applying the step-up rule.
+                                  rule. Default 0.01.
+      --bootstrap-lrt-bonferroni / --no-bootstrap-lrt-bonferroni
+                                  Divide alpha by the number of pairwise
+                                  tests before applying the step-up rule
+                                  (default: enabled). With the shipped
+                                  K range there are four comparisons per
+                                  sex and interval type, so the effective
+                                  per-comparison threshold is 0.01 / 4 =
+                                  0.0025.
 
 ``generate-rm``
 ``generate-rm`` is the command-line interface for calculating per-cluster neuronal tuning curves (behavioral + vocal in one pass). Behavioral tuning runs when the session's ``*_behavioral_features.csv`` exists; vocal tuning runs when the ``*_usv_summary.csv`` and synced spike data exist. Sessions missing both inputs return cleanly without producing any tuning files.
