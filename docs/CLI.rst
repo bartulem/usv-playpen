@@ -380,8 +380,6 @@ Process
 
     usage: das-summarize [-h] --root-directory PATH
                          [--filter-putative-noise | --no-filter-putative-noise]
-                         [--peak-min INTEGER] [--valley-frac FLOAT]
-                         [--coverage-bin-ms FLOAT]
                          [--win-len INTEGER] [--freq-cutoff INTEGER]
                          [--corr-cutoff FLOAT] [--coherence-cutoff FLOAT]
                          [--coherence-channel-count INTEGER]
@@ -402,9 +400,6 @@ Process
       -h, --help            Show this help message and exit.
       --filter-putative-noise / --no-filter-putative-noise
                             Run the Phase-4 amplitude/spectrogram noise rejection (default: enabled); pass --no-filter-putative-noise to keep every merged detection.
-      --peak-min            Watershed merge: minimum distinct channels for a coverage peak to count as a call.
-      --valley-frac         Watershed merge: relative valley depth (0-1) that both splits at a gap and trims each USV edge.
-      --coverage-bin-ms     Watershed merge: coverage-grid bin width in milliseconds (temporal resolution).
       --win-len             Window length of the signal.
       --freq-cutoff         Low frequency cutoff (Hz).
       --corr-cutoff         Absolute detected-channel correlation cutoff (drop below).

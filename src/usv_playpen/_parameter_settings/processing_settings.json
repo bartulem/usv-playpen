@@ -206,9 +206,6 @@
       },
       "summarize_das_findings": {
         "filter_putative_noise_bool": true,
-        "peak_min": 8,
-        "valley_frac": 0.5,
-        "coverage_bin_ms": 1.0,
         "len_win_signal": 512,
         "low_freq_cutoff": 30000,
         "noise_corr_cutoff_min": 0.3,

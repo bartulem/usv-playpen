@@ -1072,7 +1072,37 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 
 Curate DAS outputs
 ~~~~~~~~~~~~~~~~~~
-As explained above, DAS is run on every channel separately, such that a need arises to systematize different channel detections in one singular table. This code identifies the same detections across different channels and creates a single CSV file with the start and end times of each detected vocalization. Detections are combined by a coverage-watershed merge: at every moment the number of channels agreeing that a call is present forms a coverage profile, each peak of which becomes one USV and the valleys between peaks set the boundaries. Because every channel contributes at most one vote, a single spuriously long or jittery detection on one channel cannot fuse distinct calls into one, while quiet calls seen on only a few channels are still preserved (Phase-4 noise rejection, below, decides which detections to keep). Microphones recorded as hardware-compromised for a session -- the ``excluded_channels`` list under ``Equipment -> audio_Avisoft`` in the session's ``*_metadata.yaml`` -- are skipped outright: their annotation files never enter the merge. The field is absent on healthy sessions (no exclusions).
+As explained above, DAS is run on every channel separately, such that a need arises to systematize different channel detections in one singular table. This code identifies the same detections across different channels and creates a single CSV file with the start and end times of each detected vocalization. Detections are combined by a greedy interval union: segments are sorted by start time and any two that overlap are merged, transitively, so one USV spans the full extent of every per-channel detection that belongs to it. Boundaries therefore follow the outermost channel that heard the call, which keeps the faint onsets and offsets registered by only the nearest few microphones (Phase-4 noise rejection, below, decides which detections to keep). A coverage-watershed merge was used between August 2026 and this release; it trimmed each USV to the span where a fixed fraction of its peak channel count still agreed, which clipped exactly those faint edges, and it has been reverted. Microphones recorded as hardware-compromised for a session -- the ``excluded_channels`` list under ``Equipment -> audio_Avisoft`` in the session's ``*_metadata.yaml`` -- are skipped outright: their annotation files never enter the merge. The field is absent on healthy sessions (no exclusions).
+
+.. note::
+
+   **Excluding a compromised microphone (**\ ``excluded_channels``\ **).** A
+   microphone that was broken, unplugged or noisy for a given recording is
+   excluded **per session, from that session's metadata** -- not from
+   ``processing_settings.json``, which has no exclusion key. Add the channel
+   names by hand under ``Equipment -> audio_Avisoft`` in the session's
+   ``*_metadata.yaml``:
+
+   .. code-block:: yaml
+
+        Equipment:
+          audio_Avisoft:
+            excluded_channels:
+              - m_ch02
+              - m_ch08
+              - s_ch11
+
+   There is deliberately no GUI field or CLI flag for this: an exclusion
+   describes the *recording*, not the analysis run, so it travels with the
+   session rather than with the settings of whoever processes it. Two steps
+   honour the list -- ``das-summarize`` (the excluded channels' annotation
+   files never enter the merge) and
+   ``generate-usv-spectrograms`` (they are dropped from the variance-weighted
+   average) -- so a channel excluded after those steps have run only takes
+   effect when they are re-run. Names must be ``m_chNN`` / ``s_chNN`` with
+   ``NN`` in ``01``-``12``; a malformed entry fails loud rather than being
+   silently ignored. The field is absent in healthy sessions, which simply
+   means nothing is excluded.
 
 To run, you need to list the root directories of interest, select *Curate DAS outputs*, click *Next* and then *Process*:
 
@@ -1145,9 +1175,6 @@ The *usv_signal_correlation_histogram.svg* file contains a histogram of [1] mean
 The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section not modifiable in the GUI, but it can be modified manually:
 
 * **filter_putative_noise_bool** : whether to run the Phase-4 amplitude/spectrogram noise rejection; when ``false``, every merged detection is kept and the summary CSV is written as-is (peak/mean amplitude channels left at 0)
-* **peak_min** : coverage-watershed merge — minimum number of distinct channels for a coverage peak to count as a call (gates splitting; quiet few-channel calls are kept whole)
-* **valley_frac** : coverage-watershed merge — relative valley depth (0-1) that both splits a gap between two calls and trims each USV's edges
-* **coverage_bin_ms** : coverage-watershed merge — coverage-grid bin width in milliseconds (temporal resolution / implicit smoothing)
 * **len_win_signal** : STFT window length
 * **low_freq_cutoff** : frequency cutoff for filtering (in Hz)
 * **noise_corr_cutoff_min** : absolute cutoff on the cross-channel spectral correlation across a candidate's DAS-detected channels; a multi-channel candidate below it is dropped. Absolute rather than session-relative, because percentile rules overshoot on clean candidate pools and undershoot on noise-dominated ones (empirically, cohort-wide, noise sits at correlation ~0.25 and verified real calls at >=0.30)
@@ -1157,7 +1184,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 * **seam_repair_legacy_stride_samples** : window-stitching stride (in samples) of the legacy non-overlapping DAS model whose seam artifact is checked for (``8128`` for the lab's 2024-03-25 model at 250 kHz)
 * **seam_repair_max_rung** : highest stride multiple tested for the seam-ladder fingerprint
 * **seam_repair_ladder_tolerance_samples** : maximum deviation (in samples) from the exact ``k * stride + 1`` ladder fingerprint for a raw-annotation gap to count as seam-snapped
-* **seam_repair_width_tolerance_below_ms** : merged-gap width gate reach below each stride multiple (in ms); merged gaps sit up to the watershed trim below the exact raw ladder values, hence the asymmetric window
+* **seam_repair_width_tolerance_below_ms** : merged-gap width gate reach below each stride multiple (in ms); merged gaps can sit slightly off the exact raw ladder values because the union takes the outermost edge across channels
 * **seam_repair_width_tolerance_above_ms** : merged-gap width gate reach above each stride multiple (in ms)
 * **seam_repair_raw_stop_tolerance_s** : maximum distance (in s) between a merged pair's stop and a raw ladder-gap stop for the pair to count as corroborated
 * **seam_repair_snippet_margin_s** : audio margin (in s) excised around each flagged pair for re-detection
@@ -1167,9 +1194,6 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 
      "summarize_das_findings": {
         "filter_putative_noise_bool": true,
-        "peak_min": 8,
-        "valley_frac": 0.5,
-        "coverage_bin_ms": 1.0,
         "len_win_signal": 512,
         "low_freq_cutoff": 30000,
         "noise_corr_cutoff_min": 0.3,

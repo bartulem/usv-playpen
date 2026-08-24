@@ -30,7 +30,6 @@ from usv_playpen.processing.das_inference import (
     _DAS_ANNOTATION_FILE_RE,
     _ladder_gap_leading_stops,
     _repaired_facing_edges,
-    _watershed_merge_segments,
 )
 from usv_playpen.processing.assign_vocalizations import Vocalocator
 from usv_playpen.processing.assign_vocalizations_utils import are_points_in_conf_set
@@ -721,87 +720,106 @@ def test_summarize_das_findings_missing_mmap_reports_real_cause(
 
 
 # ===========================================================================
-# _watershed_merge_segments — coverage-watershed DAS merge
+# Phase 3 merge — greedy interval union
 # ===========================================================================
 
 
-def _channel_segments(calls_by_channel: dict) -> list:
-    """Flatten a ``{channel: [(start, stop), ...]}`` mapping into the
-    ``(start, stop, channel)`` tuple list ``_watershed_merge_segments`` expects."""
-    return [(start, stop, ch)
-            for ch, intervals in calls_by_channel.items()
-            for (start, stop) in intervals]
+def _write_channel_annotations(annot_dir, channel: str, intervals: list) -> None:
+    """Write one channel's DAS annotation CSV from ``(start, stop)`` pairs."""
+    pls.DataFrame([{"start_seconds": start, "stop_seconds": stop, "name": "call"}
+                   for start, stop in intervals]).write_csv(
+        annot_dir / f"m_20260101_{channel}_annotations.csv")
 
 
-def test_watershed_merge_empty_returns_empty():
-    """No segments in, no USVs out (the early-return guard)."""
-    assert _watershed_merge_segments([], peak_min=8, valley_frac=0.5, coverage_bin_ms=1.0) == []
+def _run_merge_only(tmp_path, mocker, processing_settings, channel_intervals: dict):
+    """Run summarize_das_findings with Phase-4 rejection off and return the summary.
+
+    Only the merge is under test, so the noise filter is disabled and the audio
+    memmap is silent; what comes back is exactly what Phase 3 produced.
+    """
+    annot_dir = tmp_path / "audio" / "das_annotations"
+    annot_dir.mkdir(parents=True)
+    for channel, intervals in channel_intervals.items():
+        _write_channel_annotations(annot_dir, channel, intervals)
+
+    sampling_rate, n_audio_channels = 250000, 24
+    hpss_dir = tmp_path / "audio" / "hpss_filtered"
+    hpss_dir.mkdir(parents=True)
+    n_samples = int(sampling_rate * 5)
+    np.zeros((n_samples, n_audio_channels), dtype=np.int16).tofile(
+        hpss_dir / f"sess_{sampling_rate}_{n_samples}_{n_audio_channels}_int16.mmap")
+
+    processing_settings["usv_inference"]["FindMouseVocalizations"][
+        "summarize_das_findings"]["filter_putative_noise_bool"] = False
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
+                 return_value=(None, None))
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
+
+    FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_kw: None,
+    ).summarize_das_findings()
+
+    summaries = list((tmp_path / "audio").glob("*_usv_summary.csv"))
+    assert len(summaries) == 1
+    return pls.read_csv(str(summaries[0]))
 
 
-def test_watershed_merge_single_call_is_one_usv():
-    """A single call detected on many channels is one USV, bounded to the call
-    and carrying every detecting channel."""
-    segs = _channel_segments({ch: [(0.10, 0.15)] for ch in range(10)})
-    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
-    assert len(merged) == 1
-    usv = merged[0]
-    assert usv["start"] == pytest.approx(0.10, abs=2e-3)
-    assert usv["stop"] == pytest.approx(0.15, abs=2e-3)
-    assert usv["chs_detected"] == set(range(10))
+def test_merge_single_call_spans_the_outermost_channel(processing_settings, tmp_path, mocker):
+    """One call heard on several channels becomes one USV spanning the union of
+    their detections, so the channel that heard the faint edges sets the bounds."""
+    df = _run_merge_only(tmp_path, mocker, processing_settings, {
+        "ch01": [(0.100, 0.150)],
+        "ch02": [(0.104, 0.146)],
+        "ch03": [(0.098, 0.152)],
+    })
+    assert df.height == 1
+    assert df["start"][0] == pytest.approx(0.098)
+    assert df["stop"][0] == pytest.approx(0.152)
+    assert df["chs_count"][0] == 3
 
 
-def test_watershed_merge_two_separated_calls_are_two_usvs():
-    """Two temporally separated calls (a true silent gap between them) are two
-    distinct USVs."""
-    segs = _channel_segments({ch: [(0.10, 0.15), (0.50, 0.55)] for ch in range(10)})
-    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
-    assert len(merged) == 2
+def test_merge_separated_calls_stay_separate(processing_settings, tmp_path, mocker):
+    """Calls with real silence between them are never joined."""
+    df = _run_merge_only(tmp_path, mocker, processing_settings, {
+        "ch01": [(0.10, 0.15), (0.50, 0.55)],
+        "ch02": [(0.10, 0.15), (0.50, 0.55)],
+    })
+    assert df.height == 2
+    assert df["start"].to_list() == pytest.approx([0.10, 0.50])
 
 
-def test_watershed_merge_long_bridge_segment_does_not_merge_calls():
-    """The signature failure of the old greedy merge: two real calls plus one
-    channel whose single long segment spans the gap between them. Greedy would
-    chain them into one giant USV; the watershed keeps them separate because
-    that lone bridging channel is worth only one vote and cannot fill the
-    multi-channel valley."""
-    segs = _channel_segments({ch: [(0.10, 0.15), (0.30, 0.35)] for ch in range(10)})
-    segs.append((0.10, 0.35, 99))  # one channel over-merges the two calls
-    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
-    assert len(merged) == 2
-    # neither USV spans the whole 0.10-0.35 bridge
-    assert all((usv["stop"] - usv["start"]) < 0.20 for usv in merged)
+def test_merge_bridging_segment_joins_calls(processing_settings, tmp_path, mocker):
+    """A single channel whose detection spans the gap joins the calls either side.
+
+    This is the accepted cost of the union: transitive overlap means one long
+    detection fuses its neighbours. The coverage-watershed merge that replaced it
+    avoided this but clipped faint call edges to do so, which is the worse error,
+    so the behaviour is pinned here deliberately rather than guarded against.
+    """
+    df = _run_merge_only(tmp_path, mocker, processing_settings, {
+        "ch01": [(0.10, 0.15), (0.30, 0.35)],
+        "ch02": [(0.10, 0.15), (0.30, 0.35)],
+        "ch03": [(0.10, 0.35)],
+    })
+    assert df.height == 1
+    assert df["start"][0] == pytest.approx(0.10)
+    assert df["stop"][0] == pytest.approx(0.35)
 
 
-def test_watershed_merge_partial_merge_splits_on_relative_valley():
-    """Three real calls A/B/C, cleanly separated on ten channels, but four
-    additional channels over-merge B and C into one segment. The B-C gap
-    therefore sits at four channels while B and C peak at fourteen: a relative
-    valley the watershed splits (an absolute floor could not)."""
-    segs = _channel_segments({ch: [(0.10, 0.15), (0.20, 0.25), (0.30, 0.35)] for ch in range(10)})
-    segs += _channel_segments({100 + k: [(0.20, 0.35)] for k in range(4)})
-    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
-    assert len(merged) == 3
-
-
-def test_watershed_merge_quiet_few_channel_call_is_kept_whole():
-    """A quiet call detected on fewer than peak_min channels never reaches a
-    significant peak, so it is neither dropped nor shattered -- it is kept as a
-    single USV (Phase 4 still applies its own noise rejection downstream)."""
-    segs = _channel_segments({ch: [(0.10, 0.15)] for ch in range(3)})
-    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
-    assert len(merged) == 1
-
-
-def test_watershed_merge_output_is_sorted_and_schema_complete():
-    """Every merged dict carries the keys the summary writer / Phase 4 expect,
-    and the list is ordered by start time regardless of input order."""
-    segs = _channel_segments({ch: [(0.50, 0.55), (0.10, 0.15)] for ch in range(10)})
-    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
-    assert [u["start"] for u in merged] == sorted(u["start"] for u in merged)
-    for usv in merged:
-        assert set(usv) >= {"start", "stop", "chs_detected", "peak_amp_ch", "mean_amp_ch"}
-        assert usv["peak_amp_ch"] == 0.0
-        assert usv["mean_amp_ch"] == 0.0
+def test_merge_output_is_sorted_and_schema_complete(processing_settings, tmp_path, mocker):
+    """Rows come out ordered by start time and carry the full summary schema."""
+    df = _run_merge_only(tmp_path, mocker, processing_settings, {
+        "ch01": [(0.50, 0.55), (0.10, 0.15)],
+        "ch02": [(0.50, 0.55), (0.10, 0.15)],
+    })
+    assert df["start"].to_list() == sorted(df["start"].to_list())
+    assert set(df.columns) >= {"usv_id", "start", "stop", "duration",
+                               "peak_amp_ch", "mean_amp_ch", "chs_count",
+                               "chs_detected", "emitter"}
+    assert df["peak_amp_ch"].to_list() == [0.0, 0.0]
 
 
 def test_summarize_das_findings_skips_metadata_excluded_channel(
