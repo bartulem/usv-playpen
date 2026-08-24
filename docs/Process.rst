@@ -1468,11 +1468,11 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains th
 * **yolo_iou** : YOLO NMS IoU (raise to keep stacked calls)
 * **yolo_imgsz** : YOLO inference image size (px)
 * **mask_cmap** : colormap used to render each spectrogram to RGB before detection
-* **duration_min** : minimum USV duration (time bins) to segment; shorter rows are skipped
+* **duration_min** : minimum USV duration to segment, in SPECTROGRAM TIME BINS (not milliseconds); shorter rows are skipped without any detection attempt and end up with ``mask_number`` 0. At the shipped spectrogram settings the grid runs at ~0.5 bins/ms, so a value of 10 silently excluded every USV under ~20 ms — well above DAS's own 15 ms ``segment_minlen``, so genuine calls were discarded. Set to 5 (~10 ms)
 * **batch_size** : number of spectrograms per SAM2 batch
 * **multimask_output** : whether SAM2 returns multiple candidate masks per box (the best is kept)
-* **iou_floor** : minimum SAM2 predicted-IoU quality for a mask
-* **drop_below_iou** : if true, drop masks below ``iou_floor`` (else keep)
+* **iou_floor** : SAM2 self-predicted-IoU threshold used by ``drop_below_iou``. Set to 0.30 (not 0.70): the mask population is strongly good-quality (median 0.925) and its low tail is continuous, so only the 0-0.30 band is unambiguously broken
+* **drop_below_iou** : if true, drop masks whose SAM2 self-predicted IoU is below ``iou_floor`` (else keep them). Enabled, but paired with a low ``iou_floor``: measured over 1,209 masks the predicted-IoU distribution has median 0.925 with no gap in its low tail, so the original 0.70 floor cut through a continuum -- 28% of what it removed sat within 0.05 of the line. A 0.30 floor removes only the ~18% of low-IoU masks SAM2 rates as outright wrong and leaves the grey zone intact
 * **split_disconnected** : split a mask with disconnected components into separate instances
 * **max_iters** : maximum SAM2 prompt-refinement iterations per box
 * **merge_instances** : merge overlapping per-box mask instances
@@ -1495,11 +1495,11 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains th
         "yolo_iou": 0.7,
         "yolo_imgsz": 128,
         "mask_cmap": "viridis",
-        "duration_min": 10,
+        "duration_min": 5,
         "batch_size": 12,
         "multimask_output": true,
-        "iou_floor": 0.7,
-        "drop_below_iou": false,
+        "iou_floor": 0.3,
+        "drop_below_iou": true,
         "split_disconnected": true,
         "max_iters": 1,
         "merge_instances": true,

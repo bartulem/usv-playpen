@@ -513,6 +513,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
                             [--sam2-model-path TEXT] [--yolo-weights TEXT]
                             [--yolo-conf FLOAT] [--yolo-iou FLOAT]
                             [--method TEXT] [--yolo-imgsz INTEGER]
+                            [--deterministic | --no-deterministic]
                             [--mask-cmap TEXT] [--duration-min INTEGER]
                             [--batch-size INTEGER]
                             [--multimask-output | --no-multimask-output]

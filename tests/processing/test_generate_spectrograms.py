@@ -14,6 +14,7 @@ from __future__ import annotations
 import h5py
 import numpy as np
 import polars as pls
+import pytest
 import yaml
 
 from usv_playpen.processing.generate_spectrograms import (
@@ -165,3 +166,77 @@ def test_generate_session_spectrograms_drops_metadata_excluded_channels(tmp_path
         segment = call.kwargs["audio_segment_channels"]
         # 4 fixture channels minus the excluded m_ch02 (column 1)
         assert segment.shape[1] == 3
+
+
+def test_generate_session_spectrograms_row_subset_patches_only_those_rows(tmp_path, mocker):
+    """Patch mode recomputes exactly the requested rows in place: the patched row
+    matches a full regeneration from the new boundaries, every other row stays
+    byte-identical, and the mask group written by generate_masks survives (a full
+    pass opens the file with mode 'w' and would drop it)."""
+    root, session_id, n_usv = _build_session(tmp_path)
+    mocker.patch("usv_playpen.processing.generate_spectrograms.smart_wait")
+    settings = {"generate_spectrograms": _SPEC_PARAMS}
+
+    SpectrogramGenerator(root_directory=str(root), input_parameter_dict=settings,
+                         message_output=lambda *_a, **_kw: None).generate_session_spectrograms()
+    h5_path = root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5"
+    with h5py.File(h5_path, "r") as f:
+        before = f[f"spectrogram/{session_id}"]["spectrograms"][:]
+    # a mask group must survive the patch (it does not survive a full pass)
+    with h5py.File(h5_path, "a") as f:
+        grp = f.create_group(f"mask/{session_id}")
+        grp.create_dataset("segmentations", data=np.ones((2, 128, 128), dtype=bool))
+        grp.create_dataset("spectrogram_index", data=np.array([0, 2], dtype=np.int64))
+
+    # extend USV 1's stop (the seam-repair signature) and patch only that row
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    df = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+    stops = df["stop"].to_numpy().copy()
+    stops[1] += 0.01
+    df = df.with_columns(pls.Series(name="stop", values=stops))
+    df.write_csv(summary_path)
+
+    SpectrogramGenerator(root_directory=str(root), input_parameter_dict=settings,
+                         message_output=lambda *_a, **_kw: None).generate_session_spectrograms(row_subset={1})
+
+    with h5py.File(h5_path, "r") as f:
+        patched = f[f"spectrogram/{session_id}"]["spectrograms"][:]
+        assert f"mask/{session_id}" in f
+        assert f[f"mask/{session_id}"]["segmentations"].shape == (2, 128, 128)
+        assert f.attrs["total_spectrograms"] == n_usv
+    assert np.array_equal(patched[0], before[0])
+    assert np.array_equal(patched[2], before[2])
+    assert not np.array_equal(patched[1], before[1])
+
+    # the patched row equals what a full regeneration produces
+    SpectrogramGenerator(root_directory=str(root), input_parameter_dict=settings,
+                         message_output=lambda *_a, **_kw: None).generate_session_spectrograms()
+    with h5py.File(h5_path, "r") as f:
+        full = f[f"spectrogram/{session_id}"]["spectrograms"][:]
+    assert np.array_equal(patched, full)
+
+
+def test_generate_session_spectrograms_row_subset_rejects_bad_input(tmp_path, mocker):
+    """An out-of-range row, a missing file, and a stale row count all fail loud
+    rather than silently misaligning the 1:1 row mapping."""
+    root, session_id, n_usv = _build_session(tmp_path)
+    mocker.patch("usv_playpen.processing.generate_spectrograms.smart_wait")
+    settings = {"generate_spectrograms": _SPEC_PARAMS}
+    generator = SpectrogramGenerator(root_directory=str(root), input_parameter_dict=settings,
+                                     message_output=lambda *_a, **_kw: None)
+
+    # no file yet -> patching is impossible
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        generator.generate_session_spectrograms(row_subset={0})
+
+    generator.generate_session_spectrograms()
+
+    with pytest.raises(ValueError, match="out-of-range"):
+        generator.generate_session_spectrograms(row_subset={n_usv})
+
+    # summary grew since the file was written -> refuse to patch
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    df = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+    pls.concat([df, df[-1:]]).write_csv(summary_path)
+    with pytest.raises(ValueError, match="do not match the USV summary"):
+        generator.generate_session_spectrograms(row_subset={0})
