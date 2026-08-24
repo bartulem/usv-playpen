@@ -386,9 +386,17 @@ class NaturalisticUsvRepositoryBuilder:
                     recursive=True,
                     label="USV summary CSV",
                 )
+                # Session-keyed, NOT "*_spectrograms.h5": a session can hold
+                # other files ending in that suffix (e.g. a sonic-band
+                # "<session>_3_30khz_spectrograms.h5"), which a wildcard may
+                # select ahead of the real one. The key is taken from the
+                # summary CSV just resolved rather than from the directory name,
+                # because this builder is given arbitrary root directories and
+                # reads the session id out of the H5 itself further down.
+                session_key = usv_summary_loc.name[: -len("_usv_summary.csv")]
                 h5_loc = first_match_or_raise(
                     root=root / "audio" / "spectrograms",
-                    pattern="*_spectrograms.h5",
+                    pattern=f"{session_key}_spectrograms.h5",
                     label="per-session spectrogram H5",
                 )
 

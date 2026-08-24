@@ -49,6 +49,7 @@ def _base_settings(tmp_path):
             "yolo_conf": 0.25,
             "yolo_iou": 0.7,
             "yolo_imgsz": 128,
+            "deterministic": True,
             "mask_cmap": "viridis",
             "duration_min": 10,
             "batch_size": 12,
@@ -332,3 +333,83 @@ def test_generate_session_masks_rejects_non_boxprompt(tmp_path):
             input_parameter_dict=settings,
             message_output=lambda *_: None,
         ).generate_session_masks()
+
+
+def test_generate_session_masks_row_subset_remaps_and_merges(tmp_path, monkeypatch):
+    """Patch mode: the kernel sees only the subset rows (so its keys are sub-stack
+    positions, remapped back to native usv_summary rows), masks of rows outside the
+    subset are carried over untouched, and the merged arrays stay index-sorted --
+    indistinguishable in layout from a full re-run."""
+    durations = [40, 60, 25, 50]
+    root = _make_session_h5(tmp_path, durations)
+    h5_path = root / "audio" / "spectrograms" / f"{_SESSION_ID}_spectrograms.h5"
+
+    # Existing masks for every row; rows 0 and 3 must survive the patch verbatim.
+    keep_row0 = np.zeros((_N_FREQ, _N_TIME), dtype=bool)
+    keep_row0[5, :40] = True
+    keep_row3 = np.zeros((_N_FREQ, _N_TIME), dtype=bool)
+    keep_row3[9, :50] = True
+    stale_row1 = np.ones((_N_FREQ, _N_TIME), dtype=bool)
+    with h5py.File(h5_path, "a") as h5_file:
+        grp = h5_file.create_group(f"mask/{_SESSION_ID}")
+        grp.create_dataset("segmentations", data=np.stack([keep_row0, stale_row1, stale_row1, keep_row3]))
+        grp.create_dataset("spectrogram_index", data=np.array([0, 1, 2, 3], dtype=np.int64))
+
+    # Kernel receives the 2-row sub-stack for rows {1, 2}: its keys are 0 and 1.
+    canned = {0: [{"segmentation": _seg(60, rows=(30,))}], 1: [{"segmentation": _seg(25, rows=(40,))}]}
+    _install_fake_kernels(monkeypatch, canned)
+
+    MaskGenerator(
+        root_directory=str(root),
+        input_parameter_dict=_base_settings(tmp_path),
+        message_output=lambda *_: None,
+    ).generate_session_masks(row_subset={1, 2})
+
+    with h5py.File(h5_path, "r") as h5_file:
+        segmentations = h5_file[f"mask/{_SESSION_ID}"]["segmentations"][:]
+        spectrogram_index = h5_file[f"mask/{_SESSION_ID}"]["spectrogram_index"][:]
+        assert int(h5_file[f"mask/{_SESSION_ID}"].attrs["total_masks"]) == 4
+
+    # sub-stack positions 0/1 mapped back to native rows 1/2, order restored
+    assert spectrogram_index.tolist() == [0, 1, 2, 3]
+    # untouched rows keep their exact masks
+    assert np.array_equal(segmentations[0], keep_row0)
+    assert np.array_equal(segmentations[3], keep_row3)
+    # patched rows carry the new masks, not the stale all-True ones
+    assert not segmentations[1].all()
+    assert not segmentations[2].all()
+    assert segmentations[1][:, 60:].sum() == 0
+    assert segmentations[2][:, 25:].sum() == 0
+
+
+def test_generate_session_masks_row_subset_without_existing_group(tmp_path, monkeypatch):
+    """Patching a session that has no mask group yet writes just the subset masks
+    rather than failing on the missing group."""
+    durations = [40, 60]
+    root = _make_session_h5(tmp_path, durations)
+    canned = {0: [{"segmentation": _seg(60)}]}
+    _install_fake_kernels(monkeypatch, canned)
+
+    MaskGenerator(
+        root_directory=str(root),
+        input_parameter_dict=_base_settings(tmp_path),
+        message_output=lambda *_: None,
+    ).generate_session_masks(row_subset={1})
+
+    h5_path = root / "audio" / "spectrograms" / f"{_SESSION_ID}_spectrograms.h5"
+    with h5py.File(h5_path, "r") as h5_file:
+        assert h5_file[f"mask/{_SESSION_ID}"]["spectrogram_index"][:].tolist() == [1]
+
+
+def test_generate_session_masks_row_subset_rejects_out_of_range(tmp_path, monkeypatch):
+    """An out-of-range subset row fails loud instead of silently segmenting nothing."""
+    durations = [40, 60]
+    root = _make_session_h5(tmp_path, durations)
+    _install_fake_kernels(monkeypatch, {})
+
+    with pytest.raises(ValueError, match="out-of-range"):
+        MaskGenerator(
+            root_directory=str(root),
+            input_parameter_dict=_base_settings(tmp_path),
+            message_output=lambda *_: None,
+        ).generate_session_masks(row_subset={5})

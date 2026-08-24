@@ -32,7 +32,13 @@ dependencies = [
     "cmasher",
     "ffmpeg-binaries>=1.0.1",
     "h5py",
-    "hydra-core",
+    # 2026-08-22 -- Dependabot #79 (hydra.utils.instantiate executes the callable named by
+    # a config's _target_, so untrusted config becomes arbitrary code execution). Reached
+    # here only through sam-2, which instantiates its own packaged model config; no repo
+    # code calls instantiate() and no config is externally supplied, so this is a floor
+    # for defense in depth rather than a live exposure. 1.3.4 adds a dangerous-target
+    # blacklist; the allowlist model lands in 1.4.
+    "hydra-core>=1.3.4",
     "imgstore",
     "jax",
     "joblib",
@@ -133,6 +139,7 @@ generate-usv-spectrograms = "usv_playpen.processing.generate_spectrograms:genera
 generate-usv-masks = "usv_playpen.processing.generate_masks:generate_masks_cli"
 generate-usv-acoustic-features = "usv_playpen.processing.compute_usv_acoustic_features:compute_usv_acoustic_features_cli"
 build-qlvm-training-set = "usv_playpen.processing.build_qlvm_training_set:build_qlvm_training_set_cli"
+consolidate-spectrogram-store = "usv_playpen.processing.consolidate_spectrogram_store:consolidate_spectrogram_store_cli"
 build-naturalistic-usv-repository = "usv_playpen.analyses.build_naturalistic_usv_repository:build_naturalistic_usv_repository_cli"
 train-qlvm = "usv_playpen.processing.train_qlvm:train_qlvm_cli"
 export-yolo-dataset = "usv_playpen.processing.export_yolo_dataset:export_yolo_dataset_cli"

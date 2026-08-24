@@ -14,7 +14,7 @@ lookup into two fixed reference watershed grids** — a FINE grid and a COARSE g
 across every session embedded into the same torus.
 
 Columns written into ``usv_summary.csv`` (the ones the visualizations/tuning
-code already consume): ``qlvm_dim1``, ``qlvm_dim2`` (torus coordinates),
+code already consume): ``qlvm1``, ``qlvm2`` (torus coordinates),
 ``qlvm_category`` (FINE cluster label, e.g. 12 classes) and ``qlvm_supercategory``
 (COARSE cluster label, e.g. 7 classes; 0 = background/noise).
 
@@ -43,7 +43,7 @@ from ..time_utils import is_gui_context, smart_wait
 from .qlvm_model import embed_data, gen_fib_basis, gen_korobov_basis, roberts_sequence
 
 # QLVM columns written into the USV summary CSV (consumed downstream).
-QLVM_COLUMNS = ("qlvm_dim1", "qlvm_dim2", "qlvm_category", "qlvm_supercategory")
+QLVM_COLUMNS = ("qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory")
 
 
 def load_decoder_params(weights_npz_path: str) -> dict[str, jnp.ndarray]:
@@ -224,9 +224,13 @@ class QLVMLatentInference:
             coarse_grid = coarse_ref['ws_labels_periodic']
 
         root = pathlib.Path(self.root_directory)
+        # Session-keyed, NOT "*_spectrograms.h5": a session can hold other files
+        # ending in that suffix (e.g. a sonic-band
+        # "<session>_3_30khz_spectrograms.h5"), which a wildcard may select
+        # ahead of the real one.
         h5_loc = first_match_or_raise(
             root=root / "audio" / "spectrograms",
-            pattern="*_spectrograms.h5",
+            pattern=f"{root.name}_spectrograms.h5",
             label="per-session spectrogram H5",
         )
         with h5py.File(h5_loc, "r") as h5_file:
@@ -260,8 +264,8 @@ class QLVMLatentInference:
 
         qlvm_df = pls.DataFrame({
             "_usv_row": usv_indices,
-            "qlvm_dim1": coords[:, 0].astype(np.float64),
-            "qlvm_dim2": coords[:, 1].astype(np.float64),
+            "qlvm1": coords[:, 0].astype(np.float64),
+            "qlvm2": coords[:, 1].astype(np.float64),
             "qlvm_category": category.astype(np.int64),
             "qlvm_supercategory": supercategory.astype(np.int64),
         })

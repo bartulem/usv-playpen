@@ -40,11 +40,15 @@ from ._usv_io import (
 from .mixture_model_utils import (
     bootstrap_lrt,
     fit_log_gmm,
+    fit_log_ig_mixture,
     fit_log_t_mixture,
     gmm_boundaries_logspace,
     gmm_cv_neg_loglik,
+    ig_mixture_cv_neg_loglik,
     gmm_icl,
+    ig_mixture_icl,
     report_gmm_stats,
+    report_ig_mixture_stats,
     report_t_mixture_stats,
     select_n_components_step_up_lrt,
     t_mixture_cv_neg_loglik,
@@ -379,8 +383,8 @@ def fit_mixture_model_sweep(
         modes.
     """
 
-    if model_class not in ("gauss", "t"):
-        msg = f"fit_mixture_model_sweep: model_class must be 'gauss' or 't', got {model_class!r}."
+    if model_class not in ("gauss", "t", "ig"):
+        msg = f"fit_mixture_model_sweep: model_class must be 'gauss', 't' or 'ig', got {model_class!r}."
         raise ValueError(
             msg
         )
@@ -399,6 +403,15 @@ def fit_mixture_model_sweep(
         for n_components in n_comps:
             if model_class == "gauss":
                 cv_val = gmm_cv_neg_loglik(
+                    intervals_sec=iui,
+                    n_components=n_components,
+                    seed=random_seed_base,
+                    n_folds=cv_n_folds,
+                    n_init=cv_n_init,
+                    reg_covar=mixture_model_reg_covar,
+                )
+            elif model_class == "ig":
+                cv_val = ig_mixture_cv_neg_loglik(
                     intervals_sec=iui,
                     n_components=n_components,
                     seed=random_seed_base,
@@ -430,6 +443,10 @@ def fit_mixture_model_sweep(
         # per-component degrees of freedom; populated for t-mixtures only,
         # NaN-filled for Gaussian mixtures so the schema is class-agnostic.
         results[f"nu_{i}"] = []
+        # per-component inverse-Gaussian shape; populated for model_class='ig'
+        # only, NaN-filled otherwise. For IG rows, logmean_k = log(mu_k) (log
+        # of the component MEAN) and logsd_k is NaN (an IG has no log-sd).
+        results[f"lambda_{i}"] = []
 
     for i in range(1, max_modes_reported + 1):
         results[f"mode_sec_{i}"] = []
@@ -456,6 +473,15 @@ def fit_mixture_model_sweep(
                     weights = model.weights_.flatten()[model_order]
                     nus = np.full(n_components, np.nan, dtype=float)  # not applicable for gauss
                     icl = gmm_icl(model, log_iui)
+                elif model_class == "ig":
+                    model, model_order = fit_log_ig_mixture(
+                        iui, n_components=n_components, seed=seed,
+                        n_init=mixture_model_n_init, reg_covar=mixture_model_reg_covar,
+                    )
+                    logmeans, lambdas, weights, modes_log, densities = report_ig_mixture_stats(model, model_order)
+                    logsds = np.full(n_components, np.nan, dtype=float)  # no log-sd for IG
+                    nus = np.full(n_components, np.nan, dtype=float)     # not applicable for IG
+                    icl = ig_mixture_icl(model, log_iui)
                 else:  # t-mixture
                     model, model_order = fit_log_t_mixture(
                         iui, n_components=n_components, seed=seed,
@@ -489,12 +515,16 @@ def fit_mixture_model_sweep(
                     results[f"median_sec_{k+1}"].append(float(np.exp(logmeans[k])))
                     results[f"weight_{k+1}"].append(float(weights[k]))
                     results[f"nu_{k+1}"].append(float(nus[k]))
+                    results[f"lambda_{k+1}"].append(
+                        float(lambdas[k]) if model_class == "ig" else np.nan
+                    )
                 for k in range(n_components, n_components_max):
                     results[f"logmean_{k+1}"].append(np.nan)
                     results[f"logsd_{k+1}"].append(np.nan)
                     results[f"median_sec_{k+1}"].append(np.nan)
                     results[f"weight_{k+1}"].append(np.nan)
                     results[f"nu_{k+1}"].append(np.nan)
+                    results[f"lambda_{k+1}"].append(np.nan)
 
                 # mixture modes (Gaussian) or per-component peaks (t), kept in
                 # ascending-location order; first max_modes_reported recorded
@@ -508,7 +538,7 @@ def fit_mixture_model_sweep(
                     results[f"mode_sec_{k+1}"].append(np.nan)
                     results[f"density_{k+1}"].append(np.nan)
 
-                # adjacent-component boundaries (Gaussian-only; NaN-fill for t-mix)
+                # adjacent-component boundaries (Gaussian-only; NaN-fill for t / ig)
                 if model_class == "gauss":
                     boundaries_log, boundaries_sec = gmm_boundaries_logspace(model, tau=tau)
                     for k in range(n_components - 1):
@@ -639,10 +669,11 @@ class InterUSVIntervalCalculator:
         bootstrap_lrt_B = cfg['bootstrap_lrt_B']
         bootstrap_lrt_n_subsample = cfg['bootstrap_lrt_n_subsample']
         bootstrap_lrt_alpha = cfg['bootstrap_lrt_alpha']
+        bootstrap_lrt_n_jobs = cfg['bootstrap_lrt_n_jobs']
         bootstrap_lrt_bonferroni = cfg['bootstrap_lrt_bonferroni']
 
-        if model_class not in ('gauss', 't'):
-            msg = f"compute_inter_usv_interval_distributions: model_class must be 'gauss' or 't', got {model_class!r}."
+        if model_class not in ('gauss', 't', 'ig'):
+            msg = f"compute_inter_usv_interval_distributions: model_class must be 'gauss', 't' or 'ig', got {model_class!r}."
             raise ValueError(
                 msg
             )
@@ -814,6 +845,7 @@ class InterUSVIntervalCalculator:
                                 n_init_boot=max(1, mixture_model_n_init - 7),
                                 reg_covar=mixture_model_reg_covar,
                                 seed=random_seed_base,
+                                n_jobs=bootstrap_lrt_n_jobs,
                             )
                             pair_results[(K_n, K_a)] = res
                             message(

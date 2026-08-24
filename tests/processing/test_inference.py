@@ -18,6 +18,8 @@ import h5py
 import numpy as np
 import polars as pls
 import pytest
+import soundfile as sf
+import yaml
 
 # Headless matplotlib for the das_inference plotting code path.
 import matplotlib
@@ -26,7 +28,8 @@ matplotlib.use("Agg")
 from usv_playpen.processing.das_inference import (
     FindMouseVocalizations,
     _DAS_ANNOTATION_FILE_RE,
-    _watershed_merge_segments,
+    _ladder_gap_leading_stops,
+    _repaired_facing_edges,
 )
 from usv_playpen.processing.assign_vocalizations import Vocalocator
 from usv_playpen.processing.assign_vocalizations_utils import are_points_in_conf_set
@@ -248,6 +251,76 @@ def _make_vocalocator(tmp_path, processing_settings, **extras):
     )
 
 
+@pytest.mark.parametrize(
+    ("subjects", "expected_codes"),
+    [
+        ((("mouse_A", "male"), ("mouse_B", "female")), [0, 1]),
+        ((("mouse_A", "female"), ("mouse_B", "female")), [1, 1]),
+        ((("mouse_A", "male"), ("mouse_B", "male")), [0, 0]),
+    ],
+)
+def test_prepare_for_vocalocator_animal_id_encodes_subject_sex(
+    tmp_path, processing_settings, mocker, subjects, expected_codes
+):
+    """The dset.h5 animal_id field must carry per-animal SEX codes (0=male,
+    1=female) from the metadata Subjects -- not np.arange, which is only
+    coincidentally right for courtship and wrong for same-sex sessions."""
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    _build_prepare_for_vocalocator_layout(tmp_path, processing_settings, subjects=subjects)
+
+    voc = _make_vocalocator(tmp_path, processing_settings)
+    voc.prepare_for_vocalocator()
+
+    with h5py.File(tmp_path / "audio" / "sound_localization" / "dset.h5", "r") as f:
+        animal_id = f["animal_id"][:]
+    # two USVs in the fixture -> the codes are tiled across calls
+    assert animal_id.shape == (2, 2)
+    for row in animal_id:
+        assert list(row) == expected_codes
+
+
+def test_prepare_for_vocalocator_strips_track_name_whitespace(
+    tmp_path, processing_settings, mocker
+):
+    """Track h5 files in the wild carry stray whitespace in track_names (e.g.
+    b' 158800_0'); the Subjects match must strip it rather than failing loud on
+    a name that is correct modulo padding."""
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    _build_prepare_for_vocalocator_layout(
+        tmp_path, processing_settings, subjects=(("mouse_A", "male"), ("mouse_B", "female"))
+    )
+    track_h5 = tmp_path / "video" / "track" / "20230101_points3d_translated_rotated_metric.h5"
+    with h5py.File(track_h5, "r+") as f:
+        del f["track_names"]
+        f.create_dataset("track_names", data=np.array([b" mouse_A", b"mouse_B "]))
+
+    voc = _make_vocalocator(tmp_path, processing_settings)
+    voc.prepare_for_vocalocator()
+
+    with h5py.File(tmp_path / "audio" / "sound_localization" / "dset.h5", "r") as f:
+        animal_id = f["animal_id"][:]
+    for row in animal_id:
+        assert list(row) == [0, 1]
+
+
+def test_prepare_for_vocalocator_unmatched_track_fails_loud(
+    tmp_path, processing_settings, mocker
+):
+    """A track name with no matching subject_id in the metadata Subjects must
+    raise rather than silently writing wrong sex codes."""
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    _build_prepare_for_vocalocator_layout(tmp_path, processing_settings)
+    # rewrite the metadata with a subject id that matches no track
+    (tmp_path / "sess_metadata.yaml").write_text(yaml.dump(
+        {"Subjects": [{"subject_id": "mouse_A", "sex": "male"},
+                      {"subject_id": "somebody_else", "sex": "female"}]}
+    ))
+
+    voc = _make_vocalocator(tmp_path, processing_settings)
+    with pytest.raises(ValueError, match="mouse_B"):
+        voc.prepare_for_vocalocator()
+
+
 def test_vocalocator_init_rejects_unknown_kwargs():
     """Unknown keyword arguments (typos) raise TypeError at construction instead
     of being silently stored, so a mistyped settings key is caught immediately."""
@@ -450,34 +523,28 @@ def _make_summary_fixture(tmp_path: Path,
     hpss_dir.mkdir(parents=True)
     n_samples = int(sampling_rate * 5)  # 5 seconds of audio
     audio = np.zeros((n_samples, n_audio_channels), dtype=np.int16)
-    # Inject signal at the USV start times so the spectrogram quality check
-    # can compute correlations / variance over real samples.
+    # Inject the SAME waveform on every channel at the USV start times (a
+    # real call reaches all microphones with one shared time-frequency
+    # pattern), so the correlation/coherence gate scores the fixture USVs as
+    # genuine rather than as uncorrelated per-channel noise.
     rng = np.random.default_rng(0)
     for i in range(n_usv):
         s = int((0.1 + i * 0.5) * sampling_rate)
         e = int((0.15 + i * 0.5) * sampling_rate)
-        audio[s:e, :] = rng.integers(-10000, 10000, size=(e - s, n_audio_channels), dtype=np.int16)
+        audio[s:e, :] = rng.integers(-10000, 10000, size=(e - s, 1), dtype=np.int16)
     fname = f"sess_{sampling_rate}_{n_samples}_{n_audio_channels}_int16.mmap"
     audio.tofile(hpss_dir / fname)
     return tmp_path
 
 
-@pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_summarize_das_findings_writes_summary_csv_and_histogram(
     processing_settings, tmp_path, mocker
 ):
     """End-to-end: 2 channels × 3 USVs each, all overlapping → 3 merged USVs.
     The function should write a `<sess>_usv_summary.csv` plus a
-    `<sess>_usv_signal_correlation_histogram.png` (the noise-cutoff figure;
-    no viz settings are passed, so it uses the project-wide `png` default).
-
-    Filterwarning rationale: when every USV is detected on >1 channel, the
-    `signal_variance` array stays all-NaN and `np.nanpercentile` emits a
-    benign all-NaN-slice warning (the NaN flows through to a finite cutoff).
-    The project's pytest config escalates RuntimeWarning to an error; we
-    silence it locally because it's an artifact of the synthetic input mix,
-    not a code bug.
-    """
+    `<sess>_usv_signal_correlation_histogram.png` (the correlation/coherence
+    cutoff figure; no viz settings are passed, so it uses the project-wide
+    `png` default)."""
     _make_summary_fixture(tmp_path, n_usv=3, channels=("ch01", "ch02"))
 
     mocker.patch("usv_playpen.processing.das_inference.smart_wait")
@@ -580,11 +647,11 @@ def test_summarize_das_findings_single_usv_writes_csv_and_counts_it(
     (one row, with peak/mean amplitude channels filled in) and record
     session_usv_count == 1.
 
-    The statistical noise filtering needs a distribution of per-USV descriptors,
-    so it is legitimately skipped for a lone USV; but the previous bare
-    `n_usv > 1` gate also skipped the CSV write and zeroed the count, silently
-    discarding a real detection. This pins the single-USV branch that preserves
-    it. No histogram is produced (there is no distribution to plot)."""
+    The correlation/coherence cutoffs are absolute, so the lone USV is gated
+    exactly like any other candidate (the fixture's correlated waveform passes)
+    rather than being kept or dropped by a special case -- the historic bare
+    `n_usv > 1` gate silently discarded real lone detections. No histogram is
+    produced for a single USV (there is no distribution to plot)."""
     _make_summary_fixture(tmp_path, n_usv=1, channels=("ch01",))
 
     metadata = {"Session": {}}
@@ -653,90 +720,240 @@ def test_summarize_das_findings_missing_mmap_reports_real_cause(
 
 
 # ===========================================================================
-# _watershed_merge_segments — coverage-watershed DAS merge
+# Phase 3 merge — greedy interval union
 # ===========================================================================
 
 
-def _channel_segments(calls_by_channel: dict) -> list:
-    """Flatten a ``{channel: [(start, stop), ...]}`` mapping into the
-    ``(start, stop, channel)`` tuple list ``_watershed_merge_segments`` expects."""
-    return [(start, stop, ch)
-            for ch, intervals in calls_by_channel.items()
-            for (start, stop) in intervals]
+def _write_channel_annotations(annot_dir, channel: str, intervals: list) -> None:
+    """Write one channel's DAS annotation CSV from ``(start, stop)`` pairs."""
+    pls.DataFrame([{"start_seconds": start, "stop_seconds": stop, "name": "call"}
+                   for start, stop in intervals]).write_csv(
+        annot_dir / f"m_20260101_{channel}_annotations.csv")
 
 
-def test_watershed_merge_empty_returns_empty():
-    """No segments in, no USVs out (the early-return guard)."""
-    assert _watershed_merge_segments([], peak_min=8, valley_frac=0.5, coverage_bin_ms=1.0) == []
+def _run_merge_only(tmp_path, mocker, processing_settings, channel_intervals: dict):
+    """Run summarize_das_findings with Phase-4 rejection off and return the summary.
+
+    Only the merge is under test, so the noise filter is disabled and the audio
+    memmap is silent; what comes back is exactly what Phase 3 produced.
+    """
+    annot_dir = tmp_path / "audio" / "das_annotations"
+    annot_dir.mkdir(parents=True)
+    for channel, intervals in channel_intervals.items():
+        _write_channel_annotations(annot_dir, channel, intervals)
+
+    sampling_rate, n_audio_channels = 250000, 24
+    hpss_dir = tmp_path / "audio" / "hpss_filtered"
+    hpss_dir.mkdir(parents=True)
+    n_samples = int(sampling_rate * 5)
+    np.zeros((n_samples, n_audio_channels), dtype=np.int16).tofile(
+        hpss_dir / f"sess_{sampling_rate}_{n_samples}_{n_audio_channels}_int16.mmap")
+
+    processing_settings["usv_inference"]["FindMouseVocalizations"][
+        "summarize_das_findings"]["filter_putative_noise_bool"] = False
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
+                 return_value=(None, None))
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
+
+    FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_kw: None,
+    ).summarize_das_findings()
+
+    summaries = list((tmp_path / "audio").glob("*_usv_summary.csv"))
+    assert len(summaries) == 1
+    return pls.read_csv(str(summaries[0]))
 
 
-def test_watershed_merge_single_call_is_one_usv():
-    """A single call detected on many channels is one USV, bounded to the call
-    and carrying every detecting channel."""
-    segs = _channel_segments({ch: [(0.10, 0.15)] for ch in range(10)})
-    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
-    assert len(merged) == 1
-    usv = merged[0]
-    assert usv["start"] == pytest.approx(0.10, abs=2e-3)
-    assert usv["stop"] == pytest.approx(0.15, abs=2e-3)
-    assert usv["chs_detected"] == set(range(10))
+def test_merge_single_call_spans_the_outermost_channel(processing_settings, tmp_path, mocker):
+    """One call heard on several channels becomes one USV spanning the union of
+    their detections, so the channel that heard the faint edges sets the bounds."""
+    df = _run_merge_only(tmp_path, mocker, processing_settings, {
+        "ch01": [(0.100, 0.150)],
+        "ch02": [(0.104, 0.146)],
+        "ch03": [(0.098, 0.152)],
+    })
+    assert df.height == 1
+    assert df["start"][0] == pytest.approx(0.098)
+    assert df["stop"][0] == pytest.approx(0.152)
+    assert df["chs_count"][0] == 3
 
 
-def test_watershed_merge_two_separated_calls_are_two_usvs():
-    """Two temporally separated calls (a true silent gap between them) are two
-    distinct USVs."""
-    segs = _channel_segments({ch: [(0.10, 0.15), (0.50, 0.55)] for ch in range(10)})
-    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
-    assert len(merged) == 2
+def test_merge_separated_calls_stay_separate(processing_settings, tmp_path, mocker):
+    """Calls with real silence between them are never joined."""
+    df = _run_merge_only(tmp_path, mocker, processing_settings, {
+        "ch01": [(0.10, 0.15), (0.50, 0.55)],
+        "ch02": [(0.10, 0.15), (0.50, 0.55)],
+    })
+    assert df.height == 2
+    assert df["start"].to_list() == pytest.approx([0.10, 0.50])
 
 
-def test_watershed_merge_long_bridge_segment_does_not_merge_calls():
-    """The signature failure of the old greedy merge: two real calls plus one
-    channel whose single long segment spans the gap between them. Greedy would
-    chain them into one giant USV; the watershed keeps them separate because
-    that lone bridging channel is worth only one vote and cannot fill the
-    multi-channel valley."""
-    segs = _channel_segments({ch: [(0.10, 0.15), (0.30, 0.35)] for ch in range(10)})
-    segs.append((0.10, 0.35, 99))  # one channel over-merges the two calls
-    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
-    assert len(merged) == 2
-    # neither USV spans the whole 0.10-0.35 bridge
-    assert all((usv["stop"] - usv["start"]) < 0.20 for usv in merged)
+def test_merge_bridging_segment_joins_calls(processing_settings, tmp_path, mocker):
+    """A single channel whose detection spans the gap joins the calls either side.
+
+    This is the accepted cost of the union: transitive overlap means one long
+    detection fuses its neighbours. The coverage-watershed merge that replaced it
+    avoided this but clipped faint call edges to do so, which is the worse error,
+    so the behaviour is pinned here deliberately rather than guarded against.
+    """
+    df = _run_merge_only(tmp_path, mocker, processing_settings, {
+        "ch01": [(0.10, 0.15), (0.30, 0.35)],
+        "ch02": [(0.10, 0.15), (0.30, 0.35)],
+        "ch03": [(0.10, 0.35)],
+    })
+    assert df.height == 1
+    assert df["start"][0] == pytest.approx(0.10)
+    assert df["stop"][0] == pytest.approx(0.35)
 
 
-def test_watershed_merge_partial_merge_splits_on_relative_valley():
-    """Three real calls A/B/C, cleanly separated on ten channels, but four
-    additional channels over-merge B and C into one segment. The B-C gap
-    therefore sits at four channels while B and C peak at fourteen: a relative
-    valley the watershed splits (an absolute floor could not)."""
-    segs = _channel_segments({ch: [(0.10, 0.15), (0.20, 0.25), (0.30, 0.35)] for ch in range(10)})
-    segs += _channel_segments({100 + k: [(0.20, 0.35)] for k in range(4)})
-    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
-    assert len(merged) == 3
+def test_merge_output_is_sorted_and_schema_complete(processing_settings, tmp_path, mocker):
+    """Rows come out ordered by start time and carry the full summary schema."""
+    df = _run_merge_only(tmp_path, mocker, processing_settings, {
+        "ch01": [(0.50, 0.55), (0.10, 0.15)],
+        "ch02": [(0.50, 0.55), (0.10, 0.15)],
+    })
+    assert df["start"].to_list() == sorted(df["start"].to_list())
+    assert set(df.columns) >= {"usv_id", "start", "stop", "duration",
+                               "peak_amp_ch", "mean_amp_ch", "chs_count",
+                               "chs_detected", "emitter"}
+    assert df["peak_amp_ch"].to_list() == [0.0, 0.0]
 
 
-def test_watershed_merge_quiet_few_channel_call_is_kept_whole():
-    """A quiet call detected on fewer than peak_min channels never reaches a
-    significant peak, so it is neither dropped nor shattered -- it is kept as a
-    single USV (Phase 4 still applies its own noise rejection downstream)."""
-    segs = _channel_segments({ch: [(0.10, 0.15)] for ch in range(3)})
-    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
-    assert len(merged) == 1
+def test_summarize_das_findings_skips_metadata_excluded_channel(
+    processing_settings, tmp_path, mocker
+):
+    """A channel listed in the session metadata's excluded_channels must
+    contribute no detections: its annotation file is skipped in Phase 1, so no
+    merged USV carries its index in chs_detected."""
+    _make_summary_fixture(tmp_path, n_usv=3, channels=("ch01", "ch02"))
+
+    processing_settings["usv_inference"]["FindMouseVocalizations"][
+        "summarize_das_findings"
+    ]["filter_putative_noise_bool"] = False
+
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
+                 return_value=(None, None))
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
+    mocker.patch("usv_playpen.processing.das_inference.read_excluded_audio_channels",
+                 return_value=["m_ch02"])
+
+    fmv = FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_kw: None,
+    )
+    fmv.summarize_das_findings()
+
+    summaries = list((tmp_path / "audio").glob("*_usv_summary.csv"))
+    assert len(summaries) == 1
+    df = pls.read_csv(str(summaries[0]))
+    # every USV was detected on both fixture channels; with m_ch02 (index 1)
+    # excluded only m_ch01 (index 0) may appear in chs_detected.
+    assert df.height == 3
+    for chs in df["chs_detected"].to_list():
+        assert "1" not in chs.strip("[]").replace(" ", "").split(",")
 
 
-def test_watershed_merge_output_is_sorted_and_schema_complete():
-    """Every merged dict carries the keys the summary writer / Phase 4 expect,
-    and the list is ordered by start time regardless of input order."""
-    segs = _channel_segments({ch: [(0.50, 0.55), (0.10, 0.15)] for ch in range(10)})
-    merged = _watershed_merge_segments(segs, peak_min=5, valley_frac=0.5, coverage_bin_ms=1.0)
-    assert [u["start"] for u in merged] == sorted(u["start"] for u in merged)
-    for usv in merged:
-        assert set(usv) >= {"start", "stop", "chs_detected", "peak_amp_ch", "mean_amp_ch"}
-        assert usv["peak_amp_ch"] == 0.0
-        assert usv["mean_amp_ch"] == 0.0
+def _make_gate_fixture(tmp_path: Path, channels: tuple, audio: np.ndarray,
+                       sampling_rate: int = 250000) -> None:
+    """Write per-channel annotation CSVs (one 50 ms call at 0.1 s per channel)
+    plus the given 24-channel audio as the hpss mmap, for gate-behavior tests."""
+    annot_dir = tmp_path / "audio" / "das_annotations"
+    annot_dir.mkdir(parents=True)
+    for ch in channels:
+        pls.DataFrame([
+            {"start_seconds": 0.1, "stop_seconds": 0.15, "name": "call"},
+        ]).write_csv(annot_dir / f"m_20260101_{ch}_annotations.csv")
+    hpss_dir = tmp_path / "audio" / "hpss_filtered"
+    hpss_dir.mkdir(parents=True)
+    fname = f"sess_{sampling_rate}_{audio.shape[0]}_{audio.shape[1]}_int16.mmap"
+    audio.tofile(hpss_dir / fname)
 
 
-def _build_prepare_for_vocalocator_layout(tmp_path, settings):
+def _run_summarize(tmp_path: Path, processing_settings: dict, mocker,
+                   excluded: list | None = None) -> pls.DataFrame:
+    """Run summarize_das_findings on the fixture session and return the summary."""
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
+                 return_value=(None, None))
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
+    mocker.patch("usv_playpen.processing.das_inference.read_excluded_audio_channels",
+                 return_value=excluded or [])
+    FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_kw: None,
+    ).summarize_das_findings()
+    summaries = list((tmp_path / "audio").glob("*_usv_summary.csv"))
+    assert len(summaries) == 1
+    return pls.read_csv(str(summaries[0]))
+
+
+def test_summarize_das_findings_drops_array_incoherent_candidate(
+    processing_settings, tmp_path, mocker
+):
+    """A candidate whose two detected channels agree with each other but whose
+    pattern is absent from the array's loudest channels (a localized artifact)
+    passes the correlation term but fails the coherence term -> dropped."""
+    sr = 250000
+    rng = np.random.default_rng(0)
+    audio = np.zeros((sr, 24), dtype=np.int16)
+    s, e = int(0.1 * sr), int(0.15 * sr)
+    # detected pair shares one waveform...
+    audio[s:e, 0:2] = rng.integers(-5000, 5000, size=(e - s, 1), dtype=np.int16)
+    # ...but three OTHER channels carry louder, mutually independent noise, so
+    # the top-3-by-energy ranking lands on incoherent content.
+    for ch in (2, 3, 4):
+        audio[s:e, ch] = rng.integers(-15000, 15000, size=e - s, dtype=np.int16)
+    _make_gate_fixture(tmp_path, ("ch01", "ch02"), audio)
+
+    df = _run_summarize(tmp_path, processing_settings, mocker)
+    assert df.height == 0
+
+
+def test_summarize_das_findings_drops_single_channel_blip(
+    processing_settings, tmp_path, mocker
+):
+    """A single-channel detection whose pattern appears on no other channel (the
+    classic isolated noise blip) is gated by coherence alone -> dropped. This is
+    the behaviour that replaced the retired single-channel variance test."""
+    sr = 250000
+    rng = np.random.default_rng(0)
+    audio = np.zeros((sr, 24), dtype=np.int16)
+    s, e = int(0.1 * sr), int(0.15 * sr)
+    audio[s:e, 0] = rng.integers(-10000, 10000, size=e - s, dtype=np.int16)
+    _make_gate_fixture(tmp_path, ("ch01",), audio)
+
+    df = _run_summarize(tmp_path, processing_settings, mocker)
+    assert df.height == 0
+
+
+def test_summarize_das_findings_excluded_channel_cannot_fail_amplitude_check(
+    processing_settings, tmp_path, mocker
+):
+    """A loud artifact on a hardware-excluded channel must not become the
+    peak-amplitude channel and knock out a genuine call via condition_0: the
+    amplitude scan runs over eligible channels only."""
+    sr = 250000
+    rng = np.random.default_rng(0)
+    audio = np.zeros((sr, 24), dtype=np.int16)
+    s, e = int(0.1 * sr), int(0.15 * sr)
+    # a genuine call: one shared waveform on every channel...
+    audio[s:e, :] = rng.integers(-8000, 8000, size=(e - s, 1), dtype=np.int16)
+    # ...plus a much louder artifact on the excluded channel m_ch04 (column 3).
+    audio[s:e, 3] = rng.integers(-30000, 30000, size=e - s, dtype=np.int16)
+    _make_gate_fixture(tmp_path, ("ch01", "ch02"), audio)
+
+    df = _run_summarize(tmp_path, processing_settings, mocker, excluded=["m_ch04"])
+    assert df.height == 1
+    assert df["peak_amp_ch"][0] != 3.0
+
+
+def _build_prepare_for_vocalocator_layout(tmp_path, settings, subjects=(("mouse_A", "male"), ("mouse_B", "female"))):
     """
     Description
     -----------
@@ -748,6 +965,7 @@ def _build_prepare_for_vocalocator_layout(tmp_path, settings):
       <root>/audio/sess_usv_summary.csv          (start/stop columns)
       <root>/video/track/<date>_points3d_translated_rotated_metric.h5
       <root>/video/track/sess_camera_frame_count_dict.json
+      <root>/sess_metadata.yaml                  (Subjects with per-animal sex)
       <arena>/video/<date>_points3d_translated_rotated_metric.h5  (NWSE corners)
 
     Parameters
@@ -756,6 +974,9 @@ def _build_prepare_for_vocalocator_layout(tmp_path, settings):
         Per-test temp directory (the session root).
     settings (dict)
         Processing settings to mutate in place (sets calibration_file_loc).
+    subjects (tuple)
+        Per-animal ``(subject_id, sex)`` pairs, in track order; written both as
+        the track h5's ``track_names`` and the metadata yaml's ``Subjects``.
 
     Returns
     -------
@@ -780,6 +1001,10 @@ def _build_prepare_for_vocalocator_layout(tmp_path, settings):
     with h5py.File(video_track / "20230101_points3d_translated_rotated_metric.h5", "w") as f:
         f.create_dataset("tracks", data=tracks)
         f.create_dataset("node_names", data=np.array([b"Nose", b"Head", b"TTI"]))
+        f.create_dataset("track_names", data=np.array([sid.encode() for sid, _sex in subjects]))
+    (tmp_path / "sess_metadata.yaml").write_text(yaml.dump(
+        {"Subjects": [{"subject_id": sid, "sex": sex} for sid, sex in subjects]}
+    ))
     (video_track / "sess_camera_frame_count_dict.json").write_text(
         json.dumps({"median_empirical_camera_sr": 150.0})
     )
@@ -1128,3 +1353,288 @@ def test_shipped_assign_vocalizations_block_schema():
     }
     assert len(block["grid_resolution"]) == 2
     assert 0.0 <= float(block["confidence_level"]) <= 1.0
+
+
+def test_phase4_all_zero_window_fails_loud(tmp_path, processing_settings, mocker):
+    """A truncated/corrupt concatenated mmap (all-zero audio where DAS detected
+    calls) must raise, not silently classify real calls as noise."""
+    _make_summary_fixture(tmp_path, n_usv=3, channels=("ch01", "ch02"))
+    # Zero the entire mmap: DAS detections exist but the concatenated audio has
+    # no content at their windows (the truncated-write failure signature).
+    mmap_file = next((tmp_path / "audio" / "hpss_filtered").glob("*.mmap"))
+    n_samples = int(mmap_file.name.split("_")[-3])
+    n_ch = int(mmap_file.name.split("_")[-2])
+    np.zeros((n_samples, n_ch), dtype=np.int16).tofile(mmap_file)
+
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
+                 return_value=(None, None))
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
+
+    fmv = FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_kw: None,
+    )
+    with pytest.raises(ValueError, match="All-zero audio window"):
+        fmv.summarize_das_findings()
+
+
+# ===========================================================================
+# repair_seam_snapped_boundaries — seam-ladder detection + snippet repair
+# ===========================================================================
+
+
+def test_ladder_gap_leading_stops_exact_fingerprint_detected():
+    """A gap of exactly k*stride+1 samples is the legacy seam fingerprint and
+    must be flagged; the leading segment's stop time is returned."""
+    fs, stride = 250000, 8128
+    starts = np.array([0.1, (37625 + 2 * stride + 1) / fs, 1.0])
+    stops = np.array([37625 / fs, 0.9, 1.05])
+    leading = _ladder_gap_leading_stops(
+        start_seconds=starts, stop_seconds=stops, sampling_rate=fs,
+        stride_samples=stride, tolerance_samples=2, max_rung=6,
+    )
+    assert leading.tolist() == [37625 / fs]
+
+
+def test_ladder_gap_leading_stops_rejects_off_ladder_and_high_rungs():
+    """Gaps off the sample-exact ladder, or beyond max_rung, are not flagged."""
+    fs, stride = 250000, 8128
+    # off-ladder by 118 samples at rung 2
+    starts_off = np.array([0.1, (37625 + 2 * stride + 119) / fs])
+    stops_off = np.array([37625 / fs, 0.9])
+    assert len(_ladder_gap_leading_stops(starts_off, stops_off, fs, stride, 2, 6)) == 0
+    # exact ladder but rung 7 > max_rung 6
+    starts_high = np.array([0.1, (37625 + 7 * stride + 1) / fs])
+    assert len(_ladder_gap_leading_stops(starts_high, stops_off, fs, stride, 2, 6)) == 0
+
+
+def test_ladder_gap_leading_stops_empty_and_single_input():
+    """Fewer than two segments cannot form a gap; the result is empty."""
+    fs, stride = 250000, 8128
+    empty = np.empty(0, dtype=float)
+    assert len(_ladder_gap_leading_stops(empty, empty, fs, stride, 2, 6)) == 0
+    one = np.array([0.1])
+    assert len(_ladder_gap_leading_stops(one, one + 0.05, fs, stride, 2, 6)) == 0
+
+
+def test_repaired_facing_edges_outward_recovery_and_inward_clamp():
+    """The re-detection extends edges outward into the recorded gap; an inward
+    suggestion (snippet channel heard less than the merge) clamps to the
+    recorded boundary because the seam artifact only ever clips edges."""
+    # snippet-relative segments: call1 0.050-0.101, call2 0.156-0.210
+    ann_starts = np.array([0.050, 0.156])
+    ann_stops = np.array([0.101, 0.210])
+    edges = _repaired_facing_edges(
+        annotation_starts=ann_starts, annotation_stops=ann_stops,
+        snippet_offset=0.05, stop_first=0.150, start_second=0.214,
+        mid_first=0.125, mid_second=0.237, max_boundary_shift=0.034,
+    )
+    assert edges is not None
+    new_stop_first, new_start_second = edges
+    assert new_stop_first == pytest.approx(0.151)   # outward by 1 ms
+    assert new_start_second == pytest.approx(0.206)  # outward by 8 ms
+    # inward suggestion on both edges -> both clamp to recorded values
+    edges_clamped = _repaired_facing_edges(
+        annotation_starts=np.array([0.050, 0.170]),
+        annotation_stops=np.array([0.090, 0.210]),
+        snippet_offset=0.05, stop_first=0.150, start_second=0.214,
+        mid_first=0.125, mid_second=0.237, max_boundary_shift=0.034,
+    )
+    assert edges_clamped == (0.150, 0.214)
+
+
+def test_repaired_facing_edges_joined_or_missing_returns_none():
+    """A re-detection that joins both calls into one segment, or misses a
+    call's midpoint entirely, is unrepairable and returns None."""
+    # one segment spans both midpoints -> joined
+    assert _repaired_facing_edges(
+        annotation_starts=np.array([0.050]), annotation_stops=np.array([0.210]),
+        snippet_offset=0.05, stop_first=0.150, start_second=0.214,
+        mid_first=0.125, mid_second=0.237, max_boundary_shift=0.034,
+    ) is None
+    # second call undetected
+    assert _repaired_facing_edges(
+        annotation_starts=np.array([0.050]), annotation_stops=np.array([0.101]),
+        snippet_offset=0.05, stop_first=0.150, start_second=0.214,
+        mid_first=0.125, mid_second=0.237, max_boundary_shift=0.034,
+    ) is None
+
+
+def test_repaired_facing_edges_cap_rejects_oversized_shift():
+    """An outward correction larger than max_boundary_shift is rejected."""
+    assert _repaired_facing_edges(
+        annotation_starts=np.array([0.050, 0.120]),
+        annotation_stops=np.array([0.101, 0.210]),
+        snippet_offset=0.05, stop_first=0.150, start_second=0.214,
+        mid_first=0.125, mid_second=0.237, max_boundary_shift=0.034,
+    ) is None  # onset recovery would be 44 ms > 34 ms cap
+
+
+def _make_seam_repair_fixture(tmp_path: Path, with_ladder: bool = True) -> Path:
+    """Builds the on-disk inputs repair_seam_snapped_boundaries expects:
+
+    1. <root>/audio/<sess>_usv_summary.csv — three USVs; the first pair's gap
+       is 64 ms (inside the rung-2 width gate), the second pair's gap is far
+       off any rung. An extra `qlvm1` column stands in for enrichment columns
+       that the atomic rewrite must preserve.
+    2. <root>/audio/das_annotations/ — one m_ch01 CSV whose first gap is
+       exactly 2*8128+1 samples (the seam fingerprint) when `with_ladder`,
+       or 118 samples off it when not; plus a noise row.
+    3. <root>/audio/hpss_filtered/ — a real 0.4 s zeros WAV at 250 kHz for the
+       sampling-rate probe and the snippet excision.
+    """
+    fs, stride = 250000, 8128
+    audio_dir = tmp_path / "audio"
+    annot_dir = audio_dir / "das_annotations"
+    hpss_dir = audio_dir / "hpss_filtered"
+    annot_dir.mkdir(parents=True)
+    hpss_dir.mkdir(parents=True)
+
+    pls.DataFrame({
+        "usv_id": ["0000", "0001", "0002"],
+        "start": [0.100, 0.214, 0.500],
+        "stop": [0.150, 0.260, 0.520],
+        "duration": [0.050, 0.046, 0.020],
+        "emitter": ["m1", "m1", "m1"],
+        "qlvm1": [0.11, 0.22, 0.33],
+    }).write_csv(audio_dir / f"{tmp_path.name}_usv_summary.csv")
+
+    raw_stop_first = 37625 / fs  # 0.1505 s, within 0.5 ms of the merged stop
+    gap_samples = 2 * stride + 1 if with_ladder else 2 * stride + 119
+    pls.DataFrame({
+        "start_seconds": [0.0995, (37625 + gap_samples) / fs, 0.5],
+        "stop_seconds": [raw_stop_first, 0.2605, 0.52],
+        "name": ["call", "call", "call"],
+    }).write_csv(annot_dir / "m_250716104250_ch01_cropped_to_video_hpss_filtered_annotations.csv")
+
+    sf.write(
+        file=str(hpss_dir / "m_250716104250_ch01_cropped_to_video_hpss_filtered.wav"),
+        data=np.zeros(int(0.4 * fs), dtype=np.int16),
+        samplerate=fs,
+        subtype="PCM_16",
+    )
+    return tmp_path
+
+
+def test_seam_repair_corrects_flagged_pair_and_preserves_columns(
+    processing_settings, tmp_path, mocker
+):
+    """Happy path: the seam-snapped pair is flagged (width gate + raw ladder
+    corroboration), one das predict runs on the snippet folder, the facing
+    edges move outward per the re-detection, durations follow, enrichment
+    columns survive the atomic rewrite, a report is written, and the snippet
+    folder is cleaned up."""
+    _make_seam_repair_fixture(tmp_path, with_ladder=True)
+    snippet_dir = tmp_path / "audio" / "seam_repair_snippets"
+
+    def _fake_wait(**_kwargs):
+        # stand in for das predict on the snippet folder: recover 1 ms of
+        # call-1 tail and 8 ms of call-2 onset (snippet offset is 0.050 s)
+        pls.DataFrame({
+            "start_seconds": [0.050, 0.156],
+            "stop_seconds": [0.101, 0.210],
+            "name": ["call", "call"],
+        }).write_csv(snippet_dir / "pair00000_annotations.csv")
+        return [0]
+
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    popen_mock = mocker.patch(
+        "usv_playpen.processing.das_inference.subprocess.Popen",
+        return_value=MagicMock(returncode=0),
+    )
+    mocker.patch(
+        "usv_playpen.processing.das_inference.wait_for_subprocesses",
+        side_effect=_fake_wait,
+    )
+
+    fmv = FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_kw: None,
+    )
+    fmv.repair_seam_snapped_boundaries()
+
+    argv = popen_mock.call_args.kwargs.get("args") or popen_mock.call_args.args[0]
+    assert "das" in argv
+    assert "predict" in argv
+    df = pls.read_csv(
+        str(tmp_path / "audio" / f"{tmp_path.name}_usv_summary.csv"),
+        schema_overrides={"usv_id": pls.String},
+    )
+    assert df["stop"][0] == pytest.approx(0.151)
+    assert df["start"][1] == pytest.approx(0.206)
+    assert df["duration"][0] == pytest.approx(0.051)
+    assert df["duration"][1] == pytest.approx(0.054)
+    # untouched row and enrichment columns preserved
+    assert df["start"][2] == pytest.approx(0.500)
+    assert df["usv_id"].to_list() == ["0000", "0001", "0002"]
+    assert df["qlvm1"].to_list() == pytest.approx([0.11, 0.22, 0.33])
+    assert df["emitter"].to_list() == ["m1", "m1", "m1"]
+    report = json.loads((tmp_path / "audio" / f"{tmp_path.name}_seam_repair_report.json").read_text())
+    assert report["n_flagged"] == 1
+    assert report["n_repaired"] == 1
+    assert report["pairs"][0]["outcome"] == "repaired"
+    assert not snippet_dir.exists()
+
+
+def test_seam_repair_no_ladder_is_a_noop_without_subprocess(
+    processing_settings, tmp_path, mocker
+):
+    """Without the microsecond-exact raw fingerprint, the width-gate pair is
+    not corroborated: no das run, the summary is byte-identical, and the
+    report records zero flags."""
+    _make_seam_repair_fixture(tmp_path, with_ladder=False)
+    summary_path = tmp_path / "audio" / f"{tmp_path.name}_usv_summary.csv"
+    before = summary_path.read_text()
+
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    popen_mock = mocker.patch(
+        "usv_playpen.processing.das_inference.subprocess.Popen",
+        return_value=MagicMock(returncode=0),
+    )
+
+    fmv = FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_kw: None,
+    )
+    fmv.repair_seam_snapped_boundaries()
+
+    assert popen_mock.call_count == 0
+    assert summary_path.read_text() == before
+    report = json.loads((tmp_path / "audio" / f"{tmp_path.name}_seam_repair_report.json").read_text())
+    assert report["n_flagged"] == 0
+
+
+def test_summarize_das_findings_gates_seam_repair_on_settings_bool(
+    processing_settings, tmp_path, mocker
+):
+    """summarize_das_findings invokes the repair when seam_repair_bool is true
+    and skips it when false."""
+    _make_summary_fixture(tmp_path, n_usv=3, channels=("ch01", "ch02"))
+
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
+                 return_value=(None, None))
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
+    repair_mock = mocker.patch.object(FindMouseVocalizations, "repair_seam_snapped_boundaries")
+
+    fmv = FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=processing_settings,
+        message_output=lambda *_a, **_kw: None,
+    )
+    fmv.summarize_das_findings()
+    assert repair_mock.call_count == 1
+
+    settings_off = json.loads(json.dumps(processing_settings))
+    settings_off["usv_inference"]["FindMouseVocalizations"]["summarize_das_findings"]["seam_repair_bool"] = False
+    fmv_off = FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=settings_off,
+        message_output=lambda *_a, **_kw: None,
+    )
+    fmv_off.summarize_das_findings()
+    assert repair_mock.call_count == 1

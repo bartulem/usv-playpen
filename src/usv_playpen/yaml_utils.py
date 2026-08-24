@@ -6,6 +6,7 @@ Utility functions for modifying the metadata YAML file.
 from __future__ import annotations
 
 import numbers
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import numpy as np
 import yaml
 
 from .os_utils import atomic_output_path
+
 
 # Custom Dumper to format lists in flow style (e.g., [1, 2, 3])
 # while keeping dictionaries in block style for overall readability.
@@ -488,3 +490,53 @@ def save_session_metadata(data: dict, filepath: Path, logger: Callable = print) 
                 yaml.dump(data, f, Dumper=SmartDumper, default_flow_style=False, sort_keys=False, indent=2)
     except yaml.YAMLError as e:
         logger(f"Error saving metadata file: {e}")
+
+
+def read_excluded_audio_channels(root_directory: str, logger: Callable = print) -> list[str]:
+    """
+    Description
+    -----------
+    Reads the list of hardware-excluded audio channels from the session's
+    metadata YAML (``Equipment -> audio_Avisoft -> excluded_channels``) -- the
+    per-session record of microphones known to be compromised for that
+    recording. Consumers (the DAS cross-channel merge, the spectrogram
+    averaging) disregard these channels entirely.
+
+    The field is legitimately absent in healthy sessions, so a missing
+    metadata file, block, or key means "no channels excluded" and returns an
+    empty list -- an explicit, agreed exception to the fail-loud dict-access
+    convention. A present-but-malformed entry, however, fails loud: every
+    entry must be an ``m_chNN`` / ``s_chNN`` name with NN in 01..12.
+
+    Parameters
+    ----------
+    root_directory (str)
+        Session root directory containing the ``*_metadata.yaml`` file.
+    logger (Callable)
+        Message sink passed through to :func:`load_session_metadata`.
+
+    Returns
+    -------
+    excluded_channels (list[str])
+        Channel names to exclude, e.g. ``['m_ch02', 'm_ch08', 'm_ch11']``;
+        empty when the session has no exclusions on record.
+    """
+
+    metadata, _ = load_session_metadata(root_directory, logger=logger)
+    if (metadata is None
+            or 'Equipment' not in metadata
+            or 'audio_Avisoft' not in metadata['Equipment']
+            or 'excluded_channels' not in metadata['Equipment']['audio_Avisoft']):
+        return []
+
+    excluded_channels = metadata['Equipment']['audio_Avisoft']['excluded_channels']
+    if excluded_channels is None:
+        return []
+    for channel_name in excluded_channels:
+        if not isinstance(channel_name, str) or re.fullmatch(r"[ms]_ch(0[1-9]|1[0-2])", channel_name) is None:
+            err_msg = (
+                f"Invalid entry '{channel_name}' in Equipment->audio_Avisoft->excluded_channels of the "
+                f"'{root_directory}' session metadata; expected 'm_chNN'/'s_chNN' with NN in 01..12."
+            )
+            raise ValueError(err_msg)
+    return list(excluded_channels)

@@ -127,11 +127,11 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
     assert set(ql.QLVM_COLUMNS).issubset(df.columns)
     assert df.height == 3
     # rows 0 and 2 embedded; row 1 (no spec) is null.
-    assert df["qlvm_dim1"][0] is not None
-    assert df["qlvm_dim1"][1] is None
-    assert df["qlvm_dim1"][2] is not None
+    assert df["qlvm1"][0] is not None
+    assert df["qlvm1"][1] is None
+    assert df["qlvm1"][2] is not None
     # coordinates live on the torus [0, 1).
-    assert 0.0 <= df["qlvm_dim1"][0] < 1.0
+    assert 0.0 <= df["qlvm1"][0] < 1.0
 
 
 def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid):
@@ -323,5 +323,5 @@ def test_infer_and_merge_idempotent_preserves_other_columns(tmp_path, mocker):
     for column in ql.QLVM_COLUMNS:
         assert df.columns.count(column) == 1
     # the embedded rows still carry latents after the re-run.
-    assert df["qlvm_dim1"][0] is not None
-    assert df["qlvm_dim1"][1] is None
+    assert df["qlvm1"][0] is not None
+    assert df["qlvm1"][1] is None

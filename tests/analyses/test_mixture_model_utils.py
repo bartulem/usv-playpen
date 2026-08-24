@@ -28,13 +28,21 @@ from sklearn.mixture import GaussianMixture
 # Headless matplotlib in case any imported helper touches a backend.
 matplotlib.use("Agg")
 
+import matplotlib.pyplot as plt
+
 from usv_playpen.analyses.mixture_model_utils import (
+    IGMixture,
     TMixture,
     _sample_from_mixture,
     _t_update_nu,
     bootstrap_lrt,
+    fit_log_ig_mixture,
     gmm_boundaries_logspace,
     gmm_modes,
+    ig_mixture_cdf_logspace,
+    ig_mixture_quantile_logspace,
+    plot_gmm_fit,
+    thin_seam_ladder_surplus,
 )
 
 
@@ -419,3 +427,230 @@ def test_bootstrap_lrt_gauss_dispatch_no_callback():
     assert result["model_class"] == "gauss"
     assert result["lr_null"].shape == (3,)
     assert math.isfinite(result["lr_obs"])
+
+
+def _synthetic_ig_intervals(seed=0, n_per=4000):
+    """
+    Draws a well-separated two-component inverse-Gaussian mixture sample
+    (fast component IG(mu=0.07, lam=1.0), slow component IG(mu=3.0,
+    lam=2.0)) for the IG fitter / interface tests.
+
+    Parameters
+    ----------
+    seed (int)
+        RNG seed.
+    n_per (int)
+        Samples per component.
+
+    Returns
+    -------
+    x (np.ndarray)
+        A (2 * n_per,) shape ndarray of strictly positive intervals.
+    """
+    from scipy.stats import invgauss
+    rng = np.random.default_rng(seed)
+    fast = invgauss.rvs(0.07 / 1.0, scale=1.0, size=n_per, random_state=rng)
+    slow = invgauss.rvs(3.0 / 2.0, scale=2.0, size=n_per, random_state=rng)
+    return np.concatenate([fast, slow])
+
+
+def test_fit_log_ig_mixture_recovers_two_components():
+    """The IG fitter must recover the means, shapes and weights of a
+    well-separated synthetic two-component IG mixture."""
+    x = _synthetic_ig_intervals()
+    model, order = fit_log_ig_mixture(x, n_components=2, seed=0, n_init=3)
+    mus = model.mus_[order]
+    weights = model.weights_[order]
+    assert abs(mus[0] - 0.07) < 0.01
+    assert abs(mus[1] - 3.0) < 0.3
+    assert abs(weights[0] - 0.5) < 0.05
+
+
+def test_ig_mixture_log_density_integrates_to_one():
+    """score_samples must be a proper density of log X: its exponential
+    integrated over a wide log grid should be ~1 (validates the Jacobian
+    convention that makes IG comparable with the log-space families)."""
+    model = IGMixture(weights=[0.4, 0.6], mus=[0.08, 2.0], lambdas=[0.5, 3.0])
+    grid = np.linspace(-12.0, 8.0, 20001)
+    dens = np.exp(model.score_samples(grid))
+    total = float(np.trapezoid(dens, grid))
+    assert abs(total - 1.0) < 1e-3
+
+
+def test_ig_mixture_interface_shapes_and_params():
+    """The sklearn-compatible surface must match TMixture's conventions:
+    shapes of score_samples / predict_proba, (K, 1) means_, and the
+    3K - 1 parameter count feeding BIC/AIC."""
+    model = IGMixture(weights=[0.5, 0.5], mus=[0.1, 1.0], lambdas=[1.0, 1.0])
+    log_x = np.log(np.array([0.05, 0.1, 0.5, 1.0, 2.0]))
+    assert model.score_samples(log_x).shape == (5,)
+    z = model.predict_proba(log_x)
+    assert z.shape == (5, 2)
+    np.testing.assert_allclose(z.sum(axis=1), 1.0, atol=1e-12)
+    assert model.means_.shape == (2, 1)
+    assert model._n_params() == 5
+    assert np.isfinite(model.bic(log_x))
+    assert np.isfinite(model.aic(log_x))
+    # slower component must dominate posterior at 2 s
+    assert z[-1, 1] > 0.9
+
+
+def test_sample_from_mixture_ig_branch_log_convention():
+    """The bootstrap sampler's IG branch must return LOG-space samples whose
+    per-component means match the model's mus."""
+    model = IGMixture(weights=[0.5, 0.5], mus=[0.07, 3.0], lambdas=[1.0, 2.0])
+    rng = np.random.default_rng(0)
+    log_s = _sample_from_mixture(model, 20000, rng)
+    assert log_s.shape == (20000,)
+    x = np.exp(log_s)
+    # overall mean is the weight-average of component means
+    assert abs(float(np.mean(x)) - (0.5 * 0.07 + 0.5 * 3.0)) < 0.15
+
+
+def test_bootstrap_lrt_ig_dispatch_smoke():
+    """bootstrap_lrt must run end-to-end with model_class='ig' and return a
+    finite observed LR statistic plus a B-length null sample."""
+    x = _synthetic_ig_intervals(n_per=400)
+    res = bootstrap_lrt(
+        intervals_sec=x, K_null=1, K_alt=2, B=2, n_subsample=400,
+        model_class="ig", n_init_obs=1, n_init_boot=1, seed=0,
+    )
+    assert res["model_class"] == "ig"
+    assert np.isfinite(res["lr_obs"])
+    assert res["lr_null"].shape == (2,)
+
+
+def test_ig_mixture_cdf_quantile_roundtrip():
+    """Quantile then CDF must round-trip across the mixture's support."""
+    model = IGMixture(weights=[0.3, 0.7], mus=[0.08, 1.5], lambdas=[0.6, 2.5])
+    qs = np.array([0.05, 0.25, 0.5, 0.75, 0.95])
+    log_q = ig_mixture_quantile_logspace(qs, model)
+    back = ig_mixture_cdf_logspace(log_q, model)
+    np.testing.assert_allclose(back, qs, atol=1e-6)
+
+
+def test_bootstrap_lrt_parallel_deterministic_and_finite():
+    """The n_jobs > 1 path must be reproducible run-to-run (per-replicate
+    deterministic RNGs) and return finite statistics with the same shapes as
+    the sequential path."""
+    x = _synthetic_ig_intervals(n_per=300)
+    kwargs = dict(intervals_sec=x, K_null=1, K_alt=2, B=4, n_subsample=300,
+                  model_class="ig", n_init_obs=1, n_init_boot=1, seed=0)
+    res1 = bootstrap_lrt(n_jobs=2, **kwargs)
+    res2 = bootstrap_lrt(n_jobs=2, **kwargs)
+    np.testing.assert_allclose(res1["lr_null"], res2["lr_null"])
+    assert np.isfinite(res1["lr_obs"])
+    assert res1["lr_null"].shape == (4,)
+    # observed statistic does not depend on the bootstrap path
+    res_seq = bootstrap_lrt(n_jobs=1, **kwargs)
+    np.testing.assert_allclose(res_seq["lr_obs"], res1["lr_obs"])
+
+
+
+def test_plot_gmm_fit_bin_means_are_below_the_point_wise_apex():
+    """A bar is the density AVERAGED over its bin; the mixture curve is the
+    density AT a point. Wherever a bin straddles the peak the average must be
+    the smaller of the two, which is why a point-wise curve reads as an
+    overshoot against a histogram even for a perfect fit -- and the gap widens
+    with bin width, so it is a property of the drawing, not of the model."""
+    rng = np.random.default_rng(0)
+    x = rng.normal(0.0, 0.25, 20000)
+    model = GaussianMixture(n_components=1, random_state=0).fit(x.reshape(-1, 1))
+    apex = float(np.exp(model.score_samples(np.array([[0.0]])))[0])
+
+    def peak_bin_mean(n_bins: int) -> float:
+        """Model density averaged over whichever bin contains the mode."""
+        edges = np.histogram_bin_edges(x, bins=n_bins)
+        idx = int(np.searchsorted(edges, 0.0) - 1)
+        fine = np.linspace(edges[idx], edges[idx + 1], 256)
+        return float(np.trapezoid(np.exp(model.score_samples(fine.reshape(-1, 1))), fine)
+                     / (edges[idx + 1] - edges[idx]))
+
+    coarse, fine_bins = peak_bin_mean(8), peak_bin_mean(80)
+    # the bin average never reaches the apex, and closes on it as bins narrow
+    assert coarse < apex
+    assert fine_bins < apex
+    assert coarse < fine_bins
+
+    # both draw modes render without disturbing the axes contract
+    for as_bin_means in (False, True):
+        fig, ax = plot_gmm_fit(model=model, x=x, bins=40,
+                               density_as_bin_means=as_bin_means)
+        assert ax.get_ylabel() == "Density"
+        plt.close(fig)
+
+
+def test_plot_gmm_fit_bin_means_conserve_probability_mass():
+    """The per-bin heights must integrate to the model's mass in that range,
+    so the step is a faithful redrawing of the density rather than a rescaling."""
+    rng = np.random.default_rng(1)
+    x = np.concatenate([rng.normal(-1.0, 0.3, 6000), rng.normal(1.0, 0.5, 4000)])
+    model = GaussianMixture(n_components=2, random_state=0).fit(x.reshape(-1, 1))
+
+    edges = np.histogram_bin_edges(x, bins=30)
+    widths = np.diff(edges)
+    bin_means = np.array([
+        float(np.trapezoid(
+            np.exp(model.score_samples(np.linspace(edges[i], edges[i + 1], 128).reshape(-1, 1))),
+            np.linspace(edges[i], edges[i + 1], 128),
+        ) / widths[i])
+        for i in range(edges.size - 1)
+    ])
+    grid = np.linspace(edges[0], edges[-1], 4000)
+    exact = float(np.trapezoid(np.exp(model.score_samples(grid.reshape(-1, 1))), grid))
+    assert float(np.sum(bin_means * widths)) == pytest.approx(exact, rel=1e-3)
+
+    fig, _ = plot_gmm_fit(model=model, x=x, bins=30, density_as_bin_means=True)
+    plt.close(fig)
+
+
+# ===========================================================================
+# thin_seam_ladder_surplus — seam-ladder correction
+# ===========================================================================
+
+_STRIDE_SAMPLES = 8128
+_SAMPLING_RATE = 250000
+_RUNG_MS = (_STRIDE_SAMPLES / _SAMPLING_RATE) * 1000.0   # 32.512 ms
+
+
+def _intervals_with_ladder(background_per_window: int, surplus_at_rung2: int) -> np.ndarray:
+    """Flat interval background plus an injected surplus on the second rung."""
+    rng = np.random.default_rng(0)
+    # Uniform background across 10-230 ms so every rung has comparable support.
+    background = rng.uniform(10.0, 230.0, size=background_per_window * 220)
+    rung = 2 * _RUNG_MS
+    surplus = rng.uniform(rung - 1.0, rung + 1.0, size=surplus_at_rung2)
+    return np.concatenate([background, surplus]) / 1000.0
+
+
+def test_thin_seam_ladder_removes_injected_surplus():
+    """An injected pile-up on a rung is removed, leaving the background intact."""
+    intervals = _intervals_with_ladder(background_per_window=6, surplus_at_rung2=400)
+    keep = thin_seam_ladder_surplus(
+        intervals, stride_samples=_STRIDE_SAMPLES, sampling_rate=_SAMPLING_RATE,
+        half_width_ms=1.5, max_rung=6, seed=0)
+    removed = int((~keep).sum())
+    # The injected surplus dominates what is dropped; the estimate is a count
+    # against a sampled background, so it is not expected to be exact.
+    assert 300 < removed < 500
+    assert keep.sum() == intervals.size - removed
+
+
+def test_thin_seam_ladder_is_a_noop_without_a_ladder():
+    """A distribution with no rung excess loses at most a negligible fraction."""
+    rng = np.random.default_rng(1)
+    intervals = rng.uniform(10.0, 230.0, size=20000) / 1000.0
+    keep = thin_seam_ladder_surplus(
+        intervals, stride_samples=_STRIDE_SAMPLES, sampling_rate=_SAMPLING_RATE,
+        half_width_ms=1.5, max_rung=6, seed=0)
+    assert (~keep).mean() < 0.01
+
+
+def test_thin_seam_ladder_keeps_mask_shape_and_dtype():
+    """The return is a boolean mask aligned to the input array."""
+    intervals = _intervals_with_ladder(background_per_window=3, surplus_at_rung2=50)
+    keep = thin_seam_ladder_surplus(
+        intervals, stride_samples=_STRIDE_SAMPLES, sampling_rate=_SAMPLING_RATE,
+        half_width_ms=1.5, max_rung=6, seed=3)
+    assert keep.dtype == bool
+    assert keep.shape == intervals.shape

@@ -191,9 +191,11 @@ def write_to_h5(
     length_idx (np.ndarray)
         Array of USV durations.
     animal_ids (np.ndarray)
-        1-D array of integer animal IDs (e.g. [0, 1]). When provided, a
-        dataset of shape (num_calls, num_animals) is written under the key
-        'animal_id', tiling the IDs across all calls.
+        1-D array of per-animal SEX codes (0 = male, 1 = female) in the
+        tracks-array animal order (e.g. [0, 1] for a male/female courtship
+        session, [1, 1] for female-female, [0, 0] for male-male). When
+        provided, a dataset of shape (num_calls, num_animals) is written under
+        the key 'animal_id', tiling the codes across all calls.
     extra_metadata (dict)
         Additional metadata to be stored in the HDF5 file.
 

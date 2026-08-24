@@ -2156,6 +2156,7 @@ def _mixture_model_fits_row(model_class, sex="male", K=2, bic=10.0, cv=1.0):
         row[f"logmean_{k+1}"] = float(k - 1)  # spread out
         row[f"logsd_{k+1}"] = 0.5
         row[f"nu_{k+1}"] = 5.0
+        row[f"lambda_{k+1}"] = 2.0
     return pls.DataFrame([row])
 
 
@@ -2178,6 +2179,18 @@ def test_reconstruct_best_model_t_mixture():
     df = _mixture_model_fits_row("t", K=2)
     model, order = reconstruct_best_model(df, sex="male", K=2)
     assert isinstance(model, TMixture)
+    np.testing.assert_array_equal(order, np.arange(2))
+
+
+def test_reconstruct_best_model_ig_mixture():
+    """IG path returns an IGMixture whose mus are exp(logmean_k) and whose
+    lambdas come from the lambda_k columns."""
+    from usv_playpen.analyses.mixture_model_utils import IGMixture
+    df = _mixture_model_fits_row("ig", K=2)
+    model, order = reconstruct_best_model(df, sex="male", K=2)
+    assert isinstance(model, IGMixture)
+    np.testing.assert_allclose(model.mus_, np.exp([-1.0, 0.0]))
+    np.testing.assert_allclose(model.lambdas_, [2.0, 2.0])
     np.testing.assert_array_equal(order, np.arange(2))
 
 
