@@ -21,8 +21,9 @@ the per-event history matrix:
      * Signal correlation → temporal cross-correlation between every
        predictor and the per-frame binary bout-onset trace, at lags
        spanning `[-max_lag_seconds, +max_lag_seconds]`. Negative lags
-       mean the bout precedes the feature; positive lags mean the
-       feature precedes the bout. A within-session circular-shift
+       mean the feature precedes the bout (behaviour leads); positive
+       lags mean the bout precedes the feature (vocalisation leads).
+       A within-session circular-shift
        null is computed alongside as a per-lag noise floor.
    The response-side IBI thresholds and empirical IBI percentiles are
    bundled in for completeness.
@@ -750,9 +751,9 @@ def audit_predictor_timescales(processed_beh_dict: dict,
 
         ρ_signal(k) = corr( feature[t], Y[t + k] )
 
-    so positive `k` ⇒ feature leads bout (behaviour precedes
-    vocalisation); negative `k` ⇒ bout leads feature (vocalisation
-    precedes behaviour).
+    then mirrored so the REPORTED lag axis reads: negative `k` ⇒
+    feature leads bout (behaviour precedes vocalisation); positive
+    `k` ⇒ bout leads feature (vocalisation precedes behaviour).
 
     Signal-correlation implementation
     ---------------------------------
@@ -1267,11 +1268,14 @@ def audit_predictor_timescales(processed_beh_dict: dict,
 
                 # Actual: symmetric lag window [-L_max, +L_max] read
                 # from the standard FFT lag layout (positive lags at
-                # the front, negative lags wrapped to the back).
+                # the front, negative lags wrapped to the back), then
+                # MIRRORED onto the reported convention: negative lag =
+                # feature precedes bout (behaviour leads), positive lag
+                # = bout precedes feature (vocalisation leads).
                 xcorr_actual_raw = np.concatenate([
                     xcorr_full[n_pad_sess - max_lag_frames:],
                     xcorr_full[:max_lag_frames + 1],
-                ])
+                ])[::-1]
                 rho_per_sess[s_i, :] = (xcorr_actual_raw / denom).astype(np.float32)
 
                 # Null: n_shuffles random shifts per session. Each shift
@@ -1287,7 +1291,9 @@ def audit_predictor_timescales(processed_beh_dict: dict,
                 # draw (shifts) is unchanged, so this is byte-identical.
                 offsets = np.arange(-max_lag_frames, max_lag_frames + 1)
                 null_idx = shifts[:, None] + offsets[None, :]
-                null_per_sess_shuffle[s_i, :, :] = (xcorr_full[null_idx] / denom).astype(np.float32)
+                # Mirrored along the lag axis to match the reported
+                # convention of the actual curve above.
+                null_per_sess_shuffle[s_i, :, :] = (xcorr_full[null_idx][:, ::-1] / denom).astype(np.float32)
 
                 del x_sess, x_sess_r, x_sess_c, x_fft_conj, xcorr_full
 
@@ -1467,9 +1473,9 @@ def audit_predictor_timescales(processed_beh_dict: dict,
         peak_rho = float(peak_signed_per_feature[global_max_idx])
         peak_lag_s = float(signal_lag_grid_seconds[peak_lag_idx_per_feature[global_max_idx]])
         if peak_lag_s < 0:
-            direction = 'bout leads feature'
-        elif peak_lag_s > 0:
             direction = 'feature leads bout'
+        elif peak_lag_s > 0:
+            direction = 'bout leads feature'
         else:
             direction = 'simultaneous'
     else:

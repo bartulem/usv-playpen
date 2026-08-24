@@ -217,6 +217,11 @@ is currently off, but **treat build warnings as bugs** — a clean build has non
   `np.random.seed`.
 - **No dashed-banner section dividers** (`# -------- #` style). Remove them when
   found; a normal one-line comment is fine when a divider is genuinely needed.
+- **No global variables unless explicitly agreed.** Do not introduce
+  module-level state or new module-level constants without checking with the
+  maintainer first — keep data local to the function/method or pass it as a
+  parameter. Existing module-level constants stay as they are; adding a new one
+  is a design decision, not a default.
 - **Reuse what's already imported** before adding a dependency — e.g. the repo
   uses `polars` for CSV I/O; don't reach for `pandas`/`csv` when `polars` will
   do.

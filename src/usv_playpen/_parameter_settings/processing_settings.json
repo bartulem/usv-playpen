@@ -206,19 +206,26 @@
       },
       "summarize_das_findings": {
         "filter_putative_noise_bool": true,
-        "peak_min": 8,
-        "valley_frac": 0.5,
-        "coverage_bin_ms": 1.0,
         "len_win_signal": 512,
         "low_freq_cutoff": 30000,
-        "noise_corr_cutoff_min": 0.15,
-        "noise_var_cutoff_max": 0.001
+        "noise_corr_cutoff_min": 0.3,
+        "coherence_cutoff_min": 0.2,
+        "coherence_channel_count": 3,
+        "seam_repair_bool": true,
+        "seam_repair_legacy_stride_samples": 8128,
+        "seam_repair_max_rung": 6,
+        "seam_repair_ladder_tolerance_samples": 2,
+        "seam_repair_width_tolerance_below_ms": 3.0,
+        "seam_repair_width_tolerance_above_ms": 1.0,
+        "seam_repair_raw_stop_tolerance_s": 0.01,
+        "seam_repair_snippet_margin_s": 0.05,
+        "seam_repair_max_boundary_shift_s": 0.034
       }
     }
   },
   "vocalocator": {
     "vcl_conda_env_name": "vcl-ssl-ss",
-    "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/animal_id_model",
+    "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/mouse_all_model_June2026",
     "vcl_version": "vcl-ssl"
   },
   "assign_vocalizations": {
@@ -252,12 +259,13 @@
     "yolo_conf": 0.25,
     "yolo_iou": 0.7,
     "yolo_imgsz": 128,
+    "deterministic": true,
     "mask_cmap": "viridis",
-    "duration_min": 10,
+    "duration_min": 5,
     "batch_size": 12,
     "multimask_output": true,
-    "iou_floor": 0.7,
-    "drop_below_iou": false,
+    "iou_floor": 0.3,
+    "drop_below_iou": true,
     "split_disconnected": true,
     "max_iters": 1,
     "merge_instances": true,

@@ -110,7 +110,7 @@ NOISE_CATEGORY = 0
 
 # The USV category column the synthetic summaries are labelled with; mirrors
 # the shipped JSON default so the loaders / metadata route through it.
-CATEGORY_COLUMN = 'vae_supercategory'
+CATEGORY_COLUMN = 'qlvm_supercategory'
 
 
 def _write_category_usv_summary(
@@ -251,7 +251,7 @@ def _write_category_usv_summary(
 def _build_category_session_tree(
         base_dir: Path,
         n_sessions: int,
-        manifold_columns: tuple[str, str] = ('vae_umap1', 'vae_umap2'),
+        manifold_columns: tuple[str, str] = ('vae1', 'vae2'),
 ) -> list[Path]:
     """
     Description

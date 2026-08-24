@@ -28,13 +28,16 @@ from ..analyses.compute_inter_usv_interval_distributions import (
     fit_mixture_model_sweep,
 )
 from ..analyses.mixture_model_utils import (
+    IGMixture,
     TMixture,
     bootstrap_lrt,
     gmm_quantile_logspace,
     plot_gmm_fit,
     select_n_components_step_up_lrt,
     summarize_best_gmm,
+    summarize_best_ig_mixture,
     summarize_best_t_mixture,
+    ig_mixture_quantile_logspace,
     t_mixture_quantile_logspace,
 )
 from ..analyses.usv_interval_archive import (
@@ -472,6 +475,7 @@ def plot_best_fit_with_annotations(
     auto_inset_below_legend: bool = False,
     auto_inset_size: tuple = (0.34, 0.30),
     show_components: bool = False,
+    density_as_bin_means: bool = False,
 ) -> tuple[plt.Figure, plt.Axes, dict]:
     """
     Description
@@ -537,6 +541,12 @@ def plot_best_fit_with_annotations(
         ``(width, height)`` in axes fractions used when
         ``auto_inset_below_legend`` is True. Defaults to
         ``(0.34, 0.30)``.
+    density_as_bin_means (bool)
+        Draw the mixture as the bar heights it predicts (its density averaged
+        over each histogram bin) rather than as the point-wise curve. Bars are
+        bin averages, so the point-wise curve rides above them wherever a bin
+        straddles a peak -- an artifact of the comparison, not a misfit. Passed
+        through to :func:`mixture_model_utils.plot_gmm_fit`; defaults to False.
     show_components (bool)
         If True, overlay each individual mixture component's pdf
         (weighted by its mixing weight) on the histogram. Each
@@ -570,6 +580,7 @@ def plot_best_fit_with_annotations(
         edge_color=edge_color,
         show_components=False,
         legend=False,
+        density_as_bin_means=density_as_bin_means,
     )
 
     # Reserve ~18% headroom above the densest histogram bar / curve
@@ -584,6 +595,8 @@ def plot_best_fit_with_annotations(
     # have no closed form and are not currently rendered).
     if isinstance(mixture_model, TMixture):
         summary = summarize_best_t_mixture(mixture_model, mixture_model_order)
+    elif isinstance(mixture_model, IGMixture):
+        summary = summarize_best_ig_mixture(mixture_model, mixture_model_order)
     else:
         summary = summarize_best_gmm(mixture_model, mixture_model_order, tau=tau)
 
@@ -596,7 +609,21 @@ def plot_best_fit_with_annotations(
     qq_pearson_r = float("nan")
 
     if logmeans.size:
-        peaks_log = logmeans.reshape(-1, 1)
+        # Triangle anchors: the argmax of each component's own drawn weighted
+        # curve (posterior_k * mixture on a dense grid), so every triangle
+        # sits on the visible peak of its component for ANY family --
+        # symmetric log-space kernels peak at their means, skewed families
+        # (inverse-Gaussian) peak left of them. The text legend still states
+        # the component means from ``summary["logmeans"]``.
+        anchor_grid = np.linspace(xlims[0], xlims[1], 2000).reshape(-1, 1)
+        grid_mixture = np.exp(mixture_model.score_samples(anchor_grid))
+        grid_posteriors = mixture_model.predict_proba(anchor_grid)
+        anchor_x = np.empty(logmeans.size)
+        for k_sorted in range(logmeans.size):
+            k_orig = int(mixture_model_order[k_sorted])
+            comp_curve = grid_posteriors[:, k_orig] * grid_mixture
+            anchor_x[k_sorted] = float(anchor_grid[int(np.argmax(comp_curve)), 0])
+        peaks_log = anchor_x.reshape(-1, 1)
         mixture_pdf_at_peaks = np.exp(mixture_model.score_samples(peaks_log))
 
         # Triangles: marker='v' is centred on the data point so the
@@ -609,7 +636,7 @@ def plot_best_fit_with_annotations(
             ax.transData, fig=f, y=marker_height_pts / 2.0, units="points",
         )
         ax.scatter(
-            logmeans, mixture_pdf_at_peaks,
+            anchor_x, mixture_pdf_at_peaks,
             marker="v", s=marker_size_pts2, color=color, edgecolors=edge_color,
             linewidths=1.0, zorder=6, clip_on=False,
             transform=triangle_trans,
@@ -620,7 +647,7 @@ def plot_best_fit_with_annotations(
         # accounts for the marker height we just applied so the label
         # clears the triangle.
         label_offset_pts = marker_height_pts + 4.0
-        for letter, mu_k, y_k in zip(letters, logmeans, mixture_pdf_at_peaks, strict=False):
+        for letter, mu_k, y_k in zip(letters, anchor_x, mixture_pdf_at_peaks, strict=False):
             ax.annotate(
                 letter,
                 xy=(mu_k, y_k),
@@ -858,20 +885,15 @@ def _draw_mixture_components(
     posteriors = mixture_model.predict_proba(xx)                    # shape (N, K_orig)
     K = int(np.asarray(mixture_model_order).size)
 
-    # Posterior of component k at its own mean (Gaussian / Student-t
-    # modes both coincide with mu_k). 1 / this value is the scale that
-    # lifts the component's peak onto the mixture curve.
-    means_orig = np.asarray(mixture_model.means_).reshape(-1, 1)    # (K_orig, 1)
-    posteriors_at_mu = mixture_model.predict_proba(means_orig)      # (K_orig, K_orig)
-
+    # Each curve is the component's WEIGHTED density w_k * p_k(x)
+    # (equal to posterior_k(x) * mixture(x)), so the drawn components
+    # sum exactly to the mixture curve and each sits under the total --
+    # an honest decomposition of the fitted density. (The previous
+    # peak-lifting normalization inflated broad or heavily overlapping
+    # components far above their true contribution.)
     for k_sorted in range(K):
         k_orig = int(mixture_model_order[k_sorted])
-        post_k_at_mu_k = float(posteriors_at_mu[k_orig, k_orig])
-        # Guard against pathological cases (collapsed component or
-        # numerical underflow) where the posterior at the mean rounds
-        # to zero; fall back to the un-scaled weighted-component view.
-        scale = 1.0 / post_k_at_mu_k if post_k_at_mu_k > 0.0 else 1.0
-        comp = posteriors[:, k_orig] * mixture_pdf * scale
+        comp = posteriors[:, k_orig] * mixture_pdf
         col, ls = _COMPONENT_PALETTE[k_sorted % len(_COMPONENT_PALETTE)]
         ax.plot(
             xx.ravel(), comp,
@@ -930,6 +952,8 @@ def _draw_qq_into_axes(
     obs_q = np.quantile(intervals_sec, qs)
     if isinstance(mixture_model, TMixture):
         model_q = np.exp(t_mixture_quantile_logspace(qs, mixture_model))
+    elif isinstance(mixture_model, IGMixture):
+        model_q = np.exp(ig_mixture_quantile_logspace(qs, mixture_model))
     else:
         model_q = np.exp(gmm_quantile_logspace(qs, mixture_model))
 
@@ -1047,6 +1071,7 @@ def run_bootstrap_lrt_sweep(
     n_init_boot: int = 3,
     reg_covar: float = 1e-4,
     seed: int = 0,
+    n_jobs: int = 1,
     message_output=print,
 ) -> dict:
     """
@@ -1077,7 +1102,7 @@ def run_bootstrap_lrt_sweep(
     n_subsample (int)
         Subsample size for both observed and bootstrap fits.
     model_class (str)
-        ``'gauss'`` or ``'t'``.
+        ``'gauss'``, ``'t'`` or ``'ig'``.
     n_init_obs (int)
         EM restarts for the observed fits.
     n_init_boot (int)
@@ -1086,6 +1111,11 @@ def run_bootstrap_lrt_sweep(
         Component variance floor.
     seed (int)
         RNG seed.
+    n_jobs (int)
+        Number of parallel workers for the bootstrap replicates of each
+        pairwise test (passed through to
+        :func:`mixture_model_utils.bootstrap_lrt`; ``1`` preserves the
+        sequential legacy stream bit-for-bit).
     message_output (callable)
         Logging callable.
 
@@ -1117,6 +1147,7 @@ def run_bootstrap_lrt_sweep(
                 n_init_boot=n_init_boot,
                 reg_covar=reg_covar,
                 seed=seed,
+                n_jobs=n_jobs,
             )
             sweep[sex][(K_n, K_a)] = res
             message_output(
@@ -1884,7 +1915,7 @@ def load_best_fit_from_h5(
     path returns, suitable for direct use by
     :func:`plot_best_fit_with_annotations` and :func:`plot_qq`.
 
-    The ``model_class`` (``'gauss'`` / ``'t'``) is inferred from the
+    The ``model_class`` (``'gauss'`` / ``'t'`` / ``'ig'``) is inferred from the
     archived row, so callers do not have to know which family the run
     used. Components are returned in ascending log-mean order; the
     returned ``mixture_model_order`` is therefore ``np.arange(K)``.

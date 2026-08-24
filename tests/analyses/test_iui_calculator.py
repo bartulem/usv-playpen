@@ -78,6 +78,7 @@ def _make_settings(tmp_path, fit_mixture_model=False):
             "model_class": "gauss",
             "bootstrap_lrt_B": 2,
             "bootstrap_lrt_n_subsample": 50,
+            "bootstrap_lrt_n_jobs": 1,
             "bootstrap_lrt_alpha": 0.05,
             "bootstrap_lrt_bonferroni": True,
         }

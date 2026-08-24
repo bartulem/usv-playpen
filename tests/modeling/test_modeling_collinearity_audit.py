@@ -933,9 +933,9 @@ class TestAuditPredictorTimescales:
             p_a['rho_signal_null_mean'], p_c['rho_signal_null_mean'],
             equal_nan=True)
 
-    def test_negative_lag_direction_bout_leads_feature(self, tmp_path):
+    def test_positive_lag_direction_bout_leads_feature(self, tmp_path):
         """When a predictor is a delayed copy of the bout-onset train the
-        signal-correlation peak lands at a negative lag (bout precedes
+        signal-correlation peak lands at a POSITIVE lag (bout precedes
         feature), exercising the ``bout leads feature`` headline branch."""
 
         fps = 10.0
@@ -945,7 +945,8 @@ class TestAuditPredictorTimescales:
             n_frames=n_frames, fps=fps, n_sessions=2,
         )
         # Overwrite one feature with a delayed copy of the bout impulse
-        # train so corr(feature[t], Y[t - delay]) peaks at a negative lag.
+        # train (bout precedes feature), which under the reported
+        # convention peaks at a POSITIVE lag (vocalisation leads).
         for sid in beh:
             y = _binary_event_trace(bouts[sid], n_frames, fps)
             delayed = np.zeros(n_frames, dtype=np.float64)
@@ -971,7 +972,7 @@ class TestAuditPredictorTimescales:
         idx = payload['features'].index('self.speed')
         row = payload['rho_signal'][idx]
         peak_lag_frames = payload['signal_lags_frames'][int(np.nanargmax(np.abs(row)))]
-        assert peak_lag_frames < 0
+        assert peak_lag_frames > 0
 
     def test_zero_lag_direction_simultaneous(self, tmp_path):
         """A predictor equal to the bout-onset train peaks at lag 0, so the
@@ -1290,3 +1291,51 @@ class TestAuditPredictorTimescales:
         assert payload['n_bouts'] == 0
         # ACF block is still real.
         assert np.isfinite(payload['acf_median'][:, 0]).any()
+
+
+    def test_lag_sign_convention_behavior_precedes_vocal_is_negative(self, tmp_path):
+        """Pins the reported lag convention: a feature that consistently rises
+        BEFORE each bout onset (behaviour precedes vocalisation) must peak on
+        the NEGATIVE side of the signal-correlation lag axis."""
+        import polars as _pl
+
+        fps = 10.0
+        n_frames = 800
+        lead_frames = 5                                    # feature leads bouts by 0.5 s
+        beh, names, cam, bouts, intervals, _events = _make_timescale_inputs(
+            n_frames=n_frames, fps=fps, n_sessions=3,
+        )
+        for sid, onset_times in bouts.items():
+            onset_frames = (onset_times * fps).astype(int)
+            precursor = np.zeros(n_frames, dtype=np.float64)
+            rise_frames = np.clip(onset_frames - lead_frames, 0, n_frames - 1)
+            for rf in rise_frames:
+                precursor[rf:rf + 3] = 1.0                  # short pulse BEFORE each onset
+            beh[sid] = beh[sid].with_columns(_pl.Series('m0.speed', precursor))
+
+        payload = audit_predictor_timescales(
+            processed_beh_dict=beh,
+            mouse_names_dict=names,
+            target_idx=0,
+            predictor_idx=1,
+            configured_filter_history=1.0,
+            camera_fps_dict=cam,
+            max_lag_seconds=2.0,
+            n_shuffles=8,
+            ibi_thresholds={'male': 0.25, 'female': 0.30},
+            save_path=str(tmp_path / 'ts' / 'timescales.pkl'),
+            source_pickle='input.pkl',
+            random_seed=0,
+            input_metadata={'pipeline': 'vocal_onsets'},
+            shuffle_range_seconds=(3.0, 6.0),
+            event_intervals_per_session=intervals,
+            onset_times_per_session=bouts,
+        )
+
+        feat_idx = payload['features'].index('self.speed')
+        rho = payload['rho_signal'][feat_idx]
+        lags = payload['signal_lags_seconds']
+        peak_lag = float(lags[int(np.nanargmax(np.abs(rho)))])
+        assert peak_lag < 0, (
+            f"behaviour-precedes-vocal must peak at negative lag, got {peak_lag}"
+        )

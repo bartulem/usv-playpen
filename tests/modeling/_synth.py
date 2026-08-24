@@ -207,8 +207,8 @@ def build_usv_summary_csv(
         filter_history: float,
         n_bouts: int = 6,
         usv_per_bout: int = 3,
-        category_column: str = 'vae_supercategory',
-        manifold_columns: tuple[str, str] = ('vae_umap1', 'vae_umap2'),
+        category_column: str = 'qlvm_supercategory',
+        manifold_columns: tuple[str, str] = ('qlvm1', 'qlvm2'),
         seed: int = 0,
         csv_sep: str = ',',
 ) -> Path:
@@ -228,8 +228,9 @@ def build_usv_summary_csv(
         plus generous slack) is left silent, so the clean-epoch tiler can carve
         out negative (No-USV) events too.
 
-    A non-noise integer category, two manifold coordinates, a ``vae_category``
-    column and a ``mask_number`` column are attached to every row so the
+    A non-noise integer category, two manifold coordinates, a companion
+    ``<prefix>_category`` column (prefix from ``category_column``) and a
+    ``mask_number`` column are attached to every row so the
     category / multinomial / continuous / bout-parameter loaders all find what
     they need (even though the onset smoke path only consumes onsets).
 
@@ -312,7 +313,7 @@ def build_usv_summary_csv(
         'start': starts,
         'stop': stops,
         category_column: [1] * n_rows,            # non-noise category (noise == 0)
-        'vae_category': [1] * n_rows,
+        f"{category_column.rsplit('_', 1)[0]}_category": [1] * n_rows,
         'mask_number': [2] * n_rows,
         manifold_columns[0]: (rng.standard_normal(n_rows)).round(6).tolist(),
         manifold_columns[1]: (rng.standard_normal(n_rows)).round(6).tolist(),
@@ -337,8 +338,8 @@ def build_session_tree(
         mouse_name_stub: tuple[str, str] = ('m_male', 'm_female'),
         n_bouts: int = 8,
         usv_per_bout: int = 3,
-        category_column: str = 'vae_supercategory',
-        manifold_columns: tuple[str, str] = ('vae_umap1', 'vae_umap2'),
+        category_column: str = 'qlvm_supercategory',
+        manifold_columns: tuple[str, str] = ('qlvm1', 'qlvm2'),
         csv_sep: str = ',',
 ) -> list[Path]:
     """

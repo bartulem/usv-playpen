@@ -103,7 +103,7 @@ HISTORY_FRAMES = int(np.floor(CAMERA_FPS * FILTER_HISTORY))
 N_FRAMES = 7200       # 120 s sessions -> plenty of room for many spread events
 N_SESSIONS = 4
 N_CATEGORIES = 3      # non-noise vocal categories: labels 1, 2, 3
-NOISE_CATEGORY = 0    # filtered out by ``usv_noise_categories`` (default [0])
+NOISE_CATEGORY = 0    # stripped when ``usv_noise_categories`` enables it (shipped default: [])
 
 # Multinomial-specific settings overrides. The shipped JSON's multinomial knobs
 # (max_iter=20000, tuning on, inner_max_iter=2500, smoothness order 2) are far
@@ -144,8 +144,8 @@ def build_multinomial_usv_summary_csv(
         filter_history: float,
         n_categories: int = N_CATEGORIES,
         events_per_category: int = 10,
-        category_column: str = 'vae_supercategory',
-        manifold_columns: tuple[str, str] = ('vae_umap1', 'vae_umap2'),
+        category_column: str = 'qlvm_supercategory',
+        manifold_columns: tuple[str, str] = ('qlvm1', 'qlvm2'),
         seed: int = 0,
         csv_sep: str = ',',
 ) -> Path:
@@ -407,6 +407,10 @@ def _apply_multinomial_overrides(settings: dict) -> dict:
         _MULTINOMIAL_HP_OVERRIDES
     )
     settings['vocal_features']['usv_predictor_type'] = None
+    # The shipped default is now [] (QLVM convention: the Phase-4 gate removes
+    # noise upstream); these tests exercise the category-strip mechanism, so
+    # the noise filter is enabled explicitly.
+    settings['vocal_features']['usv_noise_categories'] = [NOISE_CATEGORY]
     return settings
 
 
@@ -437,7 +441,7 @@ def build_multinomial_input_pickle(
           '_input_metadata': {
               'analysis_specific': {
                   'usv_category_number': <K>,
-                  'usv_category_column_name': 'vae_supercategory',
+                  'usv_category_column_name': 'qlvm_supercategory',
               }, ...
           }
         }
@@ -498,10 +502,10 @@ def build_multinomial_input_pickle(
             artifact[feature][sess] = {'X': X_sess, 'y': y_sess.copy()}
 
     artifact['_input_metadata'] = {
-        'analysis_tag': 'multinomial_vae_supercategory',
+        'analysis_tag': 'multinomial_qlvm_supercategory',
         'analysis_specific': {
             'usv_category_number': int(n_categories),
-            'usv_category_column_name': 'vae_supercategory',
+            'usv_category_column_name': 'qlvm_supercategory',
         },
     }
 
@@ -671,12 +675,12 @@ class TestMultinomialInputExtraction:
 
         md = artifact['_input_metadata']
         assert md['analysis_type'] == 'multinomial'
-        assert md['analysis_tag'] == 'multinomial_vae_supercategory'
+        assert md['analysis_tag'] == 'multinomial_qlvm_supercategory'
         assert sorted(md['feature_zoo_kept']) == feature_keys
         spec = md['analysis_specific']
         assert spec['usv_category_number'] >= N_CATEGORIES
         assert spec['usv_category_number'] == observed_classes.size
-        assert spec['usv_category_column_name'] == 'vae_supercategory'
+        assert spec['usv_category_column_name'] == 'qlvm_supercategory'
 
 
 class TestMultinomialSplitters:
@@ -1595,7 +1599,7 @@ class TestMultinomialExtractionEdgeCases:
             csv_path = next((root / 'audio').glob('*_usv_summary.csv'))
             df = pls.read_csv(csv_path)
             df = df.with_columns(
-                pls.lit(NOISE_CATEGORY).alias('vae_supercategory'),
+                pls.lit(NOISE_CATEGORY).alias('qlvm_supercategory'),
                 pls.lit(NOISE_CATEGORY).alias('vae_category'),
             )
             df.write_csv(csv_path)

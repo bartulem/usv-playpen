@@ -6,13 +6,11 @@ Run USV inference on WAV files and create annotations.
 from __future__ import annotations
 
 import json
-import math
 import os
 import pathlib
 import re
 import shutil
 import subprocess
-from collections import defaultdict
 from collections.abc import Callable
 from datetime import datetime
 
@@ -20,14 +18,23 @@ import librosa
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
-from scipy.signal import find_peaks
+import soundfile as sf
 from tqdm import tqdm
 
-from ..os_utils import configure_path, first_match_or_raise, wait_for_subprocesses
+from ..os_utils import (
+    atomic_output_path,
+    configure_path,
+    first_match_or_raise,
+    wait_for_subprocesses,
+)
 from ..time_utils import is_gui_context, smart_wait
 from ..visualizations.figure_io import save_figure
 from ..visualizations.plot_style import apply_plot_style
-from ..yaml_utils import load_session_metadata, save_session_metadata
+from ..yaml_utils import (
+    load_session_metadata,
+    read_excluded_audio_channels,
+    save_session_metadata,
+)
 
 apply_plot_style()
 
@@ -78,139 +85,138 @@ def _write_usv_summary_csv(merged: list, out_path: pathlib.Path) -> None:
     }).write_csv(file=out_path)
 
 
-def _watershed_merge_segments(
-    all_segments: list,
-    peak_min: int,
-    valley_frac: float,
-    coverage_bin_ms: float,
-) -> list:
-    """Merge per-channel DAS detections into USVs by watershed on channel coverage.
+def _ladder_gap_leading_stops(
+    start_seconds: np.ndarray,
+    stop_seconds: np.ndarray,
+    sampling_rate: int,
+    stride_samples: int,
+    tolerance_samples: int,
+    max_rung: int,
+) -> np.ndarray:
+    """
+    Description
+    -----------
+    Finds the seam-ladder gaps in one channel's raw DAS annotations and returns
+    the stop time of the call leading each such gap.
 
-    Replaces the previous greedy interval-union merge, whose transitive
-    overlap-chaining collapsed a run of close calls (or a single pathological
-    long segment) into one giant USV. Here a USV is a *peak of multi-channel
-    agreement* and USVs are cut at the *valleys* between peaks, so no single
-    channel -- however long or jittery its segment -- can force a merge.
-
-    The algorithm operates purely on the segment endpoints (times, in seconds):
-
-    1. Coverage. A uniform time grid of bin width ``coverage_bin_ms`` is laid over
-       the recording, and ``coverage[t]`` is the number of *distinct* channels with
-       a segment covering bin ``t`` (each channel votes at most once per bin).
-    2. Active regions. The timeline is cut into maximal runs where
-       ``coverage >= 1``; each is processed independently, so true silence
-       (``coverage == 0``) is never crossed.
-    3. Watershed split. Within a region, significant peaks (``coverage >=
-       peak_min``) are located; the region is cut at the valley between two
-       consecutive significant peaks whenever that valley drops below
-       ``valley_frac`` times the smaller of the two peaks. Regions with fewer than
-       two significant peaks (including quiet, few-channel calls) are kept whole.
-    4. Boundaries. Each resulting piece is trimmed to the contiguous span around
-       its peak where ``coverage >= valley_frac * peak``, so the USV hugs its call
-       and the low-coverage inter-call shoulders remain real gaps.
-
-    Because every channel contributes at most one vote, a single long or jittery
-    segment can neither create a peak nor fill a valley, which is precisely the
-    over-merge failure mode of the greedy union it replaces.
+    The legacy (non-overlapping) DAS window tiling judged each stitched window
+    span without acoustic context from its neighbours, so a real inter-call
+    pause whose faint flanking call edges straddled window seams was emitted
+    with both endpoints ON the seam grid: the measured gap width is exactly
+    ``k * stride_samples + 1`` samples (the +1 is the segment-extraction
+    boundary convention). Real pauses cannot repeat to the sample, so a gap
+    within ``tolerance_samples`` of that fingerprint for k = 1..``max_rung``
+    identifies a seam-snapped pair with essentially no false positives at the
+    raw-annotation level.
 
     Parameters
     ----------
-    all_segments : list
-        Flat list of ``(start_seconds, stop_seconds, channel_index)`` tuples
-        pooled across all channels (the Phase 1 output).
-    peak_min : int
-        Minimum number of distinct channels for a coverage peak to count as a
-        confident call; gates splitting and thereby preserves quiet calls.
-    valley_frac : float
-        Relative valley depth (in ``(0, 1]``) that both triggers a split and
-        defines each USV's edges: a gap splits when it falls below ``valley_frac``
-        times the smaller flanking peak, and each USV spans the region around its
-        peak where coverage stays at or above ``valley_frac * peak``.
-    coverage_bin_ms : float
-        Width (milliseconds) of the coverage-grid bin; sets the temporal
-        resolution and the implicit smoothing (sub-bin gaps/peaks vanish).
+    start_seconds (np.ndarray)
+        Segment start times (s) of one channel's raw DAS annotations, sorted
+        ascending, noise rows removed.
+    stop_seconds (np.ndarray)
+        Matching segment stop times (s).
+    sampling_rate (int)
+        Audio sampling rate (Hz) the annotation times refer to.
+    stride_samples (int)
+        Window-stitching stride (in samples) of the legacy DAS model that
+        produced the annotations (settings key
+        ``seam_repair_legacy_stride_samples``).
+    tolerance_samples (int)
+        Maximum deviation (in samples) from the exact ladder fingerprint for a
+        gap to count as seam-snapped.
+    max_rung (int)
+        Highest ladder multiple k to test.
 
     Returns
     -------
-    merged : list
-        List of merged USV interval dicts, each with ``start``/``stop`` (seconds),
-        ``chs_detected`` (a set of channel indices active within the USV), and the
-        ``peak_amp_ch``/``mean_amp_ch`` placeholders (filled by Phase 4), sorted by
-        ``start``. Empty when ``all_segments`` is empty.
+    leading_stops (np.ndarray)
+        Stop times (s) of the segments immediately preceding each seam-ladder
+        gap; empty when the channel has fewer than two segments or no ladder
+        gaps.
     """
-    if not all_segments:
-        return []
+    if len(start_seconds) < 2:
+        return np.empty(0, dtype=float)
+    gap_samples = np.round((start_seconds[1:] - stop_seconds[:-1]) * sampling_rate).astype(np.int64)
+    rung = np.round(gap_samples / stride_samples).astype(np.int64)
+    on_ladder = (
+        (rung >= 1)
+        & (rung <= max_rung)
+        & (np.abs(gap_samples - (rung * stride_samples + 1)) <= tolerance_samples)
+    )
+    return stop_seconds[:-1][on_ladder]
 
-    dt = coverage_bin_ms / 1000.0
-    t0 = min(seg[0] for seg in all_segments)
-    t1 = max(seg[1] for seg in all_segments)
-    n_bins = math.ceil((t1 - t0) / dt) + 2
 
-    # Per-channel coverage masks (a channel votes at most once per bin), summed
-    # across channels into the integer coverage profile.
-    segments_by_channel = defaultdict(list)
-    for start, stop, ch_idx in all_segments:
-        segments_by_channel[ch_idx].append((start, stop))
+def _repaired_facing_edges(
+    annotation_starts: np.ndarray,
+    annotation_stops: np.ndarray,
+    snippet_offset: float,
+    stop_first: float,
+    start_second: float,
+    mid_first: float,
+    mid_second: float,
+    max_boundary_shift: float,
+) -> tuple[float, float] | None:
+    """
+    Description
+    -----------
+    Extracts the corrected facing edges of one seam-snapped USV pair from the
+    overlap-tiled DAS re-detection of its audio snippet.
 
-    channel_masks = {}
-    coverage = np.zeros(n_bins, dtype=np.int32)
-    for ch_idx, channel_segments in segments_by_channel.items():
-        mask = np.zeros(n_bins, dtype=bool)
-        for start, stop in channel_segments:
-            bin_start = int((start - t0) / dt)
-            bin_stop = math.ceil((stop - t0) / dt)
-            mask[bin_start:bin_stop] = True
-        channel_masks[ch_idx] = mask
-        coverage += mask
+    The re-detected segment containing the leading call's midpoint provides the
+    new stop of the first call; the segment containing the trailing call's
+    midpoint provides the new start of the second call. Because the seam
+    artifact only ever *clips* call edges (the true edges lie outward from the
+    recorded ones, inside the recorded gap), inward suggestions -- which arise
+    from single-channel-versus-multichannel-merge convention differences, not
+    from the artifact -- are clamped to the recorded boundary. Pairs the
+    re-detection joins into one segment, fails to detect, or would move by more
+    than ``max_boundary_shift`` are rejected (returned as None) and left
+    untouched by the caller.
 
-    # Active regions: maximal runs where coverage >= 1.
-    padded = np.concatenate(([0], (coverage >= 1).astype(np.int8), [0]))
-    region_edges = np.flatnonzero(np.diff(padded))
-    active_regions = list(zip(region_edges[0::2], region_edges[1::2], strict=False))
+    Parameters
+    ----------
+    annotation_starts (np.ndarray)
+        Segment start times (s, snippet-relative) of the snippet re-detection,
+        noise rows removed.
+    annotation_stops (np.ndarray)
+        Matching segment stop times (s, snippet-relative).
+    snippet_offset (float)
+        Absolute session time (s) of the snippet's first sample; added to the
+        snippet-relative annotation times.
+    stop_first (float)
+        Recorded stop (s) of the leading call in the summary.
+    start_second (float)
+        Recorded start (s) of the trailing call in the summary.
+    mid_first (float)
+        Midpoint (s) of the leading call's recorded extent.
+    mid_second (float)
+        Midpoint (s) of the trailing call's recorded extent.
+    max_boundary_shift (float)
+        Maximum permitted outward correction (s) per edge; mechanistically one
+        legacy DAS window tile.
 
-    # Watershed split each active region at valleys between consecutive
-    # significant peaks. The region coverage is zero-padded on both ends (the
-    # true coverage just outside an active region is 0), so a call sitting at the
-    # very start or end of a region -- whose peak would otherwise be a boundary
-    # sample find_peaks cannot see -- is still detected.
-    pieces = []
-    for region_start, region_stop in active_regions:
-        padded_coverage = np.concatenate(([0], coverage[region_start:region_stop], [0]))
-        peaks, _ = find_peaks(padded_coverage, height=peak_min)
-        if len(peaks) <= 1:
-            pieces.append((region_start, region_stop))
-            continue
-        peak_heights = padded_coverage[peaks]
-        split_bins = []
-        for i in range(len(peaks) - 1):
-            lo, hi = peaks[i], peaks[i + 1]
-            valley_offset = lo + int(np.argmin(padded_coverage[lo:hi + 1]))
-            if padded_coverage[valley_offset] < valley_frac * min(peak_heights[i], peak_heights[i + 1]):
-                # map the padded index back to a global coverage-bin index
-                split_bins.append(region_start + valley_offset - 1)
-        boundaries = [region_start, *split_bins, region_stop]
-        pieces.extend((boundaries[i], boundaries[i + 1]) for i in range(len(boundaries) - 1))
-
-    # Trim each piece to its call extent and assign detected channels.
-    merged = []
-    for piece_start, piece_stop in pieces:
-        piece_coverage = coverage[piece_start:piece_stop]
-        level = valley_frac * int(piece_coverage.max())
-        above = np.flatnonzero(piece_coverage >= level)
-        left = piece_start + int(above[0])
-        right = piece_start + int(above[-1])
-        chs_detected = {ch_idx for ch_idx, mask in channel_masks.items()
-                        if mask[left:right + 1].any()}
-        merged.append({
-            'start': t0 + left * dt,
-            'stop': t0 + (right + 1) * dt,
-            'chs_detected': chs_detected,
-            'peak_amp_ch': 0.0,
-            'mean_amp_ch': 0.0,
-        })
-
-    merged.sort(key=lambda usv: usv['start'])
-    return merged
+    Returns
+    -------
+    new_edges (tuple[float, float] | None)
+        ``(new_stop_first, new_start_second)`` in absolute session time, or
+        None when the pair cannot be repaired safely.
+    """
+    seg_starts = annotation_starts + snippet_offset
+    seg_stops = annotation_stops + snippet_offset
+    first_hits = np.flatnonzero((seg_starts <= mid_first) & (seg_stops >= mid_first))
+    second_hits = np.flatnonzero((seg_starts <= mid_second) & (seg_stops >= mid_second))
+    if len(first_hits) == 0 or len(second_hits) == 0:
+        return None
+    if first_hits[0] == second_hits[0]:
+        return None
+    new_stop_first = max(float(seg_stops[first_hits[0]]), stop_first)
+    new_start_second = min(float(seg_starts[second_hits[0]]), start_second)
+    if (new_stop_first - stop_first) > max_boundary_shift:
+        return None
+    if (start_second - new_start_second) > max_boundary_shift:
+        return None
+    return new_stop_first, new_start_second
 
 
 class FindMouseVocalizations:
@@ -395,6 +401,16 @@ class FindMouseVocalizations:
             "s_ch12": 23,
         }
 
+        # Hardware-excluded microphones for this session (per-session metadata
+        # record, ``Equipment -> audio_Avisoft -> excluded_channels``; empty
+        # for healthy sessions). Their annotation files are skipped in Phase 1,
+        # so excluded channels never contribute detections to the merge.
+        excluded_channels = read_excluded_audio_channels(self.root_directory, logger=self.message_output)
+        if excluded_channels:
+            self.message_output(
+                f"Excluding audio channel(s) {excluded_channels} per session metadata."
+            )
+
         session_id = pathlib.Path(self.root_directory).name
 
         annot_dir = pathlib.Path(self.root_directory) / "audio" / "das_annotations"
@@ -423,6 +439,11 @@ class FindMouseVocalizations:
                         f"Skipping {one_file.name}: unrecognized device/channel '{file_id}'."
                     )
                     continue
+                if file_id in excluded_channels:
+                    self.message_output(
+                        f"Skipping {one_file.name}: channel '{file_id}' is excluded per session metadata."
+                    )
+                    continue
                 channel_df = pls.read_csv(source=str(one_file))
                 channel_df = channel_df.filter(pls.col("name") != "noise")
                 ch_num = ch_conversion_dict[file_id]
@@ -434,23 +455,35 @@ class FindMouseVocalizations:
             # Phase 2: sort all segments by start time
             all_segments.sort(key=lambda seg: seg[0])
 
-            # Phase 3: watershed merge across channels.
-            # The greedy interval-union this replaced chained any transitively
-            # overlapping segments, so one pathological long segment -- or a run of
-            # close calls with jittery per-channel boundaries -- collapsed into a
-            # single giant USV. The watershed instead segments the multi-channel
-            # agreement profile: a USV is a peak of channel coverage, and USVs are
-            # cut at the valleys between peaks, so no single channel can force a
-            # merge (see _watershed_merge_segments for the full algorithm).
-            peak_min = self.input_parameter_dict["summarize_das_findings"]["peak_min"]
-            valley_frac = self.input_parameter_dict["summarize_das_findings"]["valley_frac"]
-            coverage_bin_ms = self.input_parameter_dict["summarize_das_findings"]["coverage_bin_ms"]
-            merged = _watershed_merge_segments(
-                all_segments=all_segments,
-                peak_min=peak_min,
-                valley_frac=valley_frac,
-                coverage_bin_ms=coverage_bin_ms,
-            )
+            # Phase 3: greedy interval merge across all channels.
+            # Two intervals (a_start, a_stop) and (b_start, b_stop) overlap (open-ended) when:
+            #   a_start < b_stop  and  b_start < a_stop
+            # Since segments are sorted by start, only the running stop needs comparing.
+            # Each merged entry is a dict with start, stop, chs_detected (set), and placeholder fields.
+            #
+            # This replaces the coverage-watershed merge introduced in f807c41. That merge
+            # trimmed every USV to the span where at least valley_frac of its peak channel
+            # count still agreed, which deletes the faint onsets and offsets heard by only
+            # the nearest few microphones: measured against the local noise floor, watershed
+            # edges leave 5-19% of a call's own peak energy outside the boundary, where the
+            # union leaves none. Its premise -- that a long merged interval is one jittery
+            # channel chaining distinct calls -- does not hold either; those intervals are
+            # dense runs of genuinely overlapping calls, with no silence to cut at.
+            merged = []
+            for start, stop, ch_idx in all_segments:
+                if merged and start < merged[-1]['stop']:
+                    # overlaps with current merged interval: extend and record channel
+                    merged[-1]['stop'] = max(merged[-1]['stop'], stop)
+                    merged[-1]['chs_detected'].add(ch_idx)
+                else:
+                    # no overlap: start a new merged interval
+                    merged.append({
+                        'start': start,
+                        'stop': stop,
+                        'chs_detected': {ch_idx},
+                        'peak_amp_ch': 0.0,
+                        'mean_amp_ch': 0.0,
+                    })
 
             # Convert channel sets to sorted lists and compute counts
             for usv in merged:
@@ -459,12 +492,12 @@ class FindMouseVocalizations:
 
             n_usv = len(merged)
             self.message_output(
-                f"Merged {n_usv} USV intervals from {len(all_segments)} raw detections across {len(das_annotation_files)} channels."
+                f"Merged {n_usv} USV intervals from {len(all_segments)} raw detections across {len({seg[2] for seg in all_segments})} channels."
             )
             smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
             # Whether to run the Phase-4 putative-noise rejection (amplitude +
-            # spectrogram correlation/variance checks). When False, every merged
+            # spectrogram correlation/coherence checks). When False, every merged
             # interval is kept and written to the summary CSV as-is.
             filter_putative_noise_bool = self.input_parameter_dict[
                 "summarize_das_findings"
@@ -472,7 +505,7 @@ class FindMouseVocalizations:
 
             # Phase 4: amplitude + spectrogram quality checks
             # (skipped entirely when filter_putative_noise_bool is False)
-            if filter_putative_noise_bool and n_usv > 1:
+            if filter_putative_noise_bool and n_usv > 0:
                 audio_file_loc = first_match_or_raise(
                     root=pathlib.Path(self.root_directory) / "audio" / "hpss_filtered",
                     pattern="*.mmap",
@@ -504,16 +537,47 @@ class FindMouseVocalizations:
                 low_freq_cutoff = self.input_parameter_dict["summarize_das_findings"][
                     "low_freq_cutoff"
                 ]
+                noise_corr_cutoff = self.input_parameter_dict["summarize_das_findings"][
+                    "noise_corr_cutoff_min"
+                ]
+                coherence_cutoff = self.input_parameter_dict["summarize_das_findings"][
+                    "coherence_cutoff_min"
+                ]
+                coherence_channel_count = self.input_parameter_dict["summarize_das_findings"][
+                    "coherence_channel_count"
+                ]
                 frequency_resolution = audio_sampling_rate / len_win_signal
                 lower_bin = int(np.floor(low_freq_cutoff / frequency_resolution))
+                # Defensive: if lower_bin sits past the STFT's freq axis every
+                # in-band slice below would be empty and corrcoef would raise an
+                # obscure broadcasting error; surface the real problem here.
+                if lower_bin >= len_win_signal // 2 + 1:
+                    msg = (
+                        f"lower_bin ({lower_bin}) exceeds STFT freq-axis "
+                        f"length ({len_win_signal // 2 + 1}); "
+                        "check `low_freq_cutoff` vs `len_win_signal` / sampling rate"
+                    )
+                    raise ValueError(msg)
+
+                # Channels eligible for the amplitude scan and the coherence
+                # ranking: every audio channel minus the session's
+                # hardware-excluded ones (see the metadata read above).
+                excluded_channel_indices = {
+                    ch_conversion_dict[ch_name]
+                    for ch_name in excluded_channels
+                    if ch_name in ch_conversion_dict
+                }
+                eligible_channel_indices = [
+                    ch for ch in range(channel_num) if ch not in excluded_channel_indices
+                ]
 
                 condition_0_list = np.full(shape=n_usv, fill_value=False)
                 mean_signal_correlations = np.full(n_usv, np.nan)
-                signal_variance = np.full(n_usv, np.nan)
+                spatial_coherences = np.full(n_usv, np.nan)
 
                 for i, usv in tqdm(
                     enumerate(merged),
-                    desc="Computing spectrogram correlations/variance in progress...",
+                    desc="Computing spectrogram correlations/coherences in progress...",
                     total=n_usv,
                     position=0,
                     leave=True,
@@ -522,15 +586,32 @@ class FindMouseVocalizations:
                     stop_usv = int(np.ceil(usv['stop'] * audio_sampling_rate))
                     # Materialize the USV sample window once: each fresh memmap index
                     # re-reads the same byte range from disk, and this window is used
-                    # three times (peak/mean amplitude channel + the STFT input below).
-                    window = np.asarray(audio_file_data[start_usv:stop_usv, :])
-                    peak_amp_ch = np.unravel_index(
-                        np.argmax(window),
-                        window.shape,
-                    )[1]
-                    mean_amp_ch = np.argmax(
-                        np.abs(window).mean(axis=0)
-                    )
+                    # twice (peak/mean amplitude channels + the STFT input below).
+                    window = np.asarray(audio_file_data[start_usv:stop_usv, :])[:, eligible_channel_indices]
+                    # Data-integrity guard: an all-zero window means the
+                    # concatenated mmap has no audio where DAS detected calls
+                    # (e.g. a truncated/partial mmap write). Classifying such
+                    # windows would silently discard real calls as noise --
+                    # fail loud instead so the corrupt intermediate is fixed.
+                    if window.size and not window.any():
+                        msg = (
+                            f"All-zero audio window at USV {i} "
+                            f"({usv['start']:.3f}-{usv['stop']:.3f} s) in the concatenated "
+                            f"mmap '{audio_file_name}' despite DAS detections there; the "
+                            "mmap is likely truncated or corrupt -- regenerate it "
+                            "(concatenate-audio-files) before summarizing."
+                        )
+                        raise ValueError(msg)
+                    # Peak/mean amplitude channels are searched over the ELIGIBLE
+                    # channels only, then mapped back to absolute channel indices
+                    # -- a loud artifact on an excluded channel must not become
+                    # the peak-amplitude channel and fail condition_0 below.
+                    peak_amp_ch = eligible_channel_indices[
+                        int(np.unravel_index(np.argmax(window), window.shape)[1])
+                    ]
+                    mean_amp_ch = eligible_channel_indices[
+                        int(np.argmax(np.abs(window).mean(axis=0)))
+                    ]
                     usv['peak_amp_ch'] = int(peak_amp_ch)
                     usv['mean_amp_ch'] = int(mean_amp_ch)
                     usv_detected_chs = usv['chs_detected']
@@ -541,100 +622,75 @@ class FindMouseVocalizations:
                         or mean_amp_ch not in usv_detected_chs
                     )
 
-                    # the following section computes channel-wise signal correlations in the frequency domain
-                    if len(usv_detected_chs) > 1:
-                        spectrogram_data_selected_ch = np.abs(
-                            librosa.stft(
-                                window[:, usv_detected_chs]
-                                .astype("float32")
-                                .T,
-                                n_fft=len_win_signal,
-                            )
+                    # One in-band magnitude spectrogram per eligible channel; the
+                    # detected-channel correlation and the top-K spatial coherence
+                    # are both read off this single STFT.
+                    spectrogram_all_eligible = np.abs(
+                        librosa.stft(
+                            window.astype("float32").T,
+                            n_fft=len_win_signal,
                         )
-                        # Defensive: if lower_bin sits past the STFT's
-                        # freq axis the slice is empty and corrcoef
-                        # would later raise an obscure broadcasting
-                        # error; surface the real problem here.
-                        if lower_bin >= spectrogram_data_selected_ch.shape[1]:
-                            msg = (
-                                f"lower_bin ({lower_bin}) exceeds STFT freq-axis "
-                                f"length ({spectrogram_data_selected_ch.shape[1]}); "
-                                "check `low_freq_cutoff` vs `len_win_signal` / sampling rate"
-                            )
-                            raise ValueError(msg)
-                        reshaped_spectrogram = spectrogram_data_selected_ch[
-                            :, lower_bin:, :
-                        ].reshape(len(usv_detected_chs), -1)
-                        correlation_matrix = np.corrcoef(reshaped_spectrogram)
-                        unique_correlations = correlation_matrix[
-                            np.triu_indices(n=len(usv_detected_chs), k=1)
-                        ]
-                        mean_signal_correlations[i] = np.mean(unique_correlations)
-                    else:
-                        spectrogram_data_selected_ch = (
-                            np.abs(
-                                librosa.stft(
-                                    window[:, usv_detected_chs[0]]
-                                    .astype("float32")
-                                    .T,
-                                    n_fft=len_win_signal,
-                                )
-                            )
-                            ** 2
-                        )
-                        signal_variance[i] = np.var(
-                            spectrogram_data_selected_ch
-                            / np.max(spectrogram_data_selected_ch)
+                    )[:, lower_bin:, :]
+                    flattened_spectrograms = spectrogram_all_eligible.reshape(
+                        len(eligible_channel_indices), -1
+                    )
+
+                    # Cross-channel spectral correlation across the DAS-detected
+                    # channels (defined for multi-channel detections only).
+                    detected_positions = [
+                        eligible_channel_indices.index(ch) for ch in usv_detected_chs
+                    ]
+                    # A zero-variance channel (digital silence in the HPSS output)
+                    # makes corrcoef emit NaN for its pairs; such a pair carries no
+                    # evidence of a shared pattern, so a NaN aggregate is coerced to
+                    # 0.0 (fails the cutoff) rather than silently skipping the check.
+                    if len(detected_positions) > 1:
+                        with np.errstate(invalid="ignore", divide="ignore"):
+                            correlation_matrix = np.corrcoef(flattened_spectrograms[detected_positions])
+                        pairwise_correlations = correlation_matrix[np.triu_indices(n=len(detected_positions), k=1)]
+                        mean_signal_correlations[i] = (
+                            0.0 if np.isnan(pairwise_correlations).any() else float(np.mean(pairwise_correlations))
                         )
 
-                # mean_signal_correlations is filled only on the multi-channel branch
-                # and signal_variance only on the single-channel branch, so either array
-                # can be entirely NaN (e.g. every USV detected on a single channel leaves
-                # mean_signal_correlations all-NaN). np.nanpercentile over an all-NaN
-                # array raises a RuntimeWarning and returns NaN, which would propagate
-                # into max()/min() order-dependently and defeat the configured floor/
-                # ceiling. Guard each percentile and fall back to the configured cutoff
-                # so the threshold is deterministic when no descriptor values exist.
-                noise_corr_cutoff_min = self.input_parameter_dict["summarize_das_findings"][
-                    "noise_corr_cutoff_min"
-                ]
-                noise_var_cutoff_max = self.input_parameter_dict["summarize_das_findings"][
-                    "noise_var_cutoff_max"
-                ]
-                if np.any(~np.isnan(mean_signal_correlations)):
-                    noise_corr_cutoff = max(
-                        float(np.nanpercentile(mean_signal_correlations, q=6)),
-                        noise_corr_cutoff_min,
-                    )
-                else:
-                    noise_corr_cutoff = noise_corr_cutoff_min
-                if np.any(~np.isnan(signal_variance)):
-                    noise_var_cutoff = min(
-                        float(np.nanpercentile(signal_variance, q=94)),
-                        noise_var_cutoff_max,
-                    )
-                else:
-                    noise_var_cutoff = noise_var_cutoff_max
+                    # Spatial coherence: mean pairwise correlation across the
+                    # top-K eligible channels ranked by in-band energy in this
+                    # window, detection status ignored. A genuine call dominates
+                    # the in-band soundscape at its moment, so its loudest
+                    # channels share one time-frequency pattern; a localized
+                    # artifact's pattern appears nowhere else on the array.
+                    coherence_k = min(coherence_channel_count, len(eligible_channel_indices))
+                    if coherence_k > 1:
+                        channel_energies = (flattened_spectrograms ** 2).sum(axis=1)
+                        top_positions = np.argsort(channel_energies)[::-1][:coherence_k]
+                        with np.errstate(invalid="ignore", divide="ignore"):
+                            coherence_matrix = np.corrcoef(flattened_spectrograms[top_positions])
+                        pairwise_coherences = coherence_matrix[np.triu_indices(n=coherence_k, k=1)]
+                        spatial_coherences[i] = (
+                            0.0 if np.isnan(pairwise_coherences).any() else float(np.mean(pairwise_coherences))
+                        )
+
                 self.message_output(
-                    f"Spectrogram correlation cutoff (6th percentile of distribution): {noise_corr_cutoff:.2f}"
-                )
-                self.message_output(
-                    f"Single channel variance cutoff (94th percentile of distribution): {noise_var_cutoff:.4f}"
+                    f"Phase-4 cutoffs (absolute): detected-channel correlation >= {noise_corr_cutoff}, "
+                    f"top-{coherence_channel_count} spatial coherence >= {coherence_cutoff}."
                 )
 
-                # filter noise: drop USVs failing amplitude-channel, correlation, or variance checks
+                # filter noise: drop USVs failing the amplitude-channel check or the
+                # correlation-AND-coherence gate. Both cutoffs are ABSOLUTE (no
+                # session-relative percentiles, which overshoot on clean candidate
+                # pools and undershoot on noise-dominated ones): noise must fool
+                # both descriptors to survive, while a real call only needs each
+                # at its loose threshold. Single-channel detections have no defined
+                # correlation and are gated by coherence alone.
                 drop_counter = 0
                 kept_merged = []
                 for i, usv in enumerate(merged):
-                    # DAS precision is 94%, therefore remove 6% of USVs with the lowest signal correlations
                     condition_1 = (
                         not np.isnan(mean_signal_correlations[i])
                         and mean_signal_correlations[i] < noise_corr_cutoff
                     )
-                    # for signals detected only on one channel, filter based on variance
                     condition_2 = (
-                        not np.isnan(signal_variance[i])
-                        and signal_variance[i] < noise_var_cutoff
+                        not np.isnan(spatial_coherences[i])
+                        and spatial_coherences[i] < coherence_cutoff
                     )
                     if condition_0_list[i] or condition_1 or condition_2:
                         drop_counter += 1
@@ -643,97 +699,46 @@ class FindMouseVocalizations:
                 merged = kept_merged
 
                 self.message_output(
-                    f"Number of detections dropped due to low signal correlation/variance across channels: {drop_counter}"
+                    f"Number of detections dropped due to low signal correlation/coherence across channels: {drop_counter}"
                 )
 
-                fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(24, 4), dpi=300)
-                ax[0].hist(
-                    x=mean_signal_correlations[~np.isnan(mean_signal_correlations)],
-                    bins=20,
-                    histtype="stepfilled",
-                    color="#BBD5E8",
-                    edgecolor="#202020",
-                    alpha=0.5,
-                )
-                ax[0].set_xlabel("Mean signal/spectral correlation")
-                ax[0].set_ylabel("Number of putative USVs")
-                ax[0].axvline(x=noise_corr_cutoff, ls="-.", lw=1.2, c="#202020")
-                ax[1].hist(
-                    x=signal_variance[~np.isnan(signal_variance)],
-                    bins=20,
-                    histtype="stepfilled",
-                    color="#BBD5E8",
-                    edgecolor="#202020",
-                    alpha=0.5,
-                )
-                ax[1].set_xlabel("Signal/spectral variance")
-                ax[1].set_ylabel("Number of putative USVs")
-                ax[1].axvline(x=noise_var_cutoff, ls="-.", lw=1.2, c="#202020")
-                save_figure(
-                    fig,
-                    stem=f"{session_id}_usv_signal_correlation_histogram",
-                    viz_settings=getattr(self, "visualizations_parameter_dict", None),
-                    override_dir=pathlib.Path(self.root_directory) / "audio",
-                    timestamp_in_name=False,
-                )
-                plt.close()
-
-                self.message_output(
-                    f"In this session, {len(merged)} USVs were detected."
-                )
-
-                # save the summary file
-                _write_usv_summary_csv(
-                    merged,
-                    pathlib.Path(self.root_directory) / "audio" / f"{session_id}_usv_summary.csv",
-                )
-
-            elif filter_putative_noise_bool and n_usv == 1:
-                # A lone USV has no descriptor distribution to filter against, so
-                # the statistical noise rejection above is skipped. The detection
-                # is nonetheless real: compute its peak/mean amplitude channels
-                # directly and still emit the summary CSV, rather than silently
-                # dropping it and zeroing the session USV count (which is what
-                # the bare `n_usv > 1` gate used to do).
-                audio_file_loc = first_match_or_raise(
-                    root=pathlib.Path(self.root_directory) / "audio" / "hpss_filtered",
-                    pattern="*.mmap",
-                    label="concatenated audio mmap",
-                )
-                audio_file_name = audio_file_loc.name
-                # The mmap filename encodes its array metadata as the last four
-                # underscore-separated tokens, in the trailing layout
-                # '..._<sampling_rate>_<sample_num>_<channel_num>_<dtype>.mmap'.
-                # Parsing right-to-left: [-1][:-5] is the dtype with the trailing
-                # '.mmap' (5 chars) stripped, [-2] the channel count, [-3] the
-                # sample count, [-4] the sampling rate.
-                data_type, channel_num, sample_num, audio_sampling_rate = (
-                    audio_file_name.split("_")[-1][:-5],
-                    int(audio_file_name.split("_")[-2]),
-                    int(audio_file_name.split("_")[-3]),
-                    int(audio_file_name.split("_")[-4]),
-                )
-                audio_file_data = np.memmap(
-                    filename=audio_file_loc,
-                    mode="r",
-                    dtype=data_type,
-                    shape=(sample_num, channel_num),
-                )
-                lone_usv = merged[0]
-                start_usv = int(np.floor(lone_usv['start'] * audio_sampling_rate))
-                stop_usv = int(np.ceil(lone_usv['stop'] * audio_sampling_rate))
-                # Single merged USV: read the window once and reuse for the peak +
-                # mean amplitude channels (same pattern as the per-USV loop above).
-                window = np.asarray(audio_file_data[start_usv:stop_usv, :])
-                peak_amp_ch = np.unravel_index(
-                    np.argmax(window),
-                    window.shape,
-                )[1]
-                mean_amp_ch = np.argmax(
-                    np.abs(window).mean(axis=0)
-                )
-                lone_usv['peak_amp_ch'] = int(peak_amp_ch)
-                lone_usv['mean_amp_ch'] = int(mean_amp_ch)
+                if n_usv > 1:
+                    fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(24, 4), dpi=300)
+                    # Correlations/coherences live in [-1, 1]; a fixed range keeps
+                    # the figure comparable across sessions and avoids degenerate
+                    # bin edges when every value is (near-)identical.
+                    ax[0].hist(
+                        x=mean_signal_correlations[~np.isnan(mean_signal_correlations)],
+                        bins=20,
+                        range=(-1.0, 1.0),
+                        histtype="stepfilled",
+                        color="#BBD5E8",
+                        edgecolor="#202020",
+                        alpha=0.5,
+                    )
+                    ax[0].set_xlabel("Mean signal/spectral correlation")
+                    ax[0].set_ylabel("Number of putative USVs")
+                    ax[0].axvline(x=noise_corr_cutoff, ls="-.", lw=1.2, c="#202020")
+                    ax[1].hist(
+                        x=spatial_coherences[~np.isnan(spatial_coherences)],
+                        bins=20,
+                        range=(-1.0, 1.0),
+                        histtype="stepfilled",
+                        color="#BBD5E8",
+                        edgecolor="#202020",
+                        alpha=0.5,
+                    )
+                    ax[1].set_xlabel(f"Spatial coherence (top-{coherence_channel_count} channels)")
+                    ax[1].set_ylabel("Number of putative USVs")
+                    ax[1].axvline(x=coherence_cutoff, ls="-.", lw=1.2, c="#202020")
+                    save_figure(
+                        fig,
+                        stem=f"{session_id}_usv_signal_correlation_histogram",
+                        viz_settings=getattr(self, "visualizations_parameter_dict", None),
+                        override_dir=pathlib.Path(self.root_directory) / "audio",
+                        timestamp_in_name=False,
+                    )
+                    plt.close()
 
                 self.message_output(
                     f"In this session, {len(merged)} USVs were detected."
@@ -775,3 +780,320 @@ class FindMouseVocalizations:
             self.message_output(
                 f"DAS summary skipped for '{self.root_directory}': {type(exc).__name__}: {exc}"
             )
+            return
+
+        # Post-summary seam check-and-correct (no-op by construction on
+        # sessions inferred with the overlap-tiled model, whose annotations
+        # carry no seam-ladder fingerprints).
+        if self.input_parameter_dict["summarize_das_findings"]["seam_repair_bool"]:
+            self.repair_seam_snapped_boundaries()
+
+    def repair_seam_snapped_boundaries(self) -> None:
+        """
+        Description
+        -----------
+        Checks the session's ``*_usv_summary.csv`` for inter-USV gaps snapped to
+        the legacy DAS window-stitching seam grid and corrects the affected call
+        boundaries by re-detecting each flagged pair's audio snippet with the
+        DAS model configured under ``das_command_line_inference``.
+
+        The legacy non-overlapping DAS tiling (stride equal to the window
+        length minus a 32-sample trim) judged each stitched span without
+        acoustic context from its neighbours, so the faint edges of calls
+        flanking a real pause were clipped exactly to the window seams: the
+        summary records such a pause with a width of k stride multiples
+        (k = 1..``seam_repair_max_rung``) and the flanking calls lose up to one
+        stride of faint edge material. This tool
+
+        1. flags consecutive summary pairs whose gap falls inside the
+           merged-level tolerance window around a stride multiple
+           (``seam_repair_width_tolerance_below_ms`` /
+           ``seam_repair_width_tolerance_above_ms``) AND is corroborated by a
+           microsecond-exact ladder gap (:func:`_ladder_gap_leading_stops`) in
+           at least one channel's raw DAS annotations whose leading stop lies
+           within ``seam_repair_raw_stop_tolerance_s`` of the merged stop;
+        2. excises a ``seam_repair_snippet_margin_s``-padded snippet around
+           each flagged pair from the corroborating channel's HPSS-filtered
+           WAV;
+        3. re-runs ``das predict`` once on the snippet folder;
+        4. replaces each pair's facing edges with the re-detected ones
+           (:func:`_repaired_facing_edges`) -- outward-only, capped at
+           ``seam_repair_max_boundary_shift_s`` per edge -- and updates the
+           affected ``start``/``stop``/``duration`` summary values.
+
+        The summary CSV is rewritten atomically with every other column
+        preserved, so the tool is safe on both freshly summarized and
+        enrichment-carrying (emitter / acoustic / embedding columns) summaries.
+        A sidecar ``*_seam_repair_report.json`` in the session's ``audio``
+        directory records the settings used and the outcome for every flagged
+        pair. Missing prerequisites (summary, raw annotations, HPSS WAVs) are
+        reported through ``message_output`` and skip the check rather than
+        raising, mirroring :func:`summarize_das_findings`.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        None
+        """
+
+        self.message_output(
+            f"DAS seam check-and-repair started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
+        )
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        repair_params = self.input_parameter_dict["summarize_das_findings"]
+        stride_samples = repair_params["seam_repair_legacy_stride_samples"]
+        max_rung = repair_params["seam_repair_max_rung"]
+        ladder_tolerance_samples = repair_params["seam_repair_ladder_tolerance_samples"]
+        width_below_s = repair_params["seam_repair_width_tolerance_below_ms"] / 1000.0
+        width_above_s = repair_params["seam_repair_width_tolerance_above_ms"] / 1000.0
+        raw_stop_tolerance_s = repair_params["seam_repair_raw_stop_tolerance_s"]
+        snippet_margin_s = repair_params["seam_repair_snippet_margin_s"]
+        max_boundary_shift_s = repair_params["seam_repair_max_boundary_shift_s"]
+
+        session_id = pathlib.Path(self.root_directory).name
+        audio_dir = pathlib.Path(self.root_directory) / "audio"
+        annot_dir = audio_dir / "das_annotations"
+        hpss_dir = audio_dir / "hpss_filtered"
+
+        try:
+            summary_path = first_match_or_raise(
+                root=audio_dir,
+                pattern="*_usv_summary.csv",
+                label="USV summary CSV",
+            )
+            probe_wav = first_match_or_raise(
+                root=hpss_dir,
+                pattern="*.wav",
+                label="HPSS-filtered WAV",
+            )
+        except FileNotFoundError as exc:
+            self.message_output(
+                f"DAS seam check skipped for '{self.root_directory}': {exc}"
+            )
+            return
+        if not annot_dir.is_dir():
+            self.message_output(
+                f"DAS seam check skipped for '{self.root_directory}': no das_annotations directory."
+            )
+            return
+        try:
+            sampling_rate = int(sf.info(str(probe_wav)).samplerate)
+        except RuntimeError as exc:
+            self.message_output(
+                f"DAS seam check skipped for '{self.root_directory}': unreadable WAV '{probe_wav.name}': {exc}"
+            )
+            return
+
+        # usv_id is zero-padded ("0000") in freshly written summaries; without
+        # the override polars re-infers it as Int64 and the atomic rewrite
+        # would silently reformat the column.
+        summary_df = pls.read_csv(source=str(summary_path), schema_overrides={"usv_id": pls.String})
+        starts = summary_df["start"].to_numpy().astype(float)
+        stops = summary_df["stop"].to_numpy().astype(float)
+        durations = summary_df["duration"].to_numpy().astype(float).copy()
+        if np.any(np.diff(starts) < 0):
+            msg = (
+                f"USV summary '{summary_path.name}' is not sorted by start time; "
+                "the seam check pairs consecutive rows and requires sorted input."
+            )
+            raise ValueError(msg)
+        n_gaps = max(len(starts) - 1, 0)
+
+        # Phase 1: merged-level width gate. Merged gap widths can sit slightly
+        # off the exact raw ladder values because the interval union takes the
+        # outermost edge across channels, hence the tolerance window around each
+        # stride multiple.
+        stride_s = stride_samples / sampling_rate
+        gaps = starts[1:] - stops[:-1] if n_gaps else np.empty(0, dtype=float)
+        rung = np.round(gaps / stride_s).astype(np.int64) if n_gaps else np.empty(0, dtype=np.int64)
+        width_gate = (
+            (rung >= 1)
+            & (rung <= max_rung)
+            & (gaps >= rung * stride_s - width_below_s)
+            & (gaps <= rung * stride_s + width_above_s)
+        )
+        width_gate_indices = np.flatnonzero(width_gate)
+
+        # Phase 2: raw-annotation corroboration -- the microsecond-exact
+        # ladder fingerprint pins the mechanism and rejects width-window
+        # innocents.
+        channel_ladder_stops: dict[str, np.ndarray] = {}
+        for one_file in sorted(annot_dir.glob("*.csv")):
+            m = _DAS_ANNOTATION_FILE_RE.match(one_file.name)
+            if m is None:
+                continue
+            file_id = f"{m.group(1)}_{m.group(2)}"
+            channel_df = pls.read_csv(source=str(one_file)).filter(pls.col("name") != "noise").sort("start_seconds")
+            leading_stops = _ladder_gap_leading_stops(
+                start_seconds=channel_df["start_seconds"].to_numpy().astype(float),
+                stop_seconds=channel_df["stop_seconds"].to_numpy().astype(float),
+                sampling_rate=sampling_rate,
+                stride_samples=stride_samples,
+                tolerance_samples=ladder_tolerance_samples,
+                max_rung=max_rung,
+            )
+            if len(leading_stops):
+                channel_ladder_stops[file_id] = leading_stops
+
+        flagged: list[dict] = []
+        for pair_row in width_gate_indices:
+            for file_id, leading_stops in channel_ladder_stops.items():
+                if np.min(np.abs(leading_stops - stops[pair_row])) <= raw_stop_tolerance_s:
+                    flagged.append({"pair_row": int(pair_row), "channel": file_id})
+                    break
+
+        self.message_output(
+            f"Seam check: {n_gaps} gaps, {len(width_gate_indices)} in the width gate, "
+            f"{len(flagged)} corroborated by raw ladder fingerprints."
+        )
+
+        report: dict = {
+            "session_id": session_id,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "sampling_rate": sampling_rate,
+            "settings": {key: repair_params[key] for key in repair_params if key.startswith("seam_repair")},
+            "n_gaps_checked": n_gaps,
+            "n_width_gate": len(width_gate_indices),
+            "n_flagged": len(flagged),
+            "n_repaired": 0,
+            "n_no_change": 0,
+            "n_skipped": 0,
+            "pairs": [],
+        }
+        report_path = audio_dir / f"{session_id}_seam_repair_report.json"
+
+        if not flagged:
+            with atomic_output_path(report_path) as tmp_report, tmp_report.open("w") as report_file:
+                json.dump(report, report_file, indent=1)
+            self.message_output("Seam check: no seam-snapped pairs found; summary left untouched.")
+            return
+
+        # Phase 3: excise snippets from the corroborating channels and re-run
+        # DAS once on the folder (the model loads once for all snippets).
+        snippet_dir = audio_dir / "seam_repair_snippets"
+        if snippet_dir.is_dir():
+            shutil.rmtree(snippet_dir)
+        snippet_dir.mkdir(parents=True)
+
+        wav_path_by_channel: dict[str, pathlib.Path] = {}
+        for pair in flagged:
+            file_id = pair["channel"]
+            if file_id not in wav_path_by_channel:
+                device, channel_token = file_id.split("_")
+                wav_path_by_channel[file_id] = first_match_or_raise(
+                    root=hpss_dir,
+                    pattern=f"{device}_*_{channel_token}_*.wav",
+                    label=f"HPSS-filtered WAV for channel {file_id}",
+                )
+            pair_row = pair["pair_row"]
+            snippet_offset = max(0.0, starts[pair_row] - snippet_margin_s)
+            snippet_stop = stops[pair_row + 1] + snippet_margin_s
+            snippet_audio, _ = sf.read(
+                file=str(wav_path_by_channel[file_id]),
+                start=int(snippet_offset * sampling_rate),
+                frames=int((snippet_stop - snippet_offset) * sampling_rate),
+                dtype="int16",
+            )
+            sf.write(
+                file=str(snippet_dir / f"pair{pair_row:05d}.wav"),
+                data=snippet_audio,
+                samplerate=sampling_rate,
+                subtype="PCM_16",
+            )
+            pair["snippet_offset"] = snippet_offset
+
+        das_params = self.input_parameter_dict["das_command_line_inference"]
+        model_base = str(
+            pathlib.Path(configure_path(das_params["das_model_directory"])) / das_params["model_name_base"]
+        )
+        conda_exe = os.environ.get("CONDA_EXE", "conda")
+        clean_env = os.environ.copy()
+        clean_env.pop("PYTHONHOME", None)
+        snippet_subp = subprocess.Popen(
+            args=[conda_exe, "run", "--no-capture-output", "-n", das_params["das_conda_env_name"],
+                  "das", "predict", str(snippet_dir), model_base,
+                  "--segment-thres", str(das_params["segment_confidence_threshold"]),
+                  "--segment-minlen", str(das_params["segment_minlen"]),
+                  "--segment-fillgap", str(das_params["segment_fillgap"]),
+                  "--save-format", "csv"],
+            cwd=snippet_dir,
+            env=clean_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+            shell=False,
+        )
+        # Snippets are sub-second, so even hundreds finish in minutes on CPU;
+        # a 4 h ceiling only catches a genuinely hung process.
+        wait_for_subprocesses(
+            subps=[snippet_subp],
+            max_seconds=4 * 60 * 60,
+            label=f"DAS seam-repair snippet inference ({len(flagged)} snippets)",
+        )
+
+        # Phase 4: harvest the re-detected facing edges and apply them.
+        for pair in flagged:
+            pair_row = pair["pair_row"]
+            record: dict = {
+                "pair_row": pair_row,
+                "channel": pair["channel"],
+                "old_stop_first": float(stops[pair_row]),
+                "old_start_second": float(starts[pair_row + 1]),
+            }
+            snippet_annotations = snippet_dir / f"pair{pair_row:05d}_annotations.csv"
+            if not snippet_annotations.is_file():
+                record["outcome"] = "skipped:no_snippet_annotations"
+                report["n_skipped"] += 1
+                report["pairs"].append(record)
+                continue
+            annotation_df = pls.read_csv(source=str(snippet_annotations)).filter(pls.col("name") != "noise").sort("start_seconds")
+            new_edges = _repaired_facing_edges(
+                annotation_starts=annotation_df["start_seconds"].to_numpy().astype(float),
+                annotation_stops=annotation_df["stop_seconds"].to_numpy().astype(float),
+                snippet_offset=pair["snippet_offset"],
+                stop_first=float(stops[pair_row]),
+                start_second=float(starts[pair_row + 1]),
+                mid_first=float(0.5 * (starts[pair_row] + stops[pair_row])),
+                mid_second=float(0.5 * (starts[pair_row + 1] + stops[pair_row + 1])),
+                max_boundary_shift=max_boundary_shift_s,
+            )
+            if new_edges is None:
+                record["outcome"] = "skipped:unrepairable"
+                report["n_skipped"] += 1
+                report["pairs"].append(record)
+                continue
+            new_stop_first, new_start_second = new_edges
+            record["new_stop_first"] = new_stop_first
+            record["new_start_second"] = new_start_second
+            if new_stop_first == stops[pair_row] and new_start_second == starts[pair_row + 1]:
+                record["outcome"] = "no_change"
+                report["n_no_change"] += 1
+            else:
+                stops[pair_row] = new_stop_first
+                starts[pair_row + 1] = new_start_second
+                durations[pair_row] = stops[pair_row] - starts[pair_row]
+                durations[pair_row + 1] = stops[pair_row + 1] - starts[pair_row + 1]
+                record["outcome"] = "repaired"
+                report["n_repaired"] += 1
+            report["pairs"].append(record)
+
+        shutil.rmtree(snippet_dir)
+
+        if report["n_repaired"] > 0:
+            summary_df = summary_df.with_columns(
+                pls.Series(name="start", values=starts),
+                pls.Series(name="stop", values=stops),
+                pls.Series(name="duration", values=durations),
+            )
+            with atomic_output_path(summary_path) as tmp_summary:
+                summary_df.write_csv(file=str(tmp_summary))
+
+        with atomic_output_path(report_path) as tmp_report, tmp_report.open("w") as report_file:
+            json.dump(report, report_file, indent=1)
+
+        self.message_output(
+            f"Seam repair: {report['n_repaired']} pairs corrected, {report['n_no_change']} confirmed unchanged, "
+            f"{report['n_skipped']} skipped; report saved to '{report_path.name}'."
+        )

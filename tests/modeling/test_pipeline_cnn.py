@@ -295,9 +295,9 @@ def _build_cnn_input_pickle(
 
     artifact['_input_metadata'] = {
         'analysis_type': 'continuous',
-        'analysis_tag': 'manifold_vae_supercategory',
+        'analysis_tag': 'manifold_qlvm_supercategory',
         'analysis_specific': {
-            'usv_category_column_name': 'vae_supercategory',
+            'usv_category_column_name': 'qlvm_supercategory',
             'manifold_metric': 'euclidean',
             'manifold_period': 1.0,
         },
@@ -435,7 +435,7 @@ class TestRunCnnTrainingFull:
         assert md['features_list'] == sorted(FEATURE_NAMES)
         assert md['n_time_bins'] == HISTORY_FRAMES
         assert md['split_strategy'] == 'mixed'
-        assert md['manifold_metric'] == 'euclidean'
+        assert md['manifold_metric'] == 'torus'
         assert md['output_encoding'] in ('raw', 'sin_cos')
 
         # One cross-validation record per fold; each carries the tri-strategy

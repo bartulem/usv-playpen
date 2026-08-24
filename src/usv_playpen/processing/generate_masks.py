@@ -34,9 +34,11 @@ actionable error BEFORE any GPU library is touched.
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import pathlib
+import sys
 from collections.abc import Callable
 from datetime import datetime
 
@@ -168,7 +170,83 @@ class MaskGenerator:
         self.message_output = message_output if message_output is not None else print
         self.app_context_bool = is_gui_context()
 
-    def generate_session_masks(self) -> None:
+    def _merge_patched_session_masks(
+        self,
+        h5_loc: pathlib.Path,
+        mask_group_key: str,
+        row_subset: set[int],
+        new_segmentations: np.ndarray,
+        new_spectrogram_index: np.ndarray,
+        num_freq_bins: int,
+        num_time_bins: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Description
+        -----------
+        Splices freshly segmented masks for a subset of USV rows into the
+        session's existing mask arrays, preserving the masks of every row
+        outside the subset.
+
+        Instance masks are stored as one flat ``(M, F, T)`` stack with a
+        parallel ``spectrogram_index`` array rather than per row, so patching a
+        row means dropping its old masks, appending the new ones, and restoring
+        the index-sorted order :func:`flatten_session_masks` guarantees. When
+        the session has no mask group yet, the new masks are returned unchanged.
+
+        Parameters
+        ----------
+        h5_loc (pathlib.Path)
+            Per-session spectrogram HDF5 holding the ``mask/<session>`` group.
+        mask_group_key (str)
+            Key of that group.
+        row_subset (set[int])
+            USV rows whose masks were recomputed; their previous masks are
+            dropped.
+        new_segmentations (np.ndarray)
+            ``(m, F, T)`` boolean masks freshly produced for the subset rows.
+        new_spectrogram_index (np.ndarray)
+            ``(m,)`` native usv_summary rows owning each new mask.
+        num_freq_bins (int)
+            Frequency-bin count ``F`` (used to shape an empty result).
+        num_time_bins (int)
+            Time-bin count ``T`` (used to shape an empty result).
+
+        Returns
+        -------
+        segmentations, spectrogram_index (tuple[np.ndarray, np.ndarray])
+            The merged mask stack and its owning-row index, sorted ascending by
+            row so the merged arrays are indistinguishable from a full re-run.
+        """
+
+        with h5py.File(h5_loc, "r") as h5_file:
+            if mask_group_key not in h5_file:
+                return new_segmentations, new_spectrogram_index
+            existing_segmentations = h5_file[mask_group_key]["segmentations"][:]
+            existing_spectrogram_index = h5_file[mask_group_key]["spectrogram_index"][:]
+
+        retained = ~np.isin(existing_spectrogram_index, np.fromiter(row_subset, dtype=np.int64, count=len(row_subset)))
+        retained_segmentations = existing_segmentations[retained]
+        retained_spectrogram_index = existing_spectrogram_index[retained]
+
+        if retained_segmentations.shape[0] == 0 and new_segmentations.shape[0] == 0:
+            return (
+                np.zeros((0, num_freq_bins, num_time_bins), dtype=bool),
+                np.zeros((0,), dtype=np.int64),
+            )
+
+        merged_segmentations = np.concatenate([retained_segmentations, new_segmentations], axis=0)
+        merged_spectrogram_index = np.concatenate([retained_spectrogram_index, new_spectrogram_index], axis=0)
+        # ``flatten_session_masks`` emits masks grouped by ascending owning row;
+        # a stable sort restores exactly that order (and keeps each row's masks
+        # in their original within-row sequence) after the splice.
+        sort_order = np.argsort(merged_spectrogram_index, kind="stable")
+        self.message_output(
+            f"Patched masks for {len(row_subset)} USV row(s): "
+            f"{retained_segmentations.shape[0]} retained + {new_segmentations.shape[0]} new."
+        )
+        return merged_segmentations[sort_order], merged_spectrogram_index[sort_order]
+
+    def generate_session_masks(self, row_subset: set[int] | None = None) -> None:
         """
         Description
         -----------
@@ -196,8 +274,21 @@ class MaskGenerator:
         weights are validated up front and a missing path raises ``FileNotFoundError``
         with the offending setting before any GPU library is imported.
 
+        With ``row_subset`` the method switches to patch mode: only those rows
+        are segmented (the kernel receives a sub-stack and its output is remapped
+        back to native rows), and the result is spliced into the existing mask
+        arrays so every other row keeps the masks it already had. This pairs with
+        the ``row_subset`` mode of ``SpectrogramGenerator`` for refreshing the
+        USVs whose boundaries changed, without re-segmenting the whole session.
+
         Parameters
         ----------
+        row_subset (set[int] | None)
+            When None (default), the whole session is segmented and any existing
+            ``mask/<session>`` group is replaced. When a set of
+            ``usv_summary.csv`` row indices, only those rows are re-segmented and
+            merged into the existing masks; an out-of-range index raises
+            ``ValueError``.
 
         Returns
         -------
@@ -270,9 +361,14 @@ class MaskGenerator:
         root = pathlib.Path(self.root_directory)
         session_id = root.name
 
+        # Session-keyed, NOT "*_spectrograms.h5": sessions can hold other files
+        # ending in that suffix (e.g. a separate sonic-band
+        # "<session>_3_30khz_spectrograms.h5"), and a wildcard picks whichever
+        # sorts first -- silently reading a file with no spectrogram/<session>
+        # group. The per-session name written by generate_spectrograms is exact.
         h5_loc = first_match_or_raise(
             root=root / "audio" / "spectrograms",
-            pattern="*_spectrograms.h5",
+            pattern=f"{session_id}_spectrograms.h5",
             label="per-session spectrogram H5",
         )
         with h5py.File(h5_loc, "r") as h5_file:
@@ -281,12 +377,33 @@ class MaskGenerator:
             durations = session_group["durations"][:]
 
         num_specs, num_freq_bins, num_time_bins = specs.shape
+
+        # Patch mode: segment only the requested rows. The kernel is handed a
+        # sub-stack, so its returned dictionary is keyed by sub-stack position
+        # and is remapped back to native usv_summary rows below; masks of rows
+        # outside the subset are carried over from the existing group untouched.
+        subset_indices: list[int] = []
+        if row_subset is None:
+            kernel_specs = specs
+            kernel_durations = durations
+        else:
+            out_of_range = [idx for idx in row_subset if idx < 0 or idx >= num_specs]
+            if out_of_range:
+                error_message = (
+                    f"row_subset contains out-of-range rows {sorted(out_of_range)[:5]} for session "
+                    f"'{session_id}' with {num_specs} spectrogram rows"
+                )
+                raise ValueError(error_message)
+            subset_indices = sorted(row_subset)
+            kernel_specs = specs[subset_indices]
+            kernel_durations = durations[subset_indices]
+
         # Match the kernel's segmentation threshold (it skips rows shorter than
         # duration_min, not just duration==0 placeholders) so this up-front count
         # reflects exactly what will be segmented.
-        valid_count = int(np.count_nonzero(durations >= cfg['duration_min']))
+        valid_count = int(np.count_nonzero(kernel_durations >= cfg['duration_min']))
         self.message_output(
-            f"Segmenting {valid_count} valid USVs (of {num_specs}) for session {session_id}."
+            f"Segmenting {valid_count} valid USVs (of {len(kernel_durations)}) for session {session_id}."
         )
 
         # Heavy, GPU-only kernels: import lazily so `import generate_masks` and the
@@ -305,7 +422,16 @@ class MaskGenerator:
         logger = logging.getLogger("usv_playpen.generate_masks")
 
         cmap = matplotlib.colormaps[cfg['mask_cmap']]
-        device = setup_device(deterministic=False, logger=logger)
+        # cuDNN's autotuner picks algorithms from the GPU state at process
+        # start, and with the bf16 autocast + TF32 this module enables that
+        # shifts borderline detections by more than the margin separating a
+        # faint call from the detector's confidence gate. Two runs in ONE
+        # process agree bit-for-bit, but runs in DIFFERENT processes do not:
+        # the cohort's original mask pass left 9-26% of rows with no mask,
+        # while a rerun of the identical code on the identical spectrograms
+        # left 1.4%. Disabling the autotuner (deterministic) trades a little
+        # speed for masks that reproduce across processes.
+        device = setup_device(deterministic=cfg['deterministic'], logger=logger)
 
         # SAM2's hydra config + (possibly relative) checkpoint resolve against the
         # model directory, so build the predictor from there (mirroring specgen), then
@@ -338,8 +464,8 @@ class MaskGenerator:
         # dict is already keyed by the native usv_summary row index.
         _, processed_masks = process_session_batch_boxprompt(
             session_id,
-            specs,
-            durations,
+            kernel_specs,
+            kernel_durations,
             predictor,
             None,  # detector_cfg: cc connected-component config is unused here (yolo uses detect_fn below)
             cmap,
@@ -360,6 +486,11 @@ class MaskGenerator:
             logger=logger,
         )
 
+        if row_subset is not None:
+            processed_masks = {
+                subset_indices[sub_position]: masks for sub_position, masks in processed_masks.items()
+            }
+
         segmentations, spectrogram_index = flatten_session_masks(
             processed_masks=processed_masks,
             num_freq_bins=num_freq_bins,
@@ -367,6 +498,17 @@ class MaskGenerator:
         )
 
         mask_group_key = f"mask/{session_id}"
+        if row_subset is not None:
+            segmentations, spectrogram_index = self._merge_patched_session_masks(
+                h5_loc=h5_loc,
+                mask_group_key=mask_group_key,
+                row_subset=row_subset,
+                new_segmentations=segmentations,
+                new_spectrogram_index=spectrogram_index,
+                num_freq_bins=num_freq_bins,
+                num_time_bins=num_time_bins,
+            )
+
         with h5py.File(h5_loc, "a") as h5_file:
             if mask_group_key in h5_file:
                 del h5_file[mask_group_key]
@@ -385,6 +527,24 @@ class MaskGenerator:
             else:
                 mask_group.create_dataset("segmentations", data=segmentations)
                 mask_group.create_dataset("spectrogram_index", data=spectrogram_index)
+
+        # Drop this call's predictor/detector and return the allocator's free
+        # blocks to the driver. This REDUCES but does not eliminate the device
+        # memory a process retains per session: SAM2/Hydra/ultralytics keep
+        # references of their own that we cannot reach from here (measured
+        # ~250 MiB retained per session on a 16 GiB card). A caller that walks
+        # many sessions must therefore CHUNK ITS WORK ACROSS PROCESSES rather
+        # than rely on this cleanup -- one CLI invocation per session, as the
+        # shipped command does, is already safe. torch is only consulted when
+        # it is already loaded, so this stays free of a heavy import (and of a
+        # GPU dependency) when the kernels are stubbed out.
+        del predictor
+        del detect_fn
+        gc.collect()
+        if "torch" in sys.modules:
+            torch_module = sys.modules["torch"]
+            if torch_module.cuda.is_available():
+                torch_module.cuda.empty_cache()
 
         self.message_output(
             f"Wrote {segmentations.shape[0]} instance masks across {len(np.unique(spectrogram_index))} USVs "
@@ -406,6 +566,9 @@ class MaskGenerator:
 @click.option('--yolo-iou', 'yolo_iou', type=float, default=None, required=False, help='YOLO NMS IoU (raise to keep stacked calls).')
 @click.option('--method', 'method', type=str, default=None, required=False, help="Mask-generation method; only 'boxprompt' (SAM2 box-prompt path) is supported.")
 @click.option('--yolo-imgsz', 'yolo_imgsz', type=int, default=None, required=False, help='YOLO detector input image size in px (native spectrogram size is 128).')
+@click.option('--deterministic/--no-deterministic', 'deterministic', default=None, required=False, help="Disable cuDNN's autotuner so masks reproduce across processes (default: enabled). "
+     "With the autotuner on, algorithm choice varies with the GPU state at process start and "
+     "borderline faint calls fall on either side of the detector's confidence gate.")
 @click.option('--mask-cmap', 'mask_cmap', type=str, default=None, required=False, help='Matplotlib colormap used to render each spectrogram to RGB before SAM2 prompting.')
 @click.option('--duration-min', 'duration_min', type=int, default=None, required=False, help='Minimum USV duration (time bins) to segment; shorter/placeholder (duration==0) rows are skipped.')
 @click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Number of spectrograms processed per batch before a memory-cleanup pass.')

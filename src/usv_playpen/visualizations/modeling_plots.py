@@ -6680,23 +6680,30 @@ def _compute_timescale_horizons(payload: dict,
                 acf_horizons[fname] = float(acf_lags_seconds[mark_idx])
 
         # XC marker (earliest sign-consistent run ≥ `sig_min_run_bins`).
+        # Under the lag convention (negative = feature precedes bout),
+        # the behaviour-leads half is the NEGATIVE lags; mirror it onto
+        # an ascending 0..+L magnitude axis so the floor/run logic
+        # applies unchanged and the horizon is a positive |lag|.
         if signal_lags_seconds.size and i < rho_signal.shape[0]:
-            mean_curve = _rolling_mean_1d(rho_signal[i], signal_smooth_window)
+            mean_curve = _rolling_mean_1d(rho_signal[i], signal_smooth_window)[::-1]
+            null_lo_view = rho_signal_null_lo[i][::-1]
+            null_hi_view = rho_signal_null_hi[i][::-1]
+            lag_magnitudes = -signal_lags_seconds[::-1]
             sig_idx_floor = int(np.searchsorted(
-                signal_lags_seconds, signal_floor_seconds, side='left'
+                lag_magnitudes, signal_floor_seconds, side='left'
             ))
-            sig_idx_max = signal_lags_seconds.size - 1
+            sig_idx_max = lag_magnitudes.size - 1
             sig_hit = _signal_outer_run_marker(
                 mean_curve,
-                rho_signal_null_lo[i],
-                rho_signal_null_hi[i],
+                null_lo_view,
+                null_hi_view,
                 sig_min_run_bins,
                 sig_idx_floor,
                 sig_idx_max,
             )
             if sig_hit is not None:
                 sig_idx, _sig_sign, sig_exceeds_flag = sig_hit
-                xc_horizons[fname] = float(signal_lags_seconds[sig_idx])
+                xc_horizons[fname] = float(lag_magnitudes[sig_idx])
                 xc_exceeds[fname] = bool(sig_exceeds_flag)
 
     return acf_horizons, xc_horizons, xc_exceeds
@@ -6718,10 +6725,10 @@ def plot_timescale_audit(timescale_pkl_path: str,
       which the ACF leaves a sustained run above its upper null.
       One bar per feature with an ACF marker.
     - **Right panel ("Cross-correlation")**: bar length = the
-      positive-side significance horizon (largest-lag end of the
-      pre-cross outside-null run, with the lag-floor
-      `signal_floor_seconds` applied). One bar per feature with a
-      qualifying XC marker.
+      behaviour-leads significance horizon — the |lag| end of the
+      outside-null run on the negative (feature-precedes-bout) side,
+      with the lag-floor `signal_floor_seconds` applied. One bar per
+      feature with a qualifying XC marker.
 
     Each panel is sorted independently descending by value (longest
     horizon at top) so the cohort distribution is legible at a
@@ -7022,8 +7029,8 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
       "{value} s"). Y-limits are `[0, 1.05]`.
     - Right column: symmetric signal-correlation curve (ρ vs. binary
       bout-onset indicator). The actual curve is the per-session
-      mean (negative lag = bout leads feature; positive lag =
-      feature leads bout); the SEM-across-sessions is drawn as a
+      mean (negative lag = feature leads bout; positive lag =
+      bout leads feature); the SEM-across-sessions is drawn as a
       filled band around it. The circular-shift null is on the
       cohort-mean scale (shuffles paired by index across sessions,
       cohort-mean per shuffle, 0.5/99.5 percentiles across the
@@ -7407,7 +7414,7 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
         axB.set_ylabel('cross-correlation (ρ)', fontsize=8)
         axB.set_title(fname, fontsize=9, color=col, pad=3, fontweight='bold')
         if new_i == n_features - 1:
-            axB.set_xlabel('bout leads --- Lag (s) --- feature leads')
+            axB.set_xlabel('feature leads --- Lag (s) --- bout leads')
         else:
             axB.set_xticklabels([])
 

@@ -307,8 +307,8 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
 def _output_axes_count(hp: Dict[str, Any]) -> int:
     """
     Returns the number of manifold axes the CNN predicts. The CNN
-    pipeline assumes a 2-D acoustic manifold (`vae_umap{1,2}` /
-    `qlvm_dim{1,2}`); this helper centralises that constant so the
+    pipeline assumes a 2-D acoustic manifold (`vae{1,2}` /
+    `qlvm{1,2}`); this helper centralises that constant so the
     output-head sizing logic doesn't sprinkle bare `2`s through
     `init_cnn_params_and_state`, `cnn_forward`, and the loss block.
 

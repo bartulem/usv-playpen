@@ -44,7 +44,7 @@ import polars as pls
 from sklearn.mixture import GaussianMixture
 
 from ..os_utils import atomic_output_path, configure_path
-from .mixture_model_utils import TMixture
+from .mixture_model_utils import IGMixture, TMixture
 
 
 # Internal helpers: polars <-> HDF5 dataset translation
@@ -539,10 +539,14 @@ def reconstruct_best_model(
         )
 
     chosen_ic = ic_col
-    # Fall back if every CV value is NaN (small-sample CV-skip path).
+    # Fall back if the CV column cannot rank the restarts: it is NaN on the
+    # small-sample CV-skip path, and CONSTANT within (sex, K) by construction
+    # (the sweep computes one CV value per component count and copies it into
+    # every restart row) -- sorting a constant picks an arbitrary restart, so
+    # rank by BIC instead, which differs per restart.
     if chosen_ic == "cv_neg_loglik":
         cv_vals = sub["cv_neg_loglik"].to_numpy()
-        if np.all(np.isnan(cv_vals)):
+        if np.all(np.isnan(cv_vals)) or np.nanstd(cv_vals) == 0:
             chosen_ic = "bic"
 
     best = sub.sort(chosen_ic, nulls_last=True).head(1).row(0, named=True)
@@ -579,9 +583,20 @@ def reconstruct_best_model(
         )
         return tmix, np.arange(K)
 
+    if model_class == "ig":
+        # IG rows store logmean_k = log(mu_k) and the shape in lambda_k
+        # (logsd_k is NaN); reconstruct straight from those columns.
+        lambdas = np.array(
+            [float(best[f"lambda_{k+1}"]) for k in range(K)], dtype=float
+        )
+        igmix = IGMixture(
+            weights=weights, mus=np.exp(means), lambdas=lambdas,
+        )
+        return igmix, np.arange(K)
+
     msg = (
         f"reconstruct_best_model: unknown model_class={model_class!r} "
-        "(expected 'gauss' or 't')."
+        "(expected 'gauss', 't' or 'ig')."
     )
     raise ValueError(
         msg

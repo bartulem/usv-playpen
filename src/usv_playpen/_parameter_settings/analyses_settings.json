@@ -34,12 +34,17 @@
     "spatial_hist_num_bins": 196
   },
   "compute_inter_usv_interval_distributions": {
+    "seam_ladder_thin_bool": true,
+    "seam_ladder_stride_samples": 8128,
+    "seam_ladder_half_width_ms": 1.5,
+    "seam_ladder_max_rung": 6,
+    "seam_ladder_seed": 0,
     "session_lists": [
       "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
     ],
     "output_directory": "/mnt/falkner/Bartul/modeling/usv_interval_results",
     "figures_directory": "/mnt/falkner/Bartul/figures",
-    "noise_col_id": "vae_supercategory",
+    "noise_col_id": "vae_supercategory_transferred",
     "noise_categories": [0],
     "fit_mixture_model": true,
     "n_components_min": 2,
@@ -52,6 +57,7 @@
     "mixture_model_n_init": 10,
     "mixture_model_reg_covar": 0.0001,
     "tau": 0.5,
+    "density_as_bin_means": true,
     "bins_per_sex": {
       "male": 80,
       "female": 30
@@ -60,8 +66,9 @@
     "model_class": "t",
     "bootstrap_lrt_B": 1000,
     "bootstrap_lrt_n_subsample": 15000,
-    "bootstrap_lrt_alpha": 0.05,
-    "bootstrap_lrt_bonferroni": false
+    "bootstrap_lrt_alpha": 0.01,
+    "bootstrap_lrt_bonferroni": true,
+    "bootstrap_lrt_n_jobs": 1
   },
   "send_email": {
     "analyses_pc_list": [
