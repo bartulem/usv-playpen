@@ -211,7 +211,7 @@
         "noise_corr_cutoff_min": 0.3,
         "coherence_cutoff_min": 0.2,
         "coherence_channel_count": 3,
-        "seam_repair_bool": true,
+        "seam_repair_bool": false,
         "seam_repair_legacy_stride_samples": 8128,
         "seam_repair_max_rung": 6,
         "seam_repair_ladder_tolerance_samples": 2,
