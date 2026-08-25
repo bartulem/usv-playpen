@@ -1214,6 +1214,25 @@ Seam check-and-repair
 ~~~~~~~~~~~~~~~~~~~~~
 DAS models inferring with non-overlapping window tiling (stride equal to the window length minus a 32-sample edge trim, i.e. ``stride: 8128`` / ``nb_hist: 8192`` at 250 kHz) judge each stitched span without acoustic context from its neighbours. The consequence is a boundary artifact on *real inter-call pauses*: the faint edges of the calls flanking a pause that straddles window seams are clipped exactly to the seam positions, so the pause is recorded with a width of exactly ``k`` stride multiples (a "ladder" at 32.5 / 65.0 / 97.5 ... ms, sample-exact in the raw annotations) and the flanking calls lose up to one stride of quiet edge material. Nothing is split or duplicated -- the audio between the recorded endpoints is genuinely silent -- but the affected gap widths are quantized (which corrupts inter-USV interval statistics) and the adjacent onsets/offsets are misplaced by up to ~32 ms.
 
+.. note::
+   This repair is **disabled by default** (``seam_repair_bool: false``) and exists for annotations that were already
+   produced with non-overlapping tiling. It is a remedy of last resort, not the fix. The fix is to infer with
+   overlapping windows in the first place: set ``stride`` to at most half of ``nb_hist`` and raise ``data_padding``
+   to cover the model's receptive field (the lab's 2024-03-25 model moved from ``stride: 8128`` / ``data_padding: 32``
+   to ``stride: 4096`` / ``data_padding: 2048`` in its ``*_params.yaml``). Overlapping windows let every sample be
+   judged with acoustic context on both sides, so no boundary is ever forced onto a seam.
+
+   Measured over six re-inferred sessions (97,011 vocalizations before, 104,333 after), taking the phase of every
+   USV boundary within the old 32.512 ms window period over 32 bins -- where a flat distribution puts 0.0312 of the
+   boundaries in each bin -- the non-overlapping annotations placed **0.2841 in the busiest bin (9.1x uniform)**,
+   while the overlap-tiled ones placed **0.0324 (1.0x uniform)**. Median USV duration fell from 39.2 to 36.5 ms, the
+   seam-clipped edge material being restored. Re-inference removes the artifact; the repair only patches it.
+
+   Re-inference is expensive, though, and halving the stride roughly doubles the windows scored per channel (measured
+   on this cohort: 342 s to ~505 s per 20-minute channel). Where re-running inference is not practical, this repair
+   remains the way to recover usable inter-call intervals from legacy annotations -- enable it with
+   ``--seam-repair``.
+
 After every summary build (and standalone, by calling ``repair_seam_snapped_boundaries`` on an existing summary -- the standalone path never rebuilds the summary, so enrichment columns like ``emitter`` and the ``qlvm_*`` set survive), the tool:
 
 #. flags consecutive summary pairs whose gap falls inside the width-gate window around a stride multiple **and** is corroborated by a sample-exact ladder gap in at least one channel's raw DAS annotations at that location -- the joint criterion keeps width-window innocents out, and any that do slip through are re-confirmed unchanged by construction;
