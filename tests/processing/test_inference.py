@@ -1621,9 +1621,11 @@ def test_summarize_das_findings_gates_seam_repair_on_settings_bool(
     mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
     repair_mock = mocker.patch.object(FindMouseVocalizations, "repair_seam_snapped_boundaries")
 
+    settings_on = json.loads(json.dumps(processing_settings))
+    settings_on["usv_inference"]["FindMouseVocalizations"]["summarize_das_findings"]["seam_repair_bool"] = True
     fmv = FindMouseVocalizations(
         root_directory=str(tmp_path),
-        input_parameter_dict=processing_settings,
+        input_parameter_dict=settings_on,
         message_output=lambda *_a, **_kw: None,
     )
     fmv.summarize_das_findings()

@@ -407,7 +407,7 @@ Process
       --coherence-channel-count
                             Number of loudest in-band channels the spatial coherence is computed over.
       --seam-repair / --no-seam-repair
-                            Run the post-summary seam check-and-repair (default: enabled); pass --no-seam-repair to leave seam-snapped USV boundaries as detected.
+                            Run the post-summary seam check-and-repair (default: disabled). Only meaningful for annotations from the legacy non-overlapping model (stride 8128); pass --seam-repair to enable.
       --seam-repair-legacy-stride-samples
                             Seam repair: window-stitching stride (samples) of the legacy DAS model whose seam artifact is checked for.
       --seam-repair-max-rung
