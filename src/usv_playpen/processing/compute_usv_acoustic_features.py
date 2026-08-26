@@ -434,7 +434,7 @@ class USVAcousticFeatureExtractor:
             recursive=True,
             label="USV summary CSV",
         )
-        usv_df = pls.read_csv(source=str(usv_summary_loc))
+        usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
         usv_df = usv_df.drop([c for c in FEATURE_COLUMNS if c in usv_df.columns])
         usv_df = usv_df.with_row_index(name="_usv_row")
         merged = usv_df.join(features_df, on="_usv_row", how="left").drop("_usv_row")

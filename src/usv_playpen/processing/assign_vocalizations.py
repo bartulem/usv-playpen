@@ -348,7 +348,7 @@ class Vocalocator:
         with h5py.File(name=track_file_path, mode='r') as f:
             track_names = [item.decode('utf-8').strip() for item in list(f['track_names'])]
 
-        usv_summary_df = pls.read_csv(str(usv_summary_file_path))
+        usv_summary_df = pls.read_csv(str(usv_summary_file_path), schema_overrides={"usv_id": pls.String})
 
         sound_loc_assignment_arr = np.load(pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'assessment_assn.npy')
 
@@ -455,7 +455,7 @@ class Vocalocator:
         with h5py.File(name=track_file_path, mode='r') as f:
             track_names = [item.decode('utf-8').strip() for item in list(f['track_names'])]
 
-        usv_summary_df = pls.read_csv(str(usv_summary_file_path))
+        usv_summary_df = pls.read_csv(str(usv_summary_file_path), schema_overrides={"usv_id": pls.String})
 
         # get assignments
         model_predictions_archive = np.load(file=pathlib.Path(self.root_directory) / 'audio' / 'sound_localization' / 'model_predictions.npz', allow_pickle=True)
