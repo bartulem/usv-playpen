@@ -1209,7 +1209,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "noise_corr_cutoff_min": 0.3,
         "coherence_cutoff_min": 0.2,
         "coherence_channel_count": 3,
-        "seam_repair_bool": true,
+        "seam_repair_bool": false,
         "seam_repair_legacy_stride_samples": 8128,
         "seam_repair_max_rung": 6,
         "seam_repair_ladder_tolerance_samples": 2,
@@ -1326,7 +1326,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 
    "vocalocator": {
     "vcl_conda_env_name": "vcl-ssl-ss",
-    "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/animal_id_model",
+    "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/mouse_all_model_June2026",
     "vcl_version": "vcl-ssl"
    }
 
