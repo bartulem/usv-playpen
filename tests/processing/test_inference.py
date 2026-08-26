@@ -28,8 +28,10 @@ matplotlib.use("Agg")
 from usv_playpen.processing.das_inference import (
     FindMouseVocalizations,
     _DAS_ANNOTATION_FILE_RE,
+    _greedy_merge_segments,
     _ladder_gap_leading_stops,
     _repaired_facing_edges,
+    _remerge_from_consensus,
 )
 from usv_playpen.processing.assign_vocalizations import Vocalocator
 from usv_playpen.processing.assign_vocalizations_utils import are_points_in_conf_set
@@ -1640,3 +1642,74 @@ def test_summarize_das_findings_gates_seam_repair_on_settings_bool(
     )
     fmv_off.summarize_das_findings()
     assert repair_mock.call_count == 1
+
+
+def test_greedy_merge_segments_unions_overlapping_and_separates_disjoint():
+    """_greedy_merge_segments unions overlapping segments and keeps disjoint ones apart."""
+    segments = [(0.0, 0.1, 'ch01'), (0.05, 0.2, 'ch02'), (0.5, 0.6, 'ch01')]
+    merged = _greedy_merge_segments(segments)
+    assert len(merged) == 2
+    assert merged[0]['start'] == 0.0 and merged[0]['stop'] == 0.2
+    assert merged[0]['chs_detected'] == {'ch01', 'ch02'}
+    assert len(merged[0]['segments']) == 2
+    assert merged[1]['start'] == 0.5 and merged[1]['stop'] == 0.6
+
+
+def test_consensus_remerge_recovers_calls_masked_by_one_channel():
+    """One channel fusing a run of calls must not dictate the merged boundary."""
+    segments = []
+    for index in range(4):
+        start = 0.30 * index
+        for channel in (f'ch{n:02d}' for n in range(1, 6)):
+            segments.append((start, start + 0.06, channel))
+    segments.append((0.0, 0.96, 'ch06'))          # the lone fused detection
+    merged = _greedy_merge_segments(sorted(segments, key=lambda seg: seg[0]))
+    assert len(merged) == 1 and merged[0]['stop'] - merged[0]['start'] > 0.9
+
+    corrected, n_split = _remerge_from_consensus(
+        merged, min_duration_s=0.25, span_factor=2.0,
+        max_dissenting_channels=2, min_agreeing_channels=3
+    )
+    assert n_split == 1
+    assert len(corrected) == 4
+    assert all(sub['stop'] - sub['start'] < 0.1 for sub in corrected)
+    # the set-aside channel spans every sub-interval, so it stays credited
+    assert all('ch06' in sub['chs_detected'] for sub in corrected)
+
+
+def test_consensus_remerge_leaves_agreed_long_intervals_alone():
+    """A long interval every channel agrees on is not touched."""
+    segments = [(0.0, 0.8, f'ch{n:02d}') for n in range(1, 7)]
+    merged = _greedy_merge_segments(sorted(segments, key=lambda seg: seg[0]))
+    corrected, n_split = _remerge_from_consensus(
+        merged, min_duration_s=0.25, span_factor=2.0,
+        max_dissenting_channels=2, min_agreeing_channels=3
+    )
+    assert n_split == 0
+    assert len(corrected) == 1
+    assert corrected[0]['stop'] - corrected[0]['start'] == pytest.approx(0.8)
+
+
+def test_consensus_remerge_ignores_short_intervals():
+    """Ordinary-length intervals are never examined, whatever the channel spread."""
+    segments = [(0.0, 0.02, 'ch01'), (0.0, 0.02, 'ch02'), (0.0, 0.02, 'ch03'),
+                (0.0, 0.20, 'ch04')]
+    merged = _greedy_merge_segments(sorted(segments, key=lambda seg: seg[0]))
+    corrected, n_split = _remerge_from_consensus(
+        merged, min_duration_s=0.25, span_factor=2.0,
+        max_dissenting_channels=2, min_agreeing_channels=3
+    )
+    assert n_split == 0
+    assert len(corrected) == 1
+
+
+def test_consensus_remerge_needs_enough_agreeing_channels():
+    """With too few channels left after setting dissenters aside, nothing is changed."""
+    segments = [(0.0, 0.06, 'ch01'), (0.30, 0.36, 'ch02'), (0.0, 0.96, 'ch03')]
+    merged = _greedy_merge_segments(sorted(segments, key=lambda seg: seg[0]))
+    corrected, n_split = _remerge_from_consensus(
+        merged, min_duration_s=0.25, span_factor=2.0,
+        max_dissenting_channels=2, min_agreeing_channels=3
+    )
+    assert n_split == 0
+    assert len(corrected) == 1
