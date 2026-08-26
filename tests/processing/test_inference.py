@@ -29,6 +29,7 @@ from usv_playpen.processing.das_inference import (
     FindMouseVocalizations,
     _DAS_ANNOTATION_FILE_RE,
     _greedy_merge_segments,
+    _write_usv_summary_csv,
     _ladder_gap_leading_stops,
     _repaired_facing_edges,
     _remerge_from_consensus,
@@ -574,6 +575,33 @@ def test_summarize_das_findings_writes_summary_csv_and_histogram(
         "usv_id", "start", "stop", "duration", "peak_amp_ch", "mean_amp_ch",
         "chs_count", "chs_detected", "emitter",
     }
+
+
+def test_usv_id_is_six_digit_zero_padded_and_widens_past_the_pad(tmp_path):
+    """usv_id is zero-padded to six digits, which keeps the column a string
+    through every read/write cycle and keeps lexicographic order equal to
+    numeric order. Six rather than four because the busiest session measured
+    carries 5,135 USVs: four digits leaves under 2x headroom, and crossing
+    9,999 would emit mixed-width ids that no longer sort numerically. The pad
+    is a MINIMUM width, so ids past the pad widen instead of truncating and
+    uniqueness is never at risk."""
+    def _interval(idx):
+        return {
+            'start': float(idx), 'stop': float(idx) + 0.05,
+            'peak_amp_ch': 0.0, 'mean_amp_ch': 0.0,
+            'chs_count': 1, 'chs_detected': [0],
+        }
+
+    out_path = tmp_path / "x_usv_summary.csv"
+    _write_usv_summary_csv([_interval(i) for i in range(3)], out_path)
+    ids = pls.read_csv(str(out_path), schema_overrides={"usv_id": pls.String})["usv_id"].to_list()
+
+    assert ids == ["000000", "000001", "000002"]
+    assert all(len(one_id) == 6 for one_id in ids)
+
+    # A session larger than the pad widens rather than truncating, so ids stay
+    # unique; only the uniform width (and with it numeric sort order) is lost.
+    assert f"{1234567:06d}" == "1234567"
 
 
 def test_summarize_das_findings_no_filter_keeps_all_and_skips_quality_checks(
