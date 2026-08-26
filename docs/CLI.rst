@@ -383,6 +383,11 @@ Process
                          [--win-len INTEGER] [--freq-cutoff INTEGER]
                          [--corr-cutoff FLOAT] [--coherence-cutoff FLOAT]
                          [--coherence-channel-count INTEGER]
+                         [--consensus-remerge | --no-consensus-remerge]
+                         [--consensus-remerge-min-duration-s FLOAT]
+                         [--consensus-remerge-span-factor FLOAT]
+                         [--consensus-remerge-max-dissenting-channels INTEGER]
+                         [--consensus-remerge-min-agreeing-channels INTEGER]
                          [--seam-repair | --no-seam-repair]
                          [--seam-repair-legacy-stride-samples INTEGER]
                          [--seam-repair-max-rung INTEGER]
@@ -406,6 +411,16 @@ Process
       --coherence-cutoff    Absolute top-K spatial-coherence cutoff (drop below).
       --coherence-channel-count
                             Number of loudest in-band channels the spatial coherence is computed over.
+      --consensus-remerge / --no-consensus-remerge
+                            Re-merge intervals whose extent is set by one channel contradicting the majority (default: enabled). Pass --no-consensus-remerge to take the union exactly as detected.
+      --consensus-remerge-min-duration-s
+                            Consensus re-merge: only merged intervals longer than this (s) are examined, so ordinary calls are never reconsidered.
+      --consensus-remerge-span-factor
+                            Consensus re-merge: a contributing channel counts as dissenting when its longest segment exceeds this multiple of the median longest-segment across contributing channels.
+      --consensus-remerge-max-dissenting-channels
+                            Consensus re-merge: fire only when at most this many channels dissent; more than that is not a lone dissenter.
+      --consensus-remerge-min-agreeing-channels
+                            Consensus re-merge: fire only when at least this many channels remain once dissenters are set aside.
       --seam-repair / --no-seam-repair
                             Run the post-summary seam check-and-repair (default: disabled). Only meaningful for annotations from the legacy non-overlapping model (stride 8128); pass --seam-repair to enable.
       --seam-repair-legacy-stride-samples
