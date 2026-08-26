@@ -217,6 +217,8 @@
         "consensus_remerge_max_dissenting_channels": 2,
         "consensus_remerge_min_agreeing_channels": 3,
         "consensus_remerge_max_depth": 4,
+        "consensus_remerge_min_gap_s": 0.015,
+        "consensus_remerge_rescue_dissenting_channels": 4,
         "max_usv_duration_bool": true,
         "max_usv_duration_s": 1.0,
         "seam_repair_bool": false,

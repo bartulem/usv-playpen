@@ -1735,18 +1735,18 @@ def test_consensus_remerge_recurses_into_its_own_sub_intervals():
         segments.append((0.00, 0.30, channel))        # the long call, lifts the median
         segments.append((0.50, 0.55, channel))
         segments.append((0.80, 0.85, channel))
-        segments.append((1.10, 1.15, channel))        # the close pair
-        segments.append((1.16, 1.21, channel))
-    segments.append((0.00, 1.21, 'ch08'))             # spans everything -> pass-1 dissenter
-    segments.append((1.10, 1.21, 'ch09'))             # fuses only the close pair
+        segments.append((1.10, 1.15, channel))        # the close pair, 20 ms apart:
+        segments.append((1.17, 1.22, channel))        # above the segmenter's own floor
+    segments.append((0.00, 1.22, 'ch08'))             # spans everything -> pass-1 dissenter
+    segments.append((1.10, 1.22, 'ch09'))             # fuses only the close pair
     segments.sort(key=lambda seg: seg[0])
     merged = _greedy_merge_segments(segments)
     assert len(merged) == 1
 
     shallow, _ = _remerge_from_consensus(_greedy_merge_segments(segments),
-                                         0.08, 2.0, 2, 3, max_depth=0)
+                                         0.08, 2.0, 2, 3, max_depth=0, min_gap_s=0.015)
     deep, _ = _remerge_from_consensus(_greedy_merge_segments(segments),
-                                      0.08, 2.0, 2, 3, max_depth=4)
+                                      0.08, 2.0, 2, 3, max_depth=4, min_gap_s=0.015)
     assert len(shallow) == 4, "one pass cannot separate the close pair"
     assert len(deep) == 5, "recursion separates it"
 
@@ -1802,3 +1802,30 @@ def test_summarize_rejects_implausibly_long_intervals(processing_settings, tmp_p
         message_output=lambda *a, **k: messages.append(" ".join(str(x) for x in a)),
     ).summarize_das_findings()
     assert any("Rejected" in m and "longer than" in m for m in messages), messages
+
+
+def test_consensus_remerge_will_not_cut_at_a_gap_the_segmenter_could_not_make():
+    """A cut needs a gap DAS itself could have produced.
+
+    DAS runs with --segment-fillgap 0.015, so it closes any gap under 15 ms within a
+    channel: over 221,522 within-channel gaps in six sessions, 99.87% are >= 15 ms.
+    A finer gap in the merged output is manufactured by taking the union across
+    channels and cutting it again, and left alone it puts boundaries inside calls --
+    20250928_172408 at 565.074 s was cut into 18 ms and 133 ms pieces divided by
+    0.1 ms.
+    """
+    segments = []
+    for channel in (f'ch{n:02d}' for n in range(1, 6)):
+        segments.append((0.00, 0.05, channel))
+        segments.append((0.055, 0.10, channel))       # 5 ms apart: below the floor
+    segments.append((0.00, 0.10, 'ch06'))             # the dissenter spanning both
+    segments.sort(key=lambda seg: seg[0])
+    merged = _greedy_merge_segments(segments)
+
+    unfloored, _ = _remerge_from_consensus(_greedy_merge_segments(segments),
+                                           0.08, 2.0, 2, 3, max_depth=4, min_gap_s=0.0)
+    floored, _ = _remerge_from_consensus(_greedy_merge_segments(segments),
+                                         0.08, 2.0, 2, 3, max_depth=4, min_gap_s=0.015)
+    assert len(floored) == 1, "a 5 ms gap is finer than the segmenter's own resolution"
+    assert floored[0]['start'] == pytest.approx(merged[0]['start'])
+    assert floored[0]['stop'] == pytest.approx(merged[0]['stop'])
