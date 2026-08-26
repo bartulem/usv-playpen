@@ -1668,7 +1668,7 @@ def test_consensus_remerge_recovers_calls_masked_by_one_channel():
 
     corrected, n_split = _remerge_from_consensus(
         merged, min_duration_s=0.25, span_factor=2.0,
-        max_dissenting_channels=2, min_agreeing_channels=3
+        max_dissenting_channels=2, min_agreeing_channels=3, max_depth=4
     )
     assert n_split == 1
     assert len(corrected) == 4
@@ -1683,7 +1683,7 @@ def test_consensus_remerge_leaves_agreed_long_intervals_alone():
     merged = _greedy_merge_segments(sorted(segments, key=lambda seg: seg[0]))
     corrected, n_split = _remerge_from_consensus(
         merged, min_duration_s=0.25, span_factor=2.0,
-        max_dissenting_channels=2, min_agreeing_channels=3
+        max_dissenting_channels=2, min_agreeing_channels=3, max_depth=4
     )
     assert n_split == 0
     assert len(corrected) == 1
@@ -1697,7 +1697,7 @@ def test_consensus_remerge_ignores_short_intervals():
     merged = _greedy_merge_segments(sorted(segments, key=lambda seg: seg[0]))
     corrected, n_split = _remerge_from_consensus(
         merged, min_duration_s=0.25, span_factor=2.0,
-        max_dissenting_channels=2, min_agreeing_channels=3
+        max_dissenting_channels=2, min_agreeing_channels=3, max_depth=4
     )
     assert n_split == 0
     assert len(corrected) == 1
@@ -1709,7 +1709,96 @@ def test_consensus_remerge_needs_enough_agreeing_channels():
     merged = _greedy_merge_segments(sorted(segments, key=lambda seg: seg[0]))
     corrected, n_split = _remerge_from_consensus(
         merged, min_duration_s=0.25, span_factor=2.0,
-        max_dissenting_channels=2, min_agreeing_channels=3
+        max_dissenting_channels=2, min_agreeing_channels=3, max_depth=4
     )
     assert n_split == 0
     assert len(corrected) == 1
+
+
+def test_consensus_remerge_recurses_into_its_own_sub_intervals():
+    """A channel fusing two calls INSIDE a long interval is invisible to a single pass.
+
+    Dissent is judged against the median longest-segment of the WHOLE interval, so a
+    channel bridging only two adjacent calls does not stand out when the interval also
+    contains a genuinely long call that lifts that median. Observed in 20240311_143803
+    at 300.816 s: a 779 ms interval with a 96 ms median, where the channels fusing two
+    30-40 ms calls sat at 102-107 ms -- 1.1x, nowhere near the threshold. Re-testing
+    each sub-interval against its own, much shorter, median is what exposes them.
+
+    The fixture reproduces that shape: a long 300 ms call every channel agrees on lifts
+    the parent median, so the channel fusing the final close pair (110 ms) reads as
+    ordinary at the top level and only becomes an outlier once the sub-interval is
+    judged on its own.
+    """
+    segments = []
+    for channel in (f'ch{n:02d}' for n in range(1, 8)):
+        segments.append((0.00, 0.30, channel))        # the long call, lifts the median
+        segments.append((0.50, 0.55, channel))
+        segments.append((0.80, 0.85, channel))
+        segments.append((1.10, 1.15, channel))        # the close pair
+        segments.append((1.16, 1.21, channel))
+    segments.append((0.00, 1.21, 'ch08'))             # spans everything -> pass-1 dissenter
+    segments.append((1.10, 1.21, 'ch09'))             # fuses only the close pair
+    segments.sort(key=lambda seg: seg[0])
+    merged = _greedy_merge_segments(segments)
+    assert len(merged) == 1
+
+    shallow, _ = _remerge_from_consensus(_greedy_merge_segments(segments),
+                                         0.08, 2.0, 2, 3, max_depth=0)
+    deep, _ = _remerge_from_consensus(_greedy_merge_segments(segments),
+                                      0.08, 2.0, 2, 3, max_depth=4)
+    assert len(shallow) == 4, "one pass cannot separate the close pair"
+    assert len(deep) == 5, "recursion separates it"
+
+
+def test_consensus_remerge_preserves_the_outer_boundaries():
+    """Only internal cuts come from the consensus; the outer edges stay the union's.
+
+    Setting a channel aside for the split also removes its contribution to the
+    interval's own start and stop, and that contribution is the faint onset or offset
+    only the nearest microphone registered -- exactly what the union exists to keep.
+    Measured before this was fixed: 20250919_145712 at 100.059 s lost 11.2 ms off its
+    start, and 20240311_143803 at 1102.237 s lost 27.1 ms off its end.
+    """
+    segments = []
+    for start in (0.10, 0.40, 0.70):
+        for channel in (f'ch{n:02d}' for n in range(1, 6)):
+            segments.append((start, start + 0.05, channel))
+    segments.append((0.00, 0.90, 'ch06'))          # alone in carrying both outer edges
+    segments.sort(key=lambda seg: seg[0])
+    merged = _greedy_merge_segments(segments)
+    union_start, union_stop = merged[0]['start'], merged[0]['stop']
+
+    corrected, n_split = _remerge_from_consensus(merged, 0.08, 2.0, 2, 3, max_depth=4)
+    assert n_split >= 1
+    assert corrected[0]['start'] == pytest.approx(union_start)
+    assert corrected[-1]['stop'] == pytest.approx(union_stop)
+
+
+def test_summarize_rejects_implausibly_long_intervals(processing_settings, tmp_path, mocker):
+    """An interval longer than max_usv_duration_s never reaches the noise checks.
+
+    Phase 4 asks whether a detection correlates across channels, which broadband
+    noise does perfectly well: 20240229_163242 carried six "USVs" with a median
+    duration of 3,074 ms on all 24 channels and every one survived it. Duration is
+    the discriminator those checks cannot supply.
+    """
+    _make_summary_fixture(tmp_path, n_usv=3, channels=("ch01", "ch02"))
+    mocker.patch("usv_playpen.processing.das_inference.smart_wait")
+    mocker.patch("usv_playpen.processing.das_inference.load_session_metadata",
+                 return_value=(None, None))
+    mocker.patch("usv_playpen.processing.das_inference.save_session_metadata")
+
+    settings = json.loads(json.dumps(processing_settings))
+    block = settings["usv_inference"]["FindMouseVocalizations"]["summarize_das_findings"]
+    block["filter_putative_noise_bool"] = False
+    block["max_usv_duration_bool"] = True
+    block["max_usv_duration_s"] = 0.05          # below every fixture interval
+
+    messages = []
+    FindMouseVocalizations(
+        root_directory=str(tmp_path),
+        input_parameter_dict=settings,
+        message_output=lambda *a, **k: messages.append(" ".join(str(x) for x in a)),
+    ).summarize_das_findings()
+    assert any("Rejected" in m and "longer than" in m for m in messages), messages
