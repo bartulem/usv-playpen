@@ -7531,6 +7531,36 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
         The initialized GUI application and its main window.
     """
 
+    # Qt and GTK both reach for the AT-SPI accessibility registry at start-up.
+    # Where it is not running -- COSMIC, bare window managers -- five warnings
+    # land on the console ("Error in contacting registry", "Could not obtain
+    # desktop path or name", and three "atk-bridge:" lines). Nothing is broken,
+    # but the noise buries anything the GUI actually prints.
+    #
+    # Measured on COSMIC, the two levers behave differently:
+    #
+    #   NO_AT_BRIDGE=1        silences all four GTK/ATK lines.
+    #   QT_ACCESSIBILITY=0    does NOTHING -- Qt6 loads the atspi bridge as a
+    #                         plugin and ignores this Qt5-era variable, so its
+    #                         own "qt.accessibility.atspi" line survives.
+    #
+    # Qt's line is therefore silenced through its logging category instead,
+    # which suppresses the message without disabling anything.
+    #
+    # Neither measure costs accessibility, so neither is gated on detecting the
+    # registry -- an earlier attempt to probe for it was both unreliable and
+    # unnecessary. GTK's ATK bridge exposes GTK widgets, of which a Qt
+    # application has none; Qt keeps serving its own widgets through its own
+    # bridge either way. Only a log category is filtered, never a feature.
+    if platform.system() == 'Linux':
+        os.environ.setdefault('NO_AT_BRIDGE', '1')
+        atspi_rule = 'qt.accessibility.atspi=false'
+        existing_rules = os.environ.get('QT_LOGGING_RULES', '')
+        if atspi_rule not in existing_rules:
+            os.environ['QT_LOGGING_RULES'] = (
+                f'{existing_rules};{atspi_rule}' if existing_rules else atspi_rule
+            )
+
     # Handle high-resolution displays:
     if hasattr(Qt, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, on=True)
