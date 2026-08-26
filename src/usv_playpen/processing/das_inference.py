@@ -55,7 +55,7 @@ _DAS_ANNOTATION_FILE_RE = re.compile(r"^([ms])_.*_(ch\d{2})_.*annotations\.csv$"
 
 def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: float,
                             max_dissenting_channels: int, min_agreeing_channels: int,
-                            max_depth: int, _depth: int = 0) -> tuple:
+                            max_depth: int, min_gap_s: float = 0.0, _depth: int = 0) -> tuple:
     """
     Description
     -----------
@@ -139,6 +139,31 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
             continue
 
         sub_intervals = _greedy_merge_segments(sorted(retained, key=lambda seg: seg[0]))
+
+        # A cut needs a gap the segmenter could actually have produced. DAS is run
+        # with --segment-fillgap 0.015, so it closes any gap under 15 ms WITHIN a
+        # channel: measured over 221,522 within-channel gaps in six sessions, 99.87%
+        # are >= 15 ms and the 1st percentile is 21 ms. A finer gap in the merged
+        # output therefore cannot come from the segmentation at all -- it is
+        # manufactured by taking the union across channels and cutting it again, where
+        # different channels' detections happen to stop at slightly different instants.
+        # Left alone it puts boundaries inside calls: 20250928_172408 at 565.074 s was
+        # cut into 18 ms and 133 ms pieces divided by 0.1 ms, mid-call, and
+        # 20251004_162927 at 303.498 s lost a call to gaps of 2.4 and 11.1 ms.
+        # Matching the floor to the segmenter's own resolution is principled rather
+        # than tuned, and it stays discriminating: at 20250928_175135 303.130 s a
+        # 17.1 ms gap survives while a 4.9 ms one closes.
+        if min_gap_s > 0 and len(sub_intervals) > 1:
+            fused = [sub_intervals[0]]
+            for piece in sub_intervals[1:]:
+                if piece['start'] - fused[-1]['stop'] < min_gap_s:
+                    fused[-1]['stop'] = max(fused[-1]['stop'], piece['stop'])
+                    fused[-1]['chs_detected'] |= piece['chs_detected']
+                    fused[-1]['segments'].extend(piece['segments'])
+                else:
+                    fused.append(piece)
+            sub_intervals = fused
+
         if len(sub_intervals) < 2:
             corrected.append(interval)
             continue
@@ -168,7 +193,7 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
         # otherwise recurse further than is meaningful.
         deeper, deeper_splits = _remerge_from_consensus(
             sub_intervals, min_duration_s, span_factor, max_dissenting_channels,
-            min_agreeing_channels, max_depth, _depth + 1
+            min_agreeing_channels, max_depth, min_gap_s=min_gap_s, _depth=_depth + 1
         ) if _depth < max_depth else (sub_intervals, 0)
         n_split += deeper_splits
         corrected.extend(deeper)
@@ -651,24 +676,13 @@ class FindMouseVocalizations:
                     max_dissenting_channels=merge_params["consensus_remerge_max_dissenting_channels"],
                     min_agreeing_channels=merge_params["consensus_remerge_min_agreeing_channels"],
                     max_depth=merge_params["consensus_remerge_max_depth"],
+                    min_gap_s=merge_params["consensus_remerge_min_gap_s"],
                 )
                 if n_split > 0:
                     self.message_output(
                         f"Re-merged {n_split} interval(s) from the agreeing channels, where "
                         f"one channel contradicted the majority."
                     )
-
-            # Convert channel sets to sorted lists and compute counts
-            for usv in merged:
-                del usv['segments']
-                usv['chs_detected'] = sorted(usv['chs_detected'])
-                usv['chs_count'] = len(usv['chs_detected'])
-
-            n_usv = len(merged)
-            self.message_output(
-                f"Merged {n_usv} USV intervals from {len(all_segments)} raw detections across {len({seg[2] for seg in all_segments})} channels."
-            )
-            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
             # Reject implausibly long intervals before Phase 4 looks at anything.
             # Phase 4 asks whether a detection correlates across channels, which
@@ -683,17 +697,63 @@ class FindMouseVocalizations:
             # plausible call or tightly-overlapping cluster, and removes 21 intervals
             # in 439,301 (0.005%) -- of which the 6 longest are that one noise session.
             duration_params = self.input_parameter_dict["summarize_das_findings"]
-            if duration_params["max_usv_duration_bool"] and n_usv > 0:
+            if duration_params["max_usv_duration_bool"] and merged:
                 max_duration_s = duration_params["max_usv_duration_s"]
+
+                # Before deleting anything, give an over-length interval one more
+                # attempt with the dissent limit relaxed. 20240311_143803 at 357.531 s
+                # is 1,094 ms of genuine calls that stayed whole only because FOUR of
+                # its channels smeared and consensus_remerge_max_dissenting_channels
+                # is 2 -- the merge declined, and the gate then destroyed real data.
+                # Relaxing the limit globally is not the answer: over twelve intervals
+                # from confirmed non-playback sessions, judged against spectrograms, a
+                # limit of 4 was better in six and worse in five, so neither value is
+                # right on ordinary data. Applied only here it changed 0 of 13,851
+                # intervals across eleven such sessions while splitting 357.531 into
+                # seven pieces, the longest 303 ms. Deleting real calls is the worst
+                # outcome available, so the retry is worth having on that path alone.
+                if merge_params["consensus_remerge_bool"]:
+                    rescued = []
+                    for usv in merged:
+                        if usv['stop'] - usv['start'] <= max_duration_s:
+                            rescued.append(usv)
+                            continue
+                        retry, _ = _remerge_from_consensus(
+                            [usv], merge_params["consensus_remerge_min_duration_s"],
+                            merge_params["consensus_remerge_span_factor"],
+                            merge_params["consensus_remerge_rescue_dissenting_channels"],
+                            merge_params["consensus_remerge_min_agreeing_channels"],
+                            merge_params["consensus_remerge_max_depth"],
+                            merge_params["consensus_remerge_min_gap_s"],
+                        )
+                        rescued.extend(retry)
+                    if len(rescued) != len(merged):
+                        self.message_output(
+                            f"Re-merged {len(rescued) - len(merged)} further piece(s) from "
+                            f"interval(s) that would otherwise have exceeded {max_duration_s} s."
+                        )
+                        merged = rescued
+
                 too_long = [usv for usv in merged if usv['stop'] - usv['start'] > max_duration_s]
                 if too_long:
                     merged = [usv for usv in merged if usv['stop'] - usv['start'] <= max_duration_s]
-                    n_usv = len(merged)
                     self.message_output(
                         f"Rejected {len(too_long)} interval(s) longer than {max_duration_s} s "
                         f"(longest {max((u['stop'] - u['start']) for u in too_long):.2f} s); "
-                        f"{n_usv} remain."
+                        f"{len(merged)} remain."
                     )
+
+            # Convert channel sets to sorted lists and compute counts
+            for usv in merged:
+                del usv['segments']
+                usv['chs_detected'] = sorted(usv['chs_detected'])
+                usv['chs_count'] = len(usv['chs_detected'])
+
+            n_usv = len(merged)
+            self.message_output(
+                f"Merged {n_usv} USV intervals from {len(all_segments)} raw detections across {len({seg[2] for seg in all_segments})} channels."
+            )
+            smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
             # Whether to run the Phase-4 putative-noise rejection (amplitude +
             # spectrogram correlation/coherence checks). When False, every merged

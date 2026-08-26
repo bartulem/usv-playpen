@@ -391,6 +391,8 @@ Process
                          [--consensus-remerge-max-dissenting-channels INTEGER]
                          [--consensus-remerge-min-agreeing-channels INTEGER]
                          [--consensus-remerge-max-depth INTEGER]
+                         [--consensus-remerge-min-gap-s FLOAT]
+                         [--consensus-remerge-rescue-dissenting-channels INTEGER]
                          [--seam-repair | --no-seam-repair]
                          [--seam-repair-legacy-stride-samples INTEGER]
                          [--seam-repair-max-rung INTEGER]
@@ -430,6 +432,10 @@ Process
                             Consensus re-merge: fire only when at least this many channels remain once dissenters are set aside.
       --consensus-remerge-max-depth
                             Consensus re-merge: how many times a corrected interval may itself be re-examined; 0 reproduces the single-pass behaviour.
+      --consensus-remerge-min-gap-s
+                            Consensus re-merge: narrowest gap (s) a cut may sit in; below the segmenter's own --segment-fillgap the gap was manufactured by the union, not found in the audio.
+      --consensus-remerge-rescue-dissenting-channels
+                            Consensus re-merge: dissent limit used only for an interval about to be rejected for exceeding --max-usv-duration-s.
       --seam-repair / --no-seam-repair
                             Run the post-summary seam check-and-repair (default: disabled). Only meaningful for annotations from the legacy non-overlapping model (stride 8128); pass --seam-repair to enable.
       --seam-repair-legacy-stride-samples
