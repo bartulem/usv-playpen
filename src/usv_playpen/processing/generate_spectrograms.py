@@ -346,7 +346,7 @@ class SpectrogramGenerator:
             recursive=True,
             label="USV summary CSV",
         )
-        usv_summary_df = pls.read_csv(source=str(usv_summary_loc))
+        usv_summary_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
 
         audio_file_loc = first_match_or_raise(
             root=root / "audio" / "hpss_filtered",
