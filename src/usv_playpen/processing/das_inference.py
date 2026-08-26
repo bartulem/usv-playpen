@@ -54,7 +54,8 @@ _DAS_ANNOTATION_FILE_RE = re.compile(r"^([ms])_.*_(ch\d{2})_.*annotations\.csv$"
 
 
 def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: float,
-                                      max_dissenting_channels: int, min_agreeing_channels: int) -> tuple:
+                            max_dissenting_channels: int, min_agreeing_channels: int,
+                            max_depth: int, _depth: int = 0) -> tuple:
     """
     Description
     -----------
@@ -143,12 +144,34 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
             continue
 
         n_split += 1
+        # Only the INTERNAL cuts come from the consensus. The outer edges stay the
+        # union's, because setting a channel aside for the split also removes its
+        # contribution to the interval's own start and stop -- and that contribution
+        # is the faint onset or offset only the nearest microphone registered, which
+        # the union exists to keep. Measured before this was fixed: 20250919_145712
+        # at 100.059 s had its start pulled 11.2 ms later, and 20240311_143803 at
+        # 1102.237 s lost 27.1 ms off its end.
+        sub_intervals[0]['start'] = interval['start']
+        sub_intervals[-1]['stop'] = interval['stop']
         for sub in sub_intervals:
             # credit a set-aside channel wherever its own segment covers this sub-interval
             for seg_start, seg_stop, seg_channel in segments:
                 if seg_channel in dissenting and seg_start < sub['stop'] and sub['start'] < seg_stop:
                     sub['chs_detected'].add(seg_channel)
-            corrected.append(sub)
+        # Recurse. A single pass tests dissent against the median longest-segment of
+        # the WHOLE interval, so inside a long one a channel fusing just two adjacent
+        # calls is invisible: in 20240311_143803 at 300.816 s the interval spans 779 ms
+        # with a 96 ms median, and the channels bridging two 30-40 ms calls sit at
+        # 102-107 ms -- only 1.1x, far under the threshold. Re-testing each sub-interval
+        # against its own, much shorter, median exposes them. Depth is capped because
+        # each level can only shorten intervals, but a pathological channel set could
+        # otherwise recurse further than is meaningful.
+        deeper, deeper_splits = _remerge_from_consensus(
+            sub_intervals, min_duration_s, span_factor, max_dissenting_channels,
+            min_agreeing_channels, max_depth, _depth + 1
+        ) if _depth < max_depth else (sub_intervals, 0)
+        n_split += deeper_splits
+        corrected.extend(deeper)
 
     return corrected, n_split
 
@@ -627,6 +650,7 @@ class FindMouseVocalizations:
                     span_factor=merge_params["consensus_remerge_span_factor"],
                     max_dissenting_channels=merge_params["consensus_remerge_max_dissenting_channels"],
                     min_agreeing_channels=merge_params["consensus_remerge_min_agreeing_channels"],
+                    max_depth=merge_params["consensus_remerge_max_depth"],
                 )
                 if n_split > 0:
                     self.message_output(
@@ -645,6 +669,31 @@ class FindMouseVocalizations:
                 f"Merged {n_usv} USV intervals from {len(all_segments)} raw detections across {len({seg[2] for seg in all_segments})} channels."
             )
             smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+            # Reject implausibly long intervals before Phase 4 looks at anything.
+            # Phase 4 asks whether a detection correlates across channels, which
+            # broadband noise does perfectly well: session 20240229_163242 carried six
+            # "USVs" with a median duration of 3,074 ms, on all 24 channels, and every
+            # one survived the correlation and coherence checks. Duration is the
+            # discriminator those checks cannot supply -- no mouse USV lasts a second.
+            #
+            # The default is set from the cohort rather than assumed: over 439,301 USVs
+            # in 246 summarized sessions the median is 86 ms, p99 is 371 ms, p99.9 is
+            # 617 ms and p99.99 is 896 ms. A 1,000 ms cutoff is ~5x the p90, past any
+            # plausible call or tightly-overlapping cluster, and removes 21 intervals
+            # in 439,301 (0.005%) -- of which the 6 longest are that one noise session.
+            duration_params = self.input_parameter_dict["summarize_das_findings"]
+            if duration_params["max_usv_duration_bool"] and n_usv > 0:
+                max_duration_s = duration_params["max_usv_duration_s"]
+                too_long = [usv for usv in merged if usv['stop'] - usv['start'] > max_duration_s]
+                if too_long:
+                    merged = [usv for usv in merged if usv['stop'] - usv['start'] <= max_duration_s]
+                    n_usv = len(merged)
+                    self.message_output(
+                        f"Rejected {len(too_long)} interval(s) longer than {max_duration_s} s "
+                        f"(longest {max((u['stop'] - u['start']) for u in too_long):.2f} s); "
+                        f"{n_usv} remain."
+                    )
 
             # Whether to run the Phase-4 putative-noise rejection (amplitude +
             # spectrogram correlation/coherence checks). When False, every merged
