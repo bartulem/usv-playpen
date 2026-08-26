@@ -10,6 +10,7 @@ import os
 import pathlib
 import re
 import shutil
+import statistics
 import subprocess
 from collections.abc import Callable
 from datetime import datetime
@@ -50,6 +51,148 @@ apply_plot_style()
 # what lets the channel sit anywhere before `annotations.csv`, not just
 # immediately before it).
 _DAS_ANNOTATION_FILE_RE = re.compile(r"^([ms])_.*_(ch\d{2})_.*annotations\.csv$")
+
+
+def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: float,
+                                      max_dissenting_channels: int, min_agreeing_channels: int) -> tuple:
+    """
+    Description
+    -----------
+    Re-merge intervals whose extent is dictated by one channel contradicting the
+    rest, and return the corrected interval list.
+
+    The greedy union takes the outermost edge across channels, which is what
+    preserves the faint onsets and offsets only the nearest microphones register.
+    The same rule means a single channel that fuses a run of calls into one long
+    detection drags every other channel's boundaries out with it. Observed in
+    session 20250919_145712, where 23 of 24 channels resolved seven separate
+    calls between 0.9 s and 1.9 s while one channel emitted a single 897 ms
+    detection: the merged USV became 901 ms, and re-inference did not change it
+    because the fused detection is in the raw annotation.
+
+    An interval is only reconsidered when all of the following hold, so that
+    dense-but-genuine runs of overlapping calls are left untouched:
+
+    1. it is longer than ``min_duration_s`` -- ordinary calls are never examined;
+    2. at least one and at most ``max_dissenting_channels`` contributing channels
+       have a segment longer than ``span_factor`` times the median
+       longest-segment across the contributing channels;
+    3. at least ``min_agreeing_channels`` channels remain after setting those
+       aside;
+    4. re-merging the remaining channels actually yields more than one interval.
+
+    Condition 4 matters: where the long channel agrees with everyone else, the
+    consensus re-merge reproduces one interval and nothing is changed. A channel
+    set aside for the boundary is still credited in ``chs_detected`` for every
+    sub-interval its original segment covers, because it did hear the call --
+    it merely failed to separate it -- and dropping it would understate
+    ``chs_count`` for the downstream noise rejection.
+
+    This is deliberately far narrower than the coverage-watershed merge reverted
+    in c9882bb, which trimmed every USV to a fraction of its peak channel count
+    and clipped real edges throughout. This touches only intervals where one
+    channel contradicts a clear majority: 3 of 1043 on the session above.
+
+    Parameters
+    ----------
+    merged : list
+        Merged interval dicts, each carrying ``start``, ``stop``, ``chs_detected``
+        (a set) and ``segments`` (the contributing ``(start, stop, channel)`` tuples).
+    min_duration_s : float
+        Only intervals longer than this are examined.
+    span_factor : float
+        A channel dominates when its longest segment exceeds this multiple of the
+        median longest-segment across contributing channels.
+    max_dissenting_channels : int
+        Fire only when at most this many channels dominate.
+    min_agreeing_channels : int
+        Fire only when at least this many channels remain once dissenters are set aside.
+
+    Returns
+    -------
+    (corrected, n_split) : tuple[list, int]
+        The corrected interval list and the number of intervals that were split.
+    """
+
+    corrected = []
+    n_split = 0
+    for interval in merged:
+        segments = interval['segments']
+        if interval['stop'] - interval['start'] <= min_duration_s:
+            corrected.append(interval)
+            continue
+
+        longest_per_channel = {}
+        for seg_start, seg_stop, seg_channel in segments:
+            span = seg_stop - seg_start
+            if span > longest_per_channel.get(seg_channel, 0.0):
+                longest_per_channel[seg_channel] = span
+        median_longest = statistics.median(longest_per_channel.values())
+        dissenting = {channel for channel, span in longest_per_channel.items()
+                    if span > span_factor * median_longest}
+        retained = [seg for seg in segments if seg[2] not in dissenting]
+
+        if (not dissenting or len(dissenting) > max_dissenting_channels
+                or len({seg[2] for seg in retained}) < min_agreeing_channels):
+            corrected.append(interval)
+            continue
+
+        sub_intervals = _greedy_merge_segments(sorted(retained, key=lambda seg: seg[0]))
+        if len(sub_intervals) < 2:
+            corrected.append(interval)
+            continue
+
+        n_split += 1
+        for sub in sub_intervals:
+            # credit a set-aside channel wherever its own segment covers this sub-interval
+            for seg_start, seg_stop, seg_channel in segments:
+                if seg_channel in dissenting and seg_start < sub['stop'] and sub['start'] < seg_stop:
+                    sub['chs_detected'].add(seg_channel)
+            corrected.append(sub)
+
+    return corrected, n_split
+
+
+def _greedy_merge_segments(sorted_segments: list) -> list:
+    """
+    Description
+    -----------
+    Merge time-sorted ``(start, stop, channel)`` segments into overlapping-interval
+    dicts by greedy union.
+
+    Two intervals overlap (open-ended) when ``a_start < b_stop and b_start < a_stop``;
+    because the input is sorted by start time, only the running stop needs comparing.
+    Each interval retains the segments that formed it so a later pass can reason about
+    which channels set its boundaries.
+
+    Parameters
+    ----------
+    sorted_segments : list
+        ``(start_seconds, stop_seconds, channel)`` tuples, sorted by start time.
+
+    Returns
+    -------
+    merged (list)
+        Interval dicts with ``start``, ``stop``, ``chs_detected``, ``segments`` and
+        the amplitude placeholders the summary writer expects.
+    """
+
+    merged = []
+    for seg_start, seg_stop, seg_channel in sorted_segments:
+        if merged and seg_start < merged[-1]['stop']:
+            merged[-1]['stop'] = max(merged[-1]['stop'], seg_stop)
+            merged[-1]['chs_detected'].add(seg_channel)
+            merged[-1]['segments'].append((seg_start, seg_stop, seg_channel))
+        else:
+            merged.append({
+                'start': seg_start,
+                'stop': seg_stop,
+                'chs_detected': {seg_channel},
+                'segments': [(seg_start, seg_stop, seg_channel)],
+                'peak_amp_ch': 0.0,
+                'mean_amp_ch': 0.0,
+            })
+    return merged
 
 
 def _write_usv_summary_csv(merged: list, out_path: pathlib.Path) -> None:
@@ -469,24 +612,31 @@ class FindMouseVocalizations:
             # union leaves none. Its premise -- that a long merged interval is one jittery
             # channel chaining distinct calls -- does not hold either; those intervals are
             # dense runs of genuinely overlapping calls, with no silence to cut at.
-            merged = []
-            for start, stop, ch_idx in all_segments:
-                if merged and start < merged[-1]['stop']:
-                    # overlaps with current merged interval: extend and record channel
-                    merged[-1]['stop'] = max(merged[-1]['stop'], stop)
-                    merged[-1]['chs_detected'].add(ch_idx)
-                else:
-                    # no overlap: start a new merged interval
-                    merged.append({
-                        'start': start,
-                        'stop': stop,
-                        'chs_detected': {ch_idx},
-                        'peak_amp_ch': 0.0,
-                        'mean_amp_ch': 0.0,
-                    })
+            merged = _greedy_merge_segments(all_segments)
+
+            # The union's one failure mode: a channel that fuses a run of calls into
+            # a single detection drags everyone else's boundaries out with it, since
+            # the outermost edge wins. Only intervals where one channel contradicts a
+            # clear majority are reconsidered -- dense runs that every channel agrees
+            # are long stay exactly as merged. See _remerge_from_consensus.
+            merge_params = self.input_parameter_dict["summarize_das_findings"]
+            if merge_params["consensus_remerge_bool"]:
+                merged, n_split = _remerge_from_consensus(
+                    merged,
+                    min_duration_s=merge_params["consensus_remerge_min_duration_s"],
+                    span_factor=merge_params["consensus_remerge_span_factor"],
+                    max_dissenting_channels=merge_params["consensus_remerge_max_dissenting_channels"],
+                    min_agreeing_channels=merge_params["consensus_remerge_min_agreeing_channels"],
+                )
+                if n_split > 0:
+                    self.message_output(
+                        f"Re-merged {n_split} interval(s) from the agreeing channels, where "
+                        f"one channel contradicted the majority."
+                    )
 
             # Convert channel sets to sorted lists and compute counts
             for usv in merged:
+                del usv['segments']
                 usv['chs_detected'] = sorted(usv['chs_detected'])
                 usv['chs_count'] = len(usv['chs_detected'])
 
