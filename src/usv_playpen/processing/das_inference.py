@@ -264,7 +264,15 @@ def _write_usv_summary_csv(merged: list, out_path: pathlib.Path) -> None:
     (None)
     """
     pls.DataFrame({
-        "usv_id": [f"{_num:04d}" for _num in range(len(merged))],
+        # Zero-padded to six digits. The padding is what keeps the column a
+        # STRING through every read/write cycle -- bare 0, 1, 2 round-trip as
+        # Int64 and the atomic rewrites silently retype the column -- and a
+        # uniform width is what makes lexicographic order match numeric order.
+        # Six digits, not four: the busiest session measured carries 5,135 USVs,
+        # so four leaves under 2x headroom, and a session that crossed 9,999
+        # would emit mixed-width ids that still sort lexicographically but no
+        # longer in numeric order.
+        "usv_id": [f"{_num:06d}" for _num in range(len(merged))],
         "start": [u['start'] for u in merged],
         "stop": [u['stop'] for u in merged],
         "duration": [u['stop'] - u['start'] for u in merged],
@@ -1146,7 +1154,7 @@ class FindMouseVocalizations:
             )
             return
 
-        # usv_id is zero-padded ("0000") in freshly written summaries; without
+        # usv_id is zero-padded ("000000") in freshly written summaries; without
         # the override polars re-infers it as Int64 and the atomic rewrite
         # would silently reformat the column.
         summary_df = pls.read_csv(source=str(summary_path), schema_overrides={"usv_id": pls.String})
