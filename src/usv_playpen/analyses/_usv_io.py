@@ -109,9 +109,20 @@ def load_and_filter_usv_data(
     # Remove noise across all categories provided in the list; rows whose noise value is
     # null are not in noise_categories, so fill_null(True) retains them rather than letting
     # the three-valued (~null -> null) logic silently drop them via filter()
-    usv_info_clean = usv_info.filter(
-        pls.col(noise_col_id).is_in(noise_categories).not_().fill_null(True)
-    )
+    #
+    # A summary written by das-summarize carries no classification column at all --
+    # the acoustic-embedding columns are added later and are dropped whenever the
+    # merge is re-run. Referencing a missing column here raised ColumnNotFoundError
+    # and killed the whole analysis on its first session, so an absent column now
+    # means "no noise labels available, keep every row" and says so once.
+    if noise_col_id not in usv_info.columns:
+        print(f"    no '{noise_col_id}' column in {usv_file.name}: keeping all "
+              f"{usv_info.height} rows unfiltered")
+        usv_info_clean = usv_info
+    else:
+        usv_info_clean = usv_info.filter(
+            pls.col(noise_col_id).is_in(noise_categories).not_().fill_null(True)
+        )
 
     return usv_info_clean.with_columns(
         (pls.col("start") * frame_rate).floor().cast(pls.UInt32).alias("frame_index")
