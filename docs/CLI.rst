@@ -917,9 +917,17 @@ The command writes a single self-describing HDF5 archive ``usv_interval_analysis
       --output-directory          Directory in which to write the consolidated
                                   usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5 archive.
       --noise-col-id              Name of the noise classification column in the
-                                  USV summary CSV.
+                                  USV summary CSV. A summary that does not carry
+                                  this column is kept whole and a line is printed
+                                  naming the session and row count -- the
+                                  acoustic-embedding columns are added after
+                                  das-summarize and are dropped whenever the merge
+                                  is re-run, so their absence is an ordinary state
+                                  rather than an error.
       --noise-categories          Integer label(s) in noise_col_id that mark a
-                                  USV as noise.
+                                  USV as noise. There is no separate on/off
+                                  switch: an empty list, or a column that is not
+                                  present, filters nothing.
       --fit-mixture-model / --no-fit-mixture-model    Whether to run the mixture-model sweep after inter-USV interval extraction.
       --n-components-min          Minimum number of mixture components.
       --n-components-max          Maximum number of mixture components.
