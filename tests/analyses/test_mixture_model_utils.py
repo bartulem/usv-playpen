@@ -36,7 +36,9 @@ from usv_playpen.analyses.mixture_model_utils import (
     _sample_from_mixture,
     _t_update_nu,
     bootstrap_lrt,
+    fit_log_gmm,
     fit_log_ig_mixture,
+    fit_log_t_mixture,
     gmm_boundaries_logspace,
     gmm_modes,
     ig_mixture_cdf_logspace,
@@ -654,3 +656,39 @@ def test_thin_seam_ladder_keeps_mask_shape_and_dtype():
         half_width_ms=1.5, max_rung=6, seed=3)
     assert keep.dtype == bool
     assert keep.shape == intervals.shape
+
+
+@pytest.mark.parametrize("fitter", [fit_log_gmm, fit_log_t_mixture])
+def test_x_is_log_matches_the_seconds_route(fitter):
+    """Passing log-space values with x_is_log=True is equivalent to passing the
+    exponentiated seconds, because every fitter's first act is to take the log.
+    The bootstrap relies on that equivalence to skip an exp/log round trip."""
+    rng = np.random.default_rng(0)
+    log_x = np.concatenate([rng.normal(-2.7, 0.25, 1500), rng.normal(-1.0, 0.5, 500)])
+
+    via_seconds, _ = fitter(np.exp(log_x), 2, seed=0, n_init=2)
+    via_log, _ = fitter(log_x, 2, seed=0, n_init=2, x_is_log=True)
+
+    assert np.allclose(np.sort(np.ravel(via_seconds.means_)),
+                       np.sort(np.ravel(via_log.means_)))
+
+
+@pytest.mark.parametrize("fitter", [fit_log_gmm, fit_log_t_mixture])
+def test_x_is_log_survives_a_draw_that_overflows_exp(fitter):
+    """A heavy-tailed component can draw log_x > 709, whose exp is inf; routing
+    through seconds then dies inside the fitter with "Input X contains
+    infinity". The log-space route has nothing to overflow. This is the failure
+    that killed the bootstrap LRT on a 172,331-interval pool."""
+    rng = np.random.default_rng(1)
+    log_x = np.concatenate([rng.normal(-2.7, 0.25, 800), [750.0]])
+    # The suite escalates warnings to errors; exp() overflowing to inf is the
+    # premise of this test, not the failure being asserted.
+    with np.errstate(over="ignore"):
+        seconds = np.exp(log_x)
+    assert np.isinf(seconds).any()
+
+    with pytest.raises(ValueError, match="infinity|too large"):
+        fitter(seconds, 2, seed=0, n_init=1)
+
+    model, _ = fitter(log_x, 2, seed=0, n_init=1, x_is_log=True)
+    assert np.isfinite(np.ravel(model.means_)).all()

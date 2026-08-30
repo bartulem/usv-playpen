@@ -278,6 +278,28 @@ def test_load_and_filter_usv_data_drops_noise_and_adds_frame_index(tmp_path):
     assert df["frame_index"][0] == int(0.05 * 150.0)
 
 
+def test_load_and_filter_usv_data_keeps_everything_when_the_noise_column_is_absent(tmp_path, capsys):
+    """A summary written by das-summarize carries no classification column: the
+    acoustic-embedding columns are added later and are dropped whenever the merge
+    is re-run. Referencing a missing column raised ColumnNotFoundError and killed
+    the whole analysis on its first session, so an absent column now keeps every
+    row and says so once."""
+    sess = tmp_path / "20260101_120000"
+    _make_synthetic_session(sess, n_male_calls=2, n_female_calls=1,
+                            n_unassigned=0, n_noise=3)
+    md = extract_session_metadata(str(sess))
+
+    df = load_and_filter_usv_data(
+        session_root=str(sess), frame_rate=md["frame_rate"],
+        noise_col_id="qlvm_supercategory", noise_categories=[0],
+    )
+
+    # Nothing is filtered -- the three "noise" rows survive alongside the rest.
+    assert df.height == 6
+    assert "frame_index" in df.columns
+    assert "qlvm_supercategory" in capsys.readouterr().out
+
+
 def test_load_and_filter_usv_data_missing_csv_raises(tmp_path):
     """No USV CSV → FileNotFoundError."""
     sess = tmp_path / "20260101_120000"
