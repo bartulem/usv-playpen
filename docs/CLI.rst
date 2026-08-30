@@ -905,6 +905,7 @@ The command writes a single self-describing HDF5 archive ``usv_interval_analysis
                             [--tau FLOAT] [--figures-directory PATH]
                             [--model-class {gauss,t,ig}]
                             [--bootstrap-lrt-B INTEGER]
+                            [--bootstrap-lrt-n-init INTEGER]
                             [--bootstrap-lrt-n-jobs INTEGER]
                             [--bootstrap-lrt-n-subsample INTEGER]
                             [--bootstrap-lrt-alpha FLOAT]
@@ -955,10 +956,27 @@ The command writes a single self-describing HDF5 archive ``usv_interval_analysis
                                   times).
       --bootstrap-lrt-B           Number of parametric bootstrap replicates
                                   per pairwise LRT. Default 1000.
+      --bootstrap-lrt-n-init      EM restarts for the bootstrap REFITS, separate
+                                  from --mixture-model-n-init which governs the
+                                  observed fit. Default 1. Restarts dominate the
+                                  cost of this test and barely move its answer:
+                                  measured on one male end-to-start K=4 vs K=5
+                                  comparison, going 3 -> 10 -> 20 moved the
+                                  failed-refit rate 75% -> 70% -> 65% and p
+                                  0.0090 -> 0.0080 -> 0.0070, at 38 and 57
+                                  minutes for a SINGLE pair. A high failure rate
+                                  is not necessarily an optimiser problem: it
+                                  also arises when the larger K is simply not
+                                  identifiable on the data.
       --bootstrap-lrt-n-jobs      Number of parallel workers for the bootstrap
                                   LRT replicates (1 = sequential legacy path).
       --bootstrap-lrt-n-subsample Subsample size for both observed and
-                                  bootstrap fits. Default 15000.
+                                  bootstrap fits. Default 10000. This is the
+                                  effective sample size of the whole test, not
+                                  just of the null: the observed statistic is
+                                  computed on the same subsample, so raising it
+                                  increases the test's power rather than
+                                  sharpening the null against a fixed value.
       --bootstrap-lrt-alpha       Significance threshold for the step-up
                                   rule. Default 0.01.
       --bootstrap-lrt-bonferroni / --no-bootstrap-lrt-bonferroni
