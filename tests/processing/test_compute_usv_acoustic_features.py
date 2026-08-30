@@ -176,6 +176,38 @@ def test_merge_features_into_summary(tmp_path, mocker):
     assert df["mean_amplitude"][0] != 9.0
 
 
+def test_merge_features_preserves_the_usv_id_padding(tmp_path, mocker):
+    """usv_id is a zero-padded STRING. Reading the summary without a schema
+    override lets polars re-infer it as Int64, and writing the frame back then
+    strips the padding -- silently, since every other column round-trips fine.
+    The merge must leave the ids byte-identical."""
+    session_id = "20230119_155302"
+    root = tmp_path / session_id
+    (root / "audio" / "spectrograms").mkdir(parents=True)
+
+    ids = [f"{i:06d}" for i in range(4)]
+    pls.DataFrame({
+        "usv_id": ids,
+        "start": [0.1, 0.3, 0.5, 0.7],
+        "stop": [0.15, 0.35, 0.55, 0.75],
+    }).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+
+    _write_h5(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5",
+              session_id, n_usv=4, valid_rows=[0, 1, 3])
+
+    mocker.patch("usv_playpen.processing.compute_usv_acoustic_features.smart_wait")
+    USVAcousticFeatureExtractor(
+        root_directory=str(root),
+        input_parameter_dict={"compute_usv_acoustic_features": _CFG},
+        message_output=lambda *_a, **_kw: None,
+    ).merge_features_into_summary()
+
+    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv",
+                      schema_overrides={"usv_id": pls.String})
+    assert df["usv_id"].to_list() == ids
+    assert {len(one_id) for one_id in df["usv_id"].to_list()} == {6}
+
+
 def test_merge_features_uses_mask_group_when_present(tmp_path, mocker):
     """When the H5 carries a mask/<session> group, features are restricted to the
     masked region: a bright pixel outside the mask does not become peak_freq."""
