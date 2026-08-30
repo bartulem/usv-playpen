@@ -61,6 +61,7 @@ def fit_log_gmm(
     seed: int = 0,
     n_init: int = 10,
     reg_covar: float = 1e-4,
+    x_is_log: bool = False,
 ) -> tuple[GaussianMixture, np.ndarray]:
     """
     Description
@@ -100,7 +101,7 @@ def fit_log_gmm(
         components by their log-space means in ascending order.
     """
 
-    log_x = np.log(x).reshape(-1, 1)
+    log_x = (np.asarray(x, dtype=float) if x_is_log else np.log(x)).reshape(-1, 1)
     gmm = GaussianMixture(
         n_components=n_components,
         covariance_type='full',
@@ -1485,6 +1486,7 @@ def fit_log_t_mixture(
     max_iter: int = 300,
     tol: float = 1e-5,
     reg_covar: float = 1e-4,
+    x_is_log: bool = False,
 ) -> tuple[TMixture, np.ndarray]:
     """
     Description
@@ -1532,7 +1534,8 @@ def fit_log_t_mixture(
         analog of :func:`fit_log_gmm`'s ``mixture_model_order``).
     """
 
-    log_x = np.log(np.asarray(x, dtype=float))
+    _x = np.asarray(x, dtype=float)
+    log_x = _x if x_is_log else np.log(_x)
     N = log_x.size
 
     best_model: TMixture | None = None
@@ -2225,6 +2228,7 @@ def fit_log_ig_mixture(
     max_iter: int = 300,
     tol: float = 1e-5,
     reg_covar: float = 1e-4,
+    x_is_log: bool = False,
 ) -> tuple[IGMixture, np.ndarray]:
     """
     Description
@@ -2275,7 +2279,9 @@ def fit_log_ig_mixture(
     """
 
     x = np.asarray(x, dtype=float).ravel()
-    log_x = np.log(x)
+    log_x = x if x_is_log else np.log(x)
+    if x_is_log:
+        x = np.exp(np.clip(log_x, -700.0, 700.0))
     N = x.size
 
     best_model: IGMixture | None = None
@@ -2794,9 +2800,15 @@ def _bootstrap_lrt_replicate(
 
     rng_b = np.random.default_rng((seed, b))
     log_x_b = _sample_from_mixture(model_null_obs, N_sub, rng_b)
-    x_b = np.exp(log_x_b)
-    m_null_b, _ = fit_fn(x_b, K_null, seed=seed + b, n_init=n_init_boot, reg_covar=reg_covar)
-    m_alt_b, _ = fit_fn(x_b, K_alt, seed=seed + b, n_init=n_init_boot, reg_covar=reg_covar)
+    # The draws are handed to the fitters in LOG space. Exponentiating here only
+    # to have every fitter immediately take the log again is a round trip that
+    # can overflow: a heavy-tailed Student-t component draws log_x > 709 often
+    # enough over B x N_sub samples that exp() returns inf and the refit raises
+    # "Input X contains infinity". Observed on the 172,331-interval e2s male pool.
+    m_null_b, _ = fit_fn(log_x_b, K_null, seed=seed + b, n_init=n_init_boot,
+                         reg_covar=reg_covar, x_is_log=True)
+    m_alt_b, _ = fit_fn(log_x_b, K_alt, seed=seed + b, n_init=n_init_boot,
+                        reg_covar=reg_covar, x_is_log=True)
     return _lr_statistic(m_null_b, m_alt_b, log_x_b)
 
 
@@ -2931,9 +2943,10 @@ def bootstrap_lrt(
     if n_jobs == 1:
         for b in range(B):
             log_x_b = _sample_from_mixture(m_null_obs, N_sub, rng)
-            x_b = np.exp(log_x_b)
-            m_null_b, _ = fit_fn(x_b, K_null, seed=seed + b, n_init=n_init_boot, reg_covar=reg_covar)
-            m_alt_b, _ = fit_fn(x_b, K_alt, seed=seed + b, n_init=n_init_boot, reg_covar=reg_covar)
+            m_null_b, _ = fit_fn(log_x_b, K_null, seed=seed + b, n_init=n_init_boot,
+                                 reg_covar=reg_covar, x_is_log=True)
+            m_alt_b, _ = fit_fn(log_x_b, K_alt, seed=seed + b, n_init=n_init_boot,
+                                reg_covar=reg_covar, x_is_log=True)
             lr_null[b] = _lr_statistic(m_null_b, m_alt_b, log_x_b)
             if message_output is not None and (b + 1) % 10 == 0:
                 message_output(f"      bootstrap [{b + 1}/{B}]")
