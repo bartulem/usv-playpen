@@ -670,6 +670,16 @@ class InterUSVIntervalCalculator:
         bootstrap_lrt_n_subsample = cfg['bootstrap_lrt_n_subsample']
         bootstrap_lrt_alpha = cfg['bootstrap_lrt_alpha']
         bootstrap_lrt_n_jobs = cfg['bootstrap_lrt_n_jobs']
+        # EM restarts for the bootstrap REFITS, separate from the observed fit's
+        # mixture_model_n_init. Previously derived as max(1, mixture_model_n_init - 7),
+        # which pinned it to 3 and could not be raised without also changing the
+        # observed fit. Restarts dominate this test's cost while barely moving the
+        # answer: measured on male e2s K=4 vs K=5, going 3 -> 10 -> 20 moved the
+        # failed-refit rate 75% -> 70% -> 65% and p 0.0090 -> 0.0080 -> 0.0070, at
+        # 38 and 57 minutes for a SINGLE pair against ~56 minutes for the whole
+        # analysis at 3. The failures are not local optima more starts would clear:
+        # the larger K is not identifiable there, which is itself the finding.
+        bootstrap_lrt_n_init = cfg['bootstrap_lrt_n_init']
         bootstrap_lrt_bonferroni = cfg['bootstrap_lrt_bonferroni']
 
         if model_class not in ('gauss', 't', 'ig'):
@@ -842,7 +852,7 @@ class InterUSVIntervalCalculator:
                                 n_subsample=bootstrap_lrt_n_subsample,
                                 model_class=model_class,
                                 n_init_obs=mixture_model_n_init,
-                                n_init_boot=max(1, mixture_model_n_init - 7),
+                                n_init_boot=bootstrap_lrt_n_init,
                                 reg_covar=mixture_model_reg_covar,
                                 seed=random_seed_base,
                                 n_jobs=bootstrap_lrt_n_jobs,

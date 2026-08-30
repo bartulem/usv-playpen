@@ -1197,6 +1197,7 @@ def plot_bootstrap_lrt_panel(
     sweep: dict,
     figsize_per_panel: tuple = (4, 3),
     break_gap_factor: float = 1.5,
+    alpha: float = 0.01,
 ) -> tuple[plt.Figure, np.ndarray]:
     """
     Description
@@ -1261,7 +1262,14 @@ def plot_bootstrap_lrt_panel(
         for col, (K_n, K_a) in enumerate(pairs_per_key[key]):
             res = sweep[key][(K_n, K_a)]
             lr_null = np.asarray(res["lr_null"])
-            null_p99 = float(np.quantile(lr_null, 0.99)) if lr_null.size else float("nan")
+            # The reference line marks the threshold the test ACTUALLY uses. It was
+            # pinned at the 99th percentile, i.e. an uncorrected alpha=0.01, while
+            # the step-up selection applies a Bonferroni-corrected alpha over the
+            # K comparisons -- so the drawn line sat left of the real decision
+            # boundary and a statistic between the two read as significant when the
+            # test had not called it so.
+            null_p99 = (float(np.quantile(lr_null, 1.0 - alpha))
+                        if lr_null.size else float("nan"))
             null_max = float(res.get("null_max", np.nan)) if res.get("null_max") is not None else (
                 float(lr_null.max()) if lr_null.size else float("nan")
             )
@@ -1285,6 +1293,7 @@ def plot_bootstrap_lrt_panel(
                 _draw_lrt_cell_pair(
                     ax_l, ax_r, lr_null, lr_obs,
                     null_p99=null_p99,
+                    alpha=alpha,
                 )
                 # Centre the title above the *whole* cell (both
                 # sub-axes), not just over ``ax_l``. We derive the
@@ -1320,7 +1329,7 @@ def plot_bootstrap_lrt_panel(
                 ax.axvline(lr_obs, color="#cc0000", lw=2,
                            label=f"LR_obs = {lr_obs:.1f}")
                 ax.axvline(null_p99, color="#202020", linestyle=":", lw=1,
-                           label=f"null 99% = {null_p99:.1f}")
+                           label=f"null {100 * (1 - alpha):.4g}% = {null_p99:.1f}")
                 ax.set_title(f"{key}: K={K_n} vs K={K_a}\np = {res['p_value']:.3f}")
                 ax.set_xlabel("LR statistic")
                 ax.set_ylabel("count")
@@ -1342,6 +1351,7 @@ def _draw_lrt_cell_pair(
     lr_obs: float,
     *,
     null_p99: float,
+    alpha: float = 0.01,
 ) -> None:
     """
     Description
@@ -1394,10 +1404,10 @@ def _draw_lrt_cell_pair(
     # 99% reference line: drawn on whichever side it falls on
     if null_p99 <= left_hi:
         ax_l.axvline(null_p99, color="#202020", linestyle=":", lw=1,
-                     label=f"null 99% = {null_p99:.1f}")
+                     label=f"null {100 * (1 - alpha):.4g}% = {null_p99:.1f}")
     elif right_lo <= null_p99 <= right_hi:
         ax_r.axvline(null_p99, color="#202020", linestyle=":", lw=1,
-                     label=f"null 99% = {null_p99:.1f}")
+                     label=f"null {100 * (1 - alpha):.4g}% = {null_p99:.1f}")
     # observed LR on the right axes
     ax_r.axvline(lr_obs, color="#cc0000", lw=2,
                  label=f"LR_obs = {lr_obs:.1f}")
