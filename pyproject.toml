@@ -349,6 +349,23 @@ constraint-dependencies = [
     # practical exposure is nil; floored anyway because uv's sticky lock will not bump a transitive
     # dep on its own (the lock still sits at 10.21.3 without this).
     "pymdown-extensions>=11.0.1",
+    # 2026-09-02 -- Dependabot #81 (tornado: parse_multipart_form_data splits the whole body
+    # on the boundary BEFORE the max_parts check, so a 600 KB body with 100 k parts
+    # materialises a 100 k-element list of copies and is only then rejected -- pre-auth
+    # transient memory amplification, httputil.py:34) and #80 (tornado: incomplete fix for
+    # CVE-2026-35536 -- the added [\x00-\x20\x3b\x7f] validation loop in
+    # RequestHandler.set_cookie covers only the four hardcoded lowercase named args, while the
+    # deprecated **kwargs path writes straight into the Morsel unvalidated; Morsel.__setitem__
+    # is case-insensitive, so a capitalised `Domain=` / `Path=` / `SameSite=` kwarg reaches the
+    # same reserved attribute and re-opens ;-delimited attribute injection). tornado is a
+    # DEV-GROUP-ONLY transitive dep (jupyterlab 4.6.2 and ipykernel 7.2.0, plus jupyter-server /
+    # jupyter-client / terminado underneath them -- verified with `uv tree --invert`); it is not
+    # reachable from the runtime dependency set, usv-playpen ships no tornado web application and
+    # never calls set_cookie, and the only tornado server that ever runs is a localhost Jupyter
+    # kernel on a developer's machine, so practical exposure is nil. Floored anyway because uv's
+    # sticky lock will NOT bump a transitive dep on its own -- the lock sits at 6.5.7 without it.
+    # (This re-adds the tornado floor pruned on 2026-06-13 for #43.)
+    "tornado>=6.5.8",
 ]
 
 [tool.uv.sources]
