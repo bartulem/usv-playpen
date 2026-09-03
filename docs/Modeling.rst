@@ -814,6 +814,7 @@ hoisted metadata blocks:
                 "step_idx": 0,
                 "current_features": ["speed"],       # features already selected before this step
                 "baseline_score": 0.68,              # best score of current_features (chance floor at step 0)
+                "baseline_folds": "<array (n_folds,)>",  # their PER-FOLD scores, for the paired 1SE test
                 "selected_feature": "nose-nose",     # feature accepted this step (None -> final, rejected step)
                 "candidates_summary": {              # every feature tested this step -> its per-fold metrics
                     "nose-nose":  {"ll": "<array (n_folds,)>", "auc": "...", "mean_ll": "...", "se_ll": "..."},
@@ -827,7 +828,7 @@ hoisted metadata blocks:
         "_consolidation_metadata": {"...": "..."}
     }
 
-* **``steps``** — an ordered list, one entry per forward-selection step. ``step_idx`` is the iteration, ``current_features`` are those already chosen, ``baseline_score`` is their held-out score (the chance floor at step 0), and ``selected_feature`` is the feature accepted this step (``None`` marks the final, rejected step). For the multinomial and manifold selectors, step 0's ``selected_feature`` is the sentinel ``'null_model_free'`` baseline.
+* **``steps``** — an ordered list, one entry per forward-selection step. ``step_idx`` is the iteration, ``current_features`` are those already chosen, ``baseline_score`` is their held-out score (the chance floor at step 0), ``baseline_folds`` is the same model's PER-FOLD scores, and ``selected_feature`` is the feature accepted this step (``None`` marks the final, rejected step). ``baseline_folds`` is what the 1SE acceptance test pairs a candidate against: the incumbent and the candidate are nested and scored on the same folds, so the fold-difficulty term they share cancels in the per-fold difference but dominates either score on its own. Checkpoints written before this key existed resume against ``baseline_score`` as a constant, which reproduces the unpaired comparison that wrote them. For the multinomial and manifold selectors, step 0's ``selected_feature`` is the sentinel ``'null_model_free'`` baseline.
 * **``candidates_summary``** — under each step, every candidate feature tested that step mapped to its per-fold metrics. For the discrete / regression targets these are flat per-fold arrays (``ll``, ``auc``, ``score``, ``f1``, ``brier``, ``ece``, ``mcc``, ``confusion_matrix``, ``n_iter`` / ``converged`` / ``fit_time``) plus aggregate ``mean_ll`` / ``se_ll``; the multinomial and manifold selectors nest these under a ``folds.metrics`` sub-dict (with ``y_true`` / ``y_pred`` / ``y_probs`` / ``classes`` and the per-fold ``selected_lambda_smooth`` / ``selected_l2_reg`` regularisation choices — equal to the fixed ``*_fixed`` penalties when ``tune_regularization_bool`` is ``false``).
 * **last accepted step** — additionally carries ``final_model_features`` (the cumulative selected set) and ``filter_shapes`` (the per-fold refit filters) of the published model.
 * **metadata blocks** — ``_input_metadata`` and ``_univariate_metadata`` carry the upstream extraction / univariate provenance, ``_run_metadata`` the selection config, and ``_consolidation_metadata`` the merge audit.

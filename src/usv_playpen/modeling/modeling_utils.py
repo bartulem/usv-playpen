@@ -1103,6 +1103,98 @@ def bounded_test_proportion(test_proportion: float,
     return max(test_proportion, min_test_sessions / n_sessions)
 
 
+def paired_one_se_improvement(candidate_fold_scores,
+                              incumbent_fold_scores,
+                              higher_is_better: bool = True) -> tuple[float, float]:
+    """
+    Computes the mean and standard error of a candidate model's PER-FOLD
+    improvement over the incumbent, for use in the forward-selection 1SE rule.
+
+    The 1SE acceptance rule asks whether a candidate improves on the incumbent
+    by more than one standard error. The quantity under test is therefore a
+    *difference* of two scores measured on the same folds, and its uncertainty
+    is the standard error of the per-fold differences — not the standard error
+    of either score on its own.
+
+    That distinction is large, not cosmetic. Fold-to-fold spread in an absolute
+    score is dominated by how hard each test fold is (its event count, its
+    animal, its base rate), and that difficulty term is shared by the incumbent
+    and the candidate because they are scored on the same folds. Since the two
+    models are nested — the candidate is the incumbent plus one feature — their
+    per-fold scores are strongly correlated, and
+
+        Var(d) = Var(a) + Var(b) - 2 * Cov(a, b) = 2 * sigma^2 * (1 - rho)
+
+    so the paired standard error is smaller than the unpaired one by a factor of
+    `sqrt(2 * (1 - rho))`: about 7x at `rho = 0.99` and about 70x at
+    `rho = 0.9999`. Using an unpaired standard error therefore sets the
+    acceptance bar far too high and truncates the forward search early. A
+    feature that improves every single fold by an identical amount — the most
+    reliable improvement obtainable — is rejected under the unpaired rule purely
+    because the sessions differ in difficulty.
+
+    Folds are paired by position, so both sequences must be ordered by fold and
+    have the same length. A fold is used only when BOTH models scored it
+    finitely; folds where either model failed carry no information about the
+    difference and are dropped as a pair.
+
+    A constant baseline (a chance floor, or a checkpoint that predates per-fold
+    baseline storage) may be passed as a scalar. Pairing against a constant is
+    exactly the unpaired case — `d_k = a_k - c` has the same spread as `a_k` —
+    so the scalar branch is the correct answer for those callers rather than a
+    fallback.
+
+    Parameters
+    ----------
+    candidate_fold_scores (Sequence[float] | np.ndarray)
+        The candidate model's score on each CV fold, ordered by fold.
+    incumbent_fold_scores (Sequence[float] | np.ndarray | float)
+        The incumbent model's score on each CV fold, ordered identically, or a
+        float for a constant baseline.
+    higher_is_better (bool)
+        Whether a larger score is a better score. `True` for D^2, AUC and R^2;
+        `False` for a log-loss / negative-log-likelihood score. Defaults to
+        `True`.
+
+    Returns
+    -------
+    improvement (float)
+        The mean per-fold improvement of the candidate over the incumbent,
+        signed so that a positive value always means the candidate is better.
+        `nan` when no fold is usable.
+    standard_error (float)
+        The standard error of that per-fold improvement,
+        `std(d, ddof=1) / sqrt(n)`. `0.0` when fewer than two folds are usable,
+        matching the existing guard against `np.std([x], ddof=1)` returning
+        `nan` and poisoning every subsequent acceptance test.
+    """
+
+    candidate = np.asarray(candidate_fold_scores, dtype=float).ravel()
+
+    if np.ndim(incumbent_fold_scores) == 0:
+        incumbent = np.full(candidate.shape, float(incumbent_fold_scores))
+    else:
+        incumbent = np.asarray(incumbent_fold_scores, dtype=float).ravel()
+
+    if candidate.size != incumbent.size:
+        msg = (f"paired 1SE needs one score per fold from both models, "
+               f"got {candidate.size} candidate and {incumbent.size} incumbent folds")
+        raise ValueError(msg)
+
+    usable = np.isfinite(candidate) & np.isfinite(incumbent)
+    if not np.any(usable):
+        return float('nan'), 0.0
+
+    difference = candidate[usable] - incumbent[usable]
+    if not higher_is_better:
+        difference = -difference
+
+    improvement = float(np.mean(difference))
+    standard_error = (float(np.std(difference, ddof=1) / np.sqrt(difference.size))
+                      if difference.size > 1 else 0.0)
+    return improvement, standard_error
+
+
 def brier_score_multi(y_true: np.ndarray,
                       y_proba: np.ndarray,
                       classes: np.ndarray) -> float:
