@@ -227,6 +227,219 @@ def calibrated_explained_deviance(eta: np.ndarray, y: np.ndarray, n_steps: int) 
     return float(1.0 - bernoulli_deviance(design @ beta, y) / baseline), float(beta[0])
 
 
+def batched_calibrated_explained_deviance(eta: np.ndarray, labels: np.ndarray,
+                                          n_steps: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    Calibrated explained deviance for many label vectors sharing one linear predictor.
+
+    This is the null-draw inner loop. Every draw of a circular-shift null re-scores the SAME frozen
+    ``eta`` against a different relabelling, so the calibration design ``[z(eta), 1]`` is identical for
+    all of them and only the response moves. Running the draws one at a time therefore repeats the same
+    120,000-row standardization and makes 10,000 separate two-parameter Newton solves, each dominated by
+    an ``exp`` over the full frame set at poor memory throughput.
+
+    Batching changes none of the arithmetic. The design is standardized once; the Newton iteration runs on
+    an ``(n_frames, n_draws)`` block so each ``exp`` is one large vectorized call; and because the design
+    has exactly two columns, the per-draw Hessian is 2x2 and is inverted in closed form rather than by a
+    ``solve`` per draw. The result matches the sequential path to floating-point tolerance.
+
+    Draws whose response is degenerate -- all spikes or no spikes, so the intercept-only deviance is zero
+    -- yield ``nan``, matching the scalar function. A draw whose Hessian goes singular stops updating and
+    keeps the coefficients it had, which is what the scalar path's ``LinAlgError`` break does.
+
+    Parameters
+    ----------
+    eta (np.ndarray)
+        Linear predictor at the scored frames, shape ``(n_frames,)``. Frozen across draws.
+    labels (np.ndarray)
+        Binary responses, shape ``(n_frames, n_draws)`` -- one column per draw.
+    n_steps (int)
+        Maximum Newton iterations. Iteration stops early once every draw's step is below 1e-9; in
+        practice this fires at eight steps regardless of the cap.
+
+    Returns
+    -------
+    scores (np.ndarray)
+        Calibrated explained deviance per draw, shape ``(n_draws,)``, ``nan`` where undefined.
+    """
+
+    spread = float(np.std(eta))
+    n_draws = labels.shape[1]
+    if spread < 1e-12 or eta.size == 0 or n_draws == 0:
+        return np.full(n_draws, np.nan, dtype=np.float64)
+
+    standardized = ((eta - np.mean(eta)) / spread).astype(np.float64)
+    response = labels.astype(np.float64, copy=False)
+
+    # Degenerate draws carry no deviance to explain; the scalar path returns nan for them.
+    rate = response.mean(axis=0)
+    usable = (rate > 0.0) & (rate < 1.0)
+
+    slope = np.zeros(n_draws, dtype=np.float64)
+    intercept = np.zeros(n_draws, dtype=np.float64)
+    squared = standardized * standardized
+    active = usable.copy()
+
+    for _ in range(n_steps):
+        linear = np.clip(standardized[:, None] * slope[None, :] + intercept[None, :], -30.0, 30.0)
+        mean = 1.0 / (1.0 + np.exp(-linear))
+        weights = np.clip(mean * (1.0 - mean), 1e-8, None)
+        residual = response - mean
+
+        gradient_slope = standardized @ residual
+        gradient_intercept = residual.sum(axis=0)
+
+        # x.T W x for a two-column design, one 2x2 per draw, assembled as three vectors.
+        hessian_ss = squared @ weights
+        hessian_si = standardized @ weights
+        hessian_ii = weights.sum(axis=0)
+
+        determinant = hessian_ss * hessian_ii - hessian_si * hessian_si
+        solvable = active & (np.abs(determinant) > 1e-30)
+        if not np.any(solvable):
+            break
+
+        safe = np.where(solvable, determinant, 1.0)
+        step_slope = np.where(solvable,
+                              (hessian_ii * gradient_slope - hessian_si * gradient_intercept) / safe, 0.0)
+        step_intercept = np.where(solvable,
+                                  (hessian_ss * gradient_intercept - hessian_si * gradient_slope) / safe, 0.0)
+
+        slope = slope + step_slope
+        intercept = intercept + step_intercept
+
+        active = solvable & (np.maximum(np.abs(step_slope), np.abs(step_intercept)) >= 1e-9)
+        if not np.any(active):
+            break
+
+    linear = np.clip(standardized[:, None] * slope[None, :] + intercept[None, :], -30.0, 30.0)
+    fitted = np.logaddexp(0.0, linear) - response * linear          # -log-likelihood per frame
+    model_deviance = 2.0 * fitted.sum(axis=0)
+
+    safe_rate = np.clip(rate, 1e-12, 1.0 - 1e-12)
+    baseline = -2.0 * eta.size * (safe_rate * np.log(safe_rate)
+                                  + (1.0 - safe_rate) * np.log1p(-safe_rate))
+
+    scores = np.full(n_draws, np.nan, dtype=np.float64)
+    valid = usable & (baseline > 0)
+    scores[valid] = 1.0 - model_deviance[valid] / baseline[valid]
+    return scores
+
+def binned_calibrated_explained_deviance(eta: np.ndarray, labels: np.ndarray, n_steps: int,
+                                         n_bins: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    Calibrated explained deviance for many label vectors, with the frozen predictor summarised into bins.
+
+    This is the fast path for the null. Its starting point is an identity: in the two-parameter
+    calibration, every per-frame quantity the Newton iteration needs -- the fitted mean, the working
+    weights, and all three entries of the Hessian -- is a function of the coefficients and of the FIXED
+    standardized predictor alone. The response enters the whole calculation through exactly two scalars
+    per draw, ``z @ y`` and ``sum(y)``, and both are computed once, exactly, in a single pass. The
+    deviance decomposes the same way.
+
+    What the sequential path therefore spends its time on is not reading the data but re-evaluating a
+    smooth function of two scalars over the same 120,000 fixed values, once per draw per iteration.
+    Summarising those values into equal-count bins replaces each of those reductions with one over
+    ``n_bins`` terms instead. **The responses are never approximated** -- only the predictor-side sums are,
+    and only through the within-bin spread of a smooth function.
+
+    Measured on the real fitted ``eta`` of all three cl0401 folds -- which is left-skewed (about -1.1 to
+    -1.3) with heavy tails (excess kurtosis +2.4 to +3.1), not Gaussian -- at both the vocal and the quiet
+    spike rate: at 2000 bins the error is 3.1e-5 to 2.6e-4 of the null's own standard deviation, and the
+    worst case over 400 threshold placements is ONE draw in a thousand changing side of the observed
+    score, i.e. a p-value shift of 0.001. Accuracy degrades as the frame count falls, since bin summaries
+    get noisier; the worst case above is the smallest fold, at 4,920 frames, against the ~120,000 the
+    screen actually runs on.
+
+    Bins are equal-count rather than equal-width so they follow the predictor's density instead of its
+    range, which is what keeps the skew and the tails from mattering.
+
+    Parameters
+    ----------
+    eta (np.ndarray)
+        Linear predictor at the scored frames, shape ``(n_frames,)``. Frozen across draws.
+    labels (np.ndarray)
+        Binary responses, shape ``(n_frames, n_draws)`` -- one column per draw.
+    n_steps (int)
+        Maximum Newton iterations, with the same early exit as the exact path.
+    n_bins (int)
+        Number of equal-count predictor bins.
+
+    Returns
+    -------
+    scores (np.ndarray)
+        Calibrated explained deviance per draw, shape ``(n_draws,)``, ``nan`` where undefined.
+    """
+
+    spread = float(np.std(eta))
+    n_draws = labels.shape[1]
+    if spread < 1e-12 or eta.size == 0 or n_draws == 0:
+        return np.full(n_draws, np.nan, dtype=np.float64)
+
+    standardized = ((eta - np.mean(eta)) / spread).astype(np.float64)
+    response = labels.astype(np.float64, copy=False)
+
+    # Exact, once: the only route by which the responses enter.
+    cross = standardized @ response
+    total = response.sum(axis=0)
+    rate = total / standardized.size
+    usable = (rate > 0.0) & (rate < 1.0)
+
+    edges = np.quantile(standardized, np.linspace(0.0, 1.0, n_bins + 1))
+    edges[0], edges[-1] = -np.inf, np.inf
+    assignment = np.clip(np.searchsorted(edges, standardized, side="right") - 1, 0, n_bins - 1)
+    count = np.bincount(assignment, minlength=n_bins).astype(np.float64)
+    first = np.bincount(assignment, weights=standardized, minlength=n_bins)
+    second = np.bincount(assignment, weights=standardized * standardized, minlength=n_bins)
+    occupied = count > 0
+    count, first, second = count[occupied], first[occupied], second[occupied]
+    centre = first / count
+
+    slope = np.zeros(n_draws, dtype=np.float64)
+    intercept = np.zeros(n_draws, dtype=np.float64)
+    active = usable.copy()
+
+    for _ in range(n_steps):
+        linear = np.clip(centre[:, None] * slope[None, :] + intercept[None, :], -30.0, 30.0)
+        mean = 1.0 / (1.0 + np.exp(-linear))
+        weights = np.clip(mean * (1.0 - mean), 1e-8, None)
+
+        gradient_slope = cross - (first @ mean)
+        gradient_intercept = total - (count @ mean)
+        hessian_ss = second @ weights
+        hessian_si = first @ weights
+        hessian_ii = count @ weights
+
+        determinant = hessian_ss * hessian_ii - hessian_si * hessian_si
+        solvable = active & (np.abs(determinant) > 1e-30)
+        if not np.any(solvable):
+            break
+        safe = np.where(solvable, determinant, 1.0)
+        step_slope = np.where(solvable,
+                              (hessian_ii * gradient_slope - hessian_si * gradient_intercept) / safe, 0.0)
+        step_intercept = np.where(solvable,
+                                  (hessian_ss * gradient_intercept - hessian_si * gradient_slope) / safe, 0.0)
+        slope = slope + step_slope
+        intercept = intercept + step_intercept
+        active = solvable & (np.maximum(np.abs(step_slope), np.abs(step_intercept)) >= 1e-9)
+        if not np.any(active):
+            break
+
+    linear = np.clip(centre[:, None] * slope[None, :] + intercept[None, :], -30.0, 30.0)
+    model_deviance = 2.0 * (count @ np.logaddexp(0.0, linear) - slope * cross - intercept * total)
+
+    safe_rate = np.clip(rate, 1e-12, 1.0 - 1e-12)
+    baseline = -2.0 * standardized.size * (safe_rate * np.log(safe_rate)
+                                           + (1.0 - safe_rate) * np.log1p(-safe_rate))
+    scores = np.full(n_draws, np.nan, dtype=np.float64)
+    valid = usable & (baseline > 0)
+    scores[valid] = 1.0 - model_deviance[valid] / baseline[valid]
+    return scores
+
 def pooled_calibrated_explained_deviance(eta: np.ndarray, y: np.ndarray, session_index: np.ndarray,
                                          n_steps: int) -> tuple[float, float]:
     """

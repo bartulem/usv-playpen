@@ -188,7 +188,8 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     quiet_null = frozen_null_scores(eta_quiet, session["quiet"], session["spike_frames"],
                                     session["n_frames"], fps, settings["null"]["n_shuffles"], rng,
                                     settings["null"]["shuffle_guard_seconds"],
-                                    encoding["solver"]["calibration_steps"])
+                                    encoding["solver"]["calibration_steps"],
+                                    encoding["solver"]["null_calibration_bins"])
     vocal = score_fold(estimator, session, selected, vocal_frames, n_lags, base_rate, encoding,
                        linear_predictor_at_frames)
     message_output(f"    TEST {test_id}: quiet {quiet_score:+.5f} (slope {quiet_slope:+.3f}) | "

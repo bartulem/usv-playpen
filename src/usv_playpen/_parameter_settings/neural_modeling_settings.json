@@ -48,7 +48,8 @@
       "learning_rate": null,
       "max_iter": 5000,
       "tol": 1e-6,
-      "calibration_steps": 30
+      "calibration_steps": 30,
+      "null_calibration_bins": 2000
     },
     "transfer": {
       "scoring": "pooled",

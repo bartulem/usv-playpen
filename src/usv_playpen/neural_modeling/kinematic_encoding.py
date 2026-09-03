@@ -29,10 +29,18 @@ from __future__ import annotations
 import numpy as np
 
 from ..modeling.jax_group_elastic_net import GroupElasticNetGLM
-from .deviance_metrics import calibrated_explained_deviance
+from .deviance_metrics import (
+    batched_calibrated_explained_deviance,
+    binned_calibrated_explained_deviance,
+    calibrated_explained_deviance,
+)
 from .neural_design_assembly import lagged_design, spike_labels_at_frames, subsample_quiet_anchors
 from .shift_null_inference import empirical_pvalue, sample_circular_shift, shifted_spike_frames
 
+
+# Memory budget for one batched null block. The Newton iteration holds several (n_frames, block)
+# float64 arrays at once, so this caps the working set at a few hundred MB per block.
+_NULL_BLOCK_BYTES = 32 * 1024 * 1024
 
 def inner_folds(pool_session_ids: list) -> list:
     """
@@ -162,7 +170,7 @@ def linear_predictor_at_frames(estimator, feature_time_series: np.ndarray, featu
 
 def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.ndarray, n_frames: int,
                        fps: float, n_shuffles: int, rng, guard_seconds: float,
-                       calibration_steps: int) -> np.ndarray:
+                       calibration_steps: int, calibration_bins: int) -> np.ndarray:
     """
     Description
     -----------
@@ -189,6 +197,10 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
         Excluded band at both ends of the circular wrap.
     calibration_steps (int)
         Newton iterations for each draw's calibration refit.
+    calibration_bins (int)
+        Equal-count predictor bins for the binned calibration. ``0`` runs the exact path instead. The
+        responses are exact either way; see ``binned_calibrated_explained_deviance`` for the measured
+        cost of the approximation.
 
     Returns
     -------
@@ -196,12 +208,27 @@ def frozen_null_scores(eta: np.ndarray, frames: np.ndarray, spike_frames: np.nda
         ``n_shuffles`` null scores.
     """
 
+    # The shifts are drawn in one pass so the generator is consumed in exactly the order the
+    # one-draw-at-a-time version consumed it, and the null stays reproducible against older runs.
+    shifts = [sample_circular_shift(rng, n_frames, fps, guard_seconds) for _ in range(n_shuffles)]
+
+    # eta is frozen across draws, so the calibration design is shared and the draws batch. The block is
+    # sized by memory rather than by draw count: the Newton iteration holds several (n_frames, block)
+    # float64 arrays at once, and a whole 10,000-draw block over ~120,000 frames would be ~10 GB.
+    block = int(max(1, min(n_shuffles, _NULL_BLOCK_BYTES // max(1, frames.size * 8))))
+
     null = np.empty(n_shuffles, dtype=np.float64)
-    for draw in range(n_shuffles):
-        shifted = shifted_spike_frames(
-            spike_frames, sample_circular_shift(rng, n_frames, fps, guard_seconds), fps, n_frames)
-        null[draw] = calibrated_explained_deviance(
-            eta, spike_labels_at_frames(shifted, frames, n_frames), calibration_steps)[0]
+    for start in range(0, n_shuffles, block):
+        stop = min(start + block, n_shuffles)
+        labels = np.empty((frames.size, stop - start), dtype=np.float64)
+        for column, draw in enumerate(range(start, stop)):
+            shifted = shifted_spike_frames(spike_frames, shifts[draw], fps, n_frames)
+            labels[:, column] = spike_labels_at_frames(shifted, frames, n_frames)
+        if calibration_bins > 0:
+            null[start:stop] = binned_calibrated_explained_deviance(
+                eta, labels, calibration_steps, calibration_bins)
+        else:
+            null[start:stop] = batched_calibrated_explained_deviance(eta, labels, calibration_steps)
     return null
 
 
@@ -278,7 +305,8 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
             fold_nulls.append(frozen_null_scores(
                 eta, session["quiet"], session["spike_frames"], session["n_frames"], session["fps"],
                 settings["null"]["screen_n_shuffles"], rng, settings["null"]["shuffle_guard_seconds"],
-                encoding["solver"]["calibration_steps"]))
+                encoding["solver"]["calibration_steps"],
+                encoding["solver"]["null_calibration_bins"]))
         score = float(np.nanmean(fold_scores))
         slope = float(np.nanmean(fold_slopes))
         p_value, at_floor = empirical_pvalue(np.nanmean(np.vstack(fold_nulls), axis=0), score)
