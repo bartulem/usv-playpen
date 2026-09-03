@@ -2,14 +2,15 @@
 @author: bartulem
 Unit tests for the pure helpers in ``usv_playpen.modeling.modeling_utils``:
 the classification / regression metric wrappers, the two-class pooling and
-balancing array ops, history unrolling, and the mouse-role / kinematic
-column selectors.
+balancing array ops, history unrolling, the forward-selection 1SE margin,
+and the mouse-role / kinematic column selectors.
 
 The metrics are checked against their textbook extremes (perfect / chance
 / degenerate), the array ops against shape and label invariants (with the
-global RNG seeded for the down-sampling draws), and the column selectors
-against small synthetic column lists exercising the directional dyadic
-folding rules documented in the source.
+global RNG seeded for the down-sampling draws), the 1SE margin against the
+paired/unpaired case it exists to separate, and the column selectors against
+small synthetic column lists exercising the directional dyadic folding rules
+documented in the source.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from usv_playpen.modeling.modeling_utils import (
     harmonize_session_columns,
     identify_empty_event_sessions,
     mean_absolute_error_1d,
+    paired_one_se_improvement,
     pearson_r_safe,
     spearman_r_safe,
     pool_session_arrays,
@@ -352,6 +354,79 @@ class TestBoundedTestProportion:
         returned untouched."""
 
         assert bounded_test_proportion(0.2, n_sessions=0) == pytest.approx(0.2)
+
+
+class TestPairedOneSeImprovement:
+
+    def test_consistent_improvement_is_accepted_where_unpaired_rejects(self):
+        """The case the paired rule exists for: a candidate that improves every
+        fold by the same amount has zero spread in its per-fold DIFFERENCE, so
+        it clears the 1SE bar, while the SE of its own absolute scores -- driven
+        by how hard each fold is -- would reject it."""
+
+        incumbent = [0.60, 0.50, 0.70, 0.55, 0.65, 0.58, 0.62, 0.53, 0.68, 0.57]
+        candidate = [x - 0.01 for x in incumbent]
+
+        improvement, standard_error = paired_one_se_improvement(
+            candidate, incumbent, higher_is_better=False)
+
+        assert improvement == pytest.approx(0.01)
+        assert standard_error == pytest.approx(0.0, abs=1e-12)
+        assert improvement > standard_error
+
+        unpaired = float(np.std(candidate, ddof=1) / np.sqrt(len(candidate)))
+        assert improvement < unpaired
+
+    def test_sign_convention_follows_higher_is_better(self):
+        """A positive return always means the candidate is better, whichever
+        direction the metric runs."""
+
+        worse_on_a_lower_is_better_metric = paired_one_se_improvement(
+            [0.7, 0.7], [0.6, 0.6], higher_is_better=False)[0]
+        better_on_a_higher_is_better_metric = paired_one_se_improvement(
+            [0.7, 0.7], [0.6, 0.6], higher_is_better=True)[0]
+
+        assert worse_on_a_lower_is_better_metric == pytest.approx(-0.1)
+        assert better_on_a_higher_is_better_metric == pytest.approx(0.1)
+
+    def test_scalar_incumbent_reduces_to_the_unpaired_case(self):
+        """Pairing against a constant baseline has the same spread as the
+        candidate's own scores, so the scalar branch is exact rather than an
+        approximation."""
+
+        candidate = [0.61, 0.49, 0.72, 0.55]
+
+        _, standard_error = paired_one_se_improvement(candidate, 0.5, higher_is_better=True)
+
+        assert standard_error == pytest.approx(
+            float(np.std(candidate, ddof=1) / np.sqrt(len(candidate))))
+
+    def test_folds_are_dropped_pairwise_when_either_model_failed(self):
+        """A fold carries no information about the difference unless both
+        models scored it, so it is dropped as a pair."""
+
+        improvement, standard_error = paired_one_se_improvement(
+            [0.10, np.nan, 0.30], [0.05, 0.20, np.nan], higher_is_better=True)
+
+        assert improvement == pytest.approx(0.05)
+        assert standard_error == pytest.approx(0.0)
+
+    def test_no_usable_fold_returns_nan_so_the_caller_rejects(self):
+        """`np.isfinite(nan)` is False at every call site, so an all-failed
+        candidate can never be accepted."""
+
+        improvement, standard_error = paired_one_se_improvement(
+            [np.nan, np.nan], [0.1, 0.2], higher_is_better=True)
+
+        assert np.isnan(improvement)
+        assert standard_error == pytest.approx(0.0)
+
+    def test_mismatched_fold_counts_raise(self):
+        """Folds are paired by position, so unequal lengths are a caller bug
+        rather than something to silently truncate."""
+
+        with pytest.raises(ValueError, match="one score per fold"):
+            paired_one_se_improvement([0.1, 0.2, 0.3], [0.1, 0.2])
 
 
 # Mouse-role / kinematic column selectors
