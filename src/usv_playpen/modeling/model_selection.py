@@ -31,6 +31,7 @@ from .modeling_utils import (
     root_mean_squared_error,
     mean_absolute_error_1d,
     bounded_test_proportion,
+    paired_one_se_improvement,
     format_run_header,
     format_run_summary,
     format_selection_step,
@@ -864,6 +865,10 @@ def vocal_onset_model_selection(univariate_results_path: str,
     current_model_features = []
     best_current_score = chance_ll
     best_current_se = 0.0
+    # Per-fold scores of the incumbent model, kept so the 1SE acceptance test
+    # below can pair them against a candidate's. Before Step 0 the incumbent is
+    # the constant chance floor, which pairs correctly as a scalar.
+    best_current_folds = chance_ll
     time_indices = np.arange(history_frames, dtype=float)
     step_counter = 0
 
@@ -905,16 +910,28 @@ def vocal_onset_model_selection(univariate_results_path: str,
             cand_dict = last_results['candidates_summary']
             if cand_dict:
                 cand_stats = []
+                # A checkpoint written before per-fold baselines were stored has no
+                # `baseline_folds`; fall back to the scalar baseline score, which
+                # reproduces the unpaired comparison that wrote the file.
+                _resume_baseline_folds = (last_results['baseline_folds']
+                                          if 'baseline_folds' in last_results
+                                          else best_current_score)
                 for feat, res in cand_dict.items():
                     m = res['mean_ll']
                     s = res['se_ll']
-                    cand_stats.append((feat, m, s))
+                    # A checkpoint may predate per-fold storage; its mean then
+                    # stands in as a constant, reproducing the unpaired test.
+                    f = res['ll'] if 'll' in res else m
+                    cand_stats.append((feat, m, s, f))
                 if cand_stats:
                     cand_stats.sort(key=lambda x: x[1])
-                    b_name, b_score, b_se = cand_stats[0]
-                    if (best_current_score - b_score) > b_se:
+                    b_name, b_score, b_se, b_folds = cand_stats[0]
+                    b_improvement, b_improvement_se = paired_one_se_improvement(
+                        b_folds, _resume_baseline_folds, higher_is_better=False)
+                    if np.isfinite(b_improvement) and b_improvement > b_improvement_se:
                         current_model_features.append(b_name)
                         best_current_score, best_current_se, step_counter = b_score, b_se, last_step + 1
+                        best_current_folds = b_folds
         except Exception as e:
             print(f"Resume failed: {e}")
 
@@ -1028,6 +1045,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
             # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
             # guard with len > 1 so a one-fold success does not poison the 1SE rule.
             best_current_se = np.std(valid_ll, ddof=1) / np.sqrt(len(valid_ll)) if len(valid_ll) > 1 else 0.0
+            best_current_folds = metrics['ll']
 
             # Step 0 Save
             step_0_metadata = {
@@ -1060,11 +1078,13 @@ def vocal_onset_model_selection(univariate_results_path: str,
                                     detail=f"best so far LL={best_current_score:.4f}"))
         step_results_metadata = {
             'step_idx': step_counter, 'current_features': list(current_model_features),
-            'baseline_score': best_current_score, 'candidates_summary': {},
+            'baseline_score': best_current_score, 'baseline_folds': best_current_folds,
+            'candidates_summary': {},
             'selected_feature': None
         }
 
         best_candidate, best_candidate_score, best_candidate_se = None, float('inf'), 0.0
+        best_candidate_folds = None
 
         # 'session' folds: the anchor pooling, the fold's balanced subsample indices
         # (trial_rng is seeded by fold only, so idx_p/idx_n are identical across
@@ -1219,11 +1239,21 @@ def vocal_onset_model_selection(univariate_results_path: str,
 
                 if mean_ll < best_candidate_score:
                     best_candidate_score, best_candidate_se, best_candidate = mean_ll, se_ll, feat
+                    best_candidate_folds = metrics['ll']
             else:
                 print(format_selection_step(f"Step {step_counter}", feature=feat,
                                             decision='FAILED (no valid scores)'))
 
-        if (best_current_score - best_candidate_score) > best_candidate_se:
+        # The 1SE bar is the standard error of the PER-FOLD improvement, not of the
+        # candidate's own scores: the incumbent and the candidate are nested and
+        # scored on the same folds, so their shared fold-difficulty term cancels in
+        # the difference but dominates either score on its own.
+        step_improvement, step_improvement_se = (
+            paired_one_se_improvement(best_candidate_folds, best_current_folds,
+                                      higher_is_better=False)
+            if best_candidate is not None else (float('nan'), 0.0))
+
+        if np.isfinite(step_improvement) and step_improvement > step_improvement_se:
             print(format_selection_step(f"Step {step_counter}", feature=best_candidate,
                                         decision='ACCEPT', metrics={'LL': best_candidate_score}))
             step_results_metadata['selected_feature'] = best_candidate
@@ -1234,6 +1264,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
                 pickle.dump(_wrap_step(step_results_metadata), f)
 
             best_current_score, best_current_se, step_counter = best_candidate_score, best_candidate_se, step_counter + 1
+            best_current_folds = best_candidate_folds
         else:
             print(format_selection_step(f"Step {step_counter}", decision='REJECT',
                                         detail='no candidate beat the 1-SE margin; selection finished'))
@@ -1550,7 +1581,12 @@ def vocal_category_model_selection(
         - Iteratively tests adding every remaining candidate feature.
         - Calculates and saves raw lists of metrics (Log-Loss, AUC, F1,
           Balanced Accuracy, Recall) for every fold for every candidate.
-    5.  Decision rule: Adopts the one-standard-error (1SE) rule.
+    5.  Decision rule: Adopts the one-standard-error (1SE) rule, applied to the
+        PAIRED per-fold improvement over the incumbent. The incumbent and the
+        candidate are nested and scored on the same folds, so the fold-difficulty
+        term they share cancels in the difference; taking the SE of either score
+        on its own instead would set the bar far too high and truncate the
+        search early.
     6.  Final Refit: Computes filter shapes for visualization depending on the chosen
         engine (back-projection for sklearn, partial dependence for pygam).
 
@@ -1863,6 +1899,9 @@ def vocal_category_model_selection(
 
     step_counter, current_model_features = 0, []
     best_current_score, best_current_se = chance_ll, 0.0
+    # Per-fold scores of the incumbent, paired against a candidate's in the 1SE
+    # test below. Before Step 0 the incumbent is the constant chance floor.
+    best_current_folds = chance_ll
 
     if existing_steps:
         last_step = max(existing_steps)
@@ -1876,16 +1915,26 @@ def vocal_category_model_selection(
 
             if cand_dict:
                 cand_stats = []
+                # A checkpoint written before per-fold baselines were stored has no
+                # `baseline_folds`; fall back to the scalar baseline score, which
+                # reproduces the unpaired comparison that wrote the file.
+                _resume_baseline_folds = (last_results['baseline_folds']
+                                          if 'baseline_folds' in last_results
+                                          else best_current_score)
                 for feat, res in cand_dict.items():
                     m = res['mean_ll'] if 'mean_ll' in res else chance_ll
                     s = res['se_ll'] if 'se_ll' in res else 0.0
-                    cand_stats.append((feat, m, s))
+                    f = res['ll'] if 'll' in res else m
+                    cand_stats.append((feat, m, s, f))
                 if cand_stats:
                     cand_stats.sort(key=lambda x: x[1])
-                    b_name, b_score, b_se = cand_stats[0]
-                    if (best_current_score - b_score) > b_se:
+                    b_name, b_score, b_se, b_folds = cand_stats[0]
+                    b_improvement, b_improvement_se = paired_one_se_improvement(
+                        b_folds, _resume_baseline_folds, higher_is_better=False)
+                    if np.isfinite(b_improvement) and b_improvement > b_improvement_se:
                         current_model_features.append(b_name)
                         best_current_score, best_current_se, step_counter = b_score, b_se, last_step + 1
+                        best_current_folds = b_folds
         except Exception as e:
             print(f"Resume failed: {e}")
 
@@ -2010,6 +2059,7 @@ def vocal_category_model_selection(
             # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
             # guard with len > 1 so a one-fold success does not poison the 1SE rule.
             best_current_se = np.std(valid, ddof=1) / np.sqrt(len(valid)) if len(valid) > 1 else 0.0
+            best_current_folds = metrics['ll']
             step_results = {
                 'step_idx': 0, 'current_features': list(current_model_features),
                 'baseline_score': best_current_score,
@@ -2037,9 +2087,11 @@ def vocal_category_model_selection(
                                     detail=f"best so far LL={best_current_score:.4f}"))
         step_results_metadata = {
             'step_idx': step_counter, 'current_features': list(current_model_features),
-            'baseline_score': best_current_score, 'candidates_summary': {}
+            'baseline_score': best_current_score, 'baseline_folds': best_current_folds,
+            'candidates_summary': {}
         }
         best_cand_name, best_cand_score, best_cand_se = None, float('inf'), 0.0
+        best_cand_folds = None
 
         # 'session' branch: pool the already-selected (base) features once per fold here
         # (identical across candidates within the step), so the candidate loop below only
@@ -2209,8 +2261,17 @@ def vocal_category_model_selection(
             }
             if mean_ll < best_cand_score:
                 best_cand_score, best_cand_se, best_cand_name = mean_ll, se_ll, feat
+                best_cand_folds = metrics['ll']
 
-        if best_cand_name and (best_current_score - best_cand_score) > best_cand_se:
+        # The 1SE bar is the standard error of the PER-FOLD improvement: incumbent
+        # and candidate are nested and share the same folds, so fold difficulty
+        # cancels in the difference but dominates either score alone.
+        step_improvement, step_improvement_se = (
+            paired_one_se_improvement(best_cand_folds, best_current_folds,
+                                      higher_is_better=False)
+            if best_cand_name else (float('nan'), 0.0))
+
+        if best_cand_name and np.isfinite(step_improvement) and step_improvement > step_improvement_se:
             print(format_selection_step(f"Step {step_counter}", feature=best_cand_name,
                                         decision='ACCEPT', metrics={'LL': best_cand_score}))
             current_model_features.append(best_cand_name)
@@ -2221,6 +2282,7 @@ def vocal_category_model_selection(
             # test always compares against the *current* accepted model's
             # sampling variability rather than a stale Step-0 value.
             best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
+            best_current_folds = best_cand_folds
             if len(current_model_features) == len(ranked_features): break
         else:
             print(format_selection_step(f"Step {step_counter}", decision='REJECT',
@@ -2484,8 +2546,11 @@ def bout_parameter_model_selection(
     Selection Metric:
     -----------------
     Explained Deviance (D^2). We select features using the one-standard-error (1SE) rule:
-    a feature is accepted only if it improves the D^2 by more than the standard error (SE)
-    of the candidate model's cross-validated performance.
+    a feature is accepted only if its mean PER-FOLD D^2 improvement over the incumbent
+    exceeds the standard error of that improvement. The SE is computed on the per-fold
+    differences, not on the candidate's own per-fold scores: the two models are nested
+    and share the folds, so fold difficulty cancels in the difference while dominating
+    either score alone.
 
     Data Persistence:
     -----------------
@@ -2749,6 +2814,9 @@ def bout_parameter_model_selection(
     current_model_features = []
     best_current_score = 0.0
     best_current_se = 0.0
+    # Per-fold scores of the incumbent, paired against a candidate's in the 1SE
+    # test below. Before Step 0 the incumbent is the constant zero-D^2 floor.
+    best_current_folds = 0.0
     step_counter = 0
 
     fname = Path(univariate_results_path).name
@@ -2834,11 +2902,26 @@ def bout_parameter_model_selection(
                 best_cand_in_file = max(cand_dict.items(), key=lambda x: x[1]['mean_explained_deviance'])
                 name, stats = best_cand_in_file
 
-                if (stats['mean_explained_deviance'] - stats['se_explained_deviance']) > best_current_score:
+                # A checkpoint written before per-fold baselines were stored has no
+                # `baseline_folds`; fall back to the scalar baseline score, which
+                # reproduces the unpaired comparison that wrote the file.
+                _resume_baseline_folds = (last_res['baseline_folds']
+                                          if 'baseline_folds' in last_res
+                                          else best_current_score)
+                # A checkpoint may predate per-fold storage; its mean then stands in
+                # as a constant, reproducing the unpaired test that wrote the file.
+                _resume_cand_folds = (stats['explained_deviance']
+                                      if 'explained_deviance' in stats
+                                      else stats['mean_explained_deviance'])
+                _resume_improvement, _resume_improvement_se = paired_one_se_improvement(
+                    _resume_cand_folds, _resume_baseline_folds, higher_is_better=True)
+
+                if np.isfinite(_resume_improvement) and _resume_improvement > _resume_improvement_se:
                     if name not in current_model_features:
                         current_model_features.append(name)
                     best_current_score = stats['mean_explained_deviance']
                     best_current_se = stats['se_explained_deviance']
+                    best_current_folds = _resume_cand_folds
                     step_counter = last_step + 1
                 else:
                     print("[RESUME] Selection already converged. Stopping loop.")
@@ -2965,6 +3048,7 @@ def bout_parameter_model_selection(
                 # `np.std([x], ddof=1)` is NaN for a single finite fold (zero divisor);
                 # guard with len > 1 so a one-fold success does not poison the 1SE rule.
                 best_current_se = np.std(valid_dev, ddof=1) / np.sqrt(len(valid_dev)) if len(valid_dev) > 1 else 0.0
+                best_current_folds = metrics['explained_deviance']
                 current_model_features = [anchor]
 
                 step_0_res = {
@@ -3010,9 +3094,11 @@ def bout_parameter_model_selection(
                 fold_base_proj_te.append(np.hstack([np.dot(x, basis_matrix) for x in base_te]) if base_te else None)
 
         best_cand, best_cand_score, best_cand_se = None, -float('inf'), 0.0
+        best_cand_folds = None
         step_results = {
             'step_idx': step_counter, 'current_features': list(current_model_features),
-            'baseline_score': best_current_score, 'candidates_summary': {},
+            'baseline_score': best_current_score, 'baseline_folds': best_current_folds,
+            'candidates_summary': {},
             'selected_feature': None
         }
 
@@ -3142,8 +3228,17 @@ def bout_parameter_model_selection(
 
             if m_dev > best_cand_score:
                 best_cand_score, best_cand_se, best_cand = m_dev, s_dev, feat
+                best_cand_folds = metrics['explained_deviance']
 
-        if (best_cand_score - best_cand_se) > best_current_score:
+        # The 1SE bar is the standard error of the PER-FOLD improvement: incumbent
+        # and candidate are nested and share the same folds, so fold difficulty
+        # cancels in the difference but dominates either score alone.
+        step_improvement, step_improvement_se = (
+            paired_one_se_improvement(best_cand_folds, best_current_folds,
+                                      higher_is_better=True)
+            if best_cand is not None else (float('nan'), 0.0))
+
+        if np.isfinite(step_improvement) and step_improvement > step_improvement_se:
             print(format_selection_step(f"Step {step_counter}", feature=best_cand,
                                         decision='ACCEPT', metrics={'D^2': best_cand_score}))
             step_results['selected_feature'] = best_cand
@@ -3154,6 +3249,7 @@ def bout_parameter_model_selection(
 
             best_current_score = best_cand_score
             best_current_se = best_cand_se
+            best_current_folds = best_cand_folds
             step_counter += 1
         else:
             print(format_selection_step(f"Step {step_counter}", decision='REJECT',
@@ -3396,7 +3492,9 @@ def multinomial_vocal_category_model_selection(
        at Step 0 current_features is the empty list and this is instead the
        model-free marginal-prior baseline AUC (the `null_model_free` entry).
     - 'candidates_summary' (dict): Maps each tested feature to its detailed results:
-        - 'mean_auc', 'se_auc': Aggregated AUC metrics used for the 1SE rule.
+        - 'mean_auc', 'se_auc': Aggregated AUC metrics (reported; the 1SE
+          acceptance test itself uses the per-fold AUCs, paired against the
+          incumbent's).
         - 'classes': Array of original USV category string labels.
         - 'folds': A nested dictionary containing lists (length = n_splits) of:
             * 'metrics': dict of the following per-fold scalars —
@@ -3736,6 +3834,10 @@ def multinomial_vocal_category_model_selection(
     current_model_features = []
     best_current_score = 0.0
     best_current_se = 0.0
+    # Per-fold scores of the incumbent, paired against a candidate's in the 1SE
+    # test below. Replaced by the model-free marginal baseline's per-fold AUCs
+    # as soon as that block runs.
+    best_current_folds = 0.0
     step_counter = 0
 
     fname = Path(univariate_results_path).name
@@ -3824,11 +3926,27 @@ def multinomial_vocal_category_model_selection(
                 best_cand_in_file = max(cand_dict.items(), key=lambda x: x[1]['mean_auc'])
                 name, stats = best_cand_in_file
 
-                if (stats['mean_auc'] - stats['se_auc']) > best_current_score:
+                # A checkpoint written before per-fold baselines were stored has no
+                # `baseline_folds`; fall back to the scalar baseline score, which
+                # reproduces the unpaired comparison that wrote the file.
+                _resume_baseline_folds = (last_res['baseline_folds']
+                                          if 'baseline_folds' in last_res
+                                          else best_current_score)
+                # A checkpoint may predate per-fold storage; its mean then stands in
+                # as a constant, reproducing the unpaired test that wrote the file.
+                _resume_cand_folds = (stats['folds']['metrics']['auc']
+                                      if 'folds' in stats and 'metrics' in stats['folds']
+                                      and 'auc' in stats['folds']['metrics']
+                                      else stats['mean_auc'])
+                _resume_improvement, _resume_improvement_se = paired_one_se_improvement(
+                    _resume_cand_folds, _resume_baseline_folds, higher_is_better=True)
+
+                if np.isfinite(_resume_improvement) and _resume_improvement > _resume_improvement_se:
                     if name not in current_model_features:
                         current_model_features.append(name)
                     best_current_score = stats['mean_auc']
                     best_current_se = stats['se_auc']
+                    best_current_folds = _resume_cand_folds
                     step_counter = last_step + 1
                 else:
                     print("[RESUME] Selection already converged. Stopping loop.")
@@ -3935,6 +4053,7 @@ def multinomial_vocal_category_model_selection(
         # forward feature and terminating with an empty model.
         best_current_score = float(np.mean(valid_auc)) if valid_auc else float('-inf')
         best_current_se = float(np.std(valid_auc, ddof=1) / np.sqrt(len(valid_auc))) if len(valid_auc) > 1 else 0.0
+        best_current_folds = baseline_data['folds']['metrics']['auc']
 
         print(format_selection_step('Baseline', detail='model-free marginal prior',
                                     metrics={'AUC': best_current_score}))
@@ -4112,11 +4231,19 @@ def multinomial_vocal_category_model_selection(
             cand_data['mean_auc'] = mean_anc_auc
             cand_data['se_auc'] = se_anc_auc
 
-            if (mean_anc_auc - se_anc_auc) > best_current_score:
+            # The incumbent here is the model-free marginal baseline, which is a
+            # real per-fold model rather than a constant floor, so this comparison
+            # is paired like the forward steps below.
+            anchor_improvement, anchor_improvement_se = paired_one_se_improvement(
+                cand_data['folds']['metrics']['auc'], best_current_folds,
+                higher_is_better=True)
+
+            if np.isfinite(anchor_improvement) and anchor_improvement > anchor_improvement_se:
                 print(format_selection_step('Anchor', feature=anchor, decision='ACCEPT',
                                             metrics={'AUC': mean_anc_auc}))
                 best_current_score = mean_anc_auc
                 best_current_se = se_anc_auc
+                best_current_folds = cand_data['folds']['metrics']['auc']
                 current_model_features = [anchor]
 
                 step_1_res = {
@@ -4146,10 +4273,12 @@ def multinomial_vocal_category_model_selection(
             'step_idx': step_counter,
             'current_features': list(current_model_features),
             'baseline_score': best_current_score,
+            'baseline_folds': best_current_folds,
             'candidates_summary': {},
             'selected_feature': None
         }
         best_cand, best_cand_score, best_cand_se = None, 0.0, 0.0
+        best_cand_folds = None
 
         # The already-selected base block is identical across every candidate in
         # this step, so build it once per fold here instead of re-hstacking it
@@ -4359,8 +4488,17 @@ def multinomial_vocal_category_model_selection(
             step_results['candidates_summary'][feat] = cand_data
             if mean_auc > best_cand_score:
                 best_cand_score, best_cand_se, best_cand = mean_auc, se_auc, feat
+                best_cand_folds = cand_data['folds']['metrics']['auc']
 
-        if (best_cand and (best_cand_score - best_current_score) > best_cand_se):
+        # The 1SE bar is the standard error of the PER-FOLD improvement: incumbent
+        # and candidate are nested and share the same folds, so fold difficulty
+        # cancels in the difference but dominates either score alone.
+        step_improvement, step_improvement_se = (
+            paired_one_se_improvement(best_cand_folds, best_current_folds,
+                                      higher_is_better=True)
+            if best_cand else (float('nan'), 0.0))
+
+        if best_cand and np.isfinite(step_improvement) and step_improvement > step_improvement_se:
             print(format_selection_step(f"Step {step_counter}", feature=best_cand,
                                         decision='ACCEPT', metrics={'AUC': best_cand_score}))
             step_results['selected_feature'] = best_cand
@@ -4368,6 +4506,7 @@ def multinomial_vocal_category_model_selection(
             with open(model_selection_dir / f"{prefix}{step_counter}.pkl", 'wb') as f:
                 pickle.dump(_wrap_step(step_results), f)
             best_current_score, best_current_se, step_counter = best_cand_score, best_cand_se, step_counter + 1
+            best_current_folds = best_cand_folds
         else:
             print(format_selection_step(f"Step {step_counter}", decision='REJECT',
                                         detail='no candidate beat the 1-SE margin; selection finished'))
@@ -4643,11 +4782,11 @@ def continuous_vocal_manifold_model_selection(
        uniform random draw from the training `Y` for every test trial —
        the chance floor (a sample from the observed repertoire, ignoring
        kinematics) reported alongside the screen.
-    6. 1SE rule on the selection score. Because the selection score is
-       higher-is-better on both geometries, a feature is added only when
-       `(best_cand_score - best_current_score) > best_cand_se`, i.e. the
-       candidate's mean score beats the current best by more than one SE
-       of its own per-fold distribution.
+    6. Fold-grain acceptance. Candidates are RANKED by their mean selection
+       score (higher-is-better on both geometries), but the step winner is
+       ACCEPTED only when its per-fold paired margin over the incumbent has a
+       bootstrap CI lower bound above zero — a gain that is consistent across
+       folds, not merely large on average. See `_fold_paired_margin_bootstrap`.
 
     Joint per-fold hyperparameter tuning
     ------------------------------------
@@ -5168,9 +5307,9 @@ def continuous_vocal_manifold_model_selection(
                 )
 
     current_model_features = []
-    # R^2 is higher-is-better, so the pre-Step-0 "best" is `-inf` (any
-    # finite baseline beats it); 1SE acceptance becomes
-    # `(best_cand_score - best_current_score) > best_cand_se`.
+    # R^2 is higher-is-better, so the pre-Step-0 "best" is `-inf` (any finite
+    # baseline beats it). `best_current_score` only RANKS candidates here; the
+    # ACCEPT decision is the per-fold paired-margin bootstrap below.
     best_current_score = float('-inf')
     best_current_se = 0.0
     step_counter = 0
