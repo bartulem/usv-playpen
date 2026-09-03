@@ -1,0 +1,206 @@
+{
+  "cohort": {
+    "session_list_files": [
+      "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_intact_partners_sessions_list.txt",
+      "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_mute_female_sessions_list.txt"
+    ],
+    "brain_areas": ["PAG"],
+    "area_mode": "include",
+    "pool_areas": false,
+    "min_sessions": 2,
+    "quality": ["good"],
+    "somatic": "somatic",
+    "block_cv_n_folds": 5,
+    "block_cv_gap_seconds": 3.0
+  },
+  "anchors": {
+    "clean_against": "all",
+    "onset_emitter": 0
+  },
+  "kinematic_encoding": {
+    "history_pre_seconds": 4.0,
+    "clean_post_seconds": 2.0,
+    "bin_resize_factor": 1,
+    "smoothness_order": 1,
+    "include_spike_history": false,
+    "spike_history_window_seconds": 0.1,
+    "subsample_negatives": true,
+    "negatives_per_positive": 10,
+    "min_quiet_anchors": null,
+    "min_quiet_spikes": null,
+    "filter_band_n_folds": 10,
+    "significance_model": {
+      "lambda_group": 0.0,
+      "lambda_smooth": 1000.0,
+      "lambda_ridge": 0.01
+    },
+    "feature_selection": {
+      "screen_alpha": 0.01,
+      "selection_method": "forward_d2",
+      "stability_selection": false,
+      "pi_threshold": 0.6,
+      "n_bootstraps": 50,
+      "subsample_size": null,
+      "lambda_group_path": null,
+      "acceptance_rule": "paired_1se"
+    },
+    "solver": {
+      "learning_rate": null,
+      "max_iter": 5000,
+      "tol": 1e-6,
+      "calibration_steps": 30
+    },
+    "transfer": {
+      "scoring": "pooled",
+      "reference_rate": "local",
+      "require_positive_slope": true
+    },
+    "subsampling_correction": "log_prior_offset",
+    "max_train_total": 70000,
+    "chunk_rows": 4000,
+    "model_predictor_mouse_index": 1
+  },
+  "vocal_gating": {
+    "vocal_window": "start_stop",
+    "ridge_frac": 0.02,
+    "max_quiet_frames_per_session": 12000,
+    "quiet_zeros_per_spike": 40,
+    "require_interaction_gt_vocal": true,
+    "min_vocal_spikes": null,
+    "min_feature_iqr_vocal": null,
+    "content_gating_compute": false,
+    "n_shuffles_screen": 2000,
+    "sign_ridge_frac": 0.1,
+    "forward_stop_gain": 0.0,
+    "borderline_sigma_flag": 5.0,
+    "solver": {
+      "irls_n_steps": 30,
+      "calib_n_steps": 40
+    }
+  },
+  "vocal_decoding": {
+    "prevocal_spike_window_duration": 0.05,
+    "require_clean_prevocal_bool": true,
+    "vm_score_mode": "micro",
+    "lambda_smooth": 1.0,
+    "l2_reg": 0.01,
+    "prevocal_window_n_bins": 1,
+    "rate_transform": "none",
+    "rate_basis": "linear",
+    "rate_basis_n_knots": 4,
+    "rate_basis_n_bins": 5,
+    "behaviour_control": "rich",
+    "compute_matched_window_control": true,
+    "min_focal_usvs": null,
+    "min_baseline_tiles": null,
+    "geodesic_metrics": {
+      "compute": true,
+      "grid_n_per_dim": 40,
+      "graph_k": 8,
+      "density_exponent": 1.0,
+      "decoder_weights_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz"
+    },
+    "tuning_surface": {
+      "tuning_basis": "fourier",
+      "fourier_k": 2,
+      "bump_grid_n": 10,
+      "bump_sigma": 0.1,
+      "min_basis_occupancy": 5.0,
+      "decode_grid_min_occupancy": 1.0,
+      "grid_n": 60,
+      "kde_bandwidth": 0.03,
+      "likelihood_family": "poisson",
+      "session_rate_offsets": true,
+      "ridge_selection": {
+        "mode": "count_normalized_fixed",
+        "ridge_frac": 0.02
+      },
+      "amplitude_calibration": {
+        "enabled": true,
+        "mode": "train_tuned_inner_loso",
+        "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5],
+        "alpha_min": 0.0
+      },
+      "record_bump_basis_gain": true
+    },
+    "discrimination_null": {
+      "method": "within_session_position_permutation",
+      "n_permutations": 1000,
+      "sided": "one_sided_upper",
+      "pass_rule": "gain_gt_zero_and_exact_p",
+      "record_left_tail_anti_alignment": true,
+      "n_permutations_category_grain": 5000
+    },
+    "stability_descriptor": {
+      "compute": true,
+      "n_split_halves": 50,
+      "surface_ridge": 300.0,
+      "metric": "observed_over_noise_ceiling"
+    },
+    "record_overdispersion_index": true
+  },
+  "null": {
+    "n_shuffles": 1000,
+    "shuffle_guard_seconds": 20.0,
+    "shuffle_seed": 0,
+    "decorrelation_lag_seconds": 2.2,
+    "screen_n_shuffles": 10000
+  },
+  "significance": {
+    "pvalue_method": "empirical_escalated",
+    "fdr_method": "bh",
+    "fdr_q": 0.01,
+    "escalation_ladder": [10000, 100000, 1000000],
+    "report_bh_floor_requirement": true
+  },
+  "robustness": {
+    "decode_raw_acoustics": true,
+    "raw_acoustic_features": [
+      "duration",
+      "mean_freq_hz",
+      "peak_freq_hz",
+      "freq_bandwidth_hz"
+    ],
+    "time_in_session_nuisance": false,
+    "shift_range_check": false
+  },
+  "kinematic_features": {
+    "egocentric": [
+      "speed",
+      "neck_elevation",
+      "allo_roll",
+      "allo_pitch",
+      "ego_yaw",
+      "back_pitch",
+      "back_yaw",
+      "tail_curvature"
+    ],
+    "dyadic_pose": [
+      "nose-nose",
+      "allo_yaw-nose",
+      "nose-allo_yaw",
+      "allo_pitch-nose",
+      "nose-allo_pitch"
+    ],
+    "dyadic_engagement": [],
+    "dyadic_pose_symmetric": false,
+    "include_1st_derivatives": false,
+    "include_2nd_derivatives": false,
+    "abs_features": [
+      "allo_roll",
+      "allo_yaw-nose",
+      "nose-allo_yaw",
+      "allo_yaw-TTI",
+      "TTI-allo_yaw"
+    ],
+    "smooth_abs_features": {
+      "ego_yaw": 1.0,
+      "back_yaw": 0.5
+    }
+  },
+  "data_roots": {
+    "ephys_root": "/mnt/falkner/Bartul/EPHYS",
+    "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
+    "data_root": "/mnt/falkner/Bartul/Data"
+  }
+}
