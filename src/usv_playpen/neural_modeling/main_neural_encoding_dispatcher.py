@@ -177,7 +177,11 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
 
     selected, path = forward_select(per_session, pool_ids, survivors, n_lags, rng, settings,
                                     feature_names, message_output)
-    estimator, base_rate = fit_quiet_model(per_session, pool_ids, selected, n_lags, rng, encoding)
+    estimator, base_rate = fit_quiet_model(per_session, pool_ids, selected, n_lags, rng, encoding,
+                                           message_output)
+    # The final model is what every reported number rests on, so its convergence travels with the
+    # artifact rather than living only in a log line a cluster run may never have read back.
+    final_converged = bool(estimator.converged_)
 
     eta_quiet = linear_predictor_at_frames(estimator, session["feature_time_series"], selected,
                                            session["quiet"], n_lags, encoding["chunk_rows"])
@@ -192,6 +196,9 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                                     encoding["solver"]["null_calibration_bins"])
     vocal = score_fold(estimator, session, selected, vocal_frames, n_lags, base_rate, encoding,
                        linear_predictor_at_frames)
+    if not final_converged:
+        message_output(f"    [!] fold {fold_index} FINAL MODEL DID NOT CONVERGE -- treat both halves "
+                       f"of this fold as provisional")
     message_output(f"    TEST {test_id}: quiet {quiet_score:+.5f} (slope {quiet_slope:+.3f}) | "
                    f"vocal {vocal['fold_score']:+.5f} (slope {vocal['fold_slope']:+.3f}) | "
                    f"{vocal['n_frames']} vocal frames")
@@ -203,7 +210,8 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                 "eta_vocal": vocal["eta"], "labels_vocal": vocal["labels"], "pointer": pointer,
                 "gaps": gaps, "vocal_frames": vocal_frames, "screen": screen_rows,
                 "fold_vocal_score": vocal["fold_score"], "fold_vocal_slope": vocal["fold_slope"],
-                "auroc_vocal": vocal["auroc"], "spike_rate_vocal": vocal["spike_rate"]}
+                "auroc_vocal": vocal["auroc"], "spike_rate_vocal": vocal["spike_rate"],
+                "final_fit_converged": final_converged}
     destination = pathlib.Path(output_directory) / f"{unit['unit_id']}_fold{fold_index}.npz"
     destination.parent.mkdir(parents=True, exist_ok=True)
     np.savez(destination, **{key: np.asarray(value, dtype=object) if isinstance(value, (list, dict))

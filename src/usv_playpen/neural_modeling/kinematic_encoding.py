@@ -64,7 +64,7 @@ def inner_folds(pool_session_ids: list) -> list:
 
 
 def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices: list, n_lags: int,
-                    rng, encoding_settings: dict) -> tuple:
+                    rng, encoding_settings: dict, message_output=print) -> tuple:
     """
     Description
     -----------
@@ -123,6 +123,18 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
         debias_refit=False, max_iter=encoding_settings["solver"]["max_iter"])
     estimator.fit(np.vstack(design_blocks), np.concatenate(label_blocks),
                   offset=np.concatenate(offset_blocks))
+
+    # A FISTA run that exhausts max_iter returns whatever iterate it reached, and it is otherwise
+    # indistinguishable from a converged fit -- same type, same attributes, a filter that looks
+    # plausible. Real single-feature fits land at 2,300-5,000 iterations against a 5,000 cap, so this
+    # is not a remote failure mode: it happens, and it decides whether a reported filter means
+    # anything. Say so where it happens rather than leaving it in an attribute nobody reads.
+    if not estimator.converged_:
+        message_output(f"    [!] FIT DID NOT CONVERGE: {len(columns)} feature(s), "
+                       f"{estimator.n_iter_} iterations at the max_iter cap of "
+                       f"{encoding_settings['solver']['max_iter']} -- the filter is an unconverged "
+                       f"iterate and every score derived from it is provisional")
+
     denominator = max(n_positive_total + n_negative_total, 1)
     return estimator, float(min(max(n_positive_total / denominator, 1e-6), 1.0 - 1e-6))
 
@@ -290,10 +302,11 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
     require_positive_slope = encoding["transfer"]["require_positive_slope"]
     rows = []
     for feature in range(n_features):
-        fold_scores, fold_slopes, fold_nulls = [], [], []
+        fold_scores, fold_slopes, fold_nulls, fold_converged = [], [], [], []
         for train_ids, validation_id in folds:
             estimator, _base_rate = fit_quiet_model(per_session, train_ids, [feature], n_lags, rng,
-                                                    encoding)
+                                                    encoding, message_output)
+            fold_converged.append(bool(estimator.converged_))
             session = per_session[validation_id]
             eta = linear_predictor_at_frames(estimator, session["feature_time_series"], [feature],
                                              session["quiet"], n_lags, encoding["chunk_rows"])
@@ -313,9 +326,11 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
         slope_ok = (not require_positive_slope) or (np.isfinite(slope) and slope > 0)
         survived = bool(score > 0 and slope_ok and np.isfinite(p_value) and p_value < threshold)
         rows.append({"feature": feature, "name": feature_names[feature], "score": score, "slope": slope,
-                     "p": p_value, "at_floor": at_floor, "survived": survived})
+                     "p": p_value, "at_floor": at_floor, "survived": survived,
+                     "converged": bool(np.all(fold_converged))})
         message_output(f"    screen {feature_names[feature]:<32} score {score:+.5f} | slope {slope:+.3f} "
-                       f"| p {p_value:.2e} | {'PASS' if survived else 'fail'}")
+                       f"| p {p_value:.2e} | {'PASS' if survived else 'fail'}"
+                       f"{'' if np.all(fold_converged) else ' | UNCONVERGED'}")
     return rows
 
 
@@ -364,10 +379,13 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
     folds = inner_folds(pool_session_ids)
 
     def fold_scores(columns):
-        """Per-inner-fold score vector for a candidate feature set; the vector, not just its mean."""
+        """Per-inner-fold score vector for a candidate feature set, and whether every fit converged."""
         values = []
+        converged = True
         for train_ids, validation_id in folds:
-            estimator, _base_rate = fit_quiet_model(per_session, train_ids, columns, n_lags, rng, encoding)
+            estimator, _base_rate = fit_quiet_model(per_session, train_ids, columns, n_lags, rng, encoding,
+                                                    message_output)
+            converged = converged and bool(estimator.converged_)
             session = per_session[validation_id]
             eta = linear_predictor_at_frames(estimator, session["feature_time_series"], columns,
                                              session["quiet"], n_lags, encoding["chunk_rows"])
@@ -375,7 +393,7 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
                                             session["n_frames"])
             values.append(calibrated_explained_deviance(
                 eta, labels, encoding["solver"]["calibration_steps"])[0])
-        return np.asarray(values, dtype=np.float64)
+        return np.asarray(values, dtype=np.float64), converged
 
     def paired_improvement(candidate_scores, incumbent_scores):
         """Mean paired per-fold improvement and the standard error of those paired differences."""
@@ -386,38 +404,41 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
         error = (float(np.std(finite, ddof=1) / np.sqrt(finite.size)) if finite.size > 1 else 0.0)
         return float(finite.mean()), error
 
-    scored = [(feature, fold_scores([feature])) for feature in survivors]
-    scored = [(feature, values) for feature, values in scored
+    scored = [(feature, *fold_scores([feature])) for feature in survivors]
+    scored = [(feature, values, converged) for feature, values, converged in scored
               if np.isfinite(np.nanmean(values)) and np.nanmean(values) > 0]
     if not scored:
         return [], []
-    anchor, incumbent_scores = max(scored, key=lambda item: np.nanmean(item[1]))
+    anchor, incumbent_scores, anchor_converged = max(scored, key=lambda item: np.nanmean(item[1]))
     incumbent_mean = float(np.nanmean(incumbent_scores))
     selected = [anchor]
     path = [{"step": 0, "candidate": feature_names[anchor], "mean": incumbent_mean,
-             "improvement": np.nan, "standard_error": np.nan, "decision": "ANCHOR"}]
+             "improvement": np.nan, "standard_error": np.nan, "decision": "ANCHOR",
+             "converged": anchor_converged}]
     message_output(f"    select step 0  ANCHOR {feature_names[anchor]:<32} score {incumbent_mean:+.5f} "
-                   f"| per fold {np.array2string(incumbent_scores, precision=4)}")
+                   f"| per fold {np.array2string(incumbent_scores, precision=4)}"
+                   f"{'' if anchor_converged else ' | UNCONVERGED'}")
 
     remaining = [feature for feature in survivors if feature != anchor]
     step = 1
     while remaining:
-        best_feature, best_mean, best_scores = None, -np.inf, None
+        best_feature, best_mean, best_scores, best_converged = None, -np.inf, None, True
         for feature in remaining:
-            values = fold_scores(selected + [feature])
+            values, converged = fold_scores(selected + [feature])
             mean = float(np.nanmean(values))
             if np.isfinite(mean) and mean > best_mean:
-                best_feature, best_mean, best_scores = feature, mean, values
+                best_feature, best_mean, best_scores, best_converged = feature, mean, values, converged
         if best_feature is None:
             break
         improvement, standard_error = paired_improvement(best_scores, incumbent_scores)
         accept = np.isfinite(improvement) and improvement > standard_error
         path.append({"step": step, "candidate": feature_names[best_feature], "mean": best_mean,
                      "improvement": improvement, "standard_error": standard_error,
-                     "decision": "ACCEPT" if accept else "REJECT"})
+                     "decision": "ACCEPT" if accept else "REJECT", "converged": best_converged})
         message_output(f"    select step {step}  {'ACCEPT' if accept else 'REJECT'} "
                        f"{feature_names[best_feature]:<32} score {best_mean:+.5f} | paired improvement "
-                       f"{improvement:+.5f} vs its SE {standard_error:.5f}")
+                       f"{improvement:+.5f} vs its SE {standard_error:.5f}"
+                       f"{'' if best_converged else ' | UNCONVERGED'}")
         if not accept:
             break
         selected.append(best_feature)
