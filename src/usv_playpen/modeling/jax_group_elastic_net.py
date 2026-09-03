@@ -429,7 +429,16 @@ class GroupElasticNetGLM:
         # convergence is guaranteed. Poisson curvature is unbounded, so it keeps the backtracking host loop.
         if self.family == "bernoulli":
             curvature = _power_iter_curvature(np.asarray(x_design), np.asarray(sample_weight))
-            lipschitz = 0.25 * curvature + self.lambda_ridge + 16.0 * self.lambda_smooth
+            # The smoothness term is 0.5 * lam * ||D_k W||^2, whose gradient has Lipschitz constant
+            # lam * ||D_k^T D_k|| = lam * ||D_k||^2 <= lam * 4^k. This was hard-coded at 16.0, the
+            # k = 2 value, and applied at every order -- so at the shipped k = 1 the bound was 4x too
+            # large. Since the step is 1/L and, at lambda_smooth = 1000, the penalty supplies ~99.8%
+            # of L (16000 against a data term near 31), that overstatement set the step for the whole
+            # fit: 6.2e-5 where 2.5e-4 is provably safe. FISTA then crawled, and the features needing
+            # the most movement -- the strongest ones -- were the ones that exhausted max_iter.
+            smoothness_curvature = 4.0 ** self.smoothness_order
+            lipschitz = (0.25 * curvature + self.lambda_ridge
+                         + smoothness_curvature * self.lambda_smooth)
             step = 1.0 / max(float(lipschitz), 1e-12)
             w_f, b_f, n_iter_f, conv_f = _fista_lax(
                 x_design, y, sample_weight, offset, w_init, b_init,
