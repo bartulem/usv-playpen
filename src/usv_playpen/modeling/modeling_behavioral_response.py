@@ -423,9 +423,16 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
 
         response_column = f"{mouse_names[response_idx]}.{response_feature}"
         if response_column not in session_df_columns:
+            available_mice = sorted({column.partition('.')[0]
+                                     for column in session_df_columns
+                                     if '-' not in column.partition('.')[0]})
             msg = (
                 f"Response column '{response_column}' is absent from the session's "
-                f"behavioral feature table; check "
+                f"behavioral feature table. Mouse identity reaches this code from two "
+                f"places: the tracking H5 gives '{mouse_names[response_idx]}', while the "
+                f"feature CSV's columns give {available_mice}. When those disagree the "
+                f"CSV labels are stale and must be corrected on disk -- the feature "
+                f"VALUES are fine. Otherwise check "
                 f"`behavioral_response.response_feature` ('{response_feature}')."
             )
             raise KeyError(msg)
