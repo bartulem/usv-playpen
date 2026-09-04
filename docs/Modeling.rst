@@ -188,7 +188,7 @@ cross-validation and held-out-test settings live in their own
 * **dyadic_pose_symmetric** — if ``true``, include both ``A-B`` and ``B-A`` orientations of each dyadic-pose feature.
 * **include_1st_derivatives** / **include_2nd_derivatives** — also add the velocity / acceleration of each feature.
 * **abs_features** — feature suffixes folded to their plain absolute value ``|x|`` before pooled z-scoring (for signed angles whose sign is not behaviorally meaningful); read by every pipeline that z-scores across sessions.
-* **smooth_abs_features** — per-feature Gaussian-smoothing σ (frames) applied to the absolute value of the named features.
+* **smooth_abs_features** — a *smooth* magnitude fold, ``sqrt(x² + ε²)``, where the mapped value is the per-feature ``ε`` **in the feature's own units** (degrees for the angles), not a smoothing width in frames and not a Gaussian σ. It is the differentiable counterpart of ``abs_features``: identical to ``|x|`` away from zero, but rounded near it, which avoids the kink that a plain absolute value puts at ``x = 0``. A feature listed in both dicts takes this branch, since ``smooth_abs_features`` has priority (see ``zscore_different_sessions_together``).
 
 **vocal_features** — which vocal predictors enter the zoo, and the acoustic-manifold definition.
 
@@ -371,6 +371,35 @@ manifold fit is always scored by the macro von Mises log-score ``vm_logscore``.)
 * **multinomial_target** — the categorical label column read as the target when ``emission_type='multinomial'`` (e.g. ``'supercategory'``); events whose label is NaN are dropped.
 * **focal_gamma** — focal-loss focusing parameter of the static multinomial emission (``0.0`` = plain cross-entropy).
 * **multinomial_max_iter** — optimiser iterations for the static multinomial emission's per-state classifier.
+
+**behavioral_response** — the inverted analysis: does a partner's vocal trace predict a
+*behavioural* variable (see :ref:`Behavioral response <modeling-behavioral-response>` below)?
+
+.. code-block:: json
+
+    "behavioral_response": {
+        "response_mouse_index": 1,
+        "response_feature": "speed",
+        "history_seconds": 4.0,
+        "target_window_seconds": 0.5,
+        "target_gap_seconds": 0.0,
+        "vocal_predictor_type": "pooled_rate",
+        "vocal_smoothing_sd_frames": 1,
+        "likelihood": "gamma",
+        "n_shift_draws": 200,
+        "shift_null_min_seconds": 20.0
+    }
+
+* **response_mouse_index** — which mouse's behaviour is predicted, by **absolute slot index** (``0`` is always the male, ``1`` always the female). Deliberately *not* the relative ``self.`` / ``other.`` role keys used elsewhere: those are defined against ``model_params.model_predictor_mouse_index`` and cannot be read on their own. **This is the only mouse index you set.** ``model_params.model_predictor_mouse_index`` decides whose *calls* are ingested and carries the opposite meaning on the same 0/1 axis; since the partner's calls are by definition the other animal's, it is **derived** as ``1 - response_mouse_index`` on a private copy of the settings (the caller's dict is never mutated, and the shipped value the five vocal pipelines read is untouched). So ``response_mouse_index: 1`` predicts the female from the male's calls, with nothing to keep in step by hand.
+* **response_feature** — the behavioural feature used as the regression target (e.g. ``'speed'``). Read from the raw per-session feature table **before** column selection and z-scoring, so it need not belong to the predictor zoo and stays in native units — a Gamma likelihood needs a strictly positive response, and the log link, not standardisation, is what handles its scale.
+* **history_seconds** — seconds of behavioural history preceding each anchor. Block-local rather than shared with ``model_params.filter_history``, mirroring how ``glm_hmm`` carries its own ``history_frames``. Because anchors are tiled non-overlapping, this doubles as the anchor stride: no two rows share a history sample, which keeps the rows close to independent.
+* **target_window_seconds** — width of the forward window the response is averaged over. Averaging suppresses the frame-to-frame differentiation noise in a single 6.7 ms sample and breaks the near-determinism that would otherwise tie the target to the last frame of its own history.
+* **target_gap_seconds** — delay between the end of the history and the start of the target window; ``0.0`` places the target immediately after the history. A non-zero gap is the leakage check: when a baseline predictor is nearly deterministic, misspecification leaves structured residual that a vocal regressor could absorb as a spurious increment.
+* **vocal_predictor_type** — which vocal representation forms the block under test: ``'pooled_binary'`` (a single ``usv_event`` indicator), ``'pooled_rate'`` (a single smoothed ``usv_rate`` trace), ``'categories_rate'`` (one ``usv_cat_<n>`` trace per category) or ``'all_rate'`` (both). This is a **block-local override** of ``vocal_features.usv_predictor_type``, applied to a shallow copy so the shared block the five vocal pipelines read is left untouched. There is deliberately no second setting listing the column names: the block is *derived* from whichever traces this produces, because two keys that must agree can silently disagree, and a disagreement would quietly change what is being tested. The resolved partition is written into the artifact's ``analysis_specific`` metadata so the nested comparison never re-derives it. ``'pooled_rate'`` is the default because the first question is whether calling matters at all, not whether she responds differently to different call types — that is a strictly stronger claim, and splitting first would also mean several tests instead of one.
+* **vocal_smoothing_sd_frames** — sigma of the Gaussian kernel the call train is convolved with, in **frames**, matching the loader's own frame-based sigma (kept as a float, so a fractional kernel stays expressible). A **block-local override** of ``vocal_features.usv_predictor_smoothing_sd``, for the same reason as the predictor type. It matters more here than elsewhere because this is the only pipeline where the vocal trace is the *block under test* rather than one predictor among many: at the default ``1`` the pooled rate is a near-impulse train that is overwhelmingly zero, so the GAM's value-axis splines fit a badly-conditioned distribution. Widening it trades temporal precision — of which there is spare, the lag axis carrying only ``n_splines_time`` knots across the whole history — for better-posed value splines.
+* **likelihood** — ``'gamma'`` (Gamma GAM, log link, native units), ``'lognormal'`` (Gaussian GAM on ``log(y)``, i.e. a lognormal model), or ``'both'``. Defaults to ``'gamma'``: it reuses the machinery ``BoutParameterPipeline`` already validates and keeps ``y`` in native units. Use ``'both'`` to stress-test a result once there is one — it exactly doubles the compute, including the null. The two are scored on different scales and are deliberately **not** made comparable — back-transforming a log-scale fit yields a geometric mean rather than ``E[y]``, the exact fit/score mismatch ``BoutParameterPipeline`` was rewritten to remove — so each arm carries its own baseline and its own null, and only the *increments* are compared across arms.
+* **n_shift_draws** — number of shifted refits forming the increment null. Only the full model is refit per draw (the baseline is identical across draws), so the cost is ``n_shift_draws × n_cv_folds`` fits. The smallest attainable p-value is ``1 / (n_shift_draws + 1)``.
+* **shift_null_min_seconds** — minimum circular-shift offset. Offsets are drawn from ``[min, T − min]``: the floor keeps the shift past the slowest behavioural autocorrelation in the zoo (``nose-nose``, ~6–8 s), and the mirrored ceiling excludes near-full-length shifts, which wrap almost all the way round and are nearly the identity.
 
 .. _modeling-extract:
 
@@ -962,6 +991,157 @@ The saved results dict carries ``selected_n_states``, the per-``K`` ``selection_
 ``transition_matrix`` (a mean over events for the input-driven engines, whose
 transitions vary per time bin), the per-session Viterbi ``state_paths``, and a
 ``metadata`` block recording the emission type, transition mode, and features used.
+
+.. _modeling-behavioral-response:
+
+Behavioral response
+-------------------
+Every pipeline above predicts a *vocal* target from behavioural history. This one
+runs the other way: it predicts a **behavioural** variable and asks whether the
+partner's vocal trace explains anything the kinematic and social features do not.
+The claim is therefore about a *unique contribution* — not whether calling
+correlates with the behaviour, but whether the vocal block improves held-out
+prediction over a baseline containing everything else measured.
+
+It runs through the **same five stages as every other analysis** — extraction, a
+per-feature univariate job array, consolidation, model selection, consolidation — so
+nothing about the cluster workflow is special-cased.
+
+.. code-block:: text
+
+    1. extract        BehavioralResponsePipeline(...).extract_and_save_modeling_input_data()
+    2. univariate     main_univariate_dispatcher --analysis_type behavioral_response
+                      (one SLURM task per BASELINE feature; the vocal block is
+                       excluded -- it is the quantity under test, not a candidate)
+    3. consolidate    consolidate_univariate_results.consolidate(...)
+    4. selection      main_model_selection_dispatcher --analysis_type behavioral_response
+                      (screen -> forward selection -> vocal block as the FINAL step;
+                       one checkpoint pickle per step, resumable)
+    5. consolidate    consolidate_model_selection_results.consolidate(...)
+
+Steps 2 and 4 are SLURM jobs; steps 3 and 5 use the shared consolidators unchanged.
+
+**The response target is magnitude-folded like every predictor.** Before the forward
+average is taken, ``response_feature`` is routed through the same branches
+``zscore_different_sessions_together`` applies to the design matrix: ``sqrt(x² + ε²)``
+if it appears in **smooth_abs_features**, ``|x|`` if it appears in **abs_features**,
+and untouched otherwise. Which branch fired is recorded as ``response_fold`` in the
+extraction provenance. This is load-bearing rather than cosmetic for a signed angle:
+its mean is a small residual left after large opposing excursions cancel, so it
+carries no stable direction, and a signed target additionally breaks the Gamma
+likelihood, which drops every non-positive row.
+
+**A short job array is a fatal error, not a warning.** The screen's candidates come
+from the extraction artifact, while their fits come from the consolidated univariate
+pickle. If ``--array`` is bounded below ``(number of features - 1)``, the surplus
+features are never swept and never reach the consolidated artifact, which would
+quietly shrink the pool the forward selection searches while the run still looked
+normal. ``screen_from_univariate`` therefore raises ``ValueError`` naming every
+missing candidate, distinguishing *never swept* from a fit that failed, and stating
+the correct ``--array`` bound. To leave a feature out on purpose, drop it from
+``candidate_features`` so the exclusion is explicit and recorded.
+
+.. note::
+
+   Both cluster scripts derive every path from ``$ANALYSIS_TYPE`` and resolve the
+   timestamped artifacts by prefix, echoing what they resolved into the log. Do not
+   reintroduce a fixed artifact filename: selecting one analysis while a literal path
+   still pointed at another analysis' results is exactly how a run silently screens on
+   the wrong pickle.
+
+.. code-block:: python
+
+    from usv_playpen.modeling.modeling_behavioral_response import BehavioralResponsePipeline
+    from usv_playpen.modeling.behavioral_response_selection import (
+        behavioral_response_model_selection,
+    )
+
+    BehavioralResponsePipeline(
+        modeling_settings_dict=None
+    ).extract_and_save_modeling_input_data()
+
+    # Step 4, if run outside the dispatcher. Reads the CONSOLIDATED univariate
+    # pickle rather than refitting per feature, and writes one pickle per step.
+    behavioral_response_model_selection(
+        input_pickle_path="/mnt/falkner/Bartul/modeling/modeling_behavioral_response_<...>.pkl",
+        univariate_results_path="/mnt/falkner/Bartul/modeling/univariate_behavioral_response_<...>.pkl",
+        output_directory="/mnt/falkner/Bartul/modeling/model_selection_results/<...>",
+    )
+
+Three structural differences from the vocal pipelines are load-bearing rather than
+incidental:
+
+* **Anchors tile the whole session.** ``load_input_files._get_clean_tiled_epochs``
+  tiles only USV-*free* stretches, which is exactly backwards here — a history
+  window that *contains* calls is the observation under test. Anchors are spaced
+  one ``history_seconds`` apart with no forbidden zones, so no two rows share a
+  history sample.
+* **The target is behavioural and stays in native units.** It is read from the raw
+  feature table before selection and z-scoring, clipped to
+  ``FeatureZoo.feature_boundaries``, and averaged over a short forward window.
+  Predictors are pooled-z-scored as everywhere else; the response is not, because
+  the link function handles its scale and z-scoring would make a Gamma likelihood
+  undefined.
+* **Predictors are partitioned into blocks.** No other selector has a notion of a
+  feature block — candidates are always individual named features — so the
+  kinematic/social baseline and the vocal block are kept separable, and the
+  partition travels in the artifact's metadata.
+
+**What the result artifact carries.** One entry per likelihood arm, each holding
+``screen`` (per-feature paired margins against the shifted-response null), ``selection``
+(the accepted features in order, plus every candidate's score at every step),
+``increment`` (the observed paired margin, per-fold baseline and full scores, all
+``n_shift_draws`` null margins, ``z_vs_null`` and ``p_vs_null``) and ``held_out``. The
+increment and held-out entries additionally carry per-fold **predictions**
+(``y_true`` / ``y_pred`` / ``test_indices``, so anything can be re-scored or plotted
+afterwards), descriptive metrics (Spearman, Pearson, MAE, RMSE, residual deviance, each
+labelled with the ``score_scale`` its arm was fitted on) and per-feature **temporal
+filter shapes** — the partial-dependence curve ``predict_mu(test_grid) - predict_mu(base_grid)``
+over the whole history, which reads as the effect of a +1 SD increase in that feature at
+each lag and is what makes the response *latency* legible rather than inferred.
+
+Two derived statistics sit alongside the raw margin. **``fraction_of_remaining``** divides
+the per-fold increment by ``1 - baseline``, because an absolute D2 margin is not comparable
+across configurations -- the baseline absorbs a different share of the deviance in each one,
+so the same margin means something very different against a baseline at 0.05 than at 0.60.
+It answers the question actually being asked: of what the kinematics could *not* explain,
+how much does the vocal block account for? And **``per_session``** re-scores each fold's
+stored predictions split by session, so "is this general, or carried by a few pairs?" is a
+lookup rather than a re-analysis; note the folds are Monte Carlo shuffle-splits, so a session
+never held out simply has no entry.
+
+``held_out`` is the honest last look: both models are refit on the development sessions
+and scored once on the carve-once reserve, which is excluded from every CV fold and from
+the entire selection search. It has no null attached — it corroborates the
+cross-validated increment rather than re-testing it.
+
+**Every acceptance in the run uses the same rule** — the paired 1SE test on the
+per-fold improvement (``modeling_utils.paired_one_se_improvement``), shared with the
+other selectors. The vocal block is held to exactly the standard the features it is
+compared against were held to; giving it a different one would make the comparison
+incoherent.
+
+That bar is deliberately lenient in the screen and the forward loop, because those
+build the **control**: a feature kept out of the baseline is not controlled for, it
+is merely absent, and the vocal block would inherit whatever it would have explained.
+
+**The screen's null is a circular SHIFT of the response, not a permutation.** The
+dispatcher's default is ``y_permutation``; this analysis overrides it through
+``BoutParameterPipeline._null_target``, an overridable seam whose default is
+unchanged for every other pipeline. Permutation destroys the response's own
+autocorrelation, which makes it an easier null than the data warrants — the
+predictors are strongly autocorrelated, so a scrambled target is trivially harder to
+predict than a real one.
+
+**No null is computed at the vocal step.** Held-out cross-validation across sessions
+already establishes that a block improving prediction on data it never saw carries
+real information; that is what the 1SE rule tests, exactly as at every earlier step.
+A shift null of the *vocal block* answers a narrower question — is the information in
+the **timing** of the calls, or merely in the shape of a sparse bursty trace? — which
+is a follow-up on an effect you already have rather than a criterion for deciding
+whether you have one. ``circular_shift_rows_within_session`` and
+``paired_fold_margin`` remain in the module for that purpose, to be run once and only
+if the vocal step is accepted.
 
 Notebook
 --------

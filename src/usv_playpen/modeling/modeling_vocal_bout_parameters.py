@@ -111,6 +111,30 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         super().__init__(modeling_settings_dict=modeling_settings_dict)
 
+    def _null_target(self, y_train: np.ndarray, null_rng: np.random.Generator) -> np.ndarray:
+        """
+        Builds the null target vector for one fold's permutation control.
+
+        Factored out as an overridable seam so a subclass can substitute a
+        different null without duplicating the run method around it. The default
+        is the permutation control this pipeline has always used, so behaviour
+        here is unchanged.
+
+        Parameters
+        ----------
+        y_train : np.ndarray
+            The fold's training targets.
+        null_rng : np.random.Generator
+            Seeded generator for this fold's null.
+
+        Returns
+        -------
+        y_null : np.ndarray
+            The targets to fit the null branch on.
+        """
+
+        return null_rng.permutation(y_train)
+
     def extract_and_save_modeling_input_data(self) -> None:
         """
         Extracts, processes, and saves (X, y, group) triples for regression analysis of bout parameters.
@@ -888,7 +912,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             try:
                 null_rng = np.random.default_rng(base_seed + split_idx + 1)
-                y_tr_shuff_tiled = np.repeat(null_rng.permutation(y_tr) + 1e-6, hist_frames).astype(np.float32)
+                y_tr_shuff_tiled = np.repeat(self._null_target(y_tr, null_rng) + 1e-6, hist_frames).astype(np.float32)
 
                 gam_null = GAM(
                     te(0, 1, n_splines=[n_val, n_time]),
@@ -1002,7 +1026,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             heldout = {}
             for branch in ('actual', 'null'):
-                y_dev_use = y_dev_all if branch == 'actual' else held_rng.permutation(y_dev_all)
+                y_dev_use = y_dev_all if branch == 'actual' else self._null_target(y_dev_all, held_rng)
                 rec = {
                     'explained_deviance': np.nan, 'spearman_r': np.nan, 'pearson_r': np.nan,
                     'msle': np.nan, 'mae': np.nan, 'rmse': np.nan, 'residual_deviance': np.nan,
@@ -1261,7 +1285,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             try:
                 null_rng = np.random.default_rng(base_seed + split_idx + 1)
-                y_tr_shuff_pos = np.maximum(null_rng.permutation(y_tr), 1e-6)
+                y_tr_shuff_pos = np.maximum(self._null_target(y_tr, null_rng), 1e-6)
 
                 fit_start = time.perf_counter()
                 model_null = GridSearchCV(
@@ -1360,7 +1384,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
             heldout = {}
             for branch in ('actual', 'null'):
-                y_dev_use = y_dev_all if branch == 'actual' else held_rng.permutation(y_dev_all)
+                y_dev_use = y_dev_all if branch == 'actual' else self._null_target(y_dev_all, held_rng)
                 rec = {
                     'explained_deviance': np.nan, 'spearman_r': np.nan, 'pearson_r': np.nan,
                     'msle': np.nan, 'mae': np.nan, 'rmse': np.nan, 'residual_deviance': np.nan,

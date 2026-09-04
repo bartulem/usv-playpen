@@ -272,5 +272,17 @@
     "multinomial_target": "supercategory",
     "focal_gamma": 0.0,
     "multinomial_max_iter": 2000
+  },
+  "behavioral_response": {
+    "response_mouse_index": 1,
+    "response_feature": "speed",
+    "history_seconds": 4.0,
+    "target_window_seconds": 0.5,
+    "target_gap_seconds": 0.0,
+    "vocal_predictor_type": "pooled_rate",
+    "vocal_smoothing_sd_frames": 1,
+    "likelihood": "gamma",
+    "n_shift_draws": 200,
+    "shift_null_min_seconds": 20.0
   }
 }

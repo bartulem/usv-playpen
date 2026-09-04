@@ -37,6 +37,7 @@ from .model_selection import (
     multinomial_vocal_category_model_selection,
     continuous_vocal_manifold_model_selection
 )
+from .behavioral_response_selection import behavioral_response_model_selection
 
 
 def validate_paths(
@@ -146,6 +147,21 @@ def dispatch_model_selection(args: argparse.Namespace) -> int:
                 p_val=args.pval
             )
 
+        elif args.analysis_type == 'behavioral_response':
+
+            # Inverted direction: the target is a behavioural feature and the
+            # partner's vocal block is added as the FINAL step, after the
+            # kinematic baseline has converged. No `target_variable` -- the
+            # response feature is a settings key, not a CLI argument, because it
+            # must match the one the extraction artifact was built with.
+            behavioral_response_model_selection(
+                input_pickle_path=args.input_path,
+                univariate_results_path=args.univariate_path,
+                output_directory=args.output_dir,
+                settings_path=settings_path,
+                use_top_rank_as_anchor=args.anchor,
+            )
+
         elif args.analysis_type == 'multinomial':
 
             multinomial_vocal_category_model_selection(
@@ -191,7 +207,7 @@ if __name__ == "__main__":
 
     # Core Arguments
     parser.add_argument('--analysis_type', required=True,
-                        choices=['onset', 'category', 'params', 'multinomial', 'continuous'],
+                        choices=['onset', 'category', 'params', 'behavioral_response', 'multinomial', 'continuous'],
                         help="The type of model selection framework to execute.")
 
     parser.add_argument('--univariate_path', type=str, required=True,
