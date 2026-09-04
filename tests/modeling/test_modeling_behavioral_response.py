@@ -532,6 +532,20 @@ class TestFullPipelineOnSyntheticSessions:
         assert '_run_metadata' in merged
         assert merged['steps'][-1]['vocal_block_features'] == vocal_features
 
+        # The occupancy ladder must survive the whole chain. It is a diagnostic,
+        # so a silent skip would look identical to a run where the effect simply
+        # was not concentrated -- exactly the reading it exists to support.
+        occupancy = merged['_input_metadata']['analysis_specific']['vocal_occupancy']
+        n_design_rows = int(np.asarray(extracted[baseline_features[0]]['y']).shape[0])
+        assert len(occupancy) == n_design_rows, 'occupancy row count must match the design'
+        assert all(0.0 <= value <= 1.0 for value in occupancy)
+        ladder = merged['steps'][-1]['occupancy_ladder']
+        assert ladder, 'the vocal step reported no occupancy ladder'
+        assert 'occupancy_gt_0' in ladder
+        for rung in ladder.values():
+            assert rung['n_rows_scored'] >= 0
+            assert np.isfinite(rung['threshold'])
+
 
 class TestTargetMagnitudeFold:
     """The target must get the same fold the predictors get.

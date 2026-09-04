@@ -48,6 +48,7 @@ with warnings.catch_warnings():
         fraction_of_remaining_deviance,
         gamma_explained_deviance,
         gaussian_explained_variance,
+        occupancy_scored_margins,
         paired_fold_margin,
         paired_one_se_improvement,
         per_session_scores,
@@ -829,3 +830,89 @@ class TestTopRankAnchor:
         assert 'forced_anchor' not in result['steps'][0]
         # unforced, the signal-bearing feature wins despite being ranked second
         assert result['selected'][0] == 'self.speed'
+
+
+class TestOccupancyScoredMargins:
+    """The ladder that says WHERE an accepted vocal effect lives."""
+
+    @staticmethod
+    def _diagnostics(y_true_folds, y_pred_folds, test_index_folds):
+        """
+        Builds the minimal per-fold bundle the ladder reads.
+
+        Parameters
+        ----------
+        y_true_folds, y_pred_folds : list of np.ndarray
+            Per-fold observed and predicted values.
+        test_index_folds : list of np.ndarray
+            Per-fold row indices into the full design.
+
+        Returns
+        -------
+        diagnostics : dict
+            The three keys ``occupancy_scored_margins`` consumes.
+        """
+
+        return {'y_true': y_true_folds, 'y_pred': y_pred_folds,
+                'test_indices': test_index_folds}
+
+    def test_restricting_to_call_bearing_rows_recovers_a_diluted_effect(self):
+        """A margin present only on call rows is larger once the mask is applied.
+
+        This is the whole reason the ladder exists: the global gate averages the
+        effect over rows where the vocal block cannot help.
+        """
+
+        rng = np.random.default_rng(0)
+        n = 400
+        occupancy = np.zeros(n)
+        occupancy[:100] = 0.5                      # a quarter of rows carry calls
+        y_true = np.abs(rng.normal(5.0, 1.0, n)) + 0.1
+        index = np.arange(n)
+        # Baseline is wrong on the call rows; the full model fixes exactly those.
+        baseline_pred = y_true.copy()
+        baseline_pred[:100] = y_true[:100] + 2.0
+        full_pred = y_true.copy()
+
+        base = self._diagnostics([y_true], [baseline_pred], [index])
+        full = self._diagnostics([y_true], [full_pred], [index])
+        ladder = occupancy_scored_margins(base, full, occupancy, 'gamma',
+                                          occupancy_thresholds=(0.0,))
+        subset = ladder['occupancy_gt_0']['paired_improvement']
+
+        global_margin = (gamma_explained_deviance(y_true, full_pred)
+                         - gamma_explained_deviance(y_true, baseline_pred))
+        assert subset > global_margin
+        assert ladder['occupancy_gt_0']['n_rows_scored'] == 100
+
+    def test_a_fold_with_too_few_masked_rows_is_nan_not_dropped(self):
+        """Keeping the fold count comparable across rungs matters for the SE."""
+
+        y = np.abs(np.random.default_rng(1).normal(5.0, 1.0, 10)) + 0.1
+        occupancy = np.zeros(10)
+        occupancy[0] = 0.9                      # one row only -> below the floor
+        base = self._diagnostics([y], [y + 0.5], [np.arange(10)])
+        full = self._diagnostics([y], [y], [np.arange(10)])
+        ladder = occupancy_scored_margins(base, full, occupancy, 'gamma',
+                                          occupancy_thresholds=(0.0,))
+
+        assert ladder['occupancy_gt_0']['n_folds_usable'] == 0
+        assert np.isnan(ladder['occupancy_gt_0']['full_folds'][0])
+
+    def test_both_models_are_masked_identically_so_the_margin_stays_paired(self):
+        """An unpaired mask would compare the two models on different rows."""
+
+        rng = np.random.default_rng(2)
+        n = 200
+        occupancy = rng.random(n)
+        y = np.abs(rng.normal(5.0, 1.0, n)) + 0.1
+        index = np.arange(n)
+        base = self._diagnostics([y], [y + 0.3], [index])
+        full = self._diagnostics([y], [y + 0.3], [index])
+        ladder = occupancy_scored_margins(base, full, occupancy, 'gamma',
+                                          occupancy_thresholds=(0.0, 0.5))
+
+        # Identical predictions -> exactly zero margin on every rung.
+        for rung in ladder.values():
+            assert rung['paired_improvement'] == pytest.approx(0.0, abs=1e-12)
+        assert ladder['occupancy_gt_0.5']['n_rows_scored'] < ladder['occupancy_gt_0']['n_rows_scored']

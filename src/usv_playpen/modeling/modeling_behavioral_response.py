@@ -800,6 +800,11 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         lookahead_frames = self.response_gap_frames + self.response_window_frames
         final_data_dict: dict[str, dict[str, Any]] = {}
         anchors_per_session: dict[str, int] = {}
+        # Same marker set `_vocal_block_feature_names` uses to identify vocal
+        # columns; kept local rather than promoted to a module constant.
+        vocal_markers = ('usv_rate', 'usv_event', 'usv_cat_')
+        vocal_occupancy_rows: list[float] = []
+        informative_fraction_per_session: dict[str, float] = {}
 
         for sess_id, df in tqdm(processed_beh_feature_data_dict.items(), desc="Tiling anchors"):
             t_name = mouse_track_names_dict[sess_id][target_mouse_idx]
@@ -838,6 +843,45 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             n_valid = int(anchor_frames.size)
             anchors_per_session[sess_id] = n_valid
 
+            # Per-anchor call content of the predictor mouse, from the RAW binary
+            # occupancy rather than the smoothed `usv_rate`: smoothing spreads a
+            # call over its neighbours, and the design matrix is pooled z-scored,
+            # so neither can be thresholded to recover "was he calling here".
+            # This drives the occupancy ladder in the selection step, which exists
+            # because the acceptance gate is a global deviance over EVERY row
+            # while only ~30.6% of anchors carry any call at all (measured over
+            # this cohort: 121 sessions, 36,200 anchors).
+            # Source is `continuous_vocal_signals`, the predictor traces themselves,
+            # rather than a raw USV table: the ladder asks where the trace the model
+            # actually sees is active, so defining it from that trace keeps the
+            # diagnostic self-consistent. `usv_count` lives on `find_onset_epochs`
+            # output and is NOT present here. The design matrix cannot be used
+            # either -- it is pooled z-scored, so "silent" is a constant negative
+            # value rather than zero.
+            vocal_signals = bout_data_dict[sess_id][p_name]['continuous_vocal_signals']
+            active_traces = [
+                np.asarray(vocal_signals[key], dtype=float) for key in vocal_signals
+                if any(marker in key for marker in vocal_markers)
+            ]
+            if active_traces:
+                trace_length = min(trace.size for trace in active_traces)
+                any_active = np.zeros(trace_length, dtype=float)
+                for trace in active_traces:
+                    any_active = np.maximum(any_active, np.abs(trace[:trace_length]))
+                active_frames = (any_active > 0.0).astype(float)
+                cumulative_active = np.concatenate([[0.0], np.cumsum(active_frames)])
+                window_ends = np.clip(anchor_frames, 0, cumulative_active.size - 1)
+                window_begins = np.clip(window_starts, 0, cumulative_active.size - 1)
+                session_occupancy = (
+                    (cumulative_active[window_ends] - cumulative_active[window_begins])
+                    / float(self.response_history_frames)
+                )
+            else:
+                session_occupancy = np.zeros(n_valid, dtype=float)
+            vocal_occupancy_rows.extend(session_occupancy.tolist())
+            informative_fraction_per_session[sess_id] = float(
+                np.mean(session_occupancy > 0.0)) if n_valid else float('nan')
+
             for col in df.columns:
                 base_feature = col.split('.')[-1]
                 if base_feature.isdigit():
@@ -865,10 +909,17 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             for key in ('X', 'y', 'groups'):
                 feature_arrays[key] = np.array(feature_arrays[key])
 
+        input_metadata['informative_fraction_per_session'] = informative_fraction_per_session
+        input_metadata['vocal_occupancy_pooled_fraction'] = (
+            float(np.mean(np.asarray(vocal_occupancy_rows) > 0.0))
+            if vocal_occupancy_rows else float('nan')
+        )
+
         self._save_extracted_data(
             final_data_dict=final_data_dict,
             input_metadata=input_metadata,
             anchors_per_session=anchors_per_session,
+            vocal_occupancy=np.asarray(vocal_occupancy_rows, dtype=float),
             fname=fname,
         )
 
@@ -876,6 +927,7 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
                              final_data_dict: dict[str, dict[str, Any]],
                              input_metadata: dict[str, Any],
                              anchors_per_session: dict[str, int],
+                             vocal_occupancy: np.ndarray,
                              fname: str) -> None:
         """
         Validates alignment, prints the extraction summary and publishes the pickle.
@@ -898,6 +950,12 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         input_metadata : dict
             The provenance block to embed; mutated in place with the per-session
             anchor counts, the kept feature list and the block partition.
+        vocal_occupancy : np.ndarray
+            Per-anchor fraction of history frames containing a predictor-mouse
+            call, row-aligned with every feature's ``X``. Stored so the selection
+            step can report the occupancy ladder without recomputing it from the
+            pooled z-scored design, where "no call" is a constant negative value
+            rather than zero and so cannot be recovered by thresholding.
         anchors_per_session : dict
             Mapping ``session_id -> number of retained anchors``.
         fname : str
@@ -1001,6 +1059,18 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             s for s in input_metadata['held_out_session_ids'] if s in anchors_per_session
         ]
         input_metadata['feature_zoo_kept'] = final_features
+        n_rows_reference = int(np.asarray(final_data_dict[reference_feature]['y']).shape[0])
+        if vocal_occupancy.shape[0] != n_rows_reference:
+            msg = (
+                f"vocal occupancy carries {vocal_occupancy.shape[0]} rows but the design "
+                f"has {n_rows_reference}; the occupancy ladder would be scored against "
+                f"misaligned rows."
+            )
+            raise ValueError(msg)
+        # Stored as a list, not an ndarray: `metadata_blocks_equal` compares
+        # metadata values with `!=`, which is ambiguous for an array and aborts
+        # consolidation. A list compares to a plain bool.
+        input_metadata['analysis_specific']['vocal_occupancy'] = vocal_occupancy.tolist()
         input_metadata['analysis_specific']['vocal_block_features'] = vocal_block
         input_metadata['analysis_specific']['baseline_block_features'] = baseline_block
 

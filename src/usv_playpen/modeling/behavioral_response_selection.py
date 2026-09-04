@@ -758,6 +758,10 @@ def score_on_held_out(all_feature_data: dict[str, dict[str, Any]],
         Number of lags per feature.
     gam_settings : dict
         The ``pygam`` settings block.
+    row_occupancy : np.ndarray or None
+        Per-anchor fraction of history frames containing a predictor-mouse call,
+        row-aligned with the design. Drives the reported occupancy ladder; when
+        ``None`` the ladder is omitted and acceptance is unaffected either way.
     likelihood : str
         Which likelihood arm to fit.
 
@@ -1286,6 +1290,98 @@ def forward_select_features(all_feature_data: dict[str, dict[str, Any]],
     return {'selected': selected, 'steps': steps, 'final_scores': current_scores}
 
 
+def occupancy_scored_margins(baseline_diagnostics: dict[str, Any],
+                             full_diagnostics: dict[str, Any],
+                             row_occupancy: np.ndarray,
+                             likelihood: str,
+                             occupancy_thresholds: tuple[float, ...] = (0.0, 0.2483)) -> dict[str, Any]:
+    """
+    Re-scores the paired margin on occupancy-restricted subsets of held-out rows.
+
+    The acceptance gate is a GLOBAL explained deviance over every held-out row,
+    which dilutes an effect confined to rows whose history actually contains
+    calls. Measured on this cohort (121 sessions, 36,200 tiled anchors), only
+    30.6% of anchors carry any male call at all, so a per-row effect present
+    only on those rows appears in the global score at roughly a third of its
+    size. The skew is sharper than that fraction suggests: the median anchor has
+    ZERO call content, the 75th percentile is 3.2%, and even among call-carrying
+    anchors the median occupancy is only 15% of the history.
+
+    This function does not refit anything. ``fit_block_across_folds`` already
+    stores each fold's ``y_true`` / ``y_pred`` / ``test_indices``, so a subset
+    score is those same predictions re-scored under a row mask, which keeps the
+    ladder exactly consistent with the gate it accompanies. Both models are
+    restricted to identical rows, so the margin stays paired.
+
+    These are DIAGNOSTICS, not gates (ruled 2026-09-04): they say where an
+    accepted effect lives, and they are read alongside the global result rather
+    than in place of it.
+
+    Parameters
+    ----------
+    baseline_diagnostics : dict[str, Any]
+        Per-fold bundle from the baseline fit; needs ``y_true``, ``y_pred`` and
+        ``test_indices``.
+    full_diagnostics : dict[str, Any]
+        The same bundle for the full model, fold-aligned with the baseline.
+    row_occupancy : np.ndarray
+        Per-anchor fraction of history frames containing a predictor-mouse call,
+        indexed like the design matrix rows.
+    likelihood : str
+        ``'gamma'`` or ``'lognormal'``; selects the scorer, matching the arm the
+        folds were fit under.
+    occupancy_thresholds : tuple of float
+        Lower bounds (exclusive) defining each rung. The default pair is
+        "any call at all" and the cohort's 90th occupancy percentile.
+
+    Returns
+    -------
+    ladder : dict
+        One entry per rung, keyed ``occupancy_gt_<threshold>``, each carrying the
+        per-fold margins, the paired improvement and its SE, and the number of
+        rows and folds that survived the mask. A rung whose mask leaves a fold
+        empty records that fold as ``nan`` rather than dropping it, so the fold
+        count stays comparable across rungs.
+    """
+
+    scorer = gamma_explained_deviance if likelihood == 'gamma' else gaussian_explained_variance
+    ladder: dict[str, Any] = {}
+
+    for threshold in occupancy_thresholds:
+        baseline_folds: list[float] = []
+        full_folds: list[float] = []
+        n_rows = 0
+        for fold_index in range(len(full_diagnostics['test_indices'])):
+            test_index = np.asarray(full_diagnostics['test_indices'][fold_index], dtype=int)
+            keep = row_occupancy[test_index] > threshold
+            if keep.sum() < 2:
+                baseline_folds.append(float('nan'))
+                full_folds.append(float('nan'))
+                continue
+            n_rows += int(keep.sum())
+            baseline_folds.append(scorer(
+                np.asarray(baseline_diagnostics['y_true'][fold_index], dtype=float)[keep],
+                np.asarray(baseline_diagnostics['y_pred'][fold_index], dtype=float)[keep]))
+            full_folds.append(scorer(
+                np.asarray(full_diagnostics['y_true'][fold_index], dtype=float)[keep],
+                np.asarray(full_diagnostics['y_pred'][fold_index], dtype=float)[keep]))
+
+        baseline_array = np.asarray(baseline_folds, dtype=float)
+        full_array = np.asarray(full_folds, dtype=float)
+        improvement, improvement_se = paired_one_se_improvement(
+            full_array, baseline_array, higher_is_better=True)
+        ladder[f'occupancy_gt_{threshold:g}'] = {
+            'threshold': float(threshold),
+            'baseline_folds': baseline_array,
+            'full_folds': full_array,
+            'paired_improvement': float(improvement),
+            'paired_improvement_se': float(improvement_se),
+            'n_rows_scored': int(n_rows),
+            'n_folds_usable': int(np.sum(np.isfinite(full_array))),
+        }
+    return ladder
+
+
 def vocal_block_final_step(all_feature_data: dict[str, dict[str, Any]],
                            baseline_features: list[str],
                            vocal_features: list[str],
@@ -1300,7 +1396,8 @@ def vocal_block_final_step(all_feature_data: dict[str, dict[str, Any]],
                            output_directory: Path,
                            step_prefix: str,
                            wrap_step: Callable[[dict[str, Any]], dict[str, Any]],
-                           likelihood: str = 'gamma') -> dict[str, Any]:
+                           likelihood: str = 'gamma',
+                           row_occupancy: np.ndarray | None = None) -> dict[str, Any]:
     """
     Adds the vocal block as the final selection step and scores what it buys.
 
@@ -1435,6 +1532,34 @@ def vocal_block_final_step(all_feature_data: dict[str, dict[str, Any]],
                   if held_out['margin'] is not None else ''),
     ))
 
+    # Diagnostics only -- `accepted` above is untouched. The gate is the global
+    # margin; this says WHERE that margin lives, because only ~30.6% of anchors
+    # carry any call and the median anchor carries none at all, so a real effect
+    # confined to call-bearing rows reaches the global score at roughly a third
+    # of its size. Rungs are "any call" and the cohort's 90th occupancy
+    # percentile, computed from the rows actually in hand.
+    if row_occupancy is None:
+        occupancy_ladder: dict[str, Any] = {}
+    else:
+        high_occupancy = float(np.quantile(row_occupancy, 0.90))
+        thresholds = (0.0, high_occupancy) if high_occupancy > 0.0 else (0.0,)
+        occupancy_ladder = occupancy_scored_margins(
+            baseline_diagnostics=baseline_refit,
+            full_diagnostics=full,
+            row_occupancy=np.asarray(row_occupancy, dtype=float),
+            likelihood=likelihood,
+            occupancy_thresholds=thresholds,
+        )
+        for rung_name, rung in occupancy_ladder.items():
+            print(format_selection_step(
+                'Vocal', feature=f"[diagnostic] {rung_name}",
+                metrics={'improvement': rung['paired_improvement'],
+                         'se': rung['paired_improvement_se']},
+                decision='INFO',
+                detail=f"{rung['n_rows_scored']} rows over "
+                       f"{rung['n_folds_usable']} folds",
+            ))
+
     payload = {
         'step_index': step_index,
         'current_features': list(baseline_features),
@@ -1456,6 +1581,7 @@ def vocal_block_final_step(all_feature_data: dict[str, dict[str, Any]],
             'max_margin': float(np.max(session_margins)) if session_margins.size else float('nan'),
         },
         'held_out': held_out,
+        'occupancy_ladder': occupancy_ladder,
         'full_fold_diagnostics': {
             key: full[key] for key in
             ('y_true', 'y_pred', 'test_indices', 'filter_shapes', 'spearman_r',
@@ -1556,6 +1682,18 @@ def behavioral_response_model_selection(input_pickle_path: str | Path,
 
     vocal_features = input_metadata['analysis_specific']['vocal_block_features']
     baseline_candidates = input_metadata['analysis_specific']['baseline_block_features']
+    # Extraction artifacts written before the occupancy ladder existed have no
+    # such key; the ladder is a diagnostic, so its absence degrades the report
+    # rather than aborting a run that is otherwise well specified.
+    analysis_specific = input_metadata['analysis_specific']
+    row_occupancy = (np.asarray(analysis_specific['vocal_occupancy'], dtype=float)
+                     if 'vocal_occupancy' in analysis_specific else None)
+    if row_occupancy is None:
+        print(format_selection_step(
+            'Vocal', decision='INFO',
+            detail='no `vocal_occupancy` in the extraction artifact; the occupancy '
+                   'ladder is skipped (re-extract to enable it)',
+        ))
     history_frames = int(input_metadata['filter_history_frames'])
     held_out_session_ids = list(input_metadata['held_out_session_ids'])
 
@@ -1675,6 +1813,7 @@ def behavioral_response_model_selection(input_pickle_path: str | Path,
             # and the vocal step would overwrite an accepted one -- recording a
             # vocal feature as a baseline feature in the merged selection path.
             gam_settings=gam_settings,
+            row_occupancy=row_occupancy,
             step_index=selection['steps'][-1]['step_index'] + 1,
             output_directory=output_directory, step_prefix=step_prefix,
             wrap_step=wrap_step, likelihood=likelihood,

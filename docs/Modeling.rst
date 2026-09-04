@@ -1031,6 +1031,29 @@ its mean is a small residual left after large opposing excursions cancel, so it
 carries no stable direction, and a signed target additionally breaks the Gamma
 likelihood, which drops every non-positive row.
 
+**The acceptance gate is global; an occupancy ladder says where the effect
+lives.** The increment is scored as an explained deviance over every held-out
+row, but measured on this cohort (121 sessions, 36,200 tiled anchors) only
+**30.6%** of anchors carry any partner call at all, so an effect confined to
+call-bearing rows reaches the global score at roughly a third of its size. The
+skew is sharper than that headline: the median anchor has **zero** call content,
+the 75th percentile is 3.2%, and even among call-bearing anchors the median
+occupancy is only 15% of the history window. Extraction therefore records a
+per-anchor ``vocal_occupancy`` (from ``continuous_vocal_signals`` — the trace the
+model actually sees, since the design matrix is pooled z-scored and "silent" is a
+constant negative value there, not zero) plus
+``informative_fraction_per_session``, and the vocal step reports
+``occupancy_ladder``: the same paired margin re-scored on call-bearing rows and
+on the cohort's top occupancy decile. Nothing is refit — the per-fold
+predictions are already stored, and both models are masked identically so the
+margin stays paired. **These rungs are diagnostics, not gates** (ruled
+2026-09-04): acceptance stays on the global margin, because a binary
+call/no-call mask is a crude stand-in for a continuous predictor and the claim
+should not quietly narrow to "given he was calling". Per-session informative
+fraction ranges **4.7% to 85.6%** across the cohort, with 13 sessions below 10%;
+all sessions are retained and the fraction is recorded so that heterogeneity is
+visible when reading the folds.
+
 **A short job array is a fatal error, not a warning.** The screen's candidates come
 from the extraction artifact, while their fits come from the consolidated univariate
 pickle. If ``--array`` is bounded below ``(number of features - 1)``, the surplus
