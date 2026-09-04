@@ -22,7 +22,13 @@ Key scientific and computational components:
     forward window ``[t + gap, t + gap + W)``. Averaging suppresses the
     frame-to-frame differentiation noise a single 6.7 ms sample carries, and
     breaks the near-determinism that would otherwise tie ``y`` to the last frame
-    of its own history.
+    of its own history. Before that average the target is magnitude-folded
+    exactly as the predictors are -- ``sqrt(x**2 + eps**2)`` for a
+    ``smooth_abs_features`` entry, ``|x|`` for an ``abs_features`` one, recorded
+    as ``response_fold`` in the provenance. This is load-bearing for a signed
+    angle, whose mean is a small residual left after large opposing excursions
+    cancel; a signed target would also break the Gamma likelihood, which drops
+    every non-positive row.
 3.  A separable vocal block. The predictors are partitioned into a kinematic /
     social block and a vocal block, and the partition is recorded in the saved
     metadata so downstream selection can fit one model with the vocal block and
@@ -32,6 +38,38 @@ Key scientific and computational components:
     ``usv_predictor_partner_only``), while ``behavioral_response.response_mouse_index``
     decides *whose behavior* is predicted. Index 0 is always the male and index 1
     always the female, so neither key has to be read relative to the other.
+
+    In practice ``response_mouse_index`` is the only one to set. The pipeline
+    derives ``model_predictor_mouse_index`` as ``1 - response_mouse_index`` on a
+    PRIVATE copy of the settings, so the shipped ``response_mouse_index: 1``
+    predicts female behavior from male calls while the shared ``model_params``
+    block the five vocal pipelines read is left untouched.
+
+Settings
+--------
+Everything else lives in the ``behavioral_response`` block of
+``modeling_settings.json``: ``response_feature``, ``history_seconds`` (which
+doubles as the anchor stride), ``target_window_seconds``, ``target_gap_seconds``,
+``vocal_predictor_type`` and ``vocal_smoothing_sd_frames``.
+
+Where this sits in the workflow
+-------------------------------
+``extract_and_save_modeling_input_data`` is stage 1 of five; the rest run on the
+cluster and through the shared consolidators, exactly like the other analyses::
+
+    2. main_univariate_dispatcher --analysis_type behavioral_response
+       one task per BASELINE feature; the vocal block is excluded, being the
+       quantity under test rather than a selection candidate.
+    3. consolidate_univariate_results.consolidate(...)
+    4. main_model_selection_dispatcher --analysis_type behavioral_response
+       screen -> forward selection -> vocal block as the FINAL step, one
+       resumable checkpoint pickle per step.
+    5. consolidate_model_selection_results.consolidate(...)
+
+Size the stage-2 array exactly: ``--array=0-(n_features - 1)``. Too large is
+harmless, since surplus tasks exit on an index check, but too small leaves
+features unswept and stage 4 now ABORTS rather than screening on a truncated
+candidate pool.
 """
 
 from __future__ import annotations
