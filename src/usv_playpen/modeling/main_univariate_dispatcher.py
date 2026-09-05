@@ -48,7 +48,6 @@ from datetime import datetime
 
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_binomial import VocalCategoryModelingPipeline
-from .modeling_behavioral_response import BehavioralResponsePipeline
 from .modeling_vocal_bout_parameters import BoutParameterPipeline
 from .modeling_vocal_categories_multinomial import MultinomialModelingPipeline, MultinomialModelRunner
 from .modeling_usv_manifold_position import ContinuousModelingPipeline, ContinuousModelRunner
@@ -258,7 +257,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
             # a bare pickle.load of the same file); the JAX branches defer loading and
             # never use feat_data. `del loaded` then frees the other features --
             # feat_data holds only this one, so the memory profile is unchanged.
-            feat_data = loaded[feature_name] if args.analysis_type in ['onset', 'category', 'params', 'behavioral_response'] else None
+            feat_data = loaded[feature_name] if args.analysis_type in ['onset', 'category', 'params'] else None
             del loaded
 
         print(f"[{timestamp}] Mapped Index {args.feature_idx} -> Feature: {feature_name}")
@@ -278,7 +277,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
     # configured `model_engine` (pygam / sklearn); the JAX tasks (multinomial /
     # continuous) always run the JAX estimators, so their engine label is 'jax'.
     run_engine = (settings['model_params']['model_engine']
-                  if args.analysis_type in ['onset', 'category', 'params', 'behavioral_response'] else 'jax')
+                  if args.analysis_type in ['onset', 'category', 'params'] else 'jax')
     print(format_run_header(
         task=args.analysis_type.upper(),
         engine=run_engine,
@@ -295,7 +294,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
 
     try:
         # CATEGORY A: CPU-based Modeling (Onset, Category, Params)
-        if args.analysis_type in ['onset', 'category', 'params', 'behavioral_response']:
+        if args.analysis_type in ['onset', 'category', 'params']:
 
             # Held-out session reserve carved once at extraction time and recorded
             # in `_input_metadata.held_out_session_ids`. Passed explicitly to each
@@ -327,21 +326,6 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
             elif args.analysis_type == 'params':
 
                 pipeline = BoutParameterPipeline(modeling_settings_dict=settings)
-                basis = get_basis_matrix_standardized(settings, pipeline.history_frames, args.output_dir)
-
-                if settings['model_params']['model_engine'] == 'sklearn':
-                    fn, res = pipeline._run_model_for_feature_sklearn(feature_name, feat_data, basis, held_out_session_ids=held_out_ids)
-                else:
-                    fn, res = pipeline._run_model_for_feature_pygam(feature_name, feat_data, None, held_out_session_ids=held_out_ids)
-
-            elif args.analysis_type == 'behavioral_response':
-
-                # Same flat X/y/groups shape and the same Gamma runner as 'params';
-                # the pipeline differs only in its null, which is a circular SHIFT of
-                # the target rather than a permutation (see `_null_target`). The
-                # vocal block is NOT a candidate here -- it is the quantity under
-                # test, and the selector screens from `baseline_block_features`.
-                pipeline = BehavioralResponsePipeline(modeling_settings_dict=settings)
                 basis = get_basis_matrix_standardized(settings, pipeline.history_frames, args.output_dir)
 
                 if settings['model_params']['model_engine'] == 'sklearn':
@@ -447,7 +431,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--analysis_type',
         required=True,
-        choices=['onset', 'category', 'params', 'behavioral_response', 'multinomial', 'continuous'],
+        choices=['onset', 'category', 'params', 'multinomial', 'continuous'],
         help="The type of USV analysis pipeline to execute."
     )
 

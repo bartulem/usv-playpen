@@ -10,25 +10,25 @@
 #SBATCH --mail-user=nsurname@domain.edu
 #SBATCH --mail-type=FAIL
 
-# Usage: sbatch univariate_modeling_behavior.sh (onset|params|category|behavioral_response|multinomial|continuous)
+# Usage: sbatch univariate_modeling_behavior.sh (onset|params|category|multinomial|continuous)
 ANALYSIS_TYPE=$1
 
 # Define your core variables
 EXPERIMENTER_ID="Name"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
-INPUT_DATA="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/data/modeling_UMAP_manifold_position_female_20260226_150803_hist4s.pkl"
-OUTPUT_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/univariate_results"
+INPUT_DATA="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/modeling_UMAP_manifold_position_female_20260226_150803_hist4s.pkl"
+OUTPUT_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/cluster/univariate_results_multi_file"
 
 mkdir -p logs
 
 # Validate input type
 case $ANALYSIS_TYPE in
-  onset|params|category|behavioral_response|multinomial|continuous)
+  onset|params|category|multinomial|continuous)
     echo "Configuring $ANALYSIS_TYPE analysis using consolidated dispatcher..."
     ;;
   *)
     echo "Error: Invalid analysis type '$ANALYSIS_TYPE'"
-    echo "Usage: sbatch univariate_modeling.sh [onset|params|category|behavioral_response|multinomial|continuous]"
+    echo "Usage: sbatch univariate_modeling.sh [onset|params|category|multinomial|continuous]"
     exit 1
     ;;
 esac

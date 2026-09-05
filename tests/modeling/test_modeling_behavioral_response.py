@@ -1,625 +1,416 @@
 """
 @author: bartulem
 Unit tests for ``usv_playpen.modeling.modeling_behavioral_response``
-— the tiled-anchor extraction that turns a behavioural feature into a
-regression target driven by a partner's vocal trace.
+— the event-anchored extraction that contrasts female behaviour after male
+vocal bouts against comparable inter-bout silence.
 
-This pipeline inverts the direction of every other extractor in
-``modeling/``, so the invariants worth pinning are the ones that would
-silently corrupt the science rather than crash. Coverage:
+The invariants worth pinning are the ones that would silently corrupt the
+contrast rather than crash it. Coverage:
 
-* ``tile_anchor_frames`` — anchors leave room for both the backward
-  history and the forward target, are stride-spaced, and collapse to
-  empty rather than raising on a session too short to hold one.
-* ``forward_window_mean`` — the target window is strictly forward of the
-  anchor (so it can never overlap that row's own history), NaNs are
-  ignored rather than propagated, and an all-NaN window yields NaN so the
-  caller can drop the row.
-* The shipped ``behavioral_response`` settings block — the keys the
-  pipeline reads by name exist, and the two mouse indices are absolute
-  slot numbers rather than relative role strings.
-* ``BehavioralResponsePipeline`` — seconds convert to frames on the
-  configured camera grid, and a degenerate window is rejected loudly.
+* ``bout_offset_anchors`` — the anchor sits at the bout's OFFSET, a bout whose
+  successor arrives inside the silence window is dropped, and an anchor with
+  no room for its history or forward window is dropped.
+* ``inter_bout_quiet_anchors`` — one anchor per usable gap, every anchor has a
+  clean history AND a clean forward window, placement is reproducible from the
+  seed, and a gap too short yields nothing rather than a bad anchor.
+* ``summarise_history`` — window means are exact and NaN-aware, and a window
+  with no finite sample yields NaN rather than zero.
+* ``forward_window_mean`` — the window is strictly forward of the anchor, and
+  out-of-bounds samples are EXCLUDED rather than clamped.
+* ``_response_likelihood`` — derived from the feature's post-fold support, so a
+  signed feature can never be handed to a Gamma likelihood.
+* ``BehavioralResponsePipeline`` — seconds convert to frames on the configured
+  camera grid, the response bins tile the window exactly, and a degenerate
+  configuration is rejected loudly.
+* The shipped ``behavioral_response`` settings block — every key the pipeline
+  reads by name exists.
 """
 
 from __future__ import annotations
 
-import argparse
 import importlib.resources
 import json
-import pathlib
-import pickle
-import warnings
 
 import numpy as np
 import pytest
 
-from ._synth import (
-    build_modeling_settings,
-    build_session_tree,
-    write_session_list_file,
+from usv_playpen.modeling.modeling_behavioral_response import (
+    BehavioralResponsePipeline,
+    bout_offset_anchors,
+    forward_window_mean,
+    inter_bout_quiet_anchors,
+    summarise_history,
 )
 
-# The dispatcher's import chain pulls optax -> a one-time JAX DeprecationWarning.
-# Guard the top-level imports so collection does not trip ``filterwarnings =
-# ["error"]`` before any per-test marker can take effect (mirrors the guard in
-# ``test_model_selection_fold_gate``).
-with warnings.catch_warnings():
-    warnings.simplefilter('ignore', DeprecationWarning)
-    from usv_playpen.modeling import main_univariate_dispatcher as univ_dispatcher
-    from usv_playpen.modeling.behavioral_response_selection import (
-        behavioral_response_model_selection,
-    )
-    from usv_playpen.modeling.consolidate_model_selection_results import (
-        consolidate as consolidate_model_selection,
-    )
-    from usv_playpen.modeling.consolidate_univariate_results import (
-        consolidate as consolidate_univariate,
-    )
-    from usv_playpen.modeling.modeling_behavioral_response import (
-        BehavioralResponsePipeline,
-        forward_window_mean,
-        tile_anchor_frames,
-    )
-    from usv_playpen.modeling.modeling_vocal_bout_parameters import (
-        BoutParameterPipeline,
-    )
+CAMERA_FPS = 150.0
+HISTORY_FRAMES = 600      # 4 s
+LOOKAHEAD_FRAMES = 75     # 0.5 s
+SESSION_FRAMES = 150 * 60
 
 
 def _shipped_settings() -> dict:
-    """Loads the shipped modeling settings JSON."""
-    settings_file = (
-        importlib.resources.files('usv_playpen')
-        / '_parameter_settings'
-        / 'modeling_settings.json'
-    )
-    return json.loads(settings_file.read_text())
+    """
+    Loads the settings block the package actually ships.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    settings : dict
+        Parsed ``modeling_settings.json``.
+    """
+
+    resource = (importlib.resources.files('usv_playpen')
+                / '_parameter_settings' / 'modeling_settings.json')
+    return json.loads(resource.read_text())
 
 
-class TestTileAnchorFrames:
-    def test_anchors_leave_room_for_history_and_target(self):
-        """Every anchor admits a full backward history and a full forward target.
+class TestBoutOffsetAnchors:
+    """Anchors must sit at bout ends and leave the forward window clean."""
 
-        This is the guard that keeps a row from being built out of a
-        truncated window; a violation would silently shorten some rows'
-        history and misalign the design matrix.
+    def test_anchor_is_the_offset_not_the_onset(self):
+        """Anchoring on the onset would put the bout inside the target window."""
+
+        frames, _ = bout_offset_anchors(
+            np.array([10.0]), np.array([0.5]), CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5)
+
+        assert frames.tolist() == [int(round(10.5 * CAMERA_FPS))]
+
+    def test_a_bout_followed_too_soon_is_dropped(self):
+        """Otherwise the forward window would contain the next bout."""
+
+        onsets = np.array([10.0, 10.7])
+        durations = np.array([0.5, 0.3])
+        frames, _ = bout_offset_anchors(
+            onsets, durations, CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5)
+
+        # 10.5 has only 0.2 s before the next onset; 11.0 has no successor.
+        assert frames.tolist() == [int(round(11.0 * CAMERA_FPS))]
+
+    def test_durations_stay_aligned_with_surviving_anchors(self):
+        """A misaligned duration would mislabel every bout's dose."""
+
+        onsets = np.array([10.0, 10.7, 30.0])
+        durations = np.array([0.5, 0.3, 1.25])
+        frames, kept = bout_offset_anchors(
+            onsets, durations, CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5)
+
+        assert frames.size == kept.size == 2
+        assert kept.tolist() == [0.3, 1.25]
+
+    def test_a_bout_without_room_for_its_history_is_dropped(self):
+        """A truncated history would silently compare unequal windows."""
+
+        frames, _ = bout_offset_anchors(
+            np.array([1.0]), np.array([0.1]), CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5)
+
+        assert frames.size == 0
+
+    def test_no_bouts_yields_empty_arrays_rather_than_raising(self):
+        """A silent session is ordinary, not exceptional."""
+
+        frames, kept = bout_offset_anchors(
+            np.empty(0), np.empty(0), CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, silence_seconds=0.5)
+
+        assert frames.size == 0 and kept.size == 0
+
+
+class TestInterBoutQuietAnchors:
+    """The silent condition must be genuinely silent on both sides."""
+
+    @staticmethod
+    def _bouts() -> tuple[np.ndarray, np.ndarray]:
+        """
+        Three bouts leaving one long gap, one short gap and one long gap.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        onsets, durations : tuple of np.ndarray
+            Bout onsets and durations in seconds.
         """
 
-        anchors = tile_anchor_frames(
-            n_frames=150 * 1200, history_frames=600, stride_frames=600, lookahead_frames=75,
-        )
-        assert anchors.size > 0
-        assert (anchors - 600 >= 0).all()
-        assert (anchors + 75 <= 150 * 1200).all()
+        return np.array([10.0, 20.0, 21.0, 40.0]), np.array([0.5, 0.5, 0.3, 0.4])
 
-    def test_anchors_are_stride_spaced(self):
-        """Consecutive anchors differ by exactly the stride."""
+    def test_one_anchor_per_usable_gap(self):
+        """Tiling long gaps would let a few silences dominate the condition."""
 
-        anchors = tile_anchor_frames(
-            n_frames=20_000, history_frames=600, stride_frames=600, lookahead_frames=75,
-        )
-        assert np.unique(np.diff(anchors)).tolist() == [600]
+        onsets, durations = self._bouts()
+        anchors = inter_bout_quiet_anchors(
+            onsets, durations, CAMERA_FPS, SESSION_FRAMES, HISTORY_FRAMES,
+            LOOKAHEAD_FRAMES, np.random.default_rng(0))
 
-    def test_stride_equal_to_history_gives_non_overlapping_windows(self):
-        """At stride == history no two rows share a single history sample.
+        # 10.5->20 and 21.3->40 are usable; 20.5->21 is far too short.
+        assert anchors.size == 2
 
-        This is what keeps the tiled rows close to independent, which the
-        whole sample-size argument for the analysis rests on.
-        """
+    def test_every_anchor_has_clean_history_and_forward_window(self):
+        """A quiet anchor touching a call is not a silent observation."""
 
-        history_frames = 600
-        anchors = tile_anchor_frames(
-            n_frames=20_000, history_frames=history_frames,
-            stride_frames=history_frames, lookahead_frames=75,
-        )
-        starts = anchors - history_frames
-        assert (starts[1:] >= anchors[:-1]).all()
+        onsets, durations = self._bouts()
+        offsets = onsets + durations
+        anchors = inter_bout_quiet_anchors(
+            onsets, durations, CAMERA_FPS, SESSION_FRAMES, HISTORY_FRAMES,
+            LOOKAHEAD_FRAMES, np.random.default_rng(3))
 
-    def test_session_too_short_returns_empty_rather_than_raising(self):
-        """A session that cannot hold one anchor yields no rows, not an error."""
+        history_seconds = HISTORY_FRAMES / CAMERA_FPS
+        forward_seconds = LOOKAHEAD_FRAMES / CAMERA_FPS
+        for anchor in anchors / CAMERA_FPS:
+            overlaps = [
+                (anchor - history_seconds) < stop and start < (anchor + forward_seconds)
+                for start, stop in zip(onsets, offsets, strict=True)
+            ]
+            assert not any(overlaps)
 
-        anchors = tile_anchor_frames(
-            n_frames=500, history_frames=600, stride_frames=600, lookahead_frames=75,
-        )
+    def test_placement_is_reproducible_from_the_seed(self):
+        """A run must be repeatable, and the seed is the only source of jitter."""
+
+        onsets, durations = self._bouts()
+        first = inter_bout_quiet_anchors(
+            onsets, durations, CAMERA_FPS, SESSION_FRAMES, HISTORY_FRAMES,
+            LOOKAHEAD_FRAMES, np.random.default_rng(7))
+        second = inter_bout_quiet_anchors(
+            onsets, durations, CAMERA_FPS, SESSION_FRAMES, HISTORY_FRAMES,
+            LOOKAHEAD_FRAMES, np.random.default_rng(7))
+
+        assert first.tolist() == second.tolist()
+
+    def test_gaps_too_short_yield_nothing(self):
+        """Better no silent row than one contaminated by a call."""
+
+        anchors = inter_bout_quiet_anchors(
+            np.array([10.0, 12.0]), np.array([0.2, 0.2]), CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, np.random.default_rng(0))
+
         assert anchors.size == 0
 
-    @pytest.mark.parametrize(
-        ('history_frames', 'stride_frames', 'lookahead_frames', 'offending_key'),
-        [(0, 600, 75, 'history_frames'), (600, 0, 75, 'stride_frames'), (600, 600, -1, 'lookahead_frames')],
-    )
-    def test_degenerate_geometry_raises_value_error(self, history_frames, stride_frames,
-                                                    lookahead_frames, offending_key):
-        """Non-positive geometry fails loudly, naming the offending parameter."""
+    def test_a_single_bout_has_no_gap(self):
+        """A gap needs two bouts to bracket it."""
 
-        with pytest.raises(ValueError, match=offending_key):
-            tile_anchor_frames(
-                n_frames=20_000, history_frames=history_frames,
-                stride_frames=stride_frames, lookahead_frames=lookahead_frames,
-            )
+        anchors = inter_bout_quiet_anchors(
+            np.array([10.0]), np.array([0.2]), CAMERA_FPS, SESSION_FRAMES,
+            HISTORY_FRAMES, LOOKAHEAD_FRAMES, np.random.default_rng(0))
+
+        assert anchors.size == 0
+
+
+class TestSummariseHistory:
+    """Covariates must describe the window BEFORE the anchor, exactly."""
+
+    def test_means_are_exact_and_backward_looking(self):
+        """A forward-looking covariate would leak the response into the control."""
+
+        values = np.arange(1000, dtype=float)
+        summaries = summarise_history(values, np.array([500]), [10, 100])
+
+        assert summaries[0, 0] == pytest.approx(np.mean(np.arange(490, 500)))
+        assert summaries[0, 1] == pytest.approx(np.mean(np.arange(400, 500)))
+
+    def test_nan_samples_are_ignored_not_propagated(self):
+        """Out-of-bounds frames are nulled upstream and must not void the window."""
+
+        values = np.arange(1000, dtype=float)
+        values[495:500] = np.nan
+        summaries = summarise_history(values, np.array([500]), [10])
+
+        assert summaries[0, 0] == pytest.approx(np.mean(np.arange(490, 495)))
+
+    def test_an_all_nan_window_yields_nan(self):
+        """The caller must be able to see that a row has no covariate."""
+
+        values = np.full(1000, np.nan)
+        summaries = summarise_history(values, np.array([500]), [10])
+
+        assert np.isnan(summaries[0, 0])
 
 
 class TestForwardWindowMean:
-    def test_window_mean_matches_hand_computation(self):
-        """On a ramp the forward mean is the arithmetic mean of the window."""
+    """The response window must be forward-only and bound-respecting."""
 
-        values = np.arange(100, dtype=float)
-        anchors = np.array([0, 10, 50])
-        means = forward_window_mean(values, anchors, gap_frames=0, window_frames=4)
-        np.testing.assert_allclose(means, [1.5, 11.5, 51.5])
+    def test_window_is_strictly_forward_of_the_anchor(self):
+        """Overlapping the history would make the row predict its own input."""
 
-    def test_gap_shifts_the_window_forward(self):
-        """A gap moves the averaged window later by exactly that many frames."""
+        values = np.concatenate([np.zeros(100), np.full(100, 5.0)])
+        mean = forward_window_mean(values, np.array([100]), 50, 0.0, 54.0)
 
-        values = np.arange(100, dtype=float)
-        anchors = np.array([0, 10, 50])
-        means = forward_window_mean(values, anchors, gap_frames=10, window_frames=4)
-        np.testing.assert_allclose(means, [11.5, 21.5, 61.5])
+        assert mean[0] == pytest.approx(5.0)
 
-    def test_window_never_reaches_before_the_anchor(self):
-        """The target is strictly forward, so pre-anchor values cannot leak in.
+    def test_out_of_bounds_samples_are_excluded_not_clamped(self):
+        """Clamping would enter a fabricated boundary value as an observation."""
 
-        If the window reached backwards it would overlap the row's own
-        history and the model would be partly predicting its own inputs.
-        """
+        values = np.array([1.0, 2.0, 1e7, 3.0, 4.0])
+        mean = forward_window_mean(values, np.array([0]), 5, 0.0, 54.0)
 
-        values = np.zeros(100, dtype=float)
-        values[:50] = 1000.0
-        means = forward_window_mean(values, np.array([50]), gap_frames=0, window_frames=10)
-        assert means[0] == 0.0
+        assert mean[0] == pytest.approx(2.5)
 
-    def test_non_finite_samples_are_ignored_not_propagated(self):
-        """A partially NaN window averages only its finite samples."""
+    def test_a_window_with_no_in_bounds_sample_yields_nan(self):
+        """Such a row carries no response and must be droppable."""
 
-        values = np.array([np.nan] * 4 + [2.0, 4.0, np.nan, np.nan], dtype=float)
-        means = forward_window_mean(values, np.array([4]), gap_frames=0, window_frames=4)
-        assert means[0] == pytest.approx(3.0)
+        values = np.full(10, 1e7)
+        mean = forward_window_mean(values, np.array([0]), 5, 0.0, 54.0)
 
-    def test_all_non_finite_window_yields_nan(self):
-        """An entirely unusable window is NaN so the caller can drop the row."""
-
-        values = np.array([np.nan] * 8, dtype=float)
-        means = forward_window_mean(values, np.array([0]), gap_frames=0, window_frames=4)
-        assert np.isnan(means[0])
-
-    def test_zero_width_window_raises_value_error(self):
-        """A zero-width target window is rejected rather than silently empty."""
-
-        with pytest.raises(ValueError, match='window_frames'):
-            forward_window_mean(np.arange(10, dtype=float), np.array([0]), 0, 0)
+        assert np.isnan(mean[0])
 
 
 class TestShippedSettingsBlock:
-    def test_block_exposes_every_key_the_pipeline_reads(self):
-        """The pipeline reads these by key with no ``.get`` fallback."""
+    """The pipeline reads these keys by name, so they must exist."""
+
+    def test_every_key_the_pipeline_reads_is_present(self):
+        """A missing key should fail here rather than mid-extraction."""
 
         block = _shipped_settings()['behavioral_response']
-        expected = {
-            'response_mouse_index', 'response_feature', 'history_seconds',
-            'target_window_seconds', 'target_gap_seconds', 'vocal_predictor_type',
-            'vocal_smoothing_sd_frames', 'likelihood', 'n_shift_draws',
-            'shift_null_min_seconds',
-        }
+        expected = {'response_mouse_index', 'response_features', 'history_seconds',
+                    'target_window_seconds', 'target_bin_seconds',
+                    'post_bout_silence_seconds', 'covariate_summary_seconds',
+                    'duration_n_bins'}
+
         assert expected <= set(block)
 
-    def test_response_mouse_is_an_absolute_slot_index(self):
-        """The responder is named by slot index, not by a relative role string.
+    def test_response_features_are_all_known_kinematic_features(self):
+        """A typo here would surface only once extraction reached that session."""
 
-        ``self`` / ``other`` are defined against
-        ``model_predictor_mouse_index`` and cannot be read alone; slot 0 is
-        always the male and slot 1 always the female.
-        """
+        settings = _shipped_settings()
+        block = settings['behavioral_response']
+
+        assert set(block['response_features']) <= set(settings['kinematic_features']['egocentric'])
+
+    def test_the_mouse_index_is_an_absolute_slot(self):
+        """Role strings would have to be read against another key to mean anything."""
 
         block = _shipped_settings()['behavioral_response']
-        assert isinstance(block['response_mouse_index'], int)
+
         assert block['response_mouse_index'] in (0, 1)
-
-    def test_window_and_gap_are_scalars_not_sweep_lists(self):
-        """A sweep is several runs, so these are single values."""
-
-        block = _shipped_settings()['behavioral_response']
-        assert isinstance(block['target_window_seconds'], (int, float))
-        assert isinstance(block['target_gap_seconds'], (int, float))
-
-    def test_shift_minimum_exceeds_the_slowest_measured_autocorrelation(self):
-        """The shift floor must clear the slowest behavioural feature.
-
-        ``nose-nose`` has the longest measured autocorrelation horizon in
-        the zoo at roughly 6-8 s; a floor below that would leave real
-        alignment intact in the null.
-        """
-
-        assert _shipped_settings()['behavioral_response']['shift_null_min_seconds'] >= 10.0
 
 
 class TestPipelineGeometry:
-    def test_seconds_convert_to_frames_on_the_camera_grid(self):
-        """History, target and gap are resolved against ``camera_sampling_rate``."""
+    """Seconds become frames on the configured grid, or the run stops."""
 
-        settings = _shipped_settings()
-        pipeline = BehavioralResponsePipeline(modeling_settings_dict=settings)
-        camera_rate = settings['io']['camera_sampling_rate']
-        block = settings['behavioral_response']
+    @staticmethod
+    def _settings(**overrides) -> dict:
+        """
+        Shipped settings with the response block overridden.
 
-        assert pipeline.response_history_frames == int(camera_rate * block['history_seconds'])
-        assert pipeline.response_window_frames == int(camera_rate * block['target_window_seconds'])
-        assert pipeline.response_gap_frames == int(camera_rate * block['target_gap_seconds'])
+        Parameters
+        ----------
+        **overrides
+            Keys to replace inside ``behavioral_response``.
 
-    def test_vocal_smoothing_is_read_in_frames_and_kept_fractional(self):
-        """Smoothing is a frame-count sigma, kept as a float.
-
-        It is passed straight to the loader's Gaussian kernel, which is
-        also frame-based; truncating to an int would make a fractional
-        kernel silently unavailable.
+        Returns
+        -------
+        settings : dict
+            Modified settings.
         """
 
         settings = _shipped_settings()
-        settings['behavioral_response']['vocal_smoothing_sd_frames'] = 2.5
-        pipeline = BehavioralResponsePipeline(modeling_settings_dict=settings)
+        settings['behavioral_response'].update(overrides)
+        return settings
 
-        assert isinstance(pipeline.response_vocal_smoothing_frames, float)
-        assert pipeline.response_vocal_smoothing_frames == pytest.approx(2.5)
+    def test_seconds_convert_on_the_camera_grid(self):
+        """A wrong conversion would silently change every window width."""
 
-    def test_sub_frame_target_window_raises_value_error(self):
-        """A target window shorter than one frame fails loudly, not silently."""
+        pipeline = BehavioralResponsePipeline(modeling_settings_dict=self._settings())
+        fps = pipeline.modeling_settings['io']['camera_sampling_rate']
 
-        settings = _shipped_settings()
-        settings['behavioral_response']['target_window_seconds'] = 0.001
-        with pytest.raises(ValueError, match='target_window_seconds'):
-            BehavioralResponsePipeline(modeling_settings_dict=settings)
+        assert pipeline.response_history_frames == int(np.floor(fps * 4.0))
+        assert pipeline.response_window_frames == int(np.floor(fps * 0.5))
 
-    def test_vocal_block_is_derived_from_the_emitted_signal_names(self):
-        """The partition survives the ``self.`` / ``other.`` role prefixing.
+    def test_response_bins_tile_the_window_exactly(self):
+        """A floored bin width would leave the window's tail outside the curve."""
 
-        It is derived rather than configured, so it cannot drift out of
-        step with the predictor type that decides which traces exist.
-        """
+        pipeline = BehavioralResponsePipeline(modeling_settings_dict=self._settings())
+        widths = np.diff(pipeline.response_bin_edges)
 
-        pipeline = BehavioralResponsePipeline(modeling_settings_dict=_shipped_settings())
-        vocal_block = pipeline._vocal_block_feature_names(
-            ['self.speed', 'other.usv_rate', 'nose-nose', 'self.usv_rate'],
-        )
-        assert vocal_block == ['other.usv_rate', 'self.usv_rate']
+        assert widths.sum() == pipeline.response_window_frames
+        assert pipeline.n_response_bins == 10
 
-    def test_every_vocal_representation_is_recognised_by_the_partition(self):
-        """All four predictor types' traces land in the block, not just one.
+    def test_a_degenerate_window_is_rejected(self):
+        """Sub-frame windows would produce empty targets, not small ones."""
 
-        ``pooled_binary`` emits ``usv_event``, ``pooled_rate`` emits
-        ``usv_rate``, ``categories_rate`` emits ``usv_cat_<n>``, and
-        ``all_rate`` emits both; a partition that recognised only one of
-        them would silently leave vocal columns in the baseline.
-        """
+        with pytest.raises(ValueError, match='at least one frame'):
+            BehavioralResponsePipeline(
+                modeling_settings_dict=self._settings(target_window_seconds=1e-6))
 
-        pipeline = BehavioralResponsePipeline(modeling_settings_dict=_shipped_settings())
-        vocal_block = pipeline._vocal_block_feature_names(
-            ['other.usv_event', 'other.usv_rate', 'other.usv_cat_1',
-             'other.usv_cat_12', 'self.speed', 'nose-nose'],
-        )
-        assert vocal_block == [
-            'other.usv_cat_1', 'other.usv_cat_12', 'other.usv_event', 'other.usv_rate',
-        ]
+    def test_a_bin_wider_than_the_window_is_rejected(self):
+        """The time course must fit inside the window it resolves."""
 
-    def test_vocal_predictor_type_is_a_legal_loader_value(self):
-        """The block-local override must be one the loader can act on."""
+        with pytest.raises(ValueError, match='exceeds'):
+            BehavioralResponsePipeline(
+                modeling_settings_dict=self._settings(target_bin_seconds=5.0))
 
-        block = _shipped_settings()['behavioral_response']
-        assert block['vocal_predictor_type'] in (
-            'pooled_binary', 'pooled_rate', 'categories_rate', 'all_rate',
-        )
+    def test_the_predictor_index_is_derived_from_the_response_index(self):
+        """Setting both by hand is how they end up contradicting each other."""
 
-    def test_predictor_index_is_derived_as_the_other_mouse(self):
-        """Whose calls go in is derived from whose behaviour is predicted.
+        pipeline = BehavioralResponsePipeline(
+            modeling_settings_dict=self._settings(response_mouse_index=1))
 
-        ``model_predictor_mouse_index`` and ``response_mouse_index`` have
-        opposite meanings on the same 0/1 axis, and the partner's calls are
-        by definition the other animal's -- so requiring both to be set by
-        hand is two keys that must disagree by construction, which is two
-        keys that can silently agree.
-        """
+        assert pipeline.modeling_settings['model_params']['model_predictor_mouse_index'] == 0
 
-        for response_index in (0, 1):
-            settings = _shipped_settings()
-            settings['behavioral_response']['response_mouse_index'] = response_index
-            pipeline = BehavioralResponsePipeline(modeling_settings_dict=settings)
+    def test_deriving_the_predictor_does_not_touch_the_shared_block(self):
+        """The five vocal pipelines read that same block."""
 
-            derived = pipeline.modeling_settings['model_params']['model_predictor_mouse_index']
-            assert derived == 1 - response_index
-
-    def test_deriving_the_predictor_index_does_not_mutate_the_caller_dict(self):
-        """The override is local to the instance, not to the passed settings."""
-
-        settings = _shipped_settings()
-        shipped_value = settings['model_params']['model_predictor_mouse_index']
-        settings['behavioral_response']['response_mouse_index'] = 1
-
+        settings = self._settings(response_mouse_index=1)
+        original = settings['model_params']['model_predictor_mouse_index']
         BehavioralResponsePipeline(modeling_settings_dict=settings)
 
-        assert settings['model_params']['model_predictor_mouse_index'] == shipped_value
-
-    @pytest.mark.parametrize('bad_index', [-1, 2])
-    def test_response_mouse_index_outside_the_two_slots_raises(self, bad_index):
-        """Only two mice exist; a third slot cannot be silently accepted."""
-
-        settings = _shipped_settings()
-        settings['behavioral_response']['response_mouse_index'] = bad_index
-        with pytest.raises(ValueError, match='response_mouse_index'):
-            BehavioralResponsePipeline(modeling_settings_dict=settings)
-
-    def test_override_does_not_mutate_the_shared_vocal_features_block(self):
-        """The five vocal pipelines read ``vocal_features``; it stays untouched."""
-
-        settings = _shipped_settings()
-        shared_before = settings['vocal_features']['usv_predictor_type']
-        BehavioralResponsePipeline(modeling_settings_dict=settings)
-        assert settings['vocal_features']['usv_predictor_type'] == shared_before
+        assert settings['model_params']['model_predictor_mouse_index'] == original
 
 
-class TestScreenNullIsAShift:
-    def test_null_target_preserves_the_response_serial_structure(self):
-        """The screen null rolls the target rather than permuting it.
+class TestDerivedLikelihood:
+    """A signed feature must never reach a Gamma likelihood."""
 
-        Permutation destroys the response's own autocorrelation, which makes
-        it an easier null than the data warrants: the predictors are strongly
-        autocorrelated, so a scrambled target is trivially harder to predict
-        than a real one.
+    @staticmethod
+    def _pipeline() -> BehavioralResponsePipeline:
+        """
+        Builds a pipeline on the shipped settings.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        pipeline : BehavioralResponsePipeline
+            Pipeline instance.
         """
 
-        pipeline = BehavioralResponsePipeline(modeling_settings_dict=_shipped_settings())
-        y_train = np.arange(200, dtype=float)
-        rolled = pipeline._null_target(y_train, np.random.default_rng(0))
+        return BehavioralResponsePipeline(modeling_settings_dict=_shipped_settings())
 
-        # a roll is a rotation: same values, same local ordering, moved wholesale
-        np.testing.assert_allclose(np.sort(rolled), np.sort(y_train))
-        assert not np.array_equal(rolled, y_train)
-        steps = np.diff(rolled)
-        assert np.sum(steps != 1.0) == 1          # exactly one wrap point
+    def test_signed_features_get_gaussian(self):
+        """Gamma would discard every negative row without saying so."""
 
-    def test_offset_respects_the_configured_minimum(self):
-        """A near-identity roll would leave real alignment intact."""
+        pipeline = self._pipeline()
 
-        settings = _shipped_settings()
-        pipeline = BehavioralResponsePipeline(modeling_settings_dict=settings)
-        minimum_rows = int(np.ceil(
-            settings['behavioral_response']['shift_null_min_seconds']
-            / settings['behavioral_response']['history_seconds'],
-        ))
-        y_train = np.arange(300, dtype=float)
+        assert pipeline._response_likelihood('allo_pitch') == 'gaussian'
+        assert pipeline._response_likelihood('back_pitch') == 'gaussian'
 
-        for seed in range(15):
-            rolled = pipeline._null_target(y_train, np.random.default_rng(seed))
-            offset = int(np.flatnonzero(rolled == 0.0)[0])
-            assert minimum_rows <= offset <= 300 - minimum_rows
+    def test_non_negative_features_get_gamma(self):
+        """Speed is positive and right-skewed, which is what Gamma is for."""
 
-    def test_too_few_rows_falls_back_to_the_inherited_permutation(self):
-        """Returning the identity would be no null at all."""
+        pipeline = self._pipeline()
 
-        pipeline = BehavioralResponsePipeline(modeling_settings_dict=_shipped_settings())
-        y_train = np.arange(4, dtype=float)
-        result = pipeline._null_target(y_train, np.random.default_rng(0))
+        assert pipeline._response_likelihood('speed') == 'gamma'
+        assert pipeline._response_likelihood('neck_elevation') == 'gamma'
 
-        np.testing.assert_allclose(np.sort(result), np.sort(y_train))
-        assert result.shape == y_train.shape
+    def test_folded_features_get_gamma_despite_signed_bounds(self):
+        """The magnitude fold maps a signed angle onto a non-negative support."""
 
-    def test_parent_default_is_unchanged(self):
-        """The seam must not alter the pipelines that already use it."""
+        pipeline = self._pipeline()
 
-        parent = BoutParameterPipeline(modeling_settings_dict=_shipped_settings())
-        y_train = np.arange(50, dtype=float)
-        permuted = parent._null_target(y_train, np.random.default_rng(0))
+        assert pipeline._response_fold_label('ego_yaw') == 'smooth_abs'
+        assert pipeline._response_likelihood('ego_yaw') == 'gamma'
+        assert pipeline._response_fold_label('allo_roll') == 'abs'
+        assert pipeline._response_likelihood('allo_roll') == 'gamma'
 
-        np.testing.assert_allclose(
-            permuted, np.random.default_rng(0).permutation(y_train),
-        )
+    def test_an_unfolded_feature_reports_no_fold(self):
+        """The provenance must say which branch actually fired."""
 
-
-class TestFullPipelineOnSyntheticSessions:
-    """All five stages end-to-end: extract, univariate array, consolidate,
-    select, consolidate.
-
-    Each stage is exercised through the same entry point the cluster uses, so
-    the things that only break at the seams -- filename conventions the
-    consolidators infer from, step numbering, the metadata blocks each stage
-    expects the previous one to have written -- are covered rather than assumed.
-    """
-
-    def _settings(self, tmp_path):
-        session_roots = build_session_tree(
-            base_dir=tmp_path / 'sessions', n_sessions=4, n_frames=3000,
-            camera_fps=150.0, filter_history=1.0, n_bouts=10, usv_per_bout=3,
-        )
-        list_file = write_session_list_file(session_roots, tmp_path / 'session_list.txt')
-        save_dir = tmp_path / 'out'
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-        settings = build_modeling_settings(
-            session_list_file=list_file, save_directory=save_dir,
-            camera_sampling_rate=150.0, filter_history=1.0,
-            model_engine='sklearn', split_strategy='session',
-            split_num=2, test_proportion=0.5,
-        )
-        settings['model_validation']['n_cv_folds'] = 2
-        settings['model_validation']['cv_validation_proportion'] = 0.5
-        settings['model_validation']['held_out_test_proportion'] = 0.25
-        settings['behavioral_response'].update({
-            'response_mouse_index': 1,
-            'response_feature': 'speed',
-            'history_seconds': 1.0,
-            'target_window_seconds': 0.2,
-            'target_gap_seconds': 0.0,
-            'vocal_predictor_type': 'pooled_rate',
-            'likelihood': 'gamma',
-        })
-        settings['hyperparameters']['classical']['pygam'].update({
-            'n_splines_value': 4, 'n_splines_time': 4, 'max_iterations': 30,
-        })
-        return settings, save_dir
-
-    def test_five_stages_run_and_consolidate(self, tmp_path, monkeypatch):
-        """The whole pipeline, stage by stage, on synthetic recordings."""
-
-        settings, save_dir = self._settings(tmp_path)
-
-        # --- stage 1: extraction -------------------------------------------
-        BehavioralResponsePipeline(
-            modeling_settings_dict=settings,
-        ).extract_and_save_modeling_input_data()
-
-        input_pickles = sorted(save_dir.glob('modeling_behavioral_response_*.pkl'))
-        input_pickles = [f for f in input_pickles
-                         if not f.name.endswith(('_collinearity.pkl', '_timescales.pkl'))]
-        assert len(input_pickles) == 1
-        input_pkl = input_pickles[0]
-
-        with input_pkl.open('rb') as handle:
-            extracted = pickle.load(handle)
-        partition = extracted['_input_metadata']['analysis_specific']
-        baseline_features = partition['baseline_block_features']
-        vocal_features = partition['vocal_block_features']
-
-        # the block-local `vocal_predictor_type` override must have produced a
-        # pooled rate even though the shared `vocal_features` block asks for none
-        assert vocal_features, 'no vocal column was generated'
-        assert not set(baseline_features) & set(vocal_features)
-
-        # --- stage 2: univariate job array, BASELINE features only ----------
-        univariate_dir = tmp_path / 'univariate'
-        univariate_dir.mkdir()
-        monkeypatch.setattr(univ_dispatcher.json, 'load', lambda _f: settings)
-
-        all_features = sorted(k for k in extracted if not k.startswith('_'))
-        for feature_index, feature_name in enumerate(all_features):
-            if feature_name not in baseline_features:
-                continue
-            univ_dispatcher.dispatch_univariate_job(argparse.Namespace(
-                analysis_type='behavioral_response', feature_idx=feature_index,
-                input_data=str(input_pkl), output_dir=str(univariate_dir),
-            ))
-
-        per_feature = sorted(univariate_dir.glob('univariate_*.pkl'))
-        assert per_feature, 'the univariate stage wrote nothing'
-
-        # --- stage 3: consolidate the per-feature pickles -------------------
-        consolidated_univariate = consolidate_univariate(input_dir=str(univariate_dir))
-        assert pathlib.Path(consolidated_univariate).is_file()
-
-        # --- stage 4: selection, one checkpoint per step --------------------
-        selection_dir = tmp_path / 'selection'
-        results = behavioral_response_model_selection(
-            input_pickle_path=input_pkl,
-            univariate_results_path=consolidated_univariate,
-            output_directory=selection_dir,
-            modeling_settings_dict=settings,
-        )
-        arm = results['gamma']
-
-        # the vocal block is never a selection candidate
-        assert all(f not in arm['screen']['per_feature'] for f in vocal_features)
-        for step in arm['selection']['steps']:
-            assert not set(step['candidates']) & set(vocal_features)
-        assert arm['final_step']['vocal_block_features'] == vocal_features
-
-        step_files = sorted(selection_dir.glob('*.pkl'))
-        indices = sorted(int(f.stem.rsplit('_', 1)[-1]) for f in step_files)
-        assert indices == list(range(len(indices)))    # 0-based and contiguous
-        assert all(f.name.startswith('model_selection_') for f in step_files)
-
-        # --- stage 5: consolidate the per-step pickles ----------------------
-        consolidated_selection = consolidate_model_selection(input_dir=str(selection_dir))
-        with pathlib.Path(consolidated_selection).open('rb') as handle:
-            merged = pickle.load(handle)
-
-        assert len(merged['steps']) == len(step_files)
-        assert '_input_metadata' in merged
-        assert '_run_metadata' in merged
-        assert merged['steps'][-1]['vocal_block_features'] == vocal_features
-
-        # The occupancy ladder must survive the whole chain. It is a diagnostic,
-        # so a silent skip would look identical to a run where the effect simply
-        # was not concentrated -- exactly the reading it exists to support.
-        occupancy = merged['_input_metadata']['analysis_specific']['vocal_occupancy']
-        n_design_rows = int(np.asarray(extracted[baseline_features[0]]['y']).shape[0])
-        assert len(occupancy) == n_design_rows, 'occupancy row count must match the design'
-        assert all(0.0 <= value <= 1.0 for value in occupancy)
-        ladder = merged['steps'][-1]['occupancy_ladder']
-        assert ladder, 'the vocal step reported no occupancy ladder'
-        assert 'occupancy_gt_0' in ladder
-        for rung in ladder.values():
-            assert rung['n_rows_scored'] >= 0
-            assert np.isfinite(rung['threshold'])
-
-
-class TestTargetMagnitudeFold:
-    """The target must get the same fold the predictors get.
-
-    Skipping it puts the target and the identical design-matrix column on
-    different scales, and for a signed feature it also collapses the usable
-    sample: the Gamma likelihood drops every non-positive row.
-    """
-
-    def _pipeline(self, response_feature):
-        """Pipeline with a ONE-FRAME target window.
-
-        ``_response_target_values`` folds and then forward-averages; a
-        single-frame window makes that average the identity, so the fold can
-        be checked element-wise instead of through a 75-frame mean.
-        """
-
-        settings = _shipped_settings()
-        settings['behavioral_response']['response_feature'] = response_feature
-        settings['behavioral_response']['target_window_seconds'] = (
-            1.0 / settings['io']['camera_sampling_rate']
-        )
-        pipeline = BehavioralResponsePipeline(modeling_settings_dict=settings)
-        assert pipeline.response_window_frames == 1
-        return pipeline, settings
-
-    def test_smooth_abs_feature_is_folded_with_the_configured_epsilon(self):
-        pipeline, settings = self._pipeline('ego_yaw')
-        epsilon = settings['kinematic_features']['smooth_abs_features']['ego_yaw']
-
-        raw = np.array([-40.0, -1.0, 0.0, 1.0, 40.0])
-        anchors = np.arange(raw.size)
-        folded = pipeline._response_target_values(raw_values=raw, anchor_frames=anchors)
-
-        np.testing.assert_allclose(folded, np.sqrt(raw ** 2 + epsilon ** 2))
-        assert (folded > 0).all()          # usable under a Gamma likelihood
-
-    def test_abs_feature_is_folded_to_plain_magnitude(self):
-        pipeline, _ = self._pipeline('allo_roll')
-        raw = np.array([-30.0, -5.0, 5.0, 30.0])
-        folded = pipeline._response_target_values(raw, np.arange(raw.size))
-        np.testing.assert_allclose(folded, np.abs(raw))
-
-    def test_unfolded_feature_is_left_signed(self):
-        """Only the configured features are folded; speed is untouched."""
-
-        pipeline, _ = self._pipeline('speed')
-        raw = np.array([1.0, 2.0, 3.0, 4.0])
-        np.testing.assert_allclose(
-            pipeline._response_target_values(raw, np.arange(raw.size)), raw,
-        )
-
-    def test_signed_target_without_the_fold_would_lose_half_the_rows(self):
-        """Documents why the fold is load-bearing, not cosmetic.
-
-        A near-symmetric signed angle has about half its samples below zero,
-        and the extraction drops non-positive targets outright.
-        """
-
-        pipeline, _ = self._pipeline('ego_yaw')
-        rng = np.random.default_rng(0)
-        raw = rng.normal(0.0, 40.0, size=2000)
-
-        assert np.mean(raw <= 0) > 0.4          # unfolded, ~half would be dropped
-        folded = pipeline._response_target_values(raw, np.arange(raw.size))
-        assert (folded > 0).all()               # folded, all rows survive
-
-    def test_the_applied_fold_is_recorded_in_provenance(self):
-        """An artifact must say which fold produced its target."""
-
-        settings = _shipped_settings()
-        for feature, expected in (('ego_yaw', 'smooth_abs'), ('allo_roll', 'abs'),
-                                  ('speed', 'none')):
-            kinematic = settings['kinematic_features']
-            resolved = ('smooth_abs' if feature in kinematic['smooth_abs_features']
-                        else 'abs' if feature in kinematic['abs_features'] else 'none')
-            assert resolved == expected
+        assert self._pipeline()._response_fold_label('speed') == 'none'

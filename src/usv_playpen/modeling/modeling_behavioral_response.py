@@ -1,75 +1,51 @@
 """
 @author: bartulem
-Module for modeling a continuous behavioral response to partner vocalization.
+Module for extracting a female behavioral response to male vocal bouts.
 
 This module inverts the direction of every other pipeline in ``modeling/``. The
 five vocal pipelines predict something about a *vocalization* from a window of
-preceding *behavior*; this one predicts a window-averaged *behavioral* variable
-(e.g. the female's locomotor speed) and asks whether the partner's vocal trace
-explains anything the kinematic and social features do not.
+preceding *behavior*; this one predicts a *behavioral* variable and asks whether
+the partner's calling changed it.
 
-Key scientific and computational components:
+It sets up two questions, both answered from one extraction:
 
-1.  Tiled anchors rather than vocal events. Every other extractor anchors its
-    rows on a USV or a bout, and ``_get_clean_tiled_epochs`` deliberately tiles
-    only USV-*free* stretches. Here the anchors tile the whole session on a
-    regular grid with no forbidden zones, because a history window that
-    *contains* calls is precisely the observation under test. The stride equals
-    the history length, so no two rows share history and the rows stay close to
-    independent.
-2.  A behavioral target. ``y`` is read from a behavioral feature column of a
-    nominated mouse, clipped to its theoretical bounds and averaged over a short
-    forward window ``[t + gap, t + gap + W)``. Averaging suppresses the
-    frame-to-frame differentiation noise a single 6.7 ms sample carries, and
-    breaks the near-determinism that would otherwise tie ``y`` to the last frame
-    of its own history. Before that average the target is magnitude-folded
-    exactly as the predictors are -- ``sqrt(x**2 + eps**2)`` for a
-    ``smooth_abs_features`` entry, ``|x|`` for an ``abs_features`` one, recorded
-    as ``response_fold`` in the provenance. This is load-bearing for a signed
-    angle, whose mean is a small residual left after large opposing excursions
-    cancel; a signed target would also break the Gamma likelihood, which drops
-    every non-positive row.
-3.  A separable vocal block. The predictors are partitioned into a kinematic /
-    social block and a vocal block, and the partition is recorded in the saved
-    metadata so downstream selection can fit one model with the vocal block and
-    one without, on identical folds.
-4.  Two mouse indices, both absolute. ``model_predictor_mouse_index`` decides
-    *whose calls* are ingested (``build_vocal_signal_columns`` honours
-    ``usv_predictor_partner_only``), while ``behavioral_response.response_mouse_index``
-    decides *whose behavior* is predicted. Index 0 is always the male and index 1
-    always the female, so neither key has to be read relative to the other.
+1.  **Does a male vocal bout, versus comparable silence, change her behavior?**
+    Rows are male bout offsets contrasted against anchors drawn from the silence
+    *between* bouts.
+2.  **Does bout duration matter?** Among the bout rows, longer versus shorter.
 
-    In practice ``response_mouse_index`` is the only one to set. The pipeline
-    derives ``model_predictor_mouse_index`` as ``1 - response_mouse_index`` on a
-    PRIVATE copy of the settings, so the shipped ``response_mouse_index: 1``
-    predicts female behavior from male calls while the shared ``model_params``
-    block the five vocal pipelines read is left untouched.
+Key design decisions, each ruled rather than defaulted:
+
+1.  Anchors are **events, not tiles**. Every row sits either at a bout offset or
+    inside an inter-bout gap. An earlier tiled design spent ~70% of its rows on
+    windows containing no calls at all, which diluted the very contrast it was
+    meant to measure.
+2.  The silent comparison is **inter-bout silence**, not globally quiet stretches.
+    A point inside a gap is a moment where he *could* have called and did not,
+    with both animals demonstrably still interacting. Globally quiet periods are a
+    different behavioral regime, and covariate adjustment would then be
+    extrapolating between two separated groups rather than comparing within one.
+3.  Covariates are **summaries, not lag histories**. Each feature's pre-anchor
+    window collapses to a mean over the last ``0.5 s`` and a mean over the full
+    ``4 s``. Their job is to hold pre-anchor state fixed, not to model a temporal
+    filter; and these features are slow (autocorrelation horizons from ~0.75 s for
+    speed to ~6.8 s for ``nose-nose``), so finer sub-windows would be collinear
+    rather than informative.
+4.  The response is kept in **native units, never z-scored** -- a Gamma likelihood
+    needs ``y > 0``, and the effect is then readable in the feature's own units.
+    Covariates *are* pooled z-scored, so their coefficients stay comparable.
+5.  Two targets are written per anchor: one mean over the whole window, and a
+    series of short bins across it, so the same contrast yields both a single
+    number and a time course of when the response appears.
 
 Settings
 --------
-Everything else lives in the ``behavioral_response`` block of
-``modeling_settings.json``: ``response_feature``, ``history_seconds`` (which
-doubles as the anchor stride), ``target_window_seconds``, ``target_gap_seconds``,
-``vocal_predictor_type`` and ``vocal_smoothing_sd_frames``.
-
-Where this sits in the workflow
--------------------------------
-``extract_and_save_modeling_input_data`` is stage 1 of five; the rest run on the
-cluster and through the shared consolidators, exactly like the other analyses::
-
-    2. main_univariate_dispatcher --analysis_type behavioral_response
-       one task per BASELINE feature; the vocal block is excluded, being the
-       quantity under test rather than a selection candidate.
-    3. consolidate_univariate_results.consolidate(...)
-    4. main_model_selection_dispatcher --analysis_type behavioral_response
-       screen -> forward selection -> vocal block as the FINAL step, one
-       resumable checkpoint pickle per step.
-    5. consolidate_model_selection_results.consolidate(...)
-
-Size the stage-2 array exactly: ``--array=0-(n_features - 1)``. Too large is
-harmless, since surplus tasks exit on an index check, but too small leaves
-features unswept and stage 4 now ABORTS rather than screening on a truncated
-candidate pool.
+Everything is read from the ``behavioral_response`` block of
+``modeling_settings.json``: ``response_mouse_index``, ``response_feature``,
+``history_seconds``, ``target_window_seconds``, ``target_bin_seconds``,
+``post_bout_silence_seconds``, ``covariate_summary_seconds``, ``duration_n_bins``
+and ``likelihood``. The anchor RNG is seeded from
+``model_validation.random_seed``.
 """
 
 from __future__ import annotations
@@ -80,7 +56,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
 from tqdm import tqdm
 
 from ..os_utils import atomic_output_path
@@ -97,223 +72,284 @@ from .modeling_metadata import (
     inject_metadata,
 )
 from .modeling_utils import (
-    build_vocal_signal_columns,
     harmonize_session_columns,
     identify_empty_event_sessions,
     prepare_modeling_sessions,
     resolve_mouse_roles,
     run_predictor_audits,
-    seeded_session_holdout,
     select_kinematic_columns,
     zscore_features_across_sessions,
 )
 from .modeling_vocal_bout_parameters import BoutParameterPipeline
 
 
-def tile_anchor_frames(n_frames: int,
-                       history_frames: int,
-                       stride_frames: int,
-                       lookahead_frames: int) -> np.ndarray:
+def bout_offset_anchors(bout_onsets: np.ndarray,
+                        bout_durations: np.ndarray,
+                        camera_fps: float,
+                        n_frames: int,
+                        history_frames: int,
+                        lookahead_frames: int,
+                        silence_seconds: float) -> tuple[np.ndarray, np.ndarray]:
     """
-    Builds the regular grid of anchor frames for one session.
+    Places one anchor at the offset of every qualifying male vocal bout.
 
-    An anchor ``t`` is legal when its full history window ``[t - history_frames, t)``
-    lies inside the session AND its forward target window, which extends
-    ``lookahead_frames`` past ``t``, also lies inside the session. Anchors are
-    spaced ``stride_frames`` apart; when the stride equals ``history_frames`` no
-    two rows share any history sample, which is the intended configuration.
+    A bout offset qualifies when the next bout starts at least
+    ``silence_seconds`` later, so the forward window genuinely follows the bout
+    rather than straddling the next one, and when the anchor leaves room for both
+    the pre-anchor history and the forward window inside the recording.
 
-    Unlike ``load_input_files._get_clean_tiled_epochs`` this tiler applies no
-    forbidden zones around vocalizations — a history window containing calls is
-    the observation of interest, not a contaminant.
+    The silence requirement is deliberately tied to the forward window rather than
+    set independently: anything beyond the window is discarded data bought for
+    cleanliness the analysis never uses. It does select on the future, though --
+    bigger bouts are followed sooner by the next bout (measured Spearman
+    ``rho = -0.12`` between syllable count and gap), so a longer requirement
+    preferentially discards long bouts and truncates the very predictor question 2
+    asks about.
 
     Parameters
     ----------
+    bout_onsets : np.ndarray
+        Bout start times in seconds, ascending.
+    bout_durations : np.ndarray
+        Bout durations in seconds, aligned with ``bout_onsets``.
+    camera_fps : float
+        Tracking frame rate.
     n_frames : int
         Number of frames in the session.
     history_frames : int
-        Length of the backward history window, in frames.
-    stride_frames : int
-        Spacing between consecutive anchors, in frames.
+        Pre-anchor window width, in frames.
     lookahead_frames : int
-        Number of frames after the anchor that the target window occupies
-        (i.e. gap + averaging window), used to bound the last legal anchor.
+        Forward window width, in frames.
+    silence_seconds : float
+        Required quiet interval after the bout offset.
+
+    Returns
+    -------
+    anchor_frames, kept_durations : tuple of np.ndarray
+        Frame index of each qualifying offset, and that bout's duration in
+        seconds. Both empty when the session has no qualifying bout.
+    """
+
+    if bout_onsets.size == 0:
+        return np.empty(0, dtype=int), np.empty(0, dtype=float)
+
+    order = np.argsort(bout_onsets)
+    onsets, durations = bout_onsets[order], bout_durations[order]
+    offsets = onsets + durations
+
+    # A bout with no successor is limited only by the end of the recording.
+    next_onset = np.concatenate([onsets[1:], [np.inf]])
+    has_silence = (next_onset - offsets) >= silence_seconds
+
+    anchor_frames = np.round(offsets * camera_fps).astype(int)
+    fits = (anchor_frames - history_frames >= 0) & (anchor_frames + lookahead_frames <= n_frames)
+
+    keep = has_silence & fits
+    return anchor_frames[keep], durations[keep]
+
+
+def inter_bout_quiet_anchors(bout_onsets: np.ndarray,
+                             bout_durations: np.ndarray,
+                             camera_fps: float,
+                             n_frames: int,
+                             history_frames: int,
+                             lookahead_frames: int,
+                             rng: np.random.Generator) -> np.ndarray:
+    """
+    Draws one silent anchor from each sufficiently long gap between bouts.
+
+    The anchor is placed uniformly at random inside the sub-interval where its
+    whole pre-anchor history and forward window fall within the gap, so no male
+    call touches either. Random placement rather than the midpoint avoids
+    systematically sampling the quietest instant of every gap.
+
+    One anchor per gap, not several: tiling long gaps would buy rows that are
+    strongly correlated with each other and would let a handful of long silences
+    dominate the silent condition.
+
+    Parameters
+    ----------
+    bout_onsets : np.ndarray
+        Bout start times in seconds, ascending.
+    bout_durations : np.ndarray
+        Bout durations in seconds, aligned with ``bout_onsets``.
+    camera_fps : float
+        Tracking frame rate.
+    n_frames : int
+        Number of frames in the session.
+    history_frames : int
+        Pre-anchor window width, in frames.
+    lookahead_frames : int
+        Forward window width, in frames.
+    rng : np.random.Generator
+        Seeded generator for the within-gap placement.
 
     Returns
     -------
     anchor_frames : np.ndarray
-        Sorted 1-D int array of anchor frame indices; empty when the session is
-        too short to hold a single legal anchor.
+        Frame index of one silent anchor per qualifying gap; empty when no gap is
+        long enough to hold a full history plus forward window.
     """
 
-    if history_frames < 1:
-        msg = f"`history_frames` must be >= 1, got {history_frames}."
-        raise ValueError(msg)
-    if stride_frames < 1:
-        msg = f"`stride_frames` must be >= 1, got {stride_frames}."
-        raise ValueError(msg)
-    if lookahead_frames < 0:
-        msg = f"`lookahead_frames` must be >= 0, got {lookahead_frames}."
-        raise ValueError(msg)
-
-    # `t` is legal when its target window ENDS at or before the last frame, so
-    # `t = n_frames - lookahead_frames` qualifies and the range is inclusive.
-    last_legal = n_frames - lookahead_frames
-    if last_legal < history_frames:
+    if bout_onsets.size < 2:
         return np.empty(0, dtype=int)
 
-    return np.arange(history_frames, last_legal + 1, stride_frames, dtype=int)
+    order = np.argsort(bout_onsets)
+    onsets, durations = bout_onsets[order], bout_durations[order]
+    offsets = onsets + durations
+
+    history_seconds = history_frames / camera_fps
+    lookahead_seconds = lookahead_frames / camera_fps
+
+    earliest = offsets[:-1] + history_seconds
+    latest = onsets[1:] - lookahead_seconds
+    usable = latest > earliest
+    if not np.any(usable):
+        return np.empty(0, dtype=int)
+
+    drawn = rng.uniform(earliest[usable], latest[usable])
+    anchor_frames = np.round(drawn * camera_fps).astype(int)
+    fits = (anchor_frames - history_frames >= 0) & (anchor_frames + lookahead_frames <= n_frames)
+    return anchor_frames[fits]
 
 
-def forward_window_mean(values: np.ndarray,
-                        anchor_frames: np.ndarray,
-                        gap_frames: int,
-                        window_frames: int) -> np.ndarray:
+def summarise_history(values: np.ndarray,
+                      anchor_frames: np.ndarray,
+                      summary_frames: list[int]) -> np.ndarray:
     """
-    Averages a behavioral trace over a forward window at each anchor.
+    Collapses each anchor's pre-anchor history into one mean per summary width.
 
-    Computes the mean of ``values`` over ``[t + gap_frames, t + gap_frames + window_frames)``
-    for every anchor ``t``, ignoring non-finite samples. Anchors whose whole
-    target window is non-finite yield ``NaN`` so the caller can drop them.
-
-    The window is strictly forward of the anchor, so in INDEX terms it never
-    overlaps that row's backward history.
-
-    That is not the whole story for ``speed``, which
-    ``compute_behavioral_features.calculate_speed`` smooths with a CENTRED
-    ``Gaussian1DKernel`` (stddev ``floor(0.015 * fps)`` = 2 frames at 150 fps,
-    17-sample support, ~40% of its weight at positive lags). The last history
-    sample ``speed[t-1]`` therefore already carries weight from frames ``t`` to
-    ``t+7`` -- the first ~53 ms of the target window. With
-    ``target_gap_seconds = 0`` nothing absorbs that overlap. It inflates the
-    BASELINE (which contains the response feature's own history), so the vocal
-    increment is if anything conservative; but the reported ``baseline_d2`` and
-    the ``1 - baseline`` denominator of ``fraction_of_remaining_deviance`` are
-    both affected. A ``target_gap_seconds`` above the kernel half-width (8 frames,
-    ~53 ms) removes it entirely, at negligible cost to a response whose measured
-    peak sits at ~2.7 s.
-
-    Consecutive anchors' targets do fall inside the *next* anchor's history when
-    the stride is short; that couples neighbouring rows but is not leakage, and
-    session-grouped folds keep such rows on the same side of any split.
+    Means are NaN-aware: out-of-bounds samples are nulled upstream by
+    ``zscore_features_across_sessions``, so a window is averaged over whatever
+    finite samples it holds, and returns ``nan`` only when it holds none.
 
     Parameters
     ----------
     values : np.ndarray
-        1-D float trace of the response feature, already clipped to its
-        theoretical bounds with out-of-range samples set to ``NaN``.
+        One feature's per-frame trace for the session, already z-scored.
     anchor_frames : np.ndarray
-        1-D int array of anchor frame indices.
-    gap_frames : int
-        Frames between the anchor and the start of the target window; ``0`` puts
-        the target immediately after the history.
+        Anchor frame indices; the history for anchor ``t`` is ``[t - w, t)``.
+    summary_frames : list of int
+        Window widths in frames, one summary produced per width.
+
+    Returns
+    -------
+    summaries : np.ndarray
+        ``(n_anchors, len(summary_frames))`` array of window means.
+    """
+
+    finite = np.isfinite(values)
+    filled = np.where(finite, values, 0.0)
+    value_cumsum = np.concatenate([[0.0], np.cumsum(filled)])
+    count_cumsum = np.concatenate([[0], np.cumsum(finite.astype(np.int64))])
+
+    summaries = np.empty((anchor_frames.size, len(summary_frames)), dtype=float)
+    for column, width in enumerate(summary_frames):
+        starts = np.maximum(anchor_frames - width, 0)
+        total = value_cumsum[anchor_frames] - value_cumsum[starts]
+        count = count_cumsum[anchor_frames] - count_cumsum[starts]
+        with np.errstate(invalid='ignore', divide='ignore'):
+            summaries[:, column] = np.where(count > 0, total / np.maximum(count, 1), np.nan)
+    return summaries
+
+
+def forward_window_mean(values: np.ndarray,
+                        anchor_frames: np.ndarray,
+                        window_frames: int,
+                        lower_bound: float,
+                        upper_bound: float) -> np.ndarray:
+    """
+    Averages a raw feature over the forward window following each anchor.
+
+    Samples outside ``[lower_bound, upper_bound]`` are dropped before averaging
+    rather than clamped: the on-disk CSVs carry excursions (speed to ~1e7) that
+    would otherwise dominate a mean, and clamping would enter a fabricated
+    boundary value as a real observation.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        The response feature's per-frame trace, in native units.
+    anchor_frames : np.ndarray
+        Anchor frame indices; the window for anchor ``t`` is ``[t, t + w)``.
     window_frames : int
-        Width of the averaging window, in frames.
+        Forward window width, in frames.
+    lower_bound, upper_bound : float
+        Theoretical bounds for the feature, from ``FeatureZoo.feature_boundaries``.
 
     Returns
     -------
     window_means : np.ndarray
-        1-D float array, one entry per anchor; ``NaN`` where the target window
-        held no finite sample.
+        One mean per anchor; ``nan`` where the window held no in-bounds sample.
     """
 
-    if window_frames < 1:
-        msg = f"`window_frames` must be >= 1, got {window_frames}."
-        raise ValueError(msg)
+    in_bounds = np.isfinite(values) & (values >= lower_bound) & (values <= upper_bound)
+    filled = np.where(in_bounds, values, 0.0)
+    value_cumsum = np.concatenate([[0.0], np.cumsum(filled)])
+    count_cumsum = np.concatenate([[0], np.cumsum(in_bounds.astype(np.int64))])
 
-    finite_mask = np.isfinite(values)
-    value_cumsum = np.concatenate([[0.0], np.cumsum(np.where(finite_mask, values, 0.0))])
-    count_cumsum = np.concatenate([[0.0], np.cumsum(finite_mask)])
-
-    window_starts = anchor_frames + gap_frames
-    window_stops = window_starts + window_frames
-
-    finite_counts = count_cumsum[window_stops] - count_cumsum[window_starts]
-    value_sums = value_cumsum[window_stops] - value_cumsum[window_starts]
-
-    window_means = np.full(anchor_frames.size, np.nan, dtype=float)
-    populated = finite_counts > 0
-    window_means[populated] = value_sums[populated] / finite_counts[populated]
-    return window_means
+    ends = np.minimum(anchor_frames + window_frames, values.size)
+    total = value_cumsum[ends] - value_cumsum[anchor_frames]
+    count = count_cumsum[ends] - count_cumsum[anchor_frames]
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.where(count > 0, total / np.maximum(count, 1), np.nan)
 
 
 class BehavioralResponsePipeline(BoutParameterPipeline):
     """
-    Pipeline for predicting a continuous behavioral feature from a history window.
+    Pipeline for contrasting female behavior after male bouts against silence.
 
-    Inherits the fitting, splitting, cross-validation and held-out-reserve
-    machinery from ``BoutParameterPipeline`` — the target is a continuous,
-    strictly positive scalar in both cases — and overrides only the extraction,
-    which differs in three ways:
+    Subclasses ``BoutParameterPipeline`` for its settings loading, session
+    preparation and provenance machinery, and replaces the anchor and target
+    construction entirely.
 
-    1.  **Anchors** are tiled across the whole session instead of taken at vocal
-        events, and carry no clean-history requirement.
-    2.  **``y``** comes from a behavioral feature column of the mouse named by
-        ``behavioral_response.response_mouse_index``, averaged forward over
-        ``target_window_seconds`` starting ``target_gap_seconds`` after the
-        anchor, rather than from the USV table.
-    3.  **The predictor set is partitioned** into a kinematic/social block and a
-        vocal block, with the partition written into the saved metadata so the
-        nested block comparison downstream can fit with and without the vocal
-        block on identical folds.
+    Two mouse indices are in play and both are absolute (0 is always the male, 1
+    always the female). Only ``behavioral_response.response_mouse_index`` is set
+    by hand; ``model_params.model_predictor_mouse_index`` is DERIVED as
+    ``1 - response_mouse_index`` on a private copy of the settings, so the shared
+    block the five vocal pipelines read is never disturbed.
     """
 
     def __init__(self, modeling_settings_dict: dict[str, Any] | None = None) -> None:
         """
-        Initializes the pipeline and resolves its block-local temporal geometry.
+        Initializes the pipeline and resolves its temporal geometry.
 
-        Delegates settings loading to the parent chain, then converts this
-        pipeline's own ``behavioral_response.history_seconds`` /
-        ``target_window_seconds`` / ``target_gap_seconds`` into frame counts on
-        the ``io.camera_sampling_rate`` grid. The history length is read from
-        this pipeline's own block rather than ``model_params.filter_history`` so
-        the block is self-contained, matching how ``glm_hmm`` carries its own
-        ``history_frames``.
+        Converts every duration in the ``behavioral_response`` block into frames
+        at the configured camera rate, and derives the predictor mouse index from
+        the response index on a private settings copy.
 
         Parameters
         ----------
-        modeling_settings_dict : dict, optional
-            Configuration dictionary. When ``None`` the parent chain loads
-            ``_parameter_settings/modeling_settings.json``.
+        modeling_settings_dict : dict or None
+            Full modeling settings; loaded from JSON by the parent chain when
+            ``None``.
 
         Returns
         -------
         None
         """
 
-        super().__init__(modeling_settings_dict=modeling_settings_dict)  # type: ignore[no-untyped-call]
+        super().__init__(modeling_settings_dict=modeling_settings_dict)
 
         response_settings = self.modeling_settings['behavioral_response']
         camera_rate = self.modeling_settings['io']['camera_sampling_rate']
 
         self.response_history_frames = int(np.floor(camera_rate * response_settings['history_seconds']))
         self.response_window_frames = int(np.floor(camera_rate * response_settings['target_window_seconds']))
-        self.response_gap_frames = int(np.floor(camera_rate * response_settings['target_gap_seconds']))
-
-        # Already in frames, matching the loader's Gaussian sigma; kept as a float
-        # so a fractional-frame kernel stays expressible.
-        self.response_vocal_smoothing_frames = float(response_settings['vocal_smoothing_sd_frames'])
-
-        # The inherited univariate runner and `get_basis_matrix_standardized` both
-        # read `self.history_frames`, which the parent derives from
-        # `model_params.filter_history`. Our windows are built at
-        # `history_seconds`, so leaving the two independent means the univariate
-        # arm reads windows of the wrong width the moment either value is changed.
-        # They agree in the shipped JSON only by coincidence.
+        self.response_bin_frames = int(np.floor(camera_rate * response_settings['target_bin_seconds']))
+        self.response_silence_frames = int(np.floor(camera_rate * response_settings['post_bout_silence_seconds']))
+        self.covariate_summary_frames = [
+            int(np.floor(camera_rate * seconds))
+            for seconds in response_settings['covariate_summary_seconds']
+        ]
+        # The parent's fold machinery reads `self.history_frames`.
         self.history_frames = self.response_history_frames
 
-        # `model_predictor_mouse_index` decides whose CALLS are ingested (via
-        # `usv_predictor_partner_only`), while `response_mouse_index` decides whose
-        # BEHAVIOUR is predicted -- opposite meanings on the same 0/1 axis. Since the
-        # partner's calls are by definition the other animal's, the predictor index is
-        # `1 - response_mouse_index` and is DERIVED here rather than set by hand: two
-        # keys that must disagree by construction are two keys that can silently agree.
-        # Copied at both levels so a caller-supplied settings dict is never mutated.
         response_idx = int(response_settings['response_mouse_index'])
         if response_idx not in (0, 1):
             msg = (
-                f"`behavioral_response.response_mouse_index` must be 0 (male) or 1 (female), "
-                f"got {response_idx}."
+                f"`behavioral_response.response_mouse_index` must be 0 (male) or 1 "
+                f"(female); got {response_idx}."
             )
             raise ValueError(msg)
 
@@ -321,80 +357,46 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         self.modeling_settings['model_params'] = dict(self.modeling_settings['model_params'])
         self.modeling_settings['model_params']['model_predictor_mouse_index'] = 1 - response_idx
 
-        if self.response_history_frames < 1:
+        for label, frames, seconds in (
+            ('history_seconds', self.response_history_frames, response_settings['history_seconds']),
+            ('target_window_seconds', self.response_window_frames, response_settings['target_window_seconds']),
+            ('target_bin_seconds', self.response_bin_frames, response_settings['target_bin_seconds']),
+        ):
+            if frames < 1:
+                msg = (
+                    f"`behavioral_response.{label}` ({seconds}) yields {frames} frames at "
+                    f"{camera_rate} fps; it must cover at least one frame."
+                )
+                raise ValueError(msg)
+
+        if self.response_bin_frames > self.response_window_frames:
             msg = (
-                f"`behavioral_response.history_seconds` "
-                f"({response_settings['history_seconds']}) yields "
-                f"{self.response_history_frames} frames at "
-                f"{camera_rate} fps; must be >= 1."
+                f"`behavioral_response.target_bin_seconds` "
+                f"({response_settings['target_bin_seconds']}) exceeds "
+                f"`target_window_seconds` ({response_settings['target_window_seconds']}); "
+                f"the time course must fit inside the window it resolves."
             )
             raise ValueError(msg)
-        if self.response_window_frames < 1:
-            msg = (
-                f"`behavioral_response.target_window_seconds` "
-                f"({response_settings['target_window_seconds']}) yields "
-                f"{self.response_window_frames} frames at "
-                f"{camera_rate} fps; must be >= 1."
-            )
-            raise ValueError(msg)
 
-    def _null_target(self, y_train: np.ndarray, null_rng: np.random.Generator) -> np.ndarray:
-        """
-        Builds the screen's null target by circularly SHIFTING, not permuting.
-
-        Permutation destroys the response's own serial structure, which makes it
-        an easier null than the data warrants: the predictors are strongly
-        autocorrelated, so a fully scrambled target is trivially harder to
-        predict than a real one. A circular roll leaves the target's temporal
-        structure exactly as observed and destroys only its alignment with the
-        predictors, which is the relationship under test.
-
-        The roll is over the fold's training rows as a block rather than within
-        session, because the splitter yields ``(X_tr, y_tr, X_te, y_te)`` without
-        the group labels. That is acceptable here: it breaks alignment at least
-        as thoroughly as the permutation it replaces, and the cross-session
-        mixing it introduces is present in that permutation too. The offset is
-        kept away from both ends so the roll is never near the identity.
-
-        Parameters
-        ----------
-        y_train : np.ndarray
-            The fold's training targets.
-        null_rng : np.random.Generator
-            Seeded generator for this fold's null.
-
-        Returns
-        -------
-        y_null : np.ndarray
-            The targets rolled by a random offset.
-        """
-
-        n_rows = len(y_train)
-        minimum_offset = max(
-            1,
-            int(np.ceil(
-                self.modeling_settings['behavioral_response']['shift_null_min_seconds']
-                / self.modeling_settings['behavioral_response']['history_seconds'],
-            )),
-        )
-        if n_rows <= 2 * minimum_offset:
-            # Too few rows to roll legally; fall back to the inherited permutation
-            # rather than returning the identity, which would be no null at all.
-            return super()._null_target(y_train, null_rng)
-
-        offset = int(null_rng.integers(minimum_offset, n_rows - minimum_offset + 1))
-        return np.roll(np.asarray(y_train), offset)
+        # Bin EDGES rather than a fixed width: 50 ms is 7.5 frames at 150 fps, so a
+        # floored width of 7 would leave the last 5 frames of the window outside the
+        # time course. Rounded edges tile the window exactly, at the cost of bins
+        # alternating between 7 and 8 frames.
+        self.n_response_bins = max(1, int(round(
+            response_settings['target_window_seconds'] / response_settings['target_bin_seconds'])))
+        self.response_bin_edges = np.linspace(
+            0, self.response_window_frames, self.n_response_bins + 1).round().astype(int)
 
     def _resolve_response_column(self,
                                  session_df_columns: list[str],
-                                 mouse_names: list[str]) -> str:
+                                 mouse_names: list[str],
+                                 response_feature: str) -> str:
         """
         Names the raw feature column holding this session's response variable.
 
         The responder is identified by absolute slot index
-        (``behavioral_response.response_mouse_index``; 0 is always the male, 1
-        always the female), deliberately not by the relative ``self.`` /
-        ``other.`` role keys, which can only be read against
+        (``behavioral_response.response_mouse_index``), deliberately not by the
+        relative ``self.`` / ``other.`` role keys, which can only be read against
         ``model_params.model_predictor_mouse_index``.
 
         Parameters
@@ -403,6 +405,8 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             Column names of the raw per-session behavioral feature frame.
         mouse_names : list of str
             Ordered mouse track names for the session, slot 0 first.
+        response_feature : str
+            Feature whose column is wanted.
 
         Returns
         -------
@@ -410,9 +414,7 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             The ``{mouse_name}.{response_feature}`` column name.
         """
 
-        response_settings = self.modeling_settings['behavioral_response']
-        response_idx = response_settings['response_mouse_index']
-        response_feature = response_settings['response_feature']
+        response_idx = self.modeling_settings['behavioral_response']['response_mouse_index']
 
         if not 0 <= response_idx < len(mouse_names):
             msg = (
@@ -433,7 +435,7 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
                 f"feature CSV's columns give {available_mice}. When those disagree the "
                 f"CSV labels are stale and must be corrected on disk -- the feature "
                 f"VALUES are fine. Otherwise check "
-                f"`behavioral_response.response_feature` ('{response_feature}')."
+                f"`behavioral_response.response_features` ('{response_feature}')."
             )
             raise KeyError(msg)
 
@@ -441,142 +443,135 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
 
     def _response_target_values(self,
                                 raw_values: np.ndarray,
-                                anchor_frames: np.ndarray) -> np.ndarray:
+                                anchor_frames: np.ndarray,
+                                response_feature: str) -> tuple[np.ndarray, np.ndarray]:
         """
-        Turns a raw response trace into one forward-averaged target per anchor.
+        Reads the response over the forward window, as one mean and as bins.
 
-        Applies the theoretical-bounds clip from ``FeatureZoo.feature_boundaries``
-        (out-of-range samples become ``NaN``, matching what
-        ``zscore_different_sessions_together`` does to the predictors), then the
-        same magnitude fold that helper applies — ``sqrt(x^2 + eps^2)`` for a
-        feature in ``smooth_abs_features``, ``|x|`` for one in ``abs_features`` —
-        and finally averages forward over the configured gap and window.
+        Both targets come from the same raw trace and the same anchors, so the
+        single number and the time course describe exactly the same rows.
 
-        The fold matters for signed features such as ``ego_yaw``, ``back_yaw`` and
-        ``allo_roll``, whose distributions are near-symmetric about zero: their
-        signed mean is a small residual of large opposing excursions, so it
-        carries no stable direction, and it would additionally be dropped wholesale
-        by the Gamma likelihood's positivity requirement. Skipping it would also
-        leave the target and the identical column in the design matrix on
-        different scales.
-
-        The target is otherwise kept in **native units** — deliberately not
-        z-scored, because the link function, not standardisation, is what handles
-        a response's scale.
+        The magnitude fold the predictors receive is applied here too when the
+        response feature is a signed angle: ``sqrt(x**2 + eps**2)`` for a
+        ``smooth_abs_features`` entry, ``|x|`` for an ``abs_features`` one. For a
+        near-symmetric angle the signed mean is a small residual left after large
+        opposing excursions cancel, and a signed target additionally breaks the
+        Gamma likelihood, which needs strictly positive values.
 
         Parameters
         ----------
         raw_values : np.ndarray
-            1-D unclipped trace of the response feature for this session.
+            The response feature's per-frame trace, in native units.
         anchor_frames : np.ndarray
-            1-D int array of anchor frame indices.
+            Anchor frame indices.
+        response_feature : str
+            Which feature ``raw_values`` holds, for its fold and bounds.
 
         Returns
         -------
-        target_values : np.ndarray
-            1-D float array of per-anchor targets; ``NaN`` where the target
-            window contained no in-bounds sample.
+        window_means, bin_means : tuple of np.ndarray
+            ``(n_anchors,)`` means over the whole forward window, and
+            ``(n_anchors, n_bins)`` means over successive bins across it.
         """
 
-        response_feature = self.modeling_settings['behavioral_response']['response_feature']
         kinematic_settings = self.modeling_settings['kinematic_features']
 
         values = np.asarray(raw_values, dtype=float)
-        # `FeatureZoo` always defines `feature_boundaries`, so a missing entry means
-        # the configured response feature is not a known feature -- fail rather than
-        # silently skipping the clip, which would let the raw CSV's out-of-range
-        # excursions (speed up to ~1e7) into the target.
-        if response_feature not in self.feature_boundaries:
-            msg = (
-                f"`behavioral_response.response_feature` = '{response_feature}' has no entry in "
-                f"`FeatureZoo.feature_boundaries`, so its theoretical range is unknown and the "
-                f"raw trace cannot be clipped."
-            )
-            raise KeyError(msg)
-
-        feature_bounds = np.asarray(self.feature_boundaries[response_feature], dtype=float)
-        lower_bound, upper_bound = float(feature_bounds[0]), float(feature_bounds[1])
-        out_of_range = ~np.isfinite(values) | (values < lower_bound) | (values > upper_bound)
-        values = np.where(out_of_range, np.nan, values)
-
-        # Apply the SAME magnitude fold the predictors get in
-        # `zscore_different_sessions_together`. Without it a signed feature would
-        # enter as a raw signed target while the identical column enters the design
-        # matrix folded -- and a signed target additionally breaks the Gamma
-        # likelihood, whose non-positive rows are dropped, silently discarding
-        # roughly half the data. `smooth_abs_features` wins over `abs_features`
-        # when a feature appears in both, matching the z-scoring helper.
         if response_feature in kinematic_settings['smooth_abs_features']:
             epsilon = float(kinematic_settings['smooth_abs_features'][response_feature])
             values = np.sqrt(np.square(values) + epsilon ** 2)
         elif response_feature in kinematic_settings['abs_features']:
             values = np.abs(values)
 
-        return forward_window_mean(
+        lower_bound, upper_bound = self.feature_boundaries[response_feature]
+
+        window_means = forward_window_mean(
             values=values,
             anchor_frames=anchor_frames,
-            gap_frames=self.response_gap_frames,
             window_frames=self.response_window_frames,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
         )
 
-    def _vocal_block_feature_names(self, feature_names: list[str]) -> list[str]:
+        bin_means = np.empty((anchor_frames.size, self.n_response_bins), dtype=float)
+        for bin_index in range(self.n_response_bins):
+            start_offset = int(self.response_bin_edges[bin_index])
+            width = int(self.response_bin_edges[bin_index + 1] - start_offset)
+            bin_means[:, bin_index] = forward_window_mean(
+                values=values,
+                anchor_frames=anchor_frames + start_offset,
+                window_frames=width,
+                lower_bound=lower_bound,
+                upper_bound=upper_bound,
+            )
+        return window_means, bin_means
+
+    def _response_fold_label(self, response_feature: str) -> str:
         """
-        Selects the generic feature keys that constitute the vocal block.
-
-        The block is **derived**, not configured: whichever vocal traces
-        ``build_vocal_signal_columns`` emitted for the chosen
-        ``behavioral_response.vocal_predictor_type`` are the block under test, and
-        everything else is the kinematic / social baseline. A second setting
-        listing the column names would have to be kept in step with the predictor
-        type by hand, and any disagreement between them silently changes what is
-        being tested -- so there is deliberately only one knob.
-
-        The three markers below are the complete set of continuous vocal-signal
-        names the loader can attach (``load_input_files``: ``usv_event`` for
-        ``'pooled_binary'``, ``usv_rate`` for ``'pooled_rate'``, ``usv_cat_<n>``
-        for ``'categories_rate'``, and both for ``'all_rate'``), matched after the
-        ``self.`` / ``other.`` role prefixing the extractor applies.
+        Names which magnitude fold a response feature receives.
 
         Parameters
         ----------
-        feature_names : list of str
-            All generic feature keys present in the extracted data dictionary.
+        response_feature : str
+            Feature to classify.
 
         Returns
         -------
-        vocal_block : list of str
-            Sorted subset naming the block under test; may be empty, which the
-            caller is expected to treat as a fatal misconfiguration.
+        fold_label : str
+            ``'smooth_abs'``, ``'abs'`` or ``'none'``.
         """
 
-        vocal_markers = ('usv_rate', 'usv_event', 'usv_cat_')
-        return sorted(
-            name for name in feature_names
-            if any(name.split('.')[-1].startswith(marker) for marker in vocal_markers)
-        )
+        kinematic_settings = self.modeling_settings['kinematic_features']
+        if response_feature in kinematic_settings['smooth_abs_features']:
+            return 'smooth_abs'
+        if response_feature in kinematic_settings['abs_features']:
+            return 'abs'
+        return 'none'
+
+    def _response_likelihood(self, response_feature: str) -> str:
+        """
+        Derives the likelihood family from the feature's post-fold support.
+
+        This is a property of the feature, not a preference, so it is computed
+        rather than configured: a signed feature simply cannot use a Gamma
+        likelihood, and a settings key would let someone assert otherwise and
+        silently discard every non-positive row.
+
+        Both magnitude folds map onto ``[0, inf)``, so a folded feature is always
+        Gamma-usable. An unfolded feature is Gamma-usable when its lower bound is
+        already non-negative. Exact zeros are still possible for a feature bounded
+        at zero; those rows are dropped at fit time and the count reported, rather
+        than the whole feature being demoted for them.
+
+        Parameters
+        ----------
+        response_feature : str
+            Feature to classify.
+
+        Returns
+        -------
+        likelihood : str
+            ``'gamma'`` when the feature cannot be negative, else ``'gaussian'``.
+        """
+
+        if self._response_fold_label(response_feature) != 'none':
+            return 'gamma'
+        lower_bound, _ = self.feature_boundaries[response_feature]
+        return 'gamma' if lower_bound >= 0.0 else 'gaussian'
 
     def extract_and_save_modeling_input_data(self) -> None:
         """
-        Extracts and saves the tiled (X, y, groups) triples for the response analysis.
+        Builds the anchor table and writes the modeling-input pickle.
 
-        Orchestrates the whole extraction: loads behavior, attaches the partner's
-        continuous vocal traces, harmonizes and z-scores the predictors, tiles
-        anchors across each session, reads the forward-averaged behavioral target,
-        and writes one pickle carrying the per-feature history windows plus an
-        ``_input_metadata`` block that records the kinematic / vocal block split.
+        Loads behavior, finds the predictor mouse's bouts, harmonizes and z-scores
+        the covariate features, places bout-offset and inter-bout-quiet anchors,
+        summarizes each anchor's history, reads the response over the forward
+        window, and writes one pickle holding a flat row table.
 
-        Three departures from the inherited bout-parameter extraction are
-        deliberate and load-bearing:
-
-        - anchors tile the entire session with **no** clean-history requirement,
-          because a history window containing calls is the observation under test;
-        - ``y`` is a behavioral column of the mouse at
-          ``behavioral_response.response_mouse_index``, kept in native units so a
-          Gamma likelihood remains usable, never z-scored;
-        - sessions are dropped when the **predictor** mouse has no bouts, not when
-          the target mouse has none — with the male as predictor the female is the
-          role-target and usually silent, so the inherited check would discard
-          almost the whole cohort.
+        Sessions are dropped when the **predictor** mouse has no bouts, not when
+        the response mouse has none: with the male as predictor the female is the
+        role-target and is usually silent, so the inherited check would discard
+        almost the whole cohort.
 
         Parameters
         ----------
@@ -588,22 +583,30 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         """
 
         response_settings = self.modeling_settings['behavioral_response']
-        response_feature = response_settings['response_feature']
+        response_features = list(response_settings['response_features'])
         response_idx = response_settings['response_mouse_index']
         predictor_mouse_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
+        kin_settings = self.modeling_settings['kinematic_features']
 
-        print(f"--- Extracting behavioral-response data for: mouse slot {response_idx}, '{response_feature}' ---")
+        unknown = [f for f in response_features if f not in kin_settings['egocentric']]
+        if unknown:
+            msg = (
+                f"`behavioral_response.response_features` names {unknown}, which are not in "
+                f"`kinematic_features.egocentric` ({sorted(kin_settings['egocentric'])})."
+            )
+            raise ValueError(msg)
+
+        likelihoods = {f: self._response_likelihood(f) for f in response_features}
+        print(f"--- Extracting behavioral-response data for mouse slot {response_idx}, "
+              f"{len(response_features)} feature(s) ---")
+        for feature in response_features:
+            print(f"      {feature:18s} fold={self._response_fold_label(feature):11s} "
+                  f"likelihood={likelihoods[feature]}")
 
         txt_modeling_sessions = prepare_modeling_sessions(self.modeling_settings)
 
         mixture_model_idx = self.modeling_settings['model_params']['mixture_model_component_index']
         mixture_model_z = self.modeling_settings['model_params']['mixture_model_z_score']
-        # Shallow copy: `vocal_features` is read by the five vocal pipelines too, so
-        # this analysis overrides the representation locally rather than in place.
-        voc_settings = dict(self.modeling_settings['vocal_features'])
-        voc_settings['usv_predictor_type'] = response_settings['vocal_predictor_type']
-        voc_settings['usv_predictor_smoothing_sd'] = self.response_vocal_smoothing_frames
-        kin_settings = self.modeling_settings['kinematic_features']
 
         print("Loading behavioral feature data...")
         beh_feature_data_dict, camera_fr_dict, mouse_track_names_dict = load_behavioral_feature_data(
@@ -611,11 +614,7 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             csv_sep=self.modeling_settings['io']['csv_separator'],
         )
 
-        print(
-            f"Generating vocal signals "
-            f"(type: {voc_settings['usv_predictor_type']}, "
-            f"partner only: {voc_settings['usv_predictor_partner_only']})..."
-        )
+        print("Finding male vocal bouts...")
         bout_data_dict = find_variable_length_bouts(
             root_directories=txt_modeling_sessions,
             mouse_ids_dict=mouse_track_names_dict,
@@ -627,18 +626,13 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             mixture_model_params=self.modeling_settings['mixture_model_params'],
             min_vocalizations=self.modeling_settings['model_params']['usv_per_bout_floor'],
             filter_history=response_settings['history_seconds'],
-            proportion_smoothing_sd=voc_settings['usv_predictor_smoothing_sd'],
-            vocal_output_type=voc_settings['usv_predictor_type'],
-            noise_vocal_categories=voc_settings['usv_noise_categories'],
-            category_column=voc_settings['usv_category_column_name'],
-            noise_column=voc_settings['usv_noise_column'],
+            proportion_smoothing_sd=None,
+            vocal_output_type=self.modeling_settings['vocal_features']['usv_predictor_type'],
+            noise_vocal_categories=self.modeling_settings['vocal_features']['usv_noise_categories'],
+            category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
+            noise_column=self.modeling_settings['vocal_features']['usv_noise_column'],
         )
 
-        # The inherited pipeline drops sessions whose *target* mouse has no bouts.
-        # Here the vocal block belongs to the PREDICTOR mouse, so it is the
-        # predictor's silence that makes a session uninformative (a constant-zero
-        # vocal column is degenerate under z-scoring); the role-target is usually
-        # the near-silent female and must not be the criterion.
         sessions_to_remove = identify_empty_event_sessions(
             usv_data_dict=bout_data_dict,
             mouse_names_dict=mouse_track_names_dict,
@@ -650,14 +644,19 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             if sess in beh_feature_data_dict:
                 del beh_feature_data_dict[sess]
 
-        print(f"Proceeding with {len(beh_feature_data_dict)} sessions after filtering vocally-empty ones.")
+        print(f"Proceeding with {len(beh_feature_data_dict)} sessions after filtering "
+              f"vocally-empty ones.")
 
-        # The response target is read from the RAW loaded frame, before column
-        # selection and before z-scoring: it must stay in native units (a Gamma
-        # likelihood needs y > 0) and it need not belong to the predictor zoo.
-        raw_response_traces: dict[str, np.ndarray] = {}
+        # The response is read from the RAW frame, before column selection and
+        # before z-scoring: it must stay in native units for the Gamma likelihood
+        # and it need not belong to the covariate zoo.
+        raw_response_traces: dict[str, dict[str, np.ndarray]] = {}
         predictor_bout_onsets: dict[str, np.ndarray] = {}
+        predictor_bout_durations: dict[str, np.ndarray] = {}
         processed_beh_feature_data_dict = {}
+        session_roles: dict[str, tuple[str, str]] = {}
+        target_mouse_idx = 1 - predictor_mouse_idx
+
         for sess_id, session_df in beh_feature_data_dict.items():
             if sess_id not in mouse_track_names_dict:
                 continue
@@ -672,23 +671,21 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             )
 
             session_df_cols = list(session_df.columns)
-            response_column = self._resolve_response_column(
-                session_df_columns=session_df_cols,
-                mouse_names=mouse_track_names_dict[sess_id],
-            )
-            raw_response_traces[sess_id] = session_df[response_column].to_numpy().astype(float)
+            raw_response_traces[sess_id] = {}
+            for feature in response_features:
+                response_column = self._resolve_response_column(
+                    session_df_columns=session_df_cols,
+                    mouse_names=mouse_track_names_dict[sess_id],
+                    response_feature=feature,
+                )
+                raw_response_traces[sess_id][feature] = (
+                    session_df[response_column].to_numpy().astype(float))
 
-            # The audit's Y(t) must be the PREDICTOR mouse's calls -- the block under
-            # test -- not the role-target's. The role-target here is the responder,
-            # who is typically near-silent, so the default per-mouse lookup would
-            # cross-correlate every feature against the wrong animal's vocalizations.
-            # Supplying the times directly leaves `target_idx` / `predictor_idx`
-            # untouched, so the audit's self./other. naming still matches the main
-            # pickle (the multinomial pipeline uses this same escape hatch).
             if p_name in bout_data_dict[sess_id]:
                 predictor_bout_onsets[sess_id] = np.asarray(
-                    bout_data_dict[sess_id][p_name]['bout_onsets'], dtype=float,
-                )
+                    bout_data_dict[sess_id][p_name]['bout_onsets'], dtype=float)
+                predictor_bout_durations[sess_id] = np.asarray(
+                    bout_data_dict[sess_id][p_name]['bout_durations'], dtype=float)
 
             columns_to_keep_session = select_kinematic_columns(
                 session_df_columns=session_df_cols,
@@ -697,22 +694,9 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
                 kin_settings=kin_settings,
                 predictor_idx=predictor_mouse_idx,
             )
-
-            new_voc_cols, new_voc_col_names = build_vocal_signal_columns(
-                usv_data_dict=bout_data_dict,
-                session_id=sess_id,
-                target_name=t_name,
-                predictor_name=p_name,
-                voc_settings=voc_settings,
-            )
-
-            columns_to_keep_session = sorted(set(columns_to_keep_session) | set(new_voc_col_names))
             existing_cols = [c for c in columns_to_keep_session if c in session_df_cols]
-            current_df = session_df.select(existing_cols)
-            if new_voc_cols:
-                current_df = current_df.with_columns(new_voc_cols)
-
-            processed_beh_feature_data_dict[sess_id] = current_df
+            processed_beh_feature_data_dict[sess_id] = session_df.select(existing_cols)
+            session_roles[sess_id] = (t_name, p_name)
 
         print("Standardizing columns ...")
         processed_beh_feature_data_dict, revised_behavioral_predictors = harmonize_session_columns(
@@ -735,8 +719,17 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             smooth_abs_features=kin_settings['smooth_abs_features'],
         )
 
+        if not processed_beh_feature_data_dict:
+            msg = (
+                "No session survived loading and column selection, so there is nothing to "
+                "extract. Check the session list, that each session has both a behavioral "
+                "feature CSV and a USV summary, and that the predictor mouse actually "
+                "vocalizes."
+            )
+            raise RuntimeError(msg)
+
         cohort_condition = derive_experimental_condition(self.modeling_settings)
-        analysis_tag = f"behavioral_response_m{response_idx}_{response_feature}"
+        analysis_tag = f"behavioral_response_m{response_idx}_allfeatures"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
@@ -753,29 +746,9 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             else:
                 ibi_thresholds_md[sex] = float('nan')
 
-        if not processed_beh_feature_data_dict:
-            msg = (
-                "No session survived loading and column selection, so there is nothing to "
-                "extract. Check the session list, that each session has both a behavioral "
-                "feature CSV and a USV summary, and that the predictor mouse actually "
-                "vocalizes in them."
-            )
-            raise RuntimeError(msg)
-
-        first_sess_id = next(iter(processed_beh_feature_data_dict))
-        kept_columns_first_sess = list(processed_beh_feature_data_dict[first_sess_id].columns)
-        vocal_columns_md = sorted({
-            c for c in kept_columns_first_sess
-            if any(tok in c for tok in ('usv_rate', 'usv_cat_', 'usv_event'))
-        })
-
-        _sorted_session_ids = sorted(processed_beh_feature_data_dict.keys())
-        held_out_session_ids = seeded_session_holdout(
-            session_ids=_sorted_session_ids,
-            held_out_test_proportion=self.modeling_settings['model_validation']['held_out_test_proportion'],
-            random_seed=self.modeling_settings['model_validation']['random_seed'],
-        )
-
+        # Counts and the kept-feature list are placeholders here and are filled in by
+        # `_save_extracted_data` once the anchors exist; the audits below only need
+        # the cohort and temporal provenance.
         input_metadata = build_input_metadata(
             modeling_settings=self.modeling_settings,
             analysis_type='behavioral_response',
@@ -784,15 +757,15 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             target_idx=target_mouse_idx,
             predictor_idx=predictor_mouse_idx,
             n_sessions_used=len(processed_beh_feature_data_dict),
-            session_ids=_sorted_session_ids,
+            session_ids=sorted(processed_beh_feature_data_dict),
             n_events_per_session={},
-            held_out_session_ids=held_out_session_ids,
             feature_zoo_full=derive_feature_zoo_full(self.modeling_settings),
-            feature_zoo_kept=[],
+            feature_zoo_kept=sorted(revised_behavioral_predictors),  # suffixes, not columns
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
             dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
-            noise_vocal_categories_excluded=list(voc_settings['usv_noise_categories']),
-            vocal_signal_columns_added=vocal_columns_md,
+            noise_vocal_categories_excluded=list(
+                self.modeling_settings['vocal_features']['usv_noise_categories']),
+            vocal_signal_columns_added=[],
             filter_history_seconds=float(response_settings['history_seconds']),
             filter_history_frames=int(self.response_history_frames),
             camera_sampling_rate_hz=derive_camera_fps_field(camera_fr_dict),
@@ -800,30 +773,22 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             analysis_specific={
                 'response_mouse_index': response_idx,
                 'derived_predictor_mouse_index': predictor_mouse_idx,
-                'response_feature': response_feature,
-                'response_fold': (
-                    'smooth_abs' if response_feature in kin_settings['smooth_abs_features']
-                    else 'abs' if response_feature in kin_settings['abs_features']
-                    else 'none'
-                ),
+                'response_features': response_features,
+                'response_folds': {f: self._response_fold_label(f) for f in response_features},
+                'response_likelihoods': likelihoods,
                 'target_window_seconds': response_settings['target_window_seconds'],
                 'target_window_frames': int(self.response_window_frames),
-                'target_gap_seconds': response_settings['target_gap_seconds'],
-                'target_gap_frames': int(self.response_gap_frames),
-                'anchor_stride_frames': int(self.response_history_frames),
-                'vocal_predictor_type': response_settings['vocal_predictor_type'],
-                'vocal_smoothing_sd_frames': self.response_vocal_smoothing_frames,
-                'likelihood': response_settings['likelihood'],
-                'n_shift_draws': response_settings['n_shift_draws'],
-                'shift_null_min_seconds': response_settings['shift_null_min_seconds'],
+                'target_bin_seconds': response_settings['target_bin_seconds'],
+                'target_bin_frames': int(self.response_bin_frames),
+                'target_bin_edges_frames': [int(e) for e in self.response_bin_edges],
+                'n_response_bins': int(self.n_response_bins),
+                'post_bout_silence_seconds': response_settings['post_bout_silence_seconds'],
+                'covariate_summary_seconds': list(response_settings['covariate_summary_seconds']),
+                'covariate_summary_frames': list(self.covariate_summary_frames),
+                'duration_n_bins': int(response_settings['duration_n_bins']),
             },
         )
 
-        # NOTE: `input_metadata` is still the pre-extraction block here -- the
-        # per-session counts, kept-feature list and block partition are filled in
-        # by `_save_extracted_data` after the tiling loop. The audit artifacts
-        # therefore carry the cohort/temporal provenance but empty event counts;
-        # the paired modeling-input pickle is the complete record.
         run_predictor_audits(
             processed_beh_dict=processed_beh_feature_data_dict,
             usv_data_dict=bout_data_dict,
@@ -842,167 +807,193 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             precomputed_onset_times=predictor_bout_onsets,
         )
 
-        lookahead_frames = self.response_gap_frames + self.response_window_frames
-        final_data_dict: dict[str, dict[str, Any]] = {}
-        anchors_per_session: dict[str, int] = {}
-        # Same marker set `_vocal_block_feature_names` uses to identify vocal
-        # columns; kept local rather than promoted to a module constant.
-        vocal_markers = ('usv_rate', 'usv_event', 'usv_cat_')
-        vocal_occupancy_rows: list[float] = []
-        informative_fraction_per_session: dict[str, float] = {}
+        anchor_rng = np.random.default_rng(self.modeling_settings['model_validation']['random_seed'])
+        # Columns still carry raw mouse names, so each is mapped to a session-neutral
+        # key -- `self.` for the responder, `other.` for the caller, bare for dyadic
+        # features -- exactly as the inherited extractors do. Without this the
+        # sessions share no column names at all.
+        rows_covariates: list[dict[str, np.ndarray]] = []
+        rows_target: list[np.ndarray] = []
+        rows_bins: list[np.ndarray] = []
+        rows_vocal: list[np.ndarray] = []
+        rows_duration: list[np.ndarray] = []
+        rows_session: list[np.ndarray] = []
+        anchors_per_session: dict[str, dict[str, int]] = {}
 
-        for sess_id, df in tqdm(processed_beh_feature_data_dict.items(), desc="Tiling anchors"):
-            t_name = mouse_track_names_dict[sess_id][target_mouse_idx]
-            p_name = mouse_track_names_dict[sess_id][predictor_mouse_idx]
-
+        for sess_id, df in tqdm(processed_beh_feature_data_dict.items(), desc="Placing anchors"):
+            if sess_id not in predictor_bout_onsets:
+                continue
+            camera_fps = float(camera_fr_dict[sess_id])
             n_frames = df.height
-            anchor_frames = tile_anchor_frames(
+
+            vocal_frames, vocal_durations = bout_offset_anchors(
+                bout_onsets=predictor_bout_onsets[sess_id],
+                bout_durations=predictor_bout_durations[sess_id],
+                camera_fps=camera_fps,
                 n_frames=n_frames,
                 history_frames=self.response_history_frames,
-                stride_frames=self.response_history_frames,
-                lookahead_frames=lookahead_frames,
+                lookahead_frames=self.response_window_frames,
+                silence_seconds=response_settings['post_bout_silence_seconds'],
             )
+            quiet_frames = inter_bout_quiet_anchors(
+                bout_onsets=predictor_bout_onsets[sess_id],
+                bout_durations=predictor_bout_durations[sess_id],
+                camera_fps=camera_fps,
+                n_frames=n_frames,
+                history_frames=self.response_history_frames,
+                lookahead_frames=self.response_window_frames,
+                rng=anchor_rng,
+            )
+            anchor_frames = np.concatenate([vocal_frames, quiet_frames])
             if anchor_frames.size == 0:
                 continue
 
-            target_values = self._response_target_values(
-                raw_values=raw_response_traces[sess_id],
-                anchor_frames=anchor_frames,
-            )
-            # A Gamma likelihood needs a strictly positive response; anchors whose
-            # target window held no in-bounds sample, or averaged to exactly zero,
-            # cannot be modelled and are dropped rather than floored. Dropping
-            # rather than flooring is deliberate -- a floored zero would enter the
-            # fit as a real observation -- but note it is a systematic exclusion of
-            # the completely immobile animal, not a random one. Note also that a
-            # window surviving on ONE in-bounds sample is kept, so a target can be
-            # a single 6.7 ms sample rather than a 500 ms average; those cluster on
-            # tracking failures and on excursions past the feature's upper bound.
-            usable = np.isfinite(target_values) & (target_values > 0.0)
-            anchor_frames = anchor_frames[usable]
-            target_values = target_values[usable]
-            if anchor_frames.size == 0:
-                continue
+            is_vocal = np.concatenate([
+                np.ones(vocal_frames.size, dtype=float),
+                np.zeros(quiet_frames.size, dtype=float),
+            ])
+            durations = np.concatenate([
+                vocal_durations,
+                np.full(quiet_frames.size, np.nan, dtype=float),
+            ])
 
-            window_starts = anchor_frames - self.response_history_frames
-            n_valid = int(anchor_frames.size)
-            anchors_per_session[sess_id] = n_valid
-
-            # Per-anchor call content of the predictor mouse, from the RAW binary
-            # occupancy rather than the smoothed `usv_rate`: smoothing spreads a
-            # call over its neighbours, and the design matrix is pooled z-scored,
-            # so neither can be thresholded to recover "was he calling here".
-            # This drives the occupancy ladder in the selection step, which exists
-            # because the acceptance gate is a global deviance over EVERY row
-            # while only ~30.6% of anchors carry any call at all (measured over
-            # this cohort: 121 sessions, 36,200 anchors).
-            # Source is `continuous_vocal_signals`, the predictor traces themselves,
-            # rather than a raw USV table: the ladder asks where the trace the model
-            # actually sees is active, so defining it from that trace keeps the
-            # diagnostic self-consistent. `usv_count` lives on `find_onset_epochs`
-            # output and is NOT present here. The design matrix cannot be used
-            # either -- it is pooled z-scored, so "silent" is a constant negative
-            # value rather than zero.
-            vocal_signals = bout_data_dict[sess_id][p_name]['continuous_vocal_signals']
-            active_traces = [
-                np.asarray(vocal_signals[key], dtype=float) for key in vocal_signals
-                if any(marker in key for marker in vocal_markers)
-            ]
-            if active_traces:
-                trace_length = min(trace.size for trace in active_traces)
-                any_active = np.zeros(trace_length, dtype=float)
-                for trace in active_traces:
-                    any_active = np.maximum(any_active, np.abs(trace[:trace_length]))
-                active_frames = (any_active > 0.0).astype(float)
-                cumulative_active = np.concatenate([[0.0], np.cumsum(active_frames)])
-                window_ends = np.clip(anchor_frames, 0, cumulative_active.size - 1)
-                window_begins = np.clip(window_starts, 0, cumulative_active.size - 1)
-                session_occupancy = (
-                    (cumulative_active[window_ends] - cumulative_active[window_begins])
-                    / float(self.response_history_frames)
+            # One target per feature. Rows are NOT filtered on any single feature's
+            # validity here: different features fail on different anchors, so a
+            # shared filter would silently shrink every feature to the intersection
+            # of all of them. Non-finite and non-positive targets are dropped per
+            # feature at fit time, where the count is reported.
+            window_stack = np.empty((anchor_frames.size, len(response_features)), dtype=float)
+            bin_stack = np.empty(
+                (anchor_frames.size, len(response_features), self.n_response_bins), dtype=float)
+            for feature_index, feature in enumerate(response_features):
+                window_means, bin_means = self._response_target_values(
+                    raw_values=raw_response_traces[sess_id][feature],
+                    anchor_frames=anchor_frames,
+                    response_feature=feature,
                 )
-            else:
-                session_occupancy = np.zeros(n_valid, dtype=float)
-            vocal_occupancy_rows.extend(session_occupancy.tolist())
-            informative_fraction_per_session[sess_id] = float(
-                np.mean(session_occupancy > 0.0)) if n_valid else float('nan')
+                window_stack[:, feature_index] = window_means
+                bin_stack[:, feature_index, :] = bin_means
 
-            for col in df.columns:
-                base_feature = col.split('.')[-1]
-                if base_feature.isdigit():
-                    continue
+            # An anchor with no usable target for ANY feature carries no information.
+            usable = np.any(np.isfinite(window_stack), axis=1)
+            if not np.any(usable):
+                continue
 
+            anchor_frames = anchor_frames[usable]
+            t_name, p_name = session_roles[sess_id]
+            session_covariates: dict[str, np.ndarray] = {}
+            for column in df.columns:
+                base_feature = column.split('.')[-1]
                 if '-' in base_feature:
                     generic_key = base_feature
-                elif col.startswith(f"{t_name}."):
+                elif column.startswith(f"{t_name}."):
                     generic_key = f"self.{base_feature}"
-                elif col.startswith(f"{p_name}."):
+                elif column.startswith(f"{p_name}."):
                     generic_key = f"other.{base_feature}"
                 else:
                     generic_key = base_feature
+                session_covariates[generic_key] = summarise_history(
+                    values=df[column].to_numpy().astype(float),
+                    anchor_frames=anchor_frames,
+                    summary_frames=self.covariate_summary_frames,
+                )
 
-                if generic_key not in final_data_dict:
-                    final_data_dict[generic_key] = {'X': [], 'y': [], 'groups': []}
+            rows_covariates.append(session_covariates)
+            rows_target.append(window_stack[usable])
+            rows_bins.append(bin_stack[usable])
+            rows_vocal.append(is_vocal[usable])
+            rows_duration.append(durations[usable])
+            rows_session.append(np.full(int(usable.sum()), sess_id, dtype=object))
+            anchors_per_session[sess_id] = {
+                'vocal': int(is_vocal[usable].sum()),
+                'quiet': int((1.0 - is_vocal[usable]).sum()),
+            }
 
-                col_data = np.nan_to_num(df[col].to_numpy(), nan=0.0)
-                windows = sliding_window_view(col_data, self.response_history_frames)
-                final_data_dict[generic_key]['X'].extend(windows[window_starts].copy())
-                final_data_dict[generic_key]['y'].extend(target_values)
-                final_data_dict[generic_key]['groups'].extend([sess_id] * n_valid)
+        if not rows_target:
+            msg = (
+                "No anchor survived placement in any session. Check "
+                "`behavioral_response.post_bout_silence_seconds` and "
+                "`history_seconds` against the session durations, and that the "
+                "predictor mouse produces bouts."
+            )
+            raise RuntimeError(msg)
 
-        for feature_arrays in final_data_dict.values():
-            for key in ('X', 'y', 'groups'):
-                feature_arrays[key] = np.array(feature_arrays[key])
-
-        input_metadata['informative_fraction_per_session'] = informative_fraction_per_session
-        input_metadata['vocal_occupancy_pooled_fraction'] = (
-            float(np.mean(np.asarray(vocal_occupancy_rows) > 0.0))
-            if vocal_occupancy_rows else float('nan')
-        )
+        # Only keys present in every session enter the design, so it stays rectangular.
+        shared_keys = sorted(set.intersection(*(set(d) for d in rows_covariates)))
+        dropped_keys = sorted(set.union(*(set(d) for d in rows_covariates)) - set(shared_keys))
+        if dropped_keys:
+            print(f"[warn] {len(dropped_keys)} feature(s) absent from at least one session "
+                  f"and dropped from the design: {dropped_keys}")
+        covariate_matrix = np.vstack([
+            np.column_stack([session_covariates[key] for key in shared_keys])
+            for session_covariates in rows_covariates
+        ])
+        summary_labels = [
+            f"{key}__mean_{seconds:g}s"
+            for key in shared_keys
+            for seconds in response_settings['covariate_summary_seconds']
+        ]
 
         self._save_extracted_data(
-            final_data_dict=final_data_dict,
+            covariates=covariate_matrix,
+            covariate_labels=summary_labels,
+            target=np.vstack(rows_target),
+            target_bins=np.concatenate(rows_bins, axis=0),
+            response_features=response_features,
+            response_likelihoods=likelihoods,
+            is_vocal=np.concatenate(rows_vocal),
+            bout_duration=np.concatenate(rows_duration),
+            session_ids=np.concatenate(rows_session),
             input_metadata=input_metadata,
             anchors_per_session=anchors_per_session,
-            vocal_occupancy=np.asarray(vocal_occupancy_rows, dtype=float),
             fname=fname,
         )
 
     def _save_extracted_data(self,
-                             final_data_dict: dict[str, dict[str, Any]],
+                             covariates: np.ndarray,
+                             covariate_labels: list[str],
+                             target: np.ndarray,
+                             target_bins: np.ndarray,
+                             response_features: list[str],
+                             response_likelihoods: dict[str, str],
+                             is_vocal: np.ndarray,
+                             bout_duration: np.ndarray,
+                             session_ids: np.ndarray,
                              input_metadata: dict[str, Any],
-                             anchors_per_session: dict[str, int],
-                             vocal_occupancy: np.ndarray,
+                             anchors_per_session: dict[str, dict[str, int]],
                              fname: str) -> None:
         """
-        Validates alignment, prints the extraction summary and publishes the pickle.
+        Validates row alignment, prints the summary and publishes the pickle.
 
-        Every generic feature must carry the same number of rows in the same
-        session order, because the rows are positionally paired with one shared
-        target vector; a mismatch means predictors are lined up against the wrong
-        anchors. That is a silent scientific corruption rather than a crash, so it
-        raises instead of warning, exactly as the inherited bout-parameter
-        extraction does.
-
-        The kinematic / vocal block partition is resolved here and written into
-        ``analysis_specific`` so the downstream nested comparison never has to
-        re-derive which columns are under test.
+        Every array must carry the same number of rows in the same order, because
+        they are positionally paired into one design; a mismatch is raised rather
+        than warned about, since a silently misaligned covariate would produce a
+        plausible but meaningless contrast.
 
         Parameters
         ----------
-        final_data_dict : dict
-            Mapping ``generic_feature -> {'X', 'y', 'groups'}`` of aligned arrays.
+        covariates : np.ndarray
+            ``(n_rows, n_covariates)`` history summaries.
+        covariate_labels : list of str
+            Column names for ``covariates``.
+        target : np.ndarray
+            ``(n_rows, n_features)`` response averaged over the whole forward window.
+        target_bins : np.ndarray
+            ``(n_rows, n_features, n_bins)`` response averaged over successive bins.
+        response_features : list of str
+            Column order of ``target`` and the middle axis of ``target_bins``.
+        response_likelihoods : dict
+            Derived likelihood family per response feature.
+        is_vocal : np.ndarray
+            ``(n_rows,)`` 1.0 at bout offsets, 0.0 at inter-bout quiet anchors.
+        bout_duration : np.ndarray
+            ``(n_rows,)`` bout duration in seconds; ``nan`` on quiet rows.
+        session_ids : np.ndarray
+            ``(n_rows,)`` session identifier, the clustering unit for inference.
         input_metadata : dict
-            The provenance block to embed; mutated in place with the per-session
-            anchor counts, the kept feature list and the block partition.
-        vocal_occupancy : np.ndarray
-            Per-anchor fraction of history frames containing a predictor-mouse
-            call, row-aligned with every feature's ``X``. Stored so the selection
-            step can report the occupancy ladder without recomputing it from the
-            pooled z-scored design, where "no call" is a constant negative value
-            rather than zero and so cannot be recovered by thresholding.
+            Provenance block, completed here with the row counts.
         anchors_per_session : dict
-            Mapping ``session_id -> number of retained anchors``.
+            Per-session vocal / quiet anchor counts.
         fname : str
             Basename of the pickle to publish under ``io.save_directory``.
 
@@ -1011,119 +1002,78 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         None
         """
 
-        final_features = sorted(final_data_dict.keys())
-        total_covariates = len(final_features)
-        if total_covariates == 0:
+        n_rows = int(target.shape[0])
+        if target.shape[1] != len(response_features):
             msg = (
-                "No features survived behavioral-response extraction; every session was "
-                "either too short for a single anchor or had no usable target values."
+                f"`target` has {target.shape[1]} feature columns but "
+                f"{len(response_features)} features were requested."
             )
-            raise RuntimeError(msg)
-
-        reference_feature = final_features[0]
-        reference_y = final_data_dict[reference_feature]['y']
-        reference_groups = final_data_dict[reference_feature]['groups']
-
-        mismatched_features = []
-        for feat in final_features[1:]:
-            if len(final_data_dict[feat]['y']) != len(reference_y):
-                mismatched_features.append(feat)
-                continue
-            if not np.array_equal(final_data_dict[feat]['groups'], reference_groups):
-                mismatched_features.append(feat)
-        alignment_passed = not mismatched_features
-
-        vocal_block = self._vocal_block_feature_names(final_features)
-        baseline_block = [f for f in final_features if f not in set(vocal_block)]
-
-        total_n = len(reference_y)
-        history_length = final_data_dict[reference_feature]['X'].shape[1]
-
-        print("\n" + "=" * 105)
-        print(
-            f"BEHAVIORAL-RESPONSE DATA SUMMARY: slot "
-            f"{self.modeling_settings['behavioral_response']['response_mouse_index']} "
-            f"'{self.modeling_settings['behavioral_response']['response_feature']}'"
-        )
-        print("=" * 105)
-        print(f"{'#':<4} {'Generic Feature Name':<45} | {'Block':<9} | {'Anchors (N)':<12} | {'Status'}")
-        print("-" * 105)
-        for i, feat in enumerate(final_features, 1):
-            block_label = "VOCAL" if feat in set(vocal_block) else "baseline"
-            is_zero = bool(np.all(final_data_dict[feat]['X'] == 0))
-            status = "ZERO-FILLED" if is_zero else "DATA-PRESENT"
-            print(f"{i:3}. {feat:<45} | {block_label:<9} | {len(final_data_dict[feat]['y']):<12} | {status}")
-        print("-" * 105)
-        print("PROJECT-WIDE TALLY:")
-        print(f"  > Total Unique Covariates:      {total_covariates}")
-        print(f"  > Baseline-block Covariates:    {len(baseline_block)}")
-        print(f"  > Vocal-block Covariates:       {len(vocal_block)}")
-        print(f"  > Total Sessions Included:      {len(anchors_per_session)}")
-        print(f"  > Total Anchors Across Project: {total_n}")
-        print(f"  > History Window Length:        {history_length} frames")
-        print(f"  > Target Window Length:         {self.response_window_frames} frames")
-        print(f"  > INTRA-SESSION ALIGNMENT:      {'PASSED (True)' if alignment_passed else 'FAILED (False)'}")
-        if not alignment_passed:
-            print(f"  [!] ALERT: Dimensional or grouping mismatch in: {mismatched_features}")
-        print("=" * 105 + "\n")
-
-        if not alignment_passed:
+            raise ValueError(msg)
+        for label, array in (('covariates', covariates), ('target_bins', target_bins),
+                             ('is_vocal', is_vocal), ('bout_duration', bout_duration),
+                             ('session_ids', session_ids)):
+            if array.shape[0] != n_rows:
+                msg = (
+                    f"Row-count mismatch: `target` has {n_rows} rows but `{label}` has "
+                    f"{array.shape[0]}; the design would be misaligned."
+                )
+                raise ValueError(msg)
+        if covariates.shape[1] != len(covariate_labels):
             msg = (
-                f"Intra-session alignment FAILED for behavioral-response extraction: "
-                f"predictors are misaligned with targets for feature(s) {mismatched_features} "
-                f"(mismatched anchor count or session grouping vs the reference feature "
-                f"'{reference_feature}'). Refusing to write a known-misaligned artifact; fix the "
-                f"upstream extraction and re-run."
+                f"`covariates` has {covariates.shape[1]} columns but "
+                f"{len(covariate_labels)} labels were built for it."
             )
-            raise RuntimeError(msg)
+            raise ValueError(msg)
 
-        if not vocal_block:
-            msg = (
-                f"`behavioral_response.vocal_predictor_type` = "
-                f"'{self.modeling_settings['behavioral_response']['vocal_predictor_type']}' produced "
-                f"no vocal columns, so the block under test is empty and the nested comparison has "
-                f"nothing to add. Check that the predictor mouse actually vocalizes and that "
-                f"`vocal_features.usv_predictor_partner_only` selects the intended animal."
-            )
-            raise RuntimeError(msg)
+        n_vocal = int(np.sum(is_vocal > 0.0))
+        n_quiet = n_rows - n_vocal
+        print("=" * 70)
+        print(f"  > Sessions contributing:        {len(anchors_per_session)}")
+        print(f"  > Anchors (vocal / quiet):      {n_vocal} / {n_quiet}")
+        print(f"  > Covariate columns:            {covariates.shape[1]}")
+        print(f"  > Response bins:                {target_bins.shape[2]}")
+        print(f"  > Bout duration (s), median:    {np.nanmedian(bout_duration):.3f}")
+        print(f"  > Response features:            {len(response_features)}")
+        for feature_index, feature in enumerate(response_features):
+            column = target[:, feature_index]
+            finite = int(np.sum(np.isfinite(column)))
+            positive = int(np.sum(np.isfinite(column) & (column > 0.0)))
+            note = ('' if response_likelihoods[feature] == 'gaussian'
+                    else f", {finite - positive} non-positive dropped at fit")
+            print(f"      {feature:18s} {response_likelihoods[feature]:9s} "
+                  f"{finite}/{n_rows} finite{note}")
+        print("=" * 70)
 
-        # `session_ids` / `n_sessions_used` were built before the tiling loop, which
-        # can skip a session (no legal anchor, or no usable target). Re-derive both
-        # from the sessions that actually contributed rows so the provenance block
-        # cannot disagree with the per-session counts beside it.
         contributing_sessions = sorted(anchors_per_session)
         input_metadata['session_ids'] = contributing_sessions
         input_metadata['n_sessions_used'] = len(contributing_sessions)
-        input_metadata['n_events_per_session'] = {
-            str(sess_id): {'anchors': int(count)}
-            for sess_id, count in sorted(anchors_per_session.items())
-        }
-        # Reserved sessions that contributed no rows cannot be scored later, so
-        # record the intersection rather than the requested list.
-        input_metadata['held_out_session_ids'] = [
-            s for s in input_metadata['held_out_session_ids'] if s in anchors_per_session
-        ]
-        input_metadata['feature_zoo_kept'] = final_features
-        n_rows_reference = int(np.asarray(final_data_dict[reference_feature]['y']).shape[0])
-        if vocal_occupancy.shape[0] != n_rows_reference:
-            msg = (
-                f"vocal occupancy carries {vocal_occupancy.shape[0]} rows but the design "
-                f"has {n_rows_reference}; the occupancy ladder would be scored against "
-                f"misaligned rows."
-            )
-            raise ValueError(msg)
-        # Stored as a list, not an ndarray: `metadata_blocks_equal` compares
-        # metadata values with `!=`, which is ambiguous for an array and aborts
-        # consolidation. A list compares to a plain bool.
-        input_metadata['analysis_specific']['vocal_occupancy'] = vocal_occupancy.tolist()
-        input_metadata['analysis_specific']['vocal_block_features'] = vocal_block
-        input_metadata['analysis_specific']['baseline_block_features'] = baseline_block
+        input_metadata['n_events_per_session'] = anchors_per_session
+        input_metadata['n_rows'] = n_rows
+        input_metadata['n_vocal_rows'] = n_vocal
+        input_metadata['n_quiet_rows'] = n_quiet
+        input_metadata['analysis_specific']['covariate_labels'] = list(covariate_labels)
+        input_metadata['analysis_specific']['response_features'] = list(response_features)
+        input_metadata['analysis_specific']['response_likelihoods'] = dict(response_likelihoods)
+
+        artifact = inject_metadata(
+            {
+                'covariates': covariates,
+                'covariate_labels': list(covariate_labels),
+                'target': target,
+                'target_bins': target_bins,
+                'response_features': list(response_features),
+                'response_likelihoods': dict(response_likelihoods),
+                'is_vocal': is_vocal,
+                'bout_duration': bout_duration,
+                'session_ids': session_ids,
+            },
+            _input_metadata=input_metadata,
+        )
 
         save_dir = Path(self.modeling_settings['io']['save_directory'])
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path = save_dir / fname
-
-        artifact = inject_metadata(final_data_dict, _input_metadata=input_metadata)
-        with atomic_output_path(save_path) as tmp_path, tmp_path.open('wb') as f:
-            pickle.dump(artifact, f)
-        print(f"[+] Saved: {save_path}")
+        with atomic_output_path(save_path) as temporary_path:
+            with Path(temporary_path).open('wb') as handle:
+                pickle.dump(artifact, handle)
+        print(f"[{datetime.now().strftime('%Y%m%d_%H%M%S')}] Success. Results saved to: {save_path}")

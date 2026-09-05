@@ -998,173 +998,138 @@ Behavioral response
 -------------------
 Every pipeline above predicts a *vocal* target from behavioural history. This one
 runs the other way: it predicts a **behavioural** variable and asks whether the
-partner's vocal trace explains anything the kinematic and social features do not.
-The claim is therefore about a *unique contribution* — not whether calling
-correlates with the behaviour, but whether the vocal block improves held-out
-prediction over a baseline containing everything else measured.
+partner's calling changed it.
 
-It runs through the **same five stages as every other analysis** — extraction, a
-per-feature univariate job array, consolidation, model selection, consolidation — so
-nothing about the cluster workflow is special-cased.
+It answers two questions from one extraction:
 
-.. code-block:: text
+1. **Does a male vocal bout, versus comparable silence, change her behaviour?**
+2. **Does bout duration matter?**
 
-    1. extract        BehavioralResponsePipeline(...).extract_and_save_modeling_input_data()
-    2. univariate     main_univariate_dispatcher --analysis_type behavioral_response
-                      (one SLURM task per BASELINE feature; the vocal block is
-                       excluded -- it is the quantity under test, not a candidate)
-    3. consolidate    consolidate_univariate_results.consolidate(...)
-    4. selection      main_model_selection_dispatcher --analysis_type behavioral_response
-                      (screen -> forward selection -> vocal block as the FINAL step;
-                       one checkpoint pickle per step, resumable)
-    5. consolidate    consolidate_model_selection_results.consolidate(...)
+Anchors are **events, not tiles**. Every row sits either at a male bout offset or
+inside an inter-bout gap. A precursor design tiled anchors every 4 s across the
+whole session and spent ~70% of its rows on windows containing no calls at all,
+diluting the very contrast it was meant to measure — measured on this cohort,
+only **30.6%** of tiled anchors carried any call.
 
-Steps 2 and 4 are SLURM jobs; steps 3 and 5 use the shared consolidators unchanged.
-
-**The response target is magnitude-folded like every predictor.** Before the forward
-average is taken, ``response_feature`` is routed through the same branches
-``zscore_different_sessions_together`` applies to the design matrix: ``sqrt(x² + ε²)``
-if it appears in **smooth_abs_features**, ``|x|`` if it appears in **abs_features**,
-and untouched otherwise. Which branch fired is recorded as ``response_fold`` in the
-extraction provenance. This is load-bearing rather than cosmetic for a signed angle:
-its mean is a small residual left after large opposing excursions cancel, so it
-carries no stable direction, and a signed target additionally breaks the Gamma
-likelihood, which drops every non-positive row.
-
-**The acceptance gate is global; an occupancy ladder says where the effect
-lives.** The increment is scored as an explained deviance over every held-out
-row, but measured on this cohort (121 sessions, 36,200 tiled anchors) only
-**30.6%** of anchors carry any partner call at all, so an effect confined to
-call-bearing rows reaches the global score at roughly a third of its size. The
-skew is sharper than that headline: the median anchor has **zero** call content,
-the 75th percentile is 3.2%, and even among call-bearing anchors the median
-occupancy is only 15% of the history window. Extraction therefore records a
-per-anchor ``vocal_occupancy`` (from ``continuous_vocal_signals`` — the trace the
-model actually sees, since the design matrix is pooled z-scored and "silent" is a
-constant negative value there, not zero) plus
-``informative_fraction_per_session``, and the vocal step reports
-``occupancy_ladder``: the same paired margin re-scored on call-bearing rows and
-on the cohort's top occupancy decile. Nothing is refit — the per-fold
-predictions are already stored, and both models are masked identically so the
-margin stays paired. **These rungs are diagnostics, not gates** (ruled
-2026-09-04): acceptance stays on the global margin, because a binary
-call/no-call mask is a crude stand-in for a continuous predictor and the claim
-should not quietly narrow to "given he was calling". Per-session informative
-fraction ranges **4.7% to 85.6%** across the cohort, with 13 sessions below 10%;
-all sessions are retained and the fraction is recorded so that heterogeneity is
-visible when reading the folds.
-
-**A short job array is a fatal error, not a warning.** The screen's candidates come
-from the extraction artifact, while their fits come from the consolidated univariate
-pickle. If ``--array`` is bounded below ``(number of features - 1)``, the surplus
-features are never swept and never reach the consolidated artifact, which would
-quietly shrink the pool the forward selection searches while the run still looked
-normal. ``screen_from_univariate`` therefore raises ``ValueError`` naming every
-missing candidate, distinguishing *never swept* from a fit that failed, and stating
-the correct ``--array`` bound. To leave a feature out on purpose, drop it from
-``candidate_features`` so the exclusion is explicit and recorded.
+The silent comparison is **inter-bout silence**, not globally quiet stretches. A
+point inside a gap is a moment where he *could* have called and did not, with
+both animals demonstrably still interacting. Globally quiet periods are a
+different behavioural regime, and adjusting for the difference would mean
+extrapolating between two separated groups rather than comparing within one.
 
 .. note::
 
-   Both cluster scripts derive every path from ``$ANALYSIS_TYPE`` and resolve the
-   timestamped artifacts by prefix, echoing what they resolved into the log. Do not
-   reintroduce a fixed artifact filename: selecting one analysis while a literal path
-   still pointed at another analysis' results is exactly how a run silently screens on
-   the wrong pickle.
+   A bout offset qualifies only when the next bout starts at least
+   ``post_bout_silence_seconds`` later, which selects on the future: bigger bouts
+   are followed sooner by the next bout (measured Spearman ``rho = -0.12``
+   between syllable count and gap). A longer requirement therefore discards long
+   bouts preferentially and truncates the predictor question 2 asks about. Tying
+   the requirement to ``target_window_seconds`` keeps that loss at its minimum.
+
+Covariates are **summaries, not lag histories**: each feature's pre-anchor window
+collapses to a mean over the last 0.5 s and a mean over the full 4 s
+(``covariate_summary_seconds``). Their job is to hold pre-anchor state fixed, not
+to model a temporal filter, and these features are slow — autocorrelation
+horizons run from ~0.75 s for ``speed`` to ~6.8 s for ``nose-nose`` — so finer
+sub-windows would be collinear rather than informative. The design is ~38 columns
+instead of 20 × 600, and the extraction artifact is a few MB instead of 3.5 GB.
+
+The response is kept in **native units, never z-scored**: a Gamma likelihood
+needs ``y > 0``, and the effect is then readable in the feature's own units.
+Covariates *are* pooled z-scored, so their coefficients stay comparable.
+
+All features at once
+~~~~~~~~~~~~~~~~~~~~
+``response_features`` lists every feature to extract. The anchors are identical
+across features — only the target changes — so one extraction covers all of them
+and the expensive part (reading 121 sessions of tracking CSV) is paid once rather
+than per feature.
+
+The likelihood is **derived, not configured**. It is a property of the feature's
+support rather than a preference: a signed feature simply cannot use a Gamma
+likelihood, and a settings key would let someone assert otherwise and silently
+discard every non-positive row. Both magnitude folds map onto ``[0, inf)``, so a
+folded feature is always Gamma-usable; an unfolded feature is Gamma-usable when
+its lower bound is already non-negative.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Feature
+     - Fold
+     - Likelihood
+   * - ``speed``, ``neck_elevation``, ``tail_curvature``
+     - none
+     - gamma
+   * - ``allo_roll``
+     - abs
+     - gamma
+   * - ``ego_yaw``, ``back_yaw``
+     - smooth_abs
+     - gamma
+   * - ``allo_pitch``, ``back_pitch``
+     - none (signed)
+     - **gaussian**
+
+Exact zeros would still be dropped under Gamma, but measured over 9M frames they
+are negligible: none at all for ``speed`` and ``tail_curvature``, 0.009% for
+``neck_elevation``, 0.005% for ``allo_roll``.
+
+The contrast
+~~~~~~~~~~~~
+``behavioral_response_contrast`` fits a GLM with session-clustered standard
+errors — not a nested predictive comparison. A nested comparison answers "does
+the vocal block improve out-of-sample prediction" and reports a ``dD^2``, which
+conflates effect size, timing and nonlinearity; on the tiled precursor it came
+back at 0.0039, reproducible across every split and uninterpretable. A
+coefficient answers the question actually asked, in the feature's own units.
+
+Duration enters as **terciles interacted with** ``vocal``, so each duration band
+gets its own step against silence::
+
+    y ~ intercept + b1*vocal_band_0 + b2*vocal_band_1 + b3*vocal_band_2 + covariates
+
+Question 1 is the joint statement of those steps; question 2 is how they differ.
+Coding quiet rows as duration zero was rejected: it would assert that "no bout at
+all" lies on the same line as "a very short bout", which is the assumption under
+test. Terciles rather than a slope because duration is heavily skewed (median
+0.43 s with a long tail), so one slope would be dominated by a few long bouts.
+
+**Standard errors are clustered on session.** Rows within a session share an
+animal, an arena and a day. On synthetic data with realistic session structure
+the clustered error is **3.9x** the naive one, so without it every interval would
+be about four times too narrow.
+
+**The same model is refit per time bin.** The predictors never change, only the
+target, so the single contrast becomes a time course of when the response appears
+— the event-triggered average with pre-anchor state regressed out.
 
 .. code-block:: python
 
     from usv_playpen.modeling.modeling_behavioral_response import BehavioralResponsePipeline
-    from usv_playpen.modeling.behavioral_response_selection import (
-        behavioral_response_model_selection,
+    from usv_playpen.modeling.behavioral_response_contrast import (
+        behavioral_response_contrast,
     )
 
     BehavioralResponsePipeline(
         modeling_settings_dict=None
     ).extract_and_save_modeling_input_data()
 
-    # Step 4, if run outside the dispatcher. Reads the CONSOLIDATED univariate
-    # pickle rather than refitting per feature, and writes one pickle per step.
-    behavioral_response_model_selection(
+    behavioral_response_contrast(
         input_pickle_path="/mnt/falkner/Bartul/modeling/modeling_behavioral_response_<...>.pkl",
-        univariate_results_path="/mnt/falkner/Bartul/modeling/univariate_behavioral_response_<...>.pkl",
-        output_directory="/mnt/falkner/Bartul/modeling/model_selection_results/<...>",
+        output_directory="/mnt/falkner/Bartul/modeling/behavioral_response_contrast",
     )
 
-Three structural differences from the vocal pipelines are load-bearing rather than
-incidental:
+This analysis does **not** use the cluster job array: there is no screen and no
+forward selection, so the univariate and model-selection stages have nothing to
+consume. Extraction plus contrast is two calls, and the fitting is seconds.
 
-* **Anchors tile the whole session.** ``load_input_files._get_clean_tiled_epochs``
-  tiles only USV-*free* stretches, which is exactly backwards here — a history
-  window that *contains* calls is the observation under test. Anchors are spaced
-  one ``history_seconds`` apart with no forbidden zones, so no two rows share a
-  history sample.
-* **The target is behavioural and stays in native units.** It is read from the raw
-  feature table before selection and z-scoring, clipped to
-  ``FeatureZoo.feature_boundaries``, and averaged over a short forward window.
-  Predictors are pooled-z-scored as everywhere else; the response is not, because
-  the link function handles its scale and z-scoring would make a Gamma likelihood
-  undefined.
-* **Predictors are partitioned into blocks.** No other selector has a notion of a
-  feature block — candidates are always individual named features — so the
-  kinematic/social baseline and the vocal block are kept separable, and the
-  partition travels in the artifact's metadata.
-
-**What the result artifact carries.** One entry per likelihood arm, each holding
-``screen`` (per-feature paired margins against the shifted-response null), ``selection``
-(the accepted features in order, plus every candidate's score at every step),
-``increment`` (the observed paired margin, per-fold baseline and full scores, all
-``n_shift_draws`` null margins, ``z_vs_null`` and ``p_vs_null``) and ``held_out``. The
-increment and held-out entries additionally carry per-fold **predictions**
-(``y_true`` / ``y_pred`` / ``test_indices``, so anything can be re-scored or plotted
-afterwards), descriptive metrics (Spearman, Pearson, MAE, RMSE, residual deviance, each
-labelled with the ``score_scale`` its arm was fitted on) and per-feature **temporal
-filter shapes** — the partial-dependence curve ``predict_mu(test_grid) - predict_mu(base_grid)``
-over the whole history, which reads as the effect of a +1 SD increase in that feature at
-each lag and is what makes the response *latency* legible rather than inferred.
-
-Two derived statistics sit alongside the raw margin. **``fraction_of_remaining``** divides
-the per-fold increment by ``1 - baseline``, because an absolute D2 margin is not comparable
-across configurations -- the baseline absorbs a different share of the deviance in each one,
-so the same margin means something very different against a baseline at 0.05 than at 0.60.
-It answers the question actually being asked: of what the kinematics could *not* explain,
-how much does the vocal block account for? And **``per_session``** re-scores each fold's
-stored predictions split by session, so "is this general, or carried by a few pairs?" is a
-lookup rather than a re-analysis; note the folds are Monte Carlo shuffle-splits, so a session
-never held out simply has no entry.
-
-``held_out`` is the honest last look: both models are refit on the development sessions
-and scored once on the carve-once reserve, which is excluded from every CV fold and from
-the entire selection search. It has no null attached — it corroborates the
-cross-validated increment rather than re-testing it.
-
-**Every acceptance in the run uses the same rule** — the paired 1SE test on the
-per-fold improvement (``modeling_utils.paired_one_se_improvement``), shared with the
-other selectors. The vocal block is held to exactly the standard the features it is
-compared against were held to; giving it a different one would make the comparison
-incoherent.
-
-That bar is deliberately lenient in the screen and the forward loop, because those
-build the **control**: a feature kept out of the baseline is not controlled for, it
-is merely absent, and the vocal block would inherit whatever it would have explained.
-
-**The screen's null is a circular SHIFT of the response, not a permutation.** The
-dispatcher's default is ``y_permutation``; this analysis overrides it through
-``BoutParameterPipeline._null_target``, an overridable seam whose default is
-unchanged for every other pipeline. Permutation destroys the response's own
-autocorrelation, which makes it an easier null than the data warrants — the
-predictors are strongly autocorrelated, so a scrambled target is trivially harder to
-predict than a real one.
-
-**No null is computed at the vocal step.** Held-out cross-validation across sessions
-already establishes that a block improving prediction on data it never saw carries
-real information; that is what the 1SE rule tests, exactly as at every earlier step.
-A shift null of the *vocal block* answers a narrower question — is the information in
-the **timing** of the calls, or merely in the shape of a sparse bursty trace? — which
-is a follow-up on an effect you already have rather than a criterion for deciding
-whether you have one. ``circular_shift_rows_within_session`` and
-``paired_fold_margin`` remain in the module for that purpose, to be run once and only
-if the vocal step is accepted.
+Three failures are made loud rather than silent: a rank-deficient design names
+the offending columns instead of raising ``LinAlgError`` from inside statsmodels;
+a total loss of rows attributes the loss per covariate, because one non-finite
+covariate drops a whole row and 38 columns multiply that risk; and a
+``response_features`` entry that is not a known kinematic feature is rejected
+before any session is read.
 
 Notebook
 --------

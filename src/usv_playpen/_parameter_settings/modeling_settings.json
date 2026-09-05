@@ -275,14 +275,21 @@
   },
   "behavioral_response": {
     "response_mouse_index": 1,
-    "response_feature": "speed",
+    "response_features": [
+      "speed",
+      "neck_elevation",
+      "allo_roll",
+      "allo_pitch",
+      "ego_yaw",
+      "back_pitch",
+      "back_yaw",
+      "tail_curvature"
+    ],
     "history_seconds": 4.0,
     "target_window_seconds": 0.5,
-    "target_gap_seconds": 0.0,
-    "vocal_predictor_type": "pooled_rate",
-    "vocal_smoothing_sd_frames": 1,
-    "likelihood": "gamma",
-    "n_shift_draws": 200,
-    "shift_null_min_seconds": 20.0
+    "target_bin_seconds": 0.05,
+    "post_bout_silence_seconds": 0.5,
+    "covariate_summary_seconds": [0.5, 4.0],
+    "duration_n_bins": 3
   }
 }
