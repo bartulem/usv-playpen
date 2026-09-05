@@ -4,6 +4,7 @@
       "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_intact_partners_sessions_list.txt",
       "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_mute_female_sessions_list.txt"
     ],
+    "behaviour_selection_result_path": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_male_intact_partners_manifold_qlvm_supercategory_session_20260806_222842Z.pkl",
     "brain_areas": ["PAG"],
     "area_mode": "include",
     "pool_areas": false,
@@ -135,10 +136,20 @@
   },
   "nested_position_decoding": {
     "behaviour_control": "rich",
+    "reduced_model_features": [
+      "self.neck_elevation",
+      "nose-nose",
+      "allo_yaw-nose",
+      "self.back_pitch",
+      "self.allo_roll"
+    ],
     "compute_matched_window_control": true,
     "vm_score_mode": "macro",
+    "region_label_column": "qlvm_supercategory",
+    "min_region_events": 20,
     "lambda_smooth": 1.0,
     "l2_reg": 0.01,
+    "smoothness_derivative_order": 1,
     "prevocal_window_n_bins": 1,
     "rate_transform": "none",
     "rate_basis": "linear",

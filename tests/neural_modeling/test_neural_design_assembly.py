@@ -343,8 +343,27 @@ class TestSettingsInvariants:
             "max_quiet_tiles_per_session", "when_axis", "geodesic_metrics", "tuning_surface",
             "discrimination_null", "record_overdispersion_index"}
         assert set(settings["nested_position_decoding"]) == {
-            "behaviour_control", "compute_matched_window_control", "vm_score_mode", "lambda_smooth",
-            "l2_reg", "prevocal_window_n_bins", "rate_transform", "rate_basis", "rate_basis_n_bins"}
+            "behaviour_control", "reduced_model_features", "compute_matched_window_control",
+            "vm_score_mode", "region_label_column", "min_region_events", "lambda_smooth", "l2_reg",
+            "smoothness_derivative_order", "prevocal_window_n_bins", "rate_transform", "rate_basis",
+            "rate_basis_n_bins"}
+
+    def test_claim_three_matches_p1_where_it_must(self):
+        """Claim 3 is "P1 plus the neuron", so the control has to be fitted and SCORED the way P1
+        fitted and scored it. A silent divergence here would make the reduced model suboptimal for
+        the test, which biases claim 3 toward passing -- the wrong direction for a positive claim."""
+        nested = _load_settings()["nested_position_decoding"]
+        modeling = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
+                    / "_parameter_settings" / "modeling_settings.json")
+        with modeling.open() as handle:
+            p1 = json.load(handle)
+        manifold = p1["hyperparameters"]["linear_models"]["manifold_regression"]
+        vocal = p1["vocal_features"]
+        assert nested["lambda_smooth"] == manifold["lambda_smooth_fixed"]
+        assert nested["l2_reg"] == manifold["l2_reg_fixed"]
+        assert nested["smoothness_derivative_order"] == manifold["smoothness_derivative_order"]
+        assert nested["vm_score_mode"] == vocal["usv_manifold_selection_score"]
+        assert nested["min_region_events"] == vocal["usv_manifold_min_region_events"]
 
     def test_the_dead_min_gates_are_gone(self):
         """`data_sufficiency` once held six `min_*` keys that nothing read, every value null, whose
