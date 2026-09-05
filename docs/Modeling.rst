@@ -1077,7 +1077,7 @@ are negligible: none at all for ``speed`` and ``tail_curvature``, 0.009% for
 
 The contrast
 ~~~~~~~~~~~~
-``behavioral_response_contrast`` fits a GLM with session-clustered standard
+``behavioral_response_contrast``, in the same module, fits a GLM with session-clustered standard
 errors — not a nested predictive comparison. A nested comparison answers "does
 the vocal block improve out-of-sample prediction" and reports a ``dD^2``, which
 conflates effect size, timing and nonlinearity; on the tiled precursor it came
@@ -1106,8 +1106,8 @@ target, so the single contrast becomes a time course of when the response appear
 
 .. code-block:: python
 
-    from usv_playpen.modeling.modeling_behavioral_response import BehavioralResponsePipeline
-    from usv_playpen.modeling.behavioral_response_contrast import (
+    from usv_playpen.modeling.modeling_behavioral_response import (
+        BehavioralResponsePipeline,
         behavioral_response_contrast,
     )
 
