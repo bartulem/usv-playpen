@@ -63,6 +63,55 @@ def inner_folds(pool_session_ids: list) -> list:
             for held_out in pool_session_ids]
 
 
+def quiet_block_sessions(session: dict, session_id: str, n_blocks: int, gap_frames: int) -> dict:
+    """
+    Description
+    -----------
+    Split one session's quiet anchors into contiguous time blocks presented as pseudo-sessions.
+
+    Screening and selection need an inner split, and a unit with only one session left to fit on has no
+    second session to hold out. Cutting its quiet anchors into contiguous blocks supplies the split
+    within the session instead, which is the fallback the cohort settings already anticipate with
+    ``block_cv_n_folds`` and ``block_cv_gap_seconds``.
+
+    The blocks are handed back as entries that look exactly like sessions, differing only in which quiet
+    anchors they carry, so ``inner_folds``, ``fit_quiet_model`` and the screen run over them unchanged.
+    Contiguous rather than interleaved blocks matter: kinematics are strongly autocorrelated, so an
+    interleaved split would put near-identical frames on both sides and report a generalisation that is
+    really memorisation. Each block is trimmed by ``gap_frames`` at both ends, which leaves a real gap
+    between any train block and any validation block and limits the leak the 4 s history would otherwise
+    carry across a boundary.
+
+    Parameters
+    ----------
+    session (dict)
+        The assembled session.
+    session_id (str)
+        Its identifier; block keys are derived from it.
+    n_blocks (int)
+        Number of contiguous blocks.
+    gap_frames (int)
+        Frames trimmed from each end of every block.
+
+    Returns
+    -------
+    blocks (dict)
+        ``{f"{session_id}#block{i}": session-like dict}``, skipping any block left empty by the trim.
+    """
+
+    quiet = np.sort(session["quiet"])
+    edges = np.linspace(0, quiet.size, n_blocks + 1).astype(int)
+    blocks = {}
+    for index in range(n_blocks):
+        piece = quiet[edges[index]:edges[index + 1]]
+        if piece.size <= 2 * gap_frames:
+            continue
+        trimmed = piece[gap_frames:piece.size - gap_frames] if gap_frames > 0 else piece
+        if trimmed.size == 0:
+            continue
+        blocks[f"{session_id}#block{index}"] = {**session, "quiet": trimmed}
+    return blocks
+
 def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices: list, n_lags: int,
                     rng, encoding_settings: dict, message_output=print) -> tuple:
     """

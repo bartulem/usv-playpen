@@ -151,7 +151,7 @@
     "pvalue_method": "empirical_escalated",
     "fdr_method": "bh",
     "fdr_q": 0.01,
-    "escalation_ladder": [10000, 100000, 1000000],
+    "escalation_ladder": [10000, 100000],
     "report_bh_floor_requirement": true
   },
   "robustness": {

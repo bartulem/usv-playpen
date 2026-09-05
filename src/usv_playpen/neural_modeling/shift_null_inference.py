@@ -133,6 +133,62 @@ def shifted_spike_frames(spike_frames: np.ndarray, shift_seconds: float, fps: fl
     return np.sort((spike_frames + shift_seconds * fps) % n_frames).astype(np.int64)
 
 
+def escalated_empirical_pvalue(observed: float, draw_more, ladder: list, initial_null: np.ndarray,
+                               message_output=print) -> tuple[float, bool, np.ndarray]:
+    """
+    Description
+    -----------
+    Resolve an empirical p that has bottomed out, by drawing more shuffles rather than extrapolating.
+
+    An empirical p cannot go below ``1 / (n + 1)``, so a unit whose observed value beats every draw is
+    reported at that floor and nothing distinguishes it from a unit a thousand times more extreme. At
+    1,000 draws the floor is 9.99e-4, while BH across a 2,525-unit cohort needs about 2e-5 for the
+    top-ranked unit -- so the floor, not the data, would decide the cohort.
+
+    The escalation is by DECADE and it ACCUMULATES: a run that floors at 1,000 draws is topped up to
+    10,000, then to 100,000, then to 1,000,000, keeping the draws already taken rather than discarding
+    them. Accumulating is valid here because the draws are exchangeable and the decision to continue
+    depends only on whether the floor was reached, never on where the observed value sits among the new
+    draws. It stops as soon as the p lifts off the floor, so only genuinely extreme units pay for the
+    deep ladder.
+
+    Resolution is bought with draws and never with a parametric tail. A GPD fit was used earlier and is
+    dropped project-wide: it silently fell back to the floor when the observed exceeded its fitted
+    support, and in the gating pilot it extrapolated 3-sigma borderline features into false positives.
+
+    Parameters
+    ----------
+    observed (float)
+        The observed statistic.
+    draw_more (Callable)
+        ``draw_more(n) -> np.ndarray`` returning ``n`` FRESH null scores.
+    ladder (list)
+        Ascending target draw counts, e.g. ``[10000, 100000, 1000000]``.
+    initial_null (np.ndarray)
+        Null scores already in hand.
+    message_output (Callable)
+        Where escalation steps are reported.
+
+    Returns
+    -------
+    p_value (float)
+        The empirical p at the deepest level reached.
+    at_floor (bool)
+        Whether it is STILL at the floor after the whole ladder.
+    null (np.ndarray)
+        Every null score drawn, so the escalation is auditable.
+    """
+
+    null = np.asarray(initial_null, dtype=np.float64)
+    p_value, at_floor = empirical_pvalue(null, observed)
+    for target in ladder:
+        if not at_floor or target <= null.size:
+            break
+        message_output(f"      escalating {null.size} -> {target} draws (p at the {p_value:.3e} floor)")
+        null = np.concatenate([null, np.asarray(draw_more(target - null.size), dtype=np.float64)])
+        p_value, at_floor = empirical_pvalue(null, observed)
+    return p_value, at_floor, null
+
 def bh_floor_requirement(n_tests: int, fdr_q: float, n_shuffles: int) -> float:
     """
     Description

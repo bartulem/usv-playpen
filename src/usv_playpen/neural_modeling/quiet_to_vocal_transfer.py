@@ -34,7 +34,10 @@ from .deviance_metrics import (area_under_roc, calibrated_explained_deviance,
                                explained_deviance_vs_reference_rate,
                                pooled_calibrated_explained_deviance)
 from .neural_design_assembly import spike_labels_at_frames
-from .shift_null_inference import empirical_pvalue, sample_circular_shift, shifted_spike_frames
+# Memory budget for one block of pooled null draws; see pooled_transfer_null.
+_POOLED_BLOCK_BYTES = 64 * 1024 * 1024
+
+from .shift_null_inference import empirical_pvalue, escalated_empirical_pvalue, sample_circular_shift, shifted_spike_frames
 
 
 def score_fold(estimator, session: dict, feature_indices: list, vocal_frames: np.ndarray, n_lags: int,
@@ -128,24 +131,39 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
     eta = np.concatenate([result["eta"] for result in fold_results])
     session_index = np.concatenate([np.full(result["labels"].size, index)
                                     for index, result in enumerate(fold_results)])
-    shuffled_labels = []
-    for index, session_id in enumerate(session_ids):
-        session = per_session[session_id]
-        frames = vocal_frames_by_session[session_id]
-        rng = np.random.default_rng(seed + index)
-        block = np.empty((n_shuffles, frames.size), dtype=np.float64)
-        for draw in range(n_shuffles):
-            shifted = shifted_spike_frames(
-                session["spike_frames"],
-                sample_circular_shift(rng, session["n_frames"], session["fps"], guard_seconds),
-                session["fps"], session["n_frames"])
-            block[draw] = spike_labels_at_frames(shifted, frames, session["n_frames"])
-        shuffled_labels.append(block)
 
-    stacked = np.concatenate(shuffled_labels, axis=1)
-    return np.array([pooled_calibrated_explained_deviance(eta, stacked[draw], session_index,
-                                                          calibration_steps)[0]
-                     for draw in range(n_shuffles)], dtype=np.float64)
+    # Draws are processed in CHUNKS. The previous version built an (n_shuffles, n_frames) label matrix
+    # per session and concatenated them, which is fine at the 1,000 draws it was written for and fatal
+    # once the escalation ladder asks for more: at 69,174 pooled vocal frames that is 55 GB at 100,000
+    # draws and 498 GB at 1,000,000. It exhausted host RAM and took the desktop down with it. The chunk
+    # is sized by a memory budget, and each session keeps ONE generator across chunks so the sequence of
+    # shifts is exactly what an unchunked run would have drawn.
+    total_frames = max(int(eta.size), 1)
+    chunk = int(max(1, min(n_shuffles, _POOLED_BLOCK_BYTES // (total_frames * 8))))
+    generators = [np.random.default_rng(seed + index) for index in range(len(session_ids))]
+
+    null = np.empty(n_shuffles, dtype=np.float64)
+    for start in range(0, n_shuffles, chunk):
+        stop = min(start + chunk, n_shuffles)
+        pieces = []
+        for index, session_id in enumerate(session_ids):
+            session = per_session[session_id]
+            frames = vocal_frames_by_session[session_id]
+            generator = generators[index]
+            block = np.empty((stop - start, frames.size), dtype=np.float64)
+            for draw in range(stop - start):
+                shifted = shifted_spike_frames(
+                    session["spike_frames"],
+                    sample_circular_shift(generator, session["n_frames"], session["fps"],
+                                          guard_seconds),
+                    session["fps"], session["n_frames"])
+                block[draw] = spike_labels_at_frames(shifted, frames, session["n_frames"])
+            pieces.append(block)
+        stacked = np.concatenate(pieces, axis=1)
+        for offset in range(stop - start):
+            null[start + offset] = pooled_calibrated_explained_deviance(
+                eta, stacked[offset], session_index, calibration_steps)[0]
+    return null
 
 
 def combine_folds(fold_results: list, per_session: dict, session_ids: list,
@@ -190,15 +208,24 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
                                     for index, result in enumerate(fold_results)])
     calibration_steps = settings["kinematic_encoding"]["solver"]["calibration_steps"]
     score, slope = pooled_calibrated_explained_deviance(eta, labels, session_index, calibration_steps)
-    null = pooled_transfer_null(fold_results, per_session, session_ids, vocal_frames_by_session,
-                                settings["null"]["n_shuffles"], settings["null"]["shuffle_seed"],
-                                settings["null"]["shuffle_guard_seconds"], calibration_steps)
-    p_value, at_floor = empirical_pvalue(null, score)
-    message_output(f"  POOLED transfer  score {score:+.5f} | slope {slope:+.3f} | p {p_value:.4e}"
+    def draw_transfer_null(count, _offset=[0]):
+        """Fresh pooled-null draws; the seed advances so escalation never repeats a shift sequence."""
+        seed = int(settings["null"]["shuffle_seed"]) + 1_000_003 * _offset[0]
+        _offset[0] += 1
+        return pooled_transfer_null(fold_results, per_session, session_ids, vocal_frames_by_session,
+                                    count, seed, settings["null"]["shuffle_guard_seconds"],
+                                    calibration_steps)
+
+    null = draw_transfer_null(settings["null"]["n_shuffles"])
+    p_value, at_floor, null = escalated_empirical_pvalue(
+        score, draw_transfer_null, settings["significance"]["escalation_ladder"], null,
+        message_output)
+    message_output(f"  TESTED TRANSFER (representative model, pooled)  score {score:+.5f} "
+                   f"| slope {slope:+.3f} | p {p_value:.4e}"
                    f"{' (at floor, escalation would resolve further)' if at_floor else ''} "
                    f"| {labels.size} vocal frames")
     for session_id, result in zip(session_ids, fold_results):
-        message_output(f"    fold {session_id}: score {result['fold_score']:+.5f} "
+        message_output(f"    per-session {session_id}: score {result['fold_score']:+.5f} "
                        f"| slope {result['fold_slope']:+.3f} | AUROC {result['auroc']:.3f} "
                        f"| {result['n_frames']} frames at rate {result['spike_rate']:.4f}")
     return {"score": score, "slope": slope, "p": p_value, "at_floor": at_floor,
