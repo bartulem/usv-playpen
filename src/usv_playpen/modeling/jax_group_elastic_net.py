@@ -42,13 +42,51 @@ runs float32).
 from __future__ import annotations
 
 import time
+from contextlib import contextmanager
 from functools import partial
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-jax.config.update("jax_enable_x64", True)
+
+@contextmanager
+def double_precision():
+    """
+    Description
+    -----------
+    Enable JAX 64-bit arithmetic for the duration of a block, then restore whatever was set before.
+
+    This solver needs float64: its explicit ``dtype=jnp.float64`` casts are silently downgraded to
+    float32 unless x64 is on, and the FISTA path relies on the extra precision. It used to get it by
+    calling ``jax.config.update("jax_enable_x64", True)`` at MODULE level, which is a process-wide side
+    effect of merely importing the file.
+
+    That collided with the rest of `modeling/`, which is deliberately float32. Pytest imports every test
+    module during collection, so a single test importing anything that reaches this file flipped the flag
+    before any test ran, and the CNN then built float64 parameters against float32 activations and raised
+    `TypeError`. Six CNN tests and one manifold test failed in the full suite while passing in isolation --
+    a failure mode that looks like flakiness and is not.
+
+    Scoping it here keeps the precision where it is needed and leaves the global default untouched.
+    ``jax.experimental.enable_x64`` does not exist in jax 0.9.2 and ``jax.config`` exposes no per-option
+    context manager, so the flag is saved and restored by hand.
+
+    Yields
+    ------
+    None
+        Inside the block ``jnp`` honours float64 requests; outside, the previous setting is restored.
+    """
+
+    previous = bool(jax.config.jax_enable_x64)
+    if not previous:
+        jax.config.update("jax_enable_x64", True)
+    try:
+        yield
+    finally:
+        if not previous:
+            jax.config.update("jax_enable_x64", False)
+
 
 _JITTER = 1e-12
 
@@ -547,6 +585,14 @@ class GroupElasticNetGLM:
                    f"{n_inputs}.")
             raise ValueError(msg)
 
+        with double_precision():
+            return self._fit_in_double(x_design, y, sample_weight, offset, t0)
+
+    def _fit_in_double(self, x_design: np.ndarray, y: np.ndarray,
+                       sample_weight: np.ndarray | None, offset: np.ndarray | None,
+                       t0: float) -> "GroupElasticNetGLM":
+        """The body of ``fit``, run inside :func:`double_precision` so the float64 casts below take."""
+        n_inputs = self.n_features * self.n_time_bins
         x_j = jnp.asarray(x_design, dtype=jnp.float64)
         y_j = jnp.asarray(y, dtype=jnp.float64)
         n_samples = x_j.shape[0]
