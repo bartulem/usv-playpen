@@ -225,6 +225,100 @@ def inter_bout_quiet_anchors(bout_onsets: np.ndarray,
     return anchor_frames[fits]
 
 
+def deep_silence_anchors(bout_onsets: np.ndarray,
+                         bout_durations: np.ndarray,
+                         camera_fps: float,
+                         n_frames: int,
+                         history_frames: int,
+                         lookahead_frames: int,
+                         margin_seconds: float,
+                         stride_frames: int) -> np.ndarray:
+    """
+    Tiles anchors through stretches with no male bout within a wide margin.
+
+    Where :func:`inter_bout_quiet_anchors` samples the gaps *between* bouts, this
+    samples the stretches where he has not called for ``margin_seconds`` on either
+    side. The two answer different questions and neither is strictly better:
+
+    *   Inter-bout silence keeps the animals inside an ongoing interaction, but is
+        contaminated by carryover -- if calling shifts her state for tens of
+        seconds, a moment between two bouts is still a post-vocal moment, so the
+        contrast can only ever see the fast component.
+    *   Deep silence escapes that carryover, at the cost of a larger imbalance in
+        social state: measured on this cohort it sits 1.09 SD away from the
+        post-bout condition in ``nose-nose`` distance, against 0.74 SD for
+        inter-bout silence. Every other covariate stays under 0.32 SD, and common
+        support is 99.7%, so the adjustment interpolates rather than extrapolates.
+
+    Both are produced by one extraction so the choice can be made -- and reported
+    both ways -- without re-reading the cohort.
+
+    Parameters
+    ----------
+    bout_onsets : np.ndarray
+        Bout start times in seconds, ascending.
+    bout_durations : np.ndarray
+        Bout durations in seconds, aligned with ``bout_onsets``.
+    camera_fps : float
+        Tracking frame rate.
+    n_frames : int
+        Number of frames in the session.
+    history_frames : int
+        Pre-anchor window width, in frames.
+    lookahead_frames : int
+        Forward window width, in frames.
+    margin_seconds : float
+        Required distance from the nearest male bout, on both sides.
+    stride_frames : int
+        Spacing between successive anchors inside a qualifying stretch, so the
+        rows do not overlap.
+
+    Returns
+    -------
+    anchor_frames : np.ndarray
+        Frame indices of the qualifying anchors; empty when the session has no
+        stretch long enough.
+    """
+
+    if bout_onsets.size == 0:
+        return np.empty(0, dtype=int)
+
+    order = np.argsort(bout_onsets)
+    onsets, durations = bout_onsets[order], bout_durations[order]
+    offsets = onsets + durations
+
+    # Forbidden intervals are the bouts grown by the margin on both sides; the
+    # anchors then tile whatever remains.
+    forbidden = np.stack([onsets - margin_seconds, offsets + margin_seconds], axis=1)
+    merged: list[list[float]] = []
+    for low, high in forbidden:
+        if merged and low <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], high)
+        else:
+            merged.append([low, high])
+
+    history_seconds = history_frames / camera_fps
+    lookahead_seconds = lookahead_frames / camera_fps
+    stride_seconds = stride_frames / camera_fps
+    last_usable = n_frames / camera_fps - lookahead_seconds
+
+    anchors: list[np.ndarray] = []
+    cursor = history_seconds
+    for low, high in merged:
+        stop_at = min(low, last_usable)
+        if stop_at > cursor:
+            anchors.append(np.arange(cursor, stop_at, stride_seconds))
+        cursor = max(cursor, high + history_seconds)
+    if last_usable > cursor:
+        anchors.append(np.arange(cursor, last_usable, stride_seconds))
+    if not anchors:
+        return np.empty(0, dtype=int)
+
+    anchor_frames = np.round(np.concatenate(anchors) * camera_fps).astype(int)
+    fits = (anchor_frames - history_frames >= 0) & (anchor_frames + lookahead_frames <= n_frames)
+    return anchor_frames[fits]
+
+
 def summarise_history(values: np.ndarray,
                       anchor_frames: np.ndarray,
                       summary_frames: list[int]) -> np.ndarray:
@@ -350,6 +444,7 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         self.response_window_frames = int(np.floor(camera_rate * response_settings['target_window_seconds']))
         self.response_bin_frames = int(np.floor(camera_rate * response_settings['target_bin_seconds']))
         self.response_silence_frames = int(np.floor(camera_rate * response_settings['post_bout_silence_seconds']))
+        self.deep_silence_margin_seconds = float(response_settings['deep_silence_margin_seconds'])
         self.covariate_summary_frames = [
             int(np.floor(camera_rate * seconds))
             for seconds in response_settings['covariate_summary_seconds']
@@ -545,9 +640,18 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         Derives the likelihood family from the feature's post-fold support.
 
         This is a property of the feature, not a preference, so it is computed
-        rather than configured: a signed feature simply cannot use a Gamma
-        likelihood, and a settings key would let someone assert otherwise and
-        silently discard every non-positive row.
+        rather than configured: a signed feature simply cannot be logged, and a
+        settings key would let someone assert otherwise and silently discard every
+        non-positive row.
+
+        A non-negative feature gets ``'lognormal'`` -- a Gaussian fit to
+        ``log(y)``, so the coefficient is still a multiplicative effect but on the
+        GEOMETRIC mean. That is the primary estimand because speed here carries a
+        long tail: per-session differences span -14.9 to +23 cm/s, and a
+        mean-based Gamma fit is dominated by a handful of sessions (measured:
+        p=0.67 where a per-session sign test gives p=0.017 on the same rows). The
+        Gamma mean is still fitted and reported alongside, so the stronger "she
+        travelled further" claim remains available when the two agree.
 
         Both magnitude folds map onto ``[0, inf)``, so a folded feature is always
         Gamma-usable. An unfolded feature is Gamma-usable when its lower bound is
@@ -563,13 +667,14 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         Returns
         -------
         likelihood : str
-            ``'gamma'`` when the feature cannot be negative, else ``'gaussian'``.
+            ``'lognormal'`` when the feature cannot be negative, else
+            ``'gaussian'``.
         """
 
         if self._response_fold_label(response_feature) != 'none':
-            return 'gamma'
+            return 'lognormal'
         lower_bound, _ = self.feature_boundaries[response_feature]
-        return 'gamma' if lower_bound >= 0.0 else 'gaussian'
+        return 'lognormal' if lower_bound >= 0.0 else 'gaussian'
 
     def extract_and_save_modeling_input_data(self) -> None:
         """
@@ -795,6 +900,7 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
                 'target_bin_edges_frames': [int(e) for e in self.response_bin_edges],
                 'n_response_bins': int(self.n_response_bins),
                 'post_bout_silence_seconds': response_settings['post_bout_silence_seconds'],
+                'deep_silence_margin_seconds': response_settings['deep_silence_margin_seconds'],
                 'covariate_summary_seconds': list(response_settings['covariate_summary_seconds']),
                 'covariate_summary_frames': list(self.covariate_summary_frames),
                 'duration_n_bins': int(response_settings['duration_n_bins']),
@@ -828,6 +934,7 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         rows_target: list[np.ndarray] = []
         rows_bins: list[np.ndarray] = []
         rows_vocal: list[np.ndarray] = []
+        rows_condition: list[np.ndarray] = []
         rows_duration: list[np.ndarray] = []
         rows_session: list[np.ndarray] = []
         anchors_per_session: dict[str, dict[str, int]] = {}
@@ -856,17 +963,34 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
                 lookahead_frames=self.response_window_frames,
                 rng=anchor_rng,
             )
-            anchor_frames = np.concatenate([vocal_frames, quiet_frames])
+            # Both controls are built in the same pass: the anchors are cheap once
+            # the session is loaded, and producing them together means the choice
+            # between them -- and reporting both -- costs no second 2-hour read,
+            # and rests on identical sessions and identical covariates.
+            deep_frames = deep_silence_anchors(
+                bout_onsets=predictor_bout_onsets[sess_id],
+                bout_durations=predictor_bout_durations[sess_id],
+                camera_fps=camera_fps,
+                n_frames=n_frames,
+                history_frames=self.response_history_frames,
+                lookahead_frames=self.response_window_frames,
+                margin_seconds=self.deep_silence_margin_seconds,
+                stride_frames=self.response_history_frames,
+            )
+            anchor_frames = np.concatenate([vocal_frames, quiet_frames, deep_frames])
             if anchor_frames.size == 0:
                 continue
 
-            is_vocal = np.concatenate([
+            # 1 = after a bout, 0 = inter-bout silence, 2 = deep silence.
+            condition = np.concatenate([
                 np.ones(vocal_frames.size, dtype=float),
                 np.zeros(quiet_frames.size, dtype=float),
+                np.full(deep_frames.size, 2.0, dtype=float),
             ])
+            is_vocal = (condition == 1.0).astype(float)
             durations = np.concatenate([
                 vocal_durations,
-                np.full(quiet_frames.size, np.nan, dtype=float),
+                np.full(quiet_frames.size + deep_frames.size, np.nan, dtype=float),
             ])
 
             # One target per feature. Rows are NOT filtered on any single feature's
@@ -914,11 +1038,14 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             rows_target.append(window_stack[usable])
             rows_bins.append(bin_stack[usable])
             rows_vocal.append(is_vocal[usable])
+            rows_condition.append(condition[usable])
             rows_duration.append(durations[usable])
             rows_session.append(np.full(int(usable.sum()), sess_id, dtype=object))
+            kept = condition[usable]
             anchors_per_session[sess_id] = {
-                'vocal': int(is_vocal[usable].sum()),
-                'quiet': int((1.0 - is_vocal[usable]).sum()),
+                'vocal': int((kept == 1.0).sum()),
+                'inter_bout': int((kept == 0.0).sum()),
+                'deep_silence': int((kept == 2.0).sum()),
             }
 
         if not rows_target:
@@ -954,6 +1081,7 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             response_features=response_features,
             response_likelihoods=likelihoods,
             is_vocal=np.concatenate(rows_vocal),
+            condition=np.concatenate(rows_condition),
             bout_duration=np.concatenate(rows_duration),
             session_ids=np.concatenate(rows_session),
             input_metadata=input_metadata,
@@ -969,6 +1097,7 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
                              response_features: list[str],
                              response_likelihoods: dict[str, str],
                              is_vocal: np.ndarray,
+                             condition: np.ndarray,
                              bout_duration: np.ndarray,
                              session_ids: np.ndarray,
                              input_metadata: dict[str, Any],
@@ -997,7 +1126,11 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         response_likelihoods : dict
             Derived likelihood family per response feature.
         is_vocal : np.ndarray
-            ``(n_rows,)`` 1.0 at bout offsets, 0.0 at inter-bout quiet anchors.
+            ``(n_rows,)`` 1.0 at bout offsets, 0.0 at either control.
+        condition : np.ndarray
+            ``(n_rows,)`` 1.0 after a bout, 0.0 inter-bout silence, 2.0 deep
+            silence, so either control can be selected downstream without
+            re-extracting.
         bout_duration : np.ndarray
             ``(n_rows,)`` bout duration in seconds; ``nan`` on quiet rows.
         session_ids : np.ndarray
@@ -1022,7 +1155,8 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             )
             raise ValueError(msg)
         for label, array in (('covariates', covariates), ('target_bins', target_bins),
-                             ('is_vocal', is_vocal), ('bout_duration', bout_duration),
+                             ('is_vocal', is_vocal), ('condition', condition),
+                             ('bout_duration', bout_duration),
                              ('session_ids', session_ids)):
             if array.shape[0] != n_rows:
                 msg = (
@@ -1037,11 +1171,15 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             )
             raise ValueError(msg)
 
-        n_vocal = int(np.sum(is_vocal > 0.0))
+        n_vocal = int(np.sum(condition == 1.0))
+        n_inter = int(np.sum(condition == 0.0))
+        n_deep = int(np.sum(condition == 2.0))
         n_quiet = n_rows - n_vocal
         print("=" * 70)
         print(f"  > Sessions contributing:        {len(anchors_per_session)}")
-        print(f"  > Anchors (vocal / quiet):      {n_vocal} / {n_quiet}")
+        print(f"  > Anchors after a bout:         {n_vocal}")
+        print(f"  > Anchors inter-bout silence:   {n_inter}")
+        print(f"  > Anchors deep silence:         {n_deep}")
         print(f"  > Covariate columns:            {covariates.shape[1]}")
         print(f"  > Response bins:                {target_bins.shape[2]}")
         print(f"  > Bout duration (s), median:    {np.nanmedian(bout_duration):.3f}")
@@ -1063,6 +1201,8 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         input_metadata['n_rows'] = n_rows
         input_metadata['n_vocal_rows'] = n_vocal
         input_metadata['n_quiet_rows'] = n_quiet
+        input_metadata['n_inter_bout_rows'] = n_inter
+        input_metadata['n_deep_silence_rows'] = n_deep
         input_metadata['analysis_specific']['covariate_labels'] = list(covariate_labels)
         input_metadata['analysis_specific']['response_features'] = list(response_features)
         input_metadata['analysis_specific']['response_likelihoods'] = dict(response_likelihoods)
@@ -1076,6 +1216,9 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
                 'response_features': list(response_features),
                 'response_likelihoods': dict(response_likelihoods),
                 'is_vocal': is_vocal,
+                'condition': condition,
+                'condition_levels': {'after_bout': 1.0, 'inter_bout_silence': 0.0,
+                                     'deep_silence': 2.0},
                 'bout_duration': bout_duration,
                 'session_ids': session_ids,
             },
@@ -1192,6 +1335,73 @@ def build_design_matrix(covariates: np.ndarray,
     return design, labels
 
 
+def build_continuous_design_matrix(covariates: np.ndarray,
+                                   is_vocal: np.ndarray,
+                                   bout_duration: np.ndarray,
+                                   covariate_labels: list[str]) -> tuple[np.ndarray, list[str]]:
+    """
+    Assembles the primary design: a vocal step plus one continuous duration slope.
+
+    Two vocal terms rather than three tercile indicators:
+
+    *   ``vocal`` -- the step from silence to a bout of AVERAGE length, since the
+        duration term is centred. This answers question 1.
+    *   ``vocal_x_log_duration`` -- the slope in ``log`` duration, z-scored across
+        the vocal rows. This answers question 2 in one parameter instead of three,
+        so the bands cannot compete against each other under correction.
+
+    Duration enters as a LOG because it is heavily skewed (median 0.435 s, p99
+    3.39 s, max 8.9 s); a raw linear term would be dominated by the few
+    multi-second bouts. On the log scale the coefficient reads per e-fold, or
+    scaled by ``log(2)`` per doubling of bout length.
+
+    Quiet rows carry zero on both vocal terms rather than a duration of zero:
+    coding them as zero-length bouts would assert that "no bout at all" lies on
+    the same line as "a very short bout", which is the assumption under test.
+
+    Parameters
+    ----------
+    covariates : np.ndarray
+        ``(n_rows, n_covariates)`` pre-anchor history summaries.
+    is_vocal : np.ndarray
+        Per-row 1.0 at bout offsets, 0.0 at control anchors.
+    bout_duration : np.ndarray
+        Per-row bout duration in seconds; ``nan`` on control rows.
+    covariate_labels : list of str
+        Column names for ``covariates``.
+
+    Returns
+    -------
+    design, labels : tuple
+        ``(n_rows, 2 + n_covariates + 1)`` design matrix and its column names.
+    """
+
+    vocal_mask = is_vocal > 0.0
+    if not np.any(vocal_mask):
+        msg = "No vocal rows are present, so the contrast has nothing to compare."
+        raise ValueError(msg)
+
+    log_duration = np.full(bout_duration.shape[0], 0.0, dtype=float)
+    vocal_log = np.log(bout_duration[vocal_mask])
+    centre, spread = float(np.mean(vocal_log)), float(np.std(vocal_log))
+    if spread <= 0.0:
+        msg = (
+            "Bout durations are all identical, so the duration slope is not "
+            "identifiable; drop the duration term or widen the cohort."
+        )
+        raise ValueError(msg)
+    log_duration[vocal_mask] = (vocal_log - centre) / spread
+
+    design = np.column_stack([
+        np.ones(covariates.shape[0]),
+        vocal_mask.astype(float),
+        vocal_mask.astype(float) * log_duration,
+        covariates,
+    ])
+    labels = ['intercept', 'vocal', 'vocal_x_log_duration'] + list(covariate_labels)
+    return design, labels
+
+
 def fit_contrast(target: np.ndarray,
                  design: np.ndarray,
                  labels: list[str],
@@ -1214,7 +1424,9 @@ def fit_contrast(target: np.ndarray,
     session_ids : np.ndarray
         ``(n_rows,)`` clustering unit for the robust covariance.
     likelihood : str
-        ``'gamma'`` (log link) or ``'gaussian'`` (identity on the raw response).
+        ``'lognormal'`` (Gaussian on ``log(y)``; multiplicative effect on the
+        geometric mean), ``'gamma'`` (log link; multiplicative on the mean) or
+        ``'gaussian'`` (identity on the raw response).
 
     Returns
     -------
@@ -1230,12 +1442,12 @@ def fit_contrast(target: np.ndarray,
         the surviving design is rank-deficient.
     """
 
-    if likelihood not in ('gamma', 'gaussian'):
-        msg = f"`likelihood` must be 'gamma' or 'gaussian'; got '{likelihood}'."
+    if likelihood not in ('lognormal', 'gamma', 'gaussian'):
+        msg = f"`likelihood` must be 'lognormal', 'gamma' or 'gaussian'; got '{likelihood}'."
         raise ValueError(msg)
 
     usable = np.isfinite(target) & np.all(np.isfinite(design), axis=1)
-    if likelihood == 'gamma':
+    if likelihood in ('lognormal', 'gamma'):
         usable &= target > 0.0
     n_dropped = int((~usable).sum())
     # A single non-finite covariate drops the whole row, so one bad feature can
@@ -1273,9 +1485,13 @@ def fit_contrast(target: np.ndarray,
         )
         raise ValueError(msg)
 
+    # 'lognormal' is a Gaussian fit to log(y): the coefficient stays a
+    # multiplicative effect, but on the GEOMETRIC mean, which is far less
+    # sensitive to this distribution's long tail than the Gamma mean.
     family = (sm.families.Gamma(link=sm.families.links.Log()) if likelihood == 'gamma'
               else sm.families.Gaussian())
-    model = sm.GLM(target[usable], fitted_design, family=family)
+    response = np.log(target[usable]) if likelihood == 'lognormal' else target[usable]
+    model = sm.GLM(response, fitted_design, family=family)
     fitted = model.fit(cov_type='cluster',
                        cov_kwds={'groups': session_ids[usable], 'use_correction': True})
 
@@ -1302,7 +1518,8 @@ def fit_contrast(target: np.ndarray,
 
 def behavioral_response_contrast(input_pickle_path: str | Path,
                                  output_directory: str | Path,
-                                 settings_path: str | Path | None = None) -> dict[str, Any]:
+                                 settings_path: str | Path | None = None,
+                                 control: str = 'inter_bout_silence') -> dict[str, Any]:
     """
     Runs the vocal-versus-silence contrast and its time course, and saves them.
 
@@ -1320,6 +1537,13 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
         Recorded in the run header for provenance; the analysis knobs themselves
         come from the artifact's ``_input_metadata``, so the extraction and the
         fit can never disagree about them.
+    control : str
+        Which silent condition to contrast against -- ``'inter_bout_silence'`` or
+        ``'deep_silence'``. Both are extracted together, so switching costs a
+        refit rather than a re-extraction. They answer different questions:
+        inter-bout silence keeps the animals inside an ongoing interaction but is
+        contaminated by carryover, while deep silence escapes the carryover at the
+        cost of a larger imbalance in social distance.
 
     Returns
     -------
@@ -1339,6 +1563,34 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
     response_likelihoods = dict(artifact['response_likelihoods'])
     n_duration_bins = int(analysis['duration_n_bins'])
 
+    # Artifacts written before the deep-silence control existed carry only
+    # `is_vocal`; treat those as the two-condition case rather than refusing to
+    # read them, since re-extraction costs a two-hour pass over the cohort.
+    if 'condition_levels' in artifact:
+        levels = artifact['condition_levels']
+        condition_raw = np.asarray(artifact['condition'], dtype=float)
+    else:
+        levels = {'after_bout': 1.0, 'inter_bout_silence': 0.0}
+        condition_raw = np.asarray(artifact['is_vocal'], dtype=float)
+        print(format_selection_step(
+            'Contrast', decision='INFO',
+            detail='artifact predates the deep-silence control; only '
+                   "'inter_bout_silence' is available",
+        ))
+    if control not in levels:
+        msg = (
+            f"`control` must be one of {sorted(k for k in levels if k != 'after_bout')}; "
+            f"got '{control}'."
+        )
+        raise ValueError(msg)
+    condition = condition_raw
+    # Keep only the treated rows and the chosen control; the other control's rows
+    # would otherwise enter as untreated and silently blend the two comparisons.
+    selected = (condition == levels['after_bout']) | (condition == levels[control])
+    if not np.any(condition == levels[control]):
+        msg = f"The artifact holds no '{control}' rows, so that contrast cannot be fitted."
+        raise ValueError(msg)
+
     covariates = np.asarray(artifact['covariates'], dtype=float)
     covariate_labels = list(artifact['covariate_labels'])
     target = np.asarray(artifact['target'], dtype=float)
@@ -1347,9 +1599,16 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
     bout_duration = np.asarray(artifact['bout_duration'], dtype=float)
     session_ids = np.asarray(artifact['session_ids'])
 
+    covariates = covariates[selected]
+    target = target[selected]
+    target_bins = target_bins[selected]
+    is_vocal = is_vocal[selected]
+    bout_duration = bout_duration[selected]
+    session_ids = session_ids[selected]
+
     print(format_run_header(
         task='BEHAVIORAL_RESPONSE_CONTRAST',
-        engine='glm',
+        engine=f'glm | control={control}',
         feature=f'{len(response_features)} response feature(s)',
         split_strategy='cluster-robust (session)',
         n_splits=int(np.unique(session_ids).size),
@@ -1367,34 +1626,72 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
         covariates=covariates, is_vocal=is_vocal, band_index=band_index,
         n_bins=n_duration_bins, covariate_labels=covariate_labels)
 
+    # PRIMARY design: a vocal step plus one continuous log-duration slope.
+    continuous_design, continuous_labels = build_continuous_design_matrix(
+        covariates=covariates, is_vocal=is_vocal, bout_duration=bout_duration,
+        covariate_labels=covariate_labels)
+
     per_feature: dict[str, Any] = {}
     for feature_index, feature in enumerate(response_features):
         likelihood = response_likelihoods[feature]
-        window_fit = fit_contrast(target=target[:, feature_index], design=design, labels=labels,
-                                  session_ids=session_ids, likelihood=likelihood)
-        for band in range(n_duration_bins):
-            term = window_fit['terms'][f'vocal_duration_band_{band}']
+        column = target[:, feature_index]
+
+        window_fit = fit_contrast(target=column, design=continuous_design,
+                                  labels=continuous_labels, session_ids=session_ids,
+                                  likelihood=likelihood)
+        for term_name in ('vocal', 'vocal_x_log_duration'):
+            term = window_fit['terms'][term_name]
             print(format_selection_step(
-                'Contrast',
-                feature=f'{feature} | band {band} '
-                        f'[{duration_edges[band]:.2f}-{duration_edges[band + 1]:.2f}s]',
+                'Contrast', feature=f'{feature} | {term_name}',
                 metrics={'beta': term['coefficient'], 'se': term['std_error'],
                          'p': term['p_value']},
                 decision='SIG' if term['p_value'] < 0.05 else 'ns',
             ))
 
+        # SECONDARY: the same design on the arithmetic mean, so the stronger
+        # "she travelled further" reading stays available when the two agree.
+        mean_fit = (fit_contrast(target=column, design=continuous_design,
+                                 labels=continuous_labels, session_ids=session_ids,
+                                 likelihood='gamma')
+                    if likelihood == 'lognormal' else None)
+
+        # DESCRIPTIVE: duration terciles, to show the slope is not hiding a bend.
+        tercile_fit = fit_contrast(target=column, design=design, labels=labels,
+                                   session_ids=session_ids, likelihood=likelihood)
+
         time_course = []
         for bin_index in range(target_bins.shape[2]):
             bin_fit = fit_contrast(target=target_bins[:, feature_index, bin_index],
-                                   design=design, labels=labels,
+                                   design=continuous_design, labels=continuous_labels,
                                    session_ids=session_ids, likelihood=likelihood)
             bin_fit['bin_index'] = bin_index
             time_course.append(bin_fit)
 
-        per_feature[feature] = {'window': window_fit, 'time_course': time_course,
-                                'likelihood': likelihood}
+        # Per-session effect, unadjusted, so the between-session spread that
+        # dominates the standard errors is visible rather than assumed away.
+        per_session = []
+        for session in np.unique(session_ids):
+            in_session = session_ids == session
+            treated = in_session & (is_vocal > 0.0) & np.isfinite(column) & (column > 0.0)
+            control_rows = in_session & (is_vocal == 0.0) & np.isfinite(column) & (column > 0.0)
+            if treated.sum() >= 3 and control_rows.sum() >= 3:
+                per_session.append(float(np.mean(np.log(column[treated]))
+                                         - np.mean(np.log(column[control_rows]))))
+        per_session = np.asarray(per_session, dtype=float)
+
+        per_feature[feature] = {
+            'window': window_fit,
+            'mean_scale': mean_fit,
+            'terciles': tercile_fit,
+            'time_course': time_course,
+            'per_session_log_ratio': per_session,
+            'likelihood': likelihood,
+        }
 
     results = {
+        'control': control,
+        'continuous_labels': continuous_labels,
+        'n_rows': int(selected.sum()),
         'per_feature': per_feature,
         'response_features': response_features,
         'response_likelihoods': response_likelihoods,
@@ -1407,7 +1704,7 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
     output_path = Path(output_directory)
     output_path.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    save_path = output_path / f"behavioral_response_contrast_{timestamp}.pkl"
+    save_path = output_path / f"behavioral_response_contrast_{control}_{timestamp}.pkl"
     with atomic_output_path(save_path) as temporary_path:
         with Path(temporary_path).open('wb') as handle:
             pickle.dump(results, handle)
@@ -1417,8 +1714,8 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
               f"{window_fit['n_sessions']} sessions",
         metrics_by_strategy={
             feature: {
-                'beta': per_feature[feature]['window']['terms']['vocal_duration_band_0']['coefficient'],
-                'p': per_feature[feature]['window']['terms']['vocal_duration_band_0']['p_value'],
+                'beta': per_feature[feature]['window']['terms']['vocal']['coefficient'],
+                'p': per_feature[feature]['window']['terms']['vocal']['p_value'],
             }
             for feature in response_features
         },

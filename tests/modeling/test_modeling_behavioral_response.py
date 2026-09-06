@@ -10,6 +10,9 @@ contrast rather than crash it. Coverage:
 * ``bout_offset_anchors`` — the anchor sits at the bout's OFFSET, a bout whose
   successor arrives inside the silence window is dropped, and an anchor with
   no room for its history or forward window is dropped.
+* ``deep_silence_anchors`` — every anchor is at least the configured margin
+  from any bout, anchors are stride-spaced so rows do not overlap, and a session
+  with no long-enough stretch yields nothing.
 * ``inter_bout_quiet_anchors`` — one anchor per usable gap, every anchor has a
   clean history AND a clean forward window, placement is reproducible from the
   seed, and a gap too short yields nothing rather than a bad anchor.
@@ -42,7 +45,9 @@ import pytest
 from usv_playpen.modeling.modeling_behavioral_response import (
     BehavioralResponsePipeline,
     bout_offset_anchors,
+    build_continuous_design_matrix,
     build_design_matrix,
+    deep_silence_anchors,
     duration_tercile_labels,
     fit_contrast,
     forward_window_mean,
@@ -400,23 +405,23 @@ class TestDerivedLikelihood:
         assert pipeline._response_likelihood('allo_pitch') == 'gaussian'
         assert pipeline._response_likelihood('back_pitch') == 'gaussian'
 
-    def test_non_negative_features_get_gamma(self):
-        """Speed is positive and right-skewed, which is what Gamma is for."""
+    def test_non_negative_features_get_lognormal(self):
+        """The primary estimand is multiplicative but on the geometric mean."""
 
         pipeline = self._pipeline()
 
-        assert pipeline._response_likelihood('speed') == 'gamma'
-        assert pipeline._response_likelihood('neck_elevation') == 'gamma'
+        assert pipeline._response_likelihood('speed') == 'lognormal'
+        assert pipeline._response_likelihood('neck_elevation') == 'lognormal'
 
-    def test_folded_features_get_gamma_despite_signed_bounds(self):
+    def test_folded_features_get_lognormal_despite_signed_bounds(self):
         """The magnitude fold maps a signed angle onto a non-negative support."""
 
         pipeline = self._pipeline()
 
         assert pipeline._response_fold_label('ego_yaw') == 'smooth_abs'
-        assert pipeline._response_likelihood('ego_yaw') == 'gamma'
+        assert pipeline._response_likelihood('ego_yaw') == 'lognormal'
         assert pipeline._response_fold_label('allo_roll') == 'abs'
-        assert pipeline._response_likelihood('allo_roll') == 'gamma'
+        assert pipeline._response_likelihood('allo_roll') == 'lognormal'
 
     def test_an_unfolded_feature_reports_no_fold(self):
         """The provenance must say which branch actually fired."""
@@ -679,7 +684,7 @@ class TestFitContrast:
         design, labels = build_design_matrix(rows['covariates'], rows['is_vocal'], band, 2,
                                              rows['covariate_labels'])
 
-        with pytest.raises(ValueError, match="must be 'gamma' or 'gaussian'"):
+        with pytest.raises(ValueError, match="must be 'lognormal', 'gamma' or 'gaussian'"):
             fit_contrast(np.ones(design.shape[0]), design, labels, rows['session_ids'], 'poisson')
 
     def test_gaussian_accepts_negative_targets(self):
@@ -697,3 +702,206 @@ class TestFitContrast:
 
         assert np.any(target < 0.0)
         assert fit['n_rows_dropped'] == 0
+
+
+class TestDeepSilenceAnchors:
+    """The second control: stretches where he has not called for a long while."""
+
+    @staticmethod
+    def _bouts() -> tuple[np.ndarray, np.ndarray]:
+        """
+        Two bouts far apart, leaving one long silent stretch between them.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        onsets, durations : tuple of np.ndarray
+            Bout onsets and durations in seconds.
+        """
+
+        return np.array([10.0, 120.0]), np.array([0.5, 0.5])
+
+    def test_every_anchor_clears_the_margin_from_any_bout(self):
+        """An anchor inside the margin is not deep silence, whatever it is."""
+
+        onsets, durations = self._bouts()
+        anchors = deep_silence_anchors(
+            onsets, durations, CAMERA_FPS, 150 * 200, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
+            margin_seconds=10.0, stride_frames=HISTORY_FRAMES)
+
+        assert anchors.size > 0
+        for anchor in anchors / CAMERA_FPS:
+            assert np.all(np.abs(onsets - anchor) > 10.0)
+            assert np.all(np.abs((onsets + durations) - anchor) > 10.0)
+
+    def test_anchors_are_stride_spaced_so_rows_do_not_overlap(self):
+        """Overlapping rows would be counted as independent when they are not."""
+
+        onsets, durations = self._bouts()
+        anchors = deep_silence_anchors(
+            onsets, durations, CAMERA_FPS, 150 * 200, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
+            margin_seconds=10.0, stride_frames=HISTORY_FRAMES)
+
+        assert np.all(np.diff(anchors) >= HISTORY_FRAMES - 1)
+
+    def test_a_widely_spaced_margin_can_exclude_everything(self):
+        """A margin longer than the session must yield nothing, not a bad anchor."""
+
+        onsets, durations = self._bouts()
+        anchors = deep_silence_anchors(
+            onsets, durations, CAMERA_FPS, 150 * 200, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
+            margin_seconds=500.0, stride_frames=HISTORY_FRAMES)
+
+        assert anchors.size == 0
+
+    def test_no_bouts_yields_nothing(self):
+        """With no bouts there is no vocal condition to control for."""
+
+        anchors = deep_silence_anchors(
+            np.empty(0), np.empty(0), CAMERA_FPS, 150 * 200, HISTORY_FRAMES,
+            LOOKAHEAD_FRAMES, margin_seconds=10.0, stride_frames=HISTORY_FRAMES)
+
+        assert anchors.size == 0
+
+    def test_it_yields_different_anchors_than_the_inter_bout_control(self):
+        """The two controls must not silently be the same rows."""
+
+        onsets, durations = self._bouts()
+        deep = deep_silence_anchors(
+            onsets, durations, CAMERA_FPS, 150 * 200, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
+            margin_seconds=10.0, stride_frames=HISTORY_FRAMES)
+        inter = inter_bout_quiet_anchors(
+            onsets, durations, CAMERA_FPS, 150 * 200, HISTORY_FRAMES, LOOKAHEAD_FRAMES,
+            np.random.default_rng(0))
+
+        assert deep.size > inter.size
+
+
+class TestContinuousDesignMatrix:
+    """The primary design: one vocal step plus one duration slope."""
+
+    @staticmethod
+    def _rows(seed: int = 0):
+        """
+        Builds vocal and control rows with skewed durations.
+
+        Parameters
+        ----------
+        seed : int
+            Seed for the generator.
+
+        Returns
+        -------
+        covariates, is_vocal, duration : tuple of np.ndarray
+            Covariates, condition indicator and per-row bout duration.
+        """
+
+        rng = np.random.default_rng(seed)
+        n = 600
+        is_vocal = (rng.random(n) < 0.6).astype(float)
+        duration = np.where(is_vocal > 0.0, rng.lognormal(-0.9, 0.7, n), np.nan)
+        return rng.normal(size=(n, 2)), is_vocal, duration
+
+    def test_control_rows_are_zero_on_both_vocal_terms(self):
+        """A control row loading either term would blur the contrast."""
+
+        cov, is_vocal, duration = self._rows()
+        design, labels = build_continuous_design_matrix(cov, is_vocal, duration, ['c0', 'c1'])
+        control = is_vocal == 0.0
+
+        assert labels[1:3] == ['vocal', 'vocal_x_log_duration']
+        assert np.all(design[control, 1] == 0.0)
+        assert np.all(design[control, 2] == 0.0)
+
+    def test_the_duration_slope_is_centred_so_vocal_is_the_average_bout(self):
+        """Otherwise the step would be the effect of a zero-length bout."""
+
+        cov, is_vocal, duration = self._rows()
+        design, _ = build_continuous_design_matrix(cov, is_vocal, duration, ['c0', 'c1'])
+
+        assert design[is_vocal > 0.0, 2].mean() == pytest.approx(0.0, abs=1e-9)
+        assert design[is_vocal > 0.0, 2].std() == pytest.approx(1.0, abs=1e-9)
+
+    def test_duration_enters_on_the_log_scale(self):
+        """A raw linear term would be dominated by a few multi-second bouts."""
+
+        cov, is_vocal, duration = self._rows()
+        design, _ = build_continuous_design_matrix(cov, is_vocal, duration, ['c0', 'c1'])
+        vocal = is_vocal > 0.0
+        expected = np.log(duration[vocal])
+        expected = (expected - expected.mean()) / expected.std()
+
+        assert np.allclose(design[vocal, 2], expected)
+
+    def test_identical_durations_raise_rather_than_producing_a_dead_column(self):
+        """A constant column would make the slope unidentifiable."""
+
+        cov, is_vocal, _ = self._rows()
+        duration = np.where(is_vocal > 0.0, 0.4, np.nan)
+
+        with pytest.raises(ValueError, match='not identifiable'):
+            build_continuous_design_matrix(cov, is_vocal, duration, ['c0', 'c1'])
+
+    def test_both_planted_terms_are_recovered(self):
+        """The step and the slope must be separable, not traded off."""
+
+        rng = np.random.default_rng(3)
+        n = 4000
+        sessions = np.repeat([f's{i:02d}' for i in range(40)], 100)
+        is_vocal = (rng.random(n) < 0.6).astype(float)
+        duration = np.where(is_vocal > 0.0, rng.lognormal(-0.9, 0.7, n), np.nan)
+        cov = rng.normal(size=(n, 2))
+        z = np.zeros(n)
+        logs = np.log(duration[is_vocal > 0.0])
+        z[is_vocal > 0.0] = (logs - logs.mean()) / logs.std()
+        target = np.exp(1.0 + 0.15 * is_vocal + 0.10 * is_vocal * z
+                        + 0.4 * cov[:, 0] + rng.normal(0.0, 0.6, n))
+
+        design, labels = build_continuous_design_matrix(cov, is_vocal, duration, ['c0', 'c1'])
+        fit = fit_contrast(target, design, labels, sessions, 'lognormal')
+
+        assert fit['terms']['vocal']['coefficient'] == pytest.approx(0.15, abs=0.05)
+        assert fit['terms']['vocal_x_log_duration']['coefficient'] == pytest.approx(0.10, abs=0.04)
+
+
+class TestLognormalLikelihood:
+    """The primary estimand: multiplicative, on the geometric mean."""
+
+    def test_it_resists_a_tail_that_defeats_the_gamma_mean(self):
+        """This is the whole reason lognormal is primary rather than Gamma."""
+
+        rng = np.random.default_rng(0)
+        n = 3000
+        sessions = np.repeat([f's{i:02d}' for i in range(30)], 100)
+        is_vocal = (rng.random(n) < 0.5).astype(float)
+        cov = rng.normal(size=(n, 2))
+        band = np.where(is_vocal > 0.0, 0, -1)
+        target = np.exp(1.0 + 0.182 * is_vocal + 0.4 * cov[:, 0] + rng.normal(0.0, 0.8, n))
+        target[rng.integers(0, n, 30)] *= 50.0        # a few wild anchors
+
+        design, labels = build_design_matrix(cov, is_vocal, band, 1, ['c0', 'c1'])
+        lognormal = fit_contrast(target, design, labels, sessions, 'lognormal')
+        gamma = fit_contrast(target, design, labels, sessions, 'gamma')
+
+        assert lognormal['terms']['vocal_duration_band_0']['p_value'] < 1e-6
+        assert gamma['terms']['vocal_duration_band_0']['p_value'] > 0.05
+
+    def test_non_positive_targets_are_dropped_under_lognormal(self):
+        """log(y) is undefined at zero, so those rows cannot be fitted."""
+
+        rng = np.random.default_rng(1)
+        n = 600
+        sessions = np.repeat([f's{i:02d}' for i in range(20)], 30)
+        is_vocal = (rng.random(n) < 0.5).astype(float)
+        cov = rng.normal(size=(n, 2))
+        band = np.where(is_vocal > 0.0, 0, -1)
+        target = np.exp(rng.normal(1.0, 0.4, n))
+        target[:12] = 0.0
+
+        design, labels = build_design_matrix(cov, is_vocal, band, 1, ['c0', 'c1'])
+        fit = fit_contrast(target, design, labels, sessions, 'lognormal')
+
+        assert fit['n_rows_dropped'] == 12
