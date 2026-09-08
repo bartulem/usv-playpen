@@ -762,7 +762,8 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
                                     suffixes: list,
                                     feature_bounds: dict,
                                     abs_features: list | None = None,
-                                    smooth_abs_features: dict | None = None) -> dict:
+                                    smooth_abs_features: dict | None = None,
+                                    stats_out: dict | None = None) -> dict:
     """
     Z-scores every session's feature columns using pooled cross-session statistics.
 
@@ -804,6 +805,12 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
         ego_yaw (range ±180°), ε = 0.5° for back_yaw (range ±36°).
         Forwarded to `zscore_different_sessions_together`.
 
+    stats_out : dict, optional
+        When supplied, populated in-place with the pooled mean and
+        standard deviation applied to each feature, so a caller can
+        recover the native scale after the frames are overwritten.
+        Forwarded to `zscore_different_sessions_together`.
+
     Returns
     -------
     dict
@@ -816,6 +823,7 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
         feature_bounds=feature_bounds,
         abs_features=abs_features,
         smooth_abs_features=smooth_abs_features,
+        stats_out=stats_out,
     )
 
 

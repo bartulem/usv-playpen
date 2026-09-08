@@ -58,6 +58,7 @@ and ``likelihood``. The anchor RNG is seeded from
 
 from __future__ import annotations
 
+import json
 import pickle
 from datetime import datetime
 from pathlib import Path
@@ -65,6 +66,7 @@ from typing import Any
 
 import numpy as np
 import statsmodels.api as sm
+from scipy import stats
 from tqdm import tqdm
 
 from ..os_utils import atomic_output_path, configure_path
@@ -828,13 +830,30 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         else:
             feature_bounds = {}
 
+        # Z-scoring overwrites the frames, so the native scale is unrecoverable
+        # afterwards. Capture the pooled statistics here and store them with the
+        # artifact: a covariate transform that is not affine (a log, say) cannot
+        # be applied to a z-score, and without these the only way to change the
+        # adjustment would be to re-read the cohort.
+        pooled_scaling: dict[str, dict[str, float]] = {}
         processed_beh_feature_data_dict = zscore_features_across_sessions(
             processed_beh_dict=processed_beh_feature_data_dict,
             suffixes=revised_behavioral_predictors,
             feature_bounds=feature_bounds,
             abs_features=kin_settings['abs_features'],
             smooth_abs_features=kin_settings['smooth_abs_features'],
+            stats_out=pooled_scaling,
         )
+        # Whether each base feature is non-negative after folding and clipping.
+        # This decides the derived covariate transform at fit time, by the same
+        # rule the response likelihood uses, and is recorded here because the fit
+        # has no access to `FeatureZoo`.
+        folded = set(kin_settings['abs_features']) | set(kin_settings['smooth_abs_features'])
+        covariate_non_negative = {
+            suffix: bool(suffix in folded
+                         or (suffix in feature_bounds and feature_bounds[suffix][0] >= 0.0))
+            for suffix in pooled_scaling
+        }
 
         if not processed_beh_feature_data_dict:
             msg = (
@@ -1076,6 +1095,8 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         self._save_extracted_data(
             covariates=covariate_matrix,
             covariate_labels=summary_labels,
+            covariate_scaling=pooled_scaling,
+            covariate_non_negative=covariate_non_negative,
             target=np.vstack(rows_target),
             target_bins=np.concatenate(rows_bins, axis=0),
             response_features=response_features,
@@ -1092,6 +1113,8 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
     def _save_extracted_data(self,
                              covariates: np.ndarray,
                              covariate_labels: list[str],
+                             covariate_scaling: dict[str, dict[str, float]],
+                             covariate_non_negative: dict[str, bool],
                              target: np.ndarray,
                              target_bins: np.ndarray,
                              response_features: list[str],
@@ -1117,6 +1140,12 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             ``(n_rows, n_covariates)`` history summaries.
         covariate_labels : list of str
             Column names for ``covariates``.
+        covariate_scaling : dict
+            Pooled ``mean`` and ``std`` applied per base feature, so the native
+            scale can be recovered at fit time.
+        covariate_non_negative : dict
+            Per base feature, whether it is non-negative after folding and
+            clipping; decides the derived transform at fit time.
         target : np.ndarray
             ``(n_rows, n_features)`` response averaged over the whole forward window.
         target_bins : np.ndarray
@@ -1211,6 +1240,8 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             {
                 'covariates': covariates,
                 'covariate_labels': list(covariate_labels),
+                'covariate_scaling': dict(covariate_scaling),
+                'covariate_non_negative': dict(covariate_non_negative),
                 'target': target,
                 'target_bins': target_bins,
                 'response_features': list(response_features),
@@ -1283,6 +1314,136 @@ def duration_tercile_labels(bout_duration: np.ndarray,
     band_index = np.full(bout_duration.shape[0], -1, dtype=int)
     band_index[vocal_mask] = np.clip(np.digitize(durations, edges[1:-1]), 0, n_bins - 1)
     return band_index, edges
+
+
+def normal_scores(covariates: np.ndarray) -> np.ndarray:
+    """
+    Replaces each covariate by the Gaussian quantile of its rank.
+
+    A linear adjustment assumes the response moves linearly in the covariate.
+    Measured on this cohort it does not: binning the response by decile of the
+    dominant covariate (``self.speed__mean_0.5s``) gives a log response that
+    steps by a near-constant ~0.35 per decile while the covariate itself crawls
+    from -0.65 to +0.23 over eight deciles and then jumps to +2.50. The response
+    is linear in the covariate's RANK and strongly concave in its value
+    (quadratic term -0.49), so a linear fit is wrong by 0.96 log units at the
+    bottom of the range.
+
+    That matters because the misfit is far larger than the effect being
+    estimated. ``beta_V`` is ~0.07, so an adjustment error an order of magnitude
+    bigger, distributed unevenly between the two conditions, moves the estimate
+    more than the estimate itself: on ``speed`` it flips the sign, +0.068 to
+    -0.053. Features whose own prior-state covariate is less skewed barely move
+    (``back_yaw`` -0.005, ``neck_elevation`` +0.001).
+
+    Ranking is monotone, so this is invariant to any earlier monotone transform:
+    it gives the same answer on raw covariates and on the pooled z-scored ones
+    already stored in the artifact, and needs no re-extraction.
+
+    Ties take their average rank, and non-finite entries are preserved as
+    ``nan`` rather than being ranked, so the caller's finite filter still sees
+    them.
+
+    Parameters
+    ----------
+    covariates : np.ndarray
+        ``(n_rows, n_covariates)`` covariate block.
+
+    Returns
+    -------
+    transformed : np.ndarray
+        Same shape, each column on the standard normal scale.
+    """
+
+    transformed = np.full(covariates.shape, np.nan, dtype=float)
+    for column in range(covariates.shape[1]):
+        values = covariates[:, column]
+        finite = np.isfinite(values)
+        if not np.any(finite):
+            continue
+        # The (n + 1) denominator keeps the extremes off +/- infinity.
+        ranks = stats.rankdata(values[finite]) / (int(finite.sum()) + 1)
+        transformed[finite, column] = stats.norm.ppf(ranks)
+    return transformed
+
+
+def derived_covariate_transform(covariates: np.ndarray,
+                                covariate_labels: list[str],
+                                scaling: dict[str, dict[str, float]],
+                                non_negative: dict[str, bool]) -> tuple[np.ndarray, list[str]]:
+    """
+    Applies the same support rule to the covariates that the response gets.
+
+    The response's likelihood is derived from its support -- non-negative
+    features are fitted on ``log y`` -- and the identical argument applies on the
+    right-hand side. ``self.speed`` predicting speed is the same quantity, so if
+    the outcome belongs on a log scale then so does the predictor; regressing
+    ``log y`` on raw ``x`` is not a free choice but an inconsistency with a rule
+    already committed to, and it shows: binning the response by decile of
+    ``self.speed__mean_0.5s`` gives a relationship whose linear fit is wrong by
+    0.96 log units at the bottom of the range, against a ``beta_V`` of ~0.07.
+
+    So a non-negative covariate enters as ``log``, and a signed one enters as it
+    is. Nothing here is fitted or tuned: the transform follows from what each
+    feature is, exactly as the likelihood does, and can be stated in advance.
+
+    Because the stored covariates are pooled z-scores, each column is first
+    returned to its native scale using the statistics recorded at extraction --
+    a log cannot be applied to a z-score. Columns are re-standardised afterwards
+    so coefficients stay comparable; standardising is affine and therefore
+    changes no coefficient of interest.
+
+    Non-positive values of a logged covariate become ``nan`` and are dropped by
+    the caller's finite filter, which reports the count. That mirrors how the
+    response handles the same case rather than inventing an offset, and the
+    measured incidence is negligible (exact zeros: speed 0, tail_curvature 0,
+    neck_elevation 0.009%).
+
+    Parameters
+    ----------
+    covariates : np.ndarray
+        ``(n_rows, n_covariates)`` pooled z-scored summaries.
+    covariate_labels : list of str
+        Column names, shaped ``'<prefix>.<feature>__mean_<width>'``.
+    scaling : dict
+        ``{feature: {'mean': float, 'std': float}}`` as applied at extraction.
+    non_negative : dict
+        ``{feature: bool}`` support flag per base feature.
+
+    Returns
+    -------
+    transformed, logged : tuple
+        The transformed block and the names of the columns that were logged.
+
+    Raises
+    ------
+    KeyError
+        If a column's base feature is missing from ``scaling`` or
+        ``non_negative``, which means the artifact and the labels disagree.
+    """
+
+    transformed = np.array(covariates, dtype=float, copy=True)
+    logged: list[str] = []
+    for column, label in enumerate(covariate_labels):
+        base = label.split('__mean_')[0].split('.')[-1]
+        if base not in scaling or base not in non_negative:
+            msg = (
+                f"Covariate '{label}' has no recorded scaling or support flag for base "
+                f"feature '{base}'; the artifact predates the derived transform and must "
+                f"be re-extracted, or `covariate_transform` set to 'linear'."
+            )
+            raise KeyError(msg)
+        if not non_negative[base]:
+            continue
+        native = transformed[:, column] * scaling[base]['std'] + scaling[base]['mean']
+        with np.errstate(invalid='ignore', divide='ignore'):
+            values = np.where(native > 0.0, np.log(np.where(native > 0.0, native, 1.0)), np.nan)
+        finite = np.isfinite(values)
+        spread = float(np.std(values[finite])) if np.any(finite) else 0.0
+        centre = float(np.mean(values[finite])) if np.any(finite) else 0.0
+        transformed[:, column] = (values - centre) / (spread if spread > 0.0 else 1.0)
+        logged.append(label)
+    return transformed, logged
 
 
 def build_design_matrix(covariates: np.ndarray,
@@ -1600,6 +1761,40 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
     session_ids = np.asarray(artifact['session_ids'])
 
     covariates = covariates[selected]
+    # Read from settings rather than from the artifact's `analysis_specific`,
+    # unlike every other knob here: this one is applied at FIT time and changes
+    # nothing about what was extracted, so an artifact written before it existed
+    # is still valid input. Ranking is monotone, so it also gives the same answer
+    # on the pooled z-scored covariates the artifact already holds.
+    resolved_settings = (Path(settings_path) if settings_path is not None
+                         else Path(__file__).resolve().parent.parent
+                         / '_parameter_settings' / 'modeling_settings.json')
+    with resolved_settings.open('r') as settings_file:
+        covariate_transform = str(
+            json.load(settings_file)['behavioral_response']['covariate_transform'])
+    # Applied AFTER subsetting, so the ranks describe the rows actually fitted
+    # rather than rows the contrast then discards.
+    transform_detail = covariate_transform
+    if covariate_transform == 'normal_scores':
+        covariates = normal_scores(covariates)
+    elif covariate_transform == 'derived':
+        covariates, logged = derived_covariate_transform(
+            covariates=covariates,
+            covariate_labels=covariate_labels,
+            scaling=artifact['covariate_scaling'],
+            non_negative=artifact['covariate_non_negative'],
+        )
+        transform_detail = f'derived ({len(logged)} of {len(covariate_labels)} logged)'
+    elif covariate_transform != 'linear':
+        msg = (
+            f"`behavioral_response.covariate_transform` must be 'derived', "
+            f"'normal_scores' or 'linear'; got '{covariate_transform}'."
+        )
+        raise ValueError(msg)
+    print(format_selection_step(
+        'Contrast', decision='INFO',
+        detail=f'covariate adjustment: {transform_detail}',
+    ))
     target = target[selected]
     target_bins = target_bins[selected]
     is_vocal = is_vocal[selected]

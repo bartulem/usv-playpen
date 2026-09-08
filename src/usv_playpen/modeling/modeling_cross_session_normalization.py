@@ -10,7 +10,8 @@ def zscore_different_sessions_together(data_dict: dict,
                                        feature_lst: list,
                                        feature_bounds: dict,
                                        abs_features: list | None = None,
-                                       smooth_abs_features: dict | None = None) -> dict:
+                                       smooth_abs_features: dict | None = None,
+                                       stats_out: dict | None = None) -> dict:
     """
     Computes z-scored behavioral data when different sessions need to
     be pooled together (z-scores are computed on the pooled data,
@@ -96,6 +97,15 @@ def zscore_different_sessions_together(data_dict: dict,
         smooth-abs branch. A feature listed in both
         `smooth_abs_features` and `abs_features` is treated as
         smooth-abs (the dict key wins).
+
+    stats_out : dict, optional
+        When supplied, populated in-place with
+        `{feature: {'mean': float, 'std': float}}` — the pooled
+        statistics this call applied. Z-scoring is irreversible
+        once the frames are overwritten, so a caller that wants
+        to recover the native scale (to apply a non-linear
+        transform later, say) must capture them here. Purely an
+        output channel: it does not change what is computed.
 
     Returns
     -------
@@ -188,6 +198,9 @@ def zscore_different_sessions_together(data_dict: dict,
             global_std = 1.0  # Avoid division by zero
             if global_mean is None:
                 global_mean = 0.0  # Avoid (null - 0) / 1
+
+        if stats_out is not None:
+            stats_out[one_feature] = {'mean': float(global_mean), 'std': float(global_std)}
 
         # Apply z-score expression using global stats
         for one_beh_session, df in data_dict.items():
