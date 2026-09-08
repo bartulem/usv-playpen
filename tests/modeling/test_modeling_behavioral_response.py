@@ -42,8 +42,11 @@ import json
 import numpy as np
 import pytest
 
+from scipy import stats
+
 from usv_playpen.modeling.modeling_behavioral_response import (
     BehavioralResponsePipeline,
+    MatchedDivergencePipeline,
     bout_offset_anchors,
     build_continuous_design_matrix,
     build_design_matrix,
@@ -51,8 +54,12 @@ from usv_playpen.modeling.modeling_behavioral_response import (
     duration_tercile_labels,
     fit_contrast,
     forward_window_mean,
+    forward_clean_times,
     inter_bout_quiet_anchors,
+    normal_scores,
     summarise_history,
+    variance_explained_by_vocal_terms,
+    yeo_johnson_covariates,
 )
 
 CAMERA_FPS = 150.0
@@ -905,3 +912,158 @@ class TestLognormalLikelihood:
         fit = fit_contrast(target, design, labels, sessions, 'lognormal')
 
         assert fit['n_rows_dropped'] == 12
+
+
+class TestNormalScores:
+    """Rank-based covariate transform."""
+
+    def test_ranking_is_invariant_to_any_monotone_transform(self):
+        # This is why the transform can be applied to the stored z-scores without
+        # re-extracting: it sees only the ordering.
+        generator = np.random.default_rng(0)
+        raw = generator.lognormal(0.0, 1.0, 400).reshape(-1, 1)
+        assert np.allclose(normal_scores(raw), normal_scores(np.log(raw)))
+
+    def test_output_is_standard_normal_shaped(self):
+        generator = np.random.default_rng(1)
+        transformed = normal_scores(generator.lognormal(0.0, 1.5, 2000).reshape(-1, 1))
+        assert abs(float(stats.skew(transformed[:, 0]))) < 0.1
+
+    def test_non_finite_entries_survive_as_nan(self):
+        values = np.array([[1.0], [np.nan], [3.0]])
+        transformed = normal_scores(values)
+        assert np.isnan(transformed[1, 0])
+        assert np.all(np.isfinite(transformed[[0, 2], 0]))
+
+
+class TestYeoJohnsonCovariates:
+    """Per-column power transform fitted by maximum likelihood."""
+
+    @staticmethod
+    def _z_scored(values: np.ndarray) -> tuple:
+        return (values - values.mean()) / values.std(), {
+            'mean': float(values.mean()), 'std': float(values.std())}
+
+    def test_a_lognormal_column_is_straightened(self):
+        generator = np.random.default_rng(2)
+        native = generator.lognormal(0.5, 0.8, 3000)
+        column, scaling = self._z_scored(native)
+        transformed, lambdas = yeo_johnson_covariates(
+            column.reshape(-1, 1), ['self.speed__mean_0.5s'], {'speed': scaling})
+        assert abs(float(stats.skew(native))) > 1.5
+        assert abs(float(stats.skew(transformed[:, 0]))) < 0.2
+        assert lambdas['self.speed__mean_0.5s'] < 0.5
+
+    def test_a_symmetric_column_is_left_essentially_alone(self):
+        # The support rule became unnecessary rather than being replaced: a signed
+        # feature returns lambda near the identity without being told it is signed.
+        generator = np.random.default_rng(3)
+        native = generator.normal(0.0, 10.0, 3000)
+        column, scaling = self._z_scored(native)
+        _, lambdas = yeo_johnson_covariates(
+            column.reshape(-1, 1), ['self.back_pitch__mean_4s'], {'back_pitch': scaling})
+        assert 0.8 < lambdas['self.back_pitch__mean_4s'] < 1.2
+
+    def test_a_near_zero_narrow_column_does_not_explode(self):
+        # A plain log on this shape drives the skew past -30; the lambda = 0 branch
+        # is log(x + 1), which is what keeps it finite.
+        generator = np.random.default_rng(4)
+        native = np.clip(generator.normal(4.0, 1.0, 3000), 0.01, None)
+        column, scaling = self._z_scored(native)
+        transformed, _ = yeo_johnson_covariates(
+            column.reshape(-1, 1), ['self.neck_elevation__mean_4s'],
+            {'neck_elevation': scaling})
+        assert abs(float(stats.skew(transformed[:, 0]))) < 0.5
+
+    def test_output_is_standardised(self):
+        generator = np.random.default_rng(5)
+        native = generator.lognormal(0.0, 1.0, 500)
+        column, scaling = self._z_scored(native)
+        transformed, _ = yeo_johnson_covariates(
+            column.reshape(-1, 1), ['self.speed__mean_4s'], {'speed': scaling})
+        assert abs(float(transformed[:, 0].mean())) < 1e-9
+        assert abs(float(transformed[:, 0].std()) - 1.0) < 1e-9
+
+    def test_a_missing_scaling_entry_raises_rather_than_guessing(self):
+        with pytest.raises(KeyError, match='re-extracted'):
+            yeo_johnson_covariates(np.zeros((5, 1)), ['self.speed__mean_4s'], {})
+
+
+class TestVarianceExplainedByVocalTerms:
+    """Decomposition stored beside the coefficients."""
+
+    def test_an_unrelated_vocal_block_adds_nothing(self):
+        generator = np.random.default_rng(6)
+        covariate = generator.normal(size=800)
+        design = np.column_stack([np.ones(800), generator.integers(0, 2, 800).astype(float),
+                                  np.zeros(800), covariate])
+        target = np.exp(0.7 * covariate + 0.1 * generator.normal(size=800))
+        result = variance_explained_by_vocal_terms(
+            target=target, full_design=design, n_contrast_terms=3, likelihood='lognormal')
+        assert result['vocal_share_percent'] < 1.0
+        assert result['r_squared_full'] > 0.9
+
+    def test_a_planted_vocal_effect_takes_a_visible_share(self):
+        generator = np.random.default_rng(7)
+        treated = generator.integers(0, 2, 800).astype(float)
+        design = np.column_stack([np.ones(800), treated, np.zeros(800),
+                                  generator.normal(size=800)])
+        target = np.exp(2.0 * treated + 0.1 * generator.normal(size=800))
+        result = variance_explained_by_vocal_terms(
+            target=target, full_design=design, n_contrast_terms=3, likelihood='lognormal')
+        assert result['vocal_share_percent'] > 50.0
+
+
+class TestForwardCleanTimes:
+    """All-animal silence test used by the matched-divergence anchors."""
+
+    def test_a_call_starting_inside_the_window_disqualifies(self):
+        mask = forward_clean_times(np.array([10.0]), np.array([12.0]), np.array([12.1]), 4.0)
+        assert not bool(mask[0])
+
+    def test_a_call_starting_after_the_window_does_not(self):
+        mask = forward_clean_times(np.array([10.0]), np.array([15.0]), np.array([15.1]), 4.0)
+        assert bool(mask[0])
+
+    def test_a_call_straddling_the_moment_disqualifies(self):
+        # A starts-only test would pass this: the call began before the anchor and
+        # is still running at it.
+        mask = forward_clean_times(np.array([10.0]), np.array([9.0]), np.array([11.0]), 4.0)
+        assert not bool(mask[0])
+
+    def test_a_session_without_calls_is_entirely_clean(self):
+        mask = forward_clean_times(np.array([1.0, 2.0]), np.empty(0), np.empty(0), 4.0)
+        assert mask.all()
+
+
+class TestMatchedDivergencePipeline:
+    """Settings wiring for the design-based counterpart to the contrast."""
+
+    @staticmethod
+    def _settings() -> dict:
+        return _shipped_settings()
+
+    def test_windows_convert_to_frames_at_the_configured_rate(self):
+        settings = self._settings()
+        pipeline = MatchedDivergencePipeline(modeling_settings_dict=settings)
+        rate = settings['io']['camera_sampling_rate']
+        block = settings['behavioral_response']['matched_divergence']
+        for name in ('pre', 'post_clean', 'window', 'pre_window',
+                     'baseline_start', 'baseline_end', 'silence_grid'):
+            expected = int(np.floor(rate * block[f'{name}_seconds']))
+            assert pipeline.divergence_frames[name] == expected
+
+    def test_a_matching_window_that_does_not_precede_the_anchor_raises(self):
+        # The window must END before the anchor: with it running up to the anchor
+        # the two arms still differed at t=0 in the direction of the effect,
+        # because the divergence is already under way inside it.
+        settings = self._settings()
+        settings['behavioral_response']['matched_divergence']['baseline_start_seconds'] = 0.5
+        settings['behavioral_response']['matched_divergence']['baseline_end_seconds'] = 4.0
+        with pytest.raises(ValueError, match='must exceed'):
+            MatchedDivergencePipeline(modeling_settings_dict=settings)
+
+    def test_it_inherits_the_response_features_and_likelihood_rule(self):
+        pipeline = MatchedDivergencePipeline(modeling_settings_dict=self._settings())
+        assert pipeline._response_likelihood('speed') == 'lognormal'
+        assert pipeline._response_likelihood('back_pitch') == 'gaussian'

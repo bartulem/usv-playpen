@@ -42,7 +42,11 @@ with warnings.catch_warnings():
         _rolling_mean_1d,
         plot_collinearity_audit,
         plot_feature_ranking,
+        _benjamini_hochberg,
+        _reportable_effect,
+        plot_behavioral_response_forest,
         plot_manifold_filter_atlas,
+        plot_matched_divergence,
         plot_manifold_selection_trajectory,
         plot_model_selection_results,
         plot_multinomial_multivariate_filters,
@@ -2183,3 +2187,182 @@ class TestDeepResultsVisualizerTorus:
             output_dir=str(out_dir),
         )
         assert len(list(out_dir.glob(f"cnn_regional_saliency_region_0_*.{_FIGURE_FORMAT}"))) == 1
+
+
+def _contrast_artifact(tmp_path, n_features: int = 3):
+    """
+    Writes a minimal contrast artifact the forest plotter can consume.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Directory to write into.
+    n_features : int
+        How many response features to fabricate.
+
+    Returns
+    -------
+    path : str
+        Location of the written pickle.
+    """
+
+    features = ['speed', 'ego_yaw', 'back_pitch'][:n_features]
+    likelihoods = {f: ('gaussian' if f == 'back_pitch' else 'lognormal') for f in features}
+    per_feature = {}
+    for position, feature in enumerate(features):
+        term = {'coefficient': -0.05 * (position + 1), 'std_error': 0.01,
+                'z': -5.0, 'p_value': 0.0001 * (position + 1),
+                'ci_low': -0.07, 'ci_high': -0.03}
+        per_feature[feature] = {
+            'window': {'terms': {'vocal': dict(term), 'vocal_x_log_duration': dict(term)}},
+            'variance_explained': {'r_squared_full': 0.4 + 0.1 * position,
+                                   'r_squared_covariates': 0.4 + 0.1 * position - 0.001,
+                                   'vocal_share_percent': 0.05 * (position + 1)},
+        }
+    artifact = {
+        'response_features': features,
+        'response_likelihoods': likelihoods,
+        'per_feature': per_feature,
+        '_input_metadata': {'analysis_specific': {
+            'covariate_summary_seconds': [0.5, 4.0],
+            'target_window_seconds': 0.5,
+        }},
+    }
+    path = tmp_path / 'contrast.pkl'
+    with path.open('wb') as handle:
+        pickle.dump(artifact, handle)
+    return str(path)
+
+
+def _divergence_artifact(tmp_path, n_pairs: int = 40, n_frames: int = 120):
+    """
+    Writes a minimal matched-divergence artifact the plotter can consume.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Directory to write into.
+    n_pairs : int
+        Rows per arm.
+    n_frames : int
+        Frames per stored curve.
+
+    Returns
+    -------
+    path : str
+        Location of the written pickle.
+    """
+
+    generator = np.random.default_rng(0)
+    features = ['speed', 'ego_yaw']
+    artifact = {
+        'features': features,
+        'pairs': {f: {'vocal': generator.normal(size=(n_pairs, n_frames)),
+                      'silence': generator.normal(size=(n_pairs, n_frames))}
+                  for f in features},
+        'pair_sessions': {f: ['s1'] * n_pairs for f in features},
+        'pair_control_counts': {f: np.full(n_pairs, 7) for f in features},
+        'caliper_rejected': {f: 0 for f in features},
+        'anchor_index': n_frames // 2,
+        'pooled_scaling': {f: {'mean': 0.0, 'std': 1.0} for f in features},
+        'parameters': {},
+        'camera_fps': 60.0,
+    }
+    path = tmp_path / 'divergence.pkl'
+    with path.open('wb') as handle:
+        pickle.dump(artifact, handle)
+    return str(path)
+
+
+class TestBenjaminiHochberg:
+    """Correction shared by both behavioural-response figures."""
+
+    def test_nothing_passes_when_every_p_is_large(self):
+        assert not _benjamini_hochberg(np.array([0.4, 0.6, 0.9]), 0.05).any()
+
+    def test_the_step_up_threshold_is_not_a_flat_alpha(self):
+        # The second-smallest p must beat q * 2 / m, not q. At q = 0.01 over four
+        # tests that is 0.005, so 0.008 fails despite being under 0.01.
+        rejected = _benjamini_hochberg(np.array([0.001, 0.008, 0.4, 0.9]), 0.01)
+        assert rejected.tolist() == [True, False, False, False]
+
+    def test_a_looser_rate_admits_more(self):
+        rejected = _benjamini_hochberg(np.array([0.001, 0.008, 0.4, 0.9]), 0.05)
+        assert rejected.tolist() == [True, True, False, False]
+
+
+class TestReportableEffect:
+    """Coefficient placed on the scale it should be read in."""
+
+    def test_a_lognormal_coefficient_becomes_a_percent_change(self):
+        value, low, high, unit = _reportable_effect(
+            {'coefficient': np.log(1.1), 'std_error': 0.0}, 'lognormal', 0.01)
+        assert unit == '% change in median'
+        assert value == pytest.approx(10.0)
+        assert low == pytest.approx(high)
+
+    def test_a_gaussian_coefficient_stays_additive(self):
+        value, _, _, unit = _reportable_effect(
+            {'coefficient': -0.3, 'std_error': 0.1}, 'gaussian', 0.01)
+        assert unit == 'degrees'
+        assert value == pytest.approx(-0.3)
+
+    def test_the_interval_widens_with_a_stricter_alpha(self):
+        _, low_99, _, _ = _reportable_effect(
+            {'coefficient': 0.0, 'std_error': 1.0}, 'gaussian', 0.01)
+        _, low_95, _, _ = _reportable_effect(
+            {'coefficient': 0.0, 'std_error': 1.0}, 'gaussian', 0.05)
+        assert low_99 < low_95
+
+    def test_the_interval_is_rebuilt_not_read_from_the_artifact(self):
+        # The stored bounds are 95%; a figure claiming 99% must not use them.
+        _, low, high, _ = _reportable_effect(
+            {'coefficient': 0.0, 'std_error': 1.0, 'ci_low': -99.0, 'ci_high': 99.0},
+            'gaussian', 0.01)
+        assert low == pytest.approx(-2.5758, abs=1e-3)
+        assert high == pytest.approx(2.5758, abs=1e-3)
+
+
+class TestBehavioralResponseFigures:
+    """Both behavioural-response plotters run end to end on a written artifact."""
+
+    # Every plotter in the module ends on `plt.show()`, which under the Agg
+    # backend warns that the canvas is non-interactive. The suite promotes
+    # warnings to errors, so the call is wrapped rather than the convention
+    # changed for these two functions alone.
+    @staticmethod
+    def _draw(function, **kwargs):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            function(**kwargs)
+        plt.close("all")
+
+    def test_forest_plot_writes_a_file(self, tmp_path):
+        self._draw(plot_behavioral_response_forest,
+                   contrast_results_path=_contrast_artifact(tmp_path),
+                   save_plot=True, output_dir=str(tmp_path))
+        assert list(tmp_path.glob(f'behavioral_response_forest*.{_FIGURE_FORMAT}'))
+
+    def test_forest_plot_does_not_write_when_not_asked(self, tmp_path):
+        self._draw(plot_behavioral_response_forest,
+                   contrast_results_path=_contrast_artifact(tmp_path), save_plot=False)
+        assert not list(tmp_path.glob(f'behavioral_response_forest*.{_FIGURE_FORMAT}'))
+
+    def test_matched_divergence_writes_a_file(self, tmp_path):
+        self._draw(plot_matched_divergence,
+                   divergence_results_path=_divergence_artifact(tmp_path),
+                   display_seconds=(-0.5, 0.5), save_plot=True, output_dir=str(tmp_path))
+        assert list(tmp_path.glob(f'matched_divergence*.{_FIGURE_FORMAT}'))
+
+    def test_matched_divergence_reads_the_frame_rate_from_the_artifact(self, tmp_path):
+        # A plotter that assumed 150 fps would mislabel every timestamp on a
+        # cohort recorded at another rate, so the key must be required.
+        path = _divergence_artifact(tmp_path)
+        with open(path, 'rb') as handle:
+            artifact = pickle.load(handle)
+        del artifact['camera_fps']
+        with open(path, 'wb') as handle:
+            pickle.dump(artifact, handle)
+        with pytest.raises(KeyError):
+            plot_matched_divergence(divergence_results_path=path)
+        plt.close('all')

@@ -65,6 +65,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import polars as pls
 import statsmodels.api as sm
 from scipy import stats
 from tqdm import tqdm
@@ -1268,6 +1269,448 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         print(f"[{datetime.now().strftime('%Y%m%d_%H%M%S')}] Success. Results saved to: {save_path}")
 
 
+class MatchedDivergencePipeline(BehavioralResponsePipeline):
+    """
+    Design-based counterpart to the covariate-adjusted contrast.
+
+    Where :class:`BehavioralResponsePipeline` holds pre-anchor state fixed with a
+    38-column covariate block, this holds it fixed by CONSTRUCTION: every vocal
+    anchor is paired with silent anchors whose pre-anchor level in that same
+    feature matches, and the difference between the two curves is then read
+    directly. The two answer the same question with almost disjoint assumptions --
+    one leans on the functional form of an adjustment, the other on the choice of
+    what to match -- so a result appearing in both is far harder to explain away
+    than one appearing in either. That is what the pair is for.
+
+    Differences from the contrast, all deliberate:
+
+    *   **Cleanliness is judged against EVERY USV**, not merely against the
+        predictor mouse's bouts. A window containing his singleton calls, the
+        partner's calls or unassigned ones is not silent, and the looser rule
+        measurably changes what is being averaged: at 4 s it keeps 3,441 anchors
+        where the strict rule keeps 1,593, and the extra anchors start 0.055 z
+        lower in speed.
+    *   **Controls are matched, not modelled.** Every silent anchor whose
+        baseline lies within ``match_caliper_sd`` standard deviations of a vocal
+        anchor's is averaged into that anchor's control curve. Using all of them
+        rather than the single nearest costs nothing -- a vocal anchor has a
+        median of 82 eligible controls -- and removes most of the control side's
+        contribution to the variance of the difference.
+    *   **The unit of analysis is the vocal anchor.** A stored row is one anchor
+        and the mean of its controls, so N is the number of anchors however many
+        controls went into each mean.
+    *   **Matching is per feature**, on that feature's own baseline, so each
+        feature's panel starts level. The panels are therefore different anchor
+        sets and are not comparable with one another.
+
+    The matching window ends ``baseline_end_seconds`` BEFORE the anchor rather
+    than at it. Two measured reasons: these features are slow (tau(1/e)
+    0.35-0.54 s) so a short window is not an average at all -- 50 ms holds 1.01
+    independent samples and 500 ms holds 1.15-1.41, and matching on a value that
+    noisy makes each arm regress toward its own condition mean, fanning the
+    curves apart by construction; and with a window ending at the anchor the two
+    arms still differed at t=0 in the direction of the eventual effect for all
+    four features tested, because the divergence is already under way inside it.
+
+    Parameters
+    ----------
+    modeling_settings_dict : dict or None
+        Full modeling settings; loaded from JSON by the parent chain when
+        ``None``.
+
+    Returns
+    -------
+    None
+    """
+
+    def __init__(self, modeling_settings_dict: dict[str, Any] | None = None) -> None:
+        """
+        Initializes the pipeline and converts its windows into frames.
+
+        Parameters
+        ----------
+        modeling_settings_dict : dict or None
+            Full modeling settings; loaded from JSON by the parent chain when
+            ``None``.
+
+        Returns
+        -------
+        None
+        """
+
+        super().__init__(modeling_settings_dict=modeling_settings_dict)
+        self.divergence_settings = (
+            self.modeling_settings['behavioral_response']['matched_divergence'])
+        camera_rate = self.modeling_settings['io']['camera_sampling_rate']
+        self.divergence_frames = {
+            name: int(np.floor(camera_rate * self.divergence_settings[f'{name}_seconds']))
+            for name in ('pre', 'post_clean', 'window', 'pre_window',
+                         'baseline_start', 'baseline_end', 'silence_grid')
+        }
+        if self.divergence_frames['baseline_start'] <= self.divergence_frames['baseline_end']:
+            msg = (
+                f"`matched_divergence.baseline_start_seconds` must exceed "
+                f"`baseline_end_seconds`; got "
+                f"{self.divergence_settings['baseline_start_seconds']} and "
+                f"{self.divergence_settings['baseline_end_seconds']}."
+            )
+            raise ValueError(msg)
+
+    def extract_and_save_matched_divergence(self) -> None:
+        """
+        Builds baseline-matched anchor pairs and writes the divergence pickle.
+
+        Loads behaviour, finds the predictor mouse's bouts, folds and pooled
+        z-scores the response features, places anchors, matches each vocal anchor
+        to every eligible silent one, and stores one curve per anchor per arm
+        spanning ``[-pre_window_seconds, +window_seconds]``.
+
+        Parameters
+        ----------
+        None
+
+        Returns
+        -------
+        None
+        """
+
+        response_settings = self.modeling_settings['behavioral_response']
+        response_features = list(response_settings['response_features'])
+        kin_settings = self.modeling_settings['kinematic_features']
+        frames = self.divergence_frames
+        caliper_sd = float(self.divergence_settings['match_caliper_sd'])
+
+        print(f"--- Extracting baseline-matched divergence, "
+              f"{len(response_features)} feature(s) ---")
+        txt_modeling_sessions = prepare_modeling_sessions(self.modeling_settings)
+        session_roots = {Path(p).name: Path(p) for p in txt_modeling_sessions}
+
+        beh_feature_data_dict, camera_fr_dict, mouse_track_names_dict = load_behavioral_feature_data(
+            behavior_file_paths=txt_modeling_sessions,
+            csv_sep=self.modeling_settings['io']['csv_separator'],
+        )
+        bout_data_dict = find_variable_length_bouts(
+            root_directories=txt_modeling_sessions,
+            mouse_ids_dict=mouse_track_names_dict,
+            camera_fps_dict=camera_fr_dict,
+            features_dict=beh_feature_data_dict,
+            csv_sep=self.modeling_settings['io']['csv_separator'],
+            mixture_model_component_index=self.modeling_settings['model_params'][
+                'mixture_model_component_index'],
+            mixture_model_z_score=self.modeling_settings['model_params'][
+                'mixture_model_z_score'],
+            mixture_model_params=self.modeling_settings['mixture_model_params'],
+            min_vocalizations=self.modeling_settings['model_params']['usv_per_bout_floor'],
+            filter_history=response_settings['history_seconds'],
+            proportion_smoothing_sd=None,
+            vocal_output_type=self.modeling_settings['vocal_features']['usv_predictor_type'],
+            noise_vocal_categories=self.modeling_settings['vocal_features'][
+                'usv_noise_categories'],
+            category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
+            noise_column=self.modeling_settings['vocal_features']['usv_noise_column'],
+        )
+
+        # The response features are folded, clipped and pooled z-scored exactly as
+        # the covariates are, so the stored curves are already in the units the
+        # figure plots. The pooled statistics travel with the artifact so native
+        # units remain recoverable.
+        pooled_scaling: dict[str, dict[str, float]] = {}
+        beh_feature_data_dict = zscore_features_across_sessions(
+            processed_beh_dict=beh_feature_data_dict,
+            suffixes=response_features,
+            feature_bounds=self.feature_boundaries if hasattr(self, 'feature_boundaries') else {},
+            abs_features=kin_settings['abs_features'],
+            smooth_abs_features=kin_settings['smooth_abs_features'],
+            stats_out=pooled_scaling,
+        )
+
+        span = np.arange(-frames['pre_window'], frames['window'])
+        baseline_span = np.arange(-frames['baseline_start'], -frames['baseline_end'])
+        pairs: dict[str, dict[str, list[np.ndarray]]] = {
+            f: {'vocal': [], 'silence': []} for f in response_features}
+        pair_sessions: dict[str, list[str]] = {f: [] for f in response_features}
+        pair_control_counts: dict[str, list[int]] = {f: [] for f in response_features}
+        caliper_rejected: dict[str, int] = {f: 0 for f in response_features}
+
+        for sess_id, session_df in tqdm(beh_feature_data_dict.items(), desc="Matching anchors"):
+            if sess_id not in mouse_track_names_dict or sess_id not in session_roots:
+                continue
+            _, _, p_name, t_name = resolve_mouse_roles(
+                modeling_settings=self.modeling_settings,
+                mouse_names_dict=mouse_track_names_dict,
+                session_id=sess_id,
+            )
+            if p_name not in bout_data_dict[sess_id]:
+                continue
+            camera_fps = float(camera_fr_dict[sess_id])
+            n_frames = session_df.height
+
+            onsets = np.asarray(bout_data_dict[sess_id][p_name]['bout_onsets'], dtype=float)
+            offsets = onsets + np.asarray(
+                bout_data_dict[sess_id][p_name]['bout_durations'], dtype=float)
+            all_starts, all_stops = _all_usv_times(
+                session_root=session_roots[sess_id],
+                csv_sep=self.modeling_settings['io']['csv_separator'],
+            )
+            if onsets.size == 0 or all_starts.size == 0:
+                continue
+
+            vocal_times = offsets[forward_clean_times(
+                offsets, all_starts, all_stops,
+                self.divergence_settings['post_clean_seconds'])]
+            grid = np.arange(self.divergence_settings['pre_seconds'],
+                             n_frames / camera_fps - self.divergence_settings['window_seconds'],
+                             self.divergence_settings['silence_grid_seconds'])
+            clean_ahead = forward_clean_times(
+                grid, all_starts, all_stops, self.divergence_settings['post_clean_seconds'])
+            sorted_stops = np.sort(all_stops)
+            previous = np.searchsorted(sorted_stops, grid, side='right')
+            previous_stop = np.where(previous > 0,
+                                     sorted_stops[np.maximum(previous - 1, 0)], -np.inf)
+            silence_times = grid[clean_ahead & ((grid - previous_stop)
+                                                >= self.divergence_settings['pre_seconds'])]
+            if vocal_times.size == 0 or silence_times.size == 0:
+                continue
+
+            room_behind = max(frames['baseline_start'], frames['pre_window'])
+
+            def usable(times: np.ndarray) -> np.ndarray:
+                """
+                Keeps anchors with room for the baseline and the stored window.
+
+                Parameters
+                ----------
+                times : np.ndarray
+                    Candidate anchor times, in seconds.
+
+                Returns
+                -------
+                anchor_frames : np.ndarray
+                    Frame indices that fit inside the recording.
+                """
+
+                anchor_frames = np.round(np.asarray(times) * camera_fps).astype(int)
+                return anchor_frames[(anchor_frames - room_behind >= 0)
+                                     & (anchor_frames + frames['window'] <= n_frames)]
+
+            vocal_frames, silence_frames = usable(vocal_times), usable(silence_times)
+            if vocal_frames.size == 0 or silence_frames.size == 0:
+                continue
+
+            for feature in response_features:
+                column = self._resolve_response_column(
+                    session_df_columns=list(session_df.columns),
+                    mouse_names=mouse_track_names_dict[sess_id],
+                    response_feature=feature,
+                )
+                trace = session_df[column].to_numpy().astype(float)
+
+                def baseline(anchor_frames: np.ndarray) -> np.ndarray:
+                    """
+                    Mean over the matching window preceding each anchor.
+
+                    Parameters
+                    ----------
+                    anchor_frames : np.ndarray
+                        Anchor frame indices.
+
+                    Returns
+                    -------
+                    values : np.ndarray
+                        One baseline per anchor.
+                    """
+
+                    with np.errstate(invalid='ignore'):
+                        return np.nanmean(
+                            trace[anchor_frames[:, None] + baseline_span[None, :]], axis=1)
+
+                anchor_values = baseline(vocal_frames)
+                control_values = baseline(silence_frames)
+                keep_vocal = np.isfinite(anchor_values)
+                keep_silence = np.isfinite(control_values)
+                usable_vocal = vocal_frames[keep_vocal]
+                usable_silence = silence_frames[keep_silence]
+                anchor_values = anchor_values[keep_vocal]
+                control_values = control_values[keep_silence]
+                if usable_vocal.size == 0 or usable_silence.size == 0:
+                    continue
+
+                caliper = caliper_sd * float(np.std(control_values))
+                control_block = trace[usable_silence[:, None] + span[None, :]]
+                for index in range(usable_vocal.size):
+                    eligible = np.flatnonzero(
+                        np.abs(control_values - anchor_values[index]) <= caliper)
+                    if eligible.size == 0:
+                        caliper_rejected[feature] += 1
+                        continue
+                    with np.errstate(invalid='ignore'):
+                        averaged = np.nanmean(control_block[eligible], axis=0)
+                    pairs[feature]['vocal'].append(trace[usable_vocal[index] + span])
+                    pairs[feature]['silence'].append(averaged)
+                    pair_sessions[feature].append(sess_id)
+                    pair_control_counts[feature].append(int(eligible.size))
+
+        self._save_matched_divergence(
+            pairs=pairs,
+            pair_sessions=pair_sessions,
+            pair_control_counts=pair_control_counts,
+            caliper_rejected=caliper_rejected,
+            pooled_scaling=pooled_scaling,
+            response_features=response_features,
+            n_window_frames=span.size,
+        )
+
+    def _save_matched_divergence(self,
+                                 pairs: dict[str, dict[str, list[np.ndarray]]],
+                                 pair_sessions: dict[str, list[str]],
+                                 pair_control_counts: dict[str, list[int]],
+                                 caliper_rejected: dict[str, int],
+                                 pooled_scaling: dict[str, dict[str, float]],
+                                 response_features: list[str],
+                                 n_window_frames: int) -> None:
+        """
+        Reports the balance achieved and publishes the divergence pickle.
+
+        The balance check is printed rather than merely stored: matching that
+        silently failed would otherwise look identical to matching that worked,
+        and the whole design rests on the two arms starting level.
+
+        Parameters
+        ----------
+        pairs : dict
+            Per feature, the stored ``vocal`` and ``silence`` curves.
+        pair_sessions : dict
+            Session id behind each stored pair.
+        pair_control_counts : dict
+            Number of controls averaged into each pair's control curve.
+        caliper_rejected : dict
+            Anchors discarded per feature for having no eligible control.
+        pooled_scaling : dict
+            Pooled mean and standard deviation applied per feature.
+        response_features : list of str
+            Features in artifact order.
+        n_window_frames : int
+            Width of a stored curve, in frames.
+
+        Returns
+        -------
+        None
+        """
+
+        anchor_index = self.divergence_frames['pre_window']
+        artifact: dict[str, Any] = {
+            'features': list(response_features),
+            'pairs': {f: {arm: (np.vstack(rows) if rows
+                                else np.empty((0, n_window_frames)))
+                          for arm, rows in pairs[f].items()} for f in response_features},
+            'pair_sessions': {f: list(pair_sessions[f]) for f in response_features},
+            'pair_control_counts': {f: np.asarray(pair_control_counts[f], dtype=int)
+                                    for f in response_features},
+            'caliper_rejected': {f: int(caliper_rejected[f]) for f in response_features},
+            'anchor_index': int(anchor_index),
+            'pooled_scaling': dict(pooled_scaling),
+            'parameters': dict(self.divergence_settings),
+            # Stored rather than assumed by the plotter: the time axis is derived
+            # from it, and a figure that guesses the frame rate would silently
+            # mislabel every timestamp on a cohort recorded at another.
+            'camera_fps': float(self.modeling_settings['io']['camera_sampling_rate']),
+        }
+
+        print(f"\n--- Matched divergence: {len(response_features)} feature(s) ---")
+        for feature in response_features:
+            n_pairs = len(pair_sessions[feature])
+            held = np.asarray(pair_control_counts[feature])
+            print(f"      {feature:18s} {n_pairs:5d} anchors / "
+                  f"{len(set(pair_sessions[feature])):3d} sessions, "
+                  f"controls per anchor median "
+                  f"{int(np.median(held)) if held.size else 0}, "
+                  f"{caliper_rejected[feature]} without an eligible control")
+
+        save_directory = configure_path(self.modeling_settings['io']['save_directory'])
+        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        cohort = derive_experimental_condition(self.modeling_settings)
+        save_path = Path(save_directory) / f"matched_divergence_{cohort}_{stamp}.pkl"
+        with atomic_output_path(save_path) as temporary_path:
+            with Path(temporary_path).open('wb') as handle:
+                pickle.dump(artifact, handle)
+        print(f"[{datetime.now().strftime('%Y%m%d_%H%M%S')}] Success. "
+              f"Results saved to: {save_path}")
+
+
+
+def forward_clean_times(times: np.ndarray,
+                        all_starts: np.ndarray,
+                        all_stops: np.ndarray,
+                        forward_seconds: float) -> np.ndarray:
+    """
+    Flags times followed by silence from EVERY animal.
+
+    Two conditions, both required: nothing starts within ``forward_seconds`` of
+    the time, and nothing that began earlier is still ongoing at it. A call
+    straddling the moment is invisible to a starts-only test, which is why the
+    running maximum of the stop times is carried separately.
+
+    Parameters
+    ----------
+    times : np.ndarray
+        Candidate times, in seconds.
+    all_starts, all_stops : np.ndarray
+        Start and stop times of every USV in the session, sorted by start.
+    forward_seconds : float
+        Silence required after each time.
+
+    Returns
+    -------
+    mask : np.ndarray
+        Boolean mask over ``times``.
+    """
+
+    if times.size == 0:
+        return np.zeros(0, dtype=bool)
+    if all_starts.size == 0:
+        return np.ones(times.size, dtype=bool)
+    following = np.searchsorted(all_starts, times, side='right')
+    gap_forward = np.where(following < all_starts.size,
+                           all_starts[np.minimum(following, all_starts.size - 1)] - times,
+                           np.inf)
+    running_stop = np.maximum.accumulate(all_stops)
+    latest_stop = np.where(following > 0, running_stop[np.maximum(following - 1, 0)], -np.inf)
+    return (gap_forward >= forward_seconds) & (latest_stop <= times)
+
+
+def _all_usv_times(session_root: Path, csv_sep: str) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Reads every USV's start and stop from a session's summary table.
+
+    Deliberately unfiltered by emitter: a window is silent only if nobody
+    vocalized in it, so unassigned calls and the partner's count too. Filtering
+    to the predictor's bouts instead more than doubles the surviving anchors and
+    changes what they are -- measured on this cohort, 3,441 against 1,593, with
+    the extra anchors starting 0.055 z lower in speed.
+
+    Parameters
+    ----------
+    session_root : pathlib.Path
+        Session directory holding ``audio/*_usv_summary.csv``.
+    csv_sep : str
+        Column separator for the summary table.
+
+    Returns
+    -------
+    starts, stops : tuple of np.ndarray
+        Every USV's start and stop time in seconds, sorted by start. Empty when
+        the session has no summary table.
+    """
+
+    summary_path = next((session_root / 'audio').glob('**/*_usv_summary.csv'), None)
+    if summary_path is None:
+        return np.empty(0), np.empty(0)
+    table = pls.read_csv(source=summary_path, separator=csv_sep, columns=['start', 'stop'])
+    starts = table['start'].to_numpy().astype(float)
+    stops = table['stop'].to_numpy().astype(float)
+    order = np.argsort(starts)
+    return starts[order], stops[order]
+
 def duration_tercile_labels(bout_duration: np.ndarray,
                             is_vocal: np.ndarray,
                             n_bins: int) -> tuple[np.ndarray, np.ndarray]:
@@ -1592,9 +2035,16 @@ def build_continuous_design_matrix(covariates: np.ndarray,
     Duration enters as a LOG because it is heavily skewed (median 0.405 s, p99
     3.15 s, max 8.1 s; skew +3.07 raw against +0.42 logged). A raw linear term
     would be dominated by the few multi-second bouts: the 99 longest carry 32% of
-    the leverage on a raw slope against 8% on the log scale. On the log scale the
-    coefficient reads per e-fold, or scaled by ``log(2)`` per doubling of bout
-    length.
+    the leverage on a raw slope against 8% on the log scale.
+
+    The log term is then Z-SCORED across the vocal rows, so
+    ``vocal_x_log_duration`` reads **per standard deviation of log duration**,
+    NOT per e-fold. On this cohort that SD is 0.810, i.e. a factor of **2.25x**
+    in bout length (geometric mean 0.44 s; +/-1 SD spans 0.19 s to 0.98 s). To
+    convert, divide by the SD: an e-fold is 1.23 SD and a doubling is 0.86 SD.
+    Reporting it per e-fold without that division overstates the effect by ~23%,
+    and the standardisation is what makes ``vocal`` interpretable as the step at
+    an average-length bout.
 
     Note the deliberate asymmetry with the covariates, which take a Yeo-Johnson
     transform whose power is fitted by maximum likelihood. Nuisance covariates get
@@ -1765,6 +2215,70 @@ def fit_contrast(target: np.ndarray,
         'non_finite_by_term': non_finite_by_term,
         'n_sessions': int(np.unique(session_ids[usable]).size),
         'likelihood': likelihood,
+    }
+
+
+# `build_continuous_design_matrix` lays the design out as intercept, `vocal`,
+# `vocal_x_log_duration`, then the covariates. Dropping the leading block leaves
+# the covariate-only comparison.
+_N_CONTRAST_TERMS = 3
+
+
+def variance_explained_by_vocal_terms(target: np.ndarray,
+                                      full_design: np.ndarray,
+                                      n_contrast_terms: int,
+                                      likelihood: str) -> dict[str, float]:
+    """
+    Splits variance explained between the covariates and the vocal terms.
+
+    Two ordinary least-squares fits on the scale the contrast uses -- ``log y``
+    for a lognormal feature, ``y`` otherwise -- one with the full design and one
+    with the intercept and covariates alone. Least squares rather than the
+    clustered GLM because this is a descriptive decomposition, not a test: the
+    clustering changes the standard errors, never the fitted values, so R-squared
+    is identical either way.
+
+    The share is reported against EXPLAINED variance rather than total, which is
+    the more generous of the two framings. It is still small: measured on this
+    cohort the models reach R-squared 0.38-0.66 while the vocal terms account for
+    0.001-0.19% of that. Both numbers are worth having, because they answer
+    different questions -- whether an effect is there, and whether it explains
+    much of the behaviour -- and a coefficient can be highly reproducible while
+    contributing almost nothing to the variance, which is exactly the case here.
+
+    Parameters
+    ----------
+    target : np.ndarray
+        ``(n_rows,)`` response in native units.
+    full_design : np.ndarray
+        ``(n_rows, n_terms)`` design, contrast terms first.
+    n_contrast_terms : int
+        Leading columns belonging to the intercept and the vocal block.
+    likelihood : str
+        ``'lognormal'`` (fit on ``log y``) or anything else (fit on ``y``).
+
+    Returns
+    -------
+    variance_explained : dict
+        ``r_squared_full``, ``r_squared_covariates`` and ``vocal_share_percent``.
+    """
+
+    usable = np.isfinite(target) & np.all(np.isfinite(full_design), axis=1)
+    if likelihood == 'lognormal':
+        usable &= target > 0.0
+        response = np.log(target[usable])
+    else:
+        response = target[usable]
+
+    intercept = np.ones((int(usable.sum()), 1))
+    covariate_design = np.column_stack(
+        [intercept, full_design[usable][:, n_contrast_terms:]])
+    full = float(sm.OLS(response, full_design[usable]).fit().rsquared)
+    reduced = float(sm.OLS(response, covariate_design).fit().rsquared)
+    return {
+        'r_squared_full': full,
+        'r_squared_covariates': reduced,
+        'vocal_share_percent': float(100.0 * (full - reduced) / full) if full > 0.0 else 0.0,
     }
 
 
@@ -1950,6 +2464,14 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
                                  likelihood='gamma')
                     if likelihood == 'lognormal' else None)
 
+        # DESCRIPTIVE: how much the model explains, and how much of that the vocal
+        # terms are responsible for. Stored beside the coefficients because a
+        # figure that recomputes it has to reach back to the extraction, and the
+        # two can then disagree about which rows were fitted.
+        variance_explained = variance_explained_by_vocal_terms(
+            target=column, full_design=continuous_design,
+            n_contrast_terms=_N_CONTRAST_TERMS, likelihood=likelihood)
+
         # DESCRIPTIVE: duration terciles, to show the slope is not hiding a bend.
         tercile_fit = fit_contrast(target=column, design=design, labels=labels,
                                    session_ids=session_ids, likelihood=likelihood)
@@ -1976,6 +2498,7 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
 
         per_feature[feature] = {
             'window': window_fit,
+            'variance_explained': variance_explained,
             'mean_scale': mean_fit,
             'terciles': tercile_fit,
             'time_course': time_course,
