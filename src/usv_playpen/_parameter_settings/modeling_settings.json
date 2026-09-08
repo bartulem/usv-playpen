@@ -291,7 +291,7 @@
     "post_bout_silence_seconds": 0.5,
     "deep_silence_margin_seconds": 10.0,
     "covariate_summary_seconds": [0.5, 4.0],
-    "covariate_transform": "derived",
+    "covariate_transform": "yeo_johnson",
     "duration_n_bins": 3
   }
 }

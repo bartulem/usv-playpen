@@ -1446,6 +1446,84 @@ def derived_covariate_transform(covariates: np.ndarray,
     return transformed, logged
 
 
+def yeo_johnson_covariates(covariates: np.ndarray,
+                           covariate_labels: list[str],
+                           scaling: dict[str, dict[str, float]]) -> tuple[np.ndarray, dict[str, float]]:
+    """
+    Fits one Yeo-Johnson power parameter per covariate by maximum likelihood.
+
+    A support rule alone is not enough. Non-negativity says a feature *can* be
+    logged, not that it *should* be, and applying the log to everything that can
+    take it over-corrects badly: on this cohort ``neck_elevation`` goes from skew
+    +1.75 raw to **-33.74** logged, because its range is narrow (99th/1st
+    percentile ratio 4.1) while it still approaches zero, so a mouse lying flat
+    becomes an extreme outlier. Eight of the twenty-eight loggable columns get
+    worse that way, and the ones that improve are those spanning orders of
+    magnitude (``speed`` 334x, ``back_yaw`` 66x).
+
+    Yeo-Johnson removes the binary choice rather than replacing one endpoint with
+    the other. The family nests the identity at ``lambda = 1`` and the log at
+    ``lambda = 0``, and ``lambda`` is estimated per column by maximum likelihood,
+    so the position on that continuum is a consequence of the data rather than a
+    rule we assert. It is also defined for negative values, so the signed
+    features need no separate branch: a symmetric column simply returns
+    ``lambda`` near 1 and is left essentially as it was.
+
+    Columns arrive as pooled z-scores, so each is first returned to its native
+    scale with the statistics recorded at extraction -- a power transform of a
+    z-score is not a power transform of the feature. Columns are re-standardised
+    afterwards, which is affine and therefore changes no coefficient of interest.
+
+    ``lambda`` is fitted on the rows actually being fitted, not on the full
+    extraction, so it describes the sample the contrast uses.
+
+    Parameters
+    ----------
+    covariates : np.ndarray
+        ``(n_rows, n_covariates)`` pooled z-scored summaries.
+    covariate_labels : list of str
+        Column names, shaped ``'<prefix>.<feature>__mean_<width>'``.
+    scaling : dict
+        ``{feature: {'mean': float, 'std': float}}`` as applied at extraction.
+
+    Returns
+    -------
+    transformed, lambdas : tuple
+        The transformed block and the fitted ``lambda`` per column name.
+
+    Raises
+    ------
+    KeyError
+        If a column's base feature is missing from ``scaling``, which means the
+        artifact predates the stored statistics and must be re-extracted.
+    """
+
+    transformed = np.array(covariates, dtype=float, copy=True)
+    lambdas: dict[str, float] = {}
+    for column, label in enumerate(covariate_labels):
+        base = label.split('__mean_')[0].split('.')[-1]
+        if base not in scaling:
+            msg = (
+                f"Covariate '{label}' has no recorded scaling for base feature '{base}'; "
+                f"the artifact predates the stored statistics and must be re-extracted, "
+                f"or `covariate_transform` set to 'linear'."
+            )
+            raise KeyError(msg)
+        native = transformed[:, column] * scaling[base]['std'] + scaling[base]['mean']
+        finite = np.isfinite(native)
+        if finite.sum() < 2 or np.ptp(native[finite]) == 0.0:
+            lambdas[label] = 1.0
+            continue
+        _, fitted = stats.yeojohnson(native[finite])
+        values = np.full(native.shape, np.nan, dtype=float)
+        values[finite] = stats.yeojohnson(native[finite], lmbda=fitted)
+        spread = float(np.std(values[finite]))
+        centre = float(np.mean(values[finite]))
+        transformed[:, column] = (values - centre) / (spread if spread > 0.0 else 1.0)
+        lambdas[label] = float(fitted)
+    return transformed, lambdas
+
+
 def build_design_matrix(covariates: np.ndarray,
                         is_vocal: np.ndarray,
                         band_index: np.ndarray,
@@ -1511,10 +1589,23 @@ def build_continuous_design_matrix(covariates: np.ndarray,
         the vocal rows. This answers question 2 in one parameter instead of three,
         so the bands cannot compete against each other under correction.
 
-    Duration enters as a LOG because it is heavily skewed (median 0.435 s, p99
-    3.39 s, max 8.9 s); a raw linear term would be dominated by the few
-    multi-second bouts. On the log scale the coefficient reads per e-fold, or
-    scaled by ``log(2)`` per doubling of bout length.
+    Duration enters as a LOG because it is heavily skewed (median 0.405 s, p99
+    3.15 s, max 8.1 s; skew +3.07 raw against +0.42 logged). A raw linear term
+    would be dominated by the few multi-second bouts: the 99 longest carry 32% of
+    the leverage on a raw slope against 8% on the log scale. On the log scale the
+    coefficient reads per e-fold, or scaled by ``log(2)`` per doubling of bout
+    length.
+
+    Note the deliberate asymmetry with the covariates, which take a Yeo-Johnson
+    transform whose power is fitted by maximum likelihood. Nuisance covariates get
+    the form the likelihood prefers because nobody reads their coefficients;
+    duration gets a fixed log because ``vocal_x_log_duration`` IS read, and "per
+    e-fold of bout duration" is a sentence while "per unit of psi(-2.12, d)" is
+    not. The asymmetry costs nothing: maximum likelihood picks lambda = -2.12 for
+    duration, but that transform correlates 0.9945 with the log, and the fitted
+    slopes agree to the third decimal (``back_yaw`` -0.0203 vs -0.0198,
+    ``speed`` -0.0275 vs -0.0281), so the choice moves interpretation rather than
+    inference.
 
     Quiet rows carry zero on both vocal terms rather than a duration of zero:
     coding them as zero-length bouts would assert that "no bout at all" lies on
@@ -1777,6 +1868,15 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
     transform_detail = covariate_transform
     if covariate_transform == 'normal_scores':
         covariates = normal_scores(covariates)
+    elif covariate_transform == 'yeo_johnson':
+        covariates, power_lambdas = yeo_johnson_covariates(
+            covariates=covariates,
+            covariate_labels=covariate_labels,
+            scaling=artifact['covariate_scaling'],
+        )
+        values = np.array(list(power_lambdas.values()))
+        transform_detail = (f'yeo-johnson (lambda median {np.median(values):.2f}, '
+                            f'range {values.min():.2f} to {values.max():.2f})')
     elif covariate_transform == 'derived':
         covariates, logged = derived_covariate_transform(
             covariates=covariates,
@@ -1787,8 +1887,8 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
         transform_detail = f'derived ({len(logged)} of {len(covariate_labels)} logged)'
     elif covariate_transform != 'linear':
         msg = (
-            f"`behavioral_response.covariate_transform` must be 'derived', "
-            f"'normal_scores' or 'linear'; got '{covariate_transform}'."
+            f"`behavioral_response.covariate_transform` must be 'yeo_johnson', "
+            f"'derived', 'normal_scores' or 'linear'; got '{covariate_transform}'."
         )
         raise ValueError(msg)
     print(format_selection_step(
