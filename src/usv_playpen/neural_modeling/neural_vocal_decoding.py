@@ -44,6 +44,10 @@ from ..modeling.manifold_metric import signed_diff
 from ..modeling.modeling_torus_geodesics import torus_grid as flat_torus_grid
 from .deviance_metrics import finite_mean
 
+#: The tuning bases the decoder implements. Fourier k=2 is the ruled default; the local
+#: bump basis is retained because its per-unit gain is a persisted robustness descriptor.
+TUNING_BASES = frozenset({"fourier", "bumps"})
+
 PERIOD = 1.0
 
 
@@ -363,6 +367,14 @@ def decoding_context(positions: np.ndarray, session_index: np.ndarray, settings:
     """
 
     surface = settings["tuning_surface"]
+    # An UNVALIDATED basis name is worse than an unsupported one here, because the branch is
+    # `fourier or else`: every other string -- a typo, or simply "FOURIER" -- silently selected the
+    # BUMP basis, i.e. the opposite of what was written. Its sibling knobs (`likelihood_family`,
+    # `ridge_selection.mode`) are both guarded; this one was not.
+    if surface["tuning_basis"] not in TUNING_BASES:
+        msg = (f"tuning_basis must be one of {sorted(TUNING_BASES)}; got "
+               f"{surface['tuning_basis']!r}.")
+        raise ValueError(msg)
     grid_positions, cell_area = torus_grid(surface["grid_n"])
     grid_n = surface["grid_n"]
     sessions = np.unique(session_index)
@@ -767,10 +779,59 @@ def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np
         Pooled event-weighted gain in nats per event under the bump basis, or NaN if it cannot be fit.
     """
 
+    return float(basis_context(positions, session_index, settings, "bumps")[1](counts)["gain"])
+
+
+def basis_context(positions: np.ndarray, session_index: np.ndarray, settings: dict,
+                  basis: str) -> tuple:
+    """
+    Description
+    -----------
+    Build the LOSO folds for one tuning basis and return them with a scorer bound to them.
+
+    Two callers need this and they need different halves. A descriptor only wants the observed gain,
+    so it takes the scorer and calls it once. A permutation null wants the SAME folds reused across
+    every draw -- rebuilding the KDE and the basis per draw is what makes an exact null unaffordable --
+    so it takes the folds and drives :func:`decode_gain` itself.
+
+    Returning both is what lets the bump basis be TESTED rather than merely ranked. Without it the
+    bump gain is a bare number with no null behind it, which answers "which basis gives larger
+    values" but not "which basis detects more units" -- and passes are decided at the faint margin,
+    so detection is the question that matters.
+
+    The caller's settings are never mutated; the basis override is applied to a deep copy.
+
+    Parameters
+    ----------
+    positions (np.ndarray)
+        ``(n, 2)`` torus positions of the events.
+    session_index (np.ndarray)
+        Session slot per event, defining the folds.
+    settings (dict)
+        The ``vocal_decoding`` block.
+    basis (str)
+        One of :data:`TUNING_BASES`.
+
+    Returns
+    -------
+    folds, score (tuple)
+        The fold list from :func:`decoding_context`, and a callable
+        ``score(counts, permutation=None, with_detail=False)`` returning :func:`decode_gain`'s dict.
+    """
+
+    if basis not in TUNING_BASES:
+        msg = f"basis must be one of {sorted(TUNING_BASES)}; got {basis!r}."
+        raise ValueError(msg)
     local = copy.deepcopy(settings)
-    local["tuning_surface"]["tuning_basis"] = "bumps"
+    local["tuning_surface"]["tuning_basis"] = basis
     folds = decoding_context(positions, session_index, local)
-    return float(decode_gain(counts, folds, local)["gain"])
+
+    def score(counts: np.ndarray, permutation: np.ndarray = None,
+              with_detail: bool = False) -> dict:
+        """Score counts against these folds under the chosen basis."""
+        return decode_gain(counts, folds, local, permutation, with_detail)
+
+    return folds, score
 
 
 def left_tail_anti_alignment(null: np.ndarray, observed: float) -> dict:

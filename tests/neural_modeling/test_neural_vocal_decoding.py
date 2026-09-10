@@ -23,6 +23,8 @@ from usv_playpen.neural_modeling.neural_significance import (
 )
 from usv_playpen.neural_modeling.neural_vocal_decoding import (
     PERIOD,
+    TUNING_BASES,
+    basis_context,
     bump_basis,
     bump_basis_gain,
     bump_nodes,
@@ -454,3 +456,46 @@ class TestFlaggedDescriptors:
         assert block["record_overdispersion_index"] is True
         assert block["tuning_surface"]["record_bump_basis_gain"] is True
         assert block["discrimination_null"]["record_left_tail_anti_alignment"] is True
+
+
+class TestTuningBasisIsAFirstClassOption:
+    """Both bases must be selectable, refusable and TESTABLE -- not one real option and one descriptor."""
+
+    def test_an_unknown_basis_is_refused_rather_than_silently_meaning_bumps(self):
+        """The branch was `fourier or else`, so every other string -- a typo, or "FOURIER" -- selected
+        the BUMP basis, i.e. the opposite of what was written, with no error at all."""
+        for bad in ("banana", "FOURIER", "Bumps", ""):
+            with pytest.raises(ValueError, match="tuning_basis must be one of"):
+                decoding_context(np.array([[0.1, 0.2], [0.3, 0.4]]), np.array([0, 0]),
+                                 _settings(tuning_basis=bad))
+
+    def test_both_shipped_bases_are_accepted(self):
+        counts, positions, sessions = _tuned_unit(seed=11)
+        for basis in sorted(TUNING_BASES):
+            folds, score = basis_context(positions, sessions, SETTINGS, basis)
+            assert len(folds) == 3
+            assert np.isfinite(score(counts)["gain"])
+
+    def test_basis_context_refuses_an_unknown_basis(self):
+        _counts, positions, sessions = _tuned_unit(seed=12)
+        with pytest.raises(ValueError, match="basis must be one of"):
+            basis_context(positions, sessions, SETTINGS, "gaussian")
+
+    def test_the_scorer_reuses_its_folds_so_a_null_can_be_driven_on_either_basis(self):
+        """A permutation null must reuse ONE context across draws; rebuilding the KDE per draw is what
+        makes an exact null unaffordable. This is what lets the bump basis be tested, not just ranked."""
+        counts, positions, sessions = _tuned_unit(seed=13)
+        folds, score = basis_context(positions, sessions, SETTINGS, "bumps")
+        observed = score(counts)["gain"]
+        rng = np.random.default_rng(0)
+        null = np.array([score(counts, within_session_permutation(sessions, rng))["gain"]
+                         for _ in range(12)])
+        assert np.all(np.isfinite(null))
+        assert observed > null.mean()          # a strongly tuned unit beats its own permutations
+        assert len(folds) == 3
+
+    def test_basis_context_does_not_mutate_the_caller_settings(self):
+        _counts, positions, sessions = _tuned_unit(seed=14)
+        settings = _settings()
+        basis_context(positions, sessions, settings, "bumps")
+        assert settings["tuning_surface"]["tuning_basis"] == "fourier"
