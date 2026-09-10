@@ -671,3 +671,66 @@ def _score_block(design: dict, settings: dict, n_lags: int) -> float:
                                        n_lags, n_features, settings)
     return float(macro_von_mises_logscore(predicted, positions, regions, metric="torus", period=1.0,
                                           min_region_events=settings["min_region_events"]))
+
+
+def null_draw_factory(design: dict, settings: dict, n_lags: int, window_edges: np.ndarray,
+                      spikes: dict, durations: dict, width: float, guard_seconds: float,
+                      reduced_predicted: np.ndarray, seed: int = 0,
+                      sigma_floor: float = 0.05):
+    """
+    Description
+    -----------
+    A ``draw_more(n)`` callable for :func:`shift_null_inference.escalated_empirical_pvalue`.
+
+    The escalation ladder ACCUMULATES -- draws already taken are kept and topped up rather than
+    discarded -- which is valid because the draws are exchangeable and the decision to continue
+    depends only on whether the floor was reached, never on where the observed value falls among the
+    new draws. For that to hold, each batch must use FRESH shifts: the factory advances its own
+    counter across calls, so no shift sequence is ever repeated between decades.
+
+    The reduced pass is passed in rather than recomputed. It cannot change between draws, and
+    verifying that once is far cheaper than paying for it a hundred thousand times.
+
+    Parameters
+    ----------
+    design (dict)
+        From :func:`nested_design`.
+    settings (dict)
+        The ``nested_position_decoding`` block.
+    n_lags (int)
+        History length in frames.
+    window_edges (np.ndarray)
+        Left edge (seconds) of each event's spike window, aligned with the design's rows.
+    spikes, durations (dict)
+        Per session slot: sorted spike times, and the session duration used as the wrap length.
+    width (float)
+        Spike-window width in seconds.
+    guard_seconds (float)
+        Guard band at each end of the shift range.
+    reduced_predicted (np.ndarray)
+        From :func:`reduced_predictions`.
+    seed (int)
+        Base seed; each draw uses ``seed + running index``.
+    sigma_floor (float)
+        Floor on the per-session count SD.
+
+    Returns
+    -------
+    draw_more (Callable)
+        ``draw_more(n)`` returning ``n`` fresh null values of the added score.
+    """
+
+    state = {"drawn": 0}
+
+    def draw_more(n_draws: int) -> np.ndarray:
+        values = np.empty(int(n_draws), dtype=np.float64)
+        for i in range(int(n_draws)):
+            rng = np.random.default_rng(seed + state["drawn"] + i)
+            column = shifted_neural_column(design, window_edges, spikes, durations, width, rng,
+                                           guard_seconds, sigma_floor)
+            values[i] = nested_scores(design, settings, n_lags, neural=column,
+                                      reduced_predicted=reduced_predicted)["added"]
+        state["drawn"] += int(n_draws)
+        return values
+
+    return draw_more

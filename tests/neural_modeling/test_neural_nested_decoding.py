@@ -35,9 +35,13 @@ with warnings.catch_warnings():
         NestedTorusRegression,
         nested_design,
         nested_scores,
+        null_draw_factory,
         reduced_model_features,
         reduced_predictions,
         shifted_neural_column,
+    )
+    from usv_playpen.neural_modeling.shift_null_inference import (
+        escalated_empirical_pvalue,
     )
 
 SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
@@ -474,3 +478,43 @@ class TestTheNull:
                                                np.random.default_rng(s), 20.0).ravel())
                  for s in range(6)]
         assert any(not np.allclose(draws[0], other) for other in draws[1:])
+
+
+class TestEscalation:
+    """The ladder accumulates, so each decade must use FRESH shifts -- reusing them would top up the
+    null with copies of draws it already had, and the p would fall without new evidence."""
+
+    SETTINGS: ClassVar[dict] = {"lambda_smooth": 1.0, "l2_reg": 0.01,
+                                "smoothness_derivative_order": 1, "min_region_events": 2}
+
+    def _factory(self, seed=0):
+        design = TestNestedScores._design(n_sessions=2, n_per_session=60, seed=20)
+        spikes, durations = TestTheNull._train(n_sessions=2, seed=1)
+        edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
+        reduced = reduced_predictions(design, self.SETTINGS, 3)
+        return null_draw_factory(design, self.SETTINGS, 3, edges, spikes, durations, 0.05, 20.0,
+                                 reduced, seed=seed)
+
+    def test_successive_batches_are_fresh_not_repeats(self):
+        draw_more = self._factory()
+        first, second = draw_more(4), draw_more(4)
+        assert first.shape == (4,)
+        assert not np.allclose(np.sort(first), np.sort(second))
+
+    def test_a_batch_is_reproducible_from_the_same_seed(self):
+        np.testing.assert_allclose(self._factory(seed=3)(4), self._factory(seed=3)(4))
+
+    def test_it_plugs_into_the_shared_escalation_ladder(self):
+        """Same contract the other claims use, so claim 3 escalates the same way rather than by its
+        own private mechanism."""
+        design = TestNestedScores._design(n_sessions=2, n_per_session=60, seed=20)
+        draw_more = self._factory(seed=5)
+        initial = draw_more(6)
+        # an observed value beyond every draw sits at the floor and must trigger a top-up
+        p_value, at_floor, null = escalated_empirical_pvalue(
+            observed=float(initial.max()) + 10.0, draw_more=draw_more, ladder=[12],
+            initial_null=initial, message_output=lambda *_a: None)
+        assert null.size == 12
+        assert p_value == pytest.approx(1.0 / 13.0)
+        assert at_floor
+        assert design["positions"].shape[0] > 0
