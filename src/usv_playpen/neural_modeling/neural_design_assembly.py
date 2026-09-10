@@ -869,7 +869,9 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     Returns
     -------
     events (dict)
-        ``positions``, ``session_index``, ``counts``, ``silent_gap``, ``call_start``, ``call_stop`` at
+        ``positions``, ``session_index``, ``counts``, ``region_labels`` (the acoustic region per
+        event, NaN where the summary carries no such column), ``silent_gap``, ``call_start``,
+        ``call_stop`` at
         call grain; ``when`` (``counts``, ``labels``, ``session_index``, plus the window ``edges`` and
         their ``width``, which the circular-shift null needs to recount both classes from a shifted
         train) over positives and tiles
@@ -883,12 +885,13 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     tiles_cap = decoding["max_quiet_tiles_per_session"]
     history_pre_seconds = encoding["history_pre_seconds"]
     clean_post_seconds = encoding["clean_post_seconds"]
+    region_column = settings["nested_position_decoding"]["region_label_column"]
     vocal_emitter = settings["vocalization_settings"]["vocal_emitter"]
     clean_against = settings["vocalization_settings"]["clean_against"]
     rng = np.random.default_rng(settings["null"]["shuffle_seed"])
 
     session_ids: list[str] = []
-    positions_parts, counts_parts, gaps_parts = [], [], []
+    positions_parts, counts_parts, gaps_parts, region_parts = [], [], [], []
     starts_parts, stops_parts, index_parts, window_edge_parts = [], [], [], []
     tile_counts_parts, tile_edge_parts, tile_index_parts = [], [], []
     per_session: dict = {}
@@ -899,8 +902,9 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     for slot, session_id in enumerate(unit["vocal_sessions"]):
         track_names, frame_rate, n_frames = session_timebase(data_root, session_id)
         duration = n_frames / frame_rate
-        # The emitter is resolved by SLOT, so a session whose track order differs would silently hand
-        # back the partner's calls. The convention is checked rather than assumed, per session.
+        # The emitter is resolved by NAME from the unit's own `mouse_id`, never by track slot, so a
+        # session whose track order differs cannot silently hand back the partner's calls;
+        # `emitter_names` raises if the unit's animal is not in this session at all.
         focal_name = emitter_names(track_names, unit["mouse_id"], vocal_emitter)[0]
 
         # `counts_in_windows` bisects, so an unsorted train would return wrong counts with no error.
@@ -926,6 +930,15 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         focal_starts = focal["start"].to_numpy().astype(np.float64)
         focal_stops = focal["stop"].to_numpy().astype(np.float64)
         focal_positions = focal.select(position_columns).to_numpy().astype(np.float64)
+
+        # The acoustic-region label rides along with the events rather than being re-read later,
+        # because claim 3's macro score averages within region and MUST do so over exactly the events
+        # claim 2 scored -- a second read could filter differently and silently compare two event
+        # sets. NaN where the summary carries no such column: claim 2 never needs it, and claim 3
+        # raises for itself rather than making a summary without supercategories unusable here.
+        focal_regions = (focal[region_column].to_numpy().astype(np.float64)
+                         if region_column in focal.columns
+                         else np.full(focal_starts.size, np.nan))
 
         # The gap covariate is `start[i] - stop[i-1]`, so it means nothing unless the rows are in
         # temporal order. Every summary on disk is, but an out-of-order one would produce negative
@@ -956,6 +969,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
 
         session_ids.append(session_id)
         positions_parts.append(focal_positions[keep])
+        region_parts.append(focal_regions[keep])
         counts_parts.append(event_counts)
         window_edge_parts.append(window_edges)
         gaps_parts.append(gaps[keep])
@@ -985,6 +999,8 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         "positions": positions,
         "session_index": session_index,
         "counts": counts,
+        "region_labels": (np.concatenate(region_parts) if region_parts
+                          else np.empty(0, dtype=np.float64)),
         "silent_gap": np.concatenate(gaps_parts) if gaps_parts else np.empty(0, dtype=np.float64),
         "call_start": np.concatenate(starts_parts) if starts_parts else np.empty(0, dtype=np.float64),
         "call_stop": np.concatenate(stops_parts) if stops_parts else np.empty(0, dtype=np.float64),

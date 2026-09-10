@@ -33,6 +33,7 @@ with warnings.catch_warnings():
     )
     from usv_playpen.neural_modeling.neural_nested_decoding import (
         NestedTorusRegression,
+        nested_design,
         reduced_model_features,
     )
 
@@ -185,3 +186,124 @@ class TestTheBehaviourControl:
             self._fake_selection(tmp_path, self.FROZEN))
         reduced_model_features(settings)
         assert settings["nested_position_decoding"]["reduced_model_features"] == original
+
+
+class TestNestedDesign:
+    """Rows are CALLS: each behavioural feature contributes `n_lags` columns of history ending at the
+    call's onset, and the neuron contributes exactly one z-scored count."""
+
+    N_LAGS = 4
+
+    @staticmethod
+    def _events(n_per_session=6, n_sessions=2, first_frame=10):
+        starts = np.concatenate([np.arange(n_per_session) * 1.0 + first_frame / 10.0
+                                 for _ in range(n_sessions)])
+        return {"call_start": starts,
+                "session_index": np.repeat(np.arange(n_sessions), n_per_session),
+                "counts": np.tile(np.arange(n_per_session, dtype=float), n_sessions),
+                "positions": np.tile(np.linspace(0.0, 0.9, n_per_session)[:, None], (n_sessions, 2)),
+                "region_labels": np.tile(np.arange(n_per_session, dtype=float), n_sessions),
+                "session_ids": [f"s{i}" for i in range(n_sessions)]}
+
+    @staticmethod
+    def _per_session(session_ids, feature_names, n_frames=400, fps=10.0, shuffle_from=None):
+        out = {}
+        for i, sid in enumerate(session_ids):
+            names = list(feature_names)
+            if shuffle_from is not None and i >= shuffle_from:
+                names = names[::-1]                       # a DIFFERENT column order in this session
+            series = np.zeros((n_frames, len(names)))
+            for column, name in enumerate(names):
+                series[:, column] = feature_names.index(name) * 1000 + np.arange(n_frames)
+            out[sid] = {"feature_time_series": series, "feature_names": names,
+                        "fps": fps, "n_frames": n_frames}
+        return out
+
+    def test_shapes_are_features_by_lags_plus_one_neural_column(self):
+        names = ["a", "b", "c"]
+        events = self._events()
+        design = nested_design(events, self._per_session(events["session_ids"], names),
+                               names, self.N_LAGS)
+        assert design["behaviour"].shape == (12, 3 * self.N_LAGS)
+        assert design["neural"].shape == (12, 1)
+
+    def test_features_are_selected_by_name_not_position(self):
+        """Per-session column ORDER differs, so a positional read takes a different feature in
+        different sessions -- the cache bug that once made cross-session LOSO look broken."""
+        names = ["a", "b", "c"]
+        events = self._events()
+        per_session = self._per_session(events["session_ids"], names, shuffle_from=1)
+        assert per_session["s0"]["feature_names"] != per_session["s1"]["feature_names"]
+        design = nested_design(events, per_session, names, self.N_LAGS)
+        # feature f's series is f*1000 + frame, so the block for f must sit in f's thousands band
+        for f in range(3):
+            block = design["behaviour"][:, f * self.N_LAGS:(f + 1) * self.N_LAGS]
+            assert np.all((block >= f * 1000) & (block < (f + 1) * 1000))
+
+    def test_the_history_ends_at_the_onset_frame(self):
+        """`lagged_design` lays each window oldest-to-newest, so the LAST column of a feature's block
+        is that feature's value AT the onset frame."""
+        names = ["a"]
+        events = self._events(n_sessions=1)
+        per_session = self._per_session(events["session_ids"], names)
+        design = nested_design(events, per_session, names, self.N_LAGS)
+        frames = np.rint(events["call_start"] * 10.0).astype(int)
+        np.testing.assert_allclose(design["behaviour"][:, self.N_LAGS - 1], frames)
+
+    def test_events_without_a_full_history_are_dropped_and_counted(self):
+        """A call in a session's first 4 s is usable for claim 2 and not for claim 3. Both counts are
+        recorded so the difference is reported rather than discovered."""
+        names = ["a"]
+        events = self._events(n_sessions=1, first_frame=0)
+        events["call_start"] = np.array([0.0, 0.1, 0.2, 1.0, 2.0, 3.0])   # first few lack history
+        per_session = self._per_session(events["session_ids"], names)
+        design = nested_design(events, per_session, names, self.N_LAGS)
+        book = design["per_session"]["s0"]
+        assert book["n_events_claim2"] == 6
+        assert book["n_events_claim3"] == design["behaviour"].shape[0]
+        assert book["n_dropped_short_history"] == 6 - book["n_events_claim3"]
+        assert book["n_dropped_short_history"] > 0
+
+    def test_kept_indexes_back_into_the_claim_two_event_set(self):
+        names = ["a"]
+        events = self._events(n_sessions=1, first_frame=0)
+        events["call_start"] = np.array([0.0, 0.1, 1.0, 2.0, 3.0, 4.0])
+        design = nested_design(events, self._per_session(events["session_ids"], names),
+                               names, self.N_LAGS)
+        np.testing.assert_allclose(design["positions"], events["positions"][design["kept"]])
+        np.testing.assert_allclose(design["region_labels"], events["region_labels"][design["kept"]])
+
+    def test_the_neural_column_is_z_scored_within_each_session(self):
+        """Per session, not pooled: the same correction claim 2's WHEN axis applies, because a
+        least-squares fit on a continuous predictor CAN standardise its input."""
+        names = ["a"]
+        events = self._events(n_sessions=2)
+        events["counts"] = np.concatenate([np.array([0.0, 0, 0, 10, 10, 10]),
+                                           np.array([100.0, 100, 100, 200, 200, 200])])
+        design = nested_design(events, self._per_session(events["session_ids"], names),
+                               names, self.N_LAGS)
+        for slot in (0, 1):
+            column = design["neural"][design["session_index"] == slot, 0]
+            assert abs(column.mean()) < 1e-9        # each session centred on its own mean
+            assert abs(column.std() - 1.0) < 1e-9
+
+    def test_a_near_silent_session_cannot_produce_an_enormous_z(self):
+        names = ["a"]
+        events = self._events(n_sessions=1)
+        events["counts"] = np.zeros(6)
+        events["counts"][0] = 1e-4                  # essentially no spread
+        design = nested_design(events, self._per_session(events["session_ids"], names),
+                               names, self.N_LAGS, sigma_floor=0.05)
+        assert np.abs(design["neural"]).max() < 10.0
+
+    def test_a_feature_the_assembler_never_built_fails_loudly(self):
+        names = ["a", "b"]
+        events = self._events()
+        with pytest.raises(ValueError, match="not in the assembled feature set"):
+            nested_design(events, self._per_session(events["session_ids"], names),
+                          ["a", "does.not.exist"], self.N_LAGS)
+
+    def test_an_empty_feature_set_is_refused(self):
+        events = self._events()
+        with pytest.raises(ValueError, match="at least one behavioural feature"):
+            nested_design(events, self._per_session(events["session_ids"], ["a"]), [], self.N_LAGS)

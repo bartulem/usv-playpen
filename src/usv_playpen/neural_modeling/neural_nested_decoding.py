@@ -50,6 +50,7 @@ import numpy as np
 from scipy.linalg import block_diag
 
 from ..modeling.manifold_torus_regression import SmoothTorusManifoldRegression
+from .neural_design_assembly import lagged_design
 
 
 class NestedTorusRegression(SmoothTorusManifoldRegression):
@@ -201,3 +202,113 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
                f"deliberately if P1 was re-run.")
         raise ValueError(msg)
     return selected
+
+
+def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: int,
+                  sigma_floor: float = 0.05) -> dict:
+    """
+    Description
+    -----------
+    Build claim 3's design: each event's 4 s behavioural history, plus the neuron as ONE column.
+
+    Rows are CALLS, not frames. Each behavioural feature contributes ``n_lags`` columns -- its history
+    ending at the call's onset frame -- so a row is one call with ``len(feature_names) * n_lags``
+    behaviour columns followed by a single neural column. The common misstatement to avoid is that
+    "every predictor is summarised to one value per call": the behaviour block is NOT summarised, it
+    is 600 columns per feature. What differs between predictors is how many columns each contributes.
+
+    **The neuron is a z-scored spike COUNT, not 600 lags of binary train.** The symmetric alternative
+    was considered and rejected: a 4 s spike history spans about twenty prior calls at the 195 ms
+    median inter-USV interval, so it is largely the neuron's RESPONSES to earlier calls, and since
+    calls within a bout correlate in type the model would predict this call's position from previous
+    calls' positions via the neuron -- claim 3 would pass on bout structure. The behaviour block has
+    the same 4 s window and the same bout structure and is accepted there because behaviour is the
+    CONTROL, where a longer window makes the test harder. Within the 50 ms window a count rather than
+    per-frame binary, because 50 ms at 150 fps is 7.5 frames (so per-frame needs the window rounded or
+    the last bin ragged), the data are sparse (cl0401: 2.16 spikes per window over 8 frame-columns),
+    and decisively because CLAIM 2 ALREADY ENCODES THE NEURON AS A COUNT -- encoding it differently in
+    the two claims of one conjunction would break the nesting.
+
+    The count is z-scored PER SESSION, the same correction claim 2's WHEN axis applies, because this
+    is a least-squares fit on a continuous predictor where standardising the input is available. (The
+    WHAT axis cannot do that -- a Poisson probability is not evaluable at "2.4 SD" -- which is why it
+    corrects on the fitted rate instead. Same quantity, each normalised the way its likelihood
+    allows.)
+
+    **Events without a full history are DROPPED, and that is why claim 2 and claim 3 see different
+    event counts.** A call in a session's first 4 s is perfectly usable for claim 2, whose 50 ms count
+    needs no history, and unusable here. Both counts are returned so the difference is reported rather
+    than discovered.
+
+    Parameters
+    ----------
+    events (dict)
+        From ``assemble_unit_vocal_events``: ``call_start``, ``session_index``, ``counts``,
+        ``positions``, ``region_labels``, ``session_ids``.
+    per_session (dict)
+        From ``assemble_unit_sessions``: per session ``feature_time_series``, ``feature_names``,
+        ``fps`` and ``n_frames``.
+    feature_names (list)
+        The behavioural features, in order. Selected BY NAME -- per-session column order differs, so
+        positional access reads a different feature in different sessions.
+    n_lags (int)
+        History length in frames.
+    sigma_floor (float)
+        Floor on the per-session count SD, so a session in which the unit is near-silent cannot divide
+        a near-zero spread into an enormous z.
+
+    Returns
+    -------
+    design (dict)
+        ``behaviour`` ``(n_kept, n_features * n_lags)``, ``neural`` ``(n_kept, 1)``, ``positions``,
+        ``session_index``, ``region_labels``, ``kept`` (index into the claim-2 event set), and
+        ``per_session`` counts of events offered versus kept.
+    """
+
+    if not feature_names:
+        msg = "nested_design needs at least one behavioural feature."
+        raise ValueError(msg)
+
+    behaviour_parts, neural_parts, keep_parts = [], [], []
+    bookkeeping: dict = {}
+    for slot, session_id in enumerate(events["session_ids"]):
+        session = per_session[session_id]
+        available = list(session["feature_names"])
+        missing = [name for name in feature_names if name not in available]
+        if missing:
+            msg = (f"{session_id}: behaviour control features {missing} are not in the assembled "
+                   f"feature set. Available: {available}.")
+            raise ValueError(msg)
+        # BY NAME, never by position: per-session column order differs, so a positional read would
+        # silently take a different feature in different sessions.
+        columns = [available.index(name) for name in feature_names]
+        series = np.asarray(session["feature_time_series"], dtype=np.float64)[:, columns]
+
+        rows = np.flatnonzero(events["session_index"] == slot)
+        frames = np.rint(events["call_start"][rows] * session["fps"]).astype(np.int64)
+        usable = (frames >= n_lags - 1) & (frames < session["n_frames"])
+        kept_rows, kept_frames = rows[usable], frames[usable]
+
+        counts = np.asarray(events["counts"], dtype=np.float64)[kept_rows]
+        centre = float(counts.mean()) if counts.size else 0.0
+        spread = max(float(counts.std()), sigma_floor)
+
+        behaviour_parts.append(lagged_design(series, kept_frames, n_lags)
+                               if kept_frames.size else np.empty((0, len(columns) * n_lags)))
+        neural_parts.append(((counts - centre) / spread)[:, None])
+        keep_parts.append(kept_rows)
+        bookkeeping[session_id] = {"n_events_claim2": int(rows.size),
+                                   "n_events_claim3": int(kept_rows.size),
+                                   "n_dropped_short_history": int(rows.size - kept_rows.size),
+                                   "count_mean": centre, "count_sd": spread}
+
+    kept = (np.concatenate(keep_parts) if keep_parts else np.empty(0, dtype=np.int64))
+    stack = (lambda parts, width: np.vstack(parts) if parts else np.empty((0, width)))  # noqa: E731
+    return {"behaviour": stack(behaviour_parts, len(feature_names) * n_lags),
+            "neural": stack(neural_parts, 1),
+            "positions": np.asarray(events["positions"], dtype=np.float64)[kept],
+            "session_index": np.asarray(events["session_index"])[kept],
+            "region_labels": np.asarray(events["region_labels"], dtype=np.float64)[kept],
+            "kept": kept,
+            "feature_names": list(feature_names),
+            "per_session": bookkeeping}
