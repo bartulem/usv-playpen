@@ -29,14 +29,23 @@ from __future__ import annotations
 import numpy as np
 
 from ..modeling.jax_group_elastic_net import GroupElasticNetGLM
+from ..modeling.modeling_utils import paired_one_se_improvement
 from .deviance_metrics import (
     batched_calibrated_explained_deviance,
     binned_calibrated_explained_deviance,
     calibrated_explained_deviance,
+    finite_mean,
 )
-from .neural_design_assembly import lagged_design, spike_labels_at_frames, subsample_quiet_anchors
-from .shift_null_inference import empirical_pvalue, sample_circular_shift, shifted_spike_frames
-
+from .neural_design_assembly import (
+    lagged_design,
+    spike_labels_at_frames,
+    subsample_quiet_anchors,
+)
+from .shift_null_inference import (
+    empirical_pvalue,
+    sample_circular_shift,
+    shifted_spike_frames,
+)
 
 # Memory budget for one batched null block. The Newton iteration holds several (n_frames, block)
 # float64 arrays at once, so this caps the working set at a few hundred MB per block.
@@ -71,8 +80,10 @@ def quiet_block_sessions(session: dict, session_id: str, n_blocks: int, gap_fram
 
     Screening and selection need an inner split, and a unit with only one session left to fit on has no
     second session to hold out. Cutting its quiet anchors into contiguous blocks supplies the split
-    within the session instead, which is the fallback the cohort settings already anticipate with
-    ``block_cv_n_folds`` and ``block_cv_gap_seconds``.
+    within the session instead, which is the fallback ``cohort.single_session_inner_split_blocks``
+    anticipates. The separation between blocks is not a settings knob: it is derived from
+    ``history_pre_seconds``, because a gap shorter than the predictor history lets a validation
+    frame's lags reach into a training block, and a longer one only discards anchors.
 
     The blocks are handed back as entries that look exactly like sessions, differing only in which quiet
     anchors they carry, so ``inner_folds``, ``fit_quiet_model`` and the screen run over them unchanged.
@@ -150,6 +161,15 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
     """
 
     penalties = encoding_settings["significance_model"]
+    # ~98% of quiet frames carry no spike, so the majority class is subsampled and the fit is corrected
+    # by the classical case-control LOG-PRIOR OFFSET: unweighted, with log(f_pos/f_neg) added to eta
+    # during training, so the intercept lands on the true-population scale and prediction at offset
+    # zero is calibrated. Named in settings and never checked, it could have declared importance
+    # weighting -- the alternative that was measured and rejected -- and run the offset regardless.
+    if encoding_settings["subsampling_correction"] != "log_prior_offset":
+        msg = (f"the subsampling correction is the case-control log-prior offset; "
+               f"subsampling_correction is {encoding_settings['subsampling_correction']!r}.")
+        raise ValueError(msg)
     columns = list(feature_indices)
     design_blocks, label_blocks, offset_blocks = [], [], []
     n_positive_total, n_negative_total = 0, 0
@@ -169,7 +189,8 @@ def fit_quiet_model(per_session: dict, train_session_ids: list, feature_indices:
         n_features=len(columns), n_time_bins=n_lags, family="bernoulli",
         lambda_group=penalties["lambda_group"], lambda_smooth=penalties["lambda_smooth"],
         lambda_ridge=penalties["lambda_ridge"], smoothness_order=encoding_settings["smoothness_order"],
-        debias_refit=False, max_iter=encoding_settings["solver"]["max_iter"])
+        debias_refit=False, max_iter=encoding_settings["solver"]["max_iter"],
+        tol=encoding_settings["solver"]["tol"])
     estimator.fit(np.vstack(design_blocks), np.concatenate(label_blocks),
                   offset=np.concatenate(offset_blocks))
 
@@ -348,7 +369,7 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
     folds = inner_folds(pool_session_ids)
     n_features = per_session[pool_session_ids[0]]["feature_time_series"].shape[1]
     threshold = encoding["feature_selection"]["screen_alpha"] / n_features
-    require_positive_slope = encoding["transfer"]["require_positive_slope"]
+    require_positive_slope = encoding["feature_selection"]["screen_require_positive_slope"]
     rows = []
     for feature in range(n_features):
         fold_scores, fold_slopes, fold_nulls, fold_converged = [], [], [], []
@@ -369,9 +390,9 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
                 settings["null"]["screen_n_shuffles"], rng, settings["null"]["shuffle_guard_seconds"],
                 encoding["solver"]["calibration_steps"],
                 encoding["solver"]["null_calibration_bins"]))
-        score = float(np.nanmean(fold_scores))
-        slope = float(np.nanmean(fold_slopes))
-        p_value, at_floor = empirical_pvalue(np.nanmean(np.vstack(fold_nulls), axis=0), score)
+        score = finite_mean(np.asarray(fold_scores))
+        slope = finite_mean(np.asarray(fold_slopes))
+        p_value, at_floor = empirical_pvalue(np.vstack(fold_nulls).mean(axis=0), score)
         slope_ok = (not require_positive_slope) or (np.isfinite(slope) and slope > 0)
         survived = bool(score > 0 and slope_ok and np.isfinite(p_value) and p_value < threshold)
         rows.append({"feature": feature, "name": feature_names[feature], "score": score, "slope": slope,
@@ -425,6 +446,19 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
     """
 
     encoding = settings["kinematic_encoding"]
+    # These two name the procedure this function IS. Unchecked they are decoration: a run could
+    # declare `marginal_d2` in its settings, be reported as such, and have run greedy forward
+    # selection all along. Refused rather than ignored.
+    selection = encoding["feature_selection"]
+    if selection["selection_method"] != "forward_d2":
+        msg = (f"forward_select implements greedy forward selection by held-out D2 only; "
+               f"selection_method is {selection['selection_method']!r}.")
+        raise ValueError(msg)
+    if selection["acceptance_rule"] != "paired_1se":
+        msg = (f"the acceptance rule is the codebase's paired one-standard-error rule -- a candidate "
+               f"must beat the incumbent by more than the SE of the PAIRED per-fold differences; "
+               f"acceptance_rule is {selection['acceptance_rule']!r}.")
+        raise ValueError(msg)
     folds = inner_folds(pool_session_ids)
 
     def fold_scores(columns):
@@ -444,22 +478,13 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
                 eta, labels, encoding["solver"]["calibration_steps"])[0])
         return np.asarray(values, dtype=np.float64), converged
 
-    def paired_improvement(candidate_scores, incumbent_scores):
-        """Mean paired per-fold improvement and the standard error of those paired differences."""
-        difference = candidate_scores - incumbent_scores
-        finite = difference[np.isfinite(difference)]
-        if finite.size == 0:
-            return np.nan, np.nan
-        error = (float(np.std(finite, ddof=1) / np.sqrt(finite.size)) if finite.size > 1 else 0.0)
-        return float(finite.mean()), error
-
     scored = [(feature, *fold_scores([feature])) for feature in survivors]
     scored = [(feature, values, converged) for feature, values, converged in scored
-              if np.isfinite(np.nanmean(values)) and np.nanmean(values) > 0]
+              if finite_mean(values) > 0]
     if not scored:
         return [], []
-    anchor, incumbent_scores, anchor_converged = max(scored, key=lambda item: np.nanmean(item[1]))
-    incumbent_mean = float(np.nanmean(incumbent_scores))
+    anchor, incumbent_scores, anchor_converged = max(scored, key=lambda item: finite_mean(item[1]))
+    incumbent_mean = finite_mean(incumbent_scores)
     selected = [anchor]
     path = [{"step": 0, "candidate": feature_names[anchor], "mean": incumbent_mean,
              "improvement": np.nan, "standard_error": np.nan, "decision": "ANCHOR",
@@ -473,13 +498,13 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
     while remaining:
         best_feature, best_mean, best_scores, best_converged = None, -np.inf, None, True
         for feature in remaining:
-            values, converged = fold_scores(selected + [feature])
-            mean = float(np.nanmean(values))
+            values, converged = fold_scores([*selected, feature])
+            mean = finite_mean(values)
             if np.isfinite(mean) and mean > best_mean:
                 best_feature, best_mean, best_scores, best_converged = feature, mean, values, converged
         if best_feature is None:
             break
-        improvement, standard_error = paired_improvement(best_scores, incumbent_scores)
+        improvement, standard_error = paired_one_se_improvement(best_scores, incumbent_scores)
         accept = np.isfinite(improvement) and improvement > standard_error
         path.append({"step": step, "candidate": feature_names[best_feature], "mean": best_mean,
                      "improvement": improvement, "standard_error": standard_error,
@@ -495,3 +520,231 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
         incumbent_scores, incumbent_mean = best_scores, best_mean
         step += 1
     return selected, path
+
+def block_resample_anchors(anchors: np.ndarray, block_frames: int, rng) -> np.ndarray:
+    """
+    Description
+    -----------
+    Resample quiet anchors in contiguous BLOCKS, with replacement, to the original count.
+
+    The unit of resampling is a block rather than a frame, and that is the whole point. Quiet anchors
+    are adjacent frames of a strongly autocorrelated behavioural signal, and two frames a few tens of
+    milliseconds apart share almost their entire predictor. Resampling them independently would treat
+    hundreds of thousands of frames as hundreds of thousands of independent observations, when the
+    decorrelation unit is the history window -- on one pilot day 340,858 quiet frames amount to about
+    554 of them. A band built that way would be roughly an order of magnitude too narrow and would
+    read as precision the data does not have.
+
+    Blocks are drawn from the anchor sequence in index order, so a block spans contiguous anchors
+    rather than a contiguous stretch of wall-clock time. Where quiet anchors are interrupted, a block
+    therefore covers MORE elapsed time than the nominal length, which errs toward wider blocks and a
+    more conservative band.
+
+    Parameters
+    ----------
+    anchors (np.ndarray)
+        Quiet anchor frames, sorted.
+    block_frames (int)
+        Anchors per block; at least the predictor history, so a block is not shorter than the
+        correlation it exists to respect.
+    rng (np.random.Generator)
+        Seeded generator.
+
+    Returns
+    -------
+    resampled (np.ndarray)
+        Sorted anchors, the same count as the input.
+    """
+
+    sorted_anchors = np.sort(anchors)
+    if sorted_anchors.size == 0:
+        return sorted_anchors
+    width = max(int(block_frames), 1)
+    n_blocks = int(np.ceil(sorted_anchors.size / width))
+    starts = rng.integers(0, max(sorted_anchors.size - width, 0) + 1, size=n_blocks)
+    picked = np.concatenate([sorted_anchors[start:start + width] for start in starts])
+    return np.sort(picked[:sorted_anchors.size])
+
+
+def filter_band(per_session: dict, train_session_ids: list, feature_indices: list, n_lags: int,
+                rng, encoding_settings: dict, n_resamples: int, message_output=print) -> dict:
+    """
+    Description
+    -----------
+    The reported error band on a unit's temporal filter: refit the SELECTED model on block resamples
+    of its quiet anchors and take the per-lag spread across the refits.
+
+    The feature set is held FIXED at the representative model's, so the band shows how much the
+    coefficients move, not how much the selection moves. Those are different quantities, and the
+    plan already treats feature identity as description rather than result: a spread taken across
+    folds that chose different features is not a coefficient spread at all.
+
+    Computed during the run and persisted, because the alternative is refitting the whole model later
+    for a figure -- which at cohort scale is the expensive half of the analysis, paid twice.
+
+    Parameters
+    ----------
+    per_session (dict)
+        Assembled session data.
+    train_session_ids (list)
+        The representative model's fitting sessions.
+    feature_indices (list)
+        The selected feature columns, frozen.
+    n_lags (int)
+        History length in frames.
+    rng (np.random.Generator)
+        Seeded generator.
+    encoding_settings (dict)
+        The ``kinematic_encoding`` block.
+    n_resamples (int)
+        Number of refits.
+    message_output (Callable)
+        Where progress is reported.
+
+    Returns
+    -------
+    band (dict)
+        ``filters`` ``(n_resamples, n_features, n_lags)``, the per-lag ``mean``, ``sd``, ``low`` and
+        ``high`` (2.5th / 97.5th percentiles), ``intercepts``, and ``n_converged``.
+    """
+
+    block_frames = n_lags
+    filters, intercepts, n_converged = [], [], 0
+    for _draw in range(n_resamples):
+        resampled = {}
+        for session_id in train_session_ids:
+            session = per_session[session_id]
+            resampled[session_id] = {**session,
+                                     "quiet": block_resample_anchors(session["quiet"],
+                                                                     block_frames, rng)}
+        estimator, _base_rate = fit_quiet_model(resampled, train_session_ids, feature_indices,
+                                                n_lags, rng, encoding_settings, lambda *_a: None)
+        filters.append(np.asarray(estimator.coef_).reshape(len(feature_indices), n_lags))
+        intercepts.append(float(estimator.intercept_))
+        n_converged += int(bool(estimator.converged_))
+
+    stacked = np.stack(filters)
+    message_output(f"  FILTER BAND  {n_resamples} block resamples of the representative model "
+                   f"({len(feature_indices)} feature(s)) | {n_converged}/{n_resamples} converged")
+    return {"filters": stacked,
+            "mean": stacked.mean(axis=0), "sd": stacked.std(axis=0, ddof=1),
+            "low": np.percentile(stacked, 2.5, axis=0),
+            "high": np.percentile(stacked, 97.5, axis=0),
+            "intercepts": np.asarray(intercepts), "n_converged": n_converged}
+
+
+def filter_descriptors(coefficients: np.ndarray, feature_names: list, n_lags: int, fps: float) -> list:
+    """
+    Description
+    -----------
+    Per-feature shape summaries of a fitted temporal filter.
+
+    Roughness is the one to judge a filter by. The plan's standing rule is that curve identity is a
+    matter of SHAPE, never of magnitude -- ``norm`` is blind to shape and demotes the true predictor
+    under collinearity, which is exactly how a group-lasso ranking put ``allo_pitch`` above
+    ``self.speed``. It is stored anyway, beside the roughness, because it is what one reaches for by
+    reflex and it is better to have it labelled than recomputed from memory.
+
+    ``peak_lag_seconds`` and ``centre_of_mass_seconds`` are the interpretable pair: where the filter
+    is largest, and how far back its weight sits on average. A unit reading recent speed and a unit
+    integrating over a second and a half differ in these two numbers and in almost nothing else.
+
+    Parameters
+    ----------
+    coefficients (np.ndarray)
+        Flat weight vector, ``n_features * n_lags``, lag-major within each feature.
+    feature_names (list)
+        Names in the same order as the feature blocks.
+    n_lags (int)
+        Lags per feature.
+    fps (float)
+        Frames per second, to report lags in seconds.
+
+    Returns
+    -------
+    descriptors (list)
+        One dict per feature: ``feature``, ``norm``, ``roughness``, ``peak_lag_seconds``,
+        ``peak_weight``, ``centre_of_mass_seconds``.
+    """
+
+    weights = np.asarray(coefficients, dtype=np.float64).reshape(len(feature_names), n_lags)
+    # the design puts lag 0 -- the anchor frame itself -- LAST, so lag age counts backwards from the end
+    age_seconds = (n_lags - 1 - np.arange(n_lags)) / fps
+    descriptors = []
+    for index, name in enumerate(feature_names):
+        row = weights[index]
+        magnitude = np.abs(row)
+        total = float(magnitude.sum())
+        peak = int(np.argmax(magnitude))
+        descriptors.append({
+            "feature": name,
+            "norm": float(np.linalg.norm(row)),
+            "roughness": float(np.linalg.norm(np.diff(row))),
+            "peak_lag_seconds": float(age_seconds[peak]),
+            "peak_weight": float(row[peak]),
+            "centre_of_mass_seconds": float(np.sum(magnitude * age_seconds) / total)
+            if total > 0 else np.nan,
+        })
+    return descriptors
+
+
+def spike_triggered_average(per_session: dict, session_ids: list, feature_indices: list,
+                            n_lags: int, chunk_rows: int) -> dict:
+    """
+    Description
+    -----------
+    Spike-triggered average of the selected features over the history window, on quiet anchors.
+
+    The STA is the robust interpretable readout and the fitted filter is a fragile deconvolution of
+    it: ``filter = C^-1 . STA``, and inverting a strongly autocorrelated covariance amplifies noise by
+    a factor of hundreds in roughness. A clean STA beside a wiggly filter is the expected picture, not
+    a fault -- and ``filter ~ STA`` is the signature of genuine broad integration, since broad filters
+    live in the well-determined low-frequency directions of C. Neither reading is available without
+    storing the STA, and recomputing it later means rebuilding the design.
+
+    Accumulated in chunks against the same memory budget the linear predictor uses, so a 600-lag
+    design over a hundred thousand anchors never lands in memory at once.
+
+    Parameters
+    ----------
+    per_session (dict)
+        Assembled session data.
+    session_ids (list)
+        Sessions to pool over.
+    feature_indices (list)
+        The selected feature columns.
+    n_lags (int)
+        History length in frames.
+    chunk_rows (int)
+        Rows per chunk.
+
+    Returns
+    -------
+    sta (dict)
+        ``triggered`` and ``baseline``, each ``(n_features, n_lags)``, plus ``difference`` (the STA
+        proper), ``n_spikes`` and ``n_anchors``.
+    """
+
+    columns = list(feature_indices)
+    triggered = np.zeros((len(columns), n_lags), dtype=np.float64)
+    baseline = np.zeros((len(columns), n_lags), dtype=np.float64)
+    n_spikes = n_anchors = 0
+
+    for session_id in session_ids:
+        session = per_session[session_id]
+        anchors = np.sort(session["quiet"])
+        labels = spike_labels_at_frames(session["spike_frames"], anchors, session["n_frames"])
+        for start in range(0, anchors.size, chunk_rows):
+            block = anchors[start:start + chunk_rows]
+            design = lagged_design(session["feature_time_series"][:, columns], block, n_lags)
+            design = design.reshape(block.size, len(columns), n_lags)
+            block_labels = labels[start:start + chunk_rows]
+            triggered += design[block_labels > 0.5].sum(axis=0)
+            baseline += design.sum(axis=0)
+            n_spikes += int(block_labels.sum())
+            n_anchors += int(block.size)
+
+    triggered = triggered / max(n_spikes, 1)
+    baseline = baseline / max(n_anchors, 1)
+    return {"triggered": triggered, "baseline": baseline, "difference": triggered - baseline,
+            "n_spikes": n_spikes, "n_anchors": n_anchors}

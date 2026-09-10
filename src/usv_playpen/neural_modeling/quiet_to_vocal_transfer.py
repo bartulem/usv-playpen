@@ -30,14 +30,22 @@ from __future__ import annotations
 
 import numpy as np
 
-from .deviance_metrics import (area_under_roc, calibrated_explained_deviance,
-                               explained_deviance_vs_reference_rate,
-                               pooled_calibrated_explained_deviance)
+from .deviance_metrics import (
+    area_under_roc,
+    calibrated_explained_deviance,
+    encoding_metrics,
+    explained_deviance_vs_reference_rate,
+    pooled_calibrated_explained_deviance,
+)
 from .neural_design_assembly import spike_labels_at_frames
+from .shift_null_inference import (
+    escalated_empirical_pvalue,
+    sample_circular_shift,
+    shifted_spike_frames,
+)
+
 # Memory budget for one block of pooled null draws; see pooled_transfer_null.
 _POOLED_BLOCK_BYTES = 64 * 1024 * 1024
-
-from .shift_null_inference import empirical_pvalue, escalated_empirical_pvalue, sample_circular_shift, shifted_spike_frames
 
 
 def score_fold(estimator, session: dict, feature_indices: list, vocal_frames: np.ndarray, n_lags: int,
@@ -87,6 +95,8 @@ def score_fold(estimator, session: dict, feature_indices: list, vocal_frames: np
     return {"eta": eta, "labels": labels, "fold_score": score, "fold_slope": slope,
             "auroc": area_under_roc(eta, labels), "spike_rate": float(labels.mean()),
             "n_frames": int(labels.size),
+            "metrics": encoding_metrics(eta, labels,
+                                        encoding_settings["solver"]["calibration_steps"]),
             "level": explained_deviance_vs_reference_rate(eta, labels, base_rate)}
 
 
@@ -202,16 +212,33 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
         under ``folds``.
     """
 
+    # Both of these name what this function DOES, and neither was read. A run could have declared
+    # fold-averaged scoring in its settings, been reported as such, and pooled all along.
+    transfer_settings = settings["kinematic_encoding"]["transfer"]
+    if transfer_settings["calibration_grain"] != "pooled_across_folds":
+        msg = (f"the transfer fits ONE calibration -- a shared slope with per-session intercepts -- "
+               f"on every fold's held-out predictions at once, rather than one per fold; "
+               f"calibration_grain is {transfer_settings['calibration_grain']!r}.")
+        raise ValueError(msg)
+    if transfer_settings["d2_reference_rate"] != "scored_frames":
+        msg = (f"the transfer D2 is measured against an intercept-only model at the SCORED frames' "
+               f"own spike rate, not the training rate; "
+               f"d2_reference_rate is {transfer_settings['d2_reference_rate']!r}.")
+        raise ValueError(msg)
+
     eta = np.concatenate([result["eta"] for result in fold_results])
     labels = np.concatenate([result["labels"] for result in fold_results])
     session_index = np.concatenate([np.full(result["labels"].size, index)
                                     for index, result in enumerate(fold_results)])
     calibration_steps = settings["kinematic_encoding"]["solver"]["calibration_steps"]
     score, slope = pooled_calibrated_explained_deviance(eta, labels, session_index, calibration_steps)
-    def draw_transfer_null(count, _offset=[0]):
+    escalation_round = 0
+
+    def draw_transfer_null(count):
         """Fresh pooled-null draws; the seed advances so escalation never repeats a shift sequence."""
-        seed = int(settings["null"]["shuffle_seed"]) + 1_000_003 * _offset[0]
-        _offset[0] += 1
+        nonlocal escalation_round
+        seed = int(settings["null"]["shuffle_seed"]) + 1_000_003 * escalation_round
+        escalation_round += 1
         return pooled_transfer_null(fold_results, per_session, session_ids, vocal_frames_by_session,
                                     count, seed, settings["null"]["shuffle_guard_seconds"],
                                     calibration_steps)
@@ -224,7 +251,7 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
                    f"| slope {slope:+.3f} | p {p_value:.4e}"
                    f"{' (at floor, escalation would resolve further)' if at_floor else ''} "
                    f"| {labels.size} vocal frames")
-    for session_id, result in zip(session_ids, fold_results):
+    for session_id, result in zip(session_ids, fold_results, strict=True):
         message_output(f"    per-session {session_id}: score {result['fold_score']:+.5f} "
                        f"| slope {result['fold_slope']:+.3f} | AUROC {result['auroc']:.3f} "
                        f"| {result['n_frames']} frames at rate {result['spike_rate']:.4f}")

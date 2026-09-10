@@ -25,6 +25,34 @@ scalar removes exactly that and nothing else, since a scalar cannot reorder fram
 from __future__ import annotations
 
 import numpy as np
+from scipy.stats import rankdata
+
+
+def finite_mean(values: np.ndarray) -> float:
+    """
+    Description
+    -----------
+    Mean of the finite entries, or NaN when there are none.
+
+    ``np.nanmean`` of an all-NaN slice warns and returns NaN, and the test suite runs with warnings as
+    errors, but the reason to avoid it is not the suite: in a run the warning passes and the NaN then
+    compares False against every candidate, so an amplitude search would silently fall through to the
+    first grid point. A fold whose events are all masked has to be visibly absent, not quietly zero.
+
+    Parameters
+    ----------
+    values (np.ndarray)
+        Values that may contain NaN.
+
+    Returns
+    -------
+    mean (float)
+        Mean over the finite entries, or NaN.
+    """
+
+    finite = np.asarray(values, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    return float(finite.mean()) if finite.size else float("nan")
 
 
 def bernoulli_deviance(eta: np.ndarray, y: np.ndarray) -> float:
@@ -50,31 +78,6 @@ def bernoulli_deviance(eta: np.ndarray, y: np.ndarray) -> float:
     return float(2.0 * np.sum(np.logaddexp(0.0, eta) - y * eta))
 
 
-def bernoulli_deviance_terms(eta: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """
-    Description
-    -----------
-    Per-observation Bernoulli deviance contributions, i.e. :func:`bernoulli_deviance` before summation.
-
-    Needed wherever the score has to be re-weighted by something other than the observation, for example by
-    call rather than by frame when checking whether a long vocalization should contribute proportionally
-    more evidence than a short one.
-
-    Parameters
-    ----------
-    eta (np.ndarray)
-        Linear predictor.
-    y (np.ndarray)
-        0/1 labels.
-
-    Returns
-    -------
-    terms (np.ndarray)
-        Per-observation contributions, summing to the scalar deviance.
-    """
-
-    return 2.0 * (np.logaddexp(0.0, eta) - y * eta)
-
 
 def area_under_roc(scores: np.ndarray, labels: np.ndarray) -> float:
     """
@@ -83,6 +86,11 @@ def area_under_roc(scores: np.ndarray, labels: np.ndarray) -> float:
     Area under the ROC curve by rank sum. Scale-free, so it is unaffected by the calibration issues that
     motivate :func:`calibrated_explained_deviance`, which makes it a useful companion diagnostic though not
     the gate, since the rest of the project scores in deviance.
+
+    Ties take the AVERAGE rank, which counts a tied pair as half a win. This is not a refinement: the WHEN
+    axis scores raw spike counts in a 50 ms window, where the predictor takes a handful of integer values
+    and the great majority of pairs are tied, so breaking ties by position would read an arbitrary sort
+    order as discrimination. On a continuous linear predictor there are no ties and the two agree exactly.
 
     Parameters
     ----------
@@ -100,10 +108,40 @@ def area_under_roc(scores: np.ndarray, labels: np.ndarray) -> float:
     positive = np.asarray(labels).astype(bool)
     if positive.all() or (~positive).all():
         return np.nan
-    ranks = np.argsort(np.argsort(np.asarray(scores, dtype=np.float64))) + 1.0
+    ranks = rankdata(np.asarray(scores, dtype=np.float64))
     n_positive, n_negative = float(positive.sum()), float((~positive).sum())
     return float((ranks[positive].sum() - n_positive * (n_positive + 1.0) / 2.0)
                  / (n_positive * n_negative))
+
+
+def calibrate_intercept(offset: np.ndarray, y: np.ndarray, n_steps: int) -> float:
+    """
+    Description
+    -----------
+    Fit the intercept alone against a fixed offset -- the recalibration a frozen model gets when it is
+    carried to a session it was not fitted on.
+
+    Freezing the slope and moving only the intercept is what makes such a transfer a test of the
+    RELATIONSHIP rather than of the level: a unit may sit at a different baseline rate in the held-out
+    session, but its predictor-to-probability slope has to carry over unchanged for the transfer to count.
+
+    Parameters
+    ----------
+    offset (np.ndarray)
+        Fixed part of the linear predictor.
+    y (np.ndarray)
+        0/1 labels.
+    n_steps (int)
+        Maximum Newton iterations.
+
+    Returns
+    -------
+    intercept (float)
+        The fitted level.
+    """
+
+    return float(newton_logistic(np.ones((y.size, 1), dtype=np.float64), y,
+                                 np.zeros(1, dtype=np.float64), n_steps, offset)[0])
 
 
 def newton_logistic(x: np.ndarray, y: np.ndarray, ridge_vector: np.ndarray,
@@ -531,3 +569,67 @@ def explained_deviance_vs_reference_rate(eta: np.ndarray, y: np.ndarray, referen
             "rate_ratio": float(y.mean() / np.clip(reference_rate, 1e-12, None)),
             "log_loss": model_deviance / (2.0 * y.size),
             "auroc": area_under_roc(eta, y)}
+
+
+def encoding_metrics(eta: np.ndarray, y: np.ndarray, n_steps: int) -> dict:
+    """
+    Description
+    -----------
+    The full per-scoring-set metric roster for a frozen encoding model, from one calibration refit.
+
+    The tested statistic is the calibrated explained deviance, and everything here comes free with it.
+    They are saved because they answer questions the headline cannot, and because refitting a cohort
+    to recover a number that was already in memory is the expensive way to learn something.
+
+    ``llr_per_spike`` divides by the spike count rather than the frame count, which is what makes
+    units of different firing rates comparable -- the encoding analogue of the nats-per-spike currency
+    already ruled for the decoding axis. ``brier`` is a proper score that responds to miscalibration
+    differently from deviance, so a model can look healthy in one and poor in the other.
+    ``calibration_intercept`` is the ``a`` in ``y ~ a + b * z(eta)``, which the tested statistic fits
+    and then discards: it says whether a frozen model systematically over- or under-predicts the rate,
+    a different failure from getting the ordering wrong, which is what ``calibration_slope`` catches.
+    ``auroc`` is scale-free and therefore the one number directly comparable between the quiet and
+    vocal regimes, which is the comparison the transfer is about.
+
+    Parameters
+    ----------
+    eta (np.ndarray)
+        Frozen model's linear predictor at the scored frames.
+    y (np.ndarray)
+        0/1 labels at the same frames.
+    n_steps (int)
+        Maximum Newton iterations for the calibration refit.
+
+    Returns
+    -------
+    metrics (dict)
+        ``deviance_explained``, ``calibration_slope``, ``calibration_intercept``, ``log_loss``,
+        ``llr_per_spike``, ``brier``, ``auroc``, ``spike_rate``, ``n_frames``, ``n_spikes``.
+    """
+
+    labels = np.asarray(y, dtype=np.float64)
+    n_spikes = float(labels.sum())
+    spread = float(np.std(eta))
+    if spread < 1e-12 or labels.size == 0 or labels.min() == labels.max():
+        return {"deviance_explained": np.nan, "calibration_slope": np.nan,
+                "calibration_intercept": np.nan, "log_loss": np.nan, "llr_per_spike": np.nan,
+                "brier": np.nan, "auroc": np.nan, "spike_rate": float(labels.mean())
+                if labels.size else np.nan, "n_frames": int(labels.size), "n_spikes": int(n_spikes)}
+
+    standardized = (eta - np.mean(eta)) / spread
+    design = np.column_stack([standardized, np.ones(standardized.size)])
+    beta = newton_logistic(design, labels, np.zeros(2, dtype=np.float64), n_steps)
+    fitted_eta = design @ beta
+    probability = 1.0 / (1.0 + np.exp(-np.clip(fitted_eta, -30.0, 30.0)))
+
+    baseline = intercept_only_deviance(labels, float(labels.mean()))
+    model_deviance = bernoulli_deviance(fitted_eta, labels)
+    return {"deviance_explained": float(1.0 - model_deviance / baseline) if baseline > 0 else np.nan,
+            "calibration_slope": float(beta[0]), "calibration_intercept": float(beta[1]),
+            "log_loss": float(model_deviance / (2.0 * labels.size)),
+            "llr_per_spike": float((baseline - model_deviance) / (2.0 * n_spikes))
+            if n_spikes > 0 else np.nan,
+            "brier": float(np.mean((probability - labels) ** 2)),
+            "auroc": area_under_roc(eta, labels),
+            "spike_rate": float(labels.mean()), "n_frames": int(labels.size),
+            "n_spikes": int(n_spikes)}

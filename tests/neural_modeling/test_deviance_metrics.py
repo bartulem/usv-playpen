@@ -120,6 +120,20 @@ class TestBinnedApproximation:
 
 class TestSupportingMetrics:
 
+    def test_ties_take_the_average_rank(self):
+        """The WHEN predictor is an integer spike count in a 50 ms window, so most pairs are tied.
+        Breaking ties by sort position would read the arbitrary order as discrimination: here every
+        score is identical, so the only defensible answer is chance."""
+        assert area_under_roc(np.ones(6), np.array([0.0, 1.0, 0.0, 1.0, 0.0, 1.0])) == pytest.approx(0.5)
+
+    def test_a_half_tied_split_sits_between_chance_and_certainty(self):
+        # positives {1, 2} against negatives {0, 1}: three pairs won outright and one tied,
+        # so 3.5 of 4 -- a tie-breaking implementation would score this 1.0 or 0.75 depending on
+        # which way the sort happened to fall
+        scores = np.array([1.0, 2.0, 0.0, 1.0])
+        labels = np.array([1.0, 1.0, 0.0, 0.0])
+        assert area_under_roc(scores, labels) == pytest.approx(0.875)
+
     def test_area_under_roc_extremes(self):
         scores = np.array([0.1, 0.2, 0.3, 0.4])
         assert area_under_roc(scores, np.array([0.0, 0.0, 1.0, 1.0])) == pytest.approx(1.0)
