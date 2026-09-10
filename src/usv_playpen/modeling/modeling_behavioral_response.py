@@ -1889,6 +1889,55 @@ def derived_covariate_transform(covariates: np.ndarray,
     return transformed, logged
 
 
+def select_covariate_columns(covariates: np.ndarray,
+                             covariate_labels: list[str],
+                             covariate_features: str) -> tuple[np.ndarray, list[str]]:
+    """
+    Keeps the covariate columns belonging to the chosen animal set.
+
+    Every extraction carries three groups of pre-anchor covariates: the
+    responder's own kinematics (``self.`` labels), the caller's kinematics
+    (``other.`` labels) and the dyadic geometry (bare labels such as
+    ``nose-nose__mean_4s``). Which of the two animal groups enters the fit is a
+    modelling choice -- adjusting for her own recent behaviour asks a different
+    question from adjusting only for his -- so it is applied here at fit time
+    rather than baked into the artifact, and an artifact extracted once serves
+    every choice. The dyadic columns belong to neither animal and stay in under
+    every choice: they describe the configuration both are in.
+
+    Parameters
+    ----------
+    covariates : np.ndarray
+        ``(n_rows, n_columns)`` pre-anchor covariates.
+    covariate_labels : list of str
+        Column names, shaped ``'<prefix>.<feature>__mean_<width>'`` for the two
+        animals and ``'<feature>__mean_<width>'`` for dyadic features.
+    covariate_features : str
+        ``'self'`` (responder's kinematics and dyadic), ``'partner'`` (caller's
+        kinematics and dyadic) or ``'both'`` (everything).
+
+    Returns
+    -------
+    selected : np.ndarray
+        ``(n_rows, n_kept)`` covariates, column order preserved.
+    kept_labels : list of str
+        Labels of the kept columns.
+    """
+
+    prefixes = {'self': ('self.',), 'partner': ('other.',), 'both': ('self.', 'other.')}
+    if covariate_features not in prefixes:
+        msg = (
+            f"`behavioral_response.covariate_features` must be 'self', 'partner' or "
+            f"'both'; got '{covariate_features}'."
+        )
+        raise ValueError(msg)
+    allowed = prefixes[covariate_features]
+    keep = [not (label.startswith('self.') or label.startswith('other.')) or label.startswith(allowed)
+            for label in covariate_labels]
+    kept_labels = [label for label, flag in zip(covariate_labels, keep) if flag]
+    return np.ascontiguousarray(covariates[:, np.asarray(keep, dtype=bool)]), kept_labels
+
+
 def yeo_johnson_covariates(covariates: np.ndarray,
                            covariate_labels: list[str],
                            scaling: dict[str, dict[str, float]]) -> tuple[np.ndarray, dict[str, float]]:
@@ -2375,8 +2424,21 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
                          else Path(__file__).resolve().parent.parent
                          / '_parameter_settings' / 'modeling_settings.json')
     with resolved_settings.open('r') as settings_file:
-        covariate_transform = str(
-            json.load(settings_file)['behavioral_response']['covariate_transform'])
+        response_settings = json.load(settings_file)['behavioral_response']
+    covariate_transform = str(response_settings['covariate_transform'])
+    covariate_features = str(response_settings['covariate_features'])
+    # Which animal's pre-anchor kinematics adjust the contrast is likewise a
+    # fit-time choice: the artifact always holds all three groups, and only the
+    # dyadic columns are kept under every choice.
+    n_all_columns = len(covariate_labels)
+    covariates, covariate_labels = select_covariate_columns(
+        covariates=covariates, covariate_labels=covariate_labels,
+        covariate_features=covariate_features)
+    print(format_selection_step(
+        'Contrast', decision='INFO',
+        detail=f"covariate set: '{covariate_features}' "
+               f'({len(covariate_labels)} of {n_all_columns} columns kept)',
+    ))
     # Applied AFTER subsetting, so the ranks describe the rows actually fitted
     # rather than rows the contrast then discards.
     transform_detail = covariate_transform
@@ -2516,6 +2578,8 @@ def behavioral_response_contrast(input_pickle_path: str | Path,
         'duration_edges': duration_edges,
         'term_labels': labels,
         'n_duration_bins': n_duration_bins,
+        'covariate_features': covariate_features,
+        'covariate_labels': list(covariate_labels),
         '_input_metadata': metadata,
     }
 

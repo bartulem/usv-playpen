@@ -27,6 +27,8 @@ contrast rather than crash it. Coverage:
   configuration is rejected loudly.
 * The shipped ``behavioral_response`` settings block — every key the pipeline
   reads by name exists.
+* ``select_covariate_columns`` — the fit-time choice of which animal's pre-anchor
+  kinematics adjust the contrast; dyadic columns survive every choice.
 * ``duration_tercile_labels`` / ``build_design_matrix`` / ``fit_contrast`` — the
   contrast half: bands hold equal numbers of BOUTS, quiet rows load no band, a
   planted step and dose-response are recovered, the false-positive rate is near
@@ -38,6 +40,7 @@ from __future__ import annotations
 
 import importlib.resources
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -57,6 +60,7 @@ from usv_playpen.modeling.modeling_behavioral_response import (
     forward_clean_times,
     inter_bout_quiet_anchors,
     normal_scores,
+    select_covariate_columns,
     summarise_history,
     variance_explained_by_vocal_terms,
     yeo_johnson_covariates,
@@ -1067,3 +1071,42 @@ class TestMatchedDivergencePipeline:
         pipeline = MatchedDivergencePipeline(modeling_settings_dict=self._settings())
         assert pipeline._response_likelihood('speed') == 'lognormal'
         assert pipeline._response_likelihood('back_pitch') == 'gaussian'
+
+
+class TestSelectCovariateColumns:
+    """The fit-time choice of which animal's covariates adjust the contrast."""
+
+    labels = ['self.speed__mean_0.5s', 'self.speed__mean_4s', 'other.speed__mean_0.5s',
+              'other.neck_elevation__mean_4s', 'nose-nose__mean_0.5s', 'nose-allo_yaw__mean_4s']
+
+    def _covariates(self) -> np.ndarray:
+        return np.arange(3 * len(self.labels), dtype=float).reshape(3, len(self.labels))
+
+    def test_both_keeps_every_column_in_order(self):
+        selected, kept = select_covariate_columns(self._covariates(), self.labels, 'both')
+        assert kept == self.labels
+        np.testing.assert_array_equal(selected, self._covariates())
+
+    def test_self_drops_the_partner_and_keeps_dyadic(self):
+        selected, kept = select_covariate_columns(self._covariates(), self.labels, 'self')
+        assert kept == ['self.speed__mean_0.5s', 'self.speed__mean_4s',
+                        'nose-nose__mean_0.5s', 'nose-allo_yaw__mean_4s']
+        np.testing.assert_array_equal(selected, self._covariates()[:, [0, 1, 4, 5]])
+
+    def test_partner_drops_self_and_keeps_dyadic(self):
+        selected, kept = select_covariate_columns(self._covariates(), self.labels, 'partner')
+        assert kept == ['other.speed__mean_0.5s', 'other.neck_elevation__mean_4s',
+                        'nose-nose__mean_0.5s', 'nose-allo_yaw__mean_4s']
+        np.testing.assert_array_equal(selected, self._covariates()[:, [2, 3, 4, 5]])
+
+    def test_unknown_choice_is_rejected_by_name(self):
+        with pytest.raises(ValueError, match='covariate_features'):
+            select_covariate_columns(self._covariates(), self.labels, 'female')
+
+    def test_shipped_settings_carry_a_valid_choice(self):
+        settings_path = (Path(__file__).resolve().parents[2] / 'src' / 'usv_playpen'
+                         / '_parameter_settings' / 'modeling_settings.json')
+        with settings_path.open('r') as handle:
+            choice = json.load(handle)['behavioral_response']['covariate_features']
+        assert choice in ('self', 'partner', 'both')
+

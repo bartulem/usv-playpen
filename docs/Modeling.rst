@@ -1034,6 +1034,14 @@ horizons run from ~0.75 s for ``speed`` to ~6.8 s for ``nose-nose`` — so finer
 sub-windows would be collinear rather than informative. The design is ~38 columns
 instead of 20 × 600, and the extraction artifact is a few MB instead of 3.5 GB.
 
+Which animal's covariates enter is chosen at **fit time** through
+``behavioral_response.covariate_features``: ``'self'`` adjusts for the responder's
+own pre-anchor kinematics, ``'partner'`` for the caller's, ``'both'`` (the default)
+for both. The dyadic columns (``nose-nose`` and the two directional angles) stay in
+under every choice, since they belong to neither animal. The extraction always
+stores all three groups, so one artifact serves every choice, and the contrast
+artifact records the choice and the columns kept.
+
 The response is kept in **native units, never z-scored**: a Gamma likelihood
 needs ``y > 0``, and the effect is then readable in the feature's own units.
 Covariates *are* pooled z-scored, so their coefficients stay comparable.

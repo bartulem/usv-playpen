@@ -292,6 +292,7 @@
     "deep_silence_margin_seconds": 10.0,
     "covariate_summary_seconds": [0.5, 4.0],
     "covariate_transform": "yeo_johnson",
+    "covariate_features": "both",
     "duration_n_bins": 3,
     "matched_divergence": {
       "pre_seconds": 4.0,
