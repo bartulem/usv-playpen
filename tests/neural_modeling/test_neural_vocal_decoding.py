@@ -24,10 +24,13 @@ from usv_playpen.neural_modeling.neural_significance import (
 from usv_playpen.neural_modeling.neural_vocal_decoding import (
     PERIOD,
     bump_basis,
+    bump_basis_gain,
     bump_nodes,
     decode_gain,
     decoding_context,
+    flagged_descriptors,
     fourier_basis,
+    left_tail_anti_alignment,
     poisson_tuning_fit,
     score_events,
     session_exposure_offsets,
@@ -381,3 +384,73 @@ class TestSaveRoster:
         strict = _settings(decode_grid_min_occupancy=20.0)
         result = decode_gain(counts, decoding_context(positions, sessions, strict), strict)
         assert sum(f["n_masked"] for f in result["per_fold"]) == result["n_masked"]
+
+
+class TestFlaggedDescriptors:
+    """The three `record_*` flags named real quantities the plan rules should be persisted, and were
+    read by nothing -- so a run could declare them true and record none of them."""
+
+    def test_the_overdispersion_index_follows_its_flag(self):
+        counts, positions, sessions = _tuned_unit(seed=5)
+        folds = decoding_context(positions, sessions, SETTINGS)
+        on = decode_gain(counts, folds, SETTINGS, with_detail=True)
+        off_settings = _settings()
+        off_settings["record_overdispersion_index"] = False
+        off = decode_gain(counts, folds, off_settings, with_detail=True)
+        assert "overdispersion_index" in on
+        assert "overdispersion_index" not in off
+        # and it is a real measurement, not a placeholder: Poisson counts sit near 1
+        assert 0.2 < on["overdispersion_index"] < 5.0
+
+    def test_the_bump_gain_is_a_genuine_refit_under_the_local_basis(self):
+        """Not a rescoring of the Fourier surface -- the basis is chosen when the context is built, so
+        a bump gain equal to the Fourier gain would mean the override never took."""
+        counts, positions, sessions = _tuned_unit(seed=6)
+        fourier = decode_gain(counts, decoding_context(positions, sessions, SETTINGS),
+                              SETTINGS)["gain"]
+        bump = bump_basis_gain(counts, positions, sessions, SETTINGS)
+        assert np.isfinite(bump)
+        assert bump != fourier
+        # both bases should find a strongly tuned unit
+        assert bump > 0
+        assert fourier > 0
+
+    def test_the_bump_refit_does_not_mutate_the_caller_settings(self):
+        counts, positions, sessions = _tuned_unit(seed=7)
+        settings = _settings()
+        bump_basis_gain(counts, positions, sessions, settings)
+        assert settings["tuning_surface"]["tuning_basis"] == "fourier"
+
+    def test_anti_alignment_reads_the_left_tail_not_the_right(self):
+        """A reliably BACKWARDS decoder is extreme in the wrong direction: interesting, never a pass."""
+        null = np.linspace(-0.01, 0.01, 1001)
+        anti = left_tail_anti_alignment(null, -0.02)
+        assert anti["anti_aligned"]
+        assert anti["p_left"] < 0.01
+        aligned = left_tail_anti_alignment(null, +0.02)
+        assert not aligned["anti_aligned"]
+        assert aligned["p_left"] > 0.99
+        middle = left_tail_anti_alignment(null, 0.0)
+        assert not middle["anti_aligned"]
+
+    def test_the_flags_gate_what_is_recorded(self):
+        counts, positions, sessions = _tuned_unit(seed=8)
+        null = np.linspace(-0.01, 0.01, 51)
+        both = flagged_descriptors(counts, positions, sessions, SETTINGS, 0.05, null)
+        assert "bump_basis_gain" in both
+        assert "p_left" in both
+
+        off = _settings()
+        off["tuning_surface"]["record_bump_basis_gain"] = False
+        off["discrimination_null"]["record_left_tail_anti_alignment"] = False
+        neither = flagged_descriptors(counts, positions, sessions, off, 0.05, null)
+        assert neither == {}
+
+    def test_the_shipped_settings_turn_all_three_on(self):
+        """If a flag ships false, the cohort run silently produces a thinner artifact than the plan's
+        save-everything roster promises."""
+        with SETTINGS_PATH.open() as handle:
+            block = json.load(handle)["vocal_decoding"]
+        assert block["record_overdispersion_index"] is True
+        assert block["tuning_surface"]["record_bump_basis_gain"] is True
+        assert block["discrimination_null"]["record_left_tail_anti_alignment"] is True

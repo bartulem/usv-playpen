@@ -35,6 +35,8 @@ confidence but can never invert a reversed map.
 
 from __future__ import annotations
 
+import copy
+
 import numpy as np
 from scipy.special import gammaln
 
@@ -721,4 +723,129 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
                 "posterior_entropy": posterior_entropy,
                 "mean_decode_error": finite_mean(decode_error),
                 "mean_posterior_entropy": finite_mean(posterior_entropy),
-                "overdispersion_index": finite_mean(np.asarray(dispersion))} if with_detail else {})}
+                **({"overdispersion_index": finite_mean(np.asarray(dispersion))}
+                   if settings["record_overdispersion_index"] else {})} if with_detail else {})}
+
+
+def bump_basis_gain(counts: np.ndarray, positions: np.ndarray, session_index: np.ndarray,
+                    settings: dict) -> float:
+    """
+    Description
+    -----------
+    Refit the whole decoder under the LOCAL bump basis and return its gain.
+
+    Fourier k=2 is the shipped basis and the ruling behind it is not reopened here: the 100-node bump
+    basis wins by about 10% on strong units, where it resolves real fine structure, but HALVES the
+    faintest unit's gain because 100 parameters overfit a whisper -- and passes are decided at the
+    faint margin, not at the strong end. It is also roughly twice the cost inside a permutation null.
+
+    So the bump fit is kept as a persisted DESCRIPTOR rather than an alternative result. Recording it
+    per unit means the local-basis question stays answerable from a completed cohort run instead of
+    requiring the cohort to be run again, which is the whole point of the save-everything principle.
+
+    It is taken on the OBSERVED pass only. Nothing about the permutation null involves it, so it costs
+    one extra fit per unit rather than one per draw.
+
+    The basis is chosen inside :func:`decoding_context`, not at scoring time, so this needs its own
+    context rather than a second pass over the Fourier one.
+
+    Parameters
+    ----------
+    counts (np.ndarray)
+        Spike count per event.
+    positions (np.ndarray)
+        ``(n, 2)`` torus positions of the events.
+    session_index (np.ndarray)
+        Session slot per event, defining the LOSO folds.
+    settings (dict)
+        The ``vocal_decoding`` block. Its ``tuning_surface.tuning_basis`` is overridden locally; the
+        caller's dict is not mutated.
+
+    Returns
+    -------
+    gain (float)
+        Pooled event-weighted gain in nats per event under the bump basis, or NaN if it cannot be fit.
+    """
+
+    local = copy.deepcopy(settings)
+    local["tuning_surface"]["tuning_basis"] = "bumps"
+    folds = decoding_context(positions, session_index, local)
+    return float(decode_gain(counts, folds, local)["gain"])
+
+
+def left_tail_anti_alignment(null: np.ndarray, observed: float) -> dict:
+    """
+    Description
+    -----------
+    The LEFT tail of the permutation null: is this unit significantly ANTI-aligned?
+
+    A unit can decode reliably backwards -- its surface points the wrong way about the torus more
+    consistently than chance allows. That is a real and interesting property (cl0235 is the recorded
+    case), and it is emphatically NOT a pass: the pass rule requires a POSITIVE gain, because a
+    statistic that is extreme in the wrong direction has not predicted anything.
+
+    Recording it costs nothing, since the null array is already in hand, and it is the descriptor that
+    distinguishes "this unit carries no content" from "this unit carries content the decoder is
+    reading inverted" -- two very different findings that a one-sided p alone reports identically.
+
+    Parameters
+    ----------
+    null (np.ndarray)
+        The permutation null distribution of the gain.
+    observed (float)
+        The observed gain.
+
+    Returns
+    -------
+    descriptor (dict)
+        ``p_left`` (fraction of draws at or below the observed, the anti-alignment exceedance),
+        ``exceed_count_left`` and ``anti_aligned`` (observed below the null mean AND ``p_left`` at or
+        under 0.01 -- a descriptor flag, never a verdict).
+    """
+
+    null = np.asarray(null, dtype=np.float64)
+    below = int(np.sum(null <= observed))
+    p_left = (1.0 + below) / (1.0 + null.size)
+    return {"p_left": p_left, "exceed_count_left": below,
+            "anti_aligned": bool(observed < float(null.mean()) and p_left <= 0.01)}
+
+
+def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index: np.ndarray,
+                        settings: dict, observed_gain: float, null: np.ndarray) -> dict:
+    """
+    Description
+    -----------
+    Compute the WHAT-axis descriptors the settings ask to record, honouring each flag.
+
+    The three ``record_*`` flags named real quantities the plan rules should be persisted, and read
+    nothing -- so a run could declare them true and record none of them. This is where they are read.
+
+    Parameters
+    ----------
+    counts (np.ndarray)
+        Spike count per event.
+    positions (np.ndarray)
+        ``(n, 2)`` torus positions.
+    session_index (np.ndarray)
+        Session slot per event.
+    settings (dict)
+        The ``vocal_decoding`` block.
+    observed_gain (float)
+        The observed Fourier-basis gain.
+    null (np.ndarray)
+        The permutation null of that gain.
+
+    Returns
+    -------
+    descriptors (dict)
+        ``bump_basis_gain`` when ``tuning_surface.record_bump_basis_gain``, and the left-tail keys
+        when ``discrimination_null.record_left_tail_anti_alignment``. Absent keys mean the flag is off,
+        never that the quantity was unavailable.
+    """
+
+    out: dict = {}
+    if settings["tuning_surface"]["record_bump_basis_gain"]:
+        out["bump_basis_gain"] = bump_basis_gain(counts, positions, session_index, settings)
+    if settings["discrimination_null"]["record_left_tail_anti_alignment"]:
+        out.update(left_tail_anti_alignment(null, observed_gain))
+    return out
