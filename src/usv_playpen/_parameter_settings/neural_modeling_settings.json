@@ -7,15 +7,25 @@
     "brain_areas": ["PAG"],
     "area_mode": "include",
     "pool_areas": false,
-    "min_sessions": 2,
+    "min_courtship_sessions": 2,
+    "min_focal_usvs_per_session": 20,
+    "min_vocal_sessions": 2,
     "quality": ["good"],
     "somatic": "somatic",
-    "block_cv_n_folds": 5,
-    "block_cv_gap_seconds": 3.0
+    "single_session_inner_split_blocks": 5
   },
   "anchors": {
+    "vocal_emitter": "self",
     "clean_against": "all",
-    "onset_emitter": 0
+    "spike_window": { "pre_offset_seconds": 0.05, "width_seconds": 0.05 }
+  },
+  "data_sufficiency": {
+    "min_quiet_anchors": null,
+    "min_quiet_spikes": null,
+    "min_focal_usvs_total": null,
+    "min_baseline_tiles": null,
+    "min_vocal_spikes": null,
+    "min_feature_iqr_vocal": null
   },
   "kinematic_encoding": {
     "history_pre_seconds": 4.0,
@@ -24,11 +34,9 @@
     "smoothness_order": 1,
     "include_spike_history": false,
     "spike_history_window_seconds": 0.1,
+    "filter_band": { "compute": true, "n_resamples": 10 },
     "subsample_negatives": true,
     "negatives_per_positive": 10,
-    "min_quiet_anchors": null,
-    "min_quiet_spikes": null,
-    "filter_band_n_folds": 10,
     "significance_model": {
       "lambda_group": 0.0,
       "lambda_smooth": 1000.0,
@@ -37,29 +45,22 @@
     "feature_selection": {
       "screen_alpha": 0.01,
       "selection_method": "forward_d2",
-      "stability_selection": false,
-      "pi_threshold": 0.6,
-      "n_bootstraps": 50,
-      "subsample_size": null,
-      "lambda_group_path": null,
-      "acceptance_rule": "paired_1se"
+      "acceptance_rule": "paired_1se",
+      "screen_require_positive_slope": true
     },
     "solver": {
-      "learning_rate": null,
       "max_iter": 5000,
       "tol": 1e-6,
       "calibration_steps": 30,
       "null_calibration_bins": 2000
     },
     "transfer": {
-      "scoring": "pooled",
-      "reference_rate": "local",
-      "require_positive_slope": true
+      "calibration_grain": "pooled_across_folds",
+      "d2_reference_rate": "scored_frames"
     },
     "subsampling_correction": "log_prior_offset",
     "max_train_total": 70000,
-    "chunk_rows": 4000,
-    "model_predictor_mouse_index": 1
+    "chunk_rows": 4000
   },
   "vocal_gating": {
     "vocal_window": "start_stop",
@@ -67,33 +68,25 @@
     "max_quiet_frames_per_session": 12000,
     "quiet_zeros_per_spike": 40,
     "require_interaction_gt_vocal": true,
-    "min_vocal_spikes": null,
-    "min_feature_iqr_vocal": null,
     "content_gating_compute": false,
-    "n_shuffles_screen": 2000,
+    "gating_screen_n_shuffles": 2000,
     "sign_ridge_frac": 0.1,
     "forward_stop_gain": 0.0,
     "borderline_sigma_flag": 5.0,
     "solver": {
       "irls_n_steps": 30,
-      "calib_n_steps": 40
+      "calibration_steps": 40
     }
   },
   "vocal_decoding": {
-    "prevocal_spike_window_duration": 0.05,
     "require_clean_prevocal_bool": true,
-    "vm_score_mode": "micro",
-    "lambda_smooth": 1.0,
-    "l2_reg": 0.01,
-    "prevocal_window_n_bins": 1,
-    "rate_transform": "none",
-    "rate_basis": "linear",
-    "rate_basis_n_knots": 4,
-    "rate_basis_n_bins": 5,
-    "behaviour_control": "rich",
-    "compute_matched_window_control": true,
-    "min_focal_usvs": null,
-    "min_baseline_tiles": null,
+    "usv_manifold_column_names": ["qlvm1", "qlvm2"],
+    "max_quiet_tiles_per_session": 5000,
+    "when_axis": {
+      "ridge_frac": 0.02,
+      "sigma_floor": 0.05,
+      "solver": { "irls_n_steps": 30, "calibration_steps": 40 }
+    },
     "geodesic_metrics": {
       "compute": true,
       "grid_n_per_dim": 40,
@@ -112,6 +105,7 @@
       "kde_bandwidth": 0.03,
       "likelihood_family": "poisson",
       "session_rate_offsets": true,
+      "solver": { "irls_n_steps": 50 },
       "ridge_selection": {
         "mode": "count_normalized_fixed",
         "ridge_frac": 0.02
@@ -132,19 +126,23 @@
       "record_left_tail_anti_alignment": true,
       "n_permutations_category_grain": 5000
     },
-    "stability_descriptor": {
-      "compute": true,
-      "n_split_halves": 50,
-      "surface_ridge": 300.0,
-      "metric": "observed_over_noise_ceiling"
-    },
     "record_overdispersion_index": true
+  },
+  "nested_position_decoding": {
+    "behaviour_control": "rich",
+    "compute_matched_window_control": true,
+    "vm_score_mode": "macro",
+    "lambda_smooth": 1.0,
+    "l2_reg": 0.01,
+    "prevocal_window_n_bins": 1,
+    "rate_transform": "none",
+    "rate_basis": "linear",
+    "rate_basis_n_bins": 5
   },
   "null": {
     "n_shuffles": 1000,
     "shuffle_guard_seconds": 20.0,
     "shuffle_seed": 0,
-    "decorrelation_lag_seconds": 2.2,
     "screen_n_shuffles": 10000
   },
   "significance": {

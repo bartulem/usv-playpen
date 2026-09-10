@@ -76,7 +76,8 @@ def shift_range_seconds(duration: float, guard_seconds: float) -> tuple[float, f
 
     hi = duration - guard_seconds
     if hi <= guard_seconds:
-        raise ValueError(f"session too short ({duration:.1f} s) for a {guard_seconds} s guard band")
+        msg = f"session too short ({duration:.1f} s) for a {guard_seconds} s guard band"
+        raise ValueError(msg)
     return guard_seconds, hi
 
 
