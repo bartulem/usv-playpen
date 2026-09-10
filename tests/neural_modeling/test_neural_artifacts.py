@@ -25,7 +25,7 @@ SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_play
                  / "_parameter_settings" / "neural_modeling_settings.json")
 UNIT = {"unit_uid": "m1_20250101_imec0_cl0001", "mouse_id": "m1", "unit_id": "imec0_cl0001",
         "brain_area": "PAG", "courtship_sessions": ["a", "b"], "vocal_sessions": ["a"],
-        "focal_usvs_per_session": {"a": 500, "b": 3}}
+        "emitter_usvs_per_session": {"a": 500, "b": 3}}
 
 
 def _settings() -> dict:
@@ -64,7 +64,7 @@ class TestMergedFile:
         artifact = read_unit_artifact(str(tmp_path), UNIT["unit_uid"])
 
         assert artifact["identity"]["vocal_sessions"] == ["a"]
-        assert artifact["identity"]["focal_usvs_per_session"] == {"a": 500, "b": 3}
+        assert artifact["identity"]["emitter_usvs_per_session"] == {"a": 500, "b": 3}
         assert set(artifact["provenance"]) == {"settings_sha256", "git_commit", "git_dirty",
                                                "package_version"}
         assert len(artifact["provenance"]["settings_sha256"]) == 64

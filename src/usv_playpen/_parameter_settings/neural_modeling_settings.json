@@ -8,7 +8,7 @@
     "area_mode": "include",
     "pool_areas": false,
     "min_courtship_sessions": 2,
-    "min_focal_usvs_per_session": 20,
+    "min_emitter_usvs_per_session": 20,
     "min_vocal_sessions": 2,
     "quality": ["good"],
     "somatic": "somatic",
@@ -18,14 +18,6 @@
     "vocal_emitter": "self",
     "clean_against": "all",
     "spike_window": { "pre_offset_seconds": 0.05, "width_seconds": 0.05 }
-  },
-  "data_sufficiency": {
-    "min_quiet_anchors": null,
-    "min_quiet_spikes": null,
-    "min_focal_usvs_total": null,
-    "min_baseline_tiles": null,
-    "min_vocal_spikes": null,
-    "min_feature_iqr_vocal": null
   },
   "kinematic_encoding": {
     "history_pre_seconds": 4.0,

@@ -53,8 +53,8 @@ def _select(tmp_path, **overrides):
     kwargs = {"catalog_path": _catalog(tmp_path),
               "courtship_session_ids": {"s_rich", "s_rich2", "s_thin"},
               "brain_areas": ["PAG"], "area_mode": "include", "quality": ["good"],
-              "somatic": "somatic", "min_courtship_sessions": 2, "focal_counts": COUNTS,
-              "min_focal_usvs_per_session": 20, "min_vocal_sessions": 2}
+              "somatic": "somatic", "min_courtship_sessions": 2, "emitter_counts": COUNTS,
+              "min_emitter_usvs_per_session": 20, "min_vocal_sessions": 2}
     kwargs.update(overrides)
     return select_cohort(**kwargs)
 
@@ -95,7 +95,7 @@ class TestTwoSessionSets:
     def test_the_per_session_counts_are_recorded_not_just_applied(self, tmp_path):
         """A gate whose effect is not stated is a silent change to every reported denominator."""
         unit = next(u for u in _select(tmp_path) if u["unit_id"].endswith("cl0001_ch001_good"))
-        assert unit["focal_usvs_per_session"] == {"s_rich": 500, "s_rich2": 300, "s_thin": 3}
+        assert unit["emitter_usvs_per_session"] == {"s_rich": 500, "s_rich2": 300, "s_thin": 3}
 
     def test_a_unit_short_of_vocal_sessions_is_flagged_not_dropped(self, tmp_path):
         """It still has an encoding claim to answer, and dropping it here would quietly shrink the
@@ -105,7 +105,7 @@ class TestTwoSessionSets:
         assert not any(u["vocal_testable"] for u in cohort)
 
     def test_the_threshold_moves_the_vocal_set_and_nothing_else(self, tmp_path):
-        loose = next(u for u in _select(tmp_path, min_focal_usvs_per_session=2)
+        loose = next(u for u in _select(tmp_path, min_emitter_usvs_per_session=2)
                      if u["unit_id"].endswith("cl0001_ch001_good"))
         assert loose["vocal_sessions"] == ["s_rich", "s_rich2", "s_thin"]
         assert loose["courtship_sessions"] == ["s_rich", "s_rich2", "s_thin"]
@@ -117,7 +117,7 @@ class TestTwoSessionSets:
     def test_min_sessions_counts_courtship_sessions_not_vocal_ones(self, tmp_path):
         """The floor that decides whether a unit exists at all is about the QUIET side, so a unit
         with two courtship sessions of which one is thin is still a unit."""
-        cohort = _select(tmp_path, focal_counts={"s_rich": 500, "s_rich2": 3, "s_thin": 3})
+        cohort = _select(tmp_path, emitter_counts={"s_rich": 500, "s_rich2": 3, "s_thin": 3})
         unit = next(u for u in cohort if u["unit_id"].endswith("cl0002_ch002_good"))
         assert unit["n_courtship_sessions"] == 2
         assert unit["vocal_sessions"] == ["s_rich"]
@@ -141,7 +141,7 @@ class TestShippedSettings:
     def test_the_gate_keys_are_present_and_the_threshold_is_the_ruled_one(self):
         with SETTINGS_PATH.open() as handle:
             cohort = json.load(handle)["cohort"]
-        assert cohort["min_focal_usvs_per_session"] == 20
+        assert cohort["min_emitter_usvs_per_session"] == 20
         assert cohort["min_vocal_sessions"] == 2
         assert cohort["min_courtship_sessions"] == 2
 

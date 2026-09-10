@@ -13,7 +13,8 @@ same-day replicate blocks and the cross-validation is within-day by construction
 TWO SESSION SETS COME BACK PER UNIT, AND THE DIFFERENCE IS THE POINT.
 
 ``courtship_sessions`` is every courtship session the cluster was recorded in. ``vocal_sessions`` is
-the subset carrying at least ``min_focal_usvs_per_session`` calls from the recorded animal.
+the subset carrying at least ``min_emitter_usvs_per_session`` calls from the emitter
+``anchors.vocal_emitter`` names -- the recorded animal by default.
 
 They differ because the claims need different things from a session. The encoding claim is fitted on
 QUIET anchors, and a session in which the male barely called is not impoverished for that purpose --
@@ -144,7 +145,7 @@ def recorded_mouse_by_session(catalog_path: str) -> dict:
     return mapping
 
 
-def focal_usv_counts(session_ids, data_root: str, mouse_by_session: dict,
+def emitter_usv_counts(session_ids, data_root: str, mouse_by_session: dict,
                      vocal_emitter: str = "self") -> dict:
     """
     Description
@@ -199,8 +200,8 @@ def select_cohort(
         quality: list[str],
         somatic: str,
         min_courtship_sessions: int,
-        focal_counts: dict,
-        min_focal_usvs_per_session: int,
+        emitter_counts: dict,
+        min_emitter_usvs_per_session: int,
         min_vocal_sessions: int,
 ) -> list[dict]:
     """
@@ -210,7 +211,7 @@ def select_cohort(
 
     Unit-level filters (area, quality, somatic) run first, then the unit must appear in at least
     ``min_courtship_sessions`` courtship sessions. ``vocal_sessions`` is then the subset of those carrying at
-    least ``min_focal_usvs_per_session`` focal calls, and ``vocal_testable`` records whether enough of
+    least ``min_emitter_usvs_per_session`` calls from the selected emitter, and ``vocal_testable`` records whether enough of
     them survive for a leave-one-session-out rotation on the vocal side.
 
     A unit that fails the vocal floor is KEPT, not dropped: it still has an encoding claim to answer,
@@ -233,9 +234,9 @@ def select_cohort(
         ``'somatic'`` | ``'non_somatic'`` | ``'both'``.
     min_courtship_sessions (int)
         Minimum courtship sessions the unit must appear in.
-    focal_counts (dict)
-        ``{session_id: n_focal_usvs}`` from :func:`focal_usv_counts`.
-    min_focal_usvs_per_session (int)
+    emitter_counts (dict)
+        ``{session_id: n_usvs}`` from :func:`emitter_usv_counts`.
+    min_emitter_usvs_per_session (int)
         Focal calls a session needs before anything scored on vocalizations may use it.
     min_vocal_sessions (int)
         Vocal-eligible sessions needed for the vocal-side rotation.
@@ -270,7 +271,7 @@ def select_cohort(
             continue
 
         vocal_sessions = [s for s in courtship_sessions
-                          if focal_counts[s] >= min_focal_usvs_per_session]
+                          if emitter_counts[s] >= min_emitter_usvs_per_session]
         cohort.append({
             "unit_uid": f"{row['mouse_id']}_{row['rec_date']}_{row['unit_id']}",
             "mouse_id": str(row["mouse_id"]),
@@ -284,7 +285,7 @@ def select_cohort(
             "vocal_sessions": vocal_sessions,
             "n_vocal_sessions": len(vocal_sessions),
             "vocal_testable": len(vocal_sessions) >= min_vocal_sessions,
-            "focal_usvs_per_session": {s: focal_counts[s] for s in courtship_sessions},
+            "emitter_usvs_per_session": {s: emitter_counts[s] for s in courtship_sessions},
         })
     return cohort
 
@@ -312,7 +313,7 @@ def build_cohort_manifest(settings: dict) -> list[dict]:
     session_ids = load_courtship_session_ids(cohort_settings["session_list_files"])
     catalog_path = settings["data_roots"]["catalog_path"]
     mouse_by_session = recorded_mouse_by_session(catalog_path)
-    counts = focal_usv_counts(session_ids & set(mouse_by_session),
+    counts = emitter_usv_counts(session_ids & set(mouse_by_session),
                               settings["data_roots"]["data_root"], mouse_by_session,
                               settings["anchors"]["vocal_emitter"])
     return select_cohort(
@@ -323,8 +324,8 @@ def build_cohort_manifest(settings: dict) -> list[dict]:
         quality=cohort_settings["quality"],
         somatic=cohort_settings["somatic"],
         min_courtship_sessions=cohort_settings["min_courtship_sessions"],
-        focal_counts=counts,
-        min_focal_usvs_per_session=cohort_settings["min_focal_usvs_per_session"],
+        emitter_counts=counts,
+        min_emitter_usvs_per_session=cohort_settings["min_emitter_usvs_per_session"],
         min_vocal_sessions=cohort_settings["min_vocal_sessions"],
     )
 
@@ -353,8 +354,8 @@ def summarize_cohort(cohort: list[dict]) -> dict:
 
     slots = sum(u["n_courtship_sessions"] for u in cohort)
     vocal_slots = sum(u["n_vocal_sessions"] for u in cohort)
-    total = sum(sum(u["focal_usvs_per_session"].values()) for u in cohort)
-    retained = sum(u["focal_usvs_per_session"][s] for u in cohort for s in u["vocal_sessions"])
+    total = sum(sum(u["emitter_usvs_per_session"].values()) for u in cohort)
+    retained = sum(u["emitter_usvs_per_session"][s] for u in cohort for s in u["vocal_sessions"])
     return {
         "n_units": len(cohort),
         "n_vocal_testable": sum(1 for u in cohort if u["vocal_testable"]),
