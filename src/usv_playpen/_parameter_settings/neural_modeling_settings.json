@@ -1,5 +1,5 @@
 {
-  "cohort": {
+  "data": {
     "session_list_files": [
       "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_intact_partners_sessions_list.txt",
       "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_mute_female_sessions_list.txt"
@@ -7,17 +7,22 @@
     "brain_areas": ["PAG"],
     "area_mode": "include",
     "pool_areas": false,
+    "quality": ["good"],
+    "somatic": "somatic"
+  },
+  "data_sufficiency": {
     "min_courtship_sessions": 2,
     "min_emitter_usvs_per_session": 20,
     "min_vocal_sessions": 2,
-    "quality": ["good"],
-    "somatic": "somatic",
     "single_session_inner_split_blocks": 5
   },
-  "anchors": {
+  "vocalization_settings": {
     "vocal_emitter": "self",
     "clean_against": "all",
-    "spike_window": { "pre_offset_seconds": 0.05, "width_seconds": 0.05 }
+    "spike_window": {
+      "pre_offset_seconds": 0.05,
+      "width_seconds": 0.05
+    }
   },
   "kinematic_encoding": {
     "history_pre_seconds": 4.0,
@@ -26,7 +31,10 @@
     "smoothness_order": 1,
     "include_spike_history": false,
     "spike_history_window_seconds": 0.1,
-    "filter_band": { "compute": true, "n_resamples": 10 },
+    "filter_band": {
+      "compute": true,
+      "n_resamples": 10
+    },
     "subsample_negatives": true,
     "negatives_per_positive": 10,
     "significance_model": {
@@ -77,7 +85,10 @@
     "when_axis": {
       "ridge_frac": 0.02,
       "sigma_floor": 0.05,
-      "solver": { "irls_n_steps": 30, "calibration_steps": 40 }
+      "solver": {
+        "irls_n_steps": 30,
+        "calibration_steps": 40
+      }
     },
     "geodesic_metrics": {
       "compute": true,
@@ -97,7 +108,9 @@
       "kde_bandwidth": 0.03,
       "likelihood_family": "poisson",
       "session_rate_offsets": true,
-      "solver": { "irls_n_steps": 50 },
+      "solver": {
+        "irls_n_steps": 50
+      },
       "ridge_selection": {
         "mode": "count_normalized_fixed",
         "ridge_frac": 0.02

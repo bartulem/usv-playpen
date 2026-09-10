@@ -14,7 +14,7 @@ TWO SESSION SETS COME BACK PER UNIT, AND THE DIFFERENCE IS THE POINT.
 
 ``courtship_sessions`` is every courtship session the cluster was recorded in. ``vocal_sessions`` is
 the subset carrying at least ``min_emitter_usvs_per_session`` calls from the emitter
-``anchors.vocal_emitter`` names -- the recorded animal by default.
+``vocalization_settings.vocal_emitter`` names -- the recorded animal by default.
 
 They differ because the claims need different things from a session. The encoding claim is fitted on
 QUIET anchors, and a session in which the male barely called is not impoverished for that purpose --
@@ -300,7 +300,8 @@ def build_cohort_manifest(settings: dict) -> list[dict]:
     Parameters
     ----------
     settings (dict)
-        The whole neural-modeling settings dict; the ``cohort``, ``anchors`` and ``data_roots``
+        The whole neural-modeling settings dict; the ``data``, ``data_sufficiency``,
+        ``vocalization_settings`` and ``data_roots``
         blocks are read.
 
     Returns
@@ -309,24 +310,27 @@ def build_cohort_manifest(settings: dict) -> list[dict]:
         The manifest, one record per unit.
     """
 
-    cohort_settings = settings["cohort"]
-    session_ids = load_courtship_session_ids(cohort_settings["session_list_files"])
+    # `data` says WHICH data the run draws on, `data_sufficiency` says HOW MUCH of it a unit must
+    # carry to be analysed. They are read together here because the manifest is where the two meet.
+    data_settings = settings["data"]
+    sufficiency = settings["data_sufficiency"]
+    session_ids = load_courtship_session_ids(data_settings["session_list_files"])
     catalog_path = settings["data_roots"]["catalog_path"]
     mouse_by_session = recorded_mouse_by_session(catalog_path)
     counts = emitter_usv_counts(session_ids & set(mouse_by_session),
-                              settings["data_roots"]["data_root"], mouse_by_session,
-                              settings["anchors"]["vocal_emitter"])
+                                settings["data_roots"]["data_root"], mouse_by_session,
+                                settings["vocalization_settings"]["vocal_emitter"])
     return select_cohort(
         catalog_path=catalog_path,
         courtship_session_ids=session_ids,
-        brain_areas=cohort_settings["brain_areas"],
-        area_mode=cohort_settings["area_mode"],
-        quality=cohort_settings["quality"],
-        somatic=cohort_settings["somatic"],
-        min_courtship_sessions=cohort_settings["min_courtship_sessions"],
+        brain_areas=data_settings["brain_areas"],
+        area_mode=data_settings["area_mode"],
+        quality=data_settings["quality"],
+        somatic=data_settings["somatic"],
+        min_courtship_sessions=sufficiency["min_courtship_sessions"],
         emitter_counts=counts,
-        min_emitter_usvs_per_session=cohort_settings["min_emitter_usvs_per_session"],
-        min_vocal_sessions=cohort_settings["min_vocal_sessions"],
+        min_emitter_usvs_per_session=sufficiency["min_emitter_usvs_per_session"],
+        min_vocal_sessions=sufficiency["min_vocal_sessions"],
     )
 
 

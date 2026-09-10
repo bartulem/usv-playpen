@@ -80,7 +80,7 @@ def quiet_block_sessions(session: dict, session_id: str, n_blocks: int, gap_fram
 
     Screening and selection need an inner split, and a unit with only one session left to fit on has no
     second session to hold out. Cutting its quiet anchors into contiguous blocks supplies the split
-    within the session instead, which is the fallback ``cohort.single_session_inner_split_blocks``
+    within the session instead, which is the fallback ``data_sufficiency.single_session_inner_split_blocks``
     anticipates. The separation between blocks is not a settings knob: it is derived from
     ``history_pre_seconds``, because a gap shorter than the predictor history lets a validation
     frame's lags reach into a training block, and a longer one only discards anchors.

@@ -140,18 +140,18 @@ class TestShippedSettings:
 
     def test_the_gate_keys_are_present_and_the_threshold_is_the_ruled_one(self):
         with SETTINGS_PATH.open() as handle:
-            cohort = json.load(handle)["cohort"]
-        assert cohort["min_emitter_usvs_per_session"] == 20
-        assert cohort["min_vocal_sessions"] == 2
-        assert cohort["min_courtship_sessions"] == 2
+            sufficiency = json.load(handle)["data_sufficiency"]
+        assert sufficiency["min_emitter_usvs_per_session"] == 20
+        assert sufficiency["min_vocal_sessions"] == 2
+        assert sufficiency["min_courtship_sessions"] == 2
 
     def test_the_block_split_gap_is_derived_not_configured(self):
         """A gap shorter than the predictor history leaks and is silently overridden; a longer one
         only discards anchors. A key here could therefore only mislead, so there must not be one."""
         with SETTINGS_PATH.open() as handle:
             settings = json.load(handle)
-        assert "block_cv_gap_seconds" not in settings["cohort"]
-        assert settings["cohort"]["single_session_inner_split_blocks"] == 5
+        assert "block_cv_gap_seconds" not in settings["data_sufficiency"]
+        assert settings["data_sufficiency"]["single_session_inner_split_blocks"] == 5
 
     def test_the_filter_band_knob_is_absent_until_the_band_is_built(self):
         """The reported filter band is a RESAMPLING of the representative model's quiet anchors with
