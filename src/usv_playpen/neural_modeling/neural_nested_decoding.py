@@ -55,6 +55,8 @@ from ..modeling.manifold_metric import (
 )
 from ..modeling.manifold_torus_regression import SmoothTorusManifoldRegression
 from .neural_design_assembly import lagged_design
+from .neural_when import counts_in_windows
+from .shift_null_inference import shift_range_seconds
 
 
 class NestedTorusRegression(SmoothTorusManifoldRegression):
@@ -363,8 +365,103 @@ def _fit_predict(behaviour: np.ndarray, neural: np.ndarray, positions: np.ndarra
     return estimator.predict(design[test], snap=False)
 
 
+def reduced_predictions(design: dict, settings: dict, n_lags: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    The reduced model's pooled held-out predictions -- IDENTICAL in every null draw, so they are
+    computed once and reused.
+
+    The circular shift moves only the spike train. Behaviour, positions and the equal-region weights
+    (which depend on region labels) are untouched, so the reduced fit cannot change between draws.
+    Recomputing it per draw would double the null's cost for a guaranteed-identical answer.
+
+    Parameters
+    ----------
+    design (dict)
+        From :func:`nested_design`.
+    settings (dict)
+        The ``nested_position_decoding`` block.
+    n_lags (int)
+        History length in frames.
+
+    Returns
+    -------
+    predictions (np.ndarray)
+        ``(n_events, 2)`` held-out predicted torus coordinates.
+    """
+
+    positions, session_index = design["positions"], design["session_index"]
+    weights = inverse_region_frequency_weights(design["region_labels"])
+    n_features = len(design["feature_names"])
+    predicted = np.full_like(positions, np.nan)
+    for held_out in sorted({int(s) for s in session_index}):
+        test = np.flatnonzero(session_index == held_out)
+        train = np.flatnonzero(session_index != held_out)
+        predicted[test] = _fit_predict(design["behaviour"], None, positions, weights, train, test,
+                                       n_lags, n_features, settings)
+    return predicted
+
+
+def shifted_neural_column(design: dict, window_edges: np.ndarray, spikes: dict, durations: dict,
+                          width: float, rng, guard_seconds: float,
+                          sigma_floor: float = 0.05) -> np.ndarray:
+    """
+    Description
+    -----------
+    One null draw's neural column: recount the neuron in each event's window from a CIRCULARLY
+    SHIFTED spike train, then z-score per session exactly as the observed column is.
+
+    The shift is the right null here because the question is purely the neuron's contribution. It
+    preserves the unit's rate, bursting and slow drift -- so the null column looks like a real spike
+    train in every respect except its alignment to the calls -- while behaviour and position keep
+    their real relationship, which a target permutation would destroy along with the thing being
+    conditioned on.
+
+    Counts are RECOUNTED from the shifted train rather than reordered, because a reordering would
+    preserve the exact multiset of counts and so test something narrower than "this neuron, decoupled
+    in time".
+
+    Parameters
+    ----------
+    design (dict)
+        From :func:`nested_design`; its ``session_index`` assigns events to sessions.
+    window_edges (np.ndarray)
+        Left edge (seconds) of each event's spike window, aligned with the design's rows.
+    spikes (dict)
+        ``{session slot: sorted spike times in seconds}``.
+    durations (dict)
+        ``{session slot: session duration in seconds}``, the circular wrap length.
+    width (float)
+        Window width in seconds.
+    rng (np.random.Generator)
+        Draw source.
+    guard_seconds (float)
+        Guard band at each end of the shift range; lags near 0 or T leave the train near register.
+    sigma_floor (float)
+        Floor on the per-session count SD.
+
+    Returns
+    -------
+    column (np.ndarray)
+        ``(n_events, 1)`` z-scored shifted count per event.
+    """
+
+    session_index = design["session_index"]
+    column = np.empty((session_index.size, 1), dtype=np.float64)
+    for slot in sorted({int(s) for s in session_index}):
+        mask = session_index == slot
+        duration = durations[slot]
+        low, high = shift_range_seconds(duration, guard_seconds)
+        shifted = np.sort((spikes[slot] + rng.uniform(low, high)) % duration)
+        counts = counts_in_windows(shifted, window_edges[mask], width).astype(np.float64)
+        spread = max(float(counts.std()), sigma_floor)
+        column[mask, 0] = (counts - float(counts.mean())) / spread
+    return column
+
+
 def nested_scores(design: dict, settings: dict, n_lags: int,
-                  neural: np.ndarray = None) -> dict:
+                  neural: np.ndarray = None, reduced_predicted: np.ndarray = None) -> dict:
     """
     Description
     -----------
@@ -423,14 +520,17 @@ def nested_scores(design: dict, settings: dict, n_lags: int,
                f"got {len(sessions)}.")
         raise ValueError(msg)
 
-    predicted_reduced = np.full_like(positions, np.nan)
+    # The reduced pass is identical in every null draw, so a caller running a null hands it in once.
+    predicted_reduced = (np.full_like(positions, np.nan) if reduced_predicted is None
+                         else np.asarray(reduced_predicted, dtype=np.float64))
     predicted_full = np.full_like(positions, np.nan)
     per_fold = []
     for held_out in sessions:
         test = np.flatnonzero(session_index == held_out)
         train = np.flatnonzero(session_index != held_out)
-        predicted_reduced[test] = _fit_predict(behaviour, None, positions, weights, train, test,
-                                               n_lags, n_features, settings)
+        if reduced_predicted is None:
+            predicted_reduced[test] = _fit_predict(behaviour, None, positions, weights, train, test,
+                                                   n_lags, n_features, settings)
         predicted_full[test] = _fit_predict(behaviour, neural_column, positions, weights, train,
                                             test, n_lags, n_features, settings)
         per_fold.append({"held_out": held_out, "n_events": int(test.size)})
@@ -460,3 +560,114 @@ def nested_scores(design: dict, settings: dict, n_lags: int,
             "min_leave_one_fold_out": float(np.min(dropped)) if dropped else float("nan"),
             "n_events": int(positions.shape[0]),
             "n_regions_scored": int(np.sum(counts >= settings["min_region_events"]))}
+
+
+def next_feature_control(events: dict, per_session: dict, reduced_features: list,
+                         candidates: list, settings: dict, n_lags: int) -> dict:
+    """
+    Description
+    -----------
+    ONE MORE STEP of the behaviour selection: what would a sixth kinematic feature have added?
+
+    This calibrates claim 3's added score against a realistic alternative, and it answers a question
+    the permutation null CANNOT. The null asks whether the neuron's alignment IN TIME is real; a
+    relay's alignment is genuinely real, so a neuron that merely re-encodes behaviour passes it. What
+    that pathway needs instead is a benchmark: how much does adding a REAL extra behavioural
+    predictor -- out-of-fold, with realistic noise -- improve the same score? If the neuron's
+    contribution is unremarkable beside the best remaining feature, its added score is telling us
+    about the control's estimation error rather than about the neuron.
+
+    This is why a synthetic placebo is the weaker instrument. The behaviour block's own fitted
+    projection is a noiseless, optimally weighted scalar that no real predictor resembles, so it
+    bounds the pathway rather than calibrating it.
+
+    It also settles a residual the behaviour selection left open: it stopped under a 1SE rule, which
+    is deliberately conservative about ADDING features, so a feature carrying a little position
+    information could have failed that bar and still be worth conditioning on in a control. This
+    measures how much such a feature would have contributed.
+
+    Every candidate is scored on the SAME events and folds as the neuron, so the numbers are directly
+    comparable.
+
+    Parameters
+    ----------
+    events (dict)
+        From ``assemble_unit_vocal_events``.
+    per_session (dict)
+        From ``assemble_unit_sessions``.
+    reduced_features (list)
+        The behaviour control's features.
+    candidates (list)
+        Features to try as a sixth; typically every assembled feature not already in the control.
+    settings (dict)
+        The ``nested_position_decoding`` block.
+    n_lags (int)
+        History length in frames.
+
+    Returns
+    -------
+    control (dict)
+        ``per_candidate`` (feature -> added score), ``best_feature``, ``best_added``, and
+        ``n_candidates``. Added scores are computed exactly as the neuron's is, against the same
+        reduced model.
+    """
+
+    overlap = [name for name in candidates if name in reduced_features]
+    if overlap:
+        msg = f"candidates must not already be in the behaviour control; got {overlap}."
+        raise ValueError(msg)
+
+    per_candidate: dict = {}
+    for candidate in candidates:
+        design = nested_design(events, per_session, [*reduced_features, candidate], n_lags)
+        # The sixth feature IS the extra block, so the "reduced" model here is the five-feature
+        # control and the "full" model is six features -- scored by dropping the neural column and
+        # letting the candidate's own lags be the addition.
+        five = nested_design(events, per_session, reduced_features, n_lags)
+        wide = dict(design)
+        wide["neural"] = np.zeros((design["behaviour"].shape[0], 0))
+        narrow = dict(five)
+        narrow["neural"] = np.zeros((five["behaviour"].shape[0], 0))
+        per_candidate[candidate] = float(
+            _score_block(wide, settings, n_lags) - _score_block(narrow, settings, n_lags))
+
+    best = max(per_candidate, key=per_candidate.get) if per_candidate else None
+    return {"per_candidate": per_candidate,
+            "best_feature": best,
+            "best_added": per_candidate[best] if best is not None else float("nan"),
+            "n_candidates": len(per_candidate)}
+
+
+def _score_block(design: dict, settings: dict, n_lags: int) -> float:
+    """
+    Description
+    -----------
+    Pooled macro score of a behaviour-only design, over the same folds ``nested_scores`` uses.
+
+    Parameters
+    ----------
+    design (dict)
+        From :func:`nested_design`, with a zero-width neural block.
+    settings (dict)
+        The ``nested_position_decoding`` block.
+    n_lags (int)
+        History length in frames.
+
+    Returns
+    -------
+    score (float)
+        Pooled macro von Mises log-likelihood.
+    """
+
+    positions, regions = design["positions"], design["region_labels"]
+    session_index = design["session_index"]
+    weights = inverse_region_frequency_weights(regions)
+    n_features = len(design["feature_names"])
+    predicted = np.full_like(positions, np.nan)
+    for held_out in sorted({int(s) for s in session_index}):
+        test = np.flatnonzero(session_index == held_out)
+        train = np.flatnonzero(session_index != held_out)
+        predicted[test] = _fit_predict(design["behaviour"], None, positions, weights, train, test,
+                                       n_lags, n_features, settings)
+    return float(macro_von_mises_logscore(predicted, positions, regions, metric="torus", period=1.0,
+                                          min_region_events=settings["min_region_events"]))
