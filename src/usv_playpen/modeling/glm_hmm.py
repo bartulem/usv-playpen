@@ -109,14 +109,17 @@ def _kmeans_init_responsibilities(y_all: np.ndarray, n_states: int, seed: int) -
     "all states identical" fixed point when the emissions are only weakly
     separated. Seeding instead from a k-means clustering of the targets gives each
     state a genuinely distinct starting emission, which the E-step can then
-    amplify. Continuous targets (``(n, d)``) are clustered directly; a categorical
-    target (``(n,)``) is one-hot-encoded first so events group by class.
+    amplify. Continuous targets are clustered directly, whether they arrive as
+    ``(n, d)`` or as a flat ``(n,)`` scalar; a categorical target (flat, with an
+    integer or boolean dtype) is one-hot-encoded first so events group by class.
+    The categorical branch is selected by dtype rather than by shape, so a
+    continuous scalar target is never mistaken for ``n`` distinct classes.
 
     Parameters
     ----------
     y_all (np.ndarray)
-        Pooled targets across sequences (``(n, d)`` continuous or ``(n,)``
-        categorical).
+        Pooled targets across sequences: ``(n, d)`` continuous, ``(n,)`` continuous
+        (floating dtype), or ``(n,)`` categorical (integer or boolean dtype).
     n_states (int)
         Number of latent states / clusters.
     seed (int)
@@ -129,9 +132,22 @@ def _kmeans_init_responsibilities(y_all: np.ndarray, n_states: int, seed: int) -
         state's weight strictly positive), rows summing to 1.
     """
     y_arr = np.asarray(y_all)
-    if y_arr.ndim == 1:
+    # A flat target is routed by DTYPE, not by shape. Only a floating (or complex)
+    # dtype is read as continuous and clustered on its own value; every other flat
+    # dtype -- integer, boolean, string, object -- is a class label and is one-hot
+    # encoded so events group by class. Branching on `ndim` alone silently treated
+    # a continuous scalar target as categorical and asked for an
+    # `(n, n_distinct_values)` one-hot -- for a real cohort that is an `(n, n)`
+    # matrix (hundreds of gigabytes) and the process dies to the OOM killer with no
+    # traceback, because every sample is its own "class". The test is written as
+    # "floating is continuous" rather than "integer is categorical" so that a label
+    # array of strings or objects keeps its original, working behaviour.
+    if y_arr.ndim == 1 and y_arr.dtype.kind in 'fc':
+        features = y_arr.astype(np.float64)[:, None]
+    elif y_arr.ndim == 1:
         classes = np.unique(y_arr)
-        features = (y_arr[:, None] == classes[None, :]).astype(np.float64)
+        features = np.zeros((y_arr.shape[0], classes.size), dtype=np.float64)
+        features[np.arange(y_arr.shape[0]), np.searchsorted(classes, y_arr)] = 1.0
     else:
         features = y_arr.astype(np.float64)
     labels = KMeans(n_clusters=n_states, n_init=3, random_state=seed).fit_predict(features)
@@ -554,7 +570,31 @@ class GLMHMM:
             for t in range(n_time - 1):
                 xi[t] = np.exp(log_alpha[t][:, None] + log_A_into(t + 1)
                                + (log_B[t + 1] + log_beta[t + 1])[None, :] - seq_loglik)
+        elif log_A_seq is None and n_time > 1:
+            # Stationary transitions let the summed responsibilities be written in
+            # closed form instead of walked timestep by timestep. The summand is an
+            # outer product whose only `t`-dependence sits in the two vectors, so
+            #
+            #     xi[i, j] = A[i, j] * sum_t exp(log_alpha[t, i]
+            #                                    + log_B[t + 1, j] + log_beta[t + 1, j]
+            #                                    - seq_loglik)
+            #
+            # factors into one matrix product once each timestep's row and column
+            # maxima are pulled out as a common scalar weight. That weight is O(1)
+            # because the two maxima sum to roughly the sequence log-likelihood, so
+            # this is as stable as the loop it replaces and returns the same value
+            # rather than an approximation.
+            from_terms = log_alpha[:-1]
+            into_terms = log_B[1:] + log_beta[1:]
+            from_max = from_terms.max(axis=1)
+            into_max = into_terms.max(axis=1)
+            weights = np.exp(from_max + into_max - seq_loglik)
+            from_scaled = np.exp(from_terms - from_max[:, None]) * weights[:, None]
+            into_scaled = np.exp(into_terms - into_max[:, None])
+            xi = np.exp(self.log_A_) * (from_scaled.T @ into_scaled)
         else:
+            # Input-driven transitions vary with `t`, so the product above does not
+            # factor and the accumulation stays a loop.
             xi = np.zeros((self.n_states, self.n_states))
             for t in range(n_time - 1):
                 log_xi = (log_alpha[t][:, None] + log_A_into(t + 1)
