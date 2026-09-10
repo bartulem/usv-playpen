@@ -34,6 +34,7 @@ with warnings.catch_warnings():
     from usv_playpen.neural_modeling.neural_nested_decoding import (
         NestedTorusRegression,
         nested_design,
+        nested_scores,
         reduced_model_features,
     )
 
@@ -307,3 +308,100 @@ class TestNestedDesign:
         events = self._events()
         with pytest.raises(ValueError, match="at least one behavioural feature"):
             nested_design(events, self._per_session(events["session_ids"], ["a"]), [], self.N_LAGS)
+
+
+class TestNestedScores:
+    """The statistic: pooled added `vm_logscore`, full over reduced, across leave-one-session-out."""
+
+    SETTINGS: ClassVar[dict] = {"lambda_smooth": 1.0, "l2_reg": 0.01,
+                                "smoothness_derivative_order": 1, "min_region_events": 2}
+
+    @staticmethod
+    def _design(n_per_session=90, n_sessions=3, n_lags=3, n_features=2, seed=0,
+                neuron="informative"):
+        """A target driven by behaviour, plus a neuron that either adds independent position
+        information, merely RELAYS the behaviour, or carries nothing at all."""
+        rng = np.random.default_rng(seed)
+        n = n_per_session * n_sessions
+        behaviour = rng.normal(size=(n, n_features * n_lags))
+        behaviour_drive = behaviour[:, n_lags - 1] + 0.5 * behaviour[:, 2 * n_lags - 1]
+        extra = rng.normal(size=n)
+        if neuron == "informative":
+            column, angle = extra, behaviour_drive + 1.5 * extra
+        elif neuron == "relay":
+            column, angle = behaviour_drive.copy(), behaviour_drive
+        elif neuron == "relay_noisy":
+            column, angle = behaviour_drive + 1.5 * rng.normal(size=n), behaviour_drive
+        else:
+            column, angle = rng.normal(size=n), behaviour_drive
+        angle = angle + 0.05 * rng.normal(size=n)
+        positions = np.column_stack([(0.15 * angle) % 1.0, (0.07 * angle) % 1.0])
+        session_index = np.repeat(np.arange(n_sessions), n_per_session)
+        regions = np.tile(np.arange(6, dtype=float), n // 6 + 1)[:n]
+        return {"behaviour": behaviour,
+                "neural": ((column - column.mean()) / column.std())[:, None],
+                "positions": positions, "session_index": session_index,
+                "region_labels": regions,
+                "feature_names": [f"f{i}" for i in range(n_features)],
+                "kept": np.arange(n), "per_session": {}}
+
+    def test_it_returns_the_pieces_the_conjunction_needs(self):
+        scores = nested_scores(self._design(), self.SETTINGS, n_lags=3)
+        for key in ("added", "reduced", "full", "per_fold", "min_leave_one_fold_out",
+                    "n_events", "n_regions_scored"):
+            assert key in scores
+        assert np.isfinite(scores["added"])
+        assert scores["added"] == pytest.approx(scores["full"] - scores["reduced"])
+
+    def test_a_neuron_carrying_position_beyond_behaviour_adds(self):
+        scores = nested_scores(self._design(neuron="informative", seed=1), self.SETTINGS, n_lags=3)
+        assert scores["added"] > 0
+
+    def test_a_relays_contribution_falls_as_it_relays_more_noisily(self):
+        """MEASURED, and it qualifies the plan's claim that "a pure relay adds ~0".
+
+        A relay carries NO information the behaviour lacks, so in the infinite-data limit it adds
+        nothing. At finite n it can still add, by VARIANCE REDUCTION: the behaviour block has to
+        estimate its mapping from many penalised columns -- on real data the design is underdetermined
+        (cl0401: 2,155 events against 3,000 columns) -- while a clean relay hands the model a
+        low-variance, already-correctly-weighted summary of the same signal.
+
+        So what is actually true, and what this pins, is that the contribution is governed by how
+        NOISILY the neuron relays. A noiseless relay adds as much as a genuinely informative neuron; a
+        realistically noisy one adds little. Measured on this synthetic, mean over five seeds:
+        noise 0.0 -> +0.90, 0.25 -> +0.67, 0.5 -> +0.38, 1.0 -> +0.12, 2.0 -> +0.02.
+
+        The circular-shift null does NOT catch this, because a relay's alignment with behaviour is
+        genuinely real; the null only breaks the neuron's alignment in time."""
+        clean = nested_scores(self._design(neuron="relay", seed=2), self.SETTINGS, n_lags=3)
+        noisy = nested_scores(self._design(neuron="relay_noisy", seed=2), self.SETTINGS, n_lags=3)
+        assert noisy["added"] < 0.25 * clean["added"]
+
+    def test_a_pure_noise_column_does_not_add(self):
+        """The score does not simply reward having one more column -- which is the first thing to
+        check before reading anything into a positive added score."""
+        scores = nested_scores(self._design(neuron="noise", seed=7), self.SETTINGS, n_lags=3)
+        assert scores["added"] < 0.05
+
+    def test_a_neuron_carrying_nothing_does_not_add(self):
+        scores = nested_scores(self._design(neuron="noise", seed=4), self.SETTINGS, n_lags=3)
+        assert scores["added"] < 0.05
+
+    def test_the_neural_column_can_be_overridden_which_is_what_the_null_needs(self):
+        """The null refits with a SHIFTED neural column against the same behaviour and target."""
+        design = self._design(neuron="informative", seed=5)
+        observed = nested_scores(design, self.SETTINGS, n_lags=3)["added"]
+        rng = np.random.default_rng(0)
+        scrambled = nested_scores(design, self.SETTINGS, n_lags=3,
+                                  neural=rng.permutation(design["neural"]))["added"]
+        assert observed > scrambled
+
+    def test_the_leave_one_fold_out_minimum_is_reported(self):
+        scores = nested_scores(self._design(neuron="informative", seed=6), self.SETTINGS, n_lags=3)
+        assert np.isfinite(scores["min_leave_one_fold_out"])
+        assert len(scores["per_fold"]) == 3
+
+    def test_a_single_session_is_refused_rather_than_silently_scored(self):
+        design = self._design(n_sessions=1)
+        with pytest.raises(ValueError, match="at least two sessions"):
+            nested_scores(design, self.SETTINGS, n_lags=3)

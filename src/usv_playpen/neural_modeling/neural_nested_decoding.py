@@ -49,6 +49,10 @@ import pickle
 import numpy as np
 from scipy.linalg import block_diag
 
+from ..modeling.manifold_metric import (
+    inverse_region_frequency_weights,
+    macro_von_mises_logscore,
+)
 from ..modeling.manifold_torus_regression import SmoothTorusManifoldRegression
 from .neural_design_assembly import lagged_design
 
@@ -312,3 +316,147 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
             "kept": kept,
             "feature_names": list(feature_names),
             "per_session": bookkeeping}
+
+
+def _fit_predict(behaviour: np.ndarray, neural: np.ndarray, positions: np.ndarray,
+                 weights: np.ndarray, train: np.ndarray, test: np.ndarray,
+                 n_lags: int, n_features: int, settings: dict) -> np.ndarray:
+    """
+    Description
+    -----------
+    Fit one model on the training rows and predict the held-out ones.
+
+    ``neural`` of None gives the REDUCED model (behaviour alone); passing the column gives the FULL
+    model. Both go through the same estimator and the same penalty policy, so the pair differs in
+    exactly one column, which is what makes the added score interpretable.
+
+    Parameters
+    ----------
+    behaviour (np.ndarray)
+        ``(n_events, n_features * n_lags)`` behaviour block.
+    neural (np.ndarray)
+        ``(n_events, 1)`` neural column, or None for the reduced model.
+    positions (np.ndarray)
+        ``(n_events, 2)`` torus targets.
+    weights (np.ndarray)
+        Per-row fit weights (equal-region reweighting).
+    train, test (np.ndarray)
+        Row indices.
+    n_lags, n_features (int)
+        Design shape.
+    settings (dict)
+        The ``nested_position_decoding`` block.
+
+    Returns
+    -------
+    predictions (np.ndarray)
+        ``(len(test), 2)`` predicted torus coordinates.
+    """
+
+    design = behaviour if neural is None else np.hstack([behaviour, neural])
+    estimator = NestedTorusRegression(
+        n_behaviour_features=n_features, n_lags=n_lags,
+        n_neural_columns=0 if neural is None else neural.shape[1],
+        lambda_smooth=settings["lambda_smooth"], l2_reg=settings["l2_reg"],
+        smoothness_derivative_order=settings["smoothness_derivative_order"])
+    estimator.fit(design[train], positions[train], sample_weight=weights[train])
+    return estimator.predict(design[test], snap=False)
+
+
+def nested_scores(design: dict, settings: dict, n_lags: int,
+                  neural: np.ndarray = None) -> dict:
+    """
+    Description
+    -----------
+    Claim 3's statistic: the POOLED added ``vm_logscore`` of ``position ~ kinematics + neuron`` over
+    ``position ~ kinematics``, across leave-one-session-out folds.
+
+    **Pooled, not fold-averaged, and this is ruled rather than stylistic.** Two reasons specific to
+    this score. First, the von Mises concentration is FITTED at scoring time, so fold-averaging fits a
+    separate one per fold on a thin fold's residuals. Second, the macro score drops acoustic regions
+    below ``min_region_events`` and returns NaN when none clear -- measured over the cohort's 70
+    vocal-eligible sessions, at the ruled threshold of 20 events, 31.4% carry a region that would be
+    dropped at fold grain, so per-fold macro scores would be averages over DIFFERENT region sets, with
+    a 1-event region weighted equally against a 500-event one. Pooled, cl0401's thinnest region holds
+    198 events and cl0499's 454.
+
+    Each model fits its OWN concentration on the pooled residuals, which is the ordinary nested
+    likelihood comparison: a model with tighter residuals earns both a higher concentration and a
+    higher score, and that is the score being what it claims to be rather than a nuisance advantage.
+
+    Training rows carry EQUAL-REGION REWEIGHTING, exactly as P1 fits it, so common regions do not
+    dominate. Those weights depend only on the region labels, which no shuffle moves.
+
+    The guard against one session carrying the result is the LEAVE-ONE-FOLD-OUT MINIMUM -- the worst
+    pooled added score with any single fold's events dropped. Threshold-free, free to compute, and a
+    descriptor rather than a gate.
+
+    Parameters
+    ----------
+    design (dict)
+        From :func:`nested_design`.
+    settings (dict)
+        The ``nested_position_decoding`` block.
+    n_lags (int)
+        History length in frames.
+    neural (np.ndarray)
+        Neural column to use instead of ``design['neural']`` -- the null passes a shifted one. None
+        uses the observed column.
+
+    Returns
+    -------
+    scores (dict)
+        ``added``, ``reduced``, ``full``, ``per_fold``, ``min_leave_one_fold_out``, ``n_events``,
+        ``n_regions_scored``.
+    """
+
+    behaviour = design["behaviour"]
+    neural_column = design["neural"] if neural is None else np.asarray(neural, dtype=np.float64)
+    positions, regions = design["positions"], design["region_labels"]
+    session_index = design["session_index"]
+    n_features = len(design["feature_names"])
+    weights = inverse_region_frequency_weights(regions)
+
+    sessions = sorted({int(s) for s in session_index})
+    if len(sessions) < 2:
+        msg = (f"nested_scores needs at least two sessions for leave-one-session-out; "
+               f"got {len(sessions)}.")
+        raise ValueError(msg)
+
+    predicted_reduced = np.full_like(positions, np.nan)
+    predicted_full = np.full_like(positions, np.nan)
+    per_fold = []
+    for held_out in sessions:
+        test = np.flatnonzero(session_index == held_out)
+        train = np.flatnonzero(session_index != held_out)
+        predicted_reduced[test] = _fit_predict(behaviour, None, positions, weights, train, test,
+                                               n_lags, n_features, settings)
+        predicted_full[test] = _fit_predict(behaviour, neural_column, positions, weights, train,
+                                            test, n_lags, n_features, settings)
+        per_fold.append({"held_out": held_out, "n_events": int(test.size)})
+
+    def macro(predictions: np.ndarray, rows: np.ndarray) -> float:
+        """Pooled macro score over the given rows; each model fits its own concentration."""
+        return float(macro_von_mises_logscore(
+            predictions[rows], positions[rows], regions[rows], metric="torus", period=1.0,
+            min_region_events=settings["min_region_events"]))
+
+    everything = np.arange(positions.shape[0])
+    reduced_score, full_score = macro(predicted_reduced, everything), macro(predicted_full, everything)
+
+    dropped = []
+    for fold in per_fold:
+        rest = np.flatnonzero(session_index != fold["held_out"])
+        fold_rows = np.flatnonzero(session_index == fold["held_out"])
+        fold["added"] = macro(predicted_full, fold_rows) - macro(predicted_reduced, fold_rows)
+        dropped.append(macro(predicted_full, rest) - macro(predicted_reduced, rest))
+
+    labelled = regions[np.isfinite(regions)]
+    _values, counts = np.unique(labelled, return_counts=True)
+    return {"added": full_score - reduced_score,
+            "reduced": reduced_score,
+            "full": full_score,
+            "per_fold": per_fold,
+            "min_leave_one_fold_out": float(np.min(dropped)) if dropped else float("nan"),
+            "n_events": int(positions.shape[0]),
+            "n_regions_scored": int(np.sum(counts >= settings["min_region_events"]))}
