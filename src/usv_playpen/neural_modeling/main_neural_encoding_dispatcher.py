@@ -20,24 +20,64 @@ import argparse
 import json
 import pathlib
 import sys
+import time
 import traceback
-from zlib import crc32
 from datetime import datetime
+from zlib import crc32
 
 import numpy as np
 
-from .kinematic_encoding import (fit_quiet_model, forward_select, frozen_null_scores,
-                                 inner_folds, linear_predictor_at_frames,
-                                 quiet_block_sessions, screen_features)
-from .neural_design_assembly import (assemble_unit_sessions, emitter_name, load_session_usvs,
-                                     silent_gap_before_call, spike_labels_at_frames,
-                                     vocal_span_frames)
-from .deviance_metrics import calibrated_explained_deviance
+from .deviance_metrics import calibrated_explained_deviance, encoding_metrics
+from .kinematic_encoding import (
+    filter_band,
+    filter_descriptors,
+    fit_quiet_model,
+    forward_select,
+    frozen_null_scores,
+    linear_predictor_at_frames,
+    quiet_block_sessions,
+    screen_features,
+    spike_triggered_average,
+)
+from .neural_artifacts import write_unit_section
+from .neural_cohort import emitter_usv_counts
+from .neural_design_assembly import (
+    assemble_unit_sessions,
+    load_session_usvs,
+    silent_gap_before_call,
+    spike_labels_at_frames,
+    vocal_span_frames,
+)
 from .quiet_to_vocal_transfer import combine_folds, score_fold
-from .shift_null_inference import empirical_pvalue, escalated_empirical_pvalue
+from .shift_null_inference import escalated_empirical_pvalue
 
 
-def load_settings(settings_path: str = None) -> dict:
+def unwrap_stored(value):
+    """
+    Description
+    -----------
+    Recover a dict or list that ``np.savez`` wrapped in a 0-d object array.
+
+    The per-fold artifacts are npz because folds are an array job and write concurrently, and npz has
+    no notion of a nested mapping: a dict goes in and a 0-d object array comes out, which iterates as
+    a scalar rather than as the mapping it was. The merged per-unit RESULT is a pickle for exactly
+    this reason; the intermediates cannot be.
+
+    Parameters
+    ----------
+    value (Any)
+        A value read back from an ``npz`` archive.
+
+    Returns
+    -------
+    value (Any)
+        The original object where one was boxed, otherwise the value unchanged.
+    """
+
+    return value.item() if isinstance(value, np.ndarray) and value.ndim == 0 else value
+
+
+def load_settings(settings_path: str | None = None) -> dict:
     """
     Description
     -----------
@@ -57,7 +97,7 @@ def load_settings(settings_path: str = None) -> dict:
     path = (pathlib.Path(settings_path) if settings_path
             else pathlib.Path(__file__).parent.parent / "_parameter_settings"
             / "neural_modeling_settings.json")
-    with open(path, "r") as settings_file:
+    with pathlib.Path(path).open() as settings_file:
         return json.load(settings_file)
 
 
@@ -97,10 +137,16 @@ def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id:
         Silent gap preceding each retained call.
     """
 
+    # Match the emitter label EXACTLY, as the assembler does. Substring matching buys nothing here
+    # -- across 77 courtship sessions it never once found a focal animal that equality missed -- and
+    # it is fragile, because a bare mouse id is a prefix of the same animal's suffixed form.
     usv_table = load_session_usvs(data_root, session_id)
-    emitters = usv_table["emitter"].unique().to_list()
-    focal = [name for name in emitters if mouse_id in str(name)][0]
-    focal_calls = usv_table.filter(usv_table["emitter"] == focal)
+    focal_calls = usv_table.filter(usv_table["emitter"] == mouse_id)
+    if focal_calls.height == 0:
+        # The focal animal simply did not vocalize in this session, which is ordinary: it happens in
+        # 8 of 77 courtship sessions. Such a session contributes no vocal frames to the transfer,
+        # which is the correct answer -- previously it raised IndexError and killed the fold.
+        return (np.zeros(0, dtype=np.int64), np.zeros(1, dtype=np.int64), np.zeros(0, dtype=np.float64))
     order = np.argsort(focal_calls["start"].to_numpy())
     starts = focal_calls["start"].to_numpy()[order]
     stops = focal_calls["stop"].to_numpy()[order]
@@ -147,13 +193,21 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     pool_ids = [session for session in sessions if session != test_id]
     message_output(f"[fold {fold_index}] test = {test_id} | pool = {pool_ids}")
 
-    # model_predictor_mouse_index, NOT anchors.onset_emitter: the first says whose kinematics predict,
-    # the second says whose calls define an onset. Wiring the second here silently swapped the predictor
-    # animal and built a different feature set entirely.
+    # The `self.` role is derived from the unit's own mouse_id, not configured -- see
+    # `build_zscored_feature_frames`. `vocalization_settings.vocal_emitter` is a different question (whose CALLS
+    # count as the recorded animal's) and stays a knob; it is handed to the assembler so claim 1's
+    # onsets and claim 2's events move together when it is changed.
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
-                                         encoding["model_predictor_mouse_index"],
-                                         encoding["history_pre_seconds"], encoding["clean_post_seconds"])
+                                         encoding["history_pre_seconds"], encoding["clean_post_seconds"],
+                                         settings["vocalization_settings"]["clean_against"],
+                                         settings["vocalization_settings"]["vocal_emitter"])
     fps = per_session[sessions[0]]["fps"]
+    # `history_pre_seconds` does THREE jobs at once, deliberately coupled: it is the kinematic
+    # filter's LENGTH (these lags), the quiet window's backward guard, and the train/validation gap
+    # in the single-session block split, which is derived from it. Changing it therefore redefines
+    # what "quiet" means and how far apart CV blocks must sit, not merely how far back the model
+    # looks. That is the intended coupling -- a quiet window shorter than the history would let a
+    # vocalization into the predictor -- but it is not something the settings file can say.
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     feature_names = list(per_session[sessions[0]]["feature_names"])
     # Seed from the TEST SESSION id, not the fold index, so a fold is reproducible regardless of
@@ -166,12 +220,23 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     # quiet-anchor blocks within that single pool session, with a gap at least as long as the predictor
     # history so a validation frame's lags cannot reach into a training block. The model itself is still
     # fitted on the whole pool session.
+    # The test session's vocal frames depend on nothing the pool split decides, and BOTH of the
+    # no-model early returns below have to report them. Computing them here rather than after the
+    # split is what stops the block-CV branch raising NameError instead of returning its artifact.
+    session = per_session[test_id]
+    vocal_frames, pointer, gaps = focal_vocal_frames(session, test_id, data_root, unit["mouse_id"],
+                                                     fps, n_lags)
+
     inner_sessions, inner_ids = per_session, pool_ids
     if len(pool_ids) == 1:
-        required_gap = max(float(settings["cohort"]["block_cv_gap_seconds"]),
-                           float(encoding["history_pre_seconds"]))
+        # The gap is DERIVED from the predictor history rather than configured. It can never be
+        # shorter -- a validation frame's history would reach into a training block and the split
+        # would leak -- and there is no reason to make it longer, the behavioural decorrelation lag
+        # having been measured at 2.2 s, well inside the 4 s history. A settings key here could only
+        # be silently overridden or pointlessly obeyed.
+        required_gap = float(encoding["history_pre_seconds"])
         blocks = quiet_block_sessions(per_session[pool_ids[0]], pool_ids[0],
-                                      settings["cohort"]["block_cv_n_folds"],
+                                      settings["data_sufficiency"]["single_session_inner_split_blocks"],
                                       int(np.ceil(required_gap * fps / 2.0)))
         if len(blocks) < 2:
             message_output(f"    NO MODEL: {pool_ids[0]} yields {len(blocks)} usable quiet blocks")
@@ -189,9 +254,6 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     survivors = [row["feature"] for row in screen_rows if row["survived"]]
     message_output(f"    survivors: {len(survivors)}/{len(screen_rows)}")
 
-    session = per_session[test_id]
-    vocal_frames, pointer, gaps = focal_vocal_frames(session, test_id, data_root, unit["mouse_id"],
-                                                     fps, n_lags)
     if not survivors:
         message_output("    NO MODEL — this fold contributes nothing")
         return {"fold_index": fold_index, "test_id": test_id, "selected": [], "path": [],
@@ -201,8 +263,10 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
 
     selected, path = forward_select(inner_sessions, inner_ids, survivors, n_lags, rng, settings,
                                     feature_names, message_output)
+    fit_started = time.time()
     estimator, base_rate = fit_quiet_model(per_session, pool_ids, selected, n_lags, rng, encoding,
                                            message_output)
+    final_fit_seconds = time.time() - fit_started
     # The final model is what every reported number rests on, so its convergence travels with the
     # artifact rather than living only in a log line a cluster run may never have read back.
     final_converged = bool(estimator.converged_)
@@ -235,8 +299,13 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     # other folds' models rather than resting on the choice. It is cheap -- no refit, just the linear
     # predictor and a two-parameter calibration -- and legitimate for every session, because quiet
     # anchors exclude vocal periods by construction, so the model has never seen a vocal frame.
+    # ONLY vocal-eligible sessions are scored. A session in which the male barely called is not
+    # impoverished for the QUIET fit -- it has more silence, not less -- so it stays in the rotation
+    # that selects and fits the model. It is excluded here, where the statistic rests on the calls
+    # themselves and a session with a handful of them contributes a fold whose score is mostly noise.
+    # The two session sets come from the cohort builder for exactly this reason.
     vocal_everywhere = []
-    for other_id in sessions:
+    for other_id in [s for s in sessions if s in set(unit["vocal_sessions"])]:
         other_frames, other_pointer, other_gaps = focal_vocal_frames(
             per_session[other_id], other_id, data_root, unit["mouse_id"], fps, n_lags)
         scored = score_fold(estimator, per_session[other_id], selected, other_frames, n_lags,
@@ -256,6 +325,11 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                    f"(slope {vocal['fold_slope']:+.3f}) on {vocal['n_frames']} frames")
 
     artifact = {"fold_index": fold_index, "test_id": test_id,
+                # the fitted filter itself, so shape descriptors and figures need no refit
+                "coefficients": np.asarray(estimator.coef_), "intercept": float(estimator.intercept_),
+                "n_iter": int(estimator.n_iter_), "fit_seconds": final_fit_seconds,
+                "quiet_metrics": encoding_metrics(eta_quiet, labels_quiet,
+                                                  encoding["solver"]["calibration_steps"]),
                 "selected": [feature_names[index] for index in selected],
                 "selected_indices": selected, "path": path, "no_model": False,
                 "quiet_score": quiet_score, "quiet_slope": quiet_slope, "quiet_null": quiet_null,
@@ -371,8 +445,9 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     encoding = settings["kinematic_encoding"]
     sessions = unit["courtship_sessions"]
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
-                                         encoding["model_predictor_mouse_index"],
-                                         encoding["history_pre_seconds"], encoding["clean_post_seconds"])
+                                         encoding["history_pre_seconds"], encoding["clean_post_seconds"],
+                                         settings["vocalization_settings"]["clean_against"],
+                                         settings["vocalization_settings"]["vocal_emitter"])
     fps = per_session[sessions[0]]["fps"]
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     feature_names = list(per_session[sessions[0]]["feature_names"])
@@ -397,11 +472,12 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
         # into a training block and the split leaks. Trimming happens at BOTH ends of every block, so
         # each end takes half the required separation and the realised gap is what was asked for --
         # previously the trim was applied whole at each end, making the gap silently twice the setting.
-        required_gap = max(float(settings["cohort"]["block_cv_gap_seconds"]),
-                           float(encoding["history_pre_seconds"]))
+        # Derived from the predictor history; see the note in `run_fold`.
+        required_gap = float(encoding["history_pre_seconds"])
         gap_frames = int(np.ceil(required_gap * fps / 2.0))
         blocks = quiet_block_sessions(per_session[fit_ids[0]], fit_ids[0],
-                                      settings["cohort"]["block_cv_n_folds"], gap_frames)
+                                      settings["data_sufficiency"]["single_session_inner_split_blocks"],
+                                      gap_frames)
         if len(blocks) < 2:
             message_output(f"    NO MODEL: {fit_ids[0]} yields {len(blocks)} usable quiet blocks")
             return {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0,
@@ -450,8 +526,14 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                    f"| p {quiet_p:.4e}{' (at floor)' if quiet_at_floor else ''}")
 
     # Every session's vocal frames are held out -- the model was fitted on quiet anchors only.
+    # ONLY vocal-eligible sessions are scored. A session in which the male barely called is not
+    # impoverished for the QUIET fit -- it has more silence, not less -- so it stays in the rotation
+    # that selects and fits the model. It is excluded here, where the statistic rests on the calls
+    # themselves and a session with a handful of them contributes a fold whose score is mostly noise.
+    # The two session sets come from the cohort builder for exactly this reason.
     vocal_results, vocal_frames_by_session = [], {}
-    for session_id in sessions:
+    vocal_ids = [s for s in sessions if s in set(unit["vocal_sessions"])]
+    for session_id in vocal_ids:
         frames, pointer, gaps = focal_vocal_frames(per_session[session_id], session_id, data_root,
                                                    unit["mouse_id"], fps, n_lags)
         vocal_frames_by_session[session_id] = frames
@@ -459,30 +541,27 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                             encoding, linear_predictor_at_frames)
         result["pointer"], result["gaps"] = pointer, gaps
         vocal_results.append(result)
-    transfer = combine_folds(vocal_results, per_session, sessions, vocal_frames_by_session, settings,
+    transfer = combine_folds(vocal_results, per_session, vocal_ids, vocal_frames_by_session, settings,
                              message_output)
 
     if not final_converged:
         message_output("    [!] FINAL MODEL DID NOT CONVERGE -- treat every number here as provisional")
-    # THREE-WAY verdict (RULED 2026-09-05, user). A transformation neuron does not switch tuning
-    # between regimes, so a filter that is significantly ANTI-predictive during vocalization is not a
-    # failed transformation neuron -- it is a different kind of neuron. Calibrated D2 grows with the
-    # square of the calibration slope and is blind to sign, so the slope is what separates them:
-    # without it cl0499 reads as a clean pass on p-values alone while being anti-predictive on all six
-    # of its sessions (slopes -0.088 to -0.565, every AUROC below 0.5).
+    # Reported for eyes on a single unit, NOT persisted -- it compares raw p-values to a bare
+    # threshold, so it is uncorrected by construction. See the note in `combine`.
     level = float(settings["significance"]["fdr_q"])
     quiet_significant = quiet_p < level
     transfer_significant = transfer["p"] < level
     if quiet_significant and transfer_significant and transfer["slope"] > 0:
-        verdict = "TRANSFORMATION CANDIDATE"
+        reading = "transformation candidate"
     elif quiet_significant and transfer_significant:
-        verdict = "REGIME-SWITCHING (tuned in both regimes, opposite sign)"
+        reading = "regime-switching (tuned in both regimes, opposite sign)"
     elif quiet_significant:
-        verdict = "PURELY KINEMATIC (no transfer)"
+        reading = "purely kinematic (no transfer)"
     else:
-        verdict = "NOT TUNED on quiet"
-    message_output(f"  VERDICT: {verdict} | quiet p {quiet_p:.4e} | transfer p {transfer['p']:.4e} "
-                   f"slope {transfer['slope']:+.3f} | q = {level}")
+        reading = "not tuned on quiet"
+    message_output(f"  UNCORRECTED READING (not persisted): {reading} | quiet p {quiet_p:.4e} "
+                   f"| transfer p {transfer['p']:.4e} slope {transfer['slope']:+.3f} "
+                   f"| bare threshold {level}, no FDR")
 
     artifact = {"unit_id": unit["unit_id"], "no_model": False, "held_out": held_out,
                 "fit_sessions": fit_ids, "spike_counts": spike_counts, "sparsest_session": sparsest,
@@ -490,17 +569,13 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                 "selected_indices": selected, "path": path, "screen": screen_rows,
                 "quiet_score": quiet_score, "quiet_slope": quiet_slope, "quiet_p": quiet_p,
                 "quiet_at_floor": quiet_at_floor, "quiet_null": quiet_null,
-                "verdict": verdict,
                 "transfer_score": transfer["score"], "transfer_slope": transfer["slope"],
                 "transfer_p": transfer["p"], "transfer_at_floor": transfer["at_floor"],
                 "transfer_null": transfer["null"], "transfer_folds": transfer["folds"],
                 "n_vocal_frames": transfer["n_frames"], "final_fit_converged": final_converged,
                 "n_lags": n_lags, "fps": fps}
-    destination = pathlib.Path(output_directory) / f"{unit['unit_id']}_single.npz"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(destination, **{key: np.asarray(value, dtype=object) if isinstance(value, (list, dict))
-                             else value for key, value in artifact.items()})
-    message_output(f"    wrote {destination.name}")
+    written = write_unit_section(output_directory, unit, "claim1", artifact, settings)
+    message_output(f"    wrote {written.name} [claim1, single-split]")
     return artifact
 
 def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
@@ -535,17 +610,21 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     for fold_index in range(len(sessions)):
         path = pathlib.Path(output_directory) / f"{unit['unit_id']}_fold{fold_index}.npz"
         if not path.exists():
-            raise FileNotFoundError(f"fold artifact missing: {path}")
+            msg = f"fold artifact missing: {path}"
+            raise FileNotFoundError(msg)
         artifacts.append(dict(np.load(path, allow_pickle=True)))
 
-    # model_predictor_mouse_index, NOT anchors.onset_emitter: the first says whose kinematics predict,
-    # the second says whose calls define an onset. Wiring the second here silently swapped the predictor
-    # animal and built a different feature set entirely.
+    # The `self.` role is derived from the unit's own mouse_id, not configured -- see
+    # `build_zscored_feature_frames`. `vocalization_settings.vocal_emitter` is a different question (whose CALLS
+    # count as the recorded animal's) and stays a knob; it is handed to the assembler so claim 1's
+    # onsets and claim 2's events move together when it is changed.
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
-                                         encoding["model_predictor_mouse_index"],
-                                         encoding["history_pre_seconds"], encoding["clean_post_seconds"])
+                                         encoding["history_pre_seconds"], encoding["clean_post_seconds"],
+                                         settings["vocalization_settings"]["clean_against"],
+                                         settings["vocalization_settings"]["vocal_emitter"])
     fps = per_session[sessions[0]]["fps"]
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
+    feature_names = list(per_session[sessions[0]]["feature_names"])
 
     fold_results, vocal_frames_by_session, scored_ids = [], {}, []
     for artifact in artifacts:
@@ -584,7 +663,7 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     # ONE model travels: the representative fold's, scored on every session's vocal frames.
     everywhere = list(chosen_artifact["vocal_everywhere"])
     message_output(f"  REPRESENTATIVE fold {int(chosen_artifact['fold_index'])} "
-                   f"({str(chosen_artifact['test_id'])}): quiet {float(chosen_artifact['quiet_score']):+.5f} "
+                   f"({chosen_artifact['test_id']!s}): quiet {float(chosen_artifact['quiet_score']):+.5f} "
                    f"| model {list(chosen_artifact['selected'])}")
     scored_ids = [str(entry["session_id"]) for entry in everywhere]
     vocal_frames_by_session = {str(entry["session_id"]): entry["frames"] for entry in everywhere}
@@ -592,31 +671,86 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
                      if key not in ("session_id", "frames")} for entry in everywhere]
     transfer = combine_folds(fold_results, per_session, scored_ids, vocal_frames_by_session, settings,
                              message_output)
-    # THREE-WAY verdict (RULED 2026-09-05, user). A transformation neuron does not switch tuning
-    # between regimes, so a filter that is significantly ANTI-predictive during vocalization is not a
-    # failed transformation neuron -- it is a different kind of neuron. Calibrated D2 grows with the
-    # square of the calibration slope and is blind to sign, so the slope is what separates them:
-    # without it cl0499 reads as a clean pass on p-values alone while being anti-predictive on all six
-    # of its sessions (slopes -0.088 to -0.565, every AUROC below 0.5).
+
+    # The reported filter band, computed HERE and persisted rather than left to a figure script. The
+    # band needs refits of the representative model, which is the expensive half of the analysis; at
+    # cohort scale, recomputing it later means paying for the whole thing twice.
+    band = None
+    band_settings = encoding["filter_band"]
+    representative_features = [int(f) for f in chosen_artifact["selected_indices"]]
+    if band_settings["compute"] and representative_features:
+        representative_id = str(chosen_artifact["test_id"])
+        band = filter_band(per_session,
+                           [s for s in sessions if s != representative_id],
+                           representative_features, n_lags,
+                           np.random.default_rng(settings["null"]["shuffle_seed"] + 977),
+                           encoding, band_settings["n_resamples"], message_output)
+
+    # A three-way reading of these numbers -- transformation candidate / regime-switching / purely
+    # kinematic / not tuned -- is REPORTED here for eyes on a single unit, and deliberately NOT
+    # persisted. It compares raw p-values to a bare threshold, so it is uncorrected by construction;
+    # false-discovery control needs the cohort, which a per-unit file has never seen. The stored
+    # numbers are what a rule consumes; the consolidator is the only thing that decides.
     level = float(settings["significance"]["fdr_q"])
     quiet_significant = quiet_p < level
     transfer_significant = transfer["p"] < level
     if quiet_significant and transfer_significant and transfer["slope"] > 0:
-        verdict = "TRANSFORMATION CANDIDATE"
+        reading = "transformation candidate"
     elif quiet_significant and transfer_significant:
-        verdict = "REGIME-SWITCHING (tuned in both regimes, opposite sign)"
+        reading = "regime-switching (tuned in both regimes, opposite sign)"
     elif quiet_significant:
-        verdict = "PURELY KINEMATIC (no transfer)"
+        reading = "purely kinematic (no transfer)"
     else:
-        verdict = "NOT TUNED on quiet"
-    message_output(f"  VERDICT: {verdict} | quiet p {quiet_p:.4e} | transfer p {transfer['p']:.4e} "
-                   f"slope {transfer['slope']:+.3f} | q = {level}")
-    return {"unit_id": unit["unit_id"], "no_model": False, "quiet_score": quiet_score,
-            "quiet_p": quiet_p, "quiet_at_floor": quiet_at_floor, "verdict": verdict,
-            "transfer_score": transfer["score"],
-            "transfer_slope": transfer["slope"], "transfer_p": transfer["p"],
-            "transfer_at_floor": transfer["at_floor"], "n_lags": n_lags, "fps": fps,
-            "selected_per_fold": [list(a["selected"]) for a in artifacts]}
+        reading = "not tuned on quiet"
+    message_output(f"  UNCORRECTED READING (not persisted): {reading} | quiet p {quiet_p:.4e} "
+                   f"| transfer p {transfer['p']:.4e} slope {transfer['slope']:+.3f} "
+                   f"| bare threshold {level}, no FDR")
+
+    # Shape descriptors off the STORED filter (no refit), and the spike-triggered average, which is
+    # the robust interpretable readout the fitted filter is a deconvolution of. Both are cheap and
+    # neither is recoverable later without rebuilding the design.
+    descriptors = filter_descriptors(np.asarray(chosen_artifact["coefficients"]),
+                                     [feature_names[i] for i in representative_features],
+                                     n_lags, fps) if representative_features else []
+    sta = (spike_triggered_average(per_session,
+                                   [s for s in sessions if s != str(chosen_artifact["test_id"])],
+                                   representative_features, n_lags, encoding["chunk_rows"])
+           if representative_features else None)
+
+    result = {"unit_id": unit["unit_id"], "no_model": False,
+              "quiet_score": quiet_score, "quiet_slope": float(chosen_artifact["quiet_slope"]),
+              "quiet_p": quiet_p, "quiet_at_floor": quiet_at_floor, "quiet_null": quiet_null,
+              "quiet_score_fold_average": quiet_mean_across_folds,
+              "transfer_score": transfer["score"], "transfer_slope": transfer["slope"],
+              "transfer_p": transfer["p"], "transfer_at_floor": transfer["at_floor"],
+              "transfer_null": transfer["null"], "transfer_n_frames": transfer["n_frames"],
+              "transfer_per_session": fold_results, "transfer_session_ids": scored_ids,
+              "n_lags": n_lags, "fps": fps,
+              "representative_fold": int(chosen_artifact["fold_index"]),
+              "representative_session": str(chosen_artifact["test_id"]),
+              "selected": [str(f) for f in chosen_artifact["selected"]],
+              "selected_indices": representative_features,
+              "selected_per_fold": [list(a["selected"]) for a in artifacts],
+              "screen_per_fold": [list(a["screen"]) for a in artifacts],
+              "forward_path_per_fold": [list(a["path"]) for a in artifacts],
+              "quiet_score_per_fold": [float(a["quiet_score"]) for a in artifacts],
+              "quiet_p_per_fold": [float(a["quiet_p"]) for a in artifacts],
+              "filter_band": band,
+              "filter": np.asarray(chosen_artifact["coefficients"]),
+              "filter_intercept": float(chosen_artifact["intercept"]),
+              "filter_descriptors": descriptors, "spike_triggered_average": sta,
+              "quiet_metrics": dict(unwrap_stored(chosen_artifact["quiet_metrics"])),
+              "quiet_metrics_per_fold": [dict(unwrap_stored(a["quiet_metrics"])) for a in artifacts],
+              "fit_seconds_per_fold": [float(a["fit_seconds"]) for a in artifacts],
+              "n_iter_per_fold": [int(a["n_iter"]) for a in artifacts]}
+
+    # The combine step is the END of claim 1 for this unit, and until now it returned its results and
+    # wrote nothing -- a cluster array would have computed every p-value and thrown them away, the
+    # fold artifacts on disk holding only the halves. Merged into the unit's own file, which the other
+    # claims write their own sections into.
+    written = write_unit_section(output_directory, unit, "claim1", result, settings)
+    message_output(f"    wrote {written.name} [claim1]")
+    return result
 
 
 def dispatch(args: argparse.Namespace) -> int:
@@ -638,8 +772,18 @@ def dispatch(args: argparse.Namespace) -> int:
     """
 
     settings = load_settings(args.settings_path)
+    # The vocal session set is derived here rather than passed in, so the array task applies the same
+    # gate the cohort builder does from the same definition. It governs ONLY what is scored on
+    # vocalizations: every session stays in the rotation that screens, selects and fits on quiet
+    # anchors, because a session the male barely called in has MORE silence, not less.
+    counts = emitter_usv_counts(args.sessions, args.data_root,
+                              dict.fromkeys(args.sessions, args.mouse_id),
+                              settings["vocalization_settings"]["vocal_emitter"])
+    threshold = settings["data_sufficiency"]["min_emitter_usvs_per_session"]
     unit = {"unit_uid": f"{args.mouse_id}_{args.rec_date}_{args.unit_id}", "mouse_id": args.mouse_id,
-            "rec_date": args.rec_date, "unit_id": args.unit_id, "courtship_sessions": args.sessions}
+            "rec_date": args.rec_date, "unit_id": args.unit_id, "courtship_sessions": args.sessions,
+            "vocal_sessions": [s for s in args.sessions if counts[s] >= threshold],
+            "emitter_usvs_per_session": counts}
     started = datetime.now()
     try:
         if args.single:
@@ -651,7 +795,9 @@ def dispatch(args: argparse.Namespace) -> int:
     except Exception:
         traceback.print_exc()
         return 1
-    print(f"finished in {(datetime.now() - started).total_seconds() / 60:.1f} min")
+    # bare print rather than an injected `message_output`: this is the array task's own exit
+    # line, written after the run object it would have been threaded through is gone.
+    print(f"finished in {(datetime.now() - started).total_seconds() / 60:.1f} min")  # noqa: T201
     return 0
 
 
