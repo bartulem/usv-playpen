@@ -324,15 +324,31 @@ class TestSettingsInvariants:
         window = settings["vocalization_settings"]["spike_window"]
         assert set(window) == {"pre_offset_seconds", "width_seconds"}
         assert window["pre_offset_seconds"] == 0.05
-        assert window["width_seconds"] == 0.05
+        assert window["width_seconds"] == 0.10
         assert "analysis_windows" not in settings["vocal_decoding"]
 
-    def test_a_width_beyond_the_pre_offset_straddles_onset(self):
-        """The shipped window ends AT onset, so a gain from it is predictive. Widening past the
-        pre-offset puts part of the window inside the call, and the result stops being a prediction --
-        which is why the two numbers are set independently rather than as a single duration."""
+    def test_the_shipped_window_straddles_onset_deliberately(self):
+        """RULED 2026-09-11 (user): width 0.10 against a pre-offset of 0.05, so the window runs
+        [start - 50 ms, start + 50 ms) and roughly 40-55% of a typical call (median duration 87-127
+        ms) falls INSIDE it.
+
+        This is a deliberate trade and it reverses the earlier prediction-clean default. It buys
+        POWER -- banked gains rise from +0.05726 to +0.07199 on cl0401 and from +0.0031 to +0.0114 on
+        cl0499, a 3.7x lift on the weak unit, and passes are decided at the faint margin. It costs the
+        claim that the gain is purely PREDICTIVE: part of it is response to the call in progress, and
+        the design cannot separate the two. The user ruled that showing the activity is purely
+        premotor is not required.
+
+        The pre-window is unchanged at 50 ms, so contamination from the PREVIOUS call is unaffected
+        (3.7% of USVs cohort-wide have a gap below 50 ms); the post-onset half is inside the call by
+        construction and needs no cleanliness guard.
+
+        The two numbers stay independent rather than collapsing into one duration precisely so this
+        choice has to be made explicitly."""
         window = _load_settings()["vocalization_settings"]["spike_window"]
-        assert window["width_seconds"] <= window["pre_offset_seconds"]
+        assert window["width_seconds"] > window["pre_offset_seconds"]
+        inside = window["width_seconds"] - window["pre_offset_seconds"]
+        assert inside == pytest.approx(0.05)
 
     def test_vocal_decoding_holds_claim_two_only(self):
         """Claim 3 is a separate claim with its own model, null and statistic; its configuration

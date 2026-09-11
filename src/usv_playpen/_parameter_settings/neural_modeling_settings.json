@@ -61,7 +61,7 @@
     "clean_against": "all",
     "spike_window": {
       "pre_offset_seconds": 0.05,
-      "width_seconds": 0.05
+      "width_seconds": 0.1
     },
     "torus_period": 1.0
   },
