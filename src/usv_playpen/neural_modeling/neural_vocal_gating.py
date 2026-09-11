@@ -60,6 +60,7 @@ from .neural_design_assembly import (
     spike_labels_at_frames,
     vocal_span_frames,
 )
+from .shift_null_inference import sample_circular_shift, shifted_spike_frames
 
 #: The only value implemented for each option `vocal_gating` names.
 #:
@@ -557,7 +558,8 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     Returns
     -------
     universe (dict)
-        ``features`` / ``vocal`` / ``spikes`` / ``session_index`` over the vocal-plus-quiet rows;
+        ``features`` / ``vocal`` / ``spikes`` / ``session_index`` / ``frames`` over the
+        vocal-plus-quiet rows (the FRAMES are carried so the null can relabel at fixed positions);
         ``features_quiet`` / ``spikes_quiet`` / ``session_quiet`` over the quiet-only rows;
         ``feature_names``; and ``per_session`` counts including how many frames each category
         contributed and how many spikes fell in each.
@@ -569,6 +571,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     zeros_per_spike = settings["quiet_zeros_per_spike"]
 
     feature_parts, vocal_parts, spike_parts, index_parts = [], [], [], []
+    frame_parts, quiet_frame_parts = [], []
     quiet_feature_parts, quiet_spike_parts, quiet_index_parts = [], [], []
     bookkeeping: dict = {}
     feature_names = None
@@ -618,6 +621,8 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
             negatives = np.sort(rng.choice(negatives, keep_zeros, replace=False))
         quiet_rows = np.sort(np.concatenate([positives, negatives]))
 
+        frame_parts.append(universe_frames)
+        quiet_frame_parts.append(quiet_frames[quiet_rows])
         feature_parts.append(series[universe_frames])
         vocal_parts.append(universe_vocal)
         spike_parts.append(universe_labels)
@@ -644,7 +649,15 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
         return np.vstack(parts) if parts else np.empty((0, n_columns), dtype=np.float64)
 
     width = len(feature_names) if feature_names else 0
-    return {"features": rows(feature_parts, width),
+    return {"frames": stack(frame_parts).astype(np.int64),
+            "frames_quiet": stack(quiet_frame_parts).astype(np.int64),
+            "spike_frames": {slot: np.asarray(per_session[sid]["spike_frames"], dtype=np.int64)
+                             for slot, sid in enumerate(unit["vocal_sessions"])},
+            "n_frames": {slot: int(per_session[sid]["n_frames"])
+                         for slot, sid in enumerate(unit["vocal_sessions"])},
+            "fps": {slot: float(per_session[sid]["fps"])
+                    for slot, sid in enumerate(unit["vocal_sessions"])},
+            "features": rows(feature_parts, width),
             "vocal": stack(vocal_parts),
             "spikes": stack(spike_parts),
             "session_index": stack(index_parts).astype(np.int64),
@@ -653,3 +666,80 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
             "session_quiet": stack(quiet_index_parts).astype(np.int64),
             "feature_names": feature_names or [],
             "per_session": bookkeeping}
+
+
+def gating_null(universe: dict, feature_index: int, settings: dict, guard_seconds: float,
+                n_draws: int, seed: int = 0) -> dict:
+    """
+    Description
+    -----------
+    The circular-shift null for one feature, driving all three statistics from the SAME draws.
+
+    Per draw the spike train of each session is circularly shifted and BOTH frame sets are relabelled
+    at their fixed positions -- the features, the vocal indicator and the frame membership never move,
+    only which frames carry a spike. The shift preserves the unit's rate, bursting and slow drift, so
+    a null train looks like a real one in every respect except its alignment to behaviour and to
+    vocalization, which is exactly what the interaction claims to be about.
+
+    **The three statistics are recomputed together, not separately, and the paired difference is what
+    makes the delta > beta_V condition a test rather than a comparison.** Scoring the difference
+    against its own paired null -- the same shifted train behind both terms on every draw -- is the
+    correction the superseded pilot lacked: it compared the two point estimates directly, which says
+    nothing about whether the gap could have arisen by chance.
+
+    Significance here is read PURELY empirically. At 100 shuffles a GPD extrapolated ~3 sigma
+    borderline features into false positives (tail_curvature, allo_roll), and an empirical p floors at
+    1/(n+1), which is why the ruled count is 2,000: it puts the floor at 5.0e-4, just under the
+    within-unit Bonferroni bar of 0.01/19 = 5.3e-4.
+
+    Parameters
+    ----------
+    universe (dict)
+        From :func:`gating_universe`.
+    feature_index (int)
+        Which column of ``features`` to test.
+    settings (dict)
+        The ``vocal_gating`` block.
+    guard_seconds (float)
+        Guard band at each end of the shift range.
+    n_draws (int)
+        Shuffles.
+    seed (int)
+        Base seed; each draw advances it.
+
+    Returns
+    -------
+    null (dict)
+        ``interaction``, ``vocal_main``, ``feature_main`` and ``difference`` -- four arrays of
+        ``n_draws`` values, aligned draw by draw so the difference is genuinely paired.
+    """
+
+    feature = universe["features"][:, feature_index]
+    feature_quiet = universe["features_quiet"][:, feature_index]
+    vocal = universe["vocal"]
+    frames, frames_quiet = universe["frames"], universe["frames_quiet"]
+    index, index_quiet = universe["session_index"], universe["session_quiet"]
+
+    values = {key: np.empty(n_draws, dtype=np.float64)
+              for key in ("interaction", "vocal_main", "feature_main", "difference")}
+    for draw in range(n_draws):
+        rng = np.random.default_rng(seed + draw)
+        spikes = np.empty(frames.size, dtype=np.float64)
+        spikes_quiet = np.empty(frames_quiet.size, dtype=np.float64)
+        for slot, train in universe["spike_frames"].items():
+            n_frames, fps = universe["n_frames"][slot], universe["fps"][slot]
+            shift = sample_circular_shift(rng, n_frames, fps, guard_seconds)
+            shifted = shifted_spike_frames(train, shift, fps, n_frames)
+            occupancy = np.zeros(n_frames, dtype=bool)
+            occupancy[np.clip(shifted, 0, n_frames - 1)] = True
+            mask, mask_quiet = index == slot, index_quiet == slot
+            spikes[mask] = occupancy[frames[mask]]
+            spikes_quiet[mask_quiet] = occupancy[frames_quiet[mask_quiet]]
+
+        drawn = feature_gating_statistic(feature, feature_quiet, vocal, spikes, spikes_quiet,
+                                         index, index_quiet, settings)
+        values["interaction"][draw] = drawn["interaction"]
+        values["vocal_main"][draw] = drawn["vocal_main"]
+        values["feature_main"][draw] = drawn["feature_main"]
+        values["difference"][draw] = drawn["interaction_minus_vocal"]
+    return values

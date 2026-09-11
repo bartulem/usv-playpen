@@ -20,6 +20,7 @@ from usv_playpen.neural_modeling import neural_vocal_gating as gating_module
 from usv_playpen.neural_modeling.neural_vocal_gating import (
     check_settings,
     feature_gating_statistic,
+    gating_null,
     gating_survivors,
     gating_terms,
     gating_universe,
@@ -435,3 +436,59 @@ class TestTheUniverse:
         assert book["n_quiet_frames_available"] == 500
         assert book["n_peri_vocal_frames_excluded"] == self.N_FRAMES - 50 - 500
         assert book["n_focal_calls"] == 1
+
+
+class TestTheNull:
+    """A circular shift of the SPIKE TRAIN. The features, the vocal indicator and the frame
+    membership never move -- only which frames carry a spike."""
+
+    @staticmethod
+    def _universe(n=1200, n_sessions=2, seed=0):
+        rng = np.random.default_rng(seed)
+        per = n // n_sessions
+        index = np.repeat(np.arange(n_sessions), per)
+        frames = np.tile(np.arange(per) * 3, n_sessions)
+        vocal = (np.tile(np.arange(per), n_sessions) % 3 == 0).astype(float)
+        feature = rng.normal(size=n)
+        quiet_rows = vocal == 0.0
+        return {"features": feature[:, None], "vocal": vocal,
+                "spikes": (rng.random(n) < 0.2).astype(float), "session_index": index,
+                "frames": frames.astype(np.int64),
+                "features_quiet": feature[quiet_rows][:, None],
+                "spikes_quiet": (rng.random(int(quiet_rows.sum())) < 0.2).astype(float),
+                "session_quiet": index[quiet_rows],
+                "frames_quiet": frames[quiet_rows].astype(np.int64),
+                "spike_frames": {s: np.sort(rng.choice(per * 3, 400, replace=False))
+                                 for s in range(n_sessions)},
+                "n_frames": dict.fromkeys(range(n_sessions), per * 3),
+                "fps": dict.fromkeys(range(n_sessions), 100.0),
+                "feature_names": ["f0"], "per_session": {}}
+
+    def test_all_four_arrays_come_back_aligned(self):
+        null = gating_null(self._universe(), 0, _gating(), 1.0, 6, seed=0)
+        assert set(null) == {"interaction", "vocal_main", "feature_main", "difference"}
+        for values in null.values():
+            assert values.shape == (6,)
+
+    def test_the_difference_is_PAIRED_draw_by_draw(self):
+        """Scoring delta > beta_V against its own paired null is the correction the superseded pilot
+        lacked -- it compared the two point estimates directly, which says nothing about whether the
+        gap could have arisen by chance."""
+        null = gating_null(self._universe(), 0, _gating(), 1.0, 8, seed=0)
+        np.testing.assert_allclose(null["difference"],
+                                   null["interaction"] - null["vocal_main"], atol=1e-9)
+
+    def test_draws_differ_from_each_other(self):
+        null = gating_null(self._universe(), 0, _gating(), 1.0, 8, seed=0)
+        assert np.unique(null["interaction"]).size > 1
+
+    def test_the_same_seed_reproduces_the_null(self):
+        first = gating_null(self._universe(), 0, _gating(), 1.0, 5, seed=7)
+        second = gating_null(self._universe(), 0, _gating(), 1.0, 5, seed=7)
+        np.testing.assert_allclose(first["interaction"], second["interaction"])
+
+    def test_a_null_interaction_centres_near_zero(self):
+        """A decoupled train should add nothing, which is what makes the observed value readable."""
+        null = gating_null(self._universe(seed=3), 0, _gating(), 1.0, 40, seed=0)
+        spread = np.std(null["interaction"])
+        assert abs(np.mean(null["interaction"])) < 5.0 * spread
