@@ -112,8 +112,11 @@
     "min_vocal_spikes": null,
     "min_feature_iqr_vocal": null,
     "require_interaction_gt_vocal": true,
+    "interaction_gt_vocal_alpha": 0.01,
+    "feature_main_alpha": 0.01,
     "content_gating_compute": false,
     "gating_screen_n_shuffles": 2000,
+    "screen_alpha": 0.01,
     "sign_ridge_frac": 0.1,
     "borderline_sigma_flag": 5.0,
     "solver": {

@@ -398,8 +398,14 @@ def gating_verdict(observed: dict, interaction_null: np.ndarray, difference_null
 
     bonferroni = settings_bonferroni_bar(settings, n_features)
     interaction_ok = p_interaction <= bonferroni
-    difference_ok = (p_difference <= 0.01) if settings["require_interaction_gt_vocal"] else True
-    main_present = p_main <= 0.01
+    # Three SEPARATE alphas, not one shared constant. The plan reasons about them independently --
+    # the feature-main bar is deliberately GENEROUS toward detecting a main effect, so the clean
+    # `GATE` label is reserved for convincingly-absent mains -- and none of them is the FDR level:
+    # `significance.fdr_q` is also 0.01, and conflating a cohort FDR level with an uncorrected
+    # within-unit alpha is exactly the confusion the plan warns against.
+    difference_ok = ((p_difference <= settings["interaction_gt_vocal_alpha"])
+                     if settings["require_interaction_gt_vocal"] else True)
+    main_present = p_main <= settings["feature_main_alpha"]
 
     if not interaction_ok:
         label = "ns"
@@ -425,7 +431,8 @@ def settings_bonferroni_bar(settings: dict, n_features: int) -> float:
     -----------
     The within-unit Bonferroni bar, and a check that the shuffle count can actually reach it.
 
-    The per-feature screen IS the within-unit correction, so the bar is ``0.01 / n_features``. An
+    The per-feature screen IS the within-unit correction, so the bar is
+    ``screen_alpha / n_features``. An
     empirical p cannot fall below ``1 / (n_shuffles + 1)``, so a shuffle count too small to reach the
     bar would make every feature unpassable no matter how strong -- silently, since nothing else in the
     pipeline would complain.
@@ -443,7 +450,7 @@ def settings_bonferroni_bar(settings: dict, n_features: int) -> float:
         The Bonferroni-corrected alpha the interaction p must clear.
     """
 
-    bar = 0.01 / float(n_features)
+    bar = settings["screen_alpha"] / float(n_features)
     floor = 1.0 / (float(settings["gating_screen_n_shuffles"]) + 1.0)
     if floor > bar:
         msg = (f"gating_screen_n_shuffles = {settings['gating_screen_n_shuffles']} floors the "
@@ -743,3 +750,52 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
         values["feature_main"][draw] = drawn["feature_main"]
         values["difference"][draw] = drawn["interaction_minus_vocal"]
     return values
+
+
+def gating_unit_pvalue(per_feature: dict, settings: dict) -> dict:
+    """
+    Description
+    -----------
+    The ONE p-value per unit that a cohort BH-FDR can correct, and the feature it came from.
+
+    The verdict returns three p-values per FEATURE, and a cohort correction needs one per UNIT. The
+    plan specifies the conjunction ``max(p_delta, p_{delta > beta_V})`` of the best feature -- a max,
+    because both conditions must hold, so the weaker one decides, exactly as the IUT does for the
+    three claims.
+
+    "Best" needs defining now that forward selection is gone: it is the surviving feature with the
+    largest sigma margin, which :func:`gating_survivors` already orders. A unit with no survivor has
+    no gating claim to correct and returns NaN, which keeps it out of the correction's denominator
+    rather than entering it as a non-rejection.
+
+    **Expect ties at the floor, and report the floor requirement alongside.** At the ruled 2,000
+    shuffles a strong feature sits at exactly 1/2001 = 5.0e-4 -- which is the point, since that is
+    what clears the Bonferroni bar -- so every strongly gated unit carries the SAME p. BH over ties
+    behaves discretely: a unit at the floor is only rejectable once ``k >= m / (q * (n + 1))``.
+
+    Parameters
+    ----------
+    per_feature (dict)
+        ``{feature: verdict dict}`` from :func:`gating_verdict`.
+    settings (dict)
+        The ``vocal_gating`` block.
+
+    Returns
+    -------
+    result (dict)
+        ``p_unit``, ``feature`` (the one it came from, or None), ``label``, and ``at_floor``.
+    """
+
+    survivors = [name for name, verdict in per_feature.items()
+                 if verdict["label"] in ("GATE", "GATE+silentME")]
+    if not survivors:
+        return {"p_unit": float("nan"), "feature": None, "label": "ns", "at_floor": False}
+
+    best = max(survivors, key=lambda name: per_feature[name]["sigma_margin"])
+    verdict = per_feature[best]
+    p_unit = max(verdict["p_interaction"], verdict["p_interaction_gt_vocal"])
+    floor = 1.0 / (float(settings["gating_screen_n_shuffles"]) + 1.0)
+    return {"p_unit": float(p_unit),
+            "feature": best,
+            "label": verdict["label"],
+            "at_floor": bool(np.isclose(p_unit, floor))}

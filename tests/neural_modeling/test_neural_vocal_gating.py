@@ -23,6 +23,7 @@ from usv_playpen.neural_modeling.neural_vocal_gating import (
     gating_null,
     gating_survivors,
     gating_terms,
+    gating_unit_pvalue,
     gating_universe,
     gating_verdict,
     loso_added_deviance,
@@ -492,3 +493,80 @@ class TestTheNull:
         null = gating_null(self._universe(seed=3), 0, _gating(), 1.0, 40, seed=0)
         spread = np.std(null["interaction"])
         assert abs(np.mean(null["interaction"])) < 5.0 * spread
+
+
+class TestTheAlphasAreSettings:
+    """Three SEPARATE bars, none of which is the FDR level -- `significance.fdr_q` is also 0.01, and
+    conflating a cohort FDR level with an uncorrected within-unit alpha is the confusion the plan
+    warns against."""
+
+    def test_all_three_are_present_and_independent(self):
+        settings = _gating()
+        for key in ("screen_alpha", "interaction_gt_vocal_alpha", "feature_main_alpha"):
+            assert settings[key] == 0.01
+
+    def test_the_screen_bar_follows_its_own_alpha(self):
+        settings = _gating()
+        settings["screen_alpha"] = 0.05
+        assert settings_bonferroni_bar(settings, 19) == pytest.approx(0.05 / 19)
+
+    def test_the_generous_main_bar_can_be_tightened_alone(self):
+        """It is deliberately generous toward DETECTING a main effect, so the clean GATE label is
+        reserved for convincingly-absent mains. Tightening it must not touch the other two."""
+        observed = {"interaction": 50.0, "interaction_minus_vocal": 20.0, "feature_main": 6.0}
+        null = np.linspace(-5.0, 5.0, 4001)
+        loose = _gating()
+        assert gating_verdict(observed, null, null, null, loose, 19)["label"] == "GATE+silentME"
+        strict = _gating()
+        strict["feature_main_alpha"] = 1e-9
+        assert gating_verdict(observed, null, null, null, strict, 19)["label"] == "GATE"
+
+    def test_the_difference_bar_can_be_relaxed_alone(self):
+        observed = {"interaction": 50.0, "interaction_minus_vocal": 0.0, "feature_main": -3.0}
+        null = np.linspace(-5.0, 5.0, 4001)
+        assert gating_verdict(observed, null, null, null, _gating(), 19)["label"] == "int<vocal"
+        relaxed = _gating()
+        relaxed["interaction_gt_vocal_alpha"] = 0.99
+        assert gating_verdict(observed, null, null, null, relaxed, 19)["label"] == "GATE"
+
+
+class TestTheUnitPvalue:
+    """One p per UNIT for the cohort correction, from three per FEATURE."""
+
+    @staticmethod
+    def _verdicts(rows):
+        return {name: {"label": label, "sigma_margin": margin,
+                       "p_interaction": p_int, "p_interaction_gt_vocal": p_diff}
+                for name, label, margin, p_int, p_diff in rows}
+
+    def test_it_is_the_max_of_the_two_conditions(self):
+        """Both must hold, so the weaker decides -- as the IUT does for the three claims."""
+        per_feature = self._verdicts([("a", "GATE", 40.0, 5.0e-4, 3.0e-3)])
+        assert gating_unit_pvalue(per_feature, _gating())["p_unit"] == pytest.approx(3.0e-3)
+
+    def test_it_comes_from_the_strongest_surviving_feature(self):
+        per_feature = self._verdicts([("weak", "GATE", 6.0, 5.0e-4, 9.0e-3),
+                                      ("strong", "GATE", 72.0, 5.0e-4, 5.0e-4)])
+        result = gating_unit_pvalue(per_feature, _gating())
+        assert result["feature"] == "strong"
+        assert result["p_unit"] == pytest.approx(5.0e-4)
+
+    def test_a_unit_with_no_survivor_returns_nan_not_one(self):
+        """NaN keeps it out of the correction's denominator rather than entering as a
+        non-rejection."""
+        per_feature = self._verdicts([("a", "int<vocal", 40.0, 5.0e-4, 1.0)])
+        result = gating_unit_pvalue(per_feature, _gating())
+        assert np.isnan(result["p_unit"])
+        assert result["feature"] is None
+
+    def test_the_floor_is_flagged_because_strong_units_all_tie_there(self):
+        """At 2,000 shuffles a strong feature sits at exactly 1/2001, which is the point -- it is what
+        clears the Bonferroni bar -- so BH over the cohort sees ties and behaves discretely."""
+        settings = _gating()
+        floor = 1.0 / (settings["gating_screen_n_shuffles"] + 1.0)
+        per_feature = self._verdicts([("a", "GATE", 72.0, floor, floor)])
+        assert gating_unit_pvalue(per_feature, settings)["at_floor"]
+
+    def test_a_resolved_p_is_not_flagged_as_floored(self):
+        per_feature = self._verdicts([("a", "GATE", 72.0, 5.0e-4, 4.0e-3)])
+        assert not gating_unit_pvalue(per_feature, _gating())["at_floor"]
