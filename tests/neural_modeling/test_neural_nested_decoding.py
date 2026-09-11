@@ -12,6 +12,7 @@ its features under. They also pin the reduced model to P1's own result file rath
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import pathlib
 import pickle
@@ -33,13 +34,16 @@ with warnings.catch_warnings():
     )
     from usv_playpen.neural_modeling.neural_nested_decoding import (
         NestedTorusRegression,
+        matched_window_control,
         nested_design,
         nested_scores,
+        nested_settings,
         null_draw_factory,
         reduced_model_features,
         reduced_predictions,
         shifted_neural_column,
     )
+    from usv_playpen.neural_modeling.neural_vocal_decoding import PERIOD
     from usv_playpen.neural_modeling.shift_null_inference import (
         escalated_empirical_pvalue,
     )
@@ -51,6 +55,15 @@ SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_play
 def _settings() -> dict:
     with SETTINGS_PATH.open() as handle:
         return json.load(handle)
+
+
+def _nested(**overrides) -> dict:
+    """The SHIPPED nested_position_decoding block, merged and validated exactly as a run does, with
+    only tiny-synthetic knobs overridden. Built from the real file rather than a literal so that a key
+    the code starts reading -- or stops honouring -- shows up here instead of only at run time."""
+    block = nested_settings(_settings())
+    block.update(overrides)
+    return block
 
 
 class TestBlockDiagonalPenalty:
@@ -230,7 +243,7 @@ class TestNestedDesign:
         names = ["a", "b", "c"]
         events = self._events()
         design = nested_design(events, self._per_session(events["session_ids"], names),
-                               names, self.N_LAGS)
+                               names, self.N_LAGS, 0.05)
         assert design["behaviour"].shape == (12, 3 * self.N_LAGS)
         assert design["neural"].shape == (12, 1)
 
@@ -241,7 +254,7 @@ class TestNestedDesign:
         events = self._events()
         per_session = self._per_session(events["session_ids"], names, shuffle_from=1)
         assert per_session["s0"]["feature_names"] != per_session["s1"]["feature_names"]
-        design = nested_design(events, per_session, names, self.N_LAGS)
+        design = nested_design(events, per_session, names, self.N_LAGS, 0.05)
         # feature f's series is f*1000 + frame, so the block for f must sit in f's thousands band
         for f in range(3):
             block = design["behaviour"][:, f * self.N_LAGS:(f + 1) * self.N_LAGS]
@@ -253,7 +266,7 @@ class TestNestedDesign:
         names = ["a"]
         events = self._events(n_sessions=1)
         per_session = self._per_session(events["session_ids"], names)
-        design = nested_design(events, per_session, names, self.N_LAGS)
+        design = nested_design(events, per_session, names, self.N_LAGS, 0.05)
         frames = np.rint(events["call_start"] * 10.0).astype(int)
         np.testing.assert_allclose(design["behaviour"][:, self.N_LAGS - 1], frames)
 
@@ -264,7 +277,7 @@ class TestNestedDesign:
         events = self._events(n_sessions=1, first_frame=0)
         events["call_start"] = np.array([0.0, 0.1, 0.2, 1.0, 2.0, 3.0])   # first few lack history
         per_session = self._per_session(events["session_ids"], names)
-        design = nested_design(events, per_session, names, self.N_LAGS)
+        design = nested_design(events, per_session, names, self.N_LAGS, 0.05)
         book = design["per_session"]["s0"]
         assert book["n_events_claim2"] == 6
         assert book["n_events_claim3"] == design["behaviour"].shape[0]
@@ -276,7 +289,7 @@ class TestNestedDesign:
         events = self._events(n_sessions=1, first_frame=0)
         events["call_start"] = np.array([0.0, 0.1, 1.0, 2.0, 3.0, 4.0])
         design = nested_design(events, self._per_session(events["session_ids"], names),
-                               names, self.N_LAGS)
+                               names, self.N_LAGS, 0.05)
         np.testing.assert_allclose(design["positions"], events["positions"][design["kept"]])
         np.testing.assert_allclose(design["region_labels"], events["region_labels"][design["kept"]])
 
@@ -288,7 +301,7 @@ class TestNestedDesign:
         events["counts"] = np.concatenate([np.array([0.0, 0, 0, 10, 10, 10]),
                                            np.array([100.0, 100, 100, 200, 200, 200])])
         design = nested_design(events, self._per_session(events["session_ids"], names),
-                               names, self.N_LAGS)
+                               names, self.N_LAGS, 0.05)
         for slot in (0, 1):
             column = design["neural"][design["session_index"] == slot, 0]
             assert abs(column.mean()) < 1e-9        # each session centred on its own mean
@@ -300,7 +313,7 @@ class TestNestedDesign:
         events["counts"] = np.zeros(6)
         events["counts"][0] = 1e-4                  # essentially no spread
         design = nested_design(events, self._per_session(events["session_ids"], names),
-                               names, self.N_LAGS, sigma_floor=0.05)
+                               names, self.N_LAGS, 0.05)
         assert np.abs(design["neural"]).max() < 10.0
 
     def test_a_feature_the_assembler_never_built_fails_loudly(self):
@@ -308,19 +321,18 @@ class TestNestedDesign:
         events = self._events()
         with pytest.raises(ValueError, match="not in the assembled feature set"):
             nested_design(events, self._per_session(events["session_ids"], names),
-                          ["a", "does.not.exist"], self.N_LAGS)
+                          ["a", "does.not.exist"], self.N_LAGS, 0.05)
 
     def test_an_empty_feature_set_is_refused(self):
         events = self._events()
         with pytest.raises(ValueError, match="at least one behavioural feature"):
-            nested_design(events, self._per_session(events["session_ids"], ["a"]), [], self.N_LAGS)
+            nested_design(events, self._per_session(events["session_ids"], ["a"]), [], self.N_LAGS, 0.05)
 
 
 class TestNestedScores:
     """The statistic: pooled added `vm_logscore`, full over reduced, across leave-one-session-out."""
 
-    SETTINGS: ClassVar[dict] = {"lambda_smooth": 1.0, "l2_reg": 0.01,
-                                "smoothness_derivative_order": 1, "min_region_events": 2}
+    SETTINGS: ClassVar[dict] = _nested(min_region_events=2)
 
     @staticmethod
     def _design(n_per_session=90, n_sessions=3, n_lags=3, n_features=2, seed=0,
@@ -417,8 +429,7 @@ class TestTheNull:
     """Circular shift of the SPIKE TRAIN -- behaviour and position keep their real relationship, and
     only the neuron is decoupled in time."""
 
-    SETTINGS: ClassVar[dict] = {"lambda_smooth": 1.0, "l2_reg": 0.01,
-                                "smoothness_derivative_order": 1, "min_region_events": 2}
+    SETTINGS: ClassVar[dict] = _nested(min_region_events=2)
 
     def test_reusing_the_reduced_pass_is_exact_not_approximate(self):
         """The shift moves only the spike train, so the reduced fit CANNOT change between draws --
@@ -442,7 +453,7 @@ class TestTheNull:
         spikes, durations = self._train()
         edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
         column = shifted_neural_column(design, edges, spikes, durations, 0.05,
-                                       np.random.default_rng(0), 20.0)
+                                       np.random.default_rng(0), 20.0, 0.05)
         assert column.shape == (design["positions"].shape[0], 1)
         for slot in (0, 1):
             block = column[design["session_index"] == slot, 0]
@@ -454,9 +465,9 @@ class TestTheNull:
         spikes, durations = self._train()
         edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
         first = shifted_neural_column(design, edges, spikes, durations, 0.05,
-                                      np.random.default_rng(1), 20.0)
+                                      np.random.default_rng(1), 20.0, 0.05)
         second = shifted_neural_column(design, edges, spikes, durations, 0.05,
-                                       np.random.default_rng(2), 20.0)
+                                       np.random.default_rng(2), 20.0, 0.05)
         assert not np.allclose(first, second)
 
     def test_the_same_seed_reproduces_a_draw(self):
@@ -465,8 +476,8 @@ class TestTheNull:
         edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
         args = (design, edges, spikes, durations, 0.05)
         np.testing.assert_allclose(
-            shifted_neural_column(*args, np.random.default_rng(7), 20.0),
-            shifted_neural_column(*args, np.random.default_rng(7), 20.0))
+            shifted_neural_column(*args, np.random.default_rng(7), 20.0, 0.05),
+            shifted_neural_column(*args, np.random.default_rng(7), 20.0, 0.05))
 
     def test_counts_are_RECOUNTED_from_the_shifted_train_not_reordered(self):
         """A reordering would preserve the exact multiset of counts, testing something narrower than
@@ -475,7 +486,7 @@ class TestTheNull:
         spikes, durations = self._train(rate=8.0)
         edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
         draws = [np.sort(shifted_neural_column(design, edges, spikes, durations, 0.5,
-                                               np.random.default_rng(s), 20.0).ravel())
+                                               np.random.default_rng(s), 20.0, 0.05).ravel())
                  for s in range(6)]
         assert any(not np.allclose(draws[0], other) for other in draws[1:])
 
@@ -484,8 +495,7 @@ class TestEscalation:
     """The ladder accumulates, so each decade must use FRESH shifts -- reusing them would top up the
     null with copies of draws it already had, and the p would fall without new evidence."""
 
-    SETTINGS: ClassVar[dict] = {"lambda_smooth": 1.0, "l2_reg": 0.01,
-                                "smoothness_derivative_order": 1, "min_region_events": 2}
+    SETTINGS: ClassVar[dict] = _nested(min_region_events=2)
 
     def _factory(self, seed=0):
         design = TestNestedScores._design(n_sessions=2, n_per_session=60, seed=20)
@@ -493,7 +503,7 @@ class TestEscalation:
         edges = np.linspace(30.0, 550.0, design["positions"].shape[0])
         reduced = reduced_predictions(design, self.SETTINGS, 3)
         return null_draw_factory(design, self.SETTINGS, 3, edges, spikes, durations, 0.05, 20.0,
-                                 reduced, seed=seed)
+                                 reduced, seed=seed, sigma_floor=0.05)
 
     def test_successive_batches_are_fresh_not_repeats(self):
         draw_more = self._factory()
@@ -518,3 +528,78 @@ class TestEscalation:
         assert p_value == pytest.approx(1.0 / 13.0)
         assert at_floor
         assert design["positions"].shape[0] > 0
+
+
+class TestSettingsAreNotHardCoded:
+    """Every option key named `nested_position_decoding` described a real alternative and was read by
+    NOTHING, so a run could declare one and silently get another."""
+
+    def test_the_shipped_block_is_accepted(self):
+        assert nested_settings(_settings())["torus_period"] == 1.0
+
+    @pytest.mark.parametrize(("key", "bad"), [("vm_score_mode", "micro"),
+                                              ("behaviour_control", "matched"),
+                                              ("prevocal_window_n_bins", 3),
+                                              ("rate_transform", "sqrt"),
+                                              ("rate_basis", "bins")])
+    def test_an_unimplemented_option_is_refused(self, key, bad):
+        settings = _settings()
+        settings["nested_position_decoding"][key] = bad
+        with pytest.raises(ValueError, match="is not implemented"):
+            nested_settings(settings)
+
+    def test_the_torus_period_lives_in_the_shared_block_not_claim_threes(self):
+        """It is a property of the MANIFOLD, so both claims see one value; duplicating it into two
+        blocks is exactly the drift this audit was about."""
+        settings = _settings()
+        assert "torus_period" in settings["vocalization_settings"]
+        assert "torus_period" not in settings["nested_position_decoding"]
+
+    def test_claim_two_and_claim_three_agree_on_the_period(self):
+        """Claim 2 keeps a module constant for it -- threading a parameter through ten call sites in
+        validated code is churn for a value that is 1.0 everywhere -- so this pins them together."""
+        assert _settings()["vocalization_settings"]["torus_period"] == PERIOD
+
+    def test_the_sigma_floor_is_a_setting_not_a_default(self):
+        """Claim 2's WHEN axis takes it as a required parameter from settings; claim 3 hard-coded the
+        same constant as a default argument, which is how the two could have drifted apart."""
+        for function in (nested_design, shifted_neural_column):
+            parameter = inspect.signature(function).parameters["sigma_floor"]
+            assert parameter.default is inspect.Parameter.empty
+        assert _settings()["nested_position_decoding"]["sigma_floor"] == 0.05
+
+    def test_the_dead_bins_knob_is_gone(self):
+        """`rate_basis_n_bins` only configured `rate_basis: "bins"`, which is now refused."""
+        assert "rate_basis_n_bins" not in _settings()["nested_position_decoding"]
+
+
+class TestMatchedWindowControl:
+    """One column against the neuron's one column, in the neuron's own window -- the apples-to-apples
+    benchmark for the variance-reduction pathway the shift null cannot catch."""
+
+    def test_it_scores_every_candidate_and_names_the_best(self):
+        design = TestNestedScores._design(neuron="informative", seed=30)
+        events = {"call_start": np.linspace(5.0, 50.0, design["positions"].shape[0]),
+                  "session_ids": ["s0", "s1", "s2"]}
+        per_session = {sid: {"feature_time_series": np.random.default_rng(i).normal(size=(900, 2)),
+                             "feature_names": ["f0", "f1"], "fps": 10.0, "n_frames": 900}
+                       for i, sid in enumerate(events["session_ids"])}
+        control = matched_window_control(design, events, per_session, self_settings(), 3, 0.05,
+                                         ["f0", "f1"])
+        assert set(control["per_candidate"]) == {"f0", "f1"}
+        assert control["best_feature"] in {"f0", "f1"}
+        assert np.isfinite(control["best_added"])
+
+    def test_a_feature_the_session_never_carried_fails_loudly(self):
+        design = TestNestedScores._design(seed=31)
+        events = {"call_start": np.linspace(5.0, 50.0, design["positions"].shape[0]),
+                  "session_ids": ["s0", "s1", "s2"]}
+        per_session = {sid: {"feature_time_series": np.zeros((900, 1)), "feature_names": ["f0"],
+                             "fps": 10.0, "n_frames": 900} for sid in events["session_ids"]}
+        with pytest.raises(ValueError, match="not in"):
+            matched_window_control(design, events, per_session, self_settings(), 3, 0.05, ["absent"])
+
+
+def self_settings() -> dict:
+    """The shipped block with the synthetic's small region counts."""
+    return _nested(min_region_events=2)

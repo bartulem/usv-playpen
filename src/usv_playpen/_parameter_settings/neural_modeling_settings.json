@@ -62,7 +62,8 @@
     "spike_window": {
       "pre_offset_seconds": 0.05,
       "width_seconds": 0.05
-    }
+    },
+    "torus_period": 1.0
   },
   "kinematic_encoding": {
     "history_pre_seconds": 4.0,
@@ -189,10 +190,10 @@
     "lambda_smooth": 1.0,
     "l2_reg": 0.01,
     "smoothness_derivative_order": 1,
+    "sigma_floor": 0.05,
     "prevocal_window_n_bins": 1,
     "rate_transform": "none",
-    "rate_basis": "linear",
-    "rate_basis_n_bins": 5
+    "rate_basis": "linear"
   },
   "null": {
     "n_shuffles": 1000,

@@ -211,7 +211,7 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
 
 
 def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: int,
-                  sigma_floor: float = 0.05) -> dict:
+                  sigma_floor: float) -> dict:
     """
     Description
     -----------
@@ -320,6 +320,74 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
             "per_session": bookkeeping}
 
 
+#: The only value implemented for each option `nested_position_decoding` names. Every one of these
+#: keys described a real alternative the plan discusses, and every one was read by NOTHING -- so a run
+#: could declare `vm_score_mode: "micro"`, be reported as micro, and score macro. The plan RULED macro
+#: for claim 3 (micro leaves the behaviour control suboptimal for the test, which biases claim 3
+#: toward passing), RULED the rich behaviour window, and RULED the neuron as ONE z-scored count -- so
+#: these are settled decisions, and the guard makes a deviation from them loud instead of silent.
+IMPLEMENTED_OPTIONS = {
+    "vm_score_mode": ("macro",),
+    "behaviour_control": ("rich",),
+    "prevocal_window_n_bins": (1,),
+    "rate_transform": ("none",),
+    "rate_basis": ("linear",),
+}
+
+
+def nested_settings(settings: dict) -> dict:
+    """
+    Description
+    -----------
+    The ``nested_position_decoding`` block with the shared manifold period merged in, validated.
+
+    The torus period is a property of the QLVM MANIFOLD, not of claim 3, so it lives in the shared
+    ``vocalization_settings`` block where both claims can see one value. Claim 3's functions take a
+    single block, so the caller merges here rather than the key being duplicated into two blocks that
+    could drift apart -- which is the defect this whole audit was about.
+
+    Parameters
+    ----------
+    settings (dict)
+        The whole neural-modelling settings dict.
+
+    Returns
+    -------
+    block (dict)
+        A copy of ``nested_position_decoding`` carrying ``torus_period``, refused if it declares an
+        option claim 3 does not implement.
+    """
+
+    block = dict(settings["nested_position_decoding"])
+    block["torus_period"] = settings["vocalization_settings"]["torus_period"]
+    check_settings(block)
+    return block
+
+
+def check_settings(settings: dict) -> None:
+    """
+    Description
+    -----------
+    Refuse a ``nested_position_decoding`` block that declares an option claim 3 does not implement.
+
+    Parameters
+    ----------
+    settings (dict)
+        The ``nested_position_decoding`` block.
+
+    Returns
+    -------
+    """
+
+    for key, allowed in IMPLEMENTED_OPTIONS.items():
+        value = settings[key]
+        if value not in allowed:
+            others = ", ".join(repr(a) for a in allowed)
+            msg = (f"nested_position_decoding.{key} = {value!r} is not implemented; claim 3 supports "
+                   f"{others}. This is a ruled decision, not a missing feature -- see the plan.")
+            raise ValueError(msg)
+
+
 def _fit_predict(behaviour: np.ndarray, neural: np.ndarray, positions: np.ndarray,
                  weights: np.ndarray, train: np.ndarray, test: np.ndarray,
                  n_lags: int, n_features: int, settings: dict) -> np.ndarray:
@@ -360,7 +428,8 @@ def _fit_predict(behaviour: np.ndarray, neural: np.ndarray, positions: np.ndarra
         n_behaviour_features=n_features, n_lags=n_lags,
         n_neural_columns=0 if neural is None else neural.shape[1],
         lambda_smooth=settings["lambda_smooth"], l2_reg=settings["l2_reg"],
-        smoothness_derivative_order=settings["smoothness_derivative_order"])
+        smoothness_derivative_order=settings["smoothness_derivative_order"],
+        period=settings["torus_period"])
     estimator.fit(design[train], positions[train], sample_weight=weights[train])
     return estimator.predict(design[test], snap=False)
 
@@ -405,7 +474,7 @@ def reduced_predictions(design: dict, settings: dict, n_lags: int) -> np.ndarray
 
 def shifted_neural_column(design: dict, window_edges: np.ndarray, spikes: dict, durations: dict,
                           width: float, rng, guard_seconds: float,
-                          sigma_floor: float = 0.05) -> np.ndarray:
+                          sigma_floor: float) -> np.ndarray:
     """
     Description
     -----------
@@ -507,6 +576,7 @@ def nested_scores(design: dict, settings: dict, n_lags: int,
         ``n_regions_scored``.
     """
 
+    check_settings(settings)
     behaviour = design["behaviour"]
     neural_column = design["neural"] if neural is None else np.asarray(neural, dtype=np.float64)
     positions, regions = design["positions"], design["region_labels"]
@@ -538,7 +608,8 @@ def nested_scores(design: dict, settings: dict, n_lags: int,
     def macro(predictions: np.ndarray, rows: np.ndarray) -> float:
         """Pooled macro score over the given rows; each model fits its own concentration."""
         return float(macro_von_mises_logscore(
-            predictions[rows], positions[rows], regions[rows], metric="torus", period=1.0,
+            predictions[rows], positions[rows], regions[rows], metric="torus",
+            period=settings["torus_period"],
             min_region_events=settings["min_region_events"]))
 
     everything = np.arange(positions.shape[0])
@@ -619,11 +690,13 @@ def next_feature_control(events: dict, per_session: dict, reduced_features: list
 
     per_candidate: dict = {}
     for candidate in candidates:
-        design = nested_design(events, per_session, [*reduced_features, candidate], n_lags)
+        design = nested_design(events, per_session, [*reduced_features, candidate], n_lags,
+                               settings["sigma_floor"])
         # The sixth feature IS the extra block, so the "reduced" model here is the five-feature
         # control and the "full" model is six features -- scored by dropping the neural column and
         # letting the candidate's own lags be the addition.
-        five = nested_design(events, per_session, reduced_features, n_lags)
+        five = nested_design(events, per_session, reduced_features, n_lags,
+                             settings["sigma_floor"])
         wide = dict(design)
         wide["neural"] = np.zeros((design["behaviour"].shape[0], 0))
         narrow = dict(five)
@@ -669,14 +742,15 @@ def _score_block(design: dict, settings: dict, n_lags: int) -> float:
         train = np.flatnonzero(session_index != held_out)
         predicted[test] = _fit_predict(design["behaviour"], None, positions, weights, train, test,
                                        n_lags, n_features, settings)
-    return float(macro_von_mises_logscore(predicted, positions, regions, metric="torus", period=1.0,
+    return float(macro_von_mises_logscore(predicted, positions, regions, metric="torus",
+                                          period=settings["torus_period"],
                                           min_region_events=settings["min_region_events"]))
 
 
 def null_draw_factory(design: dict, settings: dict, n_lags: int, window_edges: np.ndarray,
                       spikes: dict, durations: dict, width: float, guard_seconds: float,
-                      reduced_predicted: np.ndarray, seed: int = 0,
-                      sigma_floor: float = 0.05):
+                      reduced_predicted: np.ndarray, seed: int,
+                      sigma_floor: float):
     """
     Description
     -----------
@@ -734,3 +808,88 @@ def null_draw_factory(design: dict, settings: dict, n_lags: int, window_edges: n
         return values
 
     return draw_more
+
+
+def matched_window_control(design: dict, events: dict, per_session: dict, settings: dict,
+                           n_lags: int, width_seconds: float, candidates: list) -> dict:
+    """
+    Description
+    -----------
+    The MATCHED-WINDOW control: every kinematic feature reduced to ONE value in the neuron's own
+    window, scored exactly as the neuron is.
+
+    This is the apples-to-apples benchmark, and it is a different question from the sixth-feature
+    control. `next_feature_control` asks "would another behavioural feature have been selected?" and
+    gives each candidate its full 600 lags -- 600 columns against the neuron's 1. Here each candidate
+    is summarised to its mean over the SAME 50 ms window the neuron is counted in, so the comparison
+    is one column against one column.
+
+    Why it matters, measured: claim 3's added score has a VARIANCE-REDUCTION pathway. The behaviour
+    block must estimate its mapping from heavily penalised columns and on real data is
+    underdetermined (cl0401: 2,155 events against 3,000 columns), so a clean scalar summary of
+    behaviour can add score while carrying no information the block lacks. The circular-shift null
+    cannot catch that, because a relay's alignment with behaviour is genuinely real. This control
+    measures the pathway directly: if a unit's neuron does not clear the best behaviour scalar, its
+    added score is telling us about the control's estimation error rather than about the neuron.
+
+    MEASURED on cl0401: the best matched scalar (`allo_yaw-nose`) adds +0.00601 against the neuron's
+    +0.01746, a 2.91x lead -- and note `allo_yaw-nose` is ALREADY in the behaviour control as 600
+    lags, yet its 50 ms scalar still adds, which is the pathway made visible.
+
+    Each candidate is z-scored per session, exactly as the neural column is, so the two differ only in
+    what they measure and not in how they are scaled.
+
+    Parameters
+    ----------
+    design (dict)
+        From :func:`nested_design`; supplies the events, folds and the reduced model's behaviour block.
+    events (dict)
+        From ``assemble_unit_vocal_events``; ``call_start`` locates each window.
+    per_session (dict)
+        From ``assemble_unit_sessions``; the feature time series to summarise.
+    settings (dict)
+        From :func:`nested_settings`.
+    n_lags (int)
+        History length in frames.
+    width_seconds (float)
+        The neuron's window width; the matched summary spans the same span.
+    candidates (list)
+        Features to summarise. Typically every assembled feature, INCLUDING those in the behaviour
+        control -- a control feature's own scalar adding score is the clearest sign of the pathway.
+
+    Returns
+    -------
+    control (dict)
+        ``per_candidate`` (feature -> added score), ``best_feature``, ``best_added``.
+    """
+
+    starts = np.asarray(events["call_start"], dtype=np.float64)[design["kept"]]
+    session_index = design["session_index"]
+    reduced = reduced_predictions(design, settings, n_lags)
+
+    per_candidate: dict = {}
+    for name in candidates:
+        column = np.empty(starts.size, dtype=np.float64)
+        for slot, session_id in enumerate(events["session_ids"]):
+            session = per_session[session_id]
+            names = list(session["feature_names"])
+            if name not in names:
+                msg = f"{session_id}: matched-window candidate {name!r} is not in {names}."
+                raise ValueError(msg)
+            series = np.asarray(session["feature_time_series"], dtype=np.float64)[:, names.index(name)]
+            width_frames = max(round(width_seconds * session["fps"]), 1)
+            mask = session_index == slot
+            ends = np.rint(starts[mask] * session["fps"]).astype(np.int64)
+            column[mask] = [series[max(end - width_frames, 0):end].mean() if end > 0 else series[0]
+                            for end in ends]
+            block = column[mask]
+            spread = max(float(block.std()), settings["sigma_floor"])
+            column[mask] = (block - float(block.mean())) / spread
+        per_candidate[name] = float(nested_scores(design, settings, n_lags,
+                                                  neural=column[:, None],
+                                                  reduced_predicted=reduced)["added"])
+
+    best = max(per_candidate, key=per_candidate.get) if per_candidate else None
+    return {"per_candidate": per_candidate,
+            "best_feature": best,
+            "best_added": per_candidate[best] if best is not None else float("nan")}

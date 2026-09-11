@@ -345,8 +345,8 @@ class TestSettingsInvariants:
         assert set(settings["nested_position_decoding"]) == {
             "behaviour_control", "reduced_model_features", "compute_matched_window_control",
             "vm_score_mode", "region_label_column", "min_region_events", "lambda_smooth", "l2_reg",
-            "smoothness_derivative_order", "prevocal_window_n_bins", "rate_transform", "rate_basis",
-            "rate_basis_n_bins"}
+            "smoothness_derivative_order", "sigma_floor", "prevocal_window_n_bins", "rate_transform",
+            "rate_basis"}
 
     def test_claim_three_matches_p1_where_it_must(self):
         """Claim 3 is "P1 plus the neuron", so the control has to be fitted and SCORED the way P1
