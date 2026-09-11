@@ -11,11 +11,50 @@
     "quality": ["good"],
     "somatic": "somatic"
   },
+  "data_roots": {
+    "ephys_root": "/mnt/falkner/Bartul/EPHYS",
+    "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
+    "data_root": "/mnt/falkner/Bartul/Data"
+  },
   "data_sufficiency": {
     "min_courtship_sessions": 2,
     "min_emitter_usvs_per_session": 20,
     "min_vocal_sessions": 2,
     "single_session_inner_split_blocks": 5
+  },
+  "kinematic_features": {
+    "egocentric": [
+      "speed",
+      "neck_elevation",
+      "allo_roll",
+      "allo_pitch",
+      "ego_yaw",
+      "back_pitch",
+      "back_yaw",
+      "tail_curvature"
+    ],
+    "dyadic_pose": [
+      "nose-nose",
+      "allo_yaw-nose",
+      "nose-allo_yaw",
+      "allo_pitch-nose",
+      "nose-allo_pitch"
+    ],
+    "dyadic_engagement": [],
+    "dyadic_pose_symmetric": false,
+    "include_1st_derivatives": false,
+    "include_2nd_derivatives": false,
+    "abs_features": [
+      "allo_roll",
+      "allo_yaw-nose",
+      "nose-allo_yaw",
+      "allo_yaw-TTI",
+      "TTI-allo_yaw"
+    ],
+    "smooth_abs_features": {
+      "ego_yaw": 1.0,
+      "back_yaw": 0.5
+    }
   },
   "vocalization_settings": {
     "vocal_emitter": "self",
@@ -178,44 +217,5 @@
     ],
     "time_in_session_nuisance": false,
     "shift_range_check": false
-  },
-  "kinematic_features": {
-    "egocentric": [
-      "speed",
-      "neck_elevation",
-      "allo_roll",
-      "allo_pitch",
-      "ego_yaw",
-      "back_pitch",
-      "back_yaw",
-      "tail_curvature"
-    ],
-    "dyadic_pose": [
-      "nose-nose",
-      "allo_yaw-nose",
-      "nose-allo_yaw",
-      "allo_pitch-nose",
-      "nose-allo_pitch"
-    ],
-    "dyadic_engagement": [],
-    "dyadic_pose_symmetric": false,
-    "include_1st_derivatives": false,
-    "include_2nd_derivatives": false,
-    "abs_features": [
-      "allo_roll",
-      "allo_yaw-nose",
-      "nose-allo_yaw",
-      "allo_yaw-TTI",
-      "TTI-allo_yaw"
-    ],
-    "smooth_abs_features": {
-      "ego_yaw": 1.0,
-      "back_yaw": 0.5
-    }
-  },
-  "data_roots": {
-    "ephys_root": "/mnt/falkner/Bartul/EPHYS",
-    "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
-    "data_root": "/mnt/falkner/Bartul/Data"
   }
 }
