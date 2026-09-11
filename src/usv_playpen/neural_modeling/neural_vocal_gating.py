@@ -53,6 +53,13 @@ from __future__ import annotations
 import numpy as np
 
 from .deviance_metrics import bernoulli_deviance, calibrate_intercept, newton_logistic
+from .neural_design_assembly import (
+    emitter_names,
+    load_session_usvs,
+    session_timebase,
+    spike_labels_at_frames,
+    vocal_span_frames,
+)
 
 #: The only value implemented for each option `vocal_gating` names.
 #:
@@ -501,3 +508,148 @@ def gating_survivors(per_feature: dict, feature_values_vocal: dict) -> dict:
             "n_survivors": len(survivors),
             "correlations": correlations,
             "max_abs_correlation": strongest if correlations else float("nan")}
+
+
+def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dict,
+                    vocal_settings: dict, seed: int = 0) -> dict:
+    """
+    Description
+    -----------
+    The two frame sets gating runs on, with the peri-vocal zone DROPPED from both.
+
+    Three categories exist and the model uses two. VOCAL frames sit strictly inside a focal USV.
+    QUIET frames are the claim-1 guard-banded anchors -- no USV from any emitter within
+    ``history_pre_seconds`` before or ``clean_post_seconds`` after -- which is why this reuses the
+    anchors the kinematic assembler already built rather than defining quiet a second way. Everything
+    between is PERI-VOCAL and is discarded.
+
+    **That discard is the single most consequential line here.** The peri-vocal bout ramp holds most
+    of the firing -- on the calibration unit 58% of spikes, against 35% vocal and 7% quiet -- so
+    treating "not inside a USV" as quiet sweeps those frames into the quiet class and manufactures a
+    feature main effect out of nothing. It happened, and it cost a day.
+
+    TWO SUBSAMPLES, for two different universes and two different reasons. The vocal-plus-quiet
+    universe caps quiet at ``max_quiet_frames_per_session`` so the fit is not swamped by the ~64% of
+    the session that is quiet. The quiet-ONLY universe, where ``alpha_f`` is measured, instead keeps
+    ``quiet_zeros_per_spike`` zeros per quiet spike, because there the question is a rare-event
+    logistic and the class balance is what needs bounding. Neither carries importance weights:
+    logistic slopes are consistent under outcome-dependent sampling, and weights inflate the
+    effective n and destabilise the interaction.
+
+    Features are INSTANTANEOUS -- the value at the frame, no lags. Gating asks whether the CURRENT
+    context scales the response, which neither needs nor uses claim 1's 600-lag history.
+
+    Parameters
+    ----------
+    unit (dict)
+        Cohort record; ``vocal_sessions`` are used, since gating needs calls.
+    data_root (str)
+        The ``Data`` root.
+    per_session (dict)
+        From ``assemble_unit_sessions``: feature time series, names, quiet anchors, spike frames.
+    settings (dict)
+        The ``vocal_gating`` block.
+    vocal_settings (dict)
+        The ``vocalization_settings`` block, for the emitter.
+    seed (int)
+        Subsampling seed.
+
+    Returns
+    -------
+    universe (dict)
+        ``features`` / ``vocal`` / ``spikes`` / ``session_index`` over the vocal-plus-quiet rows;
+        ``features_quiet`` / ``spikes_quiet`` / ``session_quiet`` over the quiet-only rows;
+        ``feature_names``; and ``per_session`` counts including how many frames each category
+        contributed and how many spikes fell in each.
+    """
+
+    check_settings(settings)
+    rng = np.random.default_rng(seed)
+    cap = settings["max_quiet_frames_per_session"]
+    zeros_per_spike = settings["quiet_zeros_per_spike"]
+
+    feature_parts, vocal_parts, spike_parts, index_parts = [], [], [], []
+    quiet_feature_parts, quiet_spike_parts, quiet_index_parts = [], [], []
+    bookkeeping: dict = {}
+    feature_names = None
+
+    for slot, session_id in enumerate(unit["vocal_sessions"]):
+        session = per_session[session_id]
+        series = np.asarray(session["feature_time_series"], dtype=np.float64)
+        if feature_names is None:
+            feature_names = list(session["feature_names"])
+        elif list(session["feature_names"]) != feature_names:
+            msg = (f"{session_id}: feature names differ from the first session. They are "
+                   f"canonicalised upstream, so this means the assembler changed under us.")
+            raise ValueError(msg)
+
+        track_names, fps, n_frames = session_timebase(data_root, session_id)
+        usv = load_session_usvs(data_root, session_id)
+        focal_name = emitter_names(track_names, unit["mouse_id"],
+                                   vocal_settings["vocal_emitter"])[0]
+        focal = usv.filter(usv["emitter"] == focal_name)
+        starts = focal["start"].to_numpy().astype(np.float64)
+        stops = focal["stop"].to_numpy().astype(np.float64)
+        # n_lags of 1: gating needs no history, so a call is usable wherever it lies in the session.
+        # The helper returns (kept mask, flat frames, span pointer) -- the flat frames are the middle
+        # element, and gating wants every frame of every span, so the pointer is not needed here.
+        _kept, vocal_frames, _pointer = vocal_span_frames(starts, stops, fps, n_frames, 1)
+        quiet_frames = np.asarray(session["quiet"], dtype=np.int64)
+        spike_frames = np.asarray(session["spike_frames"], dtype=np.int64)
+
+        # PERI-VOCAL is whatever is in neither set; it is never assembled, which is the point.
+        vocal_labels = spike_labels_at_frames(spike_frames, vocal_frames, n_frames)
+        quiet_labels = spike_labels_at_frames(spike_frames, quiet_frames, n_frames)
+
+        # universe: every vocal frame, quiet capped so the fit is not swamped by silence
+        if cap is not None and quiet_frames.size > cap:
+            chosen = np.sort(rng.choice(quiet_frames.size, cap, replace=False))
+        else:
+            chosen = np.arange(quiet_frames.size)
+        universe_frames = np.concatenate([vocal_frames, quiet_frames[chosen]])
+        universe_vocal = np.concatenate([np.ones(vocal_frames.size), np.zeros(chosen.size)])
+        universe_labels = np.concatenate([vocal_labels, quiet_labels[chosen]])
+
+        # quiet-only: a rare-event logistic, so the ZERO count is what needs bounding
+        positives = np.flatnonzero(quiet_labels > 0)
+        negatives = np.flatnonzero(quiet_labels == 0)
+        keep_zeros = min(negatives.size, zeros_per_spike * max(positives.size, 1))
+        if negatives.size > keep_zeros:
+            negatives = np.sort(rng.choice(negatives, keep_zeros, replace=False))
+        quiet_rows = np.sort(np.concatenate([positives, negatives]))
+
+        feature_parts.append(series[universe_frames])
+        vocal_parts.append(universe_vocal)
+        spike_parts.append(universe_labels)
+        index_parts.append(np.full(universe_frames.size, slot))
+        quiet_feature_parts.append(series[quiet_frames[quiet_rows]])
+        quiet_spike_parts.append(quiet_labels[quiet_rows])
+        quiet_index_parts.append(np.full(quiet_rows.size, slot))
+
+        bookkeeping[session_id] = {
+            "n_vocal_frames": int(vocal_frames.size),
+            "n_quiet_frames_available": int(quiet_frames.size),
+            "n_quiet_frames_used": int(chosen.size),
+            "n_peri_vocal_frames_excluded": int(n_frames - vocal_frames.size - quiet_frames.size),
+            "n_vocal_spikes": int(vocal_labels.sum()),
+            "n_quiet_spikes": int(quiet_labels.sum()),
+            "n_focal_calls": int(starts.size)}
+
+    def stack(parts: list) -> np.ndarray:
+        """Concatenate, tolerating a unit that contributed no rows at all."""
+        return np.concatenate(parts) if parts else np.empty(0, dtype=np.float64)
+
+    def rows(parts: list, n_columns: int) -> np.ndarray:
+        """Stack row blocks, keeping the column count when there are none."""
+        return np.vstack(parts) if parts else np.empty((0, n_columns), dtype=np.float64)
+
+    width = len(feature_names) if feature_names else 0
+    return {"features": rows(feature_parts, width),
+            "vocal": stack(vocal_parts),
+            "spikes": stack(spike_parts),
+            "session_index": stack(index_parts).astype(np.int64),
+            "features_quiet": rows(quiet_feature_parts, width),
+            "spikes_quiet": stack(quiet_spike_parts),
+            "session_quiet": stack(quiet_index_parts).astype(np.int64),
+            "feature_names": feature_names or [],
+            "per_session": bookkeeping}

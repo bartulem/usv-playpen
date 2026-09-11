@@ -13,13 +13,16 @@ import json
 import pathlib
 
 import numpy as np
+import polars as pl
 import pytest
 
+from usv_playpen.neural_modeling import neural_vocal_gating as gating_module
 from usv_playpen.neural_modeling.neural_vocal_gating import (
     check_settings,
     feature_gating_statistic,
     gating_survivors,
     gating_terms,
+    gating_universe,
     gating_verdict,
     loso_added_deviance,
     settings_bonferroni_bar,
@@ -324,3 +327,111 @@ class TestSurvivorReporting:
     def test_the_forward_selection_knob_is_gone(self):
         """`forward_stop_gain` configured a greedy search that is no longer performed."""
         assert "forward_stop_gain" not in _gating()
+
+
+class TestTheUniverse:
+    """Three frame categories, two of which the model sees. The third -- peri-vocal -- must be absent
+    from BOTH, because it holds most of the firing and folding it into quiet manufactures a feature
+    main effect out of nothing."""
+
+    FPS, N_FRAMES = 100.0, 4000
+
+    def _patch(self, monkeypatch, calls):
+        """Two sessions with identical structure, and features that ARE the frame index so an
+        instantaneous read can be checked exactly."""
+        module = gating_module
+        monkeypatch.setattr(module, "session_timebase",
+                            lambda _root, _sid: (["male", "female"], self.FPS, self.N_FRAMES))
+        monkeypatch.setattr(module, "load_session_usvs", lambda _root, _sid: pl.DataFrame(
+            {"start": [c[0] for c in calls], "stop": [c[1] for c in calls],
+             "emitter": [c[2] for c in calls]}))
+
+    def _per_session(self, session_ids, quiet, spike_frames):
+        series = np.column_stack([np.arange(self.N_FRAMES, dtype=float),
+                                  -np.arange(self.N_FRAMES, dtype=float)])
+        return {sid: {"feature_time_series": series, "feature_names": ["f0", "f1"],
+                      "fps": self.FPS, "n_frames": self.N_FRAMES,
+                      "quiet": np.asarray(quiet, dtype=np.int64),
+                      "spike_frames": np.asarray(spike_frames, dtype=np.int64)}
+                for sid in session_ids}
+
+    def _unit(self):
+        return {"mouse_id": "male", "vocal_sessions": ["s0", "s1"]}
+
+    def test_peri_vocal_frames_reach_neither_class(self, monkeypatch):
+        """A frame just outside a call is neither vocal nor quiet, and must appear in no row."""
+        self._patch(monkeypatch, [(10.0, 10.5, "male")])          # frames 1000-1049
+        quiet = np.arange(3000, 3500)                              # far from the call
+        universe = gating_universe(self._unit(), "/data",
+                                   self._per_session(["s0", "s1"], quiet, [1005, 3010]),
+                                   _gating(), {"vocal_emitter": "self"})
+        frames_used = universe["features"][:, 0]                   # feature 0 IS the frame index
+        assert 1005 in frames_used                                 # inside the call -> vocal
+        assert 3010 in frames_used                                 # a quiet anchor
+        assert 1100 not in frames_used                             # just after it -> peri-vocal, gone
+        assert 2000 not in frames_used
+
+    def test_the_vocal_indicator_marks_exactly_the_call_frames(self, monkeypatch):
+        self._patch(monkeypatch, [(10.0, 10.5, "male")])
+        universe = gating_universe(self._unit(), "/data",
+                                   self._per_session(["s0", "s1"], np.arange(3000, 3500), [1005]),
+                                   _gating(), {"vocal_emitter": "self"})
+        frames = universe["features"][:, 0]
+        inside = (frames >= 1000) & (frames < 1050)
+        np.testing.assert_array_equal(universe["vocal"] > 0, inside)
+
+    def test_features_are_instantaneous_not_lagged(self, monkeypatch):
+        """Gating asks whether the CURRENT context scales the response; it neither needs nor uses
+        claim 1's 600 lags."""
+        self._patch(monkeypatch, [(10.0, 10.2, "male")])
+        universe = gating_universe(self._unit(), "/data",
+                                   self._per_session(["s0", "s1"], np.arange(3000, 3100), [1005]),
+                                   _gating(), {"vocal_emitter": "self"})
+        assert universe["features"].shape[1] == 2                  # one column per feature, no lags
+        np.testing.assert_allclose(universe["features"][:, 1], -universe["features"][:, 0])
+
+    def test_a_partner_call_does_not_create_vocal_frames(self, monkeypatch):
+        """V is the RECORDED animal vocalizing; a partner call is not that."""
+        self._patch(monkeypatch, [(10.0, 10.5, "female")])
+        universe = gating_universe(self._unit(), "/data",
+                                   self._per_session(["s0", "s1"], np.arange(3000, 3100), [1005]),
+                                   _gating(), {"vocal_emitter": "self"})
+        assert universe["vocal"].sum() == 0
+
+    def test_the_quiet_cap_is_honoured(self, monkeypatch):
+        self._patch(monkeypatch, [(10.0, 10.5, "male")])
+        settings = _gating()
+        settings["max_quiet_frames_per_session"] = 50
+        universe = gating_universe(self._unit(), "/data",
+                                   self._per_session(["s0", "s1"], np.arange(2000, 3000), [1005]),
+                                   settings, {"vocal_emitter": "self"})
+        for book in universe["per_session"].values():
+            assert book["n_quiet_frames_available"] == 1000
+            assert book["n_quiet_frames_used"] == 50
+
+    def test_the_quiet_only_set_bounds_zeros_per_spike(self, monkeypatch):
+        """alpha_f is a rare-event logistic there, so the ZERO count is what needs bounding -- a
+        different question from the universe's cap, which bounds silence against vocal frames."""
+        self._patch(monkeypatch, [(10.0, 10.2, "male")])
+        settings = _gating()
+        settings["quiet_zeros_per_spike"] = 3
+        quiet = np.arange(2000, 3000)
+        universe = gating_universe(self._unit(), "/data",
+                                   self._per_session(["s0", "s1"], quiet, [1005, 2500]),
+                                   settings, {"vocal_emitter": "self"})
+        per_session_rows = universe["spikes_quiet"][universe["session_quiet"] == 0]
+        assert per_session_rows.sum() == 1                         # the one quiet spike is kept
+        assert per_session_rows.size == 4                          # plus 3 zeros, not 999
+
+    def test_the_bookkeeping_counts_what_was_excluded(self, monkeypatch):
+        """The peri-vocal count is reported rather than silently dropped, because its size is the
+        whole reason the category exists."""
+        self._patch(monkeypatch, [(10.0, 10.5, "male")])
+        universe = gating_universe(self._unit(), "/data",
+                                   self._per_session(["s0", "s1"], np.arange(3000, 3500), [1005]),
+                                   _gating(), {"vocal_emitter": "self"})
+        book = universe["per_session"]["s0"]
+        assert book["n_vocal_frames"] == 50
+        assert book["n_quiet_frames_available"] == 500
+        assert book["n_peri_vocal_frames_excluded"] == self.N_FRAMES - 50 - 500
+        assert book["n_focal_calls"] == 1
