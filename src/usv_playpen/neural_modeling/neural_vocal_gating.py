@@ -54,6 +54,95 @@ import numpy as np
 
 from .deviance_metrics import bernoulli_deviance, calibrate_intercept, newton_logistic
 
+#: The only value implemented for each option `vocal_gating` names.
+#:
+#: ``vocal_window`` is ``"during_call"`` -- every frame of the call. The nameable alternative is a
+#: fixed ``"peri_onset"`` window, and the plan rejects it: gating asks about VOCALIZING, not
+#: peri-vocalizing, so the whole call is the right span even though on the calibration unit it
+#: captures only ~35% of the spikes. ``content_gating_compute`` stays false because the content
+#: branch (feature x torus position, a 4-df group) is DEFERRED and must be gated on a claim-2 pass --
+#: run blind on a non-tuned unit it produces false positives.
+IMPLEMENTED_OPTIONS = {
+    "vocal_window": ("during_call",),
+    "content_gating_compute": (False,),
+}
+
+
+def check_settings(settings: dict) -> None:
+    """
+    Description
+    -----------
+    Refuse a ``vocal_gating`` block that declares an option this module does not implement.
+
+    Parameters
+    ----------
+    settings (dict)
+        The ``vocal_gating`` block.
+
+    Returns
+    -------
+    """
+
+    for key, allowed in IMPLEMENTED_OPTIONS.items():
+        if settings[key] not in allowed:
+            others = ", ".join(repr(a) for a in allowed)
+            msg = (f"vocal_gating.{key} = {settings[key]!r} is not implemented; this module supports "
+                   f"{others}.")
+            raise ValueError(msg)
+
+
+def should_run_gating(claim2_when_significant: bool, claim2_what_significant: bool,
+                      n_vocal_spikes: int, feature_iqr_vocal: float, settings: dict) -> tuple:
+    """
+    Description
+    -----------
+    Whether this unit gets the gating test, and if not, why not.
+
+    Two independent reasons to skip, and they mean different things -- which is why they are reported
+    separately rather than collapsed into one boolean.
+
+    ACTIVATION (``require_claim2_tuning``, user-ruled 2026-09-11): run only on units with WHEN or WHAT
+    tuning. A unit with no vocal tuning at all has nothing for a gate to modulate, and the screen is
+    19 features x 2,000 shuffles, so skipping them is the saving that keeps gating negligible against
+    the rest of the pipeline. Note the two are measured on OVERLAPPING but not identical frames: since
+    2026-09-11 claim 2's window straddles onset and covers the call's first 50 ms, while gating spans
+    the WHOLE call -- so a unit responding only late in long calls could in principle be skipped. That
+    is the accepted cost of the filter.
+
+    IDENTIFIABILITY (``min_vocal_spikes``, ``min_feature_iqr_vocal``): a feature with no spread DURING
+    vocal frames leaves ``delta_f`` unidentifiable, and a unit with too few vocal spikes leaves it
+    unestimable. Either way the verdict must read ``not_testable`` -- which says "we could not test
+    this" -- and NOT ``ns``, which says "we tested it and found nothing". Collapsing the two would
+    quietly convert missing power into evidence of absence. Both gates default to null (off), matching
+    every other ``min_*`` in this project: the quantities are recorded regardless.
+
+    Parameters
+    ----------
+    claim2_when_significant, claim2_what_significant (bool)
+        The unit's claim-2 verdicts.
+    n_vocal_spikes (int)
+        Spikes inside focal USVs.
+    feature_iqr_vocal (float)
+        Interquartile spread of the feature during vocal frames.
+    settings (dict)
+        The ``vocal_gating`` block.
+
+    Returns
+    -------
+    run, reason (tuple)
+        Whether to run, and ``None`` or one of ``"no_claim2_tuning"`` / ``"not_testable"``.
+    """
+
+    minimum_spikes = settings["min_vocal_spikes"]
+    minimum_spread = settings["min_feature_iqr_vocal"]
+    if minimum_spikes is not None and n_vocal_spikes < minimum_spikes:
+        return False, "not_testable"
+    if minimum_spread is not None and feature_iqr_vocal < minimum_spread:
+        return False, "not_testable"
+    if settings["require_claim2_tuning"] and not (claim2_when_significant or claim2_what_significant):
+        return False, "no_claim2_tuning"
+    return True, None
+
 
 def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
                         session_index: np.ndarray, ridge_fraction: float, irls_steps: int,

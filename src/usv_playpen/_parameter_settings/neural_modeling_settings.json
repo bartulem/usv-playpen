@@ -104,10 +104,13 @@
     "chunk_rows": 4000
   },
   "vocal_gating": {
-    "vocal_window": "start_stop",
+    "vocal_window": "during_call",
+    "require_claim2_tuning": true,
     "ridge_frac": 0.02,
     "max_quiet_frames_per_session": 12000,
     "quiet_zeros_per_spike": 40,
+    "min_vocal_spikes": null,
+    "min_feature_iqr_vocal": null,
     "require_interaction_gt_vocal": true,
     "content_gating_compute": false,
     "gating_screen_n_shuffles": 2000,

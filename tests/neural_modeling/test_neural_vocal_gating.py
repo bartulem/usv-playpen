@@ -16,11 +16,13 @@ import numpy as np
 import pytest
 
 from usv_playpen.neural_modeling.neural_vocal_gating import (
+    check_settings,
     feature_gating_statistic,
     gating_terms,
     gating_verdict,
     loso_added_deviance,
     settings_bonferroni_bar,
+    should_run_gating,
 )
 
 SETTINGS_PATH = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
@@ -187,3 +189,81 @@ class TestTheShuffleCountCanReachTheBar:
     def test_the_shipped_override_of_the_shared_default_is_deliberate(self):
         """1,000 is the project-wide default and CANNOT clear 0.01/19 = 5.3e-4; gating overrides it."""
         assert _gating()["gating_screen_n_shuffles"] == 2000
+
+
+class TestActivation:
+    """Two independent reasons to skip a unit, and they mean different things: one says the unit has
+    nothing for a gate to modulate, the other says we could not test it."""
+
+    def test_a_unit_with_claim_two_tuning_is_run(self):
+        run, reason = should_run_gating(True, False, 500, 1.0, _gating())
+        assert run
+        assert reason is None
+        assert should_run_gating(False, True, 500, 1.0, _gating())[0]
+
+    def test_a_unit_with_no_vocal_tuning_is_skipped(self):
+        """User-ruled: the screen is 19 features x 2,000 shuffles, and a unit with no vocal tuning has
+        nothing for a gate to modulate."""
+        run, reason = should_run_gating(False, False, 500, 1.0, _gating())
+        assert not run
+        assert reason == "no_claim2_tuning"
+
+    def test_the_filter_can_be_turned_off(self):
+        settings = _gating()
+        settings["require_claim2_tuning"] = False
+        assert should_run_gating(False, False, 500, 1.0, settings)[0]
+
+    def test_an_unidentifiable_unit_reads_not_testable_not_ns(self):
+        """`ns` says we tested it and found nothing; `not_testable` says we could not test it.
+        Collapsing the two converts missing power into evidence of absence."""
+        settings = _gating()
+        settings["min_vocal_spikes"] = 100
+        run, reason = should_run_gating(True, True, 10, 1.0, settings)
+        assert not run
+        assert reason == "not_testable"
+
+    def test_a_feature_flat_during_vocal_frames_is_unidentifiable(self):
+        """delta_f is identified purely from vocal frames, so a feature with no spread there cannot
+        be estimated at all."""
+        settings = _gating()
+        settings["min_feature_iqr_vocal"] = 0.5
+        run, reason = should_run_gating(True, True, 500, 0.01, settings)
+        assert not run
+        assert reason == "not_testable"
+
+    def test_identifiability_is_checked_before_the_tuning_filter(self):
+        """A unit that is BOTH untestable and untuned should report the stronger fact -- that the test
+        could not be run -- rather than implying it was skipped merely for lacking tuning."""
+        settings = _gating()
+        settings["min_vocal_spikes"] = 100
+        assert should_run_gating(False, False, 10, 1.0, settings)[1] == "not_testable"
+
+    def test_the_gates_default_off_like_every_other_min_knob(self):
+        assert _gating()["min_vocal_spikes"] is None
+        assert _gating()["min_feature_iqr_vocal"] is None
+
+
+class TestImplementedOptions:
+
+    def test_the_shipped_block_is_accepted(self):
+        check_settings(_gating())
+
+    def test_the_vocal_window_names_what_it_means(self):
+        """`start_stop` named the MECHANISM -- it reads the start and stop columns. `during_call`
+        names the meaning. The nameable alternative is a fixed peri-onset window, rejected because
+        gating asks about VOCALIZING rather than peri-vocalizing."""
+        assert _gating()["vocal_window"] == "during_call"
+
+    def test_a_peri_onset_vocal_window_is_refused(self):
+        settings = _gating()
+        settings["vocal_window"] = "peri_onset"
+        with pytest.raises(ValueError, match="is not implemented"):
+            check_settings(settings)
+
+    def test_content_gating_cannot_be_switched_on_yet(self):
+        """Deferred, and it must be gated on a claim-2 pass -- run blind on a non-tuned unit the
+        content screen produces false positives."""
+        settings = _gating()
+        settings["content_gating_compute"] = True
+        with pytest.raises(ValueError, match="is not implemented"):
+            check_settings(settings)

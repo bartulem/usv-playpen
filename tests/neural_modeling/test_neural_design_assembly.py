@@ -384,12 +384,17 @@ class TestSettingsInvariants:
     def test_the_dead_min_gates_are_gone(self):
         """`data_sufficiency` once held six `min_*` keys that nothing read, every value null, whose
         promised behaviour (NaN plus a report line for a unit failing an enabled gate) was never
-        implemented. They were deleted; the block name was later reused for four keys that ARE read
-        and do work, so this asserts the dead keys rather than the block."""
-        leaves = {key for block in _load_settings().values() if isinstance(block, dict)
-                  for key in block}
+        implemented. Four were deleted and stay deleted.
+
+        TWO WERE RESTORED deliberately (2026-09-11) into `vocal_gating`, where they ARE read: gating
+        needs them to distinguish `not_testable` -- a feature with no spread during vocal frames
+        leaves delta unidentifiable -- from `ns`, which says the test ran and found nothing.
+        Collapsing those two would convert missing power into evidence of absence."""
+        settings = _load_settings()
+        leaves = {key for block in settings.values() if isinstance(block, dict) for key in block}
         assert not leaves & {"min_quiet_anchors", "min_quiet_spikes", "min_focal_usvs_total",
-                             "min_baseline_tiles", "min_vocal_spikes", "min_feature_iqr_vocal"}
+                             "min_baseline_tiles"}
+        assert set(settings["vocal_gating"]) >= {"min_vocal_spikes", "min_feature_iqr_vocal"}
 
     def test_the_sufficiency_block_holds_only_live_keys(self):
         """Every key here is read by something -- unlike the block that previously carried the name."""
