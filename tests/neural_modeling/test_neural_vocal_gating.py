@@ -18,6 +18,7 @@ import pytest
 from usv_playpen.neural_modeling.neural_vocal_gating import (
     check_settings,
     feature_gating_statistic,
+    gating_survivors,
     gating_terms,
     gating_verdict,
     loso_added_deviance,
@@ -267,3 +268,59 @@ class TestImplementedOptions:
         settings["content_gating_compute"] = True
         with pytest.raises(ValueError, match="is not implemented"):
             check_settings(settings)
+
+
+class TestSurvivorReporting:
+    """All survivors are reported with their collinearity, rather than forward-selected to a minimal
+    set -- under collinearity a greedy search is knife-edge, and which proxy it keeps is unstable
+    rather than meaningful. Feature identity is DESCRIPTION here, so a stable description beats an
+    unstable selection."""
+
+    @staticmethod
+    def _verdicts(labels_and_margins):
+        return {name: {"label": label, "sigma_margin": margin}
+                for name, label, margin in labels_and_margins}
+
+    def test_only_gated_labels_survive(self):
+        per_feature = self._verdicts([("a", "GATE", 40.0), ("b", "int<vocal", 30.0),
+                                      ("c", "ns", 1.0), ("d", "GATE+silentME", 20.0)])
+        values = {name: np.arange(10.0) for name in per_feature}
+        summary = gating_survivors(per_feature, values)
+        assert summary["survivors"] == ["a", "d"]
+        assert summary["n_survivors"] == 2
+
+    def test_survivors_are_ordered_strongest_first(self):
+        per_feature = self._verdicts([("weak", "GATE", 6.0), ("strong", "GATE", 46.0)])
+        values = {name: np.arange(10.0) for name in per_feature}
+        assert gating_survivors(per_feature, values)["survivors"] == ["strong", "weak"]
+
+    def test_collinear_survivors_are_flagged_by_their_correlation(self):
+        """Four survivors correlating at 0.9 are one story told four ways; the reader needs to see
+        that without the pipeline having committed to which one is 'the' feature."""
+        rng = np.random.default_rng(0)
+        base = rng.normal(size=400)
+        per_feature = self._verdicts([("x", "GATE", 40.0), ("x_proxy", "GATE", 38.0)])
+        values = {"x": base, "x_proxy": base + 0.05 * rng.normal(size=400)}
+        summary = gating_survivors(per_feature, values)
+        assert summary["max_abs_correlation"] > 0.9
+        assert "x|x_proxy" in summary["correlations"]
+
+    def test_independent_survivors_are_not_flagged(self):
+        rng = np.random.default_rng(1)
+        per_feature = self._verdicts([("x", "GATE", 40.0), ("y", "GATE", 38.0)])
+        values = {"x": rng.normal(size=400), "y": rng.normal(size=400)}
+        assert abs(gating_survivors(per_feature, values)["max_abs_correlation"]) < 0.3
+
+    def test_a_flat_feature_gives_nan_rather_than_a_spurious_correlation(self):
+        per_feature = self._verdicts([("x", "GATE", 40.0), ("flat", "GATE", 38.0)])
+        values = {"x": np.arange(50.0), "flat": np.zeros(50)}
+        assert np.isnan(gating_survivors(per_feature, values)["correlations"]["x|flat"])
+
+    def test_no_survivors_reports_cleanly(self):
+        summary = gating_survivors(self._verdicts([("a", "ns", 1.0)]), {"a": np.arange(10.0)})
+        assert summary["survivors"] == []
+        assert np.isnan(summary["max_abs_correlation"])
+
+    def test_the_forward_selection_knob_is_gone(self):
+        """`forward_stop_gain` configured a greedy search that is no longer performed."""
+        assert "forward_stop_gain" not in _gating()

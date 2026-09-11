@@ -444,3 +444,60 @@ def settings_bonferroni_bar(settings: dict, n_features: int) -> float:
                f"{int(np.ceil(1.0 / bar))}.")
         raise ValueError(msg)
     return bar
+
+
+def gating_survivors(per_feature: dict, feature_values_vocal: dict) -> dict:
+    """
+    Description
+    -----------
+    The features that passed, with the pairwise correlations that say how much they are one story.
+
+    RULED 2026-09-11 (user): report ALL survivors rather than forward-selecting a minimal set. The
+    plan had specified greedy forward selection by LOSO gain, and the argument against it is the same
+    one that removed group-lasso from claim 1: under collinearity a greedy search is knife-edge, and
+    which of several correlated posture proxies it keeps is unstable rather than meaningful. Since
+    this project's standing position is that FEATURE IDENTITY IS DESCRIPTION and not result, a stable
+    description beats an unstable selection.
+
+    So the collinearity is reported instead of resolved. A unit gated on four features that correlate
+    at 0.9 is one story told four ways; a unit gated on two that correlate at 0.1 is two stories. The
+    reader can see which without the pipeline having committed to an answer -- and the correlations
+    are measured DURING VOCAL FRAMES, since that is where ``delta_f`` is identified and therefore the
+    only place their collinearity can confound it.
+
+    Parameters
+    ----------
+    per_feature (dict)
+        ``{feature: verdict dict}`` from :func:`gating_verdict`.
+    feature_values_vocal (dict)
+        ``{feature: values on VOCAL frames}``, aligned across features.
+
+    Returns
+    -------
+    summary (dict)
+        ``survivors`` (labelled GATE or GATE+silentME, strongest first by sigma margin),
+        ``correlations`` (pairwise, among survivors only), and ``max_abs_correlation``.
+    """
+
+    survivors = [name for name, verdict in per_feature.items()
+                 if verdict["label"] in ("GATE", "GATE+silentME")]
+    survivors.sort(key=lambda name: -per_feature[name]["sigma_margin"])
+
+    correlations: dict = {}
+    strongest = 0.0
+    for i, first in enumerate(survivors):
+        for second in survivors[i + 1:]:
+            a = np.asarray(feature_values_vocal[first], dtype=np.float64)
+            b = np.asarray(feature_values_vocal[second], dtype=np.float64)
+            if a.size < 2 or np.std(a) == 0.0 or np.std(b) == 0.0:
+                value = float("nan")
+            else:
+                value = float(np.corrcoef(a, b)[0, 1])
+            correlations[f"{first}|{second}"] = value
+            if np.isfinite(value):
+                strongest = max(strongest, abs(value))
+
+    return {"survivors": survivors,
+            "n_survivors": len(survivors),
+            "correlations": correlations,
+            "max_abs_correlation": strongest if correlations else float("nan")}

@@ -115,7 +115,6 @@
     "content_gating_compute": false,
     "gating_screen_n_shuffles": 2000,
     "sign_ridge_frac": 0.1,
-    "forward_stop_gain": 0.0,
     "borderline_sigma_flag": 5.0,
     "solver": {
       "irls_n_steps": 30,
