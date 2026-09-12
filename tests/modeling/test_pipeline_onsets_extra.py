@@ -240,6 +240,26 @@ class TestInitBranches:
         assert rebuilt.feature_boundaries == {'speed': [0.0, 5.0]}
         assert rebuilt.sentinel_attr == 'set_via_kwargs'
 
+    def test_init_bout_offset_mode_takes_its_own_history_window(self, tmp_path):
+        """
+        In ``bout_offset`` mode the history window comes from the block's own
+        ``filter_history``; in every other mode from ``model_params.filter_history``.
+        The shared value stays untouched, so the other targets see no change.
+        """
+
+        pipeline = _pipeline(tmp_path)
+        settings = pipeline.modeling_settings
+        camera_rate = settings['io']['camera_sampling_rate']
+        shared = settings['model_params']['filter_history']
+        settings['bout_offset']['filter_history'] = shared / 2.0
+        settings['model_params']['model_target_vocal_type'] = 'bout_offset'
+        offset_pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
+        assert offset_pipeline.history_frames == int(np.floor(camera_rate * shared / 2.0))
+        assert offset_pipeline.history_seconds == shared / 2.0
+        settings['model_params']['model_target_vocal_type'] = 'bout'
+        onset_pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
+        assert onset_pipeline.history_frames == int(np.floor(camera_rate * shared))
+
     def test_init_missing_history_setting_raises_keyerror(self, tmp_path):
         """
         Dropping ``model_params.filter_history`` makes the ``history_frames``

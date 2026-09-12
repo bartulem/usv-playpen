@@ -288,6 +288,145 @@ def _generate_vocal_trace(event_starts: np.ndarray,
     return trace
 
 
+def _group_calls_into_bouts(starts: np.ndarray,
+                            stops: np.ndarray,
+                            ibi_threshold: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Splits one mouse's time-sorted calls into bouts at every inter-call gap
+    of at least ``ibi_threshold`` seconds.
+
+    Parameters
+    ----------
+    starts : np.ndarray
+        Call start times (s), sorted.
+    stops : np.ndarray
+        Call stop times (s), same order.
+    ibi_threshold : float
+        Gap (next start minus previous stop) at or above which a new bout begins.
+
+    Returns
+    -------
+    bout_start_indices, bout_end_indices : tuple of np.ndarray
+        Index of the first and last call of every bout; empty arrays when there
+        are no calls.
+    """
+
+    if len(starts) == 0:
+        return np.array([], dtype=int), np.array([], dtype=int)
+    if len(starts) > 1:
+        gaps = starts[1:] - stops[:-1]
+        break_indices = np.where(gaps >= ibi_threshold)[0]
+        bout_start_indices = np.concatenate(([0], break_indices + 1))
+        bout_end_indices = np.concatenate((break_indices, [len(starts) - 1]))
+    else:
+        bout_start_indices = np.array([0])
+        bout_end_indices = np.array([0])
+    return bout_start_indices, bout_end_indices
+
+
+def _bout_offset_events(starts: np.ndarray,
+                        stops: np.ndarray,
+                        bout_start_indices: np.ndarray,
+                        bout_end_indices: np.ndarray,
+                        min_usv_per_bout: int,
+                        negative_scheme: str,
+                        min_singing_after_negative: float,
+                        time_since_bout_onset_tolerance: float,
+                        max_negatives_per_bout: int | None) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Positive and negative event times for ``'bout_offset'`` mode.
+
+    A positive is the offset of a bout's last call. A negative is an interior
+    call's offset, and the question the two classes pose is: given that he is
+    singing, why does he stop here rather than continue. ``'cross_bout'`` draws
+    the negative from another bout of the same session at the same time since
+    bout onset, so position in the bout is held fixed and the bouts that
+    continue are, by definition, the longer ones. ``'within_bout'`` draws it
+    from the same bout, so bout length and context are shared and only the
+    approach to the end differs, at the price of admitting only bouts long
+    enough to hold such a call.
+
+    Parameters
+    ----------
+    starts : np.ndarray
+        Call start times (s), sorted.
+    stops : np.ndarray
+        Call stop times (s), same order.
+    bout_start_indices : np.ndarray
+        First-call index of every bout (see ``_group_calls_into_bouts``).
+    bout_end_indices : np.ndarray
+        Last-call index of every bout.
+    min_usv_per_bout : int
+        Bouts with fewer calls contribute neither positives nor negatives.
+    negative_scheme : str
+        ``'cross_bout'`` or ``'within_bout'``.
+    min_singing_after_negative : float
+        Seconds the bout must keep singing after a negative's call.
+    time_since_bout_onset_tolerance : float
+        ``'cross_bout'`` only: maximal position mismatch (s) between a positive
+        and its negative.
+    max_negatives_per_bout : int or None
+        ``'cross_bout'`` only: cap on negatives drawn from one bout.
+
+    Returns
+    -------
+    positives, negatives : tuple of np.ndarray
+        Event times (s); equal in length under both schemes.
+    """
+
+    if negative_scheme not in ('cross_bout', 'within_bout'):
+        raise ValueError(f"Unknown negative_scheme: {negative_scheme}. Must be 'cross_bout' or 'within_bout'.")
+    bouts = [(int(i0), int(i1)) for i0, i1 in zip(bout_start_indices, bout_end_indices)
+             if (i1 - i0 + 1) >= min_usv_per_bout]
+    positives: list[float] = []
+    negatives: list[float] = []
+    if negative_scheme == 'within_bout':
+        for i0, i1 in bouts:
+            end_time = stops[i1]
+            eligible = [stops[k] for k in range(i0, i1) if (end_time - stops[k]) >= min_singing_after_negative]
+            if not eligible:
+                continue
+            positives.append(float(end_time))
+            negatives.append(float(max(eligible)))
+        return np.array(positives), np.array(negatives)
+
+    # cross_bout: every interior call with enough singing left is a candidate,
+    # tagged with its position (time since its bout's onset) and its bout.
+    candidate_position: list[float] = []
+    candidate_time: list[float] = []
+    candidate_bout: list[int] = []
+    for b, (i0, i1) in enumerate(bouts):
+        onset = starts[i0]
+        end_time = stops[i1]
+        for k in range(i0, i1):
+            if (end_time - stops[k]) >= min_singing_after_negative:
+                candidate_position.append(float(stops[k] - onset))
+                candidate_time.append(float(stops[k]))
+                candidate_bout.append(b)
+    cand_pos = np.array(candidate_position)
+    cand_time = np.array(candidate_time)
+    cand_bout = np.array(candidate_bout, dtype=int)
+    used = np.zeros(cand_pos.size, dtype=bool)
+    per_bout_use = np.zeros(len(bouts), dtype=int)
+    # Positives in order of position so the nearest-candidate rule is deterministic.
+    ordered = sorted(((float(stops[i1] - starts[i0]), float(stops[i1]), b) for b, (i0, i1) in enumerate(bouts)))
+    for position, end_time, b in ordered:
+        if cand_pos.size == 0:
+            break
+        allowed = (~used) & (cand_bout != b) & (np.abs(cand_pos - position) <= time_since_bout_onset_tolerance)
+        if max_negatives_per_bout is not None:
+            allowed &= per_bout_use[cand_bout] < max_negatives_per_bout
+        options = np.where(allowed)[0]
+        if options.size == 0:
+            continue
+        j = options[np.argmin(np.abs(cand_pos[options] - position))]
+        used[j] = True
+        per_bout_use[cand_bout[j]] += 1
+        positives.append(end_time)
+        negatives.append(float(cand_time[j]))
+    return np.array(positives), np.array(negatives)
+
+
 def find_onset_epochs(root_directories: list = None,
                      mouse_ids_dict: dict = None,
                      camera_fps_dict: dict = None,
@@ -305,7 +444,11 @@ def find_onset_epochs(root_directories: list = None,
                      noise_vocal_categories: list = None,
                      category_column: str = 'usv_category',
                      target_category: int = None,
-                     noise_column: str = 'usv_supercategory') -> dict:
+                     noise_column: str = 'usv_supercategory',
+                     negative_scheme: str = None,
+                     min_singing_after_negative: int | float = None,
+                     time_since_bout_onset_tolerance: int | float = None,
+                     max_negatives_per_bout: int = None) -> dict:
     """
     Loads USV information data from a .csv file and samples epochs based on prediction mode.
     (See 'find_usv_categories' for category-based sampling).
@@ -375,6 +518,34 @@ def find_onset_epochs(root_directories: list = None,
         Name of the supercategory column used for global noise filtering. Kept
         separate from `category_column` so noise removal stays cohort-stable
         regardless of which experimental category column is chosen.
+    negative_scheme : str, optional
+        ``'bout_offset'`` mode only. ``'cross_bout'``: each positive (the last
+        call's offset of a bout) is paired with an interior call's offset from
+        ANOTHER bout of the same session, at the same time since that bout's
+        onset (within ``time_since_bout_onset_tolerance``), in a bout that kept
+        singing for at least ``min_singing_after_negative`` seconds after it;
+        one negative per positive, nearest in position, each candidate used
+        once, at most ``max_negatives_per_bout`` from any one bout; positives
+        without a partner are dropped so the two groups share the same
+        distribution of time since bout onset. ``'within_bout'``: the negative
+        is the latest interior call of the SAME bout that ended at least
+        ``min_singing_after_negative`` seconds before the bout's end; bouts too
+        short to hold one contribute nothing. Either way the pairing is only
+        the sampling recipe -- the returned groups are pooled downstream.
+    min_singing_after_negative : int or float, optional
+        ``'bout_offset'`` mode only: seconds the bout must keep singing after a
+        negative's call, so the negative sits outside the ending itself.
+    time_since_bout_onset_tolerance : int or float, optional
+        ``'bout_offset'`` / ``'cross_bout'`` only: how far apart, in seconds, the
+        time since bout onset of a positive and its negative may be.
+    max_negatives_per_bout : int or None, optional
+        ``'bout_offset'`` / ``'cross_bout'`` only: cap on negatives drawn from
+        one bout; ``None`` means no cap.
+        ``'bout_offset'`` targets the END of a bout: positives are the offsets
+        of the last call of every bout with at least ``min_usv_per_bout``
+        calls, with no clean-history or clean-future requirement (the
+        inter-call threshold already defines the end), and negatives are
+        interior-call offsets chosen by ``negative_scheme``.
 
     Returns
     -------
@@ -547,14 +718,7 @@ def find_onset_epochs(root_directories: list = None,
 
                 if len(starts) > 0:
                     # Logic: filter using IBI threshold
-                    if len(starts) > 1:
-                        gaps = starts[1:] - stops[:-1]
-                        break_indices = np.where(gaps >= ibi_threshold)[0]
-                        bout_start_indices = np.concatenate(([0], break_indices + 1))
-                        bout_end_indices = np.concatenate((break_indices, [len(starts) - 1]))
-                    else:
-                        bout_start_indices = np.array([0])
-                        bout_end_indices = np.array([0])
+                    bout_start_indices, bout_end_indices = _group_calls_into_bouts(starts, stops, ibi_threshold)
 
                     for j in range(len(bout_start_indices)):
                         idx_start = bout_start_indices[j]
@@ -635,8 +799,21 @@ def find_onset_epochs(root_directories: list = None,
                     usv_events_positive = np.array([])
                     usv_events_negative = np.array([])
 
+            ### Mode 4: 'bout_offset' (the END of a bout against an interior call, see _bout_offset_events)
+            elif prediction_mode == 'bout_offset':
+                starts = usv_data_dict[session_id][mouse_name]['start']
+                stops = usv_data_dict[session_id][mouse_name]['stop']
+                bout_start_indices, bout_end_indices = _group_calls_into_bouts(starts, stops, ibi_threshold)
+                usv_events_positive, usv_events_negative = _bout_offset_events(
+                    starts=starts, stops=stops,
+                    bout_start_indices=bout_start_indices, bout_end_indices=bout_end_indices,
+                    min_usv_per_bout=min_usv_per_bout, negative_scheme=negative_scheme,
+                    min_singing_after_negative=min_singing_after_negative,
+                    time_since_bout_onset_tolerance=time_since_bout_onset_tolerance,
+                    max_negatives_per_bout=max_negatives_per_bout)
+
             else:
-                raise ValueError(f"Unknown prediction_mode: {prediction_mode}. Must be 'bout', 'individual', or 'state'.")
+                raise ValueError(f"Unknown prediction_mode: {prediction_mode}. Must be 'bout', 'individual', 'state' or 'bout_offset'.")
 
             usv_data_dict[session_id][mouse_name]['positive_events'] = np.sort(usv_events_positive)
             usv_data_dict[session_id][mouse_name]['negative_events'] = np.sort(usv_events_negative)

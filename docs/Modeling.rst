@@ -130,7 +130,7 @@ cross-validation and held-out-test settings live in their own
 * **model_basis_function** — temporal-filter basis over the history window: ``'raised_cosine'`` / ``'bspline'`` / ``'laplacian_pyramid'`` (parameters in ``hyperparameters.basis_functions``), or ``'identity'`` (the raw per-frame history, no projection). Only relevant when ``model_engine = 'sklearn'`` — the ``'pygam'`` engine uses its own tensor-product splines instead.
 * **model_engine** — univariate model backend: ``'pygam'`` (tensor-product-spline GAM, a generalized additive model) or ``'sklearn'`` (basis-projected linear).
 * **model_predictor_mouse_index** — which mouse (``0`` / ``1``) is the **partner**; the **target** — the mouse whose vocal behavior is being predicted — is defined as the other one. Both mice's kinematics enter the predictor set.
-* **model_target_vocal_type** — onset target mode, one of ``'bout'`` (clustered bout onsets, both positive and negative pre-event windows kept clean), ``'individual'`` (per-USV onsets), or ``'state'`` (the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent, with no clean-history requirement); used only by ``VocalOnsetModelingPipeline``.
+* **model_target_vocal_type** — onset target mode, one of ``'bout'`` (clustered bout onsets, both positive and negative pre-event windows kept clean), ``'individual'`` (per-USV onsets), ``'state'`` (the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent, with no clean-history requirement), or ``'bout_offset'`` (the END of a bout against an interior call of a bout that continued; configured by the ``bout_offset`` block, see :ref:`Bout offsets <modeling-bout-offsets>`); used only by ``VocalOnsetModelingPipeline``.
 * **model_target_variable** — for ``BoutParameterPipeline``, which per-bout quantity to regress: ``'bout_durations'`` (first-to-last-USV span, seconds), ``'mean_mask_complexity'`` (per-USV mean spectrogram-mask complexity), or ``'total_mask_complexity'`` (summed over the bout).
 * **selection_p_val** — the significance level gating whether a candidate feature is admitted during forward-stepwise model selection (default ``0.01``); on the acoustic-manifold target it is the Benjamini–Hochberg FDR ``q`` used to screen candidates.
 * **selection_effect_floor** / **selection_n_bootstrap** / **selection_ci_level** — the acoustic-manifold selection's **fold-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds. ``selection_effect_floor`` is the relative effect floor a screened feature must clear — a fraction of the top surviving driver's margin (default ``0.1`` = 10%); ``selection_n_bootstrap`` is the number of fold bootstrap resamples (default ``1000``); ``selection_ci_level`` is the bootstrap confidence level whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (default ``0.99``). These three apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone.
@@ -372,6 +372,26 @@ manifold fit is always scored by the macro von Mises log-score ``vm_logscore``.)
 * **focal_gamma** — focal-loss focusing parameter of the static multinomial emission (``0.0`` = plain cross-entropy).
 * **multinomial_max_iter** — optimiser iterations for the static multinomial emission's per-state classifier.
 
+**bout_offset** — the settings of the ``'bout_offset'`` target of ``VocalOnsetModelingPipeline``
+(see :ref:`Bout offsets <modeling-bout-offsets>`); read only when ``model_params.model_target_vocal_type``
+is ``'bout_offset'``.
+
+.. code-block:: json
+
+    "bout_offset": {
+        "filter_history": 1.0,
+        "negative_scheme": "cross_bout",
+        "min_singing_after_negative_seconds": 0.5,
+        "time_since_bout_onset_tolerance_seconds": 0.1,
+        "max_negatives_per_bout": 3
+    }
+
+* **filter_history** — the history window (s) of this target, deliberately its own key: ``model_params.filter_history`` also sets the silent-tile width, the clean-history criterion of ``'bout'`` mode and the ``'state'`` grid, none of which this target uses, and the offset question lives on a shorter timescale (the kinematic changes that precede a bout end sit in the last ~0.5 s).
+* **negative_scheme** — ``'cross_bout'`` or ``'within_bout'``; see below.
+* **min_singing_after_negative_seconds** — a negative's bout must keep singing for at least this long after the negative's call, so the negative sits outside the ending itself (the measured ending process spans ~0.3 s).
+* **time_since_bout_onset_tolerance_seconds** — ``'cross_bout'`` only: how far apart the time since bout onset of a positive and its negative may be.
+* **max_negatives_per_bout** — ``'cross_bout'`` only: cap on negatives drawn from any one bout (``null`` for none), so that a few long bouts cannot supply most of the negative class.
+
 **behavioral_response** — the inverted analysis: does a partner's vocal trace predict a
 *behavioural* variable (see :ref:`Behavioral response <modeling-behavioral-response>` below)?
 
@@ -524,7 +544,7 @@ pipeline:
     MultinomialModelingPipeline     ->  { "X", "y" }
     ContinuousModelingPipeline      ->  { "X", "Y", "w", ["supercategory"], ["category"] }
 
-* **VocalOnsetModelingPipeline** — ``usv_feature_arr`` = positive onset windows, ``no_usv_feature_arr`` = silent-epoch (negative) windows. ``analysis_specific``: ``model_target_vocal_type``, ``usv_bout_time``, ``usv_per_bout_floor``.
+* **VocalOnsetModelingPipeline** — ``usv_feature_arr`` = positive onset windows, ``no_usv_feature_arr`` = silent-epoch (negative) windows. ``analysis_specific``: ``model_target_vocal_type``, ``usv_bout_time``, ``usv_per_bout_floor``, and in ``'bout_offset'`` mode the whole ``bout_offset`` block.
 * **BoutParameterPipeline** — ``X`` = the bout-onset feature windows, ``y`` = the per-bout regression target (selected by ``model_target_variable``), ``groups`` = the session grouping. ``analysis_specific``: ``target_variable``.
 * **VocalCategoryModelingPipeline** — ``target_feature_arr`` = windows for the chosen target category, ``other_feature_arr`` = windows for the pooled "other". ``analysis_specific``: ``target_category``.
 * **MultinomialModelingPipeline** — ``X`` = per-USV feature windows, ``y`` = each USV's category label. ``analysis_specific``: ``categories_kept``, ``class_counts``.
@@ -563,6 +583,47 @@ pipeline:
    name and provenance block.
 
 .. _modeling-diagnostics:
+
+.. _modeling-bout-offsets:
+
+Bout offsets
+~~~~~~~~~~~~
+``model_target_vocal_type: 'bout_offset'`` asks the mirror question of the bout-onset
+target: given that he is singing, why does he stop now rather than continue. It
+reuses the whole onset machinery — the same bout grouping, the same window slicing,
+the same univariate runners, screen, forward selection and held-out evaluation —
+and differs only in what a row is.
+
+*Positive*: the offset of the last call of every bout with at least
+``usv_per_bout_floor`` calls. No clean-history or clean-future requirement is
+imposed: the inter-call threshold of the bout definition already certifies the end
+(a silence beyond it is a memoryless restart), and nothing after the offset enters
+the design. On the courtship cohort this is every one of the ~16,000 male bouts.
+
+*Negative*: an interior call's offset, chosen by ``negative_scheme``:
+
+* ``'cross_bout'`` — from ANOTHER bout of the same session, at the same time since
+  that bout's onset (within the tolerance), in a bout that kept singing for at least
+  ``min_singing_after_negative_seconds`` afterwards; one negative per positive,
+  nearest in position, each candidate used once, at most ``max_negatives_per_bout``
+  from one bout. Positives without a partner are dropped, so the two groups share the
+  same distribution of position in the bout. The bouts that continue are longer by
+  construction, so whatever distinguishes long from short bouts — on the cohort,
+  mainly how much the female is moving — becomes a difference between the classes.
+  That is the answer to "why does he stop sooner", not a confound: bout length is
+  the outcome. Measured yield on the cohort: ~14,800 pairs from ~4,600 supplying
+  bouts without a cap, ~10,500 pairs with the cap of 3.
+* ``'within_bout'`` — from the SAME bout: the latest interior call at least
+  ``min_singing_after_negative_seconds`` before that bout's end. Positive and negative
+  then share the bout, the animal, the context and the bout's length, and only the
+  approach to the end differs; only bouts long enough to hold such a call enter
+  (~3,000 of ~16,000 on the cohort, all long ones).
+
+Under both schemes the pairing is only the sampling recipe: the loader returns
+``positive_events`` and ``negative_events`` exactly as the other modes do, and they
+are pooled, balanced and fitted downstream without change. The mode's tag,
+``bout_offset``, propagates into every artifact name, and the block is recorded in
+``analysis_specific``.
 
 Predictor diagnostics
 ---------------------

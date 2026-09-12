@@ -1143,3 +1143,114 @@ class TestFindVariableLengthBouts:
                                          **self._kwargs(tmp_path, rows))
         signals = out['sess_E']['male']['continuous_vocal_signals']
         assert not any(k.startswith('usv_cat_') for k in signals)
+
+
+class TestBoutOffsetEpochs:
+    """``'bout_offset'`` mode: the END of a bout against an interior call.
+
+    Two bouts under the ~1 s IBI threshold of ``_mixture_model_params``: a short
+    one (three calls over 0.25 s ending at 2.25 s) and a long one (six calls
+    over 1.05 s ending at 7.05 s). Positions are measured from the bout's first
+    call start to the call's offset.
+    """
+
+    def _build(self, tmp_path, rows: dict, n_frames: int = 1000, fps: float = 100.0):
+        sess = tmp_path / 'sess_O'
+        _write_usv_summary(sess, rows)
+        return {
+            'root_directories': [str(sess)],
+            'mouse_ids_dict': {'sess_O': ['male', 'female']},
+            'camera_fps_dict': {'sess_O': fps},
+            'features_dict': {'sess_O': _features_df(n_frames)},
+        }
+
+    @staticmethod
+    def _two_bouts() -> dict:
+        starts = [2.0, 2.1, 2.2, 6.0, 6.2, 6.4, 6.6, 6.8, 7.0]
+        return {
+            'emitter': ['male'] * len(starts),
+            'start': starts,
+            'stop': [round(t + 0.05, 6) for t in starts],
+            'usv_category': [1] * len(starts),
+            'usv_supercategory': [1] * len(starts),
+        }
+
+    def _run(self, tmp_path, rows, **offset_kwargs):
+        kwargs = self._build(tmp_path, rows)
+        base = {'negative_scheme': 'cross_bout', 'min_singing_after_negative': 0.5,
+                'time_since_bout_onset_tolerance': 0.10, 'max_negatives_per_bout': 3}
+        base.update(offset_kwargs)
+        return find_onset_epochs(prediction_mode='bout_offset', filter_history=1.0,
+                                 usv_bout_time=0.5, min_usv_per_bout=2,
+                                 proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
+                                 **base, **kwargs)['sess_O']['male']
+
+    def test_cross_bout_pairs_positions_across_bouts_and_drops_unmatched(self, tmp_path):
+        """The short bout's end (position 0.25 s) is matched to the long bout's
+        interior call at position 0.25 s (offset 6.25 s, with 0.8 s of singing
+        left); the long bout's end (position 1.05 s) finds no candidate in the
+        short bout and is dropped, so the groups stay position-matched."""
+
+        out = self._run(tmp_path, self._two_bouts())
+        np.testing.assert_allclose(out['positive_events'], [2.25])
+        np.testing.assert_allclose(out['negative_events'], [6.25])
+
+    def test_cross_bout_respects_minimum_singing_left(self, tmp_path):
+        """Raising the minimum singing left past what any interior call offers
+        leaves no candidates and therefore no pairs."""
+
+        out = self._run(tmp_path, self._two_bouts(), min_singing_after_negative=2.0)
+        assert out['positive_events'].size == 0
+        assert out['negative_events'].size == 0
+
+    def test_cross_bout_tolerance_and_cap(self, tmp_path):
+        """Three short bouts at the same position all want the long bout's
+        candidates. With a wide tolerance and no cap all three pair up (to the
+        candidates at 0.05, 0.25 and 0.45 s); with a cap of 2 per bout only two
+        do, and no negative ever comes from a positive's own bout."""
+
+        starts = [2.0, 2.1, 2.2, 4.0, 4.1, 4.2, 6.0, 6.1, 6.2, 8.0, 8.2, 8.4, 8.6, 8.8, 9.0]
+        rows = {'emitter': ['male'] * len(starts), 'start': starts,
+                'stop': [round(t + 0.05, 6) for t in starts],
+                'usv_category': [1] * len(starts), 'usv_supercategory': [1] * len(starts)}
+        kwargs = dict(n_frames=1200)
+        sess_kwargs = self._build(tmp_path, rows, **kwargs)
+        common = dict(prediction_mode='bout_offset', filter_history=1.0, usv_bout_time=0.5, min_usv_per_bout=2,
+                      proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
+                      min_singing_after_negative=0.5, time_since_bout_onset_tolerance=0.30)
+        loose = find_onset_epochs(negative_scheme='cross_bout', max_negatives_per_bout=None, **common, **sess_kwargs)['sess_O']['male']
+        assert loose['positive_events'].size == 3
+        assert set(np.round(loose['negative_events'], 2)) == {8.05, 8.25, 8.45}
+        capped = find_onset_epochs(negative_scheme='cross_bout', max_negatives_per_bout=2, **common, **sess_kwargs)['sess_O']['male']
+        assert capped['positive_events'].size == 2
+        assert capped['negative_events'].size == 2
+        assert np.all(capped['negative_events'] > 8.0)
+
+    def test_within_bout_uses_own_interior_call_and_skips_short_bouts(self, tmp_path):
+        """Within the long bout the negative is the latest interior call with
+        at least 0.5 s of singing left (offset 6.45 s, 0.6 s before the end at
+        7.05 s); the short bout holds no such call and contributes nothing."""
+
+        out = self._run(tmp_path, self._two_bouts(), negative_scheme='within_bout')
+        np.testing.assert_allclose(out['positive_events'], [7.05])
+        np.testing.assert_allclose(out['negative_events'], [6.45])
+
+    def test_positives_and_negatives_never_share_a_call(self, tmp_path):
+        for scheme in ('cross_bout', 'within_bout'):
+            out = self._run(tmp_path, self._two_bouts(), negative_scheme=scheme)
+            assert not set(out['positive_events']) & set(out['negative_events'])
+            assert out['positive_events'].size == out['negative_events'].size
+
+    def test_unknown_scheme_raises(self, tmp_path):
+        with pytest.raises(ValueError, match='negative_scheme'):
+            self._run(tmp_path, self._two_bouts(), negative_scheme='sideways')
+
+    def test_female_without_calls_is_empty_in_both_groups(self, tmp_path):
+        kwargs = self._build(tmp_path, self._two_bouts())
+        out = find_onset_epochs(prediction_mode='bout_offset', filter_history=1.0, usv_bout_time=0.5, min_usv_per_bout=2,
+                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
+                                negative_scheme='cross_bout', min_singing_after_negative=0.5,
+                                time_since_bout_onset_tolerance=0.1, max_negatives_per_bout=3, **kwargs)
+        assert out['sess_O']['female']['positive_events'].size == 0
+        assert out['sess_O']['female']['negative_events'].size == 0
+

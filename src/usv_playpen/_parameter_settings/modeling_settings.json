@@ -273,6 +273,13 @@
     "focal_gamma": 0.0,
     "multinomial_max_iter": 2000
   },
+  "bout_offset": {
+    "filter_history": 1.0,
+    "negative_scheme": "cross_bout",
+    "min_singing_after_negative_seconds": 0.5,
+    "time_since_bout_onset_tolerance_seconds": 0.1,
+    "max_negatives_per_bout": 3
+  },
   "behavioral_response": {
     "response_mouse_index": 1,
     "response_features": [

@@ -1,9 +1,15 @@
 """
 @author: bartulem
-Module for modeling USV (bout) onsets.
+Module for modeling vocal event boundaries from behavioural history.
 
-This module provides the core pipeline for modeling mouse vocal onset probability
-using 3D-extracted kinematic features. It handles the orchestration of
+This module provides the core pipeline for classifying a binary vocal event
+from the 3D-extracted kinematic history that precedes it. Which event is the
+target is set by ``model_params.model_target_vocal_type``: the onset of a USV
+bout (``'bout'``), the onset of a single USV (``'individual'``), whether the
+animal is vocalizing at a grid time (``'state'``), or the END of a bout against
+an interior call of a bout that continued (``'bout_offset'``, configured by the
+``bout_offset`` settings block). The module name predates the offset target and
+is kept for continuity; the class name likewise. It handles the orchestration of
 data preparation, feature engineering (egocentric/dyadic), and statistical
 classification using both Linear (sklearn) and Non-linear (PyGAM) engines.
 """
@@ -57,14 +63,18 @@ _ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 
 class VocalOnsetModelingPipeline(FeatureZoo):
     """
-    End-to-end pipeline for modeling the onset of USV bouts from behavioural kinematics.
+    End-to-end pipeline for modeling a vocal event boundary from behavioural kinematics.
 
+    The event is a bout onset, a single-USV onset, the vocal state at a grid time,
+    or a bout offset, per ``model_params.model_target_vocal_type``; the class is
+    named for the first of these, which it modelled before the others existed.
     The pipeline has three responsibilities:
 
     1. **Data preparation**: ingests raw behavioural time-series (polars DataFrames
        produced by the upstream extraction), detects vocal bouts via mixture-model-driven
        inter-bout-interval thresholds, assembles per-session history windows
-       around USV and No-USV event timestamps, applies cross-session z-scoring,
+       around the positive and negative event timestamps (onset vs silent tile,
+       or last call vs interior call in ``'bout_offset'`` mode), applies cross-session z-scoring,
        and serializes the resulting `{feature: {session: {usv_feature_arr,
        no_usv_feature_arr}}}` dictionary to disk.
     2. **Cross-validation splitting**: the `create_data_splits` generator
@@ -119,7 +129,17 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         try:
             camera_rate = self.modeling_settings['io']['camera_sampling_rate']
-            filter_history_sec = self.modeling_settings['model_params']['filter_history']
+            # The history window is `model_params.filter_history` for every target
+            # except bout offsets, whose window is that block's own `filter_history`:
+            # the shared value is coupled to the silent-tile width, the clean-history
+            # criterion and the 'state' grid, none of which the offset target uses.
+            model_params = self.modeling_settings['model_params']
+            target_mode = model_params['model_target_vocal_type'] if 'model_target_vocal_type' in model_params else None
+            if target_mode == 'bout_offset':
+                filter_history_sec = self.modeling_settings['bout_offset']['filter_history']
+            else:
+                filter_history_sec = model_params['filter_history']
+            self.history_seconds = float(filter_history_sec)
             self.history_frames = int(np.floor(camera_rate * filter_history_sec))
             print(f"History frames calculated: {self.history_frames} (for {filter_history_sec}s at {camera_rate}fps)")
         except KeyError as e:
@@ -201,6 +221,19 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         )
         print("Loading USV data and selecting epochs...")
 
+        # The offset target's four knobs are read only in that mode, so settings
+        # written before the block existed keep working for the other targets.
+        if self.modeling_settings['model_params']['model_target_vocal_type'] == 'bout_offset':
+            offset_block = self.modeling_settings['bout_offset']
+            bout_offset_kwargs = {
+                'negative_scheme': offset_block['negative_scheme'],
+                'min_singing_after_negative': offset_block['min_singing_after_negative_seconds'],
+                'time_since_bout_onset_tolerance': offset_block['time_since_bout_onset_tolerance_seconds'],
+                'max_negatives_per_bout': offset_block['max_negatives_per_bout'],
+            }
+        else:
+            bout_offset_kwargs = {}
+
         usv_data_dict = find_onset_epochs(
             root_directories=txt_modeling_sessions,
             mouse_ids_dict=mouse_track_names_dict,
@@ -213,13 +246,14 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             noise_vocal_categories=self.modeling_settings['vocal_features']['usv_noise_categories'],
             proportion_smoothing_sd=self.modeling_settings['vocal_features']['usv_predictor_smoothing_sd'],
             vocal_output_type=self.modeling_settings['vocal_features']['usv_predictor_type'],
-            filter_history=self.modeling_settings['model_params']['filter_history'],
+            filter_history=self.history_seconds,
             prediction_mode=self.modeling_settings['model_params']['model_target_vocal_type'],
             usv_bout_time=self.modeling_settings['model_params']['usv_bout_time'],
             min_usv_per_bout=self.modeling_settings['model_params']['usv_per_bout_floor'],
             category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
             target_category=self.modeling_settings['model_params']['onset_target_category'],
             noise_column=self.modeling_settings['vocal_features']['usv_noise_column'],
+            **bout_offset_kwargs,
         )
 
         predictor_mouse_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
@@ -327,7 +361,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         )
         print("Z-scoring complete.")
 
-        max_hist_sec = self.modeling_settings['model_params']['filter_history']
+        max_hist_sec = self.history_seconds
         target_vocal_type = self.modeling_settings['model_params']['model_target_vocal_type']
         mixture_model_idx = self.modeling_settings['model_params']['mixture_model_component_index']
 
@@ -446,6 +480,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                 'usv_per_bout_floor': self.modeling_settings['model_params']['usv_per_bout_floor'],
                 **({'onset_target_category': int(onset_cat),
                     'usv_category_column_name': cat_col} if onset_category_active else {}),
+                **({'bout_offset': dict(self.modeling_settings['bout_offset'])}
+                   if target_vocal_type == 'bout_offset' else {}),
             },
         )
 

@@ -207,6 +207,43 @@ class TestOnsetInputExtraction:
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_extraction_in_bout_offset_mode(self, tmp_path):
+        """
+        ``bout_offset`` mode runs the same extraction end to end: the artifact
+        carries the mode's tag in its name, the usual two array keys, windows
+        of the block's own history length, equal positive and negative counts
+        per session (one matched negative per positive), and the block's
+        settings in ``analysis_specific``. The synthetic bouts are three
+        10 ms calls 20 ms apart, so the minimum singing left is set to 30 ms
+        to make their interior calls eligible.
+        """
+
+        settings, save_dir = _build_settings(tmp_path, model_engine='sklearn')
+        settings['model_params']['model_target_vocal_type'] = 'bout_offset'
+        settings['bout_offset']['filter_history'] = settings['model_params']['filter_history'] / 2.0
+        settings['bout_offset']['min_singing_after_negative_seconds'] = 0.03
+        settings['bout_offset']['time_since_bout_onset_tolerance_seconds'] = 0.1
+        pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
+        pipeline.extract_and_save_modeling_input_data()
+
+        pkls = list(save_dir.glob('modeling_bout_offset_*.pkl'))
+        assert len(pkls) == 1, f"expected exactly one bout_offset input pickle, got {pkls}"
+        with pkls[0].open('rb') as fh:
+            artifact = pickle.load(fh)
+        meta = artifact['_input_metadata']
+        assert meta['analysis_specific']['model_target_vocal_type'] == 'bout_offset'
+        assert meta['analysis_specific']['bout_offset']['negative_scheme'] == 'cross_bout'
+        assert meta['filter_history_frames'] == pipeline.history_frames
+        feature_keys = sorted(k for k in artifact if not k.startswith('_'))
+        assert feature_keys, 'no feature arrays extracted'
+        for feature in feature_keys:
+            for session, arrays in artifact[feature].items():
+                assert arrays['usv_feature_arr'].shape[1] == pipeline.history_frames
+                assert arrays['no_usv_feature_arr'].shape[1] == pipeline.history_frames
+                assert arrays['usv_feature_arr'].shape[0] == arrays['no_usv_feature_arr'].shape[0] > 0
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     def test_extraction_produces_aligned_input_pickle(self, tmp_path):
         """
         The real ``extract_and_save_modeling_input_data`` writes a
