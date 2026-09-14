@@ -88,7 +88,7 @@ class TestDecisionsAreRefused:
     had been corrected."""
 
     @pytest.mark.parametrize("key", ["verdict", "passed", "significant", "fdr_flag", "rejected",
-                                     "is_transformation"])
+                                     "is_transformation", "label", "borderline", "survivors"])
     def test_decision_shaped_keys_are_refused(self, tmp_path, key):
         with pytest.raises(ValueError, match="not decisions"):
             write_unit_section(str(tmp_path), UNIT, "claim1", {key: True, "quiet_p": 1e-6},
@@ -102,6 +102,26 @@ class TestDecisionsAreRefused:
         artifact = read_unit_artifact(str(tmp_path), UNIT["unit_uid"])
         assert artifact["claim1"] == {"quiet_p": 1e-6}
         assert "claim2_what" not in artifact
+
+    def test_a_decision_nested_inside_a_result_is_refused_too(self, tmp_path):
+        """Gating's label sits inside a per-feature entry, never at the top of the payload. A guard that
+        only looked at the top would store all of them."""
+        payload = {"per_feature": {"nose-nose": {"p_interaction": 5e-4, "label": "GATE"}}, "p_unit": 5e-4}
+        with pytest.raises(ValueError, match=r"per_feature\.nose-nose\.label"):
+            write_unit_section(str(tmp_path), UNIT, "gating", payload, _settings())
+
+    def test_a_decision_inside_a_list_is_refused(self, tmp_path):
+        with pytest.raises(ValueError, match="not decisions"):
+            write_unit_section(str(tmp_path), UNIT, "gating",
+                               {"per_feature": [{"feature": "nose-nose", "borderline": True}]}, _settings())
+
+    def test_data_named_labels_is_not_a_decision(self, tmp_path):
+        """Claim 1 stores every vocal frame's 0/1 spike labels as `labels`. Exact-key matching keeps real
+        data from being refused as if it were a verdict."""
+        payload = {"transfer_per_session": [{"labels": [0.0, 1.0, 0.0], "auroc": 0.6}]}
+        write_unit_section(str(tmp_path), UNIT, "claim1", payload, _settings())
+        stored = read_unit_artifact(str(tmp_path), UNIT["unit_uid"])["claim1"]
+        assert stored["transfer_per_session"][0]["labels"] == [0.0, 1.0, 0.0]
 
     def test_p_values_and_metrics_are_of_course_fine(self, tmp_path):
         write_unit_section(str(tmp_path), UNIT, "claim1",

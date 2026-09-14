@@ -5,7 +5,9 @@ The per-unit result file: one merged pickle carrying metrics and p-values, and n
 Every claim writes its own SECTION into a single file per unit. What goes in is what a rule would
 consume -- effect sizes, p-values, the full null distributions, per-fold detail, and the data-
 sufficiency counts that say how much to trust any of it. What stays out is what a rule PRODUCES: no
-verdicts, no pass flags, no FDR marks.
+verdicts, no pass flags, no FDR marks, and no labels -- including the gating sub-analysis's
+per-feature GATE / int<vocal / ns label, its borderline flag and its survivor list, which apply
+thresholds one unit at a time exactly as a verdict does.
 
 That division is not tidiness. A per-unit file cannot know the cohort, and false-discovery control is
 a cohort operation, so any verdict written here would be uncorrected by construction and would invite
@@ -32,7 +34,52 @@ from ..modeling.modeling_metadata import (
 )
 from ..os_utils import atomic_output_path
 
-DECISION_KEYS = ("verdict", "passed", "significant", "fdr_flag", "rejected", "is_transformation")
+DECISION_KEYS = ("verdict", "passed", "significant", "fdr_flag", "rejected", "is_transformation",
+                 "label", "borderline", "survivors")
+
+
+def decision_key_paths(value, path: str = "") -> list:
+    """
+    Description
+    -----------
+    Every place a decision-shaped key appears in a payload, at ANY depth, as a readable path.
+
+    Checking only the top level would let decisions through wherever a claim's results are nested,
+    and the gating sub-analysis is nested by construction: its per-feature label sits inside a
+    per-feature entry, never at the top of the payload. A guard that cannot see there would refuse
+    ``verdict`` while quietly storing nineteen of them under another name.
+
+    Matching is on the exact key, so a data array named ``labels`` -- claim 1 stores the 0/1 spike
+    labels of every vocal frame under that name -- is not mistaken for a decision. Checked against
+    the real claim-1 and claim-2 payloads on disk before this was made recursive: 126-129 distinct
+    nested keys, no collision.
+
+    Dicts and lists are descended into; arrays and scalars are leaves.
+
+    Parameters
+    ----------
+    value (Any)
+        A payload, or any part of one.
+    path (str)
+        Where ``value`` sits, for the report; empty at the top.
+
+    Returns
+    -------
+    paths (list)
+        Dotted paths of every decision-shaped key found, e.g. ``per_feature.nose-nose.label``.
+    """
+
+    found = []
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            here = f"{path}.{key}" if path else str(key)
+            if key in DECISION_KEYS:
+                found.append(here)
+            found.extend(decision_key_paths(inner, here))
+    elif isinstance(value, (list, tuple)):
+        for index, inner in enumerate(value):
+            found.extend(decision_key_paths(inner, f"{path}[{index}]"))
+    return found
 
 
 def build_provenance(settings: dict) -> dict:
@@ -122,7 +169,8 @@ def write_unit_section(output_directory: str, unit: dict, section: str, payload:
     complete one used to be. The identity and provenance blocks are refreshed on every write, so the
     file always records the configuration that produced its most recent section.
 
-    Payloads are checked for decision-shaped keys and refused. The file is for what a rule consumes,
+    Payloads are checked for decision-shaped keys AT ANY DEPTH and refused (see
+    :func:`decision_key_paths`). The file is for what a rule consumes,
     not what it produces: a verdict stored here would be uncorrected by construction, since false
     discovery control needs the cohort and a per-unit file has never seen it.
 
@@ -145,7 +193,7 @@ def write_unit_section(output_directory: str, unit: dict, section: str, payload:
         Where it was written.
     """
 
-    offending = sorted(k for k in payload if k in DECISION_KEYS)
+    offending = sorted(decision_key_paths(payload))
     if offending:
         msg = (f"per-unit files carry metrics and p-values, not decisions; refusing {offending}. "
                f"A verdict written here would be uncorrected by construction -- false-discovery "
