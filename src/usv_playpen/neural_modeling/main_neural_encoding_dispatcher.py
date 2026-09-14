@@ -154,6 +154,52 @@ def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id:
     return frames, pointer, silent_gap_before_call(starts, stops)[kept]
 
 
+def write_fold_artifact(artifact: dict, unit: dict, fold_index: int, output_directory: str,
+                        message_output=print) -> dict:
+    """
+    Description
+    -----------
+    Save one fold's artifact where ``combine`` will look for it, and hand it back.
+
+    EVERY fold goes through here, including folds that found no model, and that is the reason this
+    function exists. ``combine`` demands a file for every fold and stops with "fold artifact missing"
+    when one is absent. The two no-model branches used to return before the save, so any unit with a
+    single no-model fold saved nothing at all -- and a unit that is not kinematically tuned produces a
+    no-model fold on EVERY fold. At cohort scale that is not an edge case; it is the untuned units,
+    which would have vanished from the cohort table as failed jobs rather than appearing as the
+    "not tuned" result they are. Every run before 2026-09-14 was on a tuned unit, so the path had
+    never executed.
+
+    npz has no notion of a nested mapping, so lists and dicts are boxed as object arrays; see
+    :func:`unwrap_stored` for the reverse.
+
+    Parameters
+    ----------
+    artifact (dict)
+        The fold's results, model or no model.
+    unit (dict)
+        The unit record; ``unit_id`` names the file.
+    fold_index (int)
+        Which fold this is.
+    output_directory (str)
+        Where the fold files live.
+    message_output (Callable)
+        Where the write is reported.
+
+    Returns
+    -------
+    artifact (dict)
+        The same artifact, unchanged.
+    """
+
+    destination = pathlib.Path(output_directory) / f"{unit['unit_id']}_fold{fold_index}.npz"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(destination, **{key: np.asarray(value, dtype=object) if isinstance(value, (list, dict))
+                             else value for key, value in artifact.items()})
+    message_output(f"    wrote {destination.name}")
+    return artifact
+
+
 def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output_directory: str,
              message_output=print) -> dict:
     """
@@ -240,11 +286,13 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                                       int(np.ceil(required_gap * fps / 2.0)))
         if len(blocks) < 2:
             message_output(f"    NO MODEL: {pool_ids[0]} yields {len(blocks)} usable quiet blocks")
-            return {"fold_index": fold_index, "test_id": test_id, "selected": [], "path": [],
-                    "no_model": True, "quiet_score": 0.0, "quiet_slope": np.nan,
-                    "quiet_p": 1.0, "quiet_at_floor": False,
-                    "eta_vocal": np.zeros(0), "labels_vocal": np.zeros(0), "pointer": pointer,
-                    "gaps": gaps, "screen": [], "vocal_everywhere": []}
+            return write_fold_artifact(
+                {"fold_index": fold_index, "test_id": test_id, "selected": [], "path": [],
+                 "no_model": True, "quiet_score": 0.0, "quiet_slope": np.nan,
+                 "quiet_p": 1.0, "quiet_at_floor": False,
+                 "eta_vocal": np.zeros(0), "labels_vocal": np.zeros(0), "pointer": pointer,
+                 "gaps": gaps, "screen": [], "vocal_everywhere": []},
+                unit, fold_index, output_directory, message_output)
         inner_sessions, inner_ids = {**per_session, **blocks}, list(blocks)
         message_output(f"    one pool session: inner split is {len(blocks)} contiguous quiet blocks "
                        f"with a {required_gap:g} s gap")
@@ -256,10 +304,13 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
 
     if not survivors:
         message_output("    NO MODEL — this fold contributes nothing")
-        return {"fold_index": fold_index, "test_id": test_id, "selected": [], "path": [],
-                "no_model": True, "quiet_score": 0.0, "quiet_slope": np.nan,
-                "eta_vocal": np.zeros(0), "labels_vocal": np.zeros(0), "pointer": pointer,
-                "gaps": gaps, "screen": screen_rows}
+        return write_fold_artifact(
+            {"fold_index": fold_index, "test_id": test_id, "selected": [], "path": [],
+             "no_model": True, "quiet_score": 0.0, "quiet_slope": np.nan,
+             "quiet_p": 1.0, "quiet_at_floor": False,
+             "eta_vocal": np.zeros(0), "labels_vocal": np.zeros(0), "pointer": pointer,
+             "gaps": gaps, "screen": screen_rows},
+            unit, fold_index, output_directory, message_output)
 
     selected, path = forward_select(inner_sessions, inner_ids, survivors, n_lags, rng, settings,
                                     feature_names, message_output)
@@ -339,12 +390,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                 "fold_vocal_score": vocal["fold_score"], "fold_vocal_slope": vocal["fold_slope"],
                 "auroc_vocal": vocal["auroc"], "spike_rate_vocal": vocal["spike_rate"],
                 "final_fit_converged": final_converged, "vocal_everywhere": vocal_everywhere}
-    destination = pathlib.Path(output_directory) / f"{unit['unit_id']}_fold{fold_index}.npz"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(destination, **{key: np.asarray(value, dtype=object) if isinstance(value, (list, dict))
-                             else value for key, value in artifact.items()})
-    message_output(f"    wrote {destination.name}")
-    return artifact
+    return write_fold_artifact(artifact, unit, fold_index, output_directory, message_output)
 
 
 def representative_fold(artifacts: list) -> int:
@@ -388,6 +434,80 @@ def representative_fold(artifacts: list) -> int:
         return ordered[len(ordered) // 2]
     lower, upper = ordered[len(ordered) // 2 - 1], ordered[len(ordered) // 2]
     return max((lower, upper), key=lambda index: int(artifacts[index]["vocal_frames"].size))
+
+def per_fold_roster(artifacts: list, n_lags: int) -> dict:
+    """
+    Description
+    -----------
+    Everything the rotation produced per fold, as parallel lists indexed by fold, ready to persist.
+
+    Every fold is listed, INCLUDING folds that found no model, so position ``i`` in every list is fold
+    ``i``, which holds out ``courtship_sessions[i]``. Dropping no-model folds would shift every later
+    fold down a position and pair a filter with the wrong held-out session.
+
+    A no-model fold fitted nothing, so it has no quiet metrics, fit time, iteration count or filter.
+    Those are recorded as absent -- ``None``, or ``nan`` in the one numeric list -- by branching on the
+    fold's own ``no_model`` flag, never by reading keys the fold does not carry. Reading them anyway
+    is what the previous inline version did, which would have stopped ``combine`` on the first unit
+    with a mix of model and no-model folds. A no-model fold's quiet p is 1.0, as the plan specifies
+    for a fold that fails at the screen, and its screen table is KEPT: which features came close is
+    exactly what a figure of a marginal unit needs.
+
+    EVERY fold's filter is kept, not only the representative's (ruled 2026-09-14). They are the
+    per-fold spread the rotation exists to deliver, seen as curves rather than as feature lists, and
+    they cannot be recovered afterwards without refitting. Each is reshaped to ``(n_features, n_lags)``
+    with its feature names alongside, because folds select different features and a flat vector means
+    nothing without them. The fold's held-out session travels with it, so no figure has to re-derive
+    the pairing.
+
+    Parameters
+    ----------
+    artifacts (list)
+        Per-fold artifacts in fold order, as loaded from the fold files.
+    n_lags (int)
+        History length in frames.
+
+    Returns
+    -------
+    roster (dict)
+        ``no_model_per_fold``, ``selected_per_fold``, ``screen_per_fold``, ``forward_path_per_fold``,
+        ``quiet_score_per_fold``, ``quiet_p_per_fold``, ``quiet_metrics_per_fold``,
+        ``fit_seconds_per_fold``, ``n_iter_per_fold`` and ``filters_per_fold``, each a list with one
+        entry per fold. A ``filters_per_fold`` entry carries ``fold_index``, ``test_session``,
+        ``features``, ``feature_indices``, ``filter`` and ``intercept``.
+    """
+
+    roster = {key: [] for key in ("no_model_per_fold", "selected_per_fold", "screen_per_fold",
+                                  "forward_path_per_fold", "quiet_score_per_fold", "quiet_p_per_fold",
+                                  "quiet_metrics_per_fold", "fit_seconds_per_fold", "n_iter_per_fold",
+                                  "filters_per_fold")}
+    for artifact in artifacts:
+        no_model = bool(artifact["no_model"])
+        fold = {"fold_index": int(artifact["fold_index"]), "test_session": str(artifact["test_id"])}
+        roster["no_model_per_fold"].append(no_model)
+        roster["selected_per_fold"].append([str(name) for name in artifact["selected"]])
+        roster["screen_per_fold"].append(list(artifact["screen"]))
+        roster["forward_path_per_fold"].append(list(artifact["path"]))
+        roster["quiet_score_per_fold"].append(float(artifact["quiet_score"]))
+        if no_model:
+            roster["quiet_p_per_fold"].append(1.0)
+            roster["quiet_metrics_per_fold"].append(None)
+            roster["fit_seconds_per_fold"].append(float("nan"))
+            roster["n_iter_per_fold"].append(None)
+            roster["filters_per_fold"].append({**fold, "features": [], "feature_indices": [],
+                                               "filter": None, "intercept": None})
+            continue
+        indices = [int(index) for index in artifact["selected_indices"]]
+        roster["quiet_p_per_fold"].append(float(artifact["quiet_p"]))
+        roster["quiet_metrics_per_fold"].append(dict(unwrap_stored(artifact["quiet_metrics"])))
+        roster["fit_seconds_per_fold"].append(float(artifact["fit_seconds"]))
+        roster["n_iter_per_fold"].append(int(artifact["n_iter"]))
+        roster["filters_per_fold"].append(
+            {**fold, "features": [str(name) for name in artifact["selected"]], "feature_indices": indices,
+             "filter": np.asarray(artifact["coefficients"], dtype=np.float64).reshape(len(indices), n_lags),
+             "intercept": float(artifact["intercept"])})
+    return roster
+
 
 def run_single(unit: dict, settings: dict, data_root: str, output_directory: str,
                message_output=print) -> dict:
@@ -644,7 +764,15 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
 
     if not fold_results:
         message_output("no fold produced a model; unit fails at the screen")
-        return {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0, "transfer_p": np.nan}
+        # WRITTEN, not merely returned. The plan records a unit that fails at the screen with quiet p 1.0,
+        # transfer p NaN and a no_model flag "so it never becomes a silent missing value in the cohort
+        # table" -- and the untuned units are a large share of the cohort. The per-fold screen tables go
+        # with it, since they show which features came close.
+        result = {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0, "transfer_p": np.nan,
+                  "n_lags": n_lags, "fps": fps, **per_fold_roster(artifacts, n_lags)}
+        written = write_unit_section(output_directory, unit, "claim1", result, settings)
+        message_output(f"    wrote {written.name} [claim1, no model]")
+        return result
 
     quiet_scores = [float(a["quiet_score"]) for a in artifacts if not bool(a["no_model"])]
     # Both halves must describe the SAME model, or `max(p_quiet, p_transfer)` conjoins p-values about
@@ -734,19 +862,12 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
               "representative_session": str(chosen_artifact["test_id"]),
               "selected": [str(f) for f in chosen_artifact["selected"]],
               "selected_indices": representative_features,
-              "selected_per_fold": [list(a["selected"]) for a in artifacts],
-              "screen_per_fold": [list(a["screen"]) for a in artifacts],
-              "forward_path_per_fold": [list(a["path"]) for a in artifacts],
-              "quiet_score_per_fold": [float(a["quiet_score"]) for a in artifacts],
-              "quiet_p_per_fold": [float(a["quiet_p"]) for a in artifacts],
               "filter_band": band,
               "filter": np.asarray(chosen_artifact["coefficients"]),
               "filter_intercept": float(chosen_artifact["intercept"]),
               "filter_descriptors": descriptors, "spike_triggered_average": sta,
               "quiet_metrics": dict(unwrap_stored(chosen_artifact["quiet_metrics"])),
-              "quiet_metrics_per_fold": [dict(unwrap_stored(a["quiet_metrics"])) for a in artifacts],
-              "fit_seconds_per_fold": [float(a["fit_seconds"]) for a in artifacts],
-              "n_iter_per_fold": [int(a["n_iter"]) for a in artifacts]}
+              **per_fold_roster(artifacts, n_lags)}
 
     # The combine step is the END of claim 1 for this unit, and until now it returned its results and
     # wrote nothing -- a cluster array would have computed every p-value and thrown them away, the

@@ -18,6 +18,7 @@ from itertools import pairwise
 import numpy as np
 import pytest
 
+from usv_playpen.neural_modeling import main_neural_encoding_dispatcher as dispatcher
 from usv_playpen.neural_modeling.deviance_metrics import (
     pooled_calibrated_explained_deviance,
 )
@@ -30,8 +31,13 @@ from usv_playpen.neural_modeling.kinematic_encoding import (
     quiet_block_sessions,
 )
 from usv_playpen.neural_modeling.main_neural_encoding_dispatcher import (
+    combine,
+    load_settings,
+    per_fold_roster,
     representative_fold,
+    write_fold_artifact,
 )
+from usv_playpen.neural_modeling.neural_artifacts import read_unit_artifact
 from usv_playpen.neural_modeling.neural_design_assembly import (
     lagged_design,
     quiet_anchor_frames,
@@ -283,6 +289,101 @@ class TestSolverSettings:
             solver = json.load(handle)["kinematic_encoding"]["solver"]
         assert "learning_rate" not in solver
         assert set(solver) == {"max_iter", "tol", "calibration_steps", "null_calibration_bins"}
+
+
+class TestFoldsWithoutAModel:
+    """A fold that finds no model is the ORDINARY case at cohort scale -- an untuned unit produces one on
+    every fold -- yet every rotation before 2026-09-14 ran on a tuned unit, so the path had never run.
+    It saved no fold file, so `combine` stopped with "fold artifact missing" and the unit saved nothing;
+    and past that, the per-fold lists read keys a no-model fold never carries."""
+
+    N_LAGS = 5
+    UNIT_ID = "imec1_cl0000_ch000_good"
+
+    @classmethod
+    def _model_fold(cls, fold_index, test_id, names, indices, seed):
+        rng = np.random.default_rng(seed)
+        return {"fold_index": fold_index, "test_id": test_id, "no_model": False,
+                "selected": list(names), "selected_indices": list(indices),
+                "path": [{"step": 0, "candidate": names[0], "decision": "ANCHOR"}],
+                "screen": [{"feature": index, "survived": True} for index in indices],
+                "coefficients": rng.normal(size=len(indices) * cls.N_LAGS), "intercept": -3.5,
+                "quiet_score": 0.03, "quiet_p": 1e-5, "quiet_metrics": {"auroc": 0.7},
+                "fit_seconds": 9.0, "n_iter": 2500}
+
+    @staticmethod
+    def _no_model_fold(fold_index, test_id):
+        """ONLY the keys a no-model fold is guaranteed to carry: no quiet metrics, fit time, iteration
+        count or filter -- and no quiet p, which one of the two no-model branches used to omit."""
+        return {"fold_index": fold_index, "test_id": test_id, "no_model": True,
+                "selected": [], "path": [], "quiet_score": 0.0,
+                "screen": [{"feature": 4, "survived": False, "p": 5e-3}]}
+
+    @classmethod
+    def _round_trip(cls, tmp_path, folds):
+        """Through the real fold writer, and loaded back exactly as `combine` loads them."""
+        unit = {"unit_id": cls.UNIT_ID}
+        for fold in folds:
+            write_fold_artifact(fold, unit, fold["fold_index"], str(tmp_path),
+                                message_output=lambda *_a: None)
+        return [dict(np.load(tmp_path / f"{cls.UNIT_ID}_fold{fold['fold_index']}.npz", allow_pickle=True))
+                for fold in folds]
+
+    def _mixed(self):
+        return [self._model_fold(0, "s0", ["a", "b"], [0, 1], seed=1),
+                self._no_model_fold(1, "s1"),
+                self._model_fold(2, "s2", ["a"], [0], seed=2)]
+
+    def test_a_no_model_fold_still_writes_the_file_combine_looks_for(self, tmp_path):
+        write_fold_artifact(self._no_model_fold(0, "s0"), {"unit_id": self.UNIT_ID}, 0, str(tmp_path),
+                            message_output=lambda *_a: None)
+        assert (tmp_path / f"{self.UNIT_ID}_fold0.npz").exists()
+
+    def test_every_fold_is_listed_in_order_with_no_model_folds_recorded_as_absent(self, tmp_path):
+        """Position i must stay fold i. Dropping the no-model fold would pair fold 2's filter with the
+        wrong held-out session."""
+        roster = per_fold_roster(self._round_trip(tmp_path, self._mixed()), self.N_LAGS)
+        assert all(len(values) == 3 for values in roster.values())
+        assert roster["no_model_per_fold"] == [False, True, False]
+        assert [entry["test_session"] for entry in roster["filters_per_fold"]] == ["s0", "s1", "s2"]
+        assert roster["quiet_p_per_fold"][1] == 1.0
+        assert roster["quiet_metrics_per_fold"][1] is None
+        assert roster["n_iter_per_fold"][1] is None
+        assert np.isnan(roster["fit_seconds_per_fold"][1])
+        assert roster["filters_per_fold"][1]["filter"] is None
+        # the near-miss is what a figure of a marginal unit needs, so the screen table survives
+        assert roster["screen_per_fold"][1][0]["p"] == 5e-3
+
+    def test_every_folds_filter_is_kept_with_its_own_features(self, tmp_path):
+        """Ruled 2026-09-14: every fold's filter, not only the representative's. Folds select different
+        features, so each filter carries its own names and its own shape."""
+        folds = self._mixed()
+        roster = per_fold_roster(self._round_trip(tmp_path, folds), self.N_LAGS)
+        first, last = roster["filters_per_fold"][0], roster["filters_per_fold"][2]
+        assert first["features"] == ["a", "b"]
+        assert first["filter"].shape == (2, self.N_LAGS)
+        assert last["features"] == ["a"]
+        assert last["filter"].shape == (1, self.N_LAGS)
+        np.testing.assert_array_equal(first["filter"].ravel(), folds[0]["coefficients"])
+        assert first["intercept"] == -3.5
+
+    def test_combine_writes_a_unit_where_no_fold_found_a_model(self, tmp_path, monkeypatch):
+        """The untuned unit must reach the cohort table as a result -- quiet p 1.0, transfer p NaN, a
+        no_model flag -- not vanish as a failed job."""
+        sessions = ["s0", "s1"]
+        unit = {"unit_id": self.UNIT_ID, "unit_uid": f"m_20250101_{self.UNIT_ID}", "mouse_id": "m",
+                "rec_date": 20250101, "courtship_sessions": sessions, "vocal_sessions": sessions}
+        self._round_trip(tmp_path, [self._no_model_fold(0, "s0"), self._no_model_fold(1, "s1")])
+        monkeypatch.setattr(dispatcher, "assemble_unit_sessions",
+                            lambda *_a, **_k: {s: {"fps": 150.0, "feature_names": ["a", "b"]}
+                                               for s in sessions})
+        combine(unit, load_settings(), str(tmp_path), str(tmp_path), message_output=lambda *_a: None)
+        stored = read_unit_artifact(str(tmp_path), unit["unit_uid"])["claim1"]
+        assert stored["no_model"] is True
+        assert stored["quiet_p"] == 1.0
+        assert np.isnan(stored["transfer_p"])
+        assert stored["no_model_per_fold"] == [True, True]
+        assert stored["screen_per_fold"][0][0]["p"] == 5e-3
 
 
 class TestLeaveOneSessionOut:
