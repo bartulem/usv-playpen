@@ -18,6 +18,9 @@ from itertools import pairwise
 import numpy as np
 import pytest
 
+from usv_playpen.neural_modeling.deviance_metrics import (
+    pooled_calibrated_explained_deviance,
+)
 from usv_playpen.neural_modeling.kinematic_encoding import (
     block_resample_anchors,
     filter_band,
@@ -35,7 +38,10 @@ from usv_playpen.neural_modeling.neural_design_assembly import (
     spike_labels_at_frames,
     vocal_span_frames,
 )
-from usv_playpen.neural_modeling.quiet_to_vocal_transfer import combine_folds
+from usv_playpen.neural_modeling.quiet_to_vocal_transfer import (
+    combine_folds,
+    leave_one_session_out_scores,
+)
 
 FPS = 150.0
 HISTORY = 4.0
@@ -277,6 +283,60 @@ class TestSolverSettings:
             solver = json.load(handle)["kinematic_encoding"]["solver"]
         assert "learning_rate" not in solver
         assert set(solver) == {"max_iter", "tol", "calibration_steps", "null_calibration_bins"}
+
+
+class TestLeaveOneSessionOut:
+    """The guard against one session carrying the transfer, matching `min_leave_one_fold_out` on the
+    decoding claims. A descriptor, never a gate."""
+
+    @staticmethod
+    def _pooled(n_per_session, slopes, seed=0):
+        """Sessions whose eta predicts labels at the given per-session strength, on different baselines."""
+        rng = np.random.default_rng(seed)
+        eta, labels, index = [], [], []
+        for session, (count, strength) in enumerate(zip(n_per_session, slopes, strict=True)):
+            values = rng.normal(size=count)
+            rate = 1.0 / (1.0 + np.exp(-(strength * values - 1.0 - 0.5 * session)))
+            eta.append(values)
+            labels.append((rng.random(count) < rate).astype(np.float64))
+            index.append(np.full(count, session))
+        return (np.concatenate(eta), np.concatenate(labels), np.concatenate(index),
+                [f"s{i}" for i in range(len(n_per_session))])
+
+    def test_a_session_carrying_the_result_shows_up_as_a_low_minimum(self):
+        """The whole purpose: drop the one session that carries the signal and the pooled score falls.
+        Dropping any of the others leaves it roughly where it was."""
+        eta, labels, index, ids = self._pooled([4000, 4000, 4000], [2.5, 0.0, 0.0], seed=1)
+        scores = leave_one_session_out_scores(eta, labels, index, ids, 40)
+        assert min(scores, key=lambda k: scores[k]["score"]) == "s0"
+        assert scores["s0"]["score"] < scores["s1"]["score"]
+        assert scores["s0"]["score"] < scores["s2"]["score"]
+
+    def test_a_shared_effect_survives_every_drop(self):
+        """The reassuring case, and the one the descriptor exists to certify: no single session is
+        load-bearing, so the minimum stays positive."""
+        eta, labels, index, ids = self._pooled([3000, 3000, 3000], [1.2, 1.2, 1.2], seed=2)
+        scores = leave_one_session_out_scores(eta, labels, index, ids, 40)
+        assert min(entry["score"] for entry in scores.values()) > 0.0
+        assert all(entry["slope"] > 0.0 for entry in scores.values())
+
+    def test_it_re_pools_rather_than_scoring_the_dropped_session_alone(self):
+        """The reason this is not just the per-session diagnostics already reported. Each drop must be
+        the pooled calibration on the REMAINING sessions -- which is what makes it robust on a unit
+        with one thin session, where the per-session fit is the fragile construction pooling avoids."""
+        eta, labels, index, ids = self._pooled([3000, 3000, 60], [1.5, 1.5, 1.5], seed=3)
+        scores = leave_one_session_out_scores(eta, labels, index, ids, 40)
+        keep = index != 2
+        expected, expected_slope = pooled_calibrated_explained_deviance(eta[keep], labels[keep],
+                                                                       index[keep], 40)
+        assert scores["s2"]["score"] == pytest.approx(expected)
+        assert scores["s2"]["slope"] == pytest.approx(expected_slope)
+
+    def test_one_session_yields_nothing_rather_than_a_misleading_number(self):
+        """Dropping the only session leaves nothing to pool, so there is no leave-one-out statistic --
+        the caller reports NaN rather than a value computed on an empty set."""
+        eta, labels, index, ids = self._pooled([2000], [1.5], seed=4)
+        assert leave_one_session_out_scores(eta, labels, index, ids, 40) == {}
 
 
 class TestTransferGuards:

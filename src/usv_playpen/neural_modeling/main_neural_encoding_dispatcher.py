@@ -572,6 +572,8 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                 "transfer_score": transfer["score"], "transfer_slope": transfer["slope"],
                 "transfer_p": transfer["p"], "transfer_at_floor": transfer["at_floor"],
                 "transfer_null": transfer["null"], "transfer_folds": transfer["folds"],
+                "transfer_leave_one_session_out": transfer["leave_one_session_out"],
+                "transfer_min_leave_one_session_out": transfer["min_leave_one_session_out"],
                 "n_vocal_frames": transfer["n_frames"], "final_fit_converged": final_converged,
                 "n_lags": n_lags, "fps": fps}
     written = write_unit_section(output_directory, unit, "claim1", artifact, settings)
@@ -724,6 +726,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
               "transfer_score": transfer["score"], "transfer_slope": transfer["slope"],
               "transfer_p": transfer["p"], "transfer_at_floor": transfer["at_floor"],
               "transfer_null": transfer["null"], "transfer_n_frames": transfer["n_frames"],
+              "transfer_leave_one_session_out": transfer["leave_one_session_out"],
+              "transfer_min_leave_one_session_out": transfer["min_leave_one_session_out"],
               "transfer_per_session": fold_results, "transfer_session_ids": scored_ids,
               "n_lags": n_lags, "fps": fps,
               "representative_fold": int(chosen_artifact["fold_index"]),

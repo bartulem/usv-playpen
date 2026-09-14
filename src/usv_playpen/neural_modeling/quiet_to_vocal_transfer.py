@@ -20,6 +20,13 @@ carries about 528 effectively independent shifts and a per-fold p-value floors n
 many draws are taken. Pooling shifts every session independently, giving a joint space of
 528^n_sessions, against which far more draws are genuinely distinct.
 
+Pooling does hide something, and that is what the leave-one-session-out descriptor is for: a pooled
+number cannot say whether one session carries it. The per-session scores reported alongside do not answer
+that either, because each fits its own two calibration parameters on one session's frames -- the fragile
+construction pooling exists to avoid. Dropping a session and recalibrating on the rest asks the question in
+the well-conditioned way, at the cost of one two-parameter refit per session, and is what claims 2 and 3
+already record. It is a descriptor and gates nothing; consistency is not a criterion any claim here tests on.
+
 The gate is discrimination, not level: whether the model tells a frame with a spike from one without,
 scored against the vocal frames' own rate. Whether the unit simply fires faster during vocalization is
 recorded as a descriptor and gates nothing, because a model can predict the rate change perfectly while
@@ -176,6 +183,62 @@ def pooled_transfer_null(fold_results: list, per_session: dict, session_ids: lis
     return null
 
 
+def leave_one_session_out_scores(eta: np.ndarray, labels: np.ndarray, session_index: np.ndarray,
+                                 session_ids: list, calibration_steps: int) -> dict:
+    """
+    Description
+    -----------
+    Re-pool the transfer with each session dropped in turn, so it is visible whether any one of them
+    carries the result.
+
+    This RE-POOLS rather than reading the per-session scores reported beside it, and the distinction is
+    the whole point. A per-session score fits its own slope and intercept on one session's vocal frames
+    alone -- the fragile construction pooling exists to avoid, and the one that on a 372-call session
+    produced a null whose mean (+0.0170) exceeded its own observed value (+0.0040). Dropping a session
+    and recalibrating on the rest keeps the shared slope estimated on everything that remains, so a thin
+    session's instability never becomes its own estimate.
+
+    The slope travels with each drop because the claim's sign condition is read off it: a drop that flips
+    the sign says something a score alone cannot.
+
+    Nothing is refitted -- the held-out predictions are already in hand, so each drop costs one
+    two-parameter calibration, measured at about 10 ms on a six-session unit's 34,000 frames.
+
+    This is the claim-1 analogue of ``min_leave_one_fold_out`` on the decoding claims, where the
+    partition is folds rather than sessions. Like those, it is a DESCRIPTOR and gates nothing:
+    consistency is deliberately not a criterion any claim in this analysis tests on.
+
+    Parameters
+    ----------
+    eta (np.ndarray)
+        Held-out linear predictor, concatenated across sessions.
+    labels (np.ndarray)
+        0/1 spike labels at the same frames.
+    session_index (np.ndarray)
+        Integer session index per frame, indexing into ``session_ids``.
+    session_ids (list)
+        The scored sessions, in the order their indices refer to.
+    calibration_steps (int)
+        Maximum Newton iterations for each recalibration.
+
+    Returns
+    -------
+    scores (dict)
+        ``{session_id: {'score', 'slope'}}`` for the pooled transfer WITHOUT that session. Empty when
+        there is only one session, since dropping it leaves nothing to pool.
+    """
+
+    if len(session_ids) < 2:
+        return {}
+    scores = {}
+    for index, session_id in enumerate(session_ids):
+        keep = session_index != index
+        score, slope = pooled_calibrated_explained_deviance(eta[keep], labels[keep],
+                                                            session_index[keep], calibration_steps)
+        scores[session_id] = {"score": score, "slope": slope}
+    return scores
+
+
 def combine_folds(fold_results: list, per_session: dict, session_ids: list,
                   vocal_frames_by_session: dict, settings: dict, message_output=print) -> dict:
     """
@@ -208,8 +271,9 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
     Returns
     -------
     result (dict)
-        ``score``, ``slope``, ``p``, ``at_floor``, ``n_frames``, ``null``, and the per-fold diagnostics
-        under ``folds``.
+        ``score``, ``slope``, ``p``, ``at_floor``, ``n_frames``, ``null``, the leave-one-session-out
+        descriptors ``leave_one_session_out`` and ``min_leave_one_session_out``, and the per-fold
+        diagnostics under ``folds``.
     """
 
     # Both of these name what this function DOES, and neither was read. A run could have declared
@@ -232,6 +296,10 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
                                     for index, result in enumerate(fold_results)])
     calibration_steps = settings["kinematic_encoding"]["solver"]["calibration_steps"]
     score, slope = pooled_calibrated_explained_deviance(eta, labels, session_index, calibration_steps)
+    leave_one_session_out = leave_one_session_out_scores(eta, labels, session_index, session_ids,
+                                                         calibration_steps)
+    min_leave_one_session_out = (min(entry["score"] for entry in leave_one_session_out.values())
+                                 if leave_one_session_out else float("nan"))
     escalation_round = 0
 
     def draw_transfer_null(count):
@@ -251,11 +319,19 @@ def combine_folds(fold_results: list, per_session: dict, session_ids: list,
                    f"| slope {slope:+.3f} | p {p_value:.4e}"
                    f"{' (at floor, escalation would resolve further)' if at_floor else ''} "
                    f"| {labels.size} vocal frames")
+    if leave_one_session_out:
+        message_output(f"    leave-one-session-out minimum {min_leave_one_session_out:+.5f} "
+                       f"(descriptor, gates nothing)")
     for session_id, result in zip(session_ids, fold_results, strict=True):
+        dropped = leave_one_session_out[session_id] if leave_one_session_out else None
+        without = (f" | without it {dropped['score']:+.5f} slope {dropped['slope']:+.3f}"
+                   if dropped is not None else "")
         message_output(f"    per-session {session_id}: score {result['fold_score']:+.5f} "
                        f"| slope {result['fold_slope']:+.3f} | AUROC {result['auroc']:.3f} "
-                       f"| {result['n_frames']} frames at rate {result['spike_rate']:.4f}")
+                       f"| {result['n_frames']} frames at rate {result['spike_rate']:.4f}{without}")
     return {"score": score, "slope": slope, "p": p_value, "at_floor": at_floor,
             "n_frames": int(labels.size), "null": null,
+            "leave_one_session_out": leave_one_session_out,
+            "min_leave_one_session_out": min_leave_one_session_out,
             "folds": [{key: value for key, value in result.items() if key not in ("eta", "labels")}
                       for result in fold_results]}
