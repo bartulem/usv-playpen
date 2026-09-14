@@ -215,7 +215,7 @@ class TestDecodeGain:
         assert observed > np.nanmax(null)
         # the null centres BELOW zero, not at it: a surface fitted to re-paired counts is noise, and a
         # noisy surface carried to a held-out event is worse than the prior alone. Same phenomenon as
-        # the raw-D2 null in claim 1. The statistic is therefore conservative, not centred.
+        # the raw-D2 null in the kinematic encoding. The statistic is therefore conservative, not centred.
         assert np.nanmean(null) < 0.0
         assert observed - np.nanmean(null) > 0.1
 

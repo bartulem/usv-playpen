@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Cohort selection: which units, and which of their sessions, each claim is allowed to use.
+Cohort selection: which units, and which of their sessions, each analysis is allowed to use.
 
 Builds the per-unit manifest the pipelines iterate over, from the canonical sources rather than
 reinventions -- ``unit_catalog.csv`` for unit properties, and the session-list ``.txt`` files for the
@@ -16,7 +16,7 @@ TWO SESSION SETS COME BACK PER UNIT, AND THE DIFFERENCE IS THE POINT.
 the subset carrying at least ``min_emitter_usvs_per_session`` calls from the emitter
 ``vocalization_settings.vocal_emitter`` names -- the recorded animal by default.
 
-They differ because the claims need different things from a session. The encoding claim is fitted on
+They differ because the analyses need different things from a session. The kinematic encoding is fitted on
 QUIET anchors, and a session in which the male barely called is not impoverished for that purpose --
 it has MORE silence, not less. Everything scored on vocalizations is the opposite: a session with two
 calls contributes a leave-one-session-out fold whose statistic rests on two events.
@@ -214,7 +214,7 @@ def select_cohort(
     least ``min_emitter_usvs_per_session`` calls from the selected emitter, and ``vocal_testable`` records whether enough of
     them survive for a leave-one-session-out rotation on the vocal side.
 
-    A unit that fails the vocal floor is KEPT, not dropped: it still has an encoding claim to answer,
+    A unit that fails the vocal floor is KEPT, not dropped: it still has its kinematic encoding to be tested,
     and dropping it here would silently shrink the denominator the transformation fraction is reported
     against. The flag says what it can be asked, and the counts say why.
 

@@ -126,7 +126,7 @@ class TestPermutationNull:
         assert len(seen) == 50
 
     def test_a_target_carried_through_the_permutation_stays_within_session(self):
-        """The end-to-end property the WHAT null relies on: positions move, sessions do not."""
+        """The end-to-end property the vocalization-identity null relies on: positions move, sessions do not."""
         sessions = np.array([0, 0, 0, 0, 1, 1, 1, 1])
         target = np.arange(8, dtype=float)
         generator = np.random.default_rng(3)

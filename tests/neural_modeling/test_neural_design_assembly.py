@@ -4,14 +4,14 @@ Unit tests for the call-grain data layer in ``usv_playpen.neural_modeling.neural
 
 Coverage: the clean-prevocal filter's exact overlap rule, the header-only tracking read, and the
 end-to-end event assembler run against a synthetic session tree written under ``tmp_path``. The
-properties asserted are the ones both claim-2 axes depend on -- a call never excludes itself, a partner's
+properties asserted are the ones both vocal-decoding axes depend on -- a call never excludes itself, a partner's
 call excludes just as a focal one does, calls with no torus position are dropped and counted rather than
-carried as NaN, and the WHEN negatives are the same quiet definition the encoding claim uses, tiled at
+carried as NaN, and the vocal-occurrence negatives are the same quiet definition the kinematic encoding uses, tiled at
 the analysis window's own width so the two counts are comparable.
 
 Also guards the settings invariants the assembler reads: the analysis windows must agree with the
 baseline width, and the neural copy of ``kinematic_features`` must still equal the behavioural one, since
-claim 3's "beyond behaviour" means "beyond exactly what P1 fits".
+the nested decoding's "beyond behaviour" means "beyond exactly what P1 fits".
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from usv_playpen.neural_modeling.neural_design_assembly import (
     emitter_names,
     session_timebase,
 )
-from usv_playpen.neural_modeling.neural_when import counts_in_windows
+from usv_playpen.neural_modeling.neural_vocal_occurrence import counts_in_windows
 
 SETTINGS_DIR = pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen" / "_parameter_settings"
 
@@ -193,16 +193,16 @@ class TestAssembleUnitVocalEvents:
         unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98, 500.0]))
         events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
 
-        when = events["when"]
+        windows = events["occurrence_windows"]
         n_events = events["counts"].size
         n_tiles = events["per_session"]["20250101_000000"]["n_baseline_tiles"]
-        assert when["counts"].size == n_events + n_tiles
-        assert when["labels"][:n_events].tolist() == [1.0] * n_events
-        assert not when["labels"][n_events:].any()
-        assert when["counts"][:n_events].tolist() == events["counts"].tolist()
+        assert windows["counts"].size == n_events + n_tiles
+        assert windows["labels"][:n_events].tolist() == [1.0] * n_events
+        assert not windows["labels"][n_events:].any()
+        assert windows["counts"][:n_events].tolist() == events["counts"].tolist()
 
     def test_the_when_edges_reconstruct_the_when_counts(self, tmp_path):
-        """The WHEN null is a circular shift that recounts BOTH classes from the shifted train. With
+        """The vocal-occurrence null is a circular shift that recounts BOTH classes from the shifted train. With
         counts alone that is impossible -- a caller can only recount the positives and has to leave
         the tiles frozen, which is a different null from the specified one. The edges make it a
         per-session recount, so they have to line up with the counts exactly."""
@@ -211,10 +211,10 @@ class TestAssembleUnitVocalEvents:
         unit = self._build(tmp_path, calls=calls, spike_seconds=spikes)
         events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, 0.05)
 
-        when = events["when"]
-        assert when["edges"].size == when["counts"].size
-        rebuilt = counts_in_windows(np.sort(spikes), when["edges"], when["width"])
-        assert np.array_equal(rebuilt, when["counts"])
+        windows = events["occurrence_windows"]
+        assert windows["edges"].size == windows["counts"].size
+        rebuilt = counts_in_windows(np.sort(spikes), windows["edges"], windows["width"])
+        assert np.array_equal(rebuilt, windows["counts"])
 
     def test_tiles_are_disjoint_at_the_analysis_width(self, tmp_path):
         """Tiles are laid at the analysed window's OWN width, so consecutive negatives never share a
@@ -226,7 +226,7 @@ class TestAssembleUnitVocalEvents:
         for width in (0.05, 0.10):
             events = assemble_unit_vocal_events(unit, str(tmp_path), self._settings(), 0.05, width)
             n_events = int(events["counts"].size)
-            tiles = np.sort(events["when"]["edges"][n_events:])
+            tiles = np.sort(events["occurrence_windows"]["edges"][n_events:])
             gaps = np.diff(tiles)
             assert np.all(gaps >= width - 1e-9)
 
@@ -248,7 +248,7 @@ class TestAssembleUnitVocalEvents:
 
     def test_a_unit_whose_mouse_is_absent_fails_loudly(self, tmp_path):
         """The focal animal is resolved by LOOKUP from the unit's own mouse_id, never by track slot --
-        a slot says "whatever is in position 0", which is a different claim. If the unit's mouse is
+        a slot says "whatever is in position 0", which is a different question. If the unit's mouse is
         not in this session's track_names, that is unrecoverable and must not be guessed at."""
         calls = [(100.0, 100.1, "male", 0.10, 0.20)]
         unit = self._build(tmp_path, calls=calls, spike_seconds=np.array([99.98]))
@@ -318,7 +318,8 @@ class TestSettingsInvariants:
 
     def test_one_window_per_run_lives_in_the_shared_anchors_block(self):
         """ONE window is analysed per run, not a pair looped over. It sits in `vocalization_settings` because it is
-        a cross-claim event definition -- claim 2 and claim 3 must see the same window, and claim 3
+        an event definition shared across analyses -- the vocal decoding and the nested decoding must see the
+        same window, and the nested decoding
         has its own block, so a window inside `vocal_decoding` could not serve it."""
         settings = _load_settings()
         window = settings["vocalization_settings"]["spike_window"]
@@ -335,7 +336,7 @@ class TestSettingsInvariants:
         This is a deliberate trade and it reverses the earlier prediction-clean default. It buys
         POWER -- banked gains rise from +0.05726 to +0.07199 on cl0401 and from +0.0031 to +0.0114 on
         cl0499, a 3.7x lift on the weak unit, and passes are decided at the faint margin. It costs the
-        claim that the gain is purely PREDICTIVE: part of it is response to the call in progress, and
+        ability to say the gain is purely PREDICTIVE: part of it is response to the call in progress, and
         the design cannot separate the two. The user ruled that showing the activity is purely
         premotor is not required.
 
@@ -350,25 +351,25 @@ class TestSettingsInvariants:
         inside = window["width_seconds"] - window["pre_offset_seconds"]
         assert inside == pytest.approx(0.05)
 
-    def test_vocal_decoding_holds_claim_two_only(self):
-        """Claim 3 is a separate claim with its own model, null and statistic; its configuration
-        living inside claim 2's block was the file's worst piece of mis-filing."""
+    def test_vocal_decoding_holds_only_the_vocal_decoding_axes(self):
+        """The nested decoding is a separate analysis with its own model, null and statistic; its
+        configuration living inside the vocal decoding's block was the file's worst piece of mis-filing."""
         settings = _load_settings()
         assert set(settings["vocal_decoding"]) == {
             "require_clean_prevocal_bool", "usv_manifold_column_names",
-            "max_quiet_tiles_per_session", "when_axis", "geodesic_metrics", "tuning_surface",
+            "max_quiet_tiles_per_session", "vocal_occurrence", "geodesic_metrics", "tuning_surface",
             "discrimination_null", "record_overdispersion_index"}
-        assert set(settings["nested_position_decoding"]) == {
+        assert set(settings["nested_vocal_manifold_position_decoding"]) == {
             "behaviour_control", "reduced_model_features", "compute_matched_window_control",
             "vm_score_mode", "region_label_column", "min_region_events", "lambda_smooth", "l2_reg",
             "smoothness_derivative_order", "sigma_floor", "prevocal_window_n_bins", "rate_transform",
             "rate_basis"}
 
-    def test_claim_three_matches_p1_where_it_must(self):
-        """Claim 3 is "P1 plus the neuron", so the control has to be fitted and SCORED the way P1
+    def test_the_nested_decoding_matches_p1_where_it_must(self):
+        """The nested decoding is "P1 plus the neuron", so the control has to be fitted and SCORED the way P1
         fitted and scored it. A silent divergence here would make the reduced model suboptimal for
-        the test, which biases claim 3 toward passing -- the wrong direction for a positive claim."""
-        nested = _load_settings()["nested_position_decoding"]
+        the test, which biases the test toward passing -- the wrong direction for a positive result."""
+        nested = _load_settings()["nested_vocal_manifold_position_decoding"]
         modeling = (pathlib.Path(__file__).resolve().parents[2] / "src" / "usv_playpen"
                     / "_parameter_settings" / "modeling_settings.json")
         with modeling.open() as handle:
@@ -419,12 +420,12 @@ class TestSettingsInvariants:
         assert "n_shuffles_screen" not in settings["vocal_gating"]
         assert settings["vocal_gating"]["gating_screen_n_shuffles"] == 2000
         assert "calib_n_steps" not in settings["vocal_gating"]["solver"]
-        assert "calib_n_steps" not in settings["vocal_decoding"]["when_axis"]["solver"]
+        assert "calib_n_steps" not in settings["vocal_decoding"]["vocal_occurrence"]["solver"]
         assert "min_focal_usvs" not in settings["vocal_decoding"]
         assert "decorrelation_lag_seconds" not in settings["null"]
 
     def test_the_neural_kinematic_features_still_equal_the_behavioural_ones(self):
-        """Claim 3 asks whether a neuron adds beyond behaviour, where "behaviour" is the feature set P1
+        """The nested decoding asks whether a neuron adds beyond behaviour, where "behaviour" is the feature set P1
         fits. The neural settings own their copy so a neural run can diverge deliberately, but the
         shipped default has to match or the comparison silently stops meaning what it says."""
         with (SETTINGS_DIR / "modeling_settings.json").open() as handle:
@@ -433,7 +434,7 @@ class TestSettingsInvariants:
 
 
 class TestFocalVocalFrames:
-    """The claim-1 transfer resolves the focal animal separately from the assembler, and did it by
+    """The kinematic encoding's transfer resolves the focal animal separately from the assembler, and did it by
     substring match with a bare [0] index."""
 
     UNIT = "imec0_cl0001_ch001_good"
@@ -470,7 +471,7 @@ class TestQuietSideKeepsEverySession:
 
     A session in which the recorded animal barely called is EXCLUDED from everything scored on
     vocalizations and must stay in everything fitted on silence -- it has more quiet, not less. If a
-    future change points the kinematic assembler at `vocal_sessions`, claim 1 would quietly lose
+    future change points the kinematic assembler at `vocal_sessions`, the kinematic encoding would quietly lose
     training data for the exact sessions that offer the most of it."""
 
     UNIT = "imec0_cl0001_ch001_good"
@@ -498,7 +499,7 @@ class TestQuietSideKeepsEverySession:
 
 class TestSelfAndPartnerAreResolvedByName:
     """Who is `self` and who is `partner` must never come from a track SLOT. A slot says "whatever
-    sits in position 0", which is a different claim from "this animal" and needs its own assertion to
+    sits in position 0", which is a different statement from "this animal" and needs its own assertion to
     be safe. Both halves of the pipeline -- the emitter filter on the vocal side and the
     `self.`/`other.` feature split on the kinematic side -- now answer it the same way: `self` by NAME
     lookup of the unit's own `mouse_id`, `partner` by EXCLUSION."""
@@ -545,10 +546,10 @@ class TestSelfAndPartnerAreResolvedByName:
 
 
 class TestOneQuietDefinition:
-    """The plan requires ONE quiet definition across claim 1, the WHEN negatives and the claim-2
-    baselines. Two code paths that can disagree is how that breaks -- and it did: `clean_against` was
+    """The plan requires ONE quiet definition across the kinematic encoding, the vocal-occurrence
+    negatives and the vocal-decoding baselines. Two code paths that can disagree is how that breaks -- and it did: `clean_against` was
     read by the vocal-side assembler and ignored by the kinematic one, so setting it to a mouse index
-    would have moved claim 2's tiles while leaving claim 1's anchors all-emitter."""
+    would have moved the vocal decoding's tiles while leaving the kinematic encoding's anchors all-emitter."""
 
     def test_the_kinematic_assembler_takes_clean_against(self):
         assert "clean_against" in inspect.signature(assemble_unit_sessions).parameters
@@ -556,7 +557,7 @@ class TestOneQuietDefinition:
     def test_the_kinematic_assembler_takes_vocal_emitter(self):
         """Same failure mode one key over: the kinematic side resolved the onset emitter from the
         unit's mouse_id directly, so pointing `vocalization_settings.vocal_emitter` at the partner would have moved
-        claim 2's events while leaving claim 1's onsets on the recorded animal."""
+        the vocal decoding's events while leaving the kinematic encoding's onsets on the recorded animal."""
         assert "vocal_emitter" in inspect.signature(assemble_unit_sessions).parameters
 
     def test_the_dispatcher_passes_the_same_setting_to_both_sides(self):
@@ -571,8 +572,8 @@ class TestOneQuietDefinition:
 
 class TestVocalSessionScope:
     """The cohort builder hands out two session sets, and the vocal-side assembler must read the
-    vocal one. A session the male barely called in stays available to the encoding claim, which
-    needs silence, and is kept away from everything scored on the calls themselves."""
+    vocal one. A session the male barely called in stays available to the kinematic encoding,
+    which needs silence, and is kept away from everything scored on the calls themselves."""
 
     UNIT = "imec0_cl0001_ch001_good"
 

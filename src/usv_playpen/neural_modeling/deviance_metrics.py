@@ -9,7 +9,7 @@ than preference.
 The reference rate is the scored frames' own spike rate, not the training rate. A unit can fire at a very
 different rate during vocalization than during silence (0.031 against 0.291 per frame for one PAG unit, a
 9.3x step). Scoring against the training rate then rewards the model for predicting the epoch's rate change
-rather than for discriminating spike from no-spike, which is a different claim.
+rather than for discriminating spike from no-spike, which is a different question.
 ``explained_deviance_vs_reference_rate`` is retained as a descriptor because that level information is
 interesting, but it never gates anything.
 
@@ -87,8 +87,8 @@ def area_under_roc(scores: np.ndarray, labels: np.ndarray) -> float:
     motivate :func:`calibrated_explained_deviance`, which makes it a useful companion diagnostic though not
     the gate, since the rest of the project scores in deviance.
 
-    Ties take the AVERAGE rank, which counts a tied pair as half a win. This is not a refinement: the WHEN
-    axis scores raw spike counts in a 50 ms window, where the predictor takes a handful of integer values
+    Ties take the AVERAGE rank, which counts a tied pair as half a win. This is not a refinement: the
+    vocal-occurrence axis scores raw spike counts in a 50 ms window, where the predictor takes a handful of integer values
     and the great majority of pairs are tied, so breaking ties by position would read an arbitrary sort
     order as discrimination. On a continuous linear predictor there are no ties and the two agree exactly.
 
@@ -495,7 +495,7 @@ def pooled_calibrated_explained_deviance(eta: np.ndarray, y: np.ndarray, session
     spread from 0.0086 to 0.0028, moving the result from p = 0.065 to p = 9.9e-06 on the same data.
 
     Sessions keep their own intercepts because they are not on a common scale, while the slope, the
-    quantity the claim is about, is shared and estimated on everything.
+    quantity the test is about, is shared and estimated on everything.
 
     Parameters
     ----------

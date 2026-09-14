@@ -105,7 +105,8 @@
   },
   "vocal_gating": {
     "vocal_window": "during_call",
-    "require_claim2_tuning": true,
+    "require_vocal_tuning": true,
+    "vocal_tuning_alpha": 0.01,
     "ridge_frac": 0.02,
     "max_quiet_frames_per_session": 12000,
     "quiet_zeros_per_spike": 40,
@@ -128,7 +129,7 @@
     "require_clean_prevocal_bool": true,
     "usv_manifold_column_names": ["qlvm1", "qlvm2"],
     "max_quiet_tiles_per_session": 5000,
-    "when_axis": {
+    "vocal_occurrence": {
       "ridge_frac": 0.02,
       "sigma_floor": 0.05,
       "solver": {
@@ -179,7 +180,7 @@
     },
     "record_overdispersion_index": true
   },
-  "nested_position_decoding": {
+  "nested_vocal_manifold_position_decoding": {
     "behaviour_control": "rich",
     "reduced_model_features": [
       "self.neck_elevation",

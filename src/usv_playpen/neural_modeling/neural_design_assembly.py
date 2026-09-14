@@ -27,11 +27,11 @@ The consequence is that a session divides into three parts, not two: quiet ancho
 a substantial remainder belonging to neither -- the guard bands, and every frame inside a non-focal
 animal's call. On one three-session day that split was 63.1% quiet, 6.4% vocal, 30.5% neither.
 
-The decoding claims work at a third grain, which the last section of this module supplies. There the
+The decoding analyses work at a third grain, which the last section of this module supplies. There the
 observation is a CALL rather than a frame: one row per focal vocalization, carrying its position on the
 acoustic torus and the unit's spike count in a short window before onset. The quiet definition is reused
 unchanged for the negative class, tiled at the window's own width so the two counts are comparable, which
-is what lets one guard band serve the encoding claim, the timing axis and the content baselines alike.
+is what lets one guard band serve the kinematic encoding, the vocal-occurrence axis and the vocalization-identity baselines alike.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ from ..modeling.modeling_utils import (
     zscore_features_across_sessions,
 )
 from ..os_utils import configure_path
-from .neural_when import counts_in_windows, quiet_tile_edges
+from .neural_vocal_occurrence import counts_in_windows, quiet_tile_edges
 
 
 def quiet_anchor_frames(usv_starts_seconds: np.ndarray, usv_stops_seconds: np.ndarray, n_frames: int,
@@ -349,8 +349,8 @@ def load_unit_spike_frames(data_root: str, session_id: str, unit_id: str) -> tup
     -----------
     Load a unit's spike train for one session from its ``cluster_data`` ``.npy`` (``unit_id`` is the file
     stem; the probe folder ``imec{i}`` is parsed from the id). Returns spike times in seconds (row 0) and
-    integer spike-frame indices (row 1, ``np.round`` -> int), matching the two rows used by claims 2/3
-    (seconds, ``searchsorted``) and claim 1 (frames, per-frame binning).
+    integer spike-frame indices (row 1, ``np.round`` -> int), matching the two rows used by the vocal
+    decoding (seconds, ``searchsorted``) and the kinematic encoding (frames, per-frame binning).
 
     Parameters
     ----------
@@ -415,7 +415,7 @@ def emitter_names(track_names: list, recorded_mouse_id: str, spec: str) -> list:
 
     The vocabulary is semantic rather than positional -- ``'self'`` (the recorded, probe-bearing
     animal), ``'partner'`` (the other one), ``'all'`` (every emitter). A slot index would say
-    "whatever happens to be in position 0", which is a different claim and one that needs a separate
+    "whatever happens to be in position 0", which is a different question and one that needs a separate
     assertion to be safe; resolving the recorded animal by LOOKUP from the unit's own ``mouse_id`` is
     the same principle that removed the configured predictor-slot index. ``'self'`` and ``'partner'``
     also match the feature naming this assembler produces (``self.speed``, ``other.speed``), so one
@@ -465,7 +465,7 @@ def build_zscored_feature_frames(
     Build the P1-identical z-scored behavioural feature time series for the given sessions by reusing the
     modeling chain: ``load_behavioral_feature_data`` -> per-session ``select_kinematic_columns`` ->
     ``harmonize_session_columns`` -> ``zscore_features_across_sessions``. NO vocal-signal columns are added
-    (claim 1 is kinematic-only). The z-scoring pools across all supplied sessions (the all-frames ruler).
+    (the kinematic encoding uses kinematics only). The z-scoring pools across all supplied sessions (the all-frames ruler).
 
     Parameters
     ----------
@@ -604,7 +604,7 @@ def onset_anchor_frames(
     Description
     -----------
     Frames at focal-USV onsets that have a clean pre-history (no USV overlapping ``[t/fps - history_pre,
-    t/fps)``), the claim-1 transfer / claim-3-seed anchors. A frame needs its full pre-history in-bounds.
+    t/fps)``), the kinematic encoding's transfer anchors. A frame needs its full pre-history in-bounds.
 
     Parameters
     ----------
@@ -674,12 +674,12 @@ def assemble_unit_sessions(
         Quiet-anchor post-buffer.
     clean_against (str)
         Whose calls make a frame unclean: ``'all'`` | ``'self'`` | ``'partner'``. MUST match what the vocal-side
-        assembler is given -- the plan requires ONE quiet definition across claim 1, the WHEN
-        negatives and the claim-2 baselines, and two code paths that can disagree is how that breaks.
+        assembler is given -- the plan requires ONE quiet definition across the kinematic
+        encoding, the vocal-occurrence negatives and the vocal-decoding baselines, and two code paths that can disagree is how that breaks.
     vocal_emitter (str)
         Whose calls seed the USV-onset anchors: ``'self'`` | ``'partner'`` | ``'all'``. The SAME key the
         vocal-side assembler reads, for the same reason ``clean_against`` is shared -- pointing it at
-        the partner must move claim 1's onsets and claim 2's events together, or the two claims of one
+        the partner must move the kinematic encoding's onsets and the vocal decoding's events together, or the two analyses of one
         conjunction would be built on different animals' calls.
 
     Returns
@@ -741,7 +741,7 @@ def session_timebase(data_root: str, session_id: str) -> tuple[list[str], float,
     Read a session's tracking-H5 HEADER only: the mouse track names, the camera frame rate and the frame
     count.
 
-    The decoding claims need the emitter mapping and the session duration but no kinematics at all, while
+    The decoding analyses need the emitter mapping and the session duration but no kinematics at all, while
     the behavioural loader that normally supplies them reads a whole feature table per session on the way.
     Three small dataset reads cost a file handle instead, which is the difference between a cheap event
     assembler and one that pays the encoding pipeline's price for information it discards.
@@ -826,7 +826,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     """
     Description
     -----------
-    Assemble, across a unit's sessions, the CALL-grain arrays both claim-2 axes are computed from.
+    Assemble, across a unit's sessions, the CALL-grain arrays both vocal-decoding axes -- occurrence and identity -- are computed from.
 
     Two event sets come back, and they are deliberately built from one definition each rather than two.
 
@@ -835,13 +835,13 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     governs the quiet tiles and the prevocal filter, because they are asking the same question.
     The positives are the unit's focal calls -- optionally clean-prevocal filtered -- each carrying its
     torus position and the unit's spike count in ``[onset - pre_offset, onset - pre_offset + width)``.
-    The negatives are claim-1 quiet tiles: stretches with no call from any emitter in the guard band,
+    The negatives are quiet tiles under the kinematic encoding's quiet definition: stretches with no call from any emitter in the guard band,
     tiled at the window's own width so a tile count and a prevocal count measure the same thing. Sharing
-    the quiet definition with the encoding claim is what keeps one guard band serving three purposes, and
+    the quiet definition with the kinematic encoding is what keeps one guard band serving three purposes, and
     its four-second FORWARD arm is what makes the timing contrast "a call in 50 ms" against "no call for
     seconds" rather than merely "not during a call".
 
-    Both axes are handed the SAME positive events. That is not tidiness: the WHEN and WHAT verdicts cross
+    Both axes are handed the SAME positive events. That is not tidiness: the vocal-occurrence and vocalization-identity verdicts cross
     into a 2x2, and a cell of that table means nothing if the two axes were scored on different calls.
 
     Tiles are laid at the baseline width and then re-centred on the analysis window, so a wider window
@@ -872,7 +872,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         ``positions``, ``session_index``, ``counts``, ``region_labels`` (the acoustic region per
         event, NaN where the summary carries no such column), ``silent_gap``, ``call_start``,
         ``call_stop`` at
-        call grain; ``when`` (``counts``, ``labels``, ``session_index``, plus the window ``edges`` and
+        call grain; ``occurrence_windows`` (``counts``, ``labels``, ``session_index``, plus the window ``edges`` and
         their ``width``, which the circular-shift null needs to recount both classes from a shifted
         train) over positives and tiles
         together; ``session_ids``; and ``per_session`` bookkeeping (durations, event and tile counts,
@@ -885,7 +885,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     tiles_cap = decoding["max_quiet_tiles_per_session"]
     history_pre_seconds = encoding["history_pre_seconds"]
     clean_post_seconds = encoding["clean_post_seconds"]
-    region_column = settings["nested_position_decoding"]["region_label_column"]
+    region_column = settings["nested_vocal_manifold_position_decoding"]["region_label_column"]
     vocal_emitter = settings["vocalization_settings"]["vocal_emitter"]
     clean_against = settings["vocalization_settings"]["clean_against"]
     rng = np.random.default_rng(settings["null"]["shuffle_seed"])
@@ -896,9 +896,9 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
     tile_counts_parts, tile_edge_parts, tile_index_parts = [], [], []
     per_session: dict = {}
 
-    # VOCAL sessions, not every courtship session: both claim-2 axes score on the calls themselves,
+    # VOCAL sessions, not every courtship session: both vocal-decoding axes score on the calls themselves,
     # and a session with a handful of them contributes a leave-one-session-out fold whose statistic
-    # rests on those few events. The encoding claim keeps such a session, since it needs silence.
+    # rests on those few events. The kinematic encoding keeps such a session, since it needs silence.
     for slot, session_id in enumerate(unit["vocal_sessions"]):
         track_names, frame_rate, n_frames = session_timebase(data_root, session_id)
         duration = n_frames / frame_rate
@@ -932,9 +932,10 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         focal_positions = focal.select(position_columns).to_numpy().astype(np.float64)
 
         # The acoustic-region label rides along with the events rather than being re-read later,
-        # because claim 3's macro score averages within region and MUST do so over exactly the events
-        # claim 2 scored -- a second read could filter differently and silently compare two event
-        # sets. NaN where the summary carries no such column: claim 2 never needs it, and claim 3
+        # because the nested decoding's macro score averages within region and MUST do so over exactly the
+        # events the vocal decoding scored -- a second read could filter differently and silently compare
+        # two event sets. NaN where the summary carries no such column: the vocal decoding never needs it,
+        # and the nested decoding
         # raises for itself rather than making a summary without supercategories unusable here.
         focal_regions = (focal[region_column].to_numpy().astype(np.float64)
                          if region_column in focal.columns
@@ -1004,7 +1005,7 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         "silent_gap": np.concatenate(gaps_parts) if gaps_parts else np.empty(0, dtype=np.float64),
         "call_start": np.concatenate(starts_parts) if starts_parts else np.empty(0, dtype=np.float64),
         "call_stop": np.concatenate(stops_parts) if stops_parts else np.empty(0, dtype=np.float64),
-        "when": {
+        "occurrence_windows": {
             "counts": np.concatenate([counts, tile_counts]),
             "labels": np.concatenate([np.ones(counts.size), np.zeros(tile_counts.size)]),
             "session_index": np.concatenate([session_index, tile_index]),

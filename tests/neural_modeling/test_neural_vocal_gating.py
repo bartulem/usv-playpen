@@ -201,7 +201,7 @@ class TestActivation:
     """Two independent reasons to skip a unit, and they mean different things: one says the unit has
     nothing for a gate to modulate, the other says we could not test it."""
 
-    def test_a_unit_with_claim_two_tuning_is_run(self):
+    def test_a_unit_with_vocal_tuning_is_run(self):
         run, reason = should_run_gating(True, False, 500, 1.0, _gating())
         assert run
         assert reason is None
@@ -212,11 +212,11 @@ class TestActivation:
         nothing for a gate to modulate."""
         run, reason = should_run_gating(False, False, 500, 1.0, _gating())
         assert not run
-        assert reason == "no_claim2_tuning"
+        assert reason == "no_vocal_tuning"
 
     def test_the_filter_can_be_turned_off(self):
         settings = _gating()
-        settings["require_claim2_tuning"] = False
+        settings["require_vocal_tuning"] = False
         assert should_run_gating(False, False, 500, 1.0, settings)[0]
 
     def test_an_unidentifiable_unit_reads_not_testable_not_ns(self):
@@ -267,7 +267,7 @@ class TestImplementedOptions:
             check_settings(settings)
 
     def test_content_gating_cannot_be_switched_on_yet(self):
-        """Deferred, and it must be gated on a claim-2 pass -- run blind on a non-tuned unit the
+        """Deferred, and it must be gated on a vocalization-identity pass -- run blind on a non-tuned unit the
         content screen produces false positives."""
         settings = _gating()
         settings["content_gating_compute"] = True
@@ -384,7 +384,7 @@ class TestTheUniverse:
 
     def test_features_are_instantaneous_not_lagged(self, monkeypatch):
         """Gating asks whether the CURRENT context scales the response; it neither needs nor uses
-        claim 1's 600 lags."""
+        the kinematic encoding's 600 lags."""
         self._patch(monkeypatch, [(10.0, 10.2, "male")])
         universe = gating_universe(self._unit(), "/data",
                                    self._per_session(["s0", "s1"], np.arange(3000, 3100), [1005]),
@@ -540,7 +540,7 @@ class TestTheUnitPvalue:
                 for name, label, margin, p_int, p_diff in rows}
 
     def test_it_is_the_max_of_the_two_conditions(self):
-        """Both must hold, so the weaker decides -- as the IUT does for the three claims."""
+        """Both must hold, so the weaker decides -- as the intersection-union test does across the analyses it combines."""
         per_feature = self._verdicts([("a", "GATE", 40.0, 5.0e-4, 3.0e-3)])
         assert gating_unit_pvalue(per_feature, _gating())["p_unit"] == pytest.approx(3.0e-3)
 

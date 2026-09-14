@@ -121,7 +121,7 @@ class TestBinnedApproximation:
 class TestSupportingMetrics:
 
     def test_ties_take_the_average_rank(self):
-        """The WHEN predictor is an integer spike count in a 50 ms window, so most pairs are tied.
+        """The vocal-occurrence predictor is an integer spike count in a 50 ms window, so most pairs are tied.
         Breaking ties by sort position would read the arbitrary order as discrimination: here every
         score is identical, so the only defensible answer is chance."""
         assert area_under_roc(np.ones(6), np.array([0.0, 1.0, 0.0, 1.0, 0.0, 1.0])) == pytest.approx(0.5)

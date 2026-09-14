@@ -1,6 +1,6 @@
 """
 @author: bartulem
-Coverage: claim 3's block-diagonal penalty and the behaviour control it is fitted against.
+Coverage: the nested vocal-manifold position decoding's block-diagonal penalty and the behaviour control it is fitted against.
 
 The penalty is the piece that makes a mixed design legal -- five behavioural features wanting 600 lags
 of smoothing beside one neural column that must receive ridge only -- so these tests pin its SHAPE
@@ -58,7 +58,7 @@ def _settings() -> dict:
 
 
 def _nested(**overrides) -> dict:
-    """The SHIPPED nested_position_decoding block, merged and validated exactly as a run does, with
+    """The SHIPPED nested_vocal_manifold_position_decoding block, merged and validated exactly as a run does, with
     only tiny-synthetic knobs overridden. Built from the real file rather than a literal so that a key
     the code starts reading -- or stops honouring -- shows up here instead of only at run time."""
     block = nested_settings(_settings())
@@ -169,7 +169,7 @@ class TestTheBehaviourControl:
         return path
 
     def test_the_shipped_settings_freeze_p1s_five_features(self):
-        assert _settings()["nested_position_decoding"]["reduced_model_features"] == self.FROZEN
+        assert _settings()["nested_vocal_manifold_position_decoding"]["reduced_model_features"] == self.FROZEN
 
     def test_a_matching_file_returns_the_selection_order(self, tmp_path):
         settings = _settings()
@@ -201,11 +201,11 @@ class TestTheBehaviourControl:
 
     def test_the_settings_do_not_mutate(self, tmp_path):
         settings = _settings()
-        original = copy.deepcopy(settings["nested_position_decoding"]["reduced_model_features"])
+        original = copy.deepcopy(settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"])
         settings["data"]["behaviour_selection_result_path"] = str(
             self._fake_selection(tmp_path, self.FROZEN))
         reduced_model_features(settings)
-        assert settings["nested_position_decoding"]["reduced_model_features"] == original
+        assert settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"] == original
 
 
 class TestNestedDesign:
@@ -271,7 +271,8 @@ class TestNestedDesign:
         np.testing.assert_allclose(design["behaviour"][:, self.N_LAGS - 1], frames)
 
     def test_events_without_a_full_history_are_dropped_and_counted(self):
-        """A call in a session's first 4 s is usable for claim 2 and not for claim 3. Both counts are
+        """A call in a session's first 4 s is usable for the vocal decoding and not for the nested
+        decoding. Both counts are
         recorded so the difference is reported rather than discovered."""
         names = ["a"]
         events = self._events(n_sessions=1, first_frame=0)
@@ -279,12 +280,12 @@ class TestNestedDesign:
         per_session = self._per_session(events["session_ids"], names)
         design = nested_design(events, per_session, names, self.N_LAGS, 0.05)
         book = design["per_session"]["s0"]
-        assert book["n_events_claim2"] == 6
-        assert book["n_events_claim3"] == design["behaviour"].shape[0]
-        assert book["n_dropped_short_history"] == 6 - book["n_events_claim3"]
+        assert book["n_events_vocal_decoding"] == 6
+        assert book["n_events_with_full_history"] == design["behaviour"].shape[0]
+        assert book["n_dropped_short_history"] == 6 - book["n_events_with_full_history"]
         assert book["n_dropped_short_history"] > 0
 
-    def test_kept_indexes_back_into_the_claim_two_event_set(self):
+    def test_kept_indexes_back_into_the_vocal_decoding_event_set(self):
         names = ["a"]
         events = self._events(n_sessions=1, first_frame=0)
         events["call_start"] = np.array([0.0, 0.1, 1.0, 2.0, 3.0, 4.0])
@@ -294,7 +295,7 @@ class TestNestedDesign:
         np.testing.assert_allclose(design["region_labels"], events["region_labels"][design["kept"]])
 
     def test_the_neural_column_is_z_scored_within_each_session(self):
-        """Per session, not pooled: the same correction claim 2's WHEN axis applies, because a
+        """Per session, not pooled: the same correction the vocal-occurrence axis applies, because a
         least-squares fit on a continuous predictor CAN standardise its input."""
         names = ["a"]
         events = self._events(n_sessions=2)
@@ -376,7 +377,7 @@ class TestNestedScores:
         assert scores["added"] > 0
 
     def test_a_relays_contribution_falls_as_it_relays_more_noisily(self):
-        """MEASURED, and it qualifies the plan's claim that "a pure relay adds ~0".
+        """MEASURED, and it qualifies the plan's statement that "a pure relay adds ~0".
 
         A relay carries NO information the behaviour lacks, so in the infinite-data limit it adds
         nothing. At finite n it can still add, by VARIANCE REDUCTION: the behaviour block has to
@@ -515,7 +516,7 @@ class TestEscalation:
         np.testing.assert_allclose(self._factory(seed=3)(4), self._factory(seed=3)(4))
 
     def test_it_plugs_into_the_shared_escalation_ladder(self):
-        """Same contract the other claims use, so claim 3 escalates the same way rather than by its
+        """Same contract the other analyses use, so the nested decoding escalates the same way rather than by its
         own private mechanism."""
         design = TestNestedScores._design(n_sessions=2, n_per_session=60, seed=20)
         draw_more = self._factory(seed=5)
@@ -531,7 +532,7 @@ class TestEscalation:
 
 
 class TestSettingsAreNotHardCoded:
-    """Every option key named `nested_position_decoding` described a real alternative and was read by
+    """Every option key named `nested_vocal_manifold_position_decoding` described a real alternative and was read by
     NOTHING, so a run could declare one and silently get another."""
 
     def test_the_shipped_block_is_accepted(self):
@@ -544,33 +545,33 @@ class TestSettingsAreNotHardCoded:
                                               ("rate_basis", "bins")])
     def test_an_unimplemented_option_is_refused(self, key, bad):
         settings = _settings()
-        settings["nested_position_decoding"][key] = bad
+        settings["nested_vocal_manifold_position_decoding"][key] = bad
         with pytest.raises(ValueError, match="is not implemented"):
             nested_settings(settings)
 
-    def test_the_torus_period_lives_in_the_shared_block_not_claim_threes(self):
-        """It is a property of the MANIFOLD, so both claims see one value; duplicating it into two
+    def test_the_torus_period_lives_in_the_shared_block_not_the_nested_decodings(self):
+        """It is a property of the MANIFOLD, so every analysis sees one value; duplicating it into two
         blocks is exactly the drift this audit was about."""
         settings = _settings()
         assert "torus_period" in settings["vocalization_settings"]
-        assert "torus_period" not in settings["nested_position_decoding"]
+        assert "torus_period" not in settings["nested_vocal_manifold_position_decoding"]
 
-    def test_claim_two_and_claim_three_agree_on_the_period(self):
-        """Claim 2 keeps a module constant for it -- threading a parameter through ten call sites in
+    def test_the_vocal_and_nested_decodings_agree_on_the_period(self):
+        """The vocal decoding keeps a module constant for it -- threading a parameter through ten call sites in
         validated code is churn for a value that is 1.0 everywhere -- so this pins them together."""
         assert _settings()["vocalization_settings"]["torus_period"] == PERIOD
 
     def test_the_sigma_floor_is_a_setting_not_a_default(self):
-        """Claim 2's WHEN axis takes it as a required parameter from settings; claim 3 hard-coded the
+        """The vocal-occurrence axis takes it as a required parameter from settings; the nested decoding hard-coded the
         same constant as a default argument, which is how the two could have drifted apart."""
         for function in (nested_design, shifted_neural_column):
             parameter = inspect.signature(function).parameters["sigma_floor"]
             assert parameter.default is inspect.Parameter.empty
-        assert _settings()["nested_position_decoding"]["sigma_floor"] == 0.05
+        assert _settings()["nested_vocal_manifold_position_decoding"]["sigma_floor"] == 0.05
 
     def test_the_dead_bins_knob_is_gone(self):
         """`rate_basis_n_bins` only configured `rate_basis: "bins"`, which is now refused."""
-        assert "rate_basis_n_bins" not in _settings()["nested_position_decoding"]
+        assert "rate_basis_n_bins" not in _settings()["nested_vocal_manifold_position_decoding"]
 
 
 class TestMatchedWindowControl:

@@ -11,7 +11,7 @@ lone-male control, by asking whether within-courtship variation in a feature sca
 solo silence then being the same gate at its limit, with no partner present.
 
 Per feature, contemporaneously, with NO history filter (gating asks whether the CURRENT context
-scales the response, which neither needs nor uses claim 1's 600 lags):
+scales the response, which neither needs nor uses the kinematic encoding's 600 lags):
 
     logit P(spike_t) = b0 + beta_V * V(t) + alpha_f * S_f(t) + delta_f * (S_f(t) * V(t))
 
@@ -19,7 +19,7 @@ so the quiet slope is ``alpha_f``, the vocal slope is ``alpha_f + delta_f``, and
 vocal-specific modulation -- is the gate.
 
 THREE FRAME CATEGORIES, AND THE MODEL USES TWO. Vocal frames are strictly inside a focal USV. Quiet
-frames are guard-banded by the claim-1 definition: no USV from any emitter within
+frames are guard-banded by the kinematic encoding's quiet definition: no USV from any emitter within
 `history_pre_seconds` before or `clean_post_seconds` after. **Everything between -- the peri-vocal
 zone -- is DROPPED from the universe entirely**, and that is load-bearing rather than tidy: the
 peri-vocal bout ramp holds MOST of the firing (on cl0633, 58% of spikes against 35% vocal and 7%
@@ -68,7 +68,7 @@ from .shift_null_inference import sample_circular_shift, shifted_spike_frames
 #: fixed ``"peri_onset"`` window, and the plan rejects it: gating asks about VOCALIZING, not
 #: peri-vocalizing, so the whole call is the right span even though on the calibration unit it
 #: captures only ~35% of the spikes. ``content_gating_compute`` stays false because the content
-#: branch (feature x torus position, a 4-df group) is DEFERRED and must be gated on a claim-2 pass --
+#: branch (feature x torus position, a 4-df group) is DEFERRED and must be gated on a vocalization-identity pass --
 #: run blind on a non-tuned unit it produces false positives.
 IMPLEMENTED_OPTIONS = {
     "vocal_window": ("during_call",),
@@ -99,7 +99,7 @@ def check_settings(settings: dict) -> None:
             raise ValueError(msg)
 
 
-def should_run_gating(claim2_when_significant: bool, claim2_what_significant: bool,
+def should_run_gating(vocal_occurrence_significant: bool, vocalization_identity_significant: bool,
                       n_vocal_spikes: int, feature_iqr_vocal: float, settings: dict) -> tuple:
     """
     Description
@@ -109,11 +109,11 @@ def should_run_gating(claim2_when_significant: bool, claim2_what_significant: bo
     Two independent reasons to skip, and they mean different things -- which is why they are reported
     separately rather than collapsed into one boolean.
 
-    ACTIVATION (``require_claim2_tuning``, user-ruled 2026-09-11): run only on units with WHEN or WHAT
-    tuning. A unit with no vocal tuning at all has nothing for a gate to modulate, and the screen is
+    ACTIVATION (``require_vocal_tuning``, user-ruled 2026-09-11): run only on units with vocal-occurrence
+    or vocalization-identity tuning. A unit with no vocal tuning at all has nothing for a gate to modulate, and the screen is
     19 features x 2,000 shuffles, so skipping them is the saving that keeps gating negligible against
     the rest of the pipeline. Note the two are measured on OVERLAPPING but not identical frames: since
-    2026-09-11 claim 2's window straddles onset and covers the call's first 50 ms, while gating spans
+    2026-09-11 the vocal-decoding window straddles onset and covers the call's first 50 ms, while gating spans
     the WHOLE call -- so a unit responding only late in long calls could in principle be skipped. That
     is the accepted cost of the filter.
 
@@ -126,8 +126,8 @@ def should_run_gating(claim2_when_significant: bool, claim2_what_significant: bo
 
     Parameters
     ----------
-    claim2_when_significant, claim2_what_significant (bool)
-        The unit's claim-2 verdicts.
+    vocal_occurrence_significant, vocalization_identity_significant (bool)
+        Whether the unit's vocal-occurrence and vocalization-identity p-values clear the activation threshold.
     n_vocal_spikes (int)
         Spikes inside focal USVs.
     feature_iqr_vocal (float)
@@ -138,7 +138,7 @@ def should_run_gating(claim2_when_significant: bool, claim2_what_significant: bo
     Returns
     -------
     run, reason (tuple)
-        Whether to run, and ``None`` or one of ``"no_claim2_tuning"`` / ``"not_testable"``.
+        Whether to run, and ``None`` or one of ``"no_vocal_tuning"`` / ``"not_testable"``.
     """
 
     minimum_spikes = settings["min_vocal_spikes"]
@@ -147,8 +147,8 @@ def should_run_gating(claim2_when_significant: bool, claim2_what_significant: bo
         return False, "not_testable"
     if minimum_spread is not None and feature_iqr_vocal < minimum_spread:
         return False, "not_testable"
-    if settings["require_claim2_tuning"] and not (claim2_when_significant or claim2_what_significant):
-        return False, "no_claim2_tuning"
+    if settings["require_vocal_tuning"] and not (vocal_occurrence_significant or vocalization_identity_significant):
+        return False, "no_vocal_tuning"
     return True, None
 
 
@@ -469,7 +469,7 @@ def gating_survivors(per_feature: dict, feature_values_vocal: dict) -> dict:
 
     RULED 2026-09-11 (user): report ALL survivors rather than forward-selecting a minimal set. The
     plan had specified greedy forward selection by LOSO gain, and the argument against it is the same
-    one that removed group-lasso from claim 1: under collinearity a greedy search is knife-edge, and
+    one that removed group-lasso from the kinematic encoding: under collinearity a greedy search is knife-edge, and
     which of several correlated posture proxies it keeps is unstable rather than meaningful. Since
     this project's standing position is that FEATURE IDENTITY IS DESCRIPTION and not result, a stable
     description beats an unstable selection.
@@ -526,7 +526,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     The two frame sets gating runs on, with the peri-vocal zone DROPPED from both.
 
     Three categories exist and the model uses two. VOCAL frames sit strictly inside a focal USV.
-    QUIET frames are the claim-1 guard-banded anchors -- no USV from any emitter within
+    QUIET frames are the kinematic encoding's guard-banded anchors -- no USV from any emitter within
     ``history_pre_seconds`` before or ``clean_post_seconds`` after -- which is why this reuses the
     anchors the kinematic assembler already built rather than defining quiet a second way. Everything
     between is PERI-VOCAL and is discarded.
@@ -545,7 +545,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     effective n and destabilise the interaction.
 
     Features are INSTANTANEOUS -- the value at the frame, no lags. Gating asks whether the CURRENT
-    context scales the response, which neither needs nor uses claim 1's 600-lag history.
+    context scales the response, which neither needs nor uses the kinematic encoding's 600-lag history.
 
     Parameters
     ----------
@@ -686,7 +686,7 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
     at their fixed positions -- the features, the vocal indicator and the frame membership never move,
     only which frames carry a spike. The shift preserves the unit's rate, bursting and slow drift, so
     a null train looks like a real one in every respect except its alignment to behaviour and to
-    vocalization, which is exactly what the interaction claims to be about.
+    vocalization, which is exactly what the interaction is meant to measure.
 
     **The three statistics are recomputed together, not separately, and the paired difference is what
     makes the delta > beta_V condition a test rather than a comparison.** Scoring the difference
@@ -760,12 +760,12 @@ def gating_unit_pvalue(per_feature: dict, settings: dict) -> dict:
 
     The verdict returns three p-values per FEATURE, and a cohort correction needs one per UNIT. The
     plan specifies the conjunction ``max(p_delta, p_{delta > beta_V})`` of the best feature -- a max,
-    because both conditions must hold, so the weaker one decides, exactly as the IUT does for the
-    three claims.
+    because both conditions must hold, so the weaker one decides, exactly as the intersection-union test does
+    across the analyses it combines.
 
     "Best" needs defining now that forward selection is gone: it is the surviving feature with the
     largest sigma margin, which :func:`gating_survivors` already orders. A unit with no survivor has
-    no gating claim to correct and returns NaN, which keeps it out of the correction's denominator
+    no gated feature to correct and returns NaN, which keeps it out of the correction's denominator
     rather than entering it as a non-rejection.
 
     **Expect ties at the floor, and report the floor requirement alongside.** At the ruled 2,000

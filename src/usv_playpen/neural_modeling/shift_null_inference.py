@@ -34,7 +34,7 @@ once k reaches m / (q * (n + 1)) -- 252 units at a thousand draws, 25 at ten tho
 thousand. Which rung is needed therefore depends on how many units are tied at the floor, which is only
 knowable after the whole cohort has run. The shape is: run everything at the base count, count the
 floor-tied, compute the requirement with :func:`bh_floor_requirement`, and draw more only where it still
-binds. Measured cost of the top rung, at the sizes claim 1 uses: about fifteen minutes per unit.
+binds. Measured cost of the top rung, at the sizes the kinematic encoding uses: about fifteen minutes per unit.
 
 Escalation is only meaningful for a POOLED statistic, and that is a measured constraint rather than a
 stylistic one. The null statistic is smooth in the shift lag: its autocorrelation is 0.997 at a lag

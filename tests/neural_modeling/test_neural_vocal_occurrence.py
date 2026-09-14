@@ -1,9 +1,10 @@
 """
 @author: bartulem
-Unit tests for ``usv_playpen.neural_modeling.neural_when``.
+Unit tests for ``usv_playpen.neural_modeling.neural_vocal_occurrence``.
 
-Coverage: the window counting and quiet tiling, the per-session standardization and its sigma floor, and
-the LOSO transfer statistic. The properties asserted are the ones the WHEN design turns on -- tiles never
+Coverage: the window counting and quiet tiling, the per-session standardization and its sigma floor, the
+LOSO transfer statistic, and its circular-shift null. The properties asserted are the ones the design turns
+on -- tiles never
 overlap a guarded call, standardization is per session, the slope is shared while intercepts are not, and
 the statistic is sign-free so suppressed units are not penalised.
 """
@@ -18,12 +19,14 @@ from usv_playpen.neural_modeling.deviance_metrics import (
     calibrate_intercept,
     newton_logistic,
 )
-from usv_playpen.neural_modeling.neural_when import (
+from usv_playpen.neural_modeling.neural_vocal_occurrence import (
     counts_in_windows,
     quiet_tile_edges,
     standardize_per_session,
-    when_statistic,
+    vocal_occurrence_shift_null,
+    vocal_occurrence_statistic,
 )
+from usv_playpen.neural_modeling.shift_null_inference import shift_range_seconds
 
 
 class TestWindowCounts:
@@ -41,7 +44,7 @@ class TestWindowCounts:
 class TestQuietTiles:
 
     def test_tiles_avoid_the_guard_band_around_every_call(self):
-        """The guard is the claim-1 quiet definition, so a tile is silent of BOTH animals and carries a
+        """The guard is the kinematic encoding's quiet definition, so a tile is silent of BOTH animals and carries a
         forward guard -- the negative class is 'no call for seconds', not 'not during a call'."""
         edges = quiet_tile_edges(np.array([100.0]), np.array([100.5]), 300.0, 0.05,
                                  history_pre_seconds=4.0, clean_post_seconds=2.0)
@@ -130,7 +133,7 @@ class TestFittingPrimitives:
         assert area_under_roc(np.ones(4), labels) == pytest.approx(0.5)
 
 
-class TestWhenStatistic:
+class TestVocalOccurrenceStatistic:
 
     @staticmethod
     def _unit(strength, n_sessions=3, per_session=400, seed=0, rate_scale=None):
@@ -148,8 +151,8 @@ class TestWhenStatistic:
         return (np.concatenate(counts), np.concatenate(labels), np.concatenate(sessions))
 
     def test_a_predictive_unit_scores_above_a_null_one(self):
-        strong = when_statistic(*self._unit(3.0), 0.02, 0.05, 40, 40)
-        null = when_statistic(*self._unit(0.0, seed=1), 0.02, 0.05, 40, 40)
+        strong = vocal_occurrence_statistic(*self._unit(3.0), 0.02, 0.05, 40, 40)
+        null = vocal_occurrence_statistic(*self._unit(0.0, seed=1), 0.02, 0.05, 40, 40)
 
         assert strong["d2"] > 0.05
         assert strong["auroc"] > 0.7
@@ -159,9 +162,9 @@ class TestWhenStatistic:
     def test_the_statistic_is_sign_free_so_suppression_competes_equally(self):
         """About a fifth of responders are suppressed; the score must not penalise them, and the
         direction is reported separately."""
-        elevated = when_statistic(*self._unit(3.0), 0.02, 0.05, 40, 40)
+        elevated = vocal_occurrence_statistic(*self._unit(3.0), 0.02, 0.05, 40, 40)
         counts, labels, sessions = self._unit(3.0)
-        suppressed = when_statistic(counts, 1.0 - labels, sessions, 0.02, 0.05, 40, 40)
+        suppressed = vocal_occurrence_statistic(counts, 1.0 - labels, sessions, 0.02, 0.05, 40, 40)
 
         assert suppressed["d2"] == pytest.approx(elevated["d2"], rel=0.35)
         assert elevated["response_sign"] == "elevated"
@@ -170,13 +173,85 @@ class TestWhenStatistic:
     def test_a_per_session_rate_difference_does_not_break_the_shared_slope(self):
         """Sessions firing at 1x, 3x and 6x the same relationship: per-session standardization plus
         per-session intercepts must leave one slope serviceable for all three."""
-        result = when_statistic(*self._unit(3.0, rate_scale=[1.0, 3.0, 6.0]), 0.02, 0.05, 40, 40)
+        result = vocal_occurrence_statistic(*self._unit(3.0, rate_scale=[1.0, 3.0, 6.0]), 0.02, 0.05, 40, 40)
 
         assert result["d2"] > 0.05
         assert result["auroc"] > 0.65
         assert len(result["per_fold"]) == 3
 
     def test_every_fold_is_reported(self):
-        result = when_statistic(*self._unit(2.0, n_sessions=4), 0.02, 0.05, 40, 40)
+        result = vocal_occurrence_statistic(*self._unit(2.0, n_sessions=4), 0.02, 0.05, 40, 40)
         assert [fold["session"] for fold in result["per_fold"]] == [0, 1, 2, 3]
         assert result["n_windows"] == 1600
+
+
+class TestVocalOccurrenceShiftNull:
+    """The null the vocal-occurrence axis is tested against: shift each session's spike train, recount BOTH classes,
+    refit. Promoted from the pilot driver with per-draw seeds, which is what lets draws be split across
+    workers and topped up by the escalation ladder."""
+
+    RIDGE, FLOOR, IRLS, CALIBRATION, GUARD = 0.02, 0.05, 30, 40, 20.0
+
+    @staticmethod
+    def _unit(n_sessions=2, duration=300.0, n_calls=60, n_tiles=120, width=0.1, seed=0):
+        """Uniform background spikes plus a burst inside every prevocal window, so the unit's spikes are
+        ALIGNED to its calls -- exactly what a shift should destroy."""
+        generator = np.random.default_rng(seed)
+        counts, labels, sessions, edges, spikes, durations = [], [], [], [], {}, {}
+        for slot in range(n_sessions):
+            call_edges = np.sort(generator.uniform(10.0, duration - 10.0, n_calls))
+            tile_edges = np.sort(generator.uniform(10.0, duration - 10.0, n_tiles))
+            background = generator.uniform(0.0, duration, 900)
+            burst = np.repeat(call_edges, 3) + generator.uniform(0.0, width, 3 * n_calls)
+            spikes[slot] = np.sort(np.concatenate([background, burst]))
+            durations[slot] = duration
+            window_edges = np.concatenate([call_edges, tile_edges])
+            counts.append(counts_in_windows(spikes[slot], window_edges, width))
+            labels.append(np.concatenate([np.ones(n_calls), np.zeros(n_tiles)]))
+            sessions.append(np.full(window_edges.size, slot))
+            edges.append(window_edges)
+        windows = {"counts": np.concatenate(counts), "labels": np.concatenate(labels),
+                "session_index": np.concatenate(sessions), "edges": np.concatenate(edges), "width": width}
+        return windows, spikes, durations
+
+    def _null(self, windows, spikes, durations, start, n_draws, seed=7):
+        return vocal_occurrence_shift_null(windows, spikes, durations, start, n_draws, seed, self.GUARD, self.RIDGE,
+                               self.FLOOR, self.IRLS, self.CALIBRATION)
+
+    def test_any_partition_of_the_draws_gives_the_same_values(self):
+        """Draw d is seeded by its global index, so splitting [0, 6) as [0, 2) + [2, 6) -- across workers,
+        or across escalation steps -- cannot change a single value."""
+        windows, spikes, durations = self._unit()
+        whole = self._null(windows, spikes, durations, 0, 6)
+        split = np.concatenate([self._null(windows, spikes, durations, 0, 2),
+                                self._null(windows, spikes, durations, 2, 4)])
+        np.testing.assert_array_equal(whole, split)
+
+    def test_a_shift_destroys_real_alignment(self):
+        windows, spikes, durations = self._unit(seed=1)
+        observed = vocal_occurrence_statistic(windows["counts"], windows["labels"], windows["session_index"], self.RIDGE,
+                                  self.FLOOR, self.IRLS, self.CALIBRATION)["nats_per_window"]
+        null = self._null(windows, spikes, durations, 0, 25)
+        assert observed > float(null.max())
+
+    def test_both_classes_are_recounted(self):
+        """Freezing the quiet tiles and shifting only the calls would be a different null. A draw must equal
+        the recount-BOTH reference built from the same generator, and differ from the calls-only one."""
+        windows, spikes, durations = self._unit(seed=2)
+        drawn = self._null(windows, spikes, durations, 0, 1)[0]
+        generator = np.random.default_rng(7)
+        both, calls_only = windows["counts"].copy(), windows["counts"].copy()
+        for slot in sorted(spikes):
+            low, high = shift_range_seconds(durations[slot], self.GUARD)
+            shifted = np.sort((spikes[slot] + generator.uniform(low, high)) % durations[slot])
+            mask = windows["session_index"] == slot
+            recounted = counts_in_windows(shifted, windows["edges"][mask], windows["width"])
+            both[mask] = recounted
+            calls_only[mask & (windows["labels"] == 1)] = recounted[windows["labels"][mask] == 1]
+
+        def score(counts):
+            return vocal_occurrence_statistic(counts, windows["labels"], windows["session_index"], self.RIDGE, self.FLOOR,
+                                  self.IRLS, self.CALIBRATION)["nats_per_window"]
+
+        assert drawn == pytest.approx(score(both), rel=0, abs=0)
+        assert score(calls_only) != pytest.approx(drawn)

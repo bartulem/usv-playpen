@@ -4,7 +4,7 @@ Unit tests for ``usv_playpen.neural_modeling.neural_cohort``.
 
 Coverage: the session-list union, the brain-area scheme, and the two session sets the cohort hands
 out. The property that matters is the asymmetry: a session in which the recorded animal barely called
-stays available to the encoding claim, which is fitted on silence and is if anything better off, and
+stays available to the kinematic encoding, which is fitted on silence and is if anything better off, and
 is withheld from everything scored on the calls themselves, where it would contribute a fold resting
 on a handful of events.
 """
@@ -98,7 +98,7 @@ class TestTwoSessionSets:
         assert unit["emitter_usvs_per_session"] == {"s_rich": 500, "s_rich2": 300, "s_thin": 3}
 
     def test_a_unit_short_of_vocal_sessions_is_flagged_not_dropped(self, tmp_path):
-        """It still has an encoding claim to answer, and dropping it here would quietly shrink the
+        """It still has its kinematic encoding to be tested, and dropping it here would quietly shrink the
         denominator the transformation fraction is quoted against."""
         cohort = _select(tmp_path, min_vocal_sessions=3)
         assert len(cohort) == 2                        # both good+somatic units survive

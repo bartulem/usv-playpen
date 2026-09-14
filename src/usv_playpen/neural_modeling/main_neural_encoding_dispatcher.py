@@ -241,8 +241,8 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
 
     # The `self.` role is derived from the unit's own mouse_id, not configured -- see
     # `build_zscored_feature_frames`. `vocalization_settings.vocal_emitter` is a different question (whose CALLS
-    # count as the recorded animal's) and stays a knob; it is handed to the assembler so claim 1's
-    # onsets and claim 2's events move together when it is changed.
+    # count as the recorded animal's) and stays a knob; it is handed to the assembler so the kinematic
+    # encoding's onsets and the vocal decoding's events move together when it is changed.
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
@@ -523,7 +523,7 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
 
     One set and honest scoring look mutually exclusive under pure rotation: to score session *i* the
     feature set must not depend on *i*, so a set common to all sessions can depend on none of them. The
-    way out is that the two halves of claim 1 are scored on DISJOINT frames. A quiet anchor admits no USV
+    way out is that the two halves of the kinematic encoding are scored on DISJOINT frames. A quiet anchor admits no USV
     from any emitter in ``[t - history_pre_seconds, t + clean_post_seconds]``, so its entire history is
     vocalization-free, while vocal frames lie inside focal calls. Fitting and selection touch quiet
     anchors only. **No vocal frame from any session enters the model at any stage**, so every vocal frame
@@ -696,8 +696,8 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
                 "transfer_min_leave_one_session_out": transfer["min_leave_one_session_out"],
                 "n_vocal_frames": transfer["n_frames"], "final_fit_converged": final_converged,
                 "n_lags": n_lags, "fps": fps}
-    written = write_unit_section(output_directory, unit, "claim1", artifact, settings)
-    message_output(f"    wrote {written.name} [claim1, single-split]")
+    written = write_unit_section(output_directory, unit, "kinematic_encoding", artifact, settings)
+    message_output(f"    wrote {written.name} [kinematic_encoding, single-split]")
     return artifact
 
 def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
@@ -738,8 +738,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
 
     # The `self.` role is derived from the unit's own mouse_id, not configured -- see
     # `build_zscored_feature_frames`. `vocalization_settings.vocal_emitter` is a different question (whose CALLS
-    # count as the recorded animal's) and stays a knob; it is handed to the assembler so claim 1's
-    # onsets and claim 2's events move together when it is changed.
+    # count as the recorded animal's) and stays a knob; it is handed to the assembler so the kinematic
+    # encoding's onsets and the vocal decoding's events move together when it is changed.
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
@@ -770,8 +770,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
         # with it, since they show which features came close.
         result = {"unit_id": unit["unit_id"], "no_model": True, "quiet_p": 1.0, "transfer_p": np.nan,
                   "n_lags": n_lags, "fps": fps, **per_fold_roster(artifacts, n_lags)}
-        written = write_unit_section(output_directory, unit, "claim1", result, settings)
-        message_output(f"    wrote {written.name} [claim1, no model]")
+        written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
+        message_output(f"    wrote {written.name} [kinematic_encoding, no model]")
         return result
 
     quiet_scores = [float(a["quiet_score"]) for a in artifacts if not bool(a["no_model"])]
@@ -869,13 +869,61 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
               "quiet_metrics": dict(unwrap_stored(chosen_artifact["quiet_metrics"])),
               **per_fold_roster(artifacts, n_lags)}
 
-    # The combine step is the END of claim 1 for this unit, and until now it returned its results and
+    # The combine step is the END of the kinematic encoding for this unit, and until now it returned its results and
     # wrote nothing -- a cluster array would have computed every p-value and thrown them away, the
     # fold artifacts on disk holding only the halves. Merged into the unit's own file, which the other
-    # claims write their own sections into.
-    written = write_unit_section(output_directory, unit, "claim1", result, settings)
-    message_output(f"    wrote {written.name} [claim1]")
+    # analyses write their own sections into.
+    written = write_unit_section(output_directory, unit, "kinematic_encoding", result, settings)
+    message_output(f"    wrote {written.name} [kinematic_encoding]")
     return result
+
+
+def build_unit_record(unit_id: str, mouse_id: str, rec_date: int, sessions: list, data_root: str,
+                      settings: dict) -> dict:
+    """
+    Description
+    -----------
+    The unit's record as every dispatcher sees it: identity, both session sets, and the per-session call
+    counts the vocal gate was applied on.
+
+    ONE builder for every dispatcher, and that is load-bearing rather than tidy. Each section write
+    stamps this record into the unit's file as its ``identity`` block, so a kinematic-encoding job and a vocal job
+    that built it even slightly differently would make the identity flip depending on which ran last.
+
+    The vocal session set is derived here rather than passed in, so an array task applies the same gate
+    the cohort builder does, from the same definition. It governs ONLY what is scored on vocalizations:
+    every session stays in the rotation that screens, selects and fits on quiet anchors, because a
+    session the male barely called in has MORE silence, not less.
+
+    Parameters
+    ----------
+    unit_id (str)
+        Cluster id, e.g. ``imec1_cl0401_ch220_good``.
+    mouse_id (str)
+        The recorded animal.
+    rec_date (int)
+        Recording date, ``YYYYMMDD``.
+    sessions (list)
+        The unit's courtship sessions.
+    data_root (str)
+        The ``Data`` root.
+    settings (dict)
+        Full neural-modeling settings.
+
+    Returns
+    -------
+    unit (dict)
+        ``unit_uid``, ``mouse_id``, ``rec_date``, ``unit_id``, ``courtship_sessions``, ``vocal_sessions``
+        and ``emitter_usvs_per_session``.
+    """
+
+    counts = emitter_usv_counts(sessions, data_root, dict.fromkeys(sessions, mouse_id),
+                                settings["vocalization_settings"]["vocal_emitter"])
+    threshold = settings["data_sufficiency"]["min_emitter_usvs_per_session"]
+    return {"unit_uid": f"{mouse_id}_{rec_date}_{unit_id}", "mouse_id": mouse_id,
+            "rec_date": rec_date, "unit_id": unit_id, "courtship_sessions": list(sessions),
+            "vocal_sessions": [s for s in sessions if counts[s] >= threshold],
+            "emitter_usvs_per_session": counts}
 
 
 def dispatch(args: argparse.Namespace) -> int:
@@ -897,18 +945,8 @@ def dispatch(args: argparse.Namespace) -> int:
     """
 
     settings = load_settings(args.settings_path)
-    # The vocal session set is derived here rather than passed in, so the array task applies the same
-    # gate the cohort builder does from the same definition. It governs ONLY what is scored on
-    # vocalizations: every session stays in the rotation that screens, selects and fits on quiet
-    # anchors, because a session the male barely called in has MORE silence, not less.
-    counts = emitter_usv_counts(args.sessions, args.data_root,
-                              dict.fromkeys(args.sessions, args.mouse_id),
-                              settings["vocalization_settings"]["vocal_emitter"])
-    threshold = settings["data_sufficiency"]["min_emitter_usvs_per_session"]
-    unit = {"unit_uid": f"{args.mouse_id}_{args.rec_date}_{args.unit_id}", "mouse_id": args.mouse_id,
-            "rec_date": args.rec_date, "unit_id": args.unit_id, "courtship_sessions": args.sessions,
-            "vocal_sessions": [s for s in args.sessions if counts[s] >= threshold],
-            "emitter_usvs_per_session": counts}
+    unit = build_unit_record(args.unit_id, args.mouse_id, args.rec_date, args.sessions, args.data_root,
+                             settings)
     started = datetime.now()
     try:
         if args.single:

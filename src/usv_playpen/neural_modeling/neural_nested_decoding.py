@@ -1,6 +1,7 @@
 """
 @author: bartulem
-Claim 3: does a neuron carry vocal output type BEYOND the behaviour that predicts it?
+Nested vocal-manifold position decoding: does a neuron carry vocal output type BEYOND the behaviour that
+predicts it?
 
 Two nested decoders of the same target, the upcoming call's position on the QLVM torus:
 
@@ -10,7 +11,7 @@ Two nested decoders of the same target, the upcoming call's position on the QLVM
 and the statistic is the out-of-sample added ``vm_logscore``, full minus reduced. A PURE RELAY, whose
 spiking is a function of the behaviour, adds nothing the kinematics did not already carry and fails.
 A unit that adds something passes -- and what it adds is either genuinely internal, or behaviour that
-was not measured. Claim 3 cannot separate those two, which is why the paper says "beyond MEASURED
+was not measured. This test cannot separate those two, which is why the paper says "beyond MEASURED
 behaviour" rather than "computes the transformation", and why measuring behaviour more completely
 makes this test STRONGER rather than weaker.
 
@@ -31,11 +32,11 @@ the frozen list in settings, so a re-run of P1 fails loudly here instead of sile
 
 It is scored under MACRO von Mises -- the objective the control was SELECTED under. Micro would leave
 the control mildly suboptimal for the test (its first-selected feature, `self.neck_elevation`, HURTS
-the micro score), which biases claim 3 toward passing: the wrong direction for a positive claim.
+the micro score), which biases the test toward passing: the wrong direction for a positive result.
 
 The neuron enters as a spike COUNT, not 600 lags of binary train. A 4 s spike history spans ~20 prior
 calls at the 195 ms median inter-USV interval, so it is largely the neuron's RESPONSES to earlier
-calls -- and since calls within a bout correlate in type, claim 3 would pass on bout structure. The
+calls -- and since calls within a bout correlate in type, the test would pass on bout structure. The
 behaviour block has the same 4 s window and the same bout structure, and that is accepted there
 because behaviour is the CONTROL: a longer window makes it stronger and the test harder. The neuron
 is the TESTED predictor, so its window is kept short.
@@ -55,7 +56,7 @@ from ..modeling.manifold_metric import (
 )
 from ..modeling.manifold_torus_regression import SmoothTorusManifoldRegression
 from .neural_design_assembly import lagged_design
-from .neural_when import counts_in_windows
+from .neural_vocal_occurrence import counts_in_windows
 from .shift_null_inference import shift_range_seconds
 
 
@@ -67,7 +68,7 @@ class NestedTorusRegression(SmoothTorusManifoldRegression):
     behaviour block with a handful of non-temporal neural columns is penalised correctly.
 
     The parent applies one identical ``D^T D`` block per feature across ``n_time_bins`` lags, which
-    assumes every feature is a temporal filter. Claim 3's design is not like that: five behaviour
+    assumes every feature is a temporal filter. The nested design is not like that: five behaviour
     features carry 600 lags each and want smoothing along that axis, while the neural column is a
     single number with no time axis at all and must receive ridge ONLY -- smoothing a one-element
     filter is meaningless, and the parent's operator is not even defined for it.
@@ -170,7 +171,7 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
 
     Reading alone would let a re-run of P1 silently redefine what "beyond behaviour" means after
     transformation counts are banked. Freezing alone would let the control drift out of step with the
-    selection it claims to be. Doing both catches the drift instead of absorbing it, and is the same
+    selection it is meant to be. Doing both catches the drift instead of absorbing it, and is the same
     "check rather than assume" the emitter and dyad resolutions use.
 
     The file is an INPUT to the run, so it lives in the ``data`` block beside the session lists.
@@ -179,7 +180,7 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
     ----------
     settings (dict)
         The whole neural-modelling settings dict; ``data.behaviour_selection_result_path`` and
-        ``nested_position_decoding.reduced_model_features`` are read.
+        ``nested_vocal_manifold_position_decoding.reduced_model_features`` are read.
     require_selection_file (bool)
         When False, a missing selection file is tolerated and the frozen list is returned unchecked --
         for running where the lab share is not mounted. A file that IS present is always checked.
@@ -190,11 +191,11 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
         The behaviour control's feature names, in P1's selection order.
     """
 
-    frozen = list(settings["nested_position_decoding"]["reduced_model_features"])
+    frozen = list(settings["nested_vocal_manifold_position_decoding"]["reduced_model_features"])
     path = pathlib.Path(settings["data"]["behaviour_selection_result_path"])
     if not path.exists():
         if require_selection_file:
-            msg = (f"behaviour selection result not found at {path}; it defines claim 3's reduced "
+            msg = (f"behaviour selection result not found at {path}; it defines the nested decoding's reduced "
                    f"model. Pass require_selection_file=False to run on the frozen list alone.")
             raise FileNotFoundError(msg)
         return frozen
@@ -204,7 +205,7 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
     selected = list(selection["steps"][-1]["final_model_features"])
     if selected != frozen:
         msg = (f"behaviour selection drift: {path.name} ends at {selected}, but settings freeze "
-               f"{frozen}. Claim 3's control would silently change meaning; update the settings "
+               f"{frozen}. The behaviour control would silently change meaning; update the settings "
                f"deliberately if P1 was re-run.")
         raise ValueError(msg)
     return selected
@@ -215,7 +216,7 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
     """
     Description
     -----------
-    Build claim 3's design: each event's 4 s behavioural history, plus the neuron as ONE column.
+    Build the nested decoding's design: each event's 4 s behavioural history, plus the neuron as ONE column.
 
     Rows are CALLS, not frames. Each behavioural feature contributes ``n_lags`` columns -- its history
     ending at the call's onset frame -- so a row is one call with ``len(feature_names) * n_lags``
@@ -227,22 +228,23 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
     was considered and rejected: a 4 s spike history spans about twenty prior calls at the 195 ms
     median inter-USV interval, so it is largely the neuron's RESPONSES to earlier calls, and since
     calls within a bout correlate in type the model would predict this call's position from previous
-    calls' positions via the neuron -- claim 3 would pass on bout structure. The behaviour block has
+    calls' positions via the neuron -- the test would pass on bout structure. The behaviour block has
     the same 4 s window and the same bout structure and is accepted there because behaviour is the
     CONTROL, where a longer window makes the test harder. Within the 50 ms window a count rather than
     per-frame binary, because 50 ms at 150 fps is 7.5 frames (so per-frame needs the window rounded or
     the last bin ragged), the data are sparse (cl0401: 2.16 spikes per window over 8 frame-columns),
-    and decisively because CLAIM 2 ALREADY ENCODES THE NEURON AS A COUNT -- encoding it differently in
-    the two claims of one conjunction would break the nesting.
+    and decisively because THE VOCAL DECODING ALREADY ENCODES THE NEURON AS A COUNT -- encoding it differently in
+    the two analyses of one conjunction would break the nesting.
 
-    The count is z-scored PER SESSION, the same correction claim 2's WHEN axis applies, because this
+    The count is z-scored PER SESSION, the same correction the vocal-occurrence axis applies, because this
     is a least-squares fit on a continuous predictor where standardising the input is available. (The
-    WHAT axis cannot do that -- a Poisson probability is not evaluable at "2.4 SD" -- which is why it
+    vocalization-identity axis cannot do that -- a Poisson probability is not evaluable at "2.4 SD" -- which is why it
     corrects on the fitted rate instead. Same quantity, each normalised the way its likelihood
     allows.)
 
-    **Events without a full history are DROPPED, and that is why claim 2 and claim 3 see different
-    event counts.** A call in a session's first 4 s is perfectly usable for claim 2, whose 50 ms count
+    **Events without a full history are DROPPED, and that is why the vocal decoding and the nested
+    decoding see different event counts.** A call in a session's first 4 s is perfectly usable for the vocal
+    decoding, whose spike count
     needs no history, and unusable here. Both counts are returned so the difference is reported rather
     than discovered.
 
@@ -267,7 +269,7 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
     -------
     design (dict)
         ``behaviour`` ``(n_kept, n_features * n_lags)``, ``neural`` ``(n_kept, 1)``, ``positions``,
-        ``session_index``, ``region_labels``, ``kept`` (index into the claim-2 event set), and
+        ``session_index``, ``region_labels``, ``kept`` (index into the vocal-decoding event set), and
         ``per_session`` counts of events offered versus kept.
     """
 
@@ -303,8 +305,8 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
                                if kept_frames.size else np.empty((0, len(columns) * n_lags)))
         neural_parts.append(((counts - centre) / spread)[:, None])
         keep_parts.append(kept_rows)
-        bookkeeping[session_id] = {"n_events_claim2": int(rows.size),
-                                   "n_events_claim3": int(kept_rows.size),
+        bookkeeping[session_id] = {"n_events_vocal_decoding": int(rows.size),
+                                   "n_events_with_full_history": int(kept_rows.size),
                                    "n_dropped_short_history": int(rows.size - kept_rows.size),
                                    "count_mean": centre, "count_sd": spread}
 
@@ -320,11 +322,11 @@ def nested_design(events: dict, per_session: dict, feature_names: list, n_lags: 
             "per_session": bookkeeping}
 
 
-#: The only value implemented for each option `nested_position_decoding` names. Every one of these
+#: The only value implemented for each option `nested_vocal_manifold_position_decoding` names. Every one of these
 #: keys described a real alternative the plan discusses, and every one was read by NOTHING -- so a run
 #: could declare `vm_score_mode: "micro"`, be reported as micro, and score macro. The plan RULED macro
-#: for claim 3 (micro leaves the behaviour control suboptimal for the test, which biases claim 3
-#: toward passing), RULED the rich behaviour window, and RULED the neuron as ONE z-scored count -- so
+#: for this test (micro leaves the behaviour control suboptimal for it, which biases it toward
+#: passing), RULED the rich behaviour window, and RULED the neuron as ONE z-scored count -- so
 #: these are settled decisions, and the guard makes a deviation from them loud instead of silent.
 IMPLEMENTED_OPTIONS = {
     "vm_score_mode": ("macro",),
@@ -339,10 +341,10 @@ def nested_settings(settings: dict) -> dict:
     """
     Description
     -----------
-    The ``nested_position_decoding`` block with the shared manifold period merged in, validated.
+    The ``nested_vocal_manifold_position_decoding`` block with the shared manifold period merged in, validated.
 
-    The torus period is a property of the QLVM MANIFOLD, not of claim 3, so it lives in the shared
-    ``vocalization_settings`` block where both claims can see one value. Claim 3's functions take a
+    The torus period is a property of the QLVM MANIFOLD, not of this test, so it lives in the shared
+    ``vocalization_settings`` block where every analysis can see one value. This module's functions take a
     single block, so the caller merges here rather than the key being duplicated into two blocks that
     could drift apart -- which is the defect this whole audit was about.
 
@@ -354,11 +356,11 @@ def nested_settings(settings: dict) -> dict:
     Returns
     -------
     block (dict)
-        A copy of ``nested_position_decoding`` carrying ``torus_period``, refused if it declares an
-        option claim 3 does not implement.
+        A copy of ``nested_vocal_manifold_position_decoding`` carrying ``torus_period``, refused if it declares an
+        option this module does not implement.
     """
 
-    block = dict(settings["nested_position_decoding"])
+    block = dict(settings["nested_vocal_manifold_position_decoding"])
     block["torus_period"] = settings["vocalization_settings"]["torus_period"]
     check_settings(block)
     return block
@@ -368,12 +370,12 @@ def check_settings(settings: dict) -> None:
     """
     Description
     -----------
-    Refuse a ``nested_position_decoding`` block that declares an option claim 3 does not implement.
+    Refuse a ``nested_vocal_manifold_position_decoding`` block that declares an option this module does not implement.
 
     Parameters
     ----------
     settings (dict)
-        The ``nested_position_decoding`` block.
+        The ``nested_vocal_manifold_position_decoding`` block.
 
     Returns
     -------
@@ -383,7 +385,7 @@ def check_settings(settings: dict) -> None:
         value = settings[key]
         if value not in allowed:
             others = ", ".join(repr(a) for a in allowed)
-            msg = (f"nested_position_decoding.{key} = {value!r} is not implemented; claim 3 supports "
+            msg = (f"nested_vocal_manifold_position_decoding.{key} = {value!r} is not implemented; this module supports "
                    f"{others}. This is a ruled decision, not a missing feature -- see the plan.")
             raise ValueError(msg)
 
@@ -415,7 +417,7 @@ def _fit_predict(behaviour: np.ndarray, neural: np.ndarray, positions: np.ndarra
     n_lags, n_features (int)
         Design shape.
     settings (dict)
-        The ``nested_position_decoding`` block.
+        The ``nested_vocal_manifold_position_decoding`` block.
 
     Returns
     -------
@@ -450,7 +452,7 @@ def reduced_predictions(design: dict, settings: dict, n_lags: int) -> np.ndarray
     design (dict)
         From :func:`nested_design`.
     settings (dict)
-        The ``nested_position_decoding`` block.
+        The ``nested_vocal_manifold_position_decoding`` block.
     n_lags (int)
         History length in frames.
 
@@ -534,7 +536,7 @@ def nested_scores(design: dict, settings: dict, n_lags: int,
     """
     Description
     -----------
-    Claim 3's statistic: the POOLED added ``vm_logscore`` of ``position ~ kinematics + neuron`` over
+    The nested decoding's statistic: the POOLED added ``vm_logscore`` of ``position ~ kinematics + neuron`` over
     ``position ~ kinematics``, across leave-one-session-out folds.
 
     **Pooled, not fold-averaged, and this is ruled rather than stylistic.** Two reasons specific to
@@ -548,7 +550,7 @@ def nested_scores(design: dict, settings: dict, n_lags: int,
 
     Each model fits its OWN concentration on the pooled residuals, which is the ordinary nested
     likelihood comparison: a model with tighter residuals earns both a higher concentration and a
-    higher score, and that is the score being what it claims to be rather than a nuisance advantage.
+    higher score, and that is the score being what it is meant to be rather than a nuisance advantage.
 
     Training rows carry EQUAL-REGION REWEIGHTING, exactly as P1 fits it, so common regions do not
     dominate. Those weights depend only on the region labels, which no shuffle moves.
@@ -562,7 +564,7 @@ def nested_scores(design: dict, settings: dict, n_lags: int,
     design (dict)
         From :func:`nested_design`.
     settings (dict)
-        The ``nested_position_decoding`` block.
+        The ``nested_vocal_manifold_position_decoding`` block.
     n_lags (int)
         History length in frames.
     neural (np.ndarray)
@@ -640,7 +642,7 @@ def next_feature_control(events: dict, per_session: dict, reduced_features: list
     -----------
     ONE MORE STEP of the behaviour selection: what would a sixth kinematic feature have added?
 
-    This calibrates claim 3's added score against a realistic alternative, and it answers a question
+    This calibrates the neuron's added score against a realistic alternative, and it answers a question
     the permutation null CANNOT. The null asks whether the neuron's alignment IN TIME is real; a
     relay's alignment is genuinely real, so a neuron that merely re-encodes behaviour passes it. What
     that pathway needs instead is a benchmark: how much does adding a REAL extra behavioural
@@ -671,7 +673,7 @@ def next_feature_control(events: dict, per_session: dict, reduced_features: list
     candidates (list)
         Features to try as a sixth; typically every assembled feature not already in the control.
     settings (dict)
-        The ``nested_position_decoding`` block.
+        The ``nested_vocal_manifold_position_decoding`` block.
     n_lags (int)
         History length in frames.
 
@@ -722,7 +724,7 @@ def _score_block(design: dict, settings: dict, n_lags: int) -> float:
     design (dict)
         From :func:`nested_design`, with a zero-width neural block.
     settings (dict)
-        The ``nested_position_decoding`` block.
+        The ``nested_vocal_manifold_position_decoding`` block.
     n_lags (int)
         History length in frames.
 
@@ -770,7 +772,7 @@ def null_draw_factory(design: dict, settings: dict, n_lags: int, window_edges: n
     design (dict)
         From :func:`nested_design`.
     settings (dict)
-        The ``nested_position_decoding`` block.
+        The ``nested_vocal_manifold_position_decoding`` block.
     n_lags (int)
         History length in frames.
     window_edges (np.ndarray)
@@ -824,7 +826,7 @@ def matched_window_control(design: dict, events: dict, per_session: dict, settin
     is summarised to its mean over the SAME 50 ms window the neuron is counted in, so the comparison
     is one column against one column.
 
-    Why it matters, measured: claim 3's added score has a VARIANCE-REDUCTION pathway. The behaviour
+    Why it matters, measured: the neuron's added score has a VARIANCE-REDUCTION pathway. The behaviour
     block must estimate its mapping from heavily penalised columns and on real data is
     underdetermined (cl0401: 2,155 events against 3,000 columns), so a clean scalar summary of
     behaviour can add score while carrying no information the block lacks. The circular-shift null

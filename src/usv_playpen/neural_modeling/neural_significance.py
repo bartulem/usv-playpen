@@ -2,15 +2,16 @@
 @author: bartulem
 Cohort-level multiplicity control and the exact within-session permutation null.
 
-Two things live here, both shared by every claim rather than reimplemented per analysis.
+Two things live here, both shared by every analysis rather than reimplemented for each.
 
 Benjamini-Hochberg existed in seven near-identical copies across the prototype scripts, in two
 incompatible shapes -- some returning a discovery count and a threshold, others a boolean mask -- which
 is how a cohort ends up with two different answers to the same question. One implementation returns
 both.
 
-The permutation null is what the claim-2 WHAT axis tests against, and it is a DIFFERENT null from the
-circular shift used by claim 1, claim 3, the gating analysis and the claim-2 WHEN axis. The distinction
+The permutation null is what the vocalization-identity axis tests against, and it is a DIFFERENT null from
+the circular shift used by the kinematic encoding, the nested vocal-manifold position decoding, the vocal gating
+analysis and the vocal-occurrence axis. The distinction
 is not stylistic. Shifting a spike train destroys the alignment between spikes and vocal onsets IN
 ADDITION to the pairing under test, so a strongly onset-responsive unit gets a null centred far too low:
 52.5% of position-permuted control units exceeded |z| > 2 under the shift, and 10% reached the 0/1000

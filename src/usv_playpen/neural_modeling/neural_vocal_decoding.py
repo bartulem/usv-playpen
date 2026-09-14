@@ -1,6 +1,6 @@
 """
 @author: bartulem
-The WHAT axis: does a unit's prevocal firing predict WHICH call is coming?
+Vocalization identity: does a unit's firing around a call's onset carry information about WHICH call it is?
 
 The target is the upcoming call's position on the QLVM torus, and the decoder is a Bayesian inversion of
 a per-unit Poisson tuning surface: fit ``lambda(x)`` on the training sessions' events, then for a
@@ -449,7 +449,7 @@ def score_events(beta: np.ndarray, rows: np.ndarray, counts: np.ndarray, fold: d
 
     The level being read from the scored session is a rate calibration carrying no position information
     whatever -- it is one number, the session's mean count -- and is the exact analogue of recalibrating
-    a held-out intercept on the WHEN axis.
+    a held-out intercept on the vocal-occurrence axis.
 
     Events whose true position lies in a masked cell return NaN, so they are excluded from the mean
     rather than scored against a prior of zero.
@@ -605,7 +605,7 @@ def decode_gain(counts: np.ndarray, folds: list, settings: dict,
     """
     Description
     -----------
-    The frozen WHAT statistic: mean held-out decode gain in nats per event, with everything the
+    The frozen vocalization-identity statistic: mean held-out decode gain in nats per event, with everything the
     configuration fixes applied in one pass.
 
     Per outer fold the ridge is set from that fold's own training spike total, the amplitude is tuned by
@@ -876,7 +876,7 @@ def flagged_descriptors(counts: np.ndarray, positions: np.ndarray, session_index
     """
     Description
     -----------
-    Compute the WHAT-axis descriptors the settings ask to record, honouring each flag.
+    Compute the vocalization-identity descriptors the settings ask to record, honouring each flag.
 
     The three ``record_*`` flags named real quantities the plan rules should be persisted, and read
     nothing -- so a run could declare them true and record none of them. This is where they are read.

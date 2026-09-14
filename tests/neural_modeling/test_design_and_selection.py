@@ -378,7 +378,7 @@ class TestFoldsWithoutAModel:
                             lambda *_a, **_k: {s: {"fps": 150.0, "feature_names": ["a", "b"]}
                                                for s in sessions})
         combine(unit, load_settings(), str(tmp_path), str(tmp_path), message_output=lambda *_a: None)
-        stored = read_unit_artifact(str(tmp_path), unit["unit_uid"])["claim1"]
+        stored = read_unit_artifact(str(tmp_path), unit["unit_uid"])["kinematic_encoding"]
         assert stored["no_model"] is True
         assert stored["quiet_p"] == 1.0
         assert np.isnan(stored["transfer_p"])
@@ -388,7 +388,7 @@ class TestFoldsWithoutAModel:
 
 class TestLeaveOneSessionOut:
     """The guard against one session carrying the transfer, matching `min_leave_one_fold_out` on the
-    decoding claims. A descriptor, never a gate."""
+    decoding analyses. A descriptor, never a gate."""
 
     @staticmethod
     def _pooled(n_per_session, slopes, seed=0):

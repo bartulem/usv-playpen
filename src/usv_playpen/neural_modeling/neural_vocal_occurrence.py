@@ -1,10 +1,10 @@
 """
 @author: bartulem
-The WHEN axis: does a unit's firing predict that a vocalization is imminent?
+Vocal occurrence: does a unit's firing distinguish the window around a vocalization's onset from silence?
 
 The statistic is a leave-one-session-out transfer logistic, not a rank test. Positives are the unit's
 spike count in a window before each clean focal onset; negatives are the same-width count in QUIET tiles,
-using the claim-1 quiet definition so one notion of silence serves the whole project. The model is a
+using the kinematic encoding's quiet definition so one notion of silence serves the whole project. The model is a
 single SHARED slope across sessions with a per-session intercept, and the transfer is what makes it a
 test of the relationship rather than of a level: the slope is frozen for the held-out session and only
 its intercept is recalibrated, so a unit may sit at a different baseline there but its count-to-onset
@@ -19,14 +19,14 @@ per-session intercepts are needed to absorb rate drift between sessions.
 The predictor is standardized PER SESSION. An intercept shifts the linear predictor but cannot rescale
 it, so on raw counts one extra spike means very different evidence in a 10 Hz session than in a 30 Hz
 one, and no single shared slope can serve both. Standardizing expresses the count in SDs of the unit's
-own distribution within that session -- the count analogue of the per-session exposure offsets the WHAT
+own distribution within that session -- the count analogue of the per-session exposure offsets the vocalization-identity
 axis uses.
 
 Negatives are subsampled without importance weights. Logistic slopes are consistent under
 outcome-dependent sampling and the base-rate distortion is absorbed entirely by the intercept; weights
 would inflate the effective n and destabilize the fit.
 
-No amplitude calibration is applied here, and that asymmetry with the WHAT axis is deliberate rather
+No amplitude calibration is applied here, and that asymmetry with the vocalization-identity axis is deliberate rather
 than an omission: because the predictor is already per-session standardized, scale is normalised
 upstream of the model. It was tested -- a scalar gain on the frozen slope, tuned by inner LOSO -- and
 bought nothing: 4 of 16 units improved, median delta exactly 0.000000, tuned gain 1.0 at the median.
@@ -42,6 +42,7 @@ from .deviance_metrics import (
     calibrate_intercept,
     newton_logistic,
 )
+from .shift_null_inference import shift_range_seconds
 
 
 def counts_in_windows(spike_seconds: np.ndarray, left_edges: np.ndarray, width: float) -> np.ndarray:
@@ -81,10 +82,10 @@ def quiet_tile_edges(call_starts: np.ndarray, call_stops: np.ndarray, duration: 
     -----------
     Left edges of non-overlapping quiet tiles, tiled through the gaps between guard-banded calls.
 
-    The guard band is the claim-1 quiet definition -- a call forbids
+    The guard band is the kinematic encoding's quiet definition -- a call forbids
     ``[start - clean_post, stop + history_pre]`` -- applied to calls from EVERY emitter, so a tile is
     silent of the partner as well as the focal animal. Sharing the definition matters twice over: one
-    code path across claim 1, the WHEN negatives and the claim-2 baselines, and a forward guard that
+    code path across the kinematic encoding, the vocal-occurrence negatives and the vocal-decoding baselines, and a forward guard that
     makes the negative class "no call for seconds" rather than merely "not during a call".
 
     Tiles are contiguous and non-overlapping within each gap, so no spike is counted twice, and a gap
@@ -195,13 +196,13 @@ def standardize_per_session(counts: np.ndarray, session_index: np.ndarray, label
     return values, n_floored
 
 
-def when_statistic(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarray,
+def vocal_occurrence_statistic(counts: np.ndarray, labels: np.ndarray, session_index: np.ndarray,
                    ridge_fraction: float, sigma_floor: float, irls_steps: int,
                    calibration_steps: int) -> dict:
     """
     Description
     -----------
-    The WHEN statistic: leave-one-session-out added deviance of a shared-slope transfer logistic.
+    The vocal-occurrence statistic: leave-one-session-out added deviance of a shared-slope transfer logistic.
 
     Per fold the slope and the training sessions' intercepts are fitted on the other sessions, then the
     slope is FROZEN and only the held-out session's intercept is recalibrated on its own windows. The
@@ -283,3 +284,74 @@ def when_statistic(counts: np.ndarray, labels: np.ndarray, session_index: np.nda
             "n_floored_sessions": n_floored,
             "n_windows": int(counts.size),
             "per_fold": per_fold}
+
+
+def vocal_occurrence_shift_null(occurrence_windows: dict, spike_seconds: dict, durations: dict, start: int, n_draws: int,
+                    seed: int, guard_seconds: float, ridge_fraction: float, sigma_floor: float,
+                    irls_steps: int, calibration_steps: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    Null draws of the vocal-occurrence statistic: circularly shift each session's spike train, recount BOTH classes
+    at the same window positions, and refit.
+
+    BOTH classes are recounted from the shifted train -- the prevocal windows AND the quiet tiles. Freezing
+    the tiles and shifting only the positives would be a different null, one that also moves the
+    negatives' rate and would call a unit's ordinary rate drift significant. What the shift breaks is
+    exactly the alignment of spikes to vocal onsets, which IS the vocal-occurrence question; the unit's bursting and
+    slow rate structure travel with the train, so they cannot manufacture significance.
+
+    Each session is shifted independently, by an amount drawn uniformly from the shared
+    ``shift_range_seconds`` range, and the shifted times wrap around the session.
+
+    Promoted into the package from the scratchpad driver that produced the pilot vocal-occurrence nulls, with ONE
+    change: each draw now has its own generator, seeded ``seed + start + draw``. The driver drew every shift
+    from one sequential generator, which cannot be split across workers or topped up by the escalation
+    ladder without changing earlier draws. With per-draw seeds, draws ``[start, start + n_draws)`` are the
+    same values however the range is partitioned -- the same convention as ``permutation_null`` and the nested
+    decoding's ``null_draw_factory``.
+
+    Parameters
+    ----------
+    occurrence_windows (dict)
+        The ``occurrence_windows`` block of ``assemble_unit_vocal_events``: ``counts``, ``labels``, ``session_index``,
+        ``edges`` (each window's left edge, seconds) and ``width``.
+    spike_seconds (dict)
+        ``{session slot: sorted spike times in seconds}``, slots as in ``occurrence_windows["session_index"]``.
+    durations (dict)
+        ``{session slot: session duration in seconds}``, the wrap-around length.
+    start (int)
+        Global index of the first draw, so a continuation never repeats earlier draws.
+    n_draws (int)
+        How many draws to make.
+    seed (int)
+        Base seed.
+    guard_seconds (float)
+        Minimum shift away from either end of the session.
+    ridge_fraction (float)
+        As in :func:`vocal_occurrence_statistic`.
+    sigma_floor (float)
+        As in :func:`vocal_occurrence_statistic`.
+    irls_steps (int)
+        As in :func:`vocal_occurrence_statistic`.
+    calibration_steps (int)
+        As in :func:`vocal_occurrence_statistic`.
+
+    Returns
+    -------
+    null (np.ndarray)
+        ``n_draws`` values of ``nats_per_window``.
+    """
+
+    values = np.empty(int(n_draws), dtype=np.float64)
+    for draw in range(int(n_draws)):
+        generator = np.random.default_rng(seed + start + draw)
+        counts = np.empty_like(occurrence_windows["counts"])
+        for slot, train in spike_seconds.items():
+            low, high = shift_range_seconds(durations[slot], guard_seconds)
+            shifted = np.sort((train + generator.uniform(low, high)) % durations[slot])
+            mask = occurrence_windows["session_index"] == slot
+            counts[mask] = counts_in_windows(shifted, occurrence_windows["edges"][mask], occurrence_windows["width"])
+        values[draw] = vocal_occurrence_statistic(counts, occurrence_windows["labels"], occurrence_windows["session_index"], ridge_fraction,
+                                      sigma_floor, irls_steps, calibration_steps)["nats_per_window"]
+    return values
