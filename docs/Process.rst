@@ -1566,6 +1566,8 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 * **time_stretch** : whether to time-stretch spectrograms before embedding (must match training)
 * **masking_type** : ``"sam"`` (default) masks each spectrogram by the union of its SAM regions before embedding, matching how the decoder was trained by *Build QLVM training set*; ``"none"`` embeds raw spectrograms (must match training)
 * **target_shape** : output spectrogram ``(freq, time)`` shape the embedder resizes to before inference; must match the ``target_shape`` used by *Build QLVM training set* (default ``[128, 128]``)
+* **lattice_batch_size** : lattice points decoded and scored per block (default ``4096``); each block holds its decoded images and their two logs, about ``3 * 16384 * 4`` bytes per point at ``128x128``
+* **data_batch_size** : spectrograms whose lattice posteriors are computed together (default ``8192``); their likelihood matrix takes ``data_batch_size * n_points * 4`` bytes, and the lattice is decoded once per such batch
 
 .. code-block:: json
 
@@ -1580,7 +1582,9 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "fib_m": 16,
         "time_stretch": false,
         "masking_type": "sam",
-        "target_shape": [128, 128]
+        "target_shape": [128, 128],
+        "lattice_batch_size": 4096,
+        "data_batch_size": 8192
       }
 
 Train spectrogram-pipeline models

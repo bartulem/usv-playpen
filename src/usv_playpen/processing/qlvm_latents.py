@@ -259,7 +259,9 @@ class QLVMLatentInference:
         resized = stretch_specs(specs, durations, target_shape, cfg['time_stretch'])
         data = jnp.asarray(resized[:, None, :, :])
 
-        coords = np.asarray(embed_data(lattice, data, params))           # (N, 2)
+        coords = np.asarray(embed_data(
+            lattice, data, params, cfg['lattice_batch_size'], cfg['data_batch_size']
+        ))                                                               # (N, 2)
         category, supercategory = labels_for_coords(coords, fine_grid, coarse_grid)
 
         qlvm_df = pls.DataFrame({
@@ -303,6 +305,8 @@ class QLVMLatentInference:
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.')
 @click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Apply SAM mask regions before embedding ("sam", matching training) or embed raw spectrograms ("none").')
 @click.option('--target-shape', 'target_shape', nargs=2, type=int, default=None, required=False, help='Output spectrogram (freq, time) shape as two ints, matching the training preprocessing, e.g. --target-shape 128 128.')
+@click.option('--lattice-batch-size', 'lattice_batch_size', type=int, default=None, required=False, help='Lattice points decoded and scored per block; lower it to cut memory on large lattices.')
+@click.option('--data-batch-size', 'data_batch_size', type=int, default=None, required=False, help='Spectrograms whose lattice posteriors are computed together; memory grows with this times the lattice size.')
 @click.pass_context
 def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
     """

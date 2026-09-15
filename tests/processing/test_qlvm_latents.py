@@ -115,6 +115,8 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
         "time_stretch": False,
         "masking_type": "sam",
         "target_shape": [128, 128],
+        "lattice_batch_size": 4096,
+        "data_batch_size": 8192,
     }
     mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
     ql.QLVMLatentInference(
@@ -177,6 +179,8 @@ def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid):
         "time_stretch": False,
         "masking_type": "sam",
         "target_shape": [128, 128],
+        "lattice_batch_size": 4096,
+        "data_batch_size": 8192,
     }
     return root, session_id, cfg
 
@@ -236,7 +240,7 @@ def test_infer_and_merge_masking_type_applies_or_skips_sam_mask(tmp_path, mocker
     # embedding; return valid torus coordinates so the downstream lookup succeeds.
     captured = {}
 
-    def _fake_embed(lattice, data, params):
+    def _fake_embed(lattice, data, params, *_block_sizes):
         captured["data"] = np.asarray(data)
         return np.full((data.shape[0], 2), 0.5, dtype=np.float64)
 
@@ -276,7 +280,7 @@ def test_infer_and_merge_honors_target_shape(tmp_path, mocker):
 
     captured = {}
 
-    def _fake_embed(lattice, data, params):
+    def _fake_embed(lattice, data, params, *_block_sizes):
         captured["data"] = np.asarray(data)
         return np.full((data.shape[0], 2), 0.5, dtype=np.float64)
 

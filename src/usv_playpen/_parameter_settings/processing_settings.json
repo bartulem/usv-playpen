@@ -339,6 +339,8 @@
     "fib_m": 16,
     "time_stretch": false,
     "masking_type": "sam",
-    "target_shape": [128, 128]
+    "target_shape": [128, 128],
+    "lattice_batch_size": 4096,
+    "data_batch_size": 8192
   }
 }

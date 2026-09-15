@@ -705,6 +705,8 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
                             [--target-shape INTEGER INTEGER]
                             [--time-stretch | --no-time-stretch]
                             [--masking-type {sam,none}]
+                            [--lattice-batch-size INTEGER]
+                            [--data-batch-size INTEGER]
 
     required arguments:
       --root-directory      Session root directory path.
@@ -725,6 +727,8 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --time-stretch / --no-time-stretch
                             Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.
       --masking-type        Apply SAM mask regions from the mask/<session> groups before embedding ("sam", matching how the decoder was trained) or embed raw spectrograms ("none").
+      --lattice-batch-size  Lattice points decoded and scored per block; lower it to cut memory on large lattices.
+      --data-batch-size     Spectrograms whose lattice posteriors are computed together; memory grows with this times the lattice size.
 
 ``export-yolo-dataset``
 ``export-yolo-dataset`` renders USV spectrograms to images (exactly as the detector renders them at inference) and writes an Ultralytics-format YOLO dataset (``images/{train,val}``, ``labels/{train,val}``, ``data.yaml``). ``--label-source cc`` (default) pseudo-labels boxes with the unlearned connected-component detector (no annotation needed); ``manual`` ingests hand-verified ``{spec_id}.txt`` labels; ``merge`` uses cc overridden by manual where present.

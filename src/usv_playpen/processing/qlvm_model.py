@@ -364,6 +364,8 @@ def embed_data(
     lattice: jnp.ndarray,
     data: jnp.ndarray,
     params: dict[str, jnp.ndarray],
+    lattice_batch_size: int,
+    data_batch_size: int,
 ) -> jnp.ndarray:
     """
     Description
@@ -373,6 +375,16 @@ def embed_data(
     back to latent coordinates (the ``embed_type='posterior'`` path of
     ``QMCLVM.embed_data``).
 
+    The work is chunked so memory does not grow with the lattice: the spectrograms
+    are taken ``data_batch_size`` at a time, and for each such chunk the lattice
+    is decoded ``lattice_batch_size`` points at a time and scored against it, so
+    the ``(chunk, K)`` log-likelihood matrix is assembled column block by column
+    block. Peak memory is about ``data_batch_size * K * 4`` bytes for the
+    likelihoods plus ``lattice_batch_size * 3 * 16384 * 4`` bytes for one decoded
+    block and its two logs (at ``128x128``). The lattice is re-decoded once per
+    data chunk. The posterior is the same function of the likelihoods as in
+    :func:`posterior_over_lattice`, so chunking changes float rounding only.
+
     Parameters
     ----------
     lattice (jnp.ndarray)
@@ -381,13 +393,38 @@ def embed_data(
         Data spectrograms, shape ``(B, 1, 128, 128)`` in ``[0, 1]``.
     params (dict[str, jnp.ndarray])
         Decoder weights.
+    lattice_batch_size (int)
+        Lattice points decoded and scored per block (``>= 1``).
+    data_batch_size (int)
+        Spectrograms whose posteriors are computed together (``>= 1``).
 
     Returns
     -------
     latent_coords (jnp.ndarray)
         Torus coordinates in ``[0, 1)``, shape ``(B, latent_dim)``.
     """
-    atlas = decode_lattice_atlas(lattice, params)
-    posterior = posterior_over_lattice(atlas, data)                 # (B, K)
-    weighted = posterior @ torus_basis_forward(lattice)             # (B, 2*latent_dim)
-    return torus_basis_reverse(weighted)
+    if lattice_batch_size < 1 or data_batch_size < 1:
+        error_message = (
+            f"embed_data: lattice_batch_size and data_batch_size must be >= 1, "
+            f"got {lattice_batch_size} and {data_batch_size}."
+        )
+        raise ValueError(error_message)
+    n_points = int(lattice.shape[0])
+    n_data = int(data.shape[0])
+    wrapped_basis = torus_basis_forward(lattice % 1)                # decoder input
+    lattice_torus = torus_basis_forward(lattice)                    # (K, 2*latent_dim)
+    latent_coords = np.empty((n_data, int(lattice.shape[1])), dtype=np.float32)
+    for data_start in range(0, n_data, data_batch_size):
+        data_chunk = data[data_start:data_start + data_batch_size]
+        lls = jnp.concatenate(
+            [
+                binary_lp(decoder_forward(wrapped_basis[point_start:point_start + lattice_batch_size], params), data_chunk)
+                for point_start in range(0, n_points, lattice_batch_size)
+            ],
+            axis=1,
+        )                                                           # (chunk, K)
+        evidence = jax.scipy.special.logsumexp(lls, axis=1, keepdims=True) - jnp.log(n_points)
+        posterior = jax.nn.softmax(lls - evidence, axis=1)
+        weighted = posterior @ lattice_torus                        # (chunk, 2*latent_dim)
+        latent_coords[data_start:data_start + data_chunk.shape[0]] = np.asarray(torus_basis_reverse(weighted))
+    return jnp.asarray(latent_coords)
