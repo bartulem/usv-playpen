@@ -1435,7 +1435,16 @@ The *Compute USV features* and *Infer QLVM latents* steps add columns to *usv_su
 
 * **qlvm1** / **qlvm2** : the two torus (latent) coordinates
 * **qlvm_category** : the FINE watershed cluster label (vocal category)
-* **qlvm_supercategory** : the COARSE watershed cluster label (``0`` = background / noise)
+* **qlvm_supercategory** : the COARSE watershed cluster label (every value is a cluster: the reference grids label every pixel from ``1``, with no background / noise label ``0``)
+* **qlvm_model** : the model the four columns above came from — the model package cell (``<package>/<phase>/<cell>``, e.g. ``v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked``) or the decoder weights path. Labels from different models share the column names but not their meaning (a v2 cell has 8–18 fine and at most 9 coarse clusters, numbered by size), so check this column before pooling sessions
+
+Switching sessions to a QLVM model package cell also changes what these readers see:
+
+* the QLVM visualizations read ``<spectrograms_dir>/qlvm/arrays_{fine,coarse}.npz``; write the cell's with ``export-qlvm-reference-arrays`` under a separate ``spectrograms_dir``
+* the torus geodesic metrics decode with ``vocal_features.usv_manifold_geodesic_metrics.decoder_weights_npz_path`` (``modeling_settings.json``); point it at the cell's ``checkpoint.tar``, which loads without torch
+* the pooled-embedding parquet caches and the consolidated store's ``qlvm_dim`` keep the columns as they were when built; rebuild them after re-embedding
+* the tuning figures' bundled ``_config/usv_latent_embedding_segmentation.npz`` holds the reference segmentation, so its region maps do not match a cell's clusters (the per-category bars follow the categories units hold)
+* category ids chosen by meaning (e.g. the coactivity notebook's ``GROUP_A_IDS = [1]`` / ``GROUP_B_IDS = [7]``) have to be re-chosen: a cell numbers its clusters by size
 
 .. parsed-literal::
 
@@ -1555,6 +1564,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 
 *Infer QLVM latents* (``infer_qlvm_latents``):
 
+* **model_cell_directory** : one cell of a QLVM model package, e.g. ``/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked`` (default ``""``, unused). When set, the cell replaces ``weights_npz_path``, both ``reference_arrays_*`` paths and the lattice keys: the decoder comes from its ``checkpoint.tar`` (read without torch; the legacy or ReLU head is read from the weights), the input normalization and duration window from its ``training_contract.json``, the lattice from the contract's Fibonacci ``embedding_fib_m`` (``24``, 46,368 points), and the categories from its ``cluster/fine/label_grid.npy`` and ``cluster/coarse/label_grid.npy``. ``masking_type``, ``target_shape``, ``time_stretch`` and ``latent_dim`` must still agree with the contract (``masking_type`` ``"sam"`` for phase 9 cells, ``"none"`` for phase 6 and 10 cells). Package cells were trained on min-maxed spectrograms (phase 6 and 10 cells also with a 0.2 loudness floor), which is applied automatically. Conditional cells (phase 10, conditioned on duration or mean frequency) decode each USV at the frozen corpus bin mean (``condition_bins.npz``) of its own value — the normalized duration, or the mean frequency of its SAM-masked spectrogram, which needs the session's masks even though the input is unmasked — and decode the lattice once per distinct bin mean (up to 32 per session)
 * **weights_npz_path** : path to the QLVM decoder weights ``.npz`` (written by *Train QLVM*)
 * **reference_arrays_fine_npz_path** : path to the FINE reference ``arrays.npz`` (its ``ws_labels_periodic`` grid → ``qlvm_category``)
 * **reference_arrays_coarse_npz_path** : path to the COARSE reference ``arrays.npz`` (its ``ws_labels_periodic`` grid → ``qlvm_supercategory``)
@@ -1564,12 +1574,16 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 * **korobov_a** : Korobov generating integer (must match training)
 * **fib_m** : Fibonacci lattice parameter (must match training)
 * **time_stretch** : whether to time-stretch spectrograms before embedding (must match training)
-* **masking_type** : ``"sam"`` (default) masks each spectrogram by the union of its SAM regions before embedding, matching how the decoder was trained by *Build QLVM training set*; ``"none"`` embeds raw spectrograms (must match training)
+* **masking_type** : ``"sam"`` (default) masks each spectrogram by the union of its SAM regions before embedding, matching how the decoder was trained by *Build QLVM training set*; ``"none"`` embeds raw spectrograms (must match training). USVs without a mask instance get null ``qlvm_*`` columns rather than being embedded unmasked when the training contract has ``require_mask`` true (every v2 package cell) or the cell conditions on mean frequency; a ``"sam"`` decoder without ``require_mask`` (e.g. the shipped model, whose training set kept such calls under an all-ones mask) still embeds them. A session H5 without a ``mask/<session>`` group raises for any of these decoders
 * **target_shape** : output spectrogram ``(freq, time)`` shape the embedder resizes to before inference; must match the ``target_shape`` used by *Build QLVM training set* (default ``[128, 128]``)
+* **length_threshold** : embed only USVs with ``0 < duration < length_threshold`` (time bins), the window *Build QLVM training set* keeps; longer USVs get null ``qlvm_*`` columns. ``null`` (default) takes the value from the training contract ``qmc_decoder_weights.json`` beside the weights, or embeds every positive duration when the weights have no contract. A value set here must equal the contract's
+* **lattice_batch_size** : lattice points decoded and scored per block (default ``4096``); each block holds its decoded images and their two logs, about ``3 * 16384 * 4`` bytes per point at ``128x128``
+* **data_batch_size** : spectrograms whose lattice posteriors are computed together (default ``8192``); their likelihood matrix takes ``data_batch_size * n_points * 4`` bytes, and the lattice is decoded once per such batch
 
 .. code-block:: json
 
     "infer_qlvm_latents": {
+        "model_cell_directory": "",
         "weights_npz_path": "",
         "reference_arrays_fine_npz_path": "",
         "reference_arrays_coarse_npz_path": "",
@@ -1580,7 +1594,10 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "fib_m": 16,
         "time_stretch": false,
         "masking_type": "sam",
-        "target_shape": [128, 128]
+        "target_shape": [128, 128],
+        "length_threshold": null,
+        "lattice_batch_size": 4096,
+        "data_batch_size": 8192
       }
 
 Train spectrogram-pipeline models
@@ -1593,7 +1610,20 @@ Both train cross-session via CLI / cluster commands only (no GUI buttons): each 
 QLVM decoder
 ^^^^^^^^^^^^
 
-Defines the shared toroidal latent space (and watershed categories) that makes the ``qlvm_*`` columns comparable across every session embedded with the same model. ``build-qlvm-training-set`` aggregates the cohort's ``*_spectrograms.h5`` into a curated set (``--masking-type sam`` masks each spectrogram by its SAM region, the default; ``none`` keeps raw spectrograms) → ``train_data.npz`` + ``val_data.npz`` (or ``full_data.npz``) + ``metadata.npz``. ``train-qlvm`` then trains the decoder → ``qmc_train_qlvm.tar`` + ``qmc_decoder_weights.npz`` (reloaded by ``infer-qlvm-latents``). Cluster submitter: ``train_qlvm_global.sh``.
+Defines the shared toroidal latent space (and watershed categories) that makes the ``qlvm_*`` columns comparable across every session embedded with the same model. ``build-qlvm-training-set`` aggregates the cohort's ``*_spectrograms.h5`` into a curated set (``--masking-type sam`` masks each spectrogram by its SAM region, the default; ``none`` keeps raw spectrograms) → ``train_data.npz`` + ``val_data.npz`` (or ``full_data.npz``) + ``metadata.npz``. ``train-qlvm`` then trains the decoder → ``qmc_train_qlvm.tar`` + ``qmc_decoder_weights.npz`` (reloaded by ``infer-qlvm-latents``) + ``qmc_decoder_weights.json``, the training contract that records the decoder head and the set's masking, ``target_shape``, ``time_stretch``, ``length_threshold`` and ``require_mask`` (``false`` when ``metadata.npz`` does not record it). ``infer-qlvm-latents`` refuses settings that disagree with it and embeds only USVs inside the same duration window (and, for ``require_mask``, only USVs with a SAM mask), so keep the ``.json`` next to the ``.npz`` when copying a model. Cluster submitter: ``train_qlvm_global.sh``. A ``train-qlvm`` decoder has no clustering of its own: its categories need reference arrays built for that model, and retraining into the same folder leaves the old arrays describing a different torus.
+
+QLVM model packages
+^^^^^^^^^^^^^^^^^^^
+
+A QLVM model package (the ``qlvm_models_latest/v2`` layout) ships trained decoders together with everything inference needs, one folder per cell: ``<package>/<phase>/<cell>``. ``infer-qlvm-latents`` reads a cell when ``model_cell_directory`` is set; the files it uses are:
+
+* ``checkpoint.tar`` — a torch zip checkpoint whose ``"model"`` entry holds the decoder ``state_dict`` (``decoder.<index>.weight`` / ``.bias``); read without torch. The head follows from the keys: ``decoder.1.weight`` is the activation-free legacy head, ``decoder.2.weight`` the ReLU head
+* ``training_contract.json`` — ``decoder_head``, ``latent_dim``, ``c_dim``, ``input_normalization`` (``"minmax"``) and ``normalization_epsilon``, ``masking_type``, ``floor``, ``target_shape``, ``time_stretch``, ``length_threshold``, ``require_mask`` (``true``: the corpus left out calls without a SAM mask, in every phase), ``embedding_lattice_type`` (``"fibonacci"``) and ``embedding_fib_m``, and the ``condition`` block of conditional cells (``"duration"``: ``duration_min``, ``duration_max``, ``epsilon``; ``"mean_freq"``: ``spectrogram``, ``epsilon``) with ``condition_bins``
+* ``cluster/fine/label_grid.npy`` and ``cluster/coarse/label_grid.npy`` — ``(200, 200)`` int16 label grids indexed ``[y, x]``, labels ``1 … k`` numbered by cluster size; the label of a USV is ``grid[int(qlvm2 * 200), int(qlvm1 * 200)]``, the same lookup as the reference arrays
+* ``condition_bins.npz`` (conditional cells) — ``edges`` (the corpus quantile-bin edges of the conditioning value) and ``bin_mean`` (the corpus mean value per bin)
+* ``posterior_cache.npz``, ``cluster/<level>/clusters.csv`` and ``cluster/<level>/cluster_labels.csv`` — read only by ``export-qlvm-reference-arrays``
+
+The package's own ``code/selftest.py`` checks every file above against its sources and re-embeds corpus calls; run it on a copy before using it. Runtime is set by the 46,368-point lattice: decoding it takes about 20 s on CPU (JAX, 144 cores; decoding 4,096 points takes 1.5–1.8 s, and ``jax.jit`` barely changes that), so an unconditional cell embeds a session of ~700 USVs in about 25 s, and a conditional cell, which decodes the lattice once per distinct bin mean, in about 11–12 minutes. The ``gpu`` extra (JAX with CUDA) shortens both. Embedding a session with a cell reproduces the package's corpus labels: on two sessions per cell (phase 6, 9 and 10 ``natural_3strata_N65000``), the model inputs matched the package's bitwise, and 99.0–100 % of fine labels matched ``cluster_labels.csv``, all of the rest being calls whose posterior mean crossed a pixel edge (conditional cells decode at the frozen bin mean rather than the corpus embedding's batch mean, which moves a few more calls).
 
 Mask detector
 ^^^^^^^^^^^^^

@@ -19,7 +19,14 @@ artifacts into the output directory:
   ``processing/qlvm_latents.py``'s ``weights_npz_path``) loads. Training and
   inference therefore meet only at this ``.npz`` boundary -- the decoder
   architecture here (:func:`build_qmc_decoder`) is the one
-  ``qlvm_model.decoder_forward`` reconstructs.
+  ``qlvm_model.decoder_forward`` reconstructs; and
+* ``qmc_decoder_weights.json`` -- the training contract beside the weights: the
+  decoder head and widths, the input preprocessing the decoder saw (masking,
+  normalization, ``target_shape``, ``time_stretch``), the duration window of
+  the training set and whether it kept only calls with a SAM mask
+  (``require_mask``), read from the set's ``metadata.npz``.
+  ``infer-qlvm-latents`` checks its settings against it and embeds only calls
+  inside the same duration window.
 
 The model has no learned encoder: the torus is a fixed lattice and only the
 decoder is trained. Each batch applies a fresh random torus shift to the whole
@@ -30,6 +37,7 @@ importing this module never pulls in torch.
 
 from __future__ import annotations
 
+import json
 import pathlib
 from collections.abc import Callable
 from datetime import datetime
@@ -39,6 +47,7 @@ import numpy as np
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
+from ..os_utils import atomic_output_path
 from ..time_utils import is_gui_context, smart_wait
 
 # Output artifact names (the .npz is the train -> JAX-inference bridge file).
@@ -240,15 +249,22 @@ class QLVMTrainer:
         The full ``(N, 1, F, T)`` spectrogram stack is trained as-is; the lattice
         is given a fresh random torus shift every batch (the QMC trick). After
         training the decoder ``state_dict`` is dumped one array per layer so the
-        torch-free JAX inference path can reload it without torch.
+        torch-free JAX inference path can reload it without torch, and the
+        training contract (``qmc_decoder_weights.json``) is written beside it
+        from the settings and the set's ``metadata.npz``.
+
+        Refuses to start when ``metadata.npz`` is missing, or when a
+        ``train_data.npz`` / ``val_data.npz`` is older than a ``full_data.npz`` in
+        the same directory (a split left over from an earlier build).
 
         Parameters
         ----------
 
         Returns
         -------
-        ``qmc_train_qlvm.tar`` + ``qmc_decoder_weights.npz``
-            Checkpoint and decoder-weights bridge written to the output directory.
+        ``qmc_train_qlvm.tar`` + ``qmc_decoder_weights.npz`` + ``qmc_decoder_weights.json``
+            Checkpoint, decoder-weights bridge and training contract written to the
+            output directory.
         """
 
         self.message_output(
@@ -288,6 +304,42 @@ class QLVMTrainer:
             )
             raise FileNotFoundError(error_message)
         val_path = dataset_dir / "val_data.npz"
+
+        # build-qlvm-training-set writes either train/val splits or full_data.npz and
+        # never deletes the other kind, so a set rebuilt with full_dataset leaves the
+        # old splits behind -- and train_data.npz wins the lookup above. A split older
+        # than full_data.npz is that leftover: refuse it rather than train on it.
+        if full_npz.is_file():
+            stale_splits = [
+                split.name for split in (train_npz, val_path)
+                if split.is_file() and split.stat().st_mtime < full_npz.stat().st_mtime
+            ]
+            if stale_splits:
+                error_message = (
+                    f"{', '.join(stale_splits)} in {dataset_dir} predate full_data.npz, so they are left over "
+                    f"from an earlier build. Delete them to train on full_data.npz, or rebuild the split set."
+                )
+                raise ValueError(error_message)
+
+        # The dataset's own record of how its spectrograms were made; it becomes the
+        # preprocessing half of the training contract written beside the weights.
+        metadata_path = dataset_dir / "metadata.npz"
+        if not metadata_path.is_file():
+            error_message = (
+                f"No metadata.npz in {dataset_dir}. build-qlvm-training-set writes it next to the splits; "
+                f"the decoder's training contract records the set's masking, shape and duration window from it."
+            )
+            raise FileNotFoundError(error_message)
+        with np.load(metadata_path, allow_pickle=False) as metadata:
+            dataset_contract = {
+                "masking_type": str(metadata["masking_type"]),
+                "target_shape": [int(value) for value in metadata["target_shape"]],
+                "time_stretch": bool(metadata["time_stretch"]),
+                "length_threshold": float(metadata["length_threshold"]),
+                # Sets built with require_mask keep only calls with a SAM mask instance;
+                # sets that do not record it kept mask-less calls under an all-ones mask.
+                "require_mask": bool(metadata["require_mask"]) if "require_mask" in metadata.files else False,
+            }
 
         output_dir = pathlib.Path(self.output_directory)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -383,7 +435,33 @@ class QLVMTrainer:
             **{key: value.detach().cpu().numpy() for key, value in decoder_state.items()},
         )
 
-        self.message_output(f"Wrote checkpoint -> {checkpoint_path} and decoder weights -> {weights_path}.")
+        # Training contract beside the weights (same stem, .json): what the decoder
+        # is and what input it was trained on. build_qmc_decoder is the
+        # activation-free "legacy" head with no conditioning input, and _load_split
+        # feeds the stored spectrograms without renormalizing them.
+        contract_path = weights_path.with_suffix(".json")
+        contract = {
+            "decoder_head": "legacy",
+            "latent_dim": latent_dim,
+            "c_dim": 0,
+            "condition": None,
+            "input_normalization": "none",
+            "floor": None,
+            **dataset_contract,
+            "lattice_type": lattice_type,
+            "korobov_a": korobov_a,
+            "train_n_points": train_n_points,
+            "test_n_points": test_n_points,
+            "fib_m": fib_m,
+            "dataset_directory": str(dataset_dir),
+        }
+        with atomic_output_path(contract_path) as tmp_contract_path, tmp_contract_path.open("w") as contract_file:
+            json.dump(contract, contract_file, indent=2)
+
+        self.message_output(
+            f"Wrote checkpoint -> {checkpoint_path}, decoder weights -> {weights_path} "
+            f"and training contract -> {contract_path}."
+        )
         self.message_output(
             f"QLVM training ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
         )

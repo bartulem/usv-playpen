@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from usv_playpen.processing import qlvm_model as qm
 
@@ -80,6 +81,17 @@ def test_torus_basis_roundtrip():
     assert np.allclose(back, np.asarray(z), atol=1e-6)
 
 
+def test_torus_basis_reverse_never_returns_one():
+    """A tiny negative angle rounds to 2*pi in float32; without the mod-1 wrap the
+    coordinate is exactly 1.0 and the label lookup clips it to the far grid edge."""
+    embedding = jnp.asarray(np.array([[1.0, 1.0, -1e-9, 0.5]], dtype=np.float32))
+    coords = np.asarray(qm.torus_basis_reverse(embedding))
+    assert coords.dtype == np.float32
+    assert np.all(coords >= 0.0)
+    assert np.all(coords < 1.0)
+    assert coords[0, 0] == 0.0
+
+
 def test_binary_lp_shape_and_peaks_at_self():
     """binary_lp returns (B, K) and is maximized when a sample equals the data."""
     rng = np.random.default_rng(1)
@@ -137,7 +149,83 @@ def test_decoder_forward_and_embed_end_to_end():
     assert recon_np.max() <= 1.0
 
     data = jnp.asarray(rng.uniform(0.0, 1.0, size=(3, 1, 128, 128)))
-    coords = np.asarray(qm.embed_data(lattice, data, params))
+    coords = np.asarray(qm.embed_data(lattice, data, params, lattice_batch_size=16, data_batch_size=3))
     assert coords.shape == (3, 2)
     assert coords.min() >= 0.0
-    assert coords.max() < 1.0 + 1e-6
+    assert coords.max() < 1.0
+
+
+def _sharp_decoder_params(rng, latent_dim=2):
+    """Random decoder weights large enough that lattice points decode to clearly
+    different images, so a decoded image has a peaked posterior. With the small
+    weights of ``_random_decoder_params`` every image is ~0.5 and the posterior is
+    flat, which makes the posterior-mean angle ill-conditioned."""
+    layers = {
+        "0": ((2048, 2 * latent_dim), 1.0),
+        "1": ((64 * 8 * 8, 2048), 1.0 / np.sqrt(2048)),
+        "3": ((64, 32, 3, 3), 0.5),
+        "5": ((32, 16, 3, 3), 0.5),
+        "7": ((16, 8, 3, 3), 0.5),
+        "9": ((8, 1, 3, 3), 0.5),
+    }
+    params = {}
+    for idx, (shape, scale) in layers.items():
+        params[f"{idx}.weight"] = jnp.asarray(rng.standard_normal(shape) * scale)
+        params[f"{idx}.bias"] = jnp.asarray(np.zeros(shape[1] if len(shape) == 4 else shape[0]))
+    return params
+
+
+def test_embed_data_chunking_matches_one_block():
+    """Chunking the lattice and the data must not reorder columns or rows: decoded
+    images of lattice points spread across every block embed to the one-block answer
+    for block sizes that split both axes unevenly."""
+    rng = np.random.default_rng(5)
+    params = _sharp_decoder_params(rng)
+    lattice = qm.gen_korobov_basis(a=5, num_dims=2, num_points=23)
+    atlas = qm.decode_lattice_atlas(lattice, params)
+    data = atlas[np.array([0, 4, 9, 13, 17, 20, 22])]
+
+    posterior = qm.posterior_over_lattice(atlas, data)
+    reference = np.asarray(qm.torus_basis_reverse(posterior @ qm.torus_basis_forward(lattice)))
+    for lattice_batch_size, data_batch_size in ((23, 7), (5, 2), (1, 3), (100, 100)):
+        coords = np.asarray(qm.embed_data(lattice, data, params, lattice_batch_size, data_batch_size))
+        torus_gap = np.abs(coords - reference)
+        assert np.all(np.minimum(torus_gap, 1.0 - torus_gap) < 1e-5)
+
+
+def test_embed_data_conditional_decodes_each_value_with_c_appended():
+    """A conditional decoder sees one c for the whole lattice: grouping the
+    spectrograms by value must give, for every row, the embedding its own value's
+    lattice gives, and the decoder width must match the conditioning."""
+    rng = np.random.default_rng(7)
+    params = _sharp_decoder_params(rng)
+    params["0.weight"] = jnp.asarray(rng.standard_normal((2048, 5)))           # 2 * latent_dim + c_dim
+    lattice = qm.gen_korobov_basis(a=5, num_dims=2, num_points=23)
+    wrapped = qm.torus_basis_forward(lattice % 1)
+    values = np.array([0.2, 0.7, 0.2, 0.7, 0.2], dtype=np.float32)
+    low, high = (float(value) for value in np.unique(values))
+    atlases = {
+        value: qm.decoder_forward(jnp.concatenate([wrapped, jnp.full((23, 1), value)], axis=1), params)
+        for value in (low, high)
+    }
+    data = jnp.stack([atlases[low][3], atlases[high][9], atlases[low][15], atlases[high][1], atlases[low][20]])
+    coords = np.asarray(qm.embed_data(lattice, data, params, 7, 2, condition_values=values))
+    for row, value in enumerate(values):
+        posterior = qm.posterior_over_lattice(atlases[float(value)], data[row:row + 1])
+        expected = np.asarray(qm.torus_basis_reverse(posterior @ qm.torus_basis_forward(lattice)))[0]
+        gap = np.abs(coords[row] - expected)
+        assert np.all(np.minimum(gap, 1.0 - gap) < 1e-5)
+    with pytest.raises(ValueError, match="conditioning input"):
+        qm.embed_data(lattice, data, params, 7, 2)
+    with pytest.raises(ValueError, match="conditioning input"):
+        qm.embed_data(lattice, data, _sharp_decoder_params(rng), 7, 2, condition_values=values)
+
+
+def test_embed_data_rejects_empty_blocks():
+    """A zero block size would loop forever or embed nothing, so it must fail loudly."""
+    rng = np.random.default_rng(6)
+    params = _random_decoder_params(rng)
+    lattice = qm.gen_korobov_basis(a=3, num_dims=2, num_points=4)
+    data = jnp.asarray(rng.uniform(0.0, 1.0, size=(1, 1, 128, 128)))
+    with pytest.raises(ValueError, match="must be >= 1"):
+        qm.embed_data(lattice, data, params, lattice_batch_size=0, data_batch_size=1)

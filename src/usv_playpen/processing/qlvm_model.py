@@ -18,9 +18,11 @@ This is a faithful port of ``qmc_deep_gen``'s ``models/qmc_base.py``
 checkpoint's ``state_dict``; usv-playpen never imports torch.
 
 PARITY: the JAX ``conv_transpose2d`` reproduces ``torch.nn.ConvTranspose2d``'s
-exact definition (validated against a pure-numpy reference in the tests). Before
-trusting embeddings in production, confirm the parity test passes against a
-torch-generated reference for the actual checkpoint.
+exact definition (validated against a pure-numpy reference in the tests), and
+``tests/processing/test_train_qlvm.py`` runs a seeded torch decoder, exported the
+way ``train-qlvm`` exports it, through both frameworks: decoded images agree to
+1e-5 and lattice posteriors to 1e-4 against the vendored
+``QMCLVM.posterior_probability``.
 """
 
 from __future__ import annotations
@@ -147,7 +149,10 @@ def torus_basis_reverse(data: jnp.ndarray) -> jnp.ndarray:
     Description
     -----------
     Inverse of :func:`torus_basis_forward`: recovers latent coordinates in
-    ``[0, 1)`` from a ``(N, 2d)`` ``[cos, sin]`` embedding via ``atan2``.
+    ``[0, 1)`` from a ``(N, 2d)`` ``[cos, sin]`` embedding via ``atan2``. The
+    result is reduced ``mod 1``: a tiny negative angle becomes ``2*pi`` after the
+    wrap in float32, which would otherwise return exactly ``1.0`` and be clipped
+    to the far edge of a label grid instead of pixel 0.
 
     Parameters
     ----------
@@ -162,7 +167,7 @@ def torus_basis_reverse(data: jnp.ndarray) -> jnp.ndarray:
     d = data.shape[-1] // 2
     angles = jnp.arctan2(data[:, d:], data[:, :d])
     angles = jnp.where(angles < 0, 2 * jnp.pi + angles, angles)
-    return angles / (2 * jnp.pi)
+    return (angles / (2 * jnp.pi)) % 1.0
 
 
 # --------------------------------------------------------------------------- #
@@ -262,9 +267,42 @@ def conv_transpose2d(
 # reshape to (64, 8, 8), then four ConvTranspose2d(stride=2, padding=1,
 # output_padding=1) blocks 64->32->16->8->1, ReLU between, Sigmoid at the end.
 # Indices match the nn.Sequential state_dict keys ("<idx>.weight"/"<idx>.bias").
+# The "legacy" head has nothing between the two Linear layers (indices 0, 1, convs
+# 3, 5, 7, 9); the "relu" head of qmc_deep_gen's models/qmc_decoder.py inserts a
+# ReLU there, which shifts every later index by one (0, 2, convs 4, 6, 8, 10).
 _DECODER_CONV_INDICES = (3, 5, 7, 9)
 _DECODER_RESHAPE = (64, 8, 8)
 _CONV_STRIDE, _CONV_PADDING, _CONV_OUTPUT_PADDING = 2, 1, 1
+
+
+def decoder_head(params: dict[str, jnp.ndarray]) -> str:
+    """
+    Description
+    -----------
+    Names the decoder head a set of weights was trained with, read from its
+    ``state_dict`` keys the way qmc_deep_gen's ``head_from_state_dict`` does: the
+    activation-free ``"legacy"`` head carries weights at index 1, the ``"relu"``
+    head has its ReLU there and its second Linear layer at index 2.
+
+    Parameters
+    ----------
+    params (dict[str, jnp.ndarray])
+        Decoder weights keyed by ``"<layer_idx>.weight"`` / ``"<layer_idx>.bias"``.
+
+    Returns
+    -------
+    head (str)
+        ``"legacy"`` or ``"relu"``.
+    """
+    if "1.weight" in params:
+        return "legacy"
+    if "2.weight" in params:
+        return "relu"
+    error_message = (
+        f"decoder_head: the weights have neither '1.weight' nor '2.weight', so they are not a known QLVM "
+        f"decoder head; keys: {sorted(params)[:6]}"
+    )
+    raise ValueError(error_message)
 
 
 def decoder_forward(latent_embeddings: jnp.ndarray, params: dict[str, jnp.ndarray]) -> jnp.ndarray:
@@ -275,11 +313,14 @@ def decoder_forward(latent_embeddings: jnp.ndarray, params: dict[str, jnp.ndarra
     spectrograms in ``[0, 1]``. ``params`` maps the decoder ``state_dict`` keys
     (``"0.weight"``, ``"0.bias"``, ``"1.weight"``, ..., ``"9.weight"``) to arrays
     (``decoder.`` prefixes, if present, are accepted and stripped by the loader).
+    Both decoder heads run (see :func:`decoder_head`): for the ``"relu"`` head a
+    ReLU follows the first Linear layer and every later layer index is one higher.
 
     Parameters
     ----------
     latent_embeddings (jnp.ndarray)
-        TorusBasis embeddings of latent coords, shape ``(N, 2 * latent_dim)``.
+        TorusBasis embeddings of latent coords (with any conditioning values
+        appended), shape ``(N, 2 * latent_dim + c_dim)``.
     params (dict[str, jnp.ndarray])
         Decoder weights keyed by ``"<layer_idx>.weight"`` / ``"<layer_idx>.bias"``.
 
@@ -288,10 +329,15 @@ def decoder_forward(latent_embeddings: jnp.ndarray, params: dict[str, jnp.ndarra
     reconstructions (jnp.ndarray)
         Spectrogram reconstructions, shape ``(N, 1, 128, 128)``, in ``[0, 1]``.
     """
+    relu_head = decoder_head(params) == "relu"
     h = _linear(latent_embeddings, params["0.weight"], params["0.bias"])
-    h = _linear(h, params["1.weight"], params["1.bias"])
+    if relu_head:
+        h = jax.nn.relu(h)
+    second_linear = 2 if relu_head else 1
+    h = _linear(h, params[f"{second_linear}.weight"], params[f"{second_linear}.bias"])
     h = h.reshape(h.shape[0], *_DECODER_RESHAPE)
-    for n_block, idx in enumerate(_DECODER_CONV_INDICES):
+    for n_block, legacy_idx in enumerate(_DECODER_CONV_INDICES):
+        idx = legacy_idx + int(relu_head)
         h = conv_transpose2d(
             h, params[f"{idx}.weight"], params[f"{idx}.bias"],
             _CONV_STRIDE, _CONV_PADDING, _CONV_OUTPUT_PADDING,
@@ -361,6 +407,9 @@ def embed_data(
     lattice: jnp.ndarray,
     data: jnp.ndarray,
     params: dict[str, jnp.ndarray],
+    lattice_batch_size: int,
+    data_batch_size: int,
+    condition_values: np.ndarray | None = None,
 ) -> jnp.ndarray:
     """
     Description
@@ -370,6 +419,22 @@ def embed_data(
     back to latent coordinates (the ``embed_type='posterior'`` path of
     ``QMCLVM.embed_data``).
 
+    The work is chunked so memory does not grow with the lattice: the spectrograms
+    are taken ``data_batch_size`` at a time, and for each such chunk the lattice
+    is decoded ``lattice_batch_size`` points at a time and scored against it, so
+    the ``(chunk, K)`` log-likelihood matrix is assembled column block by column
+    block. Peak memory is about ``data_batch_size * K * 4`` bytes for the
+    likelihoods plus ``lattice_batch_size * 3 * 16384 * 4`` bytes for one decoded
+    block and its two logs (at ``128x128``). The lattice is re-decoded once per
+    data chunk. The posterior is the same function of the likelihoods as in
+    :func:`posterior_over_lattice`, so chunking changes float rounding only.
+
+    A conditional decoder (input width ``2 * latent_dim + 1``) takes one
+    conditioning value per spectrogram in ``condition_values``. The decoder sees
+    one value for the whole lattice, as in ``QMCLVM.posterior_probability``, so
+    spectrograms are grouped by value and the lattice is decoded once per distinct
+    value (and per data chunk within it); few distinct values keep this cheap.
+
     Parameters
     ----------
     lattice (jnp.ndarray)
@@ -378,13 +443,64 @@ def embed_data(
         Data spectrograms, shape ``(B, 1, 128, 128)`` in ``[0, 1]``.
     params (dict[str, jnp.ndarray])
         Decoder weights.
+    lattice_batch_size (int)
+        Lattice points decoded and scored per block (``>= 1``).
+    data_batch_size (int)
+        Spectrograms whose posteriors are computed together (``>= 1``).
+    condition_values (np.ndarray | None)
+        ``(B,)`` conditioning values for a conditional decoder; ``None`` (default)
+        for an unconditional one. Must match the decoder's input width.
 
     Returns
     -------
     latent_coords (jnp.ndarray)
         Torus coordinates in ``[0, 1)``, shape ``(B, latent_dim)``.
     """
-    atlas = decode_lattice_atlas(lattice, params)
-    posterior = posterior_over_lattice(atlas, data)                 # (B, K)
-    weighted = posterior @ torus_basis_forward(lattice)             # (B, 2*latent_dim)
-    return torus_basis_reverse(weighted)
+    if lattice_batch_size < 1 or data_batch_size < 1:
+        error_message = (
+            f"embed_data: lattice_batch_size and data_batch_size must be >= 1, "
+            f"got {lattice_batch_size} and {data_batch_size}."
+        )
+        raise ValueError(error_message)
+    n_points = int(lattice.shape[0])
+    n_data = int(data.shape[0])
+    latent_dim = int(lattice.shape[1])
+    c_dim = int(params["0.weight"].shape[1]) - 2 * latent_dim
+    if c_dim != (0 if condition_values is None else 1):
+        error_message = (
+            f"embed_data: the decoder takes {c_dim} conditioning input(s) but "
+            f"{'no' if condition_values is None else 'one per spectrogram'} condition_values were given."
+        )
+        raise ValueError(error_message)
+    wrapped_basis = torus_basis_forward(lattice % 1)                # decoder input
+    lattice_torus = torus_basis_forward(lattice)                    # (K, 2*latent_dim)
+    latent_coords = np.empty((n_data, latent_dim), dtype=np.float32)
+    if condition_values is None:
+        groups = [(wrapped_basis, np.arange(n_data))]
+    else:
+        values = np.asarray(condition_values, dtype=np.float32).reshape(-1)
+        if values.shape[0] != n_data:
+            error_message = f"embed_data: {values.shape[0]} condition_values for {n_data} spectrograms."
+            raise ValueError(error_message)
+        distinct, group_of_row = np.unique(values, return_inverse=True)
+        groups = [
+            (jnp.concatenate([wrapped_basis, jnp.full((n_points, 1), value, dtype=wrapped_basis.dtype)], axis=1),
+             np.flatnonzero(group_of_row == group))
+            for group, value in enumerate(distinct)
+        ]
+    for decoder_input, rows in groups:
+        for data_start in range(0, rows.shape[0], data_batch_size):
+            chunk_rows = rows[data_start:data_start + data_batch_size]
+            data_chunk = data[chunk_rows]
+            lls = jnp.concatenate(
+                [
+                    binary_lp(decoder_forward(decoder_input[point_start:point_start + lattice_batch_size], params), data_chunk)
+                    for point_start in range(0, n_points, lattice_batch_size)
+                ],
+                axis=1,
+            )                                                       # (chunk, K)
+            evidence = jax.scipy.special.logsumexp(lls, axis=1, keepdims=True) - jnp.log(n_points)
+            posterior = jax.nn.softmax(lls - evidence, axis=1)
+            weighted = posterior @ lattice_torus                    # (chunk, 2*latent_dim)
+            latent_coords[chunk_rows] = np.asarray(torus_basis_reverse(weighted))
+    return jnp.asarray(latent_coords)

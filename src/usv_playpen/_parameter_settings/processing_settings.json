@@ -329,6 +329,7 @@
     "run_name": "usv_yolo_detector"
   },
   "infer_qlvm_latents": {
+    "model_cell_directory": "",
     "weights_npz_path": "",
     "reference_arrays_fine_npz_path": "",
     "reference_arrays_coarse_npz_path": "",
@@ -339,6 +340,9 @@
     "fib_m": 16,
     "time_stretch": false,
     "masking_type": "sam",
-    "target_shape": [128, 128]
+    "target_shape": [128, 128],
+    "length_threshold": null,
+    "lattice_batch_size": 4096,
+    "data_batch_size": 8192
   }
 }
