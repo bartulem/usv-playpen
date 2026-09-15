@@ -12,6 +12,7 @@ posterior known-answer, and an end-to-end embed shape/range check.
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -177,20 +178,42 @@ def _sharp_decoder_params(rng, latent_dim=2):
 
 def test_embed_data_chunking_matches_one_block():
     """Chunking the lattice and the data must not reorder columns or rows: decoded
-    images of lattice points spread across every block embed to the one-block answer
-    for block sizes that split both axes unevenly."""
+    images of lattice points spread across every block embed onto their own lattice
+    points for block sizes that split both axes unevenly. Their posteriors are one-hot,
+    so the answer is exact up to float32 rounding on any device; a reference computed
+    with another JAX product would share its rounding (TensorFloat-32 on a CUDA GPU
+    put both 4.5e-5 off and they still agreed)."""
     rng = np.random.default_rng(5)
     params = _sharp_decoder_params(rng)
     lattice = qm.gen_korobov_basis(a=5, num_dims=2, num_points=23)
-    atlas = qm.decode_lattice_atlas(lattice, params)
-    data = atlas[np.array([0, 4, 9, 13, 17, 20, 22])]
+    points = np.array([0, 4, 9, 13, 17, 20, 22])
+    data = qm.decode_lattice_atlas(lattice, params)[points]
 
-    posterior = qm.posterior_over_lattice(atlas, data)
-    reference = np.asarray(qm.torus_basis_reverse(posterior @ qm.torus_basis_forward(lattice)))
+    reference = np.asarray(lattice[points] % 1)
     for lattice_batch_size, data_batch_size in ((23, 7), (5, 2), (1, 3), (100, 100)):
         coords = np.asarray(qm.embed_data(lattice, data, params, lattice_batch_size, data_batch_size))
         torus_gap = np.abs(coords - reference)
-        assert np.all(np.minimum(torus_gap, 1.0 - torus_gap) < 1e-5)
+        assert np.all(np.minimum(torus_gap, 1.0 - torus_gap) < 1e-6)
+
+
+@pytest.mark.skipif(
+    not any(device.platform == "gpu" for device in jax.devices()),
+    reason="TensorFloat-32 matrix products only happen on a CUDA GPU",
+)
+def test_decoder_and_likelihood_products_keep_float32_precision_on_gpu():
+    """On a CUDA GPU JAX multiplies matrices in TensorFloat-32 unless asked not to, which
+    left a decoder Linear layer 3.6e-4 off float64; the decoder and the likelihood must
+    stay within float32 rounding of the float64 answer."""
+    rng = np.random.default_rng(8)
+    x, weight, bias = rng.standard_normal((64, 4)), rng.standard_normal((2048, 4)), rng.standard_normal(2048)
+    linear = np.asarray(qm._linear(jnp.asarray(x), jnp.asarray(weight), jnp.asarray(bias)))
+    expected_linear = x @ weight.T + bias
+    assert np.max(np.abs(linear - expected_linear)) / np.max(np.abs(expected_linear)) < 1e-6
+    samples, data = rng.uniform(0.05, 0.95, size=(8, 1, 32, 32)), rng.uniform(0.0, 1.0, size=(6, 1, 32, 32))
+    lls = np.asarray(qm.binary_lp(jnp.asarray(samples), jnp.asarray(data)))
+    expected_lls = (np.einsum("bjdl,sjdl->bs", data, np.log(samples))
+                    + np.einsum("bjdl,sjdl->bs", 1 - data, np.log(1 - samples)))
+    assert np.max(np.abs(lls - expected_lls)) / np.max(np.abs(expected_lls)) < 1e-6
 
 
 def _lattice_shift_decoder_params(rng, lattice, shift, low, high):
@@ -288,8 +311,8 @@ def test_embed_data_conditional_decodes_each_value_with_c_appended():
     for condition_values, expected_points in ((values, points), (np.where(values == low, high, low), swapped_points)):
         coords = np.asarray(qm.embed_data(lattice, data, params, 7, 2, condition_values=condition_values))
         gap = np.abs(coords - np.asarray(lattice[expected_points] % 1))
-        # One lattice point is 1/23 away; the tolerance only has to absorb float32
-        # rounding, which GPU matmul (TF32 by default on CUDA) puts near 5e-5.
+        # One lattice point is 1/23 away, so a loose tolerance still tells the right
+        # grouping from a wrong one; the precision checks are separate tests.
         assert np.all(np.minimum(gap, 1.0 - gap) < 1e-3)
     with pytest.raises(ValueError, match="conditioning input"):
         qm.embed_data(lattice, data, params, 7, 2)
