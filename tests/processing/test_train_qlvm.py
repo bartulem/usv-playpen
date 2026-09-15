@@ -78,19 +78,22 @@ def _write_training_npz(path, n_samples, *, seed=0):
     )
 
 
-def _write_metadata_npz(dataset_dir, *, length_threshold=128.0, masking_type="sam"):
+def _write_metadata_npz(dataset_dir, *, length_threshold=128.0, masking_type="sam", require_mask=None):
     """Write the metadata.npz sidecar build_qlvm_training_set puts beside the splits
-    (only the keys the training contract reads, plus a few it always carries)."""
-    np.savez(
-        dataset_dir / "metadata.npz",
-        length_threshold=length_threshold,
-        validation_split=0.2,
-        random_state=42,
-        full_dataset=False,
-        target_shape=np.array([128, 128]),
-        time_stretch=False,
-        masking_type=masking_type,
-    )
+    (only the keys the training contract reads, plus a few it always carries);
+    ``require_mask`` None leaves that key out, as sets that do not record it have."""
+    metadata = {
+        "length_threshold": length_threshold,
+        "validation_split": 0.2,
+        "random_state": 42,
+        "full_dataset": False,
+        "target_shape": np.array([128, 128]),
+        "time_stretch": False,
+        "masking_type": masking_type,
+    }
+    if require_mask is not None:
+        metadata["require_mask"] = require_mask
+    np.savez(dataset_dir / "metadata.npz", **metadata)
 
 
 def test_build_qmc_decoder_state_dict_keys():
@@ -119,7 +122,7 @@ def test_train_writes_checkpoint_and_bridge_weights(tmp_path, mocker):
     dataset_dir.mkdir()
     _write_training_npz(dataset_dir / "train_data.npz", n_samples=12, seed=0)
     _write_training_npz(dataset_dir / "val_data.npz", n_samples=4, seed=1)
-    _write_metadata_npz(dataset_dir, length_threshold=90.0)
+    _write_metadata_npz(dataset_dir, length_threshold=90.0, require_mask=True)
     output_dir = tmp_path / "model"
 
     mocker.patch("usv_playpen.processing.train_qlvm.smart_wait")
@@ -141,6 +144,7 @@ def test_train_writes_checkpoint_and_bridge_weights(tmp_path, mocker):
     assert contract["decoder_head"] == "legacy"
     assert contract["c_dim"] == 0
     assert contract["condition"] is None
+    assert contract["require_mask"] is True
     assert contract["latent_dim"] == _TINY_CFG["train_qlvm"]["latent_dim"]
     assert contract["input_normalization"] == "none"
     assert contract["floor"] is None
@@ -239,7 +243,8 @@ def test_build_lattice_fib_requires_2d():
 
 def test_train_full_dataset_no_val(tmp_path, mocker):
     """With only full_data.npz (no val split) the run still writes both artifacts
-    and skips validation cleanly."""
+    and skips validation cleanly; a set whose metadata.npz does not record
+    require_mask kept mask-less calls, so the contract says false."""
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
     _write_training_npz(dataset_dir / "full_data.npz", n_samples=8, seed=0)
@@ -256,6 +261,7 @@ def test_train_full_dataset_no_val(tmp_path, mocker):
 
     assert (output_dir / "qmc_train_qlvm.tar").is_file()
     assert (output_dir / "qmc_decoder_weights.npz").is_file()
+    assert json.loads((output_dir / "qmc_decoder_weights.json").read_text())["require_mask"] is False
 
 
 def test_train_rejects_zero_val_freq(tmp_path, mocker):

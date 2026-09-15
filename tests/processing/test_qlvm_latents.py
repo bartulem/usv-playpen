@@ -102,6 +102,7 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
         session_group = f.create_group(f"spectrogram/{session_id}")
         session_group.create_dataset("spectrograms", data=specs)
         session_group.create_dataset("durations", data=np.array([128, 0, 128], dtype=np.int64))
+    _write_session_masks(root, session_id, {0: np.ones((n_f, n_t), dtype=bool), 2: np.ones((n_f, n_t), dtype=bool)})
 
     pls.DataFrame({
         "usv_id": [f"{i:04d}" for i in range(3)],
@@ -147,10 +148,22 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
     assert df["qlvm_model"][1] is None
 
 
-def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid):
+def _write_session_masks(root, session_id, masks_by_row):
+    """Write the session H5's ``mask/<session>`` group the way generate-usv-masks
+    does: one ``segmentations`` row per mask instance, keyed by ``spectrogram_index``
+    (``masks_by_row`` maps a spectrogram row to one boolean mask)."""
+    rows = sorted(masks_by_row)
+    with h5py.File(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5", "a") as f:
+        group = f.create_group(f"mask/{session_id}")
+        group.create_dataset("segmentations", data=np.stack([masks_by_row[row] for row in rows]))
+        group.create_dataset("spectrogram_index", data=np.array(rows, dtype=np.int64))
+
+
+def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid, with_masks=True):
     """Synthesize a session (weights + fine/coarse reference grids + spectrogram
     H5 + usv_summary) for an end-to-end QLVMLatentInference run and return
-    (root, session_id, cfg). Rows 0 and 2 are real, row 1 is a placeholder."""
+    (root, session_id, cfg). Rows 0 and 2 are real, row 1 is a placeholder; with
+    ``with_masks``, rows 0 and 2 each get one all-ones SAM mask."""
     session_id = "20230119_155302"
     root = tmp_path / session_id
     (root / "audio" / "spectrograms").mkdir(parents=True)
@@ -171,6 +184,8 @@ def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid):
         session_group = f.create_group(f"spectrogram/{session_id}")
         session_group.create_dataset("spectrograms", data=specs)
         session_group.create_dataset("durations", data=np.array([128, 0, 128], dtype=np.int64))
+    if with_masks:
+        _write_session_masks(root, session_id, {0: np.ones((n_f, n_t), dtype=bool), 2: np.ones((n_f, n_t), dtype=bool)})
 
     pls.DataFrame({
         "usv_id": [f"{i:04d}" for i in range(3)],
@@ -236,18 +251,16 @@ def test_infer_and_merge_masking_type_applies_or_skips_sam_mask(tmp_path, mocker
     res = 8
     fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
     coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
+    root, session_id, cfg = _make_inference_session(
+        tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid, with_masks=False
+    )
 
     # Add a SAM mask group covering only the top half (rows 0:64) of each real USV
     # (spectrogram rows 0 and 2); build_session_masks unions per spectrogram_index.
     n_f = n_t = 128
-    seg = np.zeros((2, n_f, n_t), dtype=bool)
-    seg[:, :64, :] = True
-    h5_loc = root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5"
-    with h5py.File(h5_loc, "a") as f:
-        mask_group = f.create_group(f"mask/{session_id}")
-        mask_group.create_dataset("segmentations", data=seg)
-        mask_group.create_dataset("spectrogram_index", data=np.array([0, 2], dtype=np.int64))
+    top_half = np.zeros((n_f, n_t), dtype=bool)
+    top_half[:64, :] = True
+    _write_session_masks(root, session_id, {0: top_half, 2: top_half})
 
     # Capture the spectrogram batch handed to the decoder without needing a real
     # embedding; return valid torus coordinates so the downstream lookup succeeds.
@@ -358,6 +371,7 @@ def _matching_contract(cfg, **overrides):
         "target_shape": list(cfg["target_shape"]),
         "time_stretch": cfg["time_stretch"],
         "length_threshold": 128.0,
+        "require_mask": False,
         "lattice_type": cfg["lattice_type"],
         "korobov_a": cfg["korobov_a"],
         "train_n_points": cfg["n_points"],
@@ -579,11 +593,14 @@ def test_normalize_model_inputs_follows_the_contract():
     assert floored.dtype == np.float32
 
 
-def _make_model_cell(tmp_path, rng, *, masking_type, floor, fine_grid, coarse_grid, fib_m=8, condition=None, bins=None):
+def _make_model_cell(
+    tmp_path, rng, *, masking_type, floor, fine_grid, coarse_grid, fib_m=8, condition=None, bins=None, require_mask=True
+):
     """Synthesize a QLVM model package cell (checkpoint.tar, training_contract.json,
     cluster/{fine,coarse}/label_grid.npy) with a ReLU-head decoder; with a
     ``condition`` block, a conditional one (one extra decoder input) and its
-    ``condition_bins.npz`` (``bins`` = (edges, bin_mean))."""
+    ``condition_bins.npz`` (``bins`` = (edges, bin_mean)). ``require_mask`` True, as
+    in every v2 cell, says its corpus kept only calls with a SAM mask."""
     torch = pytest.importorskip("torch")
     cell = tmp_path / "pkg" / "phase_test" / "cell_test"
     (cell / "cluster" / "fine").mkdir(parents=True)
@@ -602,7 +619,7 @@ def _make_model_cell(tmp_path, rng, *, masking_type, floor, fine_grid, coarse_gr
         "conditional": None if condition is None else condition["name"],
         "input_normalization": "minmax", "normalization_epsilon": 1e-8,
         "masking_type": masking_type, "floor": floor,
-        "target_shape": [128, 128], "time_stretch": False, "length_threshold": 100.0,
+        "target_shape": [128, 128], "time_stretch": False, "length_threshold": 100.0, "require_mask": require_mask,
         "embedding_lattice_type": "fibonacci", "embedding_fib_m": fib_m,
         "training_lattice_type": "fibonacci", "training_fib_m": 5, "validation_fib_m": 6, "condition": condition,
     }
@@ -695,16 +712,13 @@ def test_infer_and_merge_conditional_cell_decodes_at_frozen_mean_freq(tmp_path, 
     rng = np.random.default_rng(16)
     res = 8
     grid = rng.integers(1, 5, size=(res, res)).astype(np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid, with_masks=False)
     _set_session_durations(root, session_id, [64, 0, 64])
     n_f = n_t = 128
-    seg = np.zeros((2, n_f, n_t), dtype=bool)
-    seg[0, :32, :] = True                                  # row 0's call sits in the low rows
-    seg[1, 96:, :] = True                                  # row 2's call in the high rows
-    with h5py.File(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5", "a") as f:
-        group = f.create_group(f"mask/{session_id}")
-        group.create_dataset("segmentations", data=seg)
-        group.create_dataset("spectrogram_index", data=np.array([0, 2], dtype=np.int64))
+    low_rows, high_rows = np.zeros((n_f, n_t), dtype=bool), np.zeros((n_f, n_t), dtype=bool)
+    low_rows[:32, :] = True                                # row 0's call sits in the low rows
+    high_rows[96:, :] = True                               # row 2's call in the high rows
+    _write_session_masks(root, session_id, {0: low_rows, 2: high_rows})
     condition = {"name": "mean_freq", "spectrogram": "masked", "epsilon": 1e-8}
     edges, bin_mean = np.array([0.0, 0.5, 1.0]), np.array([0.2, 0.8], dtype=np.float32)
     cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid,
@@ -796,3 +810,110 @@ def test_infer_and_merge_model_cell_refuses_wrong_masking(tmp_path, mocker):
             input_parameter_dict={"infer_qlvm_latents": cfg},
             message_output=lambda *_a, **_kw: None,
         ).infer_and_merge()
+
+
+def _use_decoder(tmp_path, rng, cfg, decoder, grid):
+    """Point ``cfg`` at one kind of decoder for the SAM-mask rule: ``"sam"`` (a
+    train-qlvm contract with masking_type sam), ``"require_mask"`` (an unmasked
+    train-qlvm contract whose set kept only calls with a mask), ``"mean_freq"`` (an
+    unmasked package cell conditioned on mean frequency, require_mask false) or
+    ``"unmasked"`` (an unmasked train-qlvm contract whose set kept every call)."""
+    if decoder == "mean_freq":
+        condition = {"name": "mean_freq", "spectrogram": "masked", "epsilon": 1e-8}
+        bins = (np.array([0.0, 0.5, 1.0]), np.array([0.2, 0.8], dtype=np.float32))
+        cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid,
+                                condition=condition, bins=bins, require_mask=False)
+        cfg["model_cell_directory"] = str(cell)
+        cfg["masking_type"] = "none"
+        return
+    cfg["masking_type"] = "sam" if decoder == "sam" else "none"
+    contract = _matching_contract(cfg, require_mask=decoder == "require_mask")
+    (tmp_path / "qmc_decoder_weights.json").write_text(json.dumps(contract))
+
+
+def _fake_embed_counting(captured):
+    """An embed_data stand-in that records how many spectrograms it was given and
+    places every one at the torus center."""
+
+    def _fake_embed(lattice, data, params, *_rest):
+        captured["n_embedded"] = data.shape[0]
+        return np.full((data.shape[0], 2), 0.5, dtype=np.float64)
+
+    return _fake_embed
+
+
+@pytest.mark.parametrize(
+    ("decoder", "maskless_embedded"),
+    [("sam", False), ("require_mask", False), ("mean_freq", False), ("unmasked", True)],
+)
+def test_infer_and_merge_nulls_calls_without_a_sam_mask(tmp_path, mocker, decoder, maskless_embedded):
+    """build_session_masks gives a call without mask instances an all-ones mask: an
+    unmasked image for a masked decoder, a mean frequency over the whole call, and a
+    call a require_mask corpus left out. Such a call gets null qlvm_* columns whenever
+    the decoder needs masks; a decoder trained on every call, unmasked, still embeds it."""
+    rng = np.random.default_rng(17)
+    grid = np.ones((8, 8), dtype=np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid, with_masks=False)
+    _set_session_durations(root, session_id, [64, 0, 64])
+    _write_session_masks(root, session_id, {0: np.ones((128, 128), dtype=bool)})  # row 2: no mask instance
+    _use_decoder(tmp_path, rng, cfg, decoder, grid)
+
+    captured = {}
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    mocker.patch("usv_playpen.processing.qlvm_latents.embed_data", side_effect=_fake_embed_counting(captured))
+    messages = []
+    ql.QLVMLatentInference(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_latents": cfg},
+        message_output=messages.append,
+    ).infer_and_merge()
+
+    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+    assert df["qlvm1"][0] is not None
+    assert df["qlvm1"][1] is None
+    assert (df["qlvm1"][2] is not None) is maskless_embedded
+    assert captured["n_embedded"] == (2 if maskless_embedded else 1)
+    assert any("1 USVs without a SAM mask" in message for message in messages) is not maskless_embedded
+
+
+@pytest.mark.parametrize("decoder", ["sam", "require_mask", "mean_freq"])
+def test_infer_and_merge_refuses_a_session_without_masks(tmp_path, mocker, decoder):
+    """A session H5 without a mask/<session> group would give every call an all-ones
+    mask, so a decoder that needs masks stops before anything is written."""
+    rng = np.random.default_rng(18)
+    grid = np.ones((8, 8), dtype=np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid, with_masks=False)
+    _set_session_durations(root, session_id, [64, 0, 64])
+    _use_decoder(tmp_path, rng, cfg, decoder, grid)
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    before = summary_path.read_bytes()
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    with pytest.raises(ValueError, match=rf"no mask/{session_id} group"):
+        ql.QLVMLatentInference(
+            root_directory=str(root),
+            input_parameter_dict={"infer_qlvm_latents": cfg},
+            message_output=lambda *_a, **_kw: None,
+        ).infer_and_merge()
+    assert summary_path.read_bytes() == before
+
+
+def test_infer_and_merge_unmasked_decoder_needs_no_masks(tmp_path, mocker):
+    """A decoder trained on every call without masks embeds a session that has no
+    mask/<session> group."""
+    rng = np.random.default_rng(19)
+    grid = np.ones((8, 8), dtype=np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid, with_masks=False)
+    _set_session_durations(root, session_id, [64, 0, 64])
+    _use_decoder(tmp_path, rng, cfg, "unmasked", grid)
+
+    captured = {}
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    mocker.patch("usv_playpen.processing.qlvm_latents.embed_data", side_effect=_fake_embed_counting(captured))
+    ql.QLVMLatentInference(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_latents": cfg},
+        message_output=lambda *_a, **_kw: None,
+    ).infer_and_merge()
+
+    assert captured["n_embedded"] == 2

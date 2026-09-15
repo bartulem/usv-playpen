@@ -22,8 +22,9 @@ artifacts into the output directory:
   ``qlvm_model.decoder_forward`` reconstructs; and
 * ``qmc_decoder_weights.json`` -- the training contract beside the weights: the
   decoder head and widths, the input preprocessing the decoder saw (masking,
-  normalization, ``target_shape``, ``time_stretch``) and the duration window of
-  the training set, read from the set's ``metadata.npz``.
+  normalization, ``target_shape``, ``time_stretch``), the duration window of
+  the training set and whether it kept only calls with a SAM mask
+  (``require_mask``), read from the set's ``metadata.npz``.
   ``infer-qlvm-latents`` checks its settings against it and embeds only calls
   inside the same duration window.
 
@@ -335,6 +336,9 @@ class QLVMTrainer:
                 "target_shape": [int(value) for value in metadata["target_shape"]],
                 "time_stretch": bool(metadata["time_stretch"]),
                 "length_threshold": float(metadata["length_threshold"]),
+                # Sets built with require_mask keep only calls with a SAM mask instance;
+                # sets that do not record it kept mask-less calls under an all-ones mask.
+                "require_mask": bool(metadata["require_mask"]) if "require_mask" in metadata.files else False,
             }
 
         output_dir = pathlib.Path(self.output_directory)
