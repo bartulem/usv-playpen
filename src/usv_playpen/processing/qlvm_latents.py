@@ -684,11 +684,12 @@ class QLVMLatentInference:
         settings are checked against it first (:func:`enforce_training_contract`)
         and its ``length_threshold`` applies; otherwise the settings'
         ``length_threshold`` does (``null`` embeds every positive duration). When
-        the decoder needs SAM masks -- ``masking_type`` ``"sam"``, a mean-frequency
-        condition, or a contract whose training set kept only masked calls
-        (``require_mask``) -- USVs without a mask instance are skipped and get nulls
-        too, and a session H5 without a ``mask/<session>`` group raises. The
-        summary is rewritten atomically.
+        the contract's training set kept only calls with a SAM mask
+        (``require_mask``) or the decoder conditions on mean frequency, USVs
+        without a mask instance are skipped and get nulls too. When the decoder
+        needs SAM masks at all (those cases, or ``masking_type`` ``"sam"``), a
+        session H5 without a ``mask/<session>`` group raises. The summary is
+        rewritten atomically.
 
         Parameters
         ----------
@@ -778,16 +779,17 @@ class QLVMLatentInference:
             # A mean-frequency condition is always computed on the masked call, even
             # for a decoder fed unmasked (floored) spectrograms, so it needs the masks too.
             condition = contract['condition'] if contract is not None and contract['c_dim'] else None
-            mask_required = (
-                cfg['masking_type'] == 'sam'
-                or (condition is not None and condition['name'] == 'mean_freq')
-                or (contract is not None and contract['require_mask'])
-            )
+            mean_freq_condition = condition is not None and condition['name'] == 'mean_freq'
+            require_mask = contract is not None and contract['require_mask']
+            # build_session_masks gives a call without mask instances an all-ones mask.
+            # A set built with require_mask left such calls out, and their mean frequency
+            # would span the whole call, so those decoders give them null columns. Sets
+            # without require_mask (the shipped model, train-qlvm on a main-built set)
+            # trained on them under that all-ones mask, so they are embedded as before.
+            drop_maskless = require_mask or mean_freq_condition
             masks = None
-            if mask_required:
-                # build_session_masks gives a call without mask instances, and every
-                # call of a session without a mask group, an all-ones mask: an unmasked
-                # image such a decoder never saw, and a mean frequency over the whole call.
+            if cfg['masking_type'] == 'sam' or drop_maskless:
+                # Without a mask group every call would get the all-ones fallback.
                 if f"mask/{root.name}" not in h5_file:
                     error_message = (
                         f"{h5_loc} has no mask/{root.name} group. This decoder needs SAM masks (masking_type 'sam', "
@@ -798,12 +800,13 @@ class QLVMLatentInference:
                 masks, mask_counts = build_session_masks(
                     h5_file, root.name, usv_indices, specs.shape[1], specs.shape[2]
                 )
-                has_mask = mask_counts > 0
-                self.message_output(
-                    f"{int(np.count_nonzero(~has_mask))} USVs without a SAM mask get null qlvm_* columns."
-                )
-                usv_indices = usv_indices[has_mask]
-                masks = masks[has_mask]
+                if drop_maskless:
+                    has_mask = mask_counts > 0
+                    self.message_output(
+                        f"{int(np.count_nonzero(~has_mask))} USVs without a SAM mask get null qlvm_* columns."
+                    )
+                    usv_indices = usv_indices[has_mask]
+                    masks = masks[has_mask]
             specs = specs[usv_indices].astype(np.float32)
             durations = durations[usv_indices]
             if cfg['masking_type'] == 'sam':
@@ -1010,7 +1013,7 @@ def export_qlvm_reference_arrays_cli(model_cell_directory, output_directory) -> 
 @click.option('--korobov-a', 'korobov_a', type=int, default=None, required=False, help='Korobov generating integer (used when lattice-type=korobov).')
 @click.option('--fib-m', 'fib_m', type=int, default=None, required=False, help='Fibonacci lattice order m (used when lattice-type=fibonacci).')
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.')
-@click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Apply SAM mask regions before embedding ("sam", matching training) or embed raw spectrograms ("none"). With "sam", USVs without a mask get null qlvm_* columns and a session without a mask group raises.')
+@click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Apply SAM mask regions before embedding ("sam", matching training) or embed raw spectrograms ("none"). With "sam", a session without a mask group raises.')
 @click.option('--target-shape', 'target_shape', nargs=2, type=int, default=None, required=False, help='Output spectrogram (freq, time) shape as two ints, matching the training preprocessing, e.g. --target-shape 128 128.')
 @click.option('--length-threshold', 'length_threshold', type=float, default=None, required=False, help='Embed only USVs with duration below this (time bins); must equal the training contract when the weights carry one. Unset in the settings (null) with no contract, every positive duration is embedded.')
 @click.option('--lattice-batch-size', 'lattice_batch_size', type=int, default=None, required=False, help='Lattice points decoded and scored per block; lower it to cut memory on large lattices.')

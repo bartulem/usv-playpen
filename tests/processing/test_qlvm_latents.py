@@ -844,13 +844,14 @@ def _fake_embed_counting(captured):
 
 @pytest.mark.parametrize(
     ("decoder", "maskless_embedded"),
-    [("sam", False), ("require_mask", False), ("mean_freq", False), ("unmasked", True)],
+    [("sam", True), ("require_mask", False), ("mean_freq", False), ("unmasked", True)],
 )
 def test_infer_and_merge_nulls_calls_without_a_sam_mask(tmp_path, mocker, decoder, maskless_embedded):
-    """build_session_masks gives a call without mask instances an all-ones mask: an
-    unmasked image for a masked decoder, a mean frequency over the whole call, and a
-    call a require_mask corpus left out. Such a call gets null qlvm_* columns whenever
-    the decoder needs masks; a decoder trained on every call, unmasked, still embeds it."""
+    """build_session_masks gives a call without mask instances an all-ones mask. A
+    require_mask training set left such calls out, and a mean-frequency cell would
+    compute c over the whole call, so those decoders give them null qlvm_* columns.
+    A sam decoder whose set kept them under that all-ones mask (the shipped model,
+    train-qlvm on a main-built set) still embeds them, as does an unmasked decoder."""
     rng = np.random.default_rng(17)
     grid = np.ones((8, 8), dtype=np.int16)
     root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid, with_masks=False)
