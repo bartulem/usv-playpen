@@ -193,7 +193,9 @@ def test_jax_inference_matches_torch_decoder_and_posterior():
         posterior_torch = model.posterior_probability(lattice_torch, torch.from_numpy(data_np), torch_binary_lp).numpy()
     posterior_jax = np.asarray(posterior_over_lattice(jnp.asarray(images_jax), jnp.asarray(data_np)))
     assert posterior_jax.shape == posterior_torch.shape == (4, 1021)
-    np.testing.assert_allclose(posterior_jax, posterior_torch, atol=1e-4)
+    # Each posterior normalizes 16,384 summed float32 log-likelihoods per lattice point,
+    # whose rounding differs across platforms (up to 1.14e-4 on macOS runners).
+    np.testing.assert_allclose(posterior_jax, posterior_torch, atol=5e-4)
     assert np.array_equal(posterior_jax.argmax(axis=1), posterior_torch.argmax(axis=1))
 
 
