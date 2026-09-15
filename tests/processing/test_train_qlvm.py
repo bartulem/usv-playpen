@@ -140,6 +140,7 @@ def test_train_writes_checkpoint_and_bridge_weights(tmp_path, mocker):
     contract = json.loads((output_dir / "qmc_decoder_weights.json").read_text())
     assert contract["decoder_head"] == "legacy"
     assert contract["c_dim"] == 0
+    assert contract["condition"] is None
     assert contract["latent_dim"] == _TINY_CFG["train_qlvm"]["latent_dim"]
     assert contract["input_normalization"] == "none"
     assert contract["floor"] is None

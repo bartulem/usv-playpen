@@ -428,6 +428,31 @@ def frozen_condition_values(values: np.ndarray, condition_bins: dict) -> np.ndar
     return bin_mean[np.digitize(values, edges[1:-1], right=False)]
 
 
+def _minmax_per_spectrogram(spectrograms: np.ndarray, epsilon: np.float32) -> np.ndarray:
+    """
+    Description
+    -----------
+    Rescales each spectrogram on its own to ``(x - min) / (max - min + epsilon)``,
+    the min-max a QLVM model package applies to its decoder inputs. Zeros stay
+    zeros when they are the spectrogram's minimum (a SAM-masked background).
+
+    Parameters
+    ----------
+    spectrograms (np.ndarray)
+        ``(N, F, T)`` float32 spectrograms.
+    epsilon (np.float32)
+        Added to each spectrogram's range, so a constant spectrogram maps to zeros.
+
+    Returns
+    -------
+    rescaled (np.ndarray)
+        ``(N, F, T)`` float32 spectrograms in ``[0, 1)``.
+    """
+    low = spectrograms.min(axis=(1, 2), keepdims=True)
+    high = spectrograms.max(axis=(1, 2), keepdims=True)
+    return (spectrograms - low) / ((high - low) + epsilon)
+
+
 def normalize_model_inputs(spectrograms: np.ndarray, contract: dict | None) -> np.ndarray:
     """
     Description
@@ -458,17 +483,11 @@ def normalize_model_inputs(spectrograms: np.ndarray, contract: dict | None) -> n
     if contract is None or contract["input_normalization"] == "none":
         return inputs
     epsilon = np.float32(contract["normalization_epsilon"])
-
-    def _minmax(x: np.ndarray) -> np.ndarray:
-        low = x.min(axis=(1, 2), keepdims=True)
-        high = x.max(axis=(1, 2), keepdims=True)
-        return (x - low) / ((high - low) + epsilon)
-
-    inputs = _minmax(inputs)
+    inputs = _minmax_per_spectrogram(inputs, epsilon)
     if contract["floor"] is not None:
         floor = np.float32(contract["floor"])
         inputs = np.clip((inputs - floor) / np.float32(1.0 - floor), np.float32(0.0), np.float32(1.0))
-        inputs = _minmax(inputs)
+        inputs = _minmax_per_spectrogram(inputs, epsilon)
     return inputs.astype(np.float32, copy=False)
 
 
@@ -517,8 +536,8 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
     weights_head = decoder_head(params)
     if contract["decoder_head"] != weights_head:
         mismatches.append(f"decoder_head: the weights are {weights_head!r}, the contract says {contract['decoder_head']!r}")
-    # train-qlvm contracts have no "condition" block; model package contracts always do.
-    condition = contract.get("condition")
+    # Unconditional decoders (every train-qlvm contract) record "condition": null.
+    condition = contract["condition"]
     if contract["c_dim"] != 0 and not (
         contract["c_dim"] == 1 and condition is not None and condition["name"] in ("duration", "mean_freq")
     ):

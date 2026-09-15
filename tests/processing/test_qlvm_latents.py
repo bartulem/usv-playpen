@@ -351,6 +351,7 @@ def _matching_contract(cfg, **overrides):
         "decoder_head": "legacy",
         "latent_dim": cfg["latent_dim"],
         "c_dim": 0,
+        "condition": None,
         "input_normalization": "none",
         "floor": None,
         "masking_type": cfg["masking_type"],

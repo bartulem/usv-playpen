@@ -440,6 +440,7 @@ class QLVMTrainer:
             "decoder_head": "legacy",
             "latent_dim": latent_dim,
             "c_dim": 0,
+            "condition": None,
             "input_normalization": "none",
             "floor": None,
             **dataset_contract,
