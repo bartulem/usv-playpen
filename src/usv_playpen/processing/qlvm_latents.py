@@ -16,7 +16,9 @@ across every session embedded into the same torus.
 Columns written into ``usv_summary.csv`` (the ones the visualizations/tuning
 code already consume): ``qlvm1``, ``qlvm2`` (torus coordinates),
 ``qlvm_category`` (FINE cluster label, e.g. 12 classes) and ``qlvm_supercategory``
-(COARSE cluster label, e.g. 7 classes; 0 = background/noise).
+(COARSE cluster label, e.g. 7 classes). The reference grids label every pixel
+from 1, so there is no background / noise label 0; USVs that are not embedded
+get nulls.
 
 Fidelity: the session spectrograms are preprocessed with the SAME resize /
 time-stretch used to build the training set (:func:`stretch_specs`), so they are

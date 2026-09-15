@@ -18,9 +18,11 @@ This is a faithful port of ``qmc_deep_gen``'s ``models/qmc_base.py``
 checkpoint's ``state_dict``; usv-playpen never imports torch.
 
 PARITY: the JAX ``conv_transpose2d`` reproduces ``torch.nn.ConvTranspose2d``'s
-exact definition (validated against a pure-numpy reference in the tests). Before
-trusting embeddings in production, confirm the parity test passes against a
-torch-generated reference for the actual checkpoint.
+exact definition (validated against a pure-numpy reference in the tests), and
+``tests/processing/test_train_qlvm.py`` runs a seeded torch decoder, exported the
+way ``train-qlvm`` exports it, through both frameworks: decoded images agree to
+1e-5 and lattice posteriors to 1e-4 against the vendored
+``QMCLVM.posterior_probability``.
 """
 
 from __future__ import annotations

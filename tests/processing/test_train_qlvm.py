@@ -9,8 +9,11 @@ decoder-weights ``.npz`` are written, (2) the weights carry the expected
 ``nn.Sequential`` ``state_dict`` keys, and (3) the exported weights load straight
 into the torch-free JAX inference decoder (``processing/qlvm_model``) and decode a
 lattice to ``(K, 1, 128, 128)`` reconstructions in ``[0, 1]`` -- i.e. the
-train -> infer bridge holds end to end. The full-scale GPU training run is not
-exercised here.
+train -> infer bridge holds end to end. It also checks the training contract
+written beside the weights, the refusal of stale splits and of a set without
+``metadata.npz``, and that a seeded torch decoder gives the same images and
+lattice posterior through the torch model and the JAX inference port. The
+full-scale GPU training run is not exercised here.
 """
 
 from __future__ import annotations
@@ -23,7 +26,15 @@ import numpy as np
 import pytest
 import torch
 
-from usv_playpen.processing.qlvm_model import decode_lattice_atlas
+from usv_playpen.processing.qlvm_model import (
+    decode_lattice_atlas,
+    decoder_forward,
+    gen_korobov_basis,
+    posterior_over_lattice,
+    torus_basis_forward,
+)
+from usv_playpen.processing.qlvm_training.losses import binary_lp as torch_binary_lp
+from usv_playpen.processing.qlvm_training.qmc_base import QMCLVM, TorusBasis
 from usv_playpen.processing.train_qlvm import (
     QLVMTrainer,
     build_lattice,
@@ -151,6 +162,38 @@ def test_train_writes_checkpoint_and_bridge_weights(tmp_path, mocker):
     assert np.all(np.isfinite(np.asarray(atlas)))
     assert float(atlas.min()) >= 0.0
     assert float(atlas.max()) <= 1.0
+
+
+def test_jax_inference_matches_torch_decoder_and_posterior():
+    """The JAX port stands in for the torch model at inference, so the same weights
+    must give the same images and the same lattice posterior in both: a seeded torch
+    decoder is exported the way train-qlvm exports it and run through both paths."""
+    torch.manual_seed(0)
+    decoder = build_qmc_decoder(latent_dim=2).eval()
+    params = {key: jnp.asarray(value.detach().numpy()) for key, value in decoder.state_dict().items()}
+    model = QMCLVM(latent_dim=2, device=torch.device("cpu"), decoder=decoder, basis=TorusBasis())
+
+    lattice_np = np.array(gen_korobov_basis(a=76, num_dims=2, num_points=1021), dtype=np.float32)
+    lattice_torch = torch.from_numpy(lattice_np)
+
+    # Decoder: identical inputs (the torus basis of the wrapped lattice) through both.
+    basis_np = np.array(torus_basis_forward(jnp.asarray(lattice_np % 1)), dtype=np.float32)
+    with torch.no_grad():
+        images_torch = decoder(torch.from_numpy(basis_np)).numpy()
+    images_jax = np.asarray(decoder_forward(jnp.asarray(basis_np), params))
+    assert images_jax.shape == images_torch.shape == (1021, 1, 128, 128)
+    np.testing.assert_allclose(images_jax, images_torch, atol=1e-5)
+
+    # Posterior over the lattice for binarized decoded images of a few lattice points
+    # (distinct likelihoods, so the comparison is not of two flat posteriors).
+    rows = np.array([3, 250, 511, 1000])
+    data_np = (images_torch[rows] > np.median(images_torch[rows], axis=(1, 2, 3), keepdims=True)).astype(np.float32)
+    with torch.no_grad():
+        posterior_torch = model.posterior_probability(lattice_torch, torch.from_numpy(data_np), torch_binary_lp).numpy()
+    posterior_jax = np.asarray(posterior_over_lattice(jnp.asarray(images_jax), jnp.asarray(data_np)))
+    assert posterior_jax.shape == posterior_torch.shape == (4, 1021)
+    np.testing.assert_allclose(posterior_jax, posterior_torch, atol=1e-4)
+    assert np.array_equal(posterior_jax.argmax(axis=1), posterior_torch.argmax(axis=1))
 
 
 def test_build_lattice_fib_requires_2d():

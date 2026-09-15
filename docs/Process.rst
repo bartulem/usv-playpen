@@ -1435,7 +1435,7 @@ The *Compute USV features* and *Infer QLVM latents* steps add columns to *usv_su
 
 * **qlvm1** / **qlvm2** : the two torus (latent) coordinates
 * **qlvm_category** : the FINE watershed cluster label (vocal category)
-* **qlvm_supercategory** : the COARSE watershed cluster label (``0`` = background / noise)
+* **qlvm_supercategory** : the COARSE watershed cluster label (every value is a cluster: the reference grids label every pixel from ``1``, with no background / noise label ``0``)
 
 .. parsed-literal::
 
