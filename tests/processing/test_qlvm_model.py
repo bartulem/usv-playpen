@@ -80,6 +80,17 @@ def test_torus_basis_roundtrip():
     assert np.allclose(back, np.asarray(z), atol=1e-6)
 
 
+def test_torus_basis_reverse_never_returns_one():
+    """A tiny negative angle rounds to 2*pi in float32; without the mod-1 wrap the
+    coordinate is exactly 1.0 and the label lookup clips it to the far grid edge."""
+    embedding = jnp.asarray(np.array([[1.0, 1.0, -1e-9, 0.5]], dtype=np.float32))
+    coords = np.asarray(qm.torus_basis_reverse(embedding))
+    assert coords.dtype == np.float32
+    assert np.all(coords >= 0.0)
+    assert np.all(coords < 1.0)
+    assert coords[0, 0] == 0.0
+
+
 def test_binary_lp_shape_and_peaks_at_self():
     """binary_lp returns (B, K) and is maximized when a sample equals the data."""
     rng = np.random.default_rng(1)

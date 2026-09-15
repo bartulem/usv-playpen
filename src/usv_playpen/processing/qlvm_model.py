@@ -147,7 +147,10 @@ def torus_basis_reverse(data: jnp.ndarray) -> jnp.ndarray:
     Description
     -----------
     Inverse of :func:`torus_basis_forward`: recovers latent coordinates in
-    ``[0, 1)`` from a ``(N, 2d)`` ``[cos, sin]`` embedding via ``atan2``.
+    ``[0, 1)`` from a ``(N, 2d)`` ``[cos, sin]`` embedding via ``atan2``. The
+    result is reduced ``mod 1``: a tiny negative angle becomes ``2*pi`` after the
+    wrap in float32, which would otherwise return exactly ``1.0`` and be clipped
+    to the far edge of a label grid instead of pixel 0.
 
     Parameters
     ----------
@@ -162,7 +165,7 @@ def torus_basis_reverse(data: jnp.ndarray) -> jnp.ndarray:
     d = data.shape[-1] // 2
     angles = jnp.arctan2(data[:, d:], data[:, :d])
     angles = jnp.where(angles < 0, 2 * jnp.pi + angles, angles)
-    return angles / (2 * jnp.pi)
+    return (angles / (2 * jnp.pi)) % 1.0
 
 
 # --------------------------------------------------------------------------- #
