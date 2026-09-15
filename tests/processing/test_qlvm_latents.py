@@ -578,23 +578,35 @@ def test_normalize_model_inputs_follows_the_contract():
     assert floored.dtype == np.float32
 
 
-def _make_model_cell(tmp_path, rng, *, masking_type, floor, fine_grid, coarse_grid, fib_m=8):
+def _make_model_cell(tmp_path, rng, *, masking_type, floor, fine_grid, coarse_grid, fib_m=8, condition=None, bins=None):
     """Synthesize a QLVM model package cell (checkpoint.tar, training_contract.json,
-    cluster/{fine,coarse}/label_grid.npy) with a ReLU-head decoder."""
+    cluster/{fine,coarse}/label_grid.npy) with a ReLU-head decoder; with a
+    ``condition`` block, a conditional one (one extra decoder input) and its
+    ``condition_bins.npz`` (``bins`` = (edges, bin_mean))."""
     torch = pytest.importorskip("torch")
     cell = tmp_path / "pkg" / "phase_test" / "cell_test"
     (cell / "cluster" / "fine").mkdir(parents=True)
     (cell / "cluster" / "coarse").mkdir(parents=True)
-    state = {key: torch.from_numpy(value) for key, value in _relu_state_dict(rng).items()}
+    arrays = _relu_state_dict(rng)
+    if condition is not None:
+        arrays["decoder.0.weight"] = (rng.standard_normal((2048, 5)) * 0.05).astype(np.float32)
+        edges, bin_mean = bins
+        np.savez(cell / "condition_bins.npz", conditional=np.array(condition["name"]), n_bins=np.array(len(bin_mean)),
+                 edges=np.asarray(edges, dtype=np.float64), bin_mean=np.asarray(bin_mean, dtype=np.float32),
+                 bin_count=np.ones(len(bin_mean), dtype=np.int64))
+    state = {key: torch.from_numpy(value) for key, value in arrays.items()}
     torch.save({"model": state, "optimizer": {}, "run info": []}, cell / "checkpoint.tar")
     contract = {
-        "decoder_head": "relu", "latent_dim": 2, "c_dim": 0, "conditional": None,
+        "decoder_head": "relu", "latent_dim": 2, "c_dim": 0 if condition is None else 1,
+        "conditional": None if condition is None else condition["name"],
         "input_normalization": "minmax", "normalization_epsilon": 1e-8,
         "masking_type": masking_type, "floor": floor,
         "target_shape": [128, 128], "time_stretch": False, "length_threshold": 100.0,
         "embedding_lattice_type": "fibonacci", "embedding_fib_m": fib_m,
-        "training_lattice_type": "fibonacci", "training_fib_m": 5, "validation_fib_m": 6, "condition": None,
+        "training_lattice_type": "fibonacci", "training_fib_m": 5, "validation_fib_m": 6, "condition": condition,
     }
+    if condition is not None:
+        contract["condition_bins"] = "condition_bins.npz"
     (cell / "training_contract.json").write_text(json.dumps(contract))
     np.save(cell / "cluster" / "fine" / "label_grid.npy", fine_grid)
     np.save(cell / "cluster" / "coarse" / "label_grid.npy", coarse_grid)
@@ -647,6 +659,122 @@ def test_infer_and_merge_with_a_model_package_cell(tmp_path, mocker):
     assert 101 <= df["qlvm_category"][2] <= 116
     assert 201 <= df["qlvm_supercategory"][2] <= 207
     assert df["qlvm_model"][2] == "pkg/phase_test/cell_test"
+
+
+def test_compute_condition_values_follow_the_contract_definitions():
+    """Duration c is normalized on the corpus range; mean-frequency c is the energy
+    centroid of the masked call's frequency rows, before any min-max."""
+    durations = np.array([8, 60, 127], dtype=np.int64)
+    duration = {"name": "duration", "duration_min": 8, "duration_max": 127, "epsilon": 1e-8}
+    np.testing.assert_array_equal(
+        ql.compute_condition_values(duration, durations, None),
+        (durations.astype(np.float32) - np.float32(8)) / (np.float32(119) + np.float32(1e-8)),
+    )
+    specs = np.zeros((2, 4, 3), dtype=np.float32)
+    specs[0, 1, :] = 2.0                                    # all energy in row 1 of 4
+    specs[1, 0, 0], specs[1, 3, 2] = 1.0, 3.0               # centroid (0*1 + 3*3) / 4 = 2.25
+    mean_freq = {"name": "mean_freq", "spectrogram": "masked", "epsilon": 1e-8}
+    np.testing.assert_allclose(ql.compute_condition_values(mean_freq, durations[:2], specs), [0.25, 2.25 / 4], rtol=1e-6)
+    with pytest.raises(ValueError, match="masked spectrograms"):
+        ql.compute_condition_values(mean_freq, durations[:2], None)
+
+
+def test_frozen_condition_values_take_bin_means_and_clamp_the_range():
+    """New calls decode at the corpus mean of their bin; values beyond the corpus
+    range fall in the outermost bins, and a value on an edge belongs to the upper bin."""
+    bins = {"edges": np.array([0.0, 0.3, 0.6, 1.0]), "bin_mean": np.array([0.1, 0.45, 0.8], dtype=np.float32)}
+    got = ql.frozen_condition_values(np.array([-0.2, 0.1, 0.3, 0.59, 0.61, 1.4]), bins)
+    np.testing.assert_array_equal(got, np.array([0.1, 0.1, 0.45, 0.45, 0.8, 0.8], dtype=np.float32))
+    assert got.dtype == np.float32
+
+
+def test_infer_and_merge_conditional_cell_decodes_at_frozen_mean_freq(tmp_path, mocker):
+    """A mean-frequency cell fed unmasked spectrograms still needs the masks for c:
+    each call is decoded at the frozen bin mean of its masked centroid."""
+    rng = np.random.default_rng(16)
+    res = 8
+    grid = rng.integers(1, 5, size=(res, res)).astype(np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid)
+    _set_session_durations(root, session_id, [64, 0, 64])
+    n_f = n_t = 128
+    seg = np.zeros((2, n_f, n_t), dtype=bool)
+    seg[0, :32, :] = True                                  # row 0's call sits in the low rows
+    seg[1, 96:, :] = True                                  # row 2's call in the high rows
+    with h5py.File(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5", "a") as f:
+        group = f.create_group(f"mask/{session_id}")
+        group.create_dataset("segmentations", data=seg)
+        group.create_dataset("spectrogram_index", data=np.array([0, 2], dtype=np.int64))
+    condition = {"name": "mean_freq", "spectrogram": "masked", "epsilon": 1e-8}
+    edges, bin_mean = np.array([0.0, 0.5, 1.0]), np.array([0.2, 0.8], dtype=np.float32)
+    cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid,
+                            condition=condition, bins=(edges, bin_mean))
+    cfg["model_cell_directory"] = str(cell)
+    cfg["masking_type"] = "none"
+
+    captured = {}
+    real_embed = ql.embed_data
+
+    def _capture(lattice, data, params, lattice_batch_size, data_batch_size, condition_values=None):
+        captured["condition_values"] = condition_values
+        return real_embed(lattice, data, params, lattice_batch_size, data_batch_size, condition_values)
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    mocker.patch("usv_playpen.processing.qlvm_latents.embed_data", side_effect=_capture)
+    messages = []
+    ql.QLVMLatentInference(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_latents": cfg},
+        message_output=messages.append,
+    ).infer_and_merge()
+
+    np.testing.assert_array_equal(captured["condition_values"], np.array([0.2, 0.8], dtype=np.float32))
+    assert any("Conditioning on mean_freq" in message for message in messages)
+    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+    assert df["qlvm1"][0] is not None
+    assert df["qlvm1"][2] is not None
+
+
+def test_export_model_cell_arrays_writes_the_reference_layout(tmp_path):
+    """The visualizations read arrays_{fine,coarse}.npz: a package cell exported to
+    that layout must carry its grid, its peaks in label order, its calls with their
+    labels, and an aggregated-posterior heatmap holding all the posterior mass."""
+    rng = np.random.default_rng(15)
+    res, n_calls, fib_m = 8, 30, 8
+    cell = tmp_path / "pkg" / "phase_x" / "cell_x"
+    for level in ("fine", "coarse"):
+        (cell / "cluster" / level).mkdir(parents=True)
+    (cell / "training_contract.json").write_text(json.dumps({"embedding_fib_m": fib_m}))
+    angles = rng.uniform(0.0, 2 * np.pi, size=(n_calls, 2))
+    torus_weighted = np.concatenate([np.cos(angles), np.sin(angles)], axis=1).astype(np.float32)
+    aggregated = rng.random(21) * 3.0                                 # fib(8) = 21 lattice points
+    np.savez(cell / "posterior_cache.npz", torus_weighted=torus_weighted, aggregated=aggregated)
+    coords = (angles / (2 * np.pi)).astype(np.float32)
+    grids = {"fine": rng.integers(1, 5, size=(res, res)).astype(np.int16), "coarse": rng.integers(1, 3, size=(res, res)).astype(np.int16)}
+    for level, grid in grids.items():
+        np.save(cell / "cluster" / level / "label_grid.npy", grid)
+        pixel_y = np.clip((coords[:, 1] * res).astype(int), 0, res - 1)
+        pixel_x = np.clip((coords[:, 0] * res).astype(int), 0, res - 1)
+        pls.DataFrame({"spec_id": [f"s_{i}" for i in range(n_calls)], "label": grid[pixel_y, pixel_x].astype(np.int64)}).write_csv(
+            cell / "cluster" / level / "cluster_labels.csv"
+        )
+        k = int(grid.max())
+        pls.DataFrame({"label": list(range(k, 0, -1)), "peak_x": [0.1 * label for label in range(k, 0, -1)],
+                       "peak_y": [0.05 * label for label in range(k, 0, -1)]}).write_csv(cell / "cluster" / level / "clusters.csv")
+
+    written = ql.export_model_cell_arrays(str(cell), str(tmp_path / "out"), message_output=lambda *_a: None)
+
+    assert [path.name for path in written] == ["arrays_fine.npz", "arrays_coarse.npz"]
+    for level, grid in grids.items():
+        with np.load(tmp_path / "out" / f"arrays_{level}.npz", allow_pickle=False) as arrays:
+            np.testing.assert_array_equal(arrays["ws_labels_periodic"], grid)
+            np.testing.assert_array_equal(arrays["ws_labels"], grid)
+            k = int(grid.max())
+            np.testing.assert_allclose(arrays["centers"], [[0.1 * label, 0.05 * label] for label in range(1, k + 1)], rtol=1e-6)
+            np.testing.assert_allclose(arrays["latent_coords"], coords, atol=1e-5)
+            np.testing.assert_array_equal(ql.labels_for_coords(arrays["latent_coords"], grid, grid)[0], arrays["sample_ws_periodic"])
+            assert arrays["heatmap"].shape == (res, res)
+            assert arrays["heatmap"].sum() == pytest.approx(aggregated.sum(), rel=1e-5)
+            assert str(arrays["model_id"]) == "pkg/phase_x/cell_x"
 
 
 def test_infer_and_merge_model_cell_refuses_wrong_masking(tmp_path, mocker):

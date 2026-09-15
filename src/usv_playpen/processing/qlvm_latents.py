@@ -57,7 +57,14 @@ from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import atomic_output_path, configure_path, derive_spectrogram_model_paths, first_match_or_raise
 from ..processing.build_qlvm_training_set import build_session_masks, stretch_specs
 from ..time_utils import is_gui_context, smart_wait
-from .qlvm_model import decoder_head, embed_data, gen_fib_basis, gen_korobov_basis, roberts_sequence
+from .qlvm_model import (
+    decoder_head,
+    embed_data,
+    gen_fib_basis,
+    gen_korobov_basis,
+    roberts_sequence,
+    torus_basis_reverse,
+)
 
 # QLVM columns written into the USV summary CSV (consumed downstream).
 QLVM_COLUMNS = ("qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_model")
@@ -330,14 +337,95 @@ def load_model_cell(model_cell_directory: str) -> dict:
             f"only 'fibonacci' package embeddings are supported."
         )
         raise ValueError(error_message)
+    condition_bins = None
+    if contract["c_dim"]:
+        # Conditional cells: the frozen table of the corpus's quantile bins of c and
+        # each bin's mean c, which new calls are decoded at.
+        with np.load(cell / contract["condition_bins"], allow_pickle=False) as bins:
+            condition_bins = {"edges": bins["edges"], "bin_mean": bins["bin_mean"]}
     return {
         "params": load_decoder_params(str(cell / "checkpoint.tar")),
         "contract": contract,
         "lattice": gen_fib_basis(contract["embedding_fib_m"]),
         "fine_grid": np.load(cell / "cluster" / "fine" / "label_grid.npy", allow_pickle=False),
         "coarse_grid": np.load(cell / "cluster" / "coarse" / "label_grid.npy", allow_pickle=False),
+        "condition_bins": condition_bins,
         "model_id": "/".join(cell.parts[-3:]),
     }
+
+
+def compute_condition_values(condition: dict, durations: np.ndarray, masked_spectrograms: np.ndarray | None) -> np.ndarray:
+    """
+    Description
+    -----------
+    Each call's own conditioning value, as a conditional QLVM model package
+    defines it in its training contract's ``condition`` block (float32, the
+    package's ``condition_value``). ``"duration"``:
+    ``(d - duration_min) / (duration_max - duration_min + epsilon)`` on the
+    pre-resize duration in time bins (the corpus range fixes min and max).
+    ``"mean_freq"``: the energy-weighted centroid of the frequency rows of the
+    resized, SAM-masked spectrogram before any normalization, divided by the
+    number of rows, with the energy clamped at ``epsilon``.
+
+    Parameters
+    ----------
+    condition (dict)
+        The contract's ``condition`` block.
+    durations (np.ndarray)
+        ``(N,)`` durations in time bins.
+    masked_spectrograms (np.ndarray | None)
+        ``(N, F, T)`` resized SAM-masked spectrograms; required for ``"mean_freq"``.
+
+    Returns
+    -------
+    values (np.ndarray)
+        ``(N,)`` float32 conditioning values.
+    """
+    if condition["name"] == "duration":
+        duration = np.asarray(durations).astype(np.float32)
+        low, high = np.float32(condition["duration_min"]), np.float32(condition["duration_max"])
+        return (duration - low) / (np.float32(high - low) + np.float32(condition["epsilon"]))
+    if condition["name"] == "mean_freq":
+        if masked_spectrograms is None:
+            error_message = "compute_condition_values: mean_freq needs the SAM-masked spectrograms."
+            raise ValueError(error_message)
+        spectrograms = np.asarray(masked_spectrograms, dtype=np.float32)
+        n_rows = spectrograms.shape[1]
+        rows = np.arange(n_rows, dtype=np.float32)[None, :, None]
+        energy = np.maximum(spectrograms.sum(axis=(1, 2)), np.float32(condition["epsilon"]))
+        return ((spectrograms * rows).sum(axis=(1, 2)) / energy / np.float32(n_rows)).astype(np.float32)
+    error_message = f"compute_condition_values: unknown condition {condition['name']!r} (expected duration|mean_freq)."
+    raise ValueError(error_message)
+
+
+def frozen_condition_values(values: np.ndarray, condition_bins: dict) -> np.ndarray:
+    """
+    Description
+    -----------
+    The conditioning value to decode new calls at: the corpus mean of the
+    quantile bin each call's own value falls in, ``bin_mean[digitize(value,
+    edges[1:-1])]`` (the package's ``frozen_condition_value``). A package's
+    corpus embedding decoded batches at their mean value, which a new session
+    cannot reproduce; the frozen bin mean comes closest, and gives at most one
+    lattice decode per bin. Values beyond the corpus range fall in the first or
+    last bin.
+
+    Parameters
+    ----------
+    values (np.ndarray)
+        ``(N,)`` each call's own conditioning value.
+    condition_bins (dict)
+        ``edges`` and ``bin_mean`` of the cell's ``condition_bins.npz``.
+
+    Returns
+    -------
+    frozen (np.ndarray)
+        ``(N,)`` float32 values, one of ``bin_mean`` per call.
+    """
+    edges = np.asarray(condition_bins["edges"])
+    bin_mean = np.asarray(condition_bins["bin_mean"], dtype=np.float32)
+    values = np.asarray(values, dtype=np.float32).reshape(-1)
+    return bin_mean[np.digitize(values, edges[1:-1], right=False)]
 
 
 def normalize_model_inputs(spectrograms: np.ndarray, contract: dict | None) -> np.ndarray:
@@ -397,7 +485,8 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
     contract's; a ``length_threshold`` set in the settings must equal the training
     set's; the weights' head (:func:`qlvm_model.decoder_head`) must be the
     contract's ``decoder_head``. The contract must also describe a decoder this
-    module can run: no conditioning input (``c_dim`` 0), an
+    module can run: no conditioning input (``c_dim`` 0) or one conditioning value
+    of a model package's ``"duration"`` / ``"mean_freq"`` condition, an
     ``input_normalization`` of ``"none"`` or ``"minmax"``, and a ``floor`` that is
     null or in ``[0, 1)``.
 
@@ -428,8 +517,15 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
     weights_head = decoder_head(params)
     if contract["decoder_head"] != weights_head:
         mismatches.append(f"decoder_head: the weights are {weights_head!r}, the contract says {contract['decoder_head']!r}")
-    if contract["c_dim"] != 0:
-        mismatches.append(f"c_dim: this module embeds unconditional decoders (c_dim 0), trained {contract['c_dim']!r}")
+    # train-qlvm contracts have no "condition" block; model package contracts always do.
+    condition = contract.get("condition")
+    if contract["c_dim"] != 0 and not (
+        contract["c_dim"] == 1 and condition is not None and condition["name"] in ("duration", "mean_freq")
+    ):
+        mismatches.append(
+            f"c_dim: this module embeds unconditional decoders and decoders conditioned on duration or mean_freq, "
+            f"trained c_dim {contract['c_dim']!r} with condition {condition!r}"
+        )
     if contract["input_normalization"] not in ("none", "minmax"):
         mismatches.append(f"input_normalization: expected 'none' or 'minmax', trained {contract['input_normalization']!r}")
     if contract["floor"] is not None and not 0.0 <= contract["floor"] < 1.0:
@@ -591,6 +687,7 @@ class QLVMLatentInference:
             model = load_model_cell(cfg['model_cell_directory'])
             params, contract, lattice = model['params'], model['contract'], model['lattice']
             fine_grid, coarse_grid = model['fine_grid'], model['coarse_grid']
+            condition_bins = model['condition_bins']
             model_id = model['model_id']
             self.message_output(
                 f"Embedding with model package cell {model['model_id']} ({decoder_head(params)} head, "
@@ -600,6 +697,7 @@ class QLVMLatentInference:
             params = load_decoder_params(cfg['weights_npz_path'])
             lattice = build_lattice(cfg)
             contract = load_training_contract(cfg['weights_npz_path'])
+            condition_bins = None
             model_id = cfg['weights_npz_path']
             # Fine grid -> qlvm_category; coarse grid -> qlvm_supercategory. Both are
             # the torus-periodic watershed (ws_labels_periodic) of their reference file.
@@ -656,10 +754,16 @@ class QLVMLatentInference:
             # decoder is out-of-distribution and yields unreliable coordinates.
             # masking_type "none" keeps raw spectrograms (correct only if the decoder
             # was trained without masking).
-            if cfg['masking_type'] == 'sam':
+            # A mean-frequency condition is always computed on the masked call, even
+            # for a decoder fed unmasked (floored) spectrograms, so it needs the masks too.
+            condition = contract['condition'] if contract is not None and contract['c_dim'] else None
+            needs_masks = cfg['masking_type'] == 'sam' or (condition is not None and condition['name'] == 'mean_freq')
+            masks = None
+            if needs_masks:
                 masks, _ = build_session_masks(
                     h5_file, root.name, usv_indices, specs.shape[1], specs.shape[2]
                 )
+            if cfg['masking_type'] == 'sam':
                 specs = specs * masks
 
         # Preprocess identically to the training set (same resize/time-stretch), then
@@ -668,8 +772,24 @@ class QLVMLatentInference:
         resized = stretch_specs(specs, durations, target_shape, cfg['time_stretch'])
         data = jnp.asarray(normalize_model_inputs(resized, contract)[:, None, :, :])
 
+        # A conditional package decoder is decoded at the frozen corpus bin mean of
+        # each call's own condition value.
+        condition_values = None
+        if condition is not None:
+            masked_resized = None
+            if condition['name'] == 'mean_freq':
+                masked_resized = resized if cfg['masking_type'] == 'sam' else stretch_specs(
+                    specs * masks, durations, target_shape, cfg['time_stretch']
+                )
+            own_values = compute_condition_values(condition, durations, masked_resized)
+            condition_values = frozen_condition_values(own_values, condition_bins)
+            self.message_output(
+                f"Conditioning on {condition['name']}: {len(np.unique(condition_values))} frozen corpus bin means "
+                f"for {len(own_values)} USVs."
+            )
+
         coords = np.asarray(embed_data(
-            lattice, data, params, cfg['lattice_batch_size'], cfg['data_batch_size']
+            lattice, data, params, cfg['lattice_batch_size'], cfg['data_batch_size'], condition_values
         ))                                                               # (N, 2)
         category, supercategory = labels_for_coords(coords, fine_grid, coarse_grid)
 
@@ -705,6 +825,134 @@ class QLVMLatentInference:
         self.message_output(
             f"QLVM latent inference ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
         )
+
+
+def export_model_cell_arrays(
+    model_cell_directory: str,
+    output_directory: str,
+    message_output: Callable | None = None,
+) -> list[pathlib.Path]:
+    """
+    Description
+    -----------
+    Writes a QLVM model package cell's clustering in the layout of the reference
+    ``arrays_fine.npz`` / ``arrays_coarse.npz`` that the visualization and modeling
+    readers load (``qlvm-torus-traversal-video``, the sequence embedding map, the
+    manifold atlas), so they can draw the package's clusters by pointing at
+    ``output_directory`` instead of the reference arrays. Per level:
+
+    * ``ws_labels_periodic`` and ``ws_labels`` -- the cell's ``label_grid.npy``
+      (``(res, res)`` int16, indexed ``[y, x]``; the package grid is periodic, so
+      both keys hold it);
+    * ``centers`` -- ``(K, 2)`` float32 ``(peak_x, peak_y)`` of ``clusters.csv``,
+      row ``i`` for label ``i + 1``;
+    * ``latent_coords`` -- ``(N, 2)`` float32 torus coordinates of the package's
+      corpus calls, from ``posterior_cache.npz``'s ``torus_weighted``;
+    * ``sample_ws`` and ``sample_ws_periodic`` -- ``(N,)`` int16 labels of those
+      calls from ``cluster_labels.csv``;
+    * ``heatmap`` -- ``(res, res)`` float32 aggregated posterior: the
+      ``aggregated`` mass of every point of the embedding lattice
+      (``embedding_fib_m`` of the contract) added to its pixel, summing to the
+      number of corpus calls. The reference arrays' heatmap was built by a
+      different, unrecorded smoothing, so the two look alike but are not equal;
+    * ``model_id`` -- ``<package>/<phase>/<cell>``.
+
+    Both files are published atomically.
+
+    Parameters
+    ----------
+    model_cell_directory (str)
+        Path to the package cell.
+    output_directory (str)
+        Directory to write ``arrays_fine.npz`` and ``arrays_coarse.npz`` into
+        (created if missing).
+    message_output (Callable)
+        Logging callback; defaults to ``print``.
+
+    Returns
+    -------
+    written (list[pathlib.Path])
+        The two files written.
+    """
+    message_output = message_output if message_output is not None else print
+    cell = pathlib.Path(configure_path(model_cell_directory))
+    output_dir = pathlib.Path(configure_path(output_directory))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (cell / "training_contract.json").open() as contract_file:
+        contract = json.load(contract_file)
+    with np.load(cell / "posterior_cache.npz", allow_pickle=False) as cache:
+        torus_weighted = cache["torus_weighted"]
+        aggregated = cache["aggregated"]
+    latent_coords = np.asarray(torus_basis_reverse(jnp.asarray(torus_weighted)), dtype=np.float32)
+    lattice = np.asarray(gen_fib_basis(contract["embedding_fib_m"])) % 1.0
+    if lattice.shape[0] != aggregated.shape[0]:
+        error_message = (
+            f"{cell}: posterior_cache.npz aggregates {aggregated.shape[0]} lattice points but the contract's "
+            f"embedding lattice has {lattice.shape[0]}."
+        )
+        raise ValueError(error_message)
+    model_id = "/".join(cell.parts[-3:])
+    written = []
+    for level in ("fine", "coarse"):
+        label_grid = np.load(cell / "cluster" / level / "label_grid.npy", allow_pickle=False)
+        resolution = label_grid.shape[0]
+        pixel_x = np.clip((lattice[:, 0] * resolution).astype(int), 0, resolution - 1)
+        pixel_y = np.clip((lattice[:, 1] * resolution).astype(int), 0, resolution - 1)
+        heatmap = np.bincount(
+            pixel_y * resolution + pixel_x, weights=aggregated, minlength=resolution * resolution
+        ).reshape(resolution, resolution)
+        clusters = pls.read_csv(cell / "cluster" / level / "clusters.csv").sort("label")
+        labels = pls.read_csv(cell / "cluster" / level / "cluster_labels.csv")["label"].to_numpy()
+        if labels.shape[0] != latent_coords.shape[0]:
+            error_message = (
+                f"{cell}: cluster/{level}/cluster_labels.csv has {labels.shape[0]} rows but posterior_cache.npz "
+                f"{latent_coords.shape[0]}."
+            )
+            raise ValueError(error_message)
+        destination = output_dir / f"arrays_{level}.npz"
+        with atomic_output_path(destination) as tmp_path, tmp_path.open("wb") as array_file:
+            np.savez(
+                array_file,
+                ws_labels_periodic=label_grid.astype(np.int16),
+                ws_labels=label_grid.astype(np.int16),
+                centers=clusters.select(["peak_x", "peak_y"]).to_numpy().astype(np.float32),
+                latent_coords=latent_coords,
+                sample_ws=labels.astype(np.int16),
+                sample_ws_periodic=labels.astype(np.int16),
+                heatmap=heatmap.astype(np.float32),
+                model_id=np.array(model_id),
+            )
+        written.append(destination)
+        message_output(
+            f"Wrote {destination} ({clusters.height} {level} clusters, {labels.shape[0]} calls) from {model_id}."
+        )
+    return written
+
+
+@click.command(name="export-qlvm-reference-arrays")
+@click.option('--model-cell-directory', 'model_cell_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='A QLVM model package cell, e.g. .../qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked.')
+@click.option('--output-directory', 'output_directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write arrays_fine.npz and arrays_coarse.npz into (created if missing), e.g. <spectrograms_dir>/qlvm.')
+def export_qlvm_reference_arrays_cli(model_cell_directory, output_directory) -> None:
+    """
+    Description
+    -----------
+    A command-line tool to write a QLVM model package cell's clustering as the
+    ``arrays_fine.npz`` / ``arrays_coarse.npz`` reference arrays the QLVM
+    visualizations read.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    export_model_cell_arrays(
+        model_cell_directory=model_cell_directory,
+        output_directory=output_directory,
+        message_output=print,
+    )
 
 
 @click.command(name="infer-qlvm-latents")

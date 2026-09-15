@@ -250,6 +250,33 @@ VOCAL_STRIP_LOG_RATIO_THRESHOLD = 10.0
 VOCAL_STRIP_SYMLOG_LINTHRESH = 0.5
 
 
+def _category_class_count(segmentation: str, per_group: dict[str, list[dict]]) -> int:
+    """
+    Description
+    -----------
+    Number of category classes to lay out for a segmentation: the upstream count
+    in `USV_CATEGORY_N_CLASSES`, raised to the largest `best_cat` any unit holds.
+    The upstream counts describe the reference QLVM / VAE segmentations; a QLVM
+    model package cell can have more clusters (up to 18 fine, 9 coarse), and a
+    fixed bound would silently drop every unit tuned to a higher category.
+
+    Parameters
+    ----------
+    segmentation (str)
+        Categorical feature, a key of `USV_CATEGORY_N_CLASSES`.
+    per_group (dict[str, list[dict]])
+        Units per region, each with an integer `best_cat`.
+
+    Returns
+    -------
+    n_classes (int)
+        Classes to draw, `1 .. n_classes`.
+    """
+
+    observed = [int(unit["best_cat"]) for units in per_group.values() for unit in units]
+    return max([USV_CATEGORY_N_CLASSES[segmentation], *observed])
+
+
 def _parse_behavioral_modality_key(modality_key: str) -> tuple[str, str, str] | None:
     """
     Description
@@ -4124,7 +4151,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         region_colors = self._resolve_region_colors()
         density_cmap = self.visualizations_parameter_dict["figures"]["sequential_cmap"]
 
-        n_classes = USV_CATEGORY_N_CLASSES[segmentation]
+        n_classes = _category_class_count(segmentation, per_group)
         class_ids = np.arange(1, n_classes + 1)
 
         fig = plt.figure(figsize=(14.0, 6.4), dpi=self._figure_dpi)
@@ -4268,7 +4295,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             require_majority=require_majority,
         )
         region_colors = self._resolve_region_colors()
-        n_classes = USV_CATEGORY_N_CLASSES[segmentation]
+        n_classes = _category_class_count(segmentation, per_group)
 
         # Marker-size mapping: linear in median peak_signed_z, clipped
         # to a plotting-friendly range so very strong outliers don't

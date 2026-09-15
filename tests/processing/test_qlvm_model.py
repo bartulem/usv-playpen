@@ -193,6 +193,34 @@ def test_embed_data_chunking_matches_one_block():
         assert np.all(np.minimum(torus_gap, 1.0 - torus_gap) < 1e-5)
 
 
+def test_embed_data_conditional_decodes_each_value_with_c_appended():
+    """A conditional decoder sees one c for the whole lattice: grouping the
+    spectrograms by value must give, for every row, the embedding its own value's
+    lattice gives, and the decoder width must match the conditioning."""
+    rng = np.random.default_rng(7)
+    params = _sharp_decoder_params(rng)
+    params["0.weight"] = jnp.asarray(rng.standard_normal((2048, 5)))           # 2 * latent_dim + c_dim
+    lattice = qm.gen_korobov_basis(a=5, num_dims=2, num_points=23)
+    wrapped = qm.torus_basis_forward(lattice % 1)
+    values = np.array([0.2, 0.7, 0.2, 0.7, 0.2], dtype=np.float32)
+    low, high = (float(value) for value in np.unique(values))
+    atlases = {
+        value: qm.decoder_forward(jnp.concatenate([wrapped, jnp.full((23, 1), value)], axis=1), params)
+        for value in (low, high)
+    }
+    data = jnp.stack([atlases[low][3], atlases[high][9], atlases[low][15], atlases[high][1], atlases[low][20]])
+    coords = np.asarray(qm.embed_data(lattice, data, params, 7, 2, condition_values=values))
+    for row, value in enumerate(values):
+        posterior = qm.posterior_over_lattice(atlases[float(value)], data[row:row + 1])
+        expected = np.asarray(qm.torus_basis_reverse(posterior @ qm.torus_basis_forward(lattice)))[0]
+        gap = np.abs(coords[row] - expected)
+        assert np.all(np.minimum(gap, 1.0 - gap) < 1e-5)
+    with pytest.raises(ValueError, match="conditioning input"):
+        qm.embed_data(lattice, data, params, 7, 2)
+    with pytest.raises(ValueError, match="conditioning input"):
+        qm.embed_data(lattice, data, _sharp_decoder_params(rng), 7, 2, condition_values=values)
+
+
 def test_embed_data_rejects_empty_blocks():
     """A zero block size would loop forever or embed nothing, so it must fail loudly."""
     rng = np.random.default_rng(6)

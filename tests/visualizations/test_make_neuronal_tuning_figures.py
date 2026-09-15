@@ -54,6 +54,7 @@ from usv_playpen.visualizations.make_neuronal_tuning_figures import (
     NeuronalTuningFigureMaker,
     USV_CATEGORY_SEGMENTATIONS,
     USV_PROPERTY_ORDER,
+    _category_class_count,
 )
 
 
@@ -2734,3 +2735,12 @@ def test_render_behavioral_pages_returns_early_without_beh_offset():
         f"_render_behavioral_pages rendered pages for a payload with no "
         f"beh_offset keys; save_fig called with {calls}"
     )
+
+
+def test_category_class_count_grows_with_the_labels_units_hold():
+    """A QLVM model package cell has up to 18 fine clusters: units tuned to a
+    category above the reference count must widen the axis, not drop out."""
+    per_group = {"PAG": [{"best_cat": 3}, {"best_cat": 15}], "VMH": []}
+    assert _category_class_count("qlvm_category", per_group) == 15
+    assert _category_class_count("qlvm_supercategory", {"PAG": [{"best_cat": 2}]}) == 7
+    assert _category_class_count("vae_category", {}) == 10

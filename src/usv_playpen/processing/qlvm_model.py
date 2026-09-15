@@ -409,6 +409,7 @@ def embed_data(
     params: dict[str, jnp.ndarray],
     lattice_batch_size: int,
     data_batch_size: int,
+    condition_values: np.ndarray | None = None,
 ) -> jnp.ndarray:
     """
     Description
@@ -428,6 +429,12 @@ def embed_data(
     data chunk. The posterior is the same function of the likelihoods as in
     :func:`posterior_over_lattice`, so chunking changes float rounding only.
 
+    A conditional decoder (input width ``2 * latent_dim + 1``) takes one
+    conditioning value per spectrogram in ``condition_values``. The decoder sees
+    one value for the whole lattice, as in ``QMCLVM.posterior_probability``, so
+    spectrograms are grouped by value and the lattice is decoded once per distinct
+    value (and per data chunk within it); few distinct values keep this cheap.
+
     Parameters
     ----------
     lattice (jnp.ndarray)
@@ -440,6 +447,9 @@ def embed_data(
         Lattice points decoded and scored per block (``>= 1``).
     data_batch_size (int)
         Spectrograms whose posteriors are computed together (``>= 1``).
+    condition_values (np.ndarray | None)
+        ``(B,)`` conditioning values for a conditional decoder; ``None`` (default)
+        for an unconditional one. Must match the decoder's input width.
 
     Returns
     -------
@@ -454,20 +464,43 @@ def embed_data(
         raise ValueError(error_message)
     n_points = int(lattice.shape[0])
     n_data = int(data.shape[0])
+    latent_dim = int(lattice.shape[1])
+    c_dim = int(params["0.weight"].shape[1]) - 2 * latent_dim
+    if c_dim != (0 if condition_values is None else 1):
+        error_message = (
+            f"embed_data: the decoder takes {c_dim} conditioning input(s) but "
+            f"{'no' if condition_values is None else 'one per spectrogram'} condition_values were given."
+        )
+        raise ValueError(error_message)
     wrapped_basis = torus_basis_forward(lattice % 1)                # decoder input
     lattice_torus = torus_basis_forward(lattice)                    # (K, 2*latent_dim)
-    latent_coords = np.empty((n_data, int(lattice.shape[1])), dtype=np.float32)
-    for data_start in range(0, n_data, data_batch_size):
-        data_chunk = data[data_start:data_start + data_batch_size]
-        lls = jnp.concatenate(
-            [
-                binary_lp(decoder_forward(wrapped_basis[point_start:point_start + lattice_batch_size], params), data_chunk)
-                for point_start in range(0, n_points, lattice_batch_size)
-            ],
-            axis=1,
-        )                                                           # (chunk, K)
-        evidence = jax.scipy.special.logsumexp(lls, axis=1, keepdims=True) - jnp.log(n_points)
-        posterior = jax.nn.softmax(lls - evidence, axis=1)
-        weighted = posterior @ lattice_torus                        # (chunk, 2*latent_dim)
-        latent_coords[data_start:data_start + data_chunk.shape[0]] = np.asarray(torus_basis_reverse(weighted))
+    latent_coords = np.empty((n_data, latent_dim), dtype=np.float32)
+    if condition_values is None:
+        groups = [(wrapped_basis, np.arange(n_data))]
+    else:
+        values = np.asarray(condition_values, dtype=np.float32).reshape(-1)
+        if values.shape[0] != n_data:
+            error_message = f"embed_data: {values.shape[0]} condition_values for {n_data} spectrograms."
+            raise ValueError(error_message)
+        distinct, group_of_row = np.unique(values, return_inverse=True)
+        groups = [
+            (jnp.concatenate([wrapped_basis, jnp.full((n_points, 1), value, dtype=wrapped_basis.dtype)], axis=1),
+             np.flatnonzero(group_of_row == group))
+            for group, value in enumerate(distinct)
+        ]
+    for decoder_input, rows in groups:
+        for data_start in range(0, rows.shape[0], data_batch_size):
+            chunk_rows = rows[data_start:data_start + data_batch_size]
+            data_chunk = data[chunk_rows]
+            lls = jnp.concatenate(
+                [
+                    binary_lp(decoder_forward(decoder_input[point_start:point_start + lattice_batch_size], params), data_chunk)
+                    for point_start in range(0, n_points, lattice_batch_size)
+                ],
+                axis=1,
+            )                                                       # (chunk, K)
+            evidence = jax.scipy.special.logsumexp(lls, axis=1, keepdims=True) - jnp.log(n_points)
+            posterior = jax.nn.softmax(lls - evidence, axis=1)
+            weighted = posterior @ lattice_torus                    # (chunk, 2*latent_dim)
+            latent_coords[chunk_rows] = np.asarray(torus_basis_reverse(weighted))
     return jnp.asarray(latent_coords)
