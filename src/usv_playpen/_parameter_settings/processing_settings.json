@@ -329,6 +329,7 @@
     "run_name": "usv_yolo_detector"
   },
   "infer_qlvm_latents": {
+    "model_cell_directory": "",
     "weights_npz_path": "",
     "reference_arrays_fine_npz_path": "",
     "reference_arrays_coarse_npz_path": "",

@@ -691,11 +691,12 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --num-workers         DataLoader worker processes (0 = load in the main process).
 
 ``infer-qlvm-latents``
-``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm1`` / ``qlvm2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``. With ``--masking-type sam`` (default) each spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group before embedding -- matching how the decoder was trained by ``build-qlvm-training-set`` (embedding raw spectrograms into a masked-trained decoder is out-of-distribution); ``--masking-type none`` embeds raw spectrograms. When a training contract (``qmc_decoder_weights.json``, written by ``train-qlvm``) sits beside the weights, the settings are checked against it and the run stops on any disagreement; USVs with a duration at or above the training set's ``length_threshold`` get null ``qlvm_*`` columns. The summary CSV is rewritten atomically.
+``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm1`` / ``qlvm2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``. With ``--masking-type sam`` (default) each spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group before embedding -- matching how the decoder was trained by ``build-qlvm-training-set`` (embedding raw spectrograms into a masked-trained decoder is out-of-distribution); ``--masking-type none`` embeds raw spectrograms. When a training contract (``qmc_decoder_weights.json``, written by ``train-qlvm``) sits beside the weights, the settings are checked against it and the run stops on any disagreement; USVs with a duration at or above the training set's ``length_threshold`` get null ``qlvm_*`` columns. The summary CSV is rewritten atomically. With ``--model-cell-directory`` pointing at one cell of a QLVM model package (``qlvm_models_latest/v2/<phase>/<cell>``), the cell supplies everything model-specific: ``checkpoint.tar`` (read without torch; legacy or ReLU head), ``training_contract.json`` (input min-max and loudness floor, duration window; ``--masking-type`` must match it: ``sam`` for phase 9 cells, ``none`` for phase 6 and 10 cells), its Fibonacci embedding lattice (46,368 points), and ``cluster/fine`` / ``cluster/coarse`` ``label_grid.npy`` for the two category columns.
 
 .. code-block:: text
 
     usage: infer-qlvm-latents [-h] --root-directory PATH
+                            [--model-cell-directory TEXT]
                             [--weights-npz-path TEXT]
                             [--reference-arrays-fine-npz-path TEXT]
                             [--reference-arrays-coarse-npz-path TEXT]
@@ -714,6 +715,8 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 
     optional arguments:
       -h, --help            Show this help message and exit.
+      --model-cell-directory
+                            A QLVM model package cell (e.g. .../qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked); when set, its checkpoint, training_contract.json, embedding lattice and label grids replace the weights, reference-arrays and lattice settings.
       --weights-npz-path    Path to the converted decoder weights .npz.
       --reference-arrays-fine-npz-path
                             Path to the FINE reference arrays.npz (ws_labels_periodic -> qlvm_category).

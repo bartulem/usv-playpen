@@ -1555,6 +1555,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 
 *Infer QLVM latents* (``infer_qlvm_latents``):
 
+* **model_cell_directory** : one cell of a QLVM model package, e.g. ``/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked`` (default ``""``, unused). When set, the cell replaces ``weights_npz_path``, both ``reference_arrays_*`` paths and the lattice keys: the decoder comes from its ``checkpoint.tar`` (read without torch; the legacy or ReLU head is read from the weights), the input normalization and duration window from its ``training_contract.json``, the lattice from the contract's Fibonacci ``embedding_fib_m`` (``24``, 46,368 points), and the categories from its ``cluster/fine/label_grid.npy`` and ``cluster/coarse/label_grid.npy``. ``masking_type``, ``target_shape``, ``time_stretch`` and ``latent_dim`` must still agree with the contract (``masking_type`` ``"sam"`` for phase 9 cells, ``"none"`` for phase 6 and 10 cells). Package cells were trained on min-maxed spectrograms (phase 6 and 10 cells also with a 0.2 loudness floor), which is applied automatically
 * **weights_npz_path** : path to the QLVM decoder weights ``.npz`` (written by *Train QLVM*)
 * **reference_arrays_fine_npz_path** : path to the FINE reference ``arrays.npz`` (its ``ws_labels_periodic`` grid → ``qlvm_category``)
 * **reference_arrays_coarse_npz_path** : path to the COARSE reference ``arrays.npz`` (its ``ws_labels_periodic`` grid → ``qlvm_supercategory``)
@@ -1573,6 +1574,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 .. code-block:: json
 
     "infer_qlvm_latents": {
+        "model_cell_directory": "",
         "weights_npz_path": "",
         "reference_arrays_fine_npz_path": "",
         "reference_arrays_coarse_npz_path": "",

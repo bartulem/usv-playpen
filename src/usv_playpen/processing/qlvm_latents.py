@@ -23,14 +23,26 @@ get nulls.
 Fidelity: the session spectrograms are preprocessed with the SAME resize /
 time-stretch used to build the training set (:func:`stretch_specs`), so they are
 in-distribution for the decoder.
+
+Model packages: with ``model_cell_directory`` set, one cell of a QLVM model
+package (``qlvm_models_latest/v2``) replaces the weights / reference-arrays /
+lattice settings (:func:`load_model_cell`): its ``checkpoint.tar`` is read without
+torch, its ``training_contract.json`` fixes the head (legacy or ReLU), the input
+normalization (min-max, and the loudness floor of floor-trained cells) and the
+duration window, its Fibonacci embedding lattice is rebuilt, and its
+``cluster/fine`` and ``cluster/coarse`` ``label_grid.npy`` supply the categories.
 """
 
 from __future__ import annotations
 
+import collections
 import json
 import pathlib
+import pickle
+import zipfile
 from collections.abc import Callable
 from datetime import datetime
+from typing import BinaryIO
 
 import click
 import h5py
@@ -43,38 +55,216 @@ from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import atomic_output_path, configure_path, derive_spectrogram_model_paths, first_match_or_raise
 from ..processing.build_qlvm_training_set import build_session_masks, stretch_specs
 from ..time_utils import is_gui_context, smart_wait
-from .qlvm_model import embed_data, gen_fib_basis, gen_korobov_basis, roberts_sequence
+from .qlvm_model import decoder_head, embed_data, gen_fib_basis, gen_korobov_basis, roberts_sequence
 
 # QLVM columns written into the USV summary CSV (consumed downstream).
 QLVM_COLUMNS = ("qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory")
+
+
+class _TorchCheckpointUnpickler(pickle.Unpickler):
+    """
+    Description
+    -----------
+    Unpickles the ``data.pkl`` of a torch zip checkpoint into numpy arrays without
+    importing torch. Only the globals a saved ``state_dict`` of float tensors
+    needs are resolved (``collections.OrderedDict``,
+    ``torch._utils._rebuild_tensor_v2`` and the typed storage classes); anything
+    else raises, so the file cannot run code. Each storage is read from the
+    archive's ``data/<key>`` record.
+    """
+
+    def __init__(self, file: BinaryIO, archive: zipfile.ZipFile, record_prefix: str) -> None:
+        """
+        Description
+        -----------
+        Initializes the unpickler over one open ``data.pkl``.
+
+        Parameters
+        ----------
+        file (BinaryIO)
+            The open ``data.pkl`` record.
+        archive (zipfile.ZipFile)
+            The checkpoint archive the storages are read from.
+        record_prefix (str)
+            The archive's top-level folder name (records are ``<prefix>/data/<key>``).
+
+        Returns
+        -------
+        None
+        """
+        super().__init__(file)
+        self.archive = archive
+        self.record_prefix = record_prefix
+
+    def find_class(self, module: str, name: str) -> object:
+        """
+        Description
+        -----------
+        Resolves the few globals a tensor ``state_dict`` pickle refers to: the
+        ordered dict, the tensor rebuild function (replaced by
+        :func:`_rebuild_tensor_as_array`) and the typed storage classes (replaced by
+        their numpy dtype). Every other global is refused.
+
+        Parameters
+        ----------
+        module (str)
+            Module of the global.
+        name (str)
+            Name of the global.
+
+        Returns
+        -------
+        resolved (object)
+            The replacement object.
+        """
+        storage_dtypes = {
+            "FloatStorage": np.float32, "DoubleStorage": np.float64, "HalfStorage": np.float16,
+            "LongStorage": np.int64, "IntStorage": np.int32, "ShortStorage": np.int16,
+            "ByteStorage": np.uint8, "CharStorage": np.int8, "BoolStorage": np.bool_,
+        }
+        if (module, name) == ("collections", "OrderedDict"):
+            return collections.OrderedDict
+        if (module, name) == ("torch._utils", "_rebuild_tensor_v2"):
+            return _rebuild_tensor_as_array
+        if module == "torch" and name in storage_dtypes:
+            return np.dtype(storage_dtypes[name])
+        error_message = f"torch checkpoint refers to {module}.{name}, which a decoder state_dict does not need; refusing to load it."
+        raise pickle.UnpicklingError(error_message)
+
+    def persistent_load(self, pid: tuple) -> np.ndarray:
+        """
+        Description
+        -----------
+        Returns the flat storage a persistent id names, read from the archive as
+        little-endian bytes of the storage's dtype.
+
+        Parameters
+        ----------
+        pid (tuple)
+            ``("storage", dtype, key, location, numel)``.
+
+        Returns
+        -------
+        storage (np.ndarray)
+            One-dimensional array over the storage bytes.
+        """
+        kind, dtype, key, _location, numel = pid
+        if kind != "storage":
+            error_message = f"torch checkpoint persistent id of kind {kind!r}; only 'storage' is supported."
+            raise pickle.UnpicklingError(error_message)
+        storage = np.frombuffer(self.archive.read(f"{self.record_prefix}/data/{key}"), dtype=dtype.newbyteorder("<"))
+        return storage[:numel]
+
+
+def _rebuild_tensor_as_array(
+    storage: np.ndarray,
+    storage_offset: int,
+    size: tuple,
+    stride: tuple,
+    *_unused: object,
+) -> np.ndarray:
+    """
+    Description
+    -----------
+    Stands in for ``torch._utils._rebuild_tensor_v2`` while unpickling a
+    checkpoint: views the storage with the tensor's offset, shape and stride and
+    returns a contiguous copy.
+
+    Parameters
+    ----------
+    storage (np.ndarray)
+        Flat storage from :meth:`_TorchCheckpointUnpickler.persistent_load`.
+    storage_offset (int)
+        Offset of the tensor's first element in the storage.
+    size (tuple)
+        Tensor shape.
+    stride (tuple)
+        Tensor stride, in elements.
+    _unused (object)
+        ``requires_grad``, backward hooks and metadata, which a plain array drops.
+
+    Returns
+    -------
+    array (np.ndarray)
+        The tensor as a numpy array.
+    """
+    view = np.lib.stride_tricks.as_strided(
+        storage[storage_offset:],
+        shape=tuple(size),
+        strides=tuple(step * storage.itemsize for step in stride),
+        writeable=False,
+    )
+    return np.array(view)
+
+
+def read_torch_checkpoint(checkpoint_path: str | pathlib.Path) -> object:
+    """
+    Description
+    -----------
+    Reads a torch zip checkpoint (``torch.save``'s default format, e.g. a QLVM
+    model package's ``checkpoint.tar``) into plain Python containers of numpy
+    arrays, without importing torch, via :class:`_TorchCheckpointUnpickler`.
+
+    Parameters
+    ----------
+    checkpoint_path (str | pathlib.Path)
+        Path to the checkpoint.
+
+    Returns
+    -------
+    checkpoint (object)
+        The unpickled object, with every tensor as a numpy array (for a QLVM
+        checkpoint, a dict with ``"model"``, ``"optimizer"`` and ``"run info"``).
+    """
+    with zipfile.ZipFile(checkpoint_path) as archive:
+        pickle_records = [name for name in archive.namelist() if name.endswith("/data.pkl")]
+        if len(pickle_records) != 1:
+            error_message = f"{checkpoint_path} is not a torch zip checkpoint (data.pkl records: {pickle_records})."
+            raise ValueError(error_message)
+        record_prefix = pickle_records[0][: -len("/data.pkl")]
+        byteorder_record = f"{record_prefix}/byteorder"
+        if byteorder_record in archive.namelist() and archive.read(byteorder_record) != b"little":
+            error_message = f"{checkpoint_path} was saved big-endian; only little-endian checkpoints are supported."
+            raise ValueError(error_message)
+        with archive.open(pickle_records[0]) as pickle_file:
+            return _TorchCheckpointUnpickler(pickle_file, archive, record_prefix).load()
 
 
 def load_decoder_params(weights_npz_path: str) -> dict[str, jnp.ndarray]:
     """
     Description
     -----------
-    Loads the frozen decoder weights from the converted ``.npz`` (one array per
-    ``state_dict`` entry) into the key form :func:`qlvm_model.decoder_forward`
-    expects. A leading ``decoder.`` prefix (present when the converter dumps the
-    full QMCLVM ``state_dict``) is stripped.
+    Loads the frozen decoder weights into the key form
+    :func:`qlvm_model.decoder_forward` expects, from either the converted
+    ``.npz`` (one array per ``state_dict`` entry, as ``train-qlvm`` writes it) or,
+    for any other suffix, a torch zip checkpoint read without torch
+    (:func:`read_torch_checkpoint`; its ``"model"`` entry when present). A leading
+    ``decoder.`` prefix (present when the full QMCLVM ``state_dict`` is dumped) is
+    stripped.
 
     Parameters
     ----------
     weights_npz_path (str)
-        Path to the ``.npz`` of decoder weights.
+        Path to the ``.npz`` of decoder weights or to a torch checkpoint.
 
     Returns
     -------
     params (dict[str, jnp.ndarray])
         Decoder weights keyed by ``"<layer_idx>.weight"`` / ``"<layer_idx>.bias"``.
     """
+    weights_path = pathlib.Path(configure_path(weights_npz_path))
+    if weights_path.suffix == ".npz":
+        # Context manager closes the zip-backed NpzFile handle; every array is copied
+        # out inside the block, so closing on exit is safe.
+        with np.load(weights_path) as raw:
+            state = {key: raw[key] for key in raw.files}
+    else:
+        checkpoint = read_torch_checkpoint(weights_path)
+        state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
     params: dict[str, jnp.ndarray] = {}
-    # Context manager closes the zip-backed NpzFile handle; every array is copied
-    # out into ``params`` inside the block, so closing on exit is safe.
-    with np.load(configure_path(weights_npz_path)) as raw:
-        for key in raw.files:
-            clean = key[len("decoder."):] if key.startswith("decoder.") else key
-            params[clean] = jnp.asarray(raw[key])
+    for key, value in state.items():
+        clean = key[len("decoder."):] if key.startswith("decoder.") else key
+        params[clean] = jnp.asarray(value)
     return params
 
 
@@ -104,19 +294,110 @@ def load_training_contract(weights_npz_path: str) -> dict | None:
         return json.load(contract_file)
 
 
-def enforce_training_contract(contract: dict, cfg: dict) -> float:
+def load_model_cell(model_cell_directory: str) -> dict:
     """
     Description
     -----------
-    Checks the ``infer_qlvm_latents`` settings against the decoder's training
-    contract (see :func:`load_training_contract`) and returns the duration window
-    to embed. Every disagreement is collected and raised together, naming the
-    settings value and the trained one: ``masking_type``, ``target_shape``,
-    ``time_stretch`` and ``latent_dim`` must equal the contract's, and a
-    ``length_threshold`` set in the settings must equal the training set's. The
-    contract must also describe a decoder this module can run: the activation-free
-    ``"legacy"`` head, no conditioning input (``c_dim`` 0), stored spectrograms
-    fed without renormalization (``input_normalization`` ``"none"``) and no floor.
+    Loads one cell of a QLVM model package (the ``qlvm_models_latest/v2`` layout):
+    the decoder weights from its torch ``checkpoint.tar`` (read without torch), its
+    ``training_contract.json``, the Fibonacci lattice the package embedded its
+    corpus on (``embedding_fib_m`` of the contract), and the ``label_grid.npy`` of
+    its ``cluster/fine`` and ``cluster/coarse`` levels (the grids its per-call
+    labels were read from, indexed ``[y, x]`` like the reference ``arrays.npz``).
+
+    Parameters
+    ----------
+    model_cell_directory (str)
+        Path to the package cell, e.g.
+        ``.../qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked``.
+
+    Returns
+    -------
+    model (dict)
+        ``params`` (decoder weights), ``contract`` (dict), ``lattice``
+        (``(fib(m), 2)``), ``fine_grid`` and ``coarse_grid`` (``(res, res)`` label
+        grids), and ``model_id`` (``<package>/<phase>/<cell>``, the last three path
+        components).
+    """
+    cell = pathlib.Path(configure_path(model_cell_directory))
+    with (cell / "training_contract.json").open() as contract_file:
+        contract = json.load(contract_file)
+    if contract["embedding_lattice_type"] != "fibonacci":
+        error_message = (
+            f"{cell}: training_contract.json embedding_lattice_type is {contract['embedding_lattice_type']!r}; "
+            f"only 'fibonacci' package embeddings are supported."
+        )
+        raise ValueError(error_message)
+    return {
+        "params": load_decoder_params(str(cell / "checkpoint.tar")),
+        "contract": contract,
+        "lattice": gen_fib_basis(contract["embedding_fib_m"]),
+        "fine_grid": np.load(cell / "cluster" / "fine" / "label_grid.npy", allow_pickle=False),
+        "coarse_grid": np.load(cell / "cluster" / "coarse" / "label_grid.npy", allow_pickle=False),
+        "model_id": "/".join(cell.parts[-3:]),
+    }
+
+
+def normalize_model_inputs(spectrograms: np.ndarray, contract: dict | None) -> np.ndarray:
+    """
+    Description
+    -----------
+    Applies the input normalization a decoder was trained with to resized
+    spectrograms, as its training contract records it. ``input_normalization``
+    ``"none"`` (``train-qlvm`` decoders, and weights without a contract) leaves the
+    stored values as they are. ``"minmax"`` (QLVM model packages) rescales each
+    spectrogram to ``(x - min) / (max - min + normalization_epsilon)`` in float32,
+    and a non-null ``floor`` then applies ``clip((x - floor) / (1 - floor), 0, 1)``
+    followed by a second min-max -- the order the package's ``model_input`` uses.
+    SAM masking, when the contract asks for it, has already zeroed the background,
+    and a min-max keeps those zeros.
+
+    Parameters
+    ----------
+    spectrograms (np.ndarray)
+        Resized spectrograms, shape ``(N, F, T)``.
+    contract (dict | None)
+        The training contract, or ``None`` for weights without one.
+
+    Returns
+    -------
+    inputs (np.ndarray)
+        ``(N, F, T)`` float32 decoder inputs.
+    """
+    inputs = np.asarray(spectrograms, dtype=np.float32)
+    if contract is None or contract["input_normalization"] == "none":
+        return inputs
+    epsilon = np.float32(contract["normalization_epsilon"])
+
+    def _minmax(x: np.ndarray) -> np.ndarray:
+        low = x.min(axis=(1, 2), keepdims=True)
+        high = x.max(axis=(1, 2), keepdims=True)
+        return (x - low) / ((high - low) + epsilon)
+
+    inputs = _minmax(inputs)
+    if contract["floor"] is not None:
+        floor = np.float32(contract["floor"])
+        inputs = np.clip((inputs - floor) / np.float32(1.0 - floor), np.float32(0.0), np.float32(1.0))
+        inputs = _minmax(inputs)
+    return inputs.astype(np.float32, copy=False)
+
+
+def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.ndarray]) -> float:
+    """
+    Description
+    -----------
+    Checks the ``infer_qlvm_latents`` settings and the loaded weights against the
+    decoder's training contract (``train-qlvm``'s, see
+    :func:`load_training_contract`, or a model package cell's, see
+    :func:`load_model_cell`) and returns the duration window to embed. Every
+    disagreement is collected and raised together: ``masking_type``,
+    ``target_shape``, ``time_stretch`` and ``latent_dim`` must equal the
+    contract's; a ``length_threshold`` set in the settings must equal the training
+    set's; the weights' head (:func:`qlvm_model.decoder_head`) must be the
+    contract's ``decoder_head``. The contract must also describe a decoder this
+    module can run: no conditioning input (``c_dim`` 0), an
+    ``input_normalization`` of ``"none"`` or ``"minmax"``, and a ``floor`` that is
+    null or in ``[0, 1)``.
 
     Parameters
     ----------
@@ -124,6 +405,8 @@ def enforce_training_contract(contract: dict, cfg: dict) -> float:
         The training contract.
     cfg (dict)
         The ``infer_qlvm_latents`` settings block.
+    params (dict[str, jnp.ndarray])
+        The loaded decoder weights.
 
     Returns
     -------
@@ -140,12 +423,15 @@ def enforce_training_contract(contract: dict, cfg: dict) -> float:
         mismatches.append(f"target_shape: settings {list(cfg['target_shape'])!r}, trained {contract['target_shape']!r}")
     if cfg["length_threshold"] is not None and float(cfg["length_threshold"]) != contract["length_threshold"]:
         mismatches.append(f"length_threshold: settings {cfg['length_threshold']!r}, trained {contract['length_threshold']!r}")
-    runnable = {"decoder_head": "legacy", "c_dim": 0, "input_normalization": "none", "floor": None}
-    mismatches.extend(
-        f"{key}: this decoder needs {expected!r}, trained {contract[key]!r}"
-        for key, expected in runnable.items()
-        if contract[key] != expected
-    )
+    weights_head = decoder_head(params)
+    if contract["decoder_head"] != weights_head:
+        mismatches.append(f"decoder_head: the weights are {weights_head!r}, the contract says {contract['decoder_head']!r}")
+    if contract["c_dim"] != 0:
+        mismatches.append(f"c_dim: this module embeds unconditional decoders (c_dim 0), trained {contract['c_dim']!r}")
+    if contract["input_normalization"] not in ("none", "minmax"):
+        mismatches.append(f"input_normalization: expected 'none' or 'minmax', trained {contract['input_normalization']!r}")
+    if contract["floor"] is not None and not 0.0 <= contract["floor"] < 1.0:
+        mismatches.append(f"floor: expected null or a value in [0, 1), trained {contract['floor']!r}")
     if mismatches:
         error_message = (
             "infer_qlvm_latents settings disagree with the decoder's training contract:\n  "
@@ -297,13 +583,32 @@ class QLVMLatentInference:
 
         derive_spectrogram_model_paths(self.input_parameter_dict)
         cfg = self.input_parameter_dict['infer_qlvm_latents']
-        params = load_decoder_params(cfg['weights_npz_path'])
-        lattice = build_lattice(cfg)
+        if cfg['model_cell_directory']:
+            # A QLVM model package cell brings its own weights, contract, embedding
+            # lattice and label grids; the settings' paths and lattice keys are unused.
+            model = load_model_cell(cfg['model_cell_directory'])
+            params, contract, lattice = model['params'], model['contract'], model['lattice']
+            fine_grid, coarse_grid = model['fine_grid'], model['coarse_grid']
+            self.message_output(
+                f"Embedding with model package cell {model['model_id']} ({decoder_head(params)} head, "
+                f"{lattice.shape[0]}-point Fibonacci lattice)."
+            )
+        else:
+            params = load_decoder_params(cfg['weights_npz_path'])
+            lattice = build_lattice(cfg)
+            contract = load_training_contract(cfg['weights_npz_path'])
+            # Fine grid -> qlvm_category; coarse grid -> qlvm_supercategory. Both are
+            # the torus-periodic watershed (ws_labels_periodic) of their reference file.
+            # Context managers close each zip-backed NpzFile handle; the grid array is
+            # fully materialized on access inside the block, so closing on exit is safe.
+            with np.load(configure_path(cfg['reference_arrays_fine_npz_path'])) as fine_ref:
+                fine_grid = fine_ref['ws_labels_periodic']
+            with np.load(configure_path(cfg['reference_arrays_coarse_npz_path'])) as coarse_ref:
+                coarse_grid = coarse_ref['ws_labels_periodic']
 
         # The decoder only knows calls shaped like its training set: check the
         # preprocessing settings against its contract and embed only calls inside the
         # set's duration window. Weights with no contract fall back to the settings.
-        contract = load_training_contract(cfg['weights_npz_path'])
         if contract is None:
             length_threshold = cfg['length_threshold']
             self.message_output(
@@ -311,16 +616,7 @@ class QLVMLatentInference:
                 f"(length_threshold={length_threshold})."
             )
         else:
-            length_threshold = enforce_training_contract(contract, cfg)
-
-        # Fine grid -> qlvm_category; coarse grid -> qlvm_supercategory. Both are
-        # the torus-periodic watershed (ws_labels_periodic) of their reference file.
-        # Context managers close each zip-backed NpzFile handle; the grid array is
-        # fully materialized on access inside the block, so closing on exit is safe.
-        with np.load(configure_path(cfg['reference_arrays_fine_npz_path'])) as fine_ref:
-            fine_grid = fine_ref['ws_labels_periodic']
-        with np.load(configure_path(cfg['reference_arrays_coarse_npz_path'])) as coarse_ref:
-            coarse_grid = coarse_ref['ws_labels_periodic']
+            length_threshold = enforce_training_contract(contract, cfg, params)
 
         root = pathlib.Path(self.root_directory)
         # Session-keyed, NOT "*_spectrograms.h5": a session can hold other files
@@ -362,10 +658,11 @@ class QLVMLatentInference:
                 )
                 specs = specs * masks
 
-        # Preprocess identically to the training set (same resize/time-stretch).
+        # Preprocess identically to the training set (same resize/time-stretch), then
+        # normalize the way the decoder's contract says it was fed.
         target_shape = tuple(int(v) for v in cfg['target_shape'])
         resized = stretch_specs(specs, durations, target_shape, cfg['time_stretch'])
-        data = jnp.asarray(resized[:, None, :, :])
+        data = jnp.asarray(normalize_model_inputs(resized, contract)[:, None, :, :])
 
         coords = np.asarray(embed_data(
             lattice, data, params, cfg['lattice_batch_size'], cfg['data_batch_size']
@@ -405,6 +702,7 @@ class QLVMLatentInference:
 
 @click.command(name="infer-qlvm-latents")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
+@click.option('--model-cell-directory', 'model_cell_directory', type=str, default=None, required=False, help='A QLVM model package cell (e.g. .../qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked); when set, its checkpoint, training_contract.json, embedding lattice and label grids replace the weights, reference-arrays and lattice settings.')
 @click.option('--weights-npz-path', 'weights_npz_path', type=str, default=None, required=False, help='Path to the converted decoder weights .npz.')
 @click.option('--reference-arrays-fine-npz-path', 'reference_arrays_fine_npz_path', type=str, default=None, required=False, help='Path to the FINE reference arrays.npz (ws_labels_periodic -> qlvm_category).')
 @click.option('--reference-arrays-coarse-npz-path', 'reference_arrays_coarse_npz_path', type=str, default=None, required=False, help='Path to the COARSE reference arrays.npz (ws_labels_periodic -> qlvm_supercategory).')

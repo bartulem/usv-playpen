@@ -29,6 +29,7 @@ import torch
 from usv_playpen.processing.qlvm_model import (
     decode_lattice_atlas,
     decoder_forward,
+    decoder_head,
     gen_korobov_basis,
     posterior_over_lattice,
     torus_basis_forward,
@@ -194,6 +195,36 @@ def test_jax_inference_matches_torch_decoder_and_posterior():
     assert posterior_jax.shape == posterior_torch.shape == (4, 1021)
     np.testing.assert_allclose(posterior_jax, posterior_torch, atol=1e-4)
     assert np.array_equal(posterior_jax.argmax(axis=1), posterior_torch.argmax(axis=1))
+
+
+def test_jax_decoder_runs_the_relu_head_like_torch():
+    """QLVM model package decoders put a ReLU between the two Linear layers, shifting
+    every later state_dict index by one; the JAX decoder must detect that head from
+    the keys and reproduce torch's output."""
+    torch.manual_seed(1)
+    relu_decoder = torch.nn.Sequential(
+        torch.nn.Linear(4, 2048),
+        torch.nn.ReLU(),
+        torch.nn.Linear(2048, 64 * 8 * 8),
+        torch.nn.Unflatten(1, (64, 8, 8)),
+        torch.nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1),
+        torch.nn.ReLU(),
+        torch.nn.ConvTranspose2d(32, 16, 3, stride=2, padding=1, output_padding=1),
+        torch.nn.ReLU(),
+        torch.nn.ConvTranspose2d(16, 8, 3, stride=2, padding=1, output_padding=1),
+        torch.nn.ReLU(),
+        torch.nn.ConvTranspose2d(8, 1, 3, stride=2, padding=1, output_padding=1),
+        torch.nn.Sigmoid(),
+    ).eval()
+    params = {key: jnp.asarray(value.detach().numpy()) for key, value in relu_decoder.state_dict().items()}
+    assert decoder_head(params) == "relu"
+    assert decoder_head(dict(build_qmc_decoder(latent_dim=2).state_dict())) == "legacy"
+
+    basis_np = np.random.default_rng(3).uniform(-1.0, 1.0, size=(64, 4)).astype(np.float32)
+    with torch.no_grad():
+        images_torch = relu_decoder(torch.from_numpy(basis_np)).numpy()
+    images_jax = np.asarray(decoder_forward(jnp.asarray(basis_np), params))
+    np.testing.assert_allclose(images_jax, images_torch, atol=1e-5)
 
 
 def test_build_lattice_fib_requires_2d():

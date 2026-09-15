@@ -267,9 +267,42 @@ def conv_transpose2d(
 # reshape to (64, 8, 8), then four ConvTranspose2d(stride=2, padding=1,
 # output_padding=1) blocks 64->32->16->8->1, ReLU between, Sigmoid at the end.
 # Indices match the nn.Sequential state_dict keys ("<idx>.weight"/"<idx>.bias").
+# The "legacy" head has nothing between the two Linear layers (indices 0, 1, convs
+# 3, 5, 7, 9); the "relu" head of qmc_deep_gen's models/qmc_decoder.py inserts a
+# ReLU there, which shifts every later index by one (0, 2, convs 4, 6, 8, 10).
 _DECODER_CONV_INDICES = (3, 5, 7, 9)
 _DECODER_RESHAPE = (64, 8, 8)
 _CONV_STRIDE, _CONV_PADDING, _CONV_OUTPUT_PADDING = 2, 1, 1
+
+
+def decoder_head(params: dict[str, jnp.ndarray]) -> str:
+    """
+    Description
+    -----------
+    Names the decoder head a set of weights was trained with, read from its
+    ``state_dict`` keys the way qmc_deep_gen's ``head_from_state_dict`` does: the
+    activation-free ``"legacy"`` head carries weights at index 1, the ``"relu"``
+    head has its ReLU there and its second Linear layer at index 2.
+
+    Parameters
+    ----------
+    params (dict[str, jnp.ndarray])
+        Decoder weights keyed by ``"<layer_idx>.weight"`` / ``"<layer_idx>.bias"``.
+
+    Returns
+    -------
+    head (str)
+        ``"legacy"`` or ``"relu"``.
+    """
+    if "1.weight" in params:
+        return "legacy"
+    if "2.weight" in params:
+        return "relu"
+    error_message = (
+        f"decoder_head: the weights have neither '1.weight' nor '2.weight', so they are not a known QLVM "
+        f"decoder head; keys: {sorted(params)[:6]}"
+    )
+    raise ValueError(error_message)
 
 
 def decoder_forward(latent_embeddings: jnp.ndarray, params: dict[str, jnp.ndarray]) -> jnp.ndarray:
@@ -280,11 +313,14 @@ def decoder_forward(latent_embeddings: jnp.ndarray, params: dict[str, jnp.ndarra
     spectrograms in ``[0, 1]``. ``params`` maps the decoder ``state_dict`` keys
     (``"0.weight"``, ``"0.bias"``, ``"1.weight"``, ..., ``"9.weight"``) to arrays
     (``decoder.`` prefixes, if present, are accepted and stripped by the loader).
+    Both decoder heads run (see :func:`decoder_head`): for the ``"relu"`` head a
+    ReLU follows the first Linear layer and every later layer index is one higher.
 
     Parameters
     ----------
     latent_embeddings (jnp.ndarray)
-        TorusBasis embeddings of latent coords, shape ``(N, 2 * latent_dim)``.
+        TorusBasis embeddings of latent coords (with any conditioning values
+        appended), shape ``(N, 2 * latent_dim + c_dim)``.
     params (dict[str, jnp.ndarray])
         Decoder weights keyed by ``"<layer_idx>.weight"`` / ``"<layer_idx>.bias"``.
 
@@ -293,10 +329,15 @@ def decoder_forward(latent_embeddings: jnp.ndarray, params: dict[str, jnp.ndarra
     reconstructions (jnp.ndarray)
         Spectrogram reconstructions, shape ``(N, 1, 128, 128)``, in ``[0, 1]``.
     """
+    relu_head = decoder_head(params) == "relu"
     h = _linear(latent_embeddings, params["0.weight"], params["0.bias"])
-    h = _linear(h, params["1.weight"], params["1.bias"])
+    if relu_head:
+        h = jax.nn.relu(h)
+    second_linear = 2 if relu_head else 1
+    h = _linear(h, params[f"{second_linear}.weight"], params[f"{second_linear}.bias"])
     h = h.reshape(h.shape[0], *_DECODER_RESHAPE)
-    for n_block, idx in enumerate(_DECODER_CONV_INDICES):
+    for n_block, legacy_idx in enumerate(_DECODER_CONV_INDICES):
+        idx = legacy_idx + int(relu_head)
         h = conv_transpose2d(
             h, params[f"{idx}.weight"], params[f"{idx}.bias"],
             _CONV_STRIDE, _CONV_PADDING, _CONV_OUTPUT_PADDING,
