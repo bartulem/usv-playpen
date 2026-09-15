@@ -15,6 +15,9 @@ exercised here.
 
 from __future__ import annotations
 
+import json
+import os
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -63,6 +66,21 @@ def _write_training_npz(path, n_samples, *, seed=0):
     )
 
 
+def _write_metadata_npz(dataset_dir, *, length_threshold=128.0, masking_type="sam"):
+    """Write the metadata.npz sidecar build_qlvm_training_set puts beside the splits
+    (only the keys the training contract reads, plus a few it always carries)."""
+    np.savez(
+        dataset_dir / "metadata.npz",
+        length_threshold=length_threshold,
+        validation_split=0.2,
+        random_state=42,
+        full_dataset=False,
+        target_shape=np.array([128, 128]),
+        time_stretch=False,
+        masking_type=masking_type,
+    )
+
+
 def test_build_qmc_decoder_state_dict_keys():
     """The decoder exposes exactly the nn.Sequential keys the JAX inference path
     reconstructs, and maps a (G, 2*latent_dim) torus embedding to (G,1,128,128)."""
@@ -89,6 +107,7 @@ def test_train_writes_checkpoint_and_bridge_weights(tmp_path, mocker):
     dataset_dir.mkdir()
     _write_training_npz(dataset_dir / "train_data.npz", n_samples=12, seed=0)
     _write_training_npz(dataset_dir / "val_data.npz", n_samples=4, seed=1)
+    _write_metadata_npz(dataset_dir, length_threshold=90.0)
     output_dir = tmp_path / "model"
 
     mocker.patch("usv_playpen.processing.train_qlvm.smart_wait")
@@ -103,6 +122,21 @@ def test_train_writes_checkpoint_and_bridge_weights(tmp_path, mocker):
     weights_path = output_dir / "qmc_decoder_weights.npz"
     assert checkpoint_path.is_file()
     assert weights_path.is_file()
+
+    # The training contract sits beside the weights and records the decoder and the
+    # dataset's preprocessing, which infer-qlvm-latents checks its settings against.
+    contract = json.loads((output_dir / "qmc_decoder_weights.json").read_text())
+    assert contract["decoder_head"] == "legacy"
+    assert contract["c_dim"] == 0
+    assert contract["latent_dim"] == _TINY_CFG["train_qlvm"]["latent_dim"]
+    assert contract["input_normalization"] == "none"
+    assert contract["floor"] is None
+    assert contract["masking_type"] == "sam"
+    assert contract["target_shape"] == [128, 128]
+    assert contract["time_stretch"] is False
+    assert contract["length_threshold"] == 90.0
+    assert contract["lattice_type"] == "korobov"
+    assert contract["train_n_points"] == _TINY_CFG["train_qlvm"]["train_n_points"]
 
     # Bridge: the exported weights carry the expected keys and decode through the
     # torch-free JAX inference path to correctly-shaped reconstructions in [0, 1].
@@ -132,6 +166,7 @@ def test_train_full_dataset_no_val(tmp_path, mocker):
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
     _write_training_npz(dataset_dir / "full_data.npz", n_samples=8, seed=0)
+    _write_metadata_npz(dataset_dir)
     output_dir = tmp_path / "model"
 
     mocker.patch("usv_playpen.processing.train_qlvm.smart_wait")
@@ -165,6 +200,47 @@ def test_train_missing_dataset_raises(tmp_path):
     with pytest.raises(FileNotFoundError, match="No training set found"):
         QLVMTrainer(
             dataset_directory=str(tmp_path / "empty"),
+            output_directory=str(tmp_path / "out"),
+            input_parameter_dict=_TINY_CFG,
+            message_output=lambda *_a, **_kw: None,
+        ).train()
+
+
+def test_train_refuses_splits_older_than_full_data(tmp_path, mocker):
+    """A set rebuilt with full_dataset keeps its old splits, and train_data.npz would
+    win the lookup: a split older than full_data.npz is refused before training."""
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    _write_training_npz(dataset_dir / "train_data.npz", n_samples=4, seed=0)
+    _write_training_npz(dataset_dir / "val_data.npz", n_samples=4, seed=1)
+    _write_training_npz(dataset_dir / "full_data.npz", n_samples=8, seed=2)
+    _write_metadata_npz(dataset_dir)
+    newest = (dataset_dir / "full_data.npz").stat().st_mtime
+    for split in ("train_data.npz", "val_data.npz"):
+        os.utime(dataset_dir / split, (newest - 60, newest - 60))
+
+    mocker.patch("usv_playpen.processing.train_qlvm.smart_wait")
+    with pytest.raises(ValueError, match=r"predate full_data\.npz"):
+        QLVMTrainer(
+            dataset_directory=str(dataset_dir),
+            output_directory=str(tmp_path / "out"),
+            input_parameter_dict=_TINY_CFG,
+            message_output=lambda *_a, **_kw: None,
+        ).train()
+    assert not (tmp_path / "out").exists()
+
+
+def test_train_missing_metadata_raises(tmp_path, mocker):
+    """Without metadata.npz the training contract cannot record the set's
+    preprocessing, so the run stops before training."""
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    _write_training_npz(dataset_dir / "full_data.npz", n_samples=8, seed=0)
+
+    mocker.patch("usv_playpen.processing.train_qlvm.smart_wait")
+    with pytest.raises(FileNotFoundError, match=r"No metadata\.npz"):
+        QLVMTrainer(
+            dataset_directory=str(dataset_dir),
             output_directory=str(tmp_path / "out"),
             input_parameter_dict=_TINY_CFG,
             message_output=lambda *_a, **_kw: None,

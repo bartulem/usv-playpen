@@ -11,9 +11,13 @@ checks the ``qlvm_*`` columns are merged into the right rows.
 
 from __future__ import annotations
 
+import json
+import pathlib
+
 import h5py
 import numpy as np
 import polars as pls
+import pytest
 
 from usv_playpen.processing import qlvm_latents as ql
 
@@ -115,6 +119,7 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
         "time_stretch": False,
         "masking_type": "sam",
         "target_shape": [128, 128],
+        "length_threshold": None,
         "lattice_batch_size": 4096,
         "data_batch_size": 8192,
     }
@@ -179,6 +184,7 @@ def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid):
         "time_stretch": False,
         "masking_type": "sam",
         "target_shape": [128, 128],
+        "length_threshold": None,
         "lattice_batch_size": 4096,
         "data_batch_size": 8192,
     }
@@ -329,3 +335,163 @@ def test_infer_and_merge_idempotent_preserves_other_columns(tmp_path, mocker):
     # the embedded rows still carry latents after the re-run.
     assert df["qlvm1"][0] is not None
     assert df["qlvm1"][1] is None
+
+
+def _matching_contract(cfg, **overrides):
+    """A training contract that agrees with ``cfg`` (as train-qlvm would write it for
+    the synthetic session), with ``overrides`` applied."""
+    contract = {
+        "decoder_head": "legacy",
+        "latent_dim": cfg["latent_dim"],
+        "c_dim": 0,
+        "input_normalization": "none",
+        "floor": None,
+        "masking_type": cfg["masking_type"],
+        "target_shape": list(cfg["target_shape"]),
+        "time_stretch": cfg["time_stretch"],
+        "length_threshold": 128.0,
+        "lattice_type": cfg["lattice_type"],
+        "korobov_a": cfg["korobov_a"],
+        "train_n_points": cfg["n_points"],
+        "test_n_points": cfg["n_points"],
+        "fib_m": cfg["fib_m"],
+        "dataset_directory": "/synthetic",
+    }
+    contract.update(overrides)
+    return contract
+
+
+def _set_session_durations(root, session_id, durations):
+    """Replace the synthetic session's per-row durations (rows stay 1:1 with the summary)."""
+    with h5py.File(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5", "a") as f:
+        group = f[f"spectrogram/{session_id}"]
+        del group["durations"]
+        group.create_dataset("durations", data=np.asarray(durations, dtype=np.int64))
+
+
+def _contract_cfg():
+    """The contract-relevant slice of an infer_qlvm_latents block."""
+    return {"latent_dim": 2, "masking_type": "sam", "target_shape": [128, 128], "time_stretch": False,
+            "length_threshold": None, "lattice_type": "korobov", "korobov_a": 3, "n_points": 16, "fib_m": 16}
+
+
+def test_enforce_training_contract_returns_the_training_window():
+    """Settings that agree with the contract pass, and the contract's duration bound
+    is what inference applies."""
+    cfg = _contract_cfg()
+    assert ql.enforce_training_contract(_matching_contract(cfg, length_threshold=100.0), cfg) == 100.0
+    cfg["length_threshold"] = 100
+    assert ql.enforce_training_contract(_matching_contract(cfg, length_threshold=100.0), cfg) == 100.0
+
+
+def test_enforce_training_contract_names_every_mismatch():
+    """All disagreements are reported at once, so one run shows everything to fix."""
+    cfg = _contract_cfg()
+    cfg["length_threshold"] = 50.0
+    contract = _matching_contract(cfg, masking_type="none", target_shape=[96, 96], decoder_head="relu")
+    with pytest.raises(ValueError, match="training contract") as excinfo:
+        ql.enforce_training_contract(contract, cfg)
+    message = str(excinfo.value)
+    for key in ("masking_type", "target_shape", "length_threshold", "decoder_head"):
+        assert key in message
+    assert "time_stretch" not in message
+
+
+def test_infer_and_merge_nulls_calls_outside_the_training_window(tmp_path, mocker):
+    """A call at or above the training set's duration bound was never trained on:
+    with a contract beside the weights it gets null qlvm_* columns, shorter calls embed."""
+    rng = np.random.default_rng(7)
+    res = 8
+    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
+    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
+    _set_session_durations(root, session_id, [128, 0, 64])
+    contract_path = tmp_path / "qmc_decoder_weights.json"
+    contract_path.write_text(json.dumps(_matching_contract(cfg, length_threshold=100.0)))
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    ql.QLVMLatentInference(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_latents": cfg},
+        message_output=lambda *_a, **_kw: None,
+    ).infer_and_merge()
+
+    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+    assert df["qlvm1"][0] is None      # 128 >= 100: outside the window
+    assert df["qlvm1"][1] is None      # duration 0: no call
+    assert df["qlvm1"][2] is not None  # 64 < 100: embedded
+
+
+def test_infer_and_merge_without_contract_applies_settings_threshold(tmp_path, mocker):
+    """Weights trained before contracts existed still run; the settings'
+    length_threshold then sets the window."""
+    rng = np.random.default_rng(8)
+    res = 8
+    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
+    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
+    _set_session_durations(root, session_id, [128, 0, 64])
+    cfg["length_threshold"] = 100.0
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    messages = []
+    ql.QLVMLatentInference(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_latents": cfg},
+        message_output=messages.append,
+    ).infer_and_merge()
+
+    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+    assert df["qlvm1"][0] is None
+    assert df["qlvm1"][2] is not None
+    assert any("No training contract" in message for message in messages)
+
+
+def test_infer_and_merge_refuses_settings_that_break_the_contract(tmp_path, mocker):
+    """Embedding with preprocessing the decoder was not trained on must stop before
+    anything is written."""
+    rng = np.random.default_rng(9)
+    res = 8
+    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
+    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
+    (tmp_path / "qmc_decoder_weights.json").write_text(json.dumps(_matching_contract(cfg, masking_type="none")))
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    before = summary_path.read_bytes()
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    with pytest.raises(ValueError, match="masking_type"):
+        ql.QLVMLatentInference(
+            root_directory=str(root),
+            input_parameter_dict={"infer_qlvm_latents": cfg},
+            message_output=lambda *_a, **_kw: None,
+        ).infer_and_merge()
+    assert summary_path.read_bytes() == before
+
+
+def test_infer_and_merge_failed_write_keeps_previous_summary(tmp_path, mocker):
+    """usv_summary.csv carries every other per-USV column, so a write that fails
+    part-way must leave the previous file whole and no temporary file behind."""
+    rng = np.random.default_rng(10)
+    res = 8
+    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
+    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    before = summary_path.read_bytes()
+
+    def _partial_write(_self, file, **_kwargs):
+        pathlib.Path(file).write_text("usv_id,start\n0000,")
+        message = "disk full"
+        raise OSError(message)
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    mocker.patch.object(pls.DataFrame, "write_csv", _partial_write)
+    with pytest.raises(OSError, match="disk full"):
+        ql.QLVMLatentInference(
+            root_directory=str(root),
+            input_parameter_dict={"infer_qlvm_latents": cfg},
+            message_output=lambda *_a, **_kw: None,
+        ).infer_and_merge()
+    assert summary_path.read_bytes() == before
+    assert sorted(path.name for path in summary_path.parent.iterdir() if path.is_file()) == [summary_path.name]

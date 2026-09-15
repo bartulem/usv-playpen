@@ -25,6 +25,7 @@ in-distribution for the decoder.
 
 from __future__ import annotations
 
+import json
 import pathlib
 from collections.abc import Callable
 from datetime import datetime
@@ -37,7 +38,7 @@ import polars as pls
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import configure_path, derive_spectrogram_model_paths, first_match_or_raise
+from ..os_utils import atomic_output_path, configure_path, derive_spectrogram_model_paths, first_match_or_raise
 from ..processing.build_qlvm_training_set import build_session_masks, stretch_specs
 from ..time_utils import is_gui_context, smart_wait
 from .qlvm_model import embed_data, gen_fib_basis, gen_korobov_basis, roberts_sequence
@@ -73,6 +74,83 @@ def load_decoder_params(weights_npz_path: str) -> dict[str, jnp.ndarray]:
             clean = key[len("decoder."):] if key.startswith("decoder.") else key
             params[clean] = jnp.asarray(raw[key])
     return params
+
+
+def load_training_contract(weights_npz_path: str) -> dict | None:
+    """
+    Description
+    -----------
+    Reads the training contract ``train-qlvm`` writes beside the decoder weights
+    (same stem, ``.json``; e.g. ``qmc_decoder_weights.json``). Weights trained
+    before the contract existed have none, which is reported as ``None`` rather
+    than raised so they keep embedding.
+
+    Parameters
+    ----------
+    weights_npz_path (str)
+        Path to the decoder weights ``.npz``.
+
+    Returns
+    -------
+    contract (dict | None)
+        The parsed contract, or ``None`` when no ``.json`` sits beside the weights.
+    """
+    contract_path = pathlib.Path(configure_path(weights_npz_path)).with_suffix(".json")
+    if not contract_path.is_file():
+        return None
+    with contract_path.open() as contract_file:
+        return json.load(contract_file)
+
+
+def enforce_training_contract(contract: dict, cfg: dict) -> float:
+    """
+    Description
+    -----------
+    Checks the ``infer_qlvm_latents`` settings against the decoder's training
+    contract (see :func:`load_training_contract`) and returns the duration window
+    to embed. Every disagreement is collected and raised together, naming the
+    settings value and the trained one: ``masking_type``, ``target_shape``,
+    ``time_stretch`` and ``latent_dim`` must equal the contract's, and a
+    ``length_threshold`` set in the settings must equal the training set's. The
+    contract must also describe a decoder this module can run: the activation-free
+    ``"legacy"`` head, no conditioning input (``c_dim`` 0), stored spectrograms
+    fed without renormalization (``input_normalization`` ``"none"``) and no floor.
+
+    Parameters
+    ----------
+    contract (dict)
+        The training contract.
+    cfg (dict)
+        The ``infer_qlvm_latents`` settings block.
+
+    Returns
+    -------
+    length_threshold (float)
+        The training set's duration bound: calls with ``duration >= length_threshold``
+        were never trained on.
+    """
+    mismatches = [
+        f"{key}: settings {cfg[key]!r}, trained {contract[key]!r}"
+        for key in ("masking_type", "time_stretch", "latent_dim")
+        if cfg[key] != contract[key]
+    ]
+    if [int(value) for value in cfg["target_shape"]] != contract["target_shape"]:
+        mismatches.append(f"target_shape: settings {list(cfg['target_shape'])!r}, trained {contract['target_shape']!r}")
+    if cfg["length_threshold"] is not None and float(cfg["length_threshold"]) != contract["length_threshold"]:
+        mismatches.append(f"length_threshold: settings {cfg['length_threshold']!r}, trained {contract['length_threshold']!r}")
+    runnable = {"decoder_head": "legacy", "c_dim": 0, "input_normalization": "none", "floor": None}
+    mismatches.extend(
+        f"{key}: this decoder needs {expected!r}, trained {contract[key]!r}"
+        for key, expected in runnable.items()
+        if contract[key] != expected
+    )
+    if mismatches:
+        error_message = (
+            "infer_qlvm_latents settings disagree with the decoder's training contract:\n  "
+            + "\n  ".join(mismatches)
+        )
+        raise ValueError(error_message)
+    return float(contract["length_threshold"])
 
 
 def build_lattice(cfg: dict) -> jnp.ndarray:
@@ -194,8 +272,14 @@ class QLVMLatentInference:
         into the torus, assigns categories by reference lookup, and merges
         ``qlvm_*`` columns into the matching USV summary rows (joined on the
         positional USV row index, since the spectrogram rows are 1:1 with the
-        ``usv_summary.csv`` rows; USVs with non-positive duration are skipped and
-        get nulls; any pre-existing ``qlvm_*`` columns are replaced).
+        ``usv_summary.csv`` rows; USVs with non-positive duration, or with a
+        duration at or above the training set's ``length_threshold``, are skipped
+        and get nulls; any pre-existing ``qlvm_*`` columns are replaced). When the
+        weights carry a training contract (:func:`load_training_contract`), the
+        settings are checked against it first (:func:`enforce_training_contract`)
+        and its ``length_threshold`` applies; otherwise the settings'
+        ``length_threshold`` does (``null`` embeds every positive duration). The
+        summary is rewritten atomically.
 
         Parameters
         ----------
@@ -213,6 +297,19 @@ class QLVMLatentInference:
         cfg = self.input_parameter_dict['infer_qlvm_latents']
         params = load_decoder_params(cfg['weights_npz_path'])
         lattice = build_lattice(cfg)
+
+        # The decoder only knows calls shaped like its training set: check the
+        # preprocessing settings against its contract and embed only calls inside the
+        # set's duration window. Weights with no contract fall back to the settings.
+        contract = load_training_contract(cfg['weights_npz_path'])
+        if contract is None:
+            length_threshold = cfg['length_threshold']
+            self.message_output(
+                "No training contract beside the decoder weights; the infer_qlvm_latents settings are used as given "
+                f"(length_threshold={length_threshold})."
+            )
+        else:
+            length_threshold = enforce_training_contract(contract, cfg)
 
         # Fine grid -> qlvm_category; coarse grid -> qlvm_supercategory. Both are
         # the torus-periodic watershed (ws_labels_periodic) of their reference file.
@@ -238,8 +335,17 @@ class QLVMLatentInference:
             specs = session_group["spectrograms"][:]
             durations = session_group["durations"][:]
             # spectrogram rows are 1:1 with usv_summary.csv; embed only the real
-            # (duration > 0) USVs and remember their row positions for the merge.
-            usv_indices = np.flatnonzero(durations > 0).astype(np.uint32)
+            # (duration > 0) USVs inside the training duration window (the
+            # 0 < duration < length_threshold rule build_qlvm_training_set applies)
+            # and remember their row positions for the merge.
+            in_window = durations > 0
+            if length_threshold is not None:
+                in_window &= durations < length_threshold
+                n_too_long = int(np.count_nonzero((durations > 0) & (durations >= length_threshold)))
+                self.message_output(
+                    f"{n_too_long} USVs with duration >= {length_threshold} (outside the training set) get null qlvm_* columns."
+                )
+            usv_indices = np.flatnonzero(in_window).astype(np.uint32)
             specs = specs[usv_indices].astype(np.float32)
             durations = durations[usv_indices]
             # Apply the SAM mask exactly as build_qlvm_training_set does, so the
@@ -282,7 +388,10 @@ class QLVMLatentInference:
         usv_df = usv_df.drop([c for c in QLVM_COLUMNS if c in usv_df.columns])
         usv_df = usv_df.with_row_index(name="_usv_row")
         merged = usv_df.join(qlvm_df, on="_usv_row", how="left").drop("_usv_row")
-        merged.write_csv(file=str(usv_summary_loc))
+        # usv_summary.csv holds every other per-USV column too: publish atomically so
+        # a failed write leaves the previous file intact instead of a truncated one.
+        with atomic_output_path(usv_summary_loc) as tmp_summary_path:
+            merged.write_csv(file=str(tmp_summary_path))
 
         self.message_output(
             f"Merged QLVM latents/categories for {len(usv_indices)} USVs into {usv_summary_loc.name}."
@@ -305,6 +414,7 @@ class QLVMLatentInference:
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.')
 @click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Apply SAM mask regions before embedding ("sam", matching training) or embed raw spectrograms ("none").')
 @click.option('--target-shape', 'target_shape', nargs=2, type=int, default=None, required=False, help='Output spectrogram (freq, time) shape as two ints, matching the training preprocessing, e.g. --target-shape 128 128.')
+@click.option('--length-threshold', 'length_threshold', type=float, default=None, required=False, help='Embed only USVs with duration below this (time bins); must equal the training contract when the weights carry one. Unset in the settings (null) with no contract, every positive duration is embedded.')
 @click.option('--lattice-batch-size', 'lattice_batch_size', type=int, default=None, required=False, help='Lattice points decoded and scored per block; lower it to cut memory on large lattices.')
 @click.option('--data-batch-size', 'data_batch_size', type=int, default=None, required=False, help='Spectrograms whose lattice posteriors are computed together; memory grows with this times the lattice size.')
 @click.pass_context

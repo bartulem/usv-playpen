@@ -340,6 +340,7 @@
     "time_stretch": false,
     "masking_type": "sam",
     "target_shape": [128, 128],
+    "length_threshold": null,
     "lattice_batch_size": 4096,
     "data_batch_size": 8192
   }

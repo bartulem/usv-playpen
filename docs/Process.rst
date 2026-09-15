@@ -1566,6 +1566,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 * **time_stretch** : whether to time-stretch spectrograms before embedding (must match training)
 * **masking_type** : ``"sam"`` (default) masks each spectrogram by the union of its SAM regions before embedding, matching how the decoder was trained by *Build QLVM training set*; ``"none"`` embeds raw spectrograms (must match training)
 * **target_shape** : output spectrogram ``(freq, time)`` shape the embedder resizes to before inference; must match the ``target_shape`` used by *Build QLVM training set* (default ``[128, 128]``)
+* **length_threshold** : embed only USVs with ``0 < duration < length_threshold`` (time bins), the window *Build QLVM training set* keeps; longer USVs get null ``qlvm_*`` columns. ``null`` (default) takes the value from the training contract ``qmc_decoder_weights.json`` beside the weights, or embeds every positive duration when the weights have no contract. A value set here must equal the contract's
 * **lattice_batch_size** : lattice points decoded and scored per block (default ``4096``); each block holds its decoded images and their two logs, about ``3 * 16384 * 4`` bytes per point at ``128x128``
 * **data_batch_size** : spectrograms whose lattice posteriors are computed together (default ``8192``); their likelihood matrix takes ``data_batch_size * n_points * 4`` bytes, and the lattice is decoded once per such batch
 
@@ -1583,6 +1584,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "time_stretch": false,
         "masking_type": "sam",
         "target_shape": [128, 128],
+        "length_threshold": null,
         "lattice_batch_size": 4096,
         "data_batch_size": 8192
       }
@@ -1597,7 +1599,7 @@ Both train cross-session via CLI / cluster commands only (no GUI buttons): each 
 QLVM decoder
 ^^^^^^^^^^^^
 
-Defines the shared toroidal latent space (and watershed categories) that makes the ``qlvm_*`` columns comparable across every session embedded with the same model. ``build-qlvm-training-set`` aggregates the cohort's ``*_spectrograms.h5`` into a curated set (``--masking-type sam`` masks each spectrogram by its SAM region, the default; ``none`` keeps raw spectrograms) → ``train_data.npz`` + ``val_data.npz`` (or ``full_data.npz``) + ``metadata.npz``. ``train-qlvm`` then trains the decoder → ``qmc_train_qlvm.tar`` + ``qmc_decoder_weights.npz`` (reloaded by ``infer-qlvm-latents``). Cluster submitter: ``train_qlvm_global.sh``.
+Defines the shared toroidal latent space (and watershed categories) that makes the ``qlvm_*`` columns comparable across every session embedded with the same model. ``build-qlvm-training-set`` aggregates the cohort's ``*_spectrograms.h5`` into a curated set (``--masking-type sam`` masks each spectrogram by its SAM region, the default; ``none`` keeps raw spectrograms) → ``train_data.npz`` + ``val_data.npz`` (or ``full_data.npz``) + ``metadata.npz``. ``train-qlvm`` then trains the decoder → ``qmc_train_qlvm.tar`` + ``qmc_decoder_weights.npz`` (reloaded by ``infer-qlvm-latents``) + ``qmc_decoder_weights.json``, the training contract that records the decoder head and the set's masking, ``target_shape``, ``time_stretch`` and ``length_threshold``. ``infer-qlvm-latents`` refuses settings that disagree with it and embeds only USVs inside the same duration window, so keep the ``.json`` next to the ``.npz`` when copying a model. Cluster submitter: ``train_qlvm_global.sh``.
 
 Mask detector
 ^^^^^^^^^^^^^

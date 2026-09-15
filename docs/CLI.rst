@@ -658,7 +658,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --masking-type                  Apply SAM mask regions from the mask/<session> groups ("sam") or keep raw spectrograms ("none").
 
 ``train-qlvm``
-``train-qlvm`` trains the QLVM decoder on a ``build-qlvm-training-set`` ``.npz`` set (fixed quasi-random torus lattice + ConvTranspose decoder, Bernoulli evidence objective) and writes ``qmc_train_qlvm.tar`` (full checkpoint) plus ``qmc_decoder_weights.npz``. That ``.npz`` is the train→inference bridge: point ``infer-qlvm-latents``' ``weights_npz_path`` at it (the torch-free JAX (the JAX numerical-computing library) inference reloads exactly these decoder weights). GPU recommended.
+``train-qlvm`` trains the QLVM decoder on a ``build-qlvm-training-set`` ``.npz`` set (fixed quasi-random torus lattice + ConvTranspose decoder, Bernoulli evidence objective) and writes ``qmc_train_qlvm.tar`` (full checkpoint) plus ``qmc_decoder_weights.npz``. That ``.npz`` is the train→inference bridge: point ``infer-qlvm-latents``' ``weights_npz_path`` at it (the torch-free JAX (the JAX numerical-computing library) inference reloads exactly these decoder weights). Beside it goes ``qmc_decoder_weights.json``, the training contract: the decoder head and widths, the set's masking, ``target_shape``, ``time_stretch`` and ``length_threshold`` (read from its ``metadata.npz``, which must exist), and the lattice settings; ``infer-qlvm-latents`` checks its settings against it. The run refuses a ``train_data.npz`` or ``val_data.npz`` older than a ``full_data.npz`` in the same directory (a split left over from an earlier build). GPU recommended.
 
 .. code-block:: text
 
@@ -691,7 +691,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --num-workers         DataLoader worker processes (0 = load in the main process).
 
 ``infer-qlvm-latents``
-``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm1`` / ``qlvm2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``. With ``--masking-type sam`` (default) each spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group before embedding -- matching how the decoder was trained by ``build-qlvm-training-set`` (embedding raw spectrograms into a masked-trained decoder is out-of-distribution); ``--masking-type none`` embeds raw spectrograms.
+``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm1`` / ``qlvm2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``. With ``--masking-type sam`` (default) each spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group before embedding -- matching how the decoder was trained by ``build-qlvm-training-set`` (embedding raw spectrograms into a masked-trained decoder is out-of-distribution); ``--masking-type none`` embeds raw spectrograms. When a training contract (``qmc_decoder_weights.json``, written by ``train-qlvm``) sits beside the weights, the settings are checked against it and the run stops on any disagreement; USVs with a duration at or above the training set's ``length_threshold`` get null ``qlvm_*`` columns. The summary CSV is rewritten atomically.
 
 .. code-block:: text
 
@@ -705,6 +705,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
                             [--target-shape INTEGER INTEGER]
                             [--time-stretch | --no-time-stretch]
                             [--masking-type {sam,none}]
+                            [--length-threshold FLOAT]
                             [--lattice-batch-size INTEGER]
                             [--data-batch-size INTEGER]
 
@@ -727,6 +728,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --time-stretch / --no-time-stretch
                             Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.
       --masking-type        Apply SAM mask regions from the mask/<session> groups before embedding ("sam", matching how the decoder was trained) or embed raw spectrograms ("none").
+      --length-threshold    Embed only USVs with duration below this (time bins); must equal the training contract when the weights carry one. Unset in the settings (null) with no contract, every positive duration is embedded.
       --lattice-batch-size  Lattice points decoded and scored per block; lower it to cut memory on large lattices.
       --data-batch-size     Spectrograms whose lattice posteriors are computed together; memory grows with this times the lattice size.
 
