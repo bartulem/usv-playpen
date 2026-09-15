@@ -189,7 +189,6 @@
       "self.back_pitch",
       "self.allo_roll"
     ],
-    "compute_matched_window_control": true,
     "vm_score_mode": "macro",
     "region_label_column": "qlvm_supercategory",
     "min_region_events": 20,

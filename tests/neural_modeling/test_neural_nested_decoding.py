@@ -34,11 +34,12 @@ with warnings.catch_warnings():
     )
     from usv_playpen.neural_modeling.neural_nested_decoding import (
         NestedTorusRegression,
-        matched_window_control,
         nested_design,
         nested_scores,
         nested_settings,
+        no_behaviour_predictions,
         null_draw_factory,
+        pooled_macro_score,
         reduced_model_features,
         reduced_predictions,
         shifted_neural_column,
@@ -574,33 +575,22 @@ class TestSettingsAreNotHardCoded:
         assert "rate_basis_n_bins" not in _settings()["nested_vocal_manifold_position_decoding"]
 
 
-class TestMatchedWindowControl:
-    """One column against the neuron's one column, in the neuron's own window -- the apples-to-apples
-    benchmark for the variance-reduction pathway the shift null cannot catch."""
 
-    def test_it_scores_every_candidate_and_names_the_best(self):
-        design = TestNestedScores._design(neuron="informative", seed=30)
-        events = {"call_start": np.linspace(5.0, 50.0, design["positions"].shape[0]),
-                  "session_ids": ["s0", "s1", "s2"]}
-        per_session = {sid: {"feature_time_series": np.random.default_rng(i).normal(size=(900, 2)),
-                             "feature_names": ["f0", "f1"], "fps": 10.0, "n_frames": 900}
-                       for i, sid in enumerate(events["session_ids"])}
-        control = matched_window_control(design, events, per_session, self_settings(), 3, 0.05,
-                                         ["f0", "f1"])
-        assert set(control["per_candidate"]) == {"f0", "f1"}
-        assert control["best_feature"] in {"f0", "f1"}
-        assert np.isfinite(control["best_added"])
+class TestNoBehaviourBaseline:
+    """What is claimed is that the neuron beats the BEHAVIOUR MODEL, which is only worth claiming when that
+    model predicts. The baseline it is judged against is the same estimator, folds and score given no behaviour."""
 
-    def test_a_feature_the_session_never_carried_fails_loudly(self):
-        design = TestNestedScores._design(seed=31)
-        events = {"call_start": np.linspace(5.0, 50.0, design["positions"].shape[0]),
-                  "session_ids": ["s0", "s1", "s2"]}
-        per_session = {sid: {"feature_time_series": np.zeros((900, 1)), "feature_names": ["f0"],
-                             "fps": 10.0, "n_frames": 900} for sid in events["session_ids"]}
-        with pytest.raises(ValueError, match="not in"):
-            matched_window_control(design, events, per_session, self_settings(), 3, 0.05, ["absent"])
+    SETTINGS: ClassVar[dict] = _nested(min_region_events=2)
 
+    def test_it_can_only_learn_a_constant_per_held_out_session(self):
+        design = TestNestedScores._design(seed=40)
+        predicted = no_behaviour_predictions(design, self.SETTINGS, n_lags=3)
+        for slot in np.unique(design["session_index"]):
+            rows = predicted[design["session_index"] == slot]
+            assert np.allclose(rows, rows[0])
 
-def self_settings() -> dict:
-    """The shipped block with the synthetic's small region counts."""
-    return _nested(min_region_events=2)
+    def test_behaviour_that_drives_position_beats_it(self):
+        design = TestNestedScores._design(neuron="informative", seed=41)
+        baseline = pooled_macro_score(no_behaviour_predictions(design, self.SETTINGS, n_lags=3),
+                                      design["positions"], design["region_labels"], self.SETTINGS)
+        assert nested_scores(design, self.SETTINGS, n_lags=3)["reduced"] > baseline

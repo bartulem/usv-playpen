@@ -124,10 +124,11 @@ class TestTheWrittenSections:
                   "min_leave_one_fold_out": 0.005,
                   "per_fold": [{"held_out": 1, "n_events": 10, "added": 0.02},
                                {"held_out": 0, "n_events": 20, "added": 0.00}]}
-        payload = vocal.nested_decoding_payload(scores, ["s_a", "s_b"], np.zeros(10), 0.09, False,
-                                       {"per_candidate": {}, "best_feature": "f", "best_added": 0.0}, None)
+        payload = vocal.nested_decoding_payload(scores, ["s_a", "s_b"], np.zeros(10), 0.09, False, -3.74)
         assert [fold["held_out_session"] for fold in payload["per_fold"]] == ["s_b", "s_a"]
         assert "held_out" not in payload["per_fold"][0]
+        # the behaviour model's own improvement over no behaviour, stored so the cohort step can judge it
+        assert payload["behaviour_over_no_behaviour"] == pytest.approx(-3.70 - -3.74)
 
     def test_vocal_gating_writes_statistics_and_p_values_but_no_decisions(self, tmp_path):
         """Vocal gating's label, the borderline flag and the unit's best label are uncorrected by construction; the
@@ -149,10 +150,10 @@ class TestTheWrittenSections:
         write_unit_section(str(tmp_path), UNIT, "vocal_gating", payload, _settings())
 
     def test_the_vocalization_identity_section_derives_its_counts_from_the_null_and_events(self):
-        what = {"gain": 0.05}
+        identity = {"gain": 0.05}
         events = {"counts": np.array([1.0, 2.0, 3.0, 4.0]), "session_index": np.array([0, 0, 1, 1]),
                   "session_ids": ["a", "b"]}
-        payload = vocal.vocalization_identity_payload(what, np.array([0.0, 0.06, 0.01]), 0.5, False, events)
+        payload = vocal.vocalization_identity_payload(identity, np.array([0.0, 0.06, 0.01]), 0.5, False, events)
         assert payload["exceed_count"] == 1
         assert payload["mid_p"] == pytest.approx(1.5 / 4.0)
         assert payload["per_session_counts"] == {"a": 3, "b": 7}
@@ -196,6 +197,22 @@ class TestTheGatingSwitch:
         with pytest.raises(ValueError, match="run vocal_occurrence first"):
             vocal.run_vocal(UNIT, _settings(), "unused", str(tmp_path), 1, steps=("vocal_gating",),
                             message_output=_quiet)
+
+    def test_a_threshold_too_few_draws_can_clear_is_refused(self, tmp_path):
+        """Found on a real smoke run: at 20 draws every p-value floors at 1/21 = 0.048, above the 0.01
+        threshold, so a strongly tuned unit read as untuned. Silently skipping every unit is refused."""
+        write_unit_section(str(tmp_path), UNIT, "vocal_occurrence", {"p": 1 / 21, "n_shuffles": 20}, _settings())
+        write_unit_section(str(tmp_path), UNIT, "vocalization_identity", {"p": 1 / 21, "n_permutations": 20},
+                           _settings())
+        with pytest.raises(ValueError, match="cannot fall below"):
+            vocal.run_vocal(UNIT, _settings(), "unused", str(tmp_path), 1, steps=("vocal_gating",),
+                            message_output=_quiet)
+
+    def test_the_fewest_draws_that_can_clear_the_threshold_are_accepted(self):
+        """1/(n+1) must be strictly below alpha: at 0.01 that is 100 draws, and 99 is refused."""
+        vocal.check_tuning_threshold_is_reachable(0.01, {"vocal_occurrence": 100, "vocalization_identity": 1000})
+        with pytest.raises(ValueError, match="at least 100 draws"):
+            vocal.check_tuning_threshold_is_reachable(0.01, {"vocal_occurrence": 99})
 
     def test_an_unknown_step_is_refused(self, tmp_path):
         with pytest.raises(ValueError, match="unknown vocal step"):

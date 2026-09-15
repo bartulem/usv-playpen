@@ -50,11 +50,11 @@ from .neural_design_assembly import (
     load_unit_spike_frames,
 )
 from .neural_nested_decoding import (
-    matched_window_control,
     nested_design,
     nested_scores,
     nested_settings,
-    next_feature_control,
+    no_behaviour_predictions,
+    pooled_macro_score,
     reduced_model_features,
     reduced_predictions,
     shifted_neural_column,
@@ -402,7 +402,7 @@ def vocalization_identity_payload(identity: dict, null: np.ndarray, p_value: flo
 
 
 def nested_decoding_payload(scores: dict, session_ids: list, null: np.ndarray, p_value: float, at_floor: bool,
-                   next_feature: dict, matched_window) -> dict:
+                            no_behaviour: float) -> dict:
     """
     Description
     -----------
@@ -423,10 +423,8 @@ def nested_decoding_payload(scores: dict, session_ids: list, null: np.ndarray, p
         Empirical p.
     at_floor (bool)
         Whether ``p_value`` sits at its resolution floor.
-    next_feature (dict)
-        ``next_feature_control``.
-    matched_window (dict | None)
-        ``matched_window_control``, or None when the settings switch it off.
+    no_behaviour (float)
+        The pooled score of the no-behaviour model on the same calls; see ``no_behaviour_predictions``.
 
     Returns
     -------
@@ -441,8 +439,8 @@ def nested_decoding_payload(scores: dict, session_ids: list, null: np.ndarray, p
                           "n_events": fold["n_events"], "added": fold["added"]}
                          for fold in scores["per_fold"]],
             "null": null, "p": p_value, "at_floor": at_floor, "z": null_z(scores["added"], null),
-            "n_draws": int(null.size), "next_feature_control": next_feature,
-            "matched_window_control": matched_window}
+            "n_draws": int(null.size), "no_behaviour": no_behaviour,
+            "behaviour_over_no_behaviour": scores["reduced"] - no_behaviour}
 
 
 def vocal_gating_payload(feature_names: list, observed: dict, nulls: dict, verdicts: dict, unit_p: dict,
@@ -624,8 +622,10 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
     Nested vocal-manifold position decoding for one unit: does the neuron add vocalization-identity
     information beyond the behaviour control?
 
-    The two controls are computed BEFORE the null and the kinematic data are released before the pool
-    starts, so the largest arrays are never held while workers are alive.
+    What is tested is whether the neuron beats the BEHAVIOUR MODEL, which is only worth claiming when that
+    model predicts -- so its held-out improvement over a no-behaviour model on the same calls is stored beside
+    the result (ruled 2026-09-15). The kinematic data are released before the pool starts, so the largest
+    arrays are never held while workers are alive.
 
     Parameters
     ----------
@@ -666,16 +666,9 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
     scores = nested_scores(design, nested, n_lags, reduced_predicted=reduced_predicted)
     message_output(f"  NESTED DECODING  added {scores['added']:+.5f} over {scores['n_events']} events")
 
-    available = list(per_session[unit["courtship_sessions"][0]]["feature_names"])
-    next_feature = next_feature_control(events, per_session, reduced,
-                                        [name for name in available if name not in reduced], nested, n_lags)
-    matched_window = (matched_window_control(design, events, per_session, nested, n_lags,
-                                             window["width_seconds"], available)
-                      if nested["compute_matched_window_control"] else None)
-    message_output(f"    controls: best 6th feature {next_feature['best_feature']} "
-                   f"{next_feature['best_added']:+.5f}"
-                   + (f" | best matched window {matched_window['best_feature']} "
-                      f"{matched_window['best_added']:+.5f}" if matched_window is not None else ""))
+    no_behaviour = pooled_macro_score(no_behaviour_predictions(design, nested, n_lags), design["positions"],
+                                      design["region_labels"], nested)
+    message_output(f"    behaviour model over no behaviour: {scores['reduced'] - no_behaviour:+.5f}")
     del per_session
 
     state = {"design": design, "settings": nested, "n_lags": n_lags,
@@ -691,8 +684,7 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
         p_value, at_floor, null = escalated_empirical_pvalue(scores["added"], draw_more,
                                                              settings["significance"]["escalation_ladder"],
                                                              null, message_output)
-    payload = nested_decoding_payload(scores, events["session_ids"], null, p_value, at_floor, next_feature,
-                             matched_window)
+    payload = nested_decoding_payload(scores, events["session_ids"], null, p_value, at_floor, no_behaviour)
     message_output(f"    null z {payload['z']:+.1f} | p {p_value:.4e}{' (at floor)' if at_floor else ''} "
                    f"| {null.size:,} draws")
     write_unit_section(output_directory, unit, "nested_vocal_manifold_position_decoding", payload, settings)
@@ -808,6 +800,43 @@ def run_vocal_gating(unit: dict, settings: dict, data_root: str, output_director
     return payload
 
 
+def check_tuning_threshold_is_reachable(alpha: float, null_sizes: dict) -> None:
+    """
+    Description
+    -----------
+    Refuse a vocal-gating threshold that the p-values it reads can never clear.
+
+    An empirical p-value cannot fall below ``1 / (n_draws + 1)``. If that floor is not below
+    ``vocal_gating.vocal_tuning_alpha``, no unit can ever count as tuned, and vocal gating is skipped for
+    EVERY unit with the reason ``no_vocal_tuning`` -- a statement about the draw count masquerading as one
+    about the unit. Found on a 20-draw smoke run of a strongly tuned unit, whose p-values sat at their
+    1/21 floor of 0.048 against a threshold of 0.01. The fewest draws that can clear ``alpha`` is
+    ``floor(1 / alpha)``: 100 at the shipped 0.01.
+
+    The same kind of guard vocal gating already applies to its own shuffle count against its Bonferroni
+    bar.
+
+    Parameters
+    ----------
+    alpha (float)
+        ``vocal_gating.vocal_tuning_alpha``.
+    null_sizes (dict)
+        ``{section: draws its p-value was computed from}``.
+
+    Returns
+    -------
+    None
+    """
+
+    for section, n_draws in null_sizes.items():
+        floor = 1.0 / (float(n_draws) + 1.0)
+        if floor >= alpha:
+            msg = (f"{section} used {n_draws} draws, so its p-value cannot fall below {floor:.3g}, which never "
+                   f"clears vocal_gating.vocal_tuning_alpha = {alpha}: vocal gating would be skipped for every "
+                   f"unit. Use at least {int(np.floor(1.0 / alpha))} draws, or raise the threshold.")
+            raise ValueError(msg)
+
+
 def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str, n_workers: int,
               steps: tuple = VOCAL_STEPS, message_output=print) -> None:
     """
@@ -819,7 +848,7 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
     occurrence, vocalization identity and the nested decoding all see exactly the same events. Vocal
     gating needs the vocal-occurrence and vocalization-identity p-values: it uses the ones computed in
     this job, reads any it did not compute from the unit's result file, and refuses to run if one is in
-    neither place.
+    neither place -- or if either was computed from too few draws ever to clear the activation threshold.
 
     Parameters
     ----------
@@ -847,7 +876,7 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
     if unknown:
         msg = f"unknown vocal step(s) {unknown}; choose from {list(VOCAL_STEPS)}"
         raise ValueError(msg)
-    p_values: dict = {}
+    results: dict = {}
     events = None
     if any(step in steps for step in VOCAL_STEPS[:3]):
         window = settings["vocalization_settings"]["spike_window"]
@@ -855,26 +884,29 @@ def run_vocal(unit: dict, settings: dict, data_root: str, output_directory: str,
                                             window["width_seconds"])
         message_output(f"  {events['counts'].size} events over {len(events['session_ids'])} sessions")
     if "vocal_occurrence" in steps:
-        p_values["vocal_occurrence"] = run_vocal_occurrence(unit, events, settings, data_root, output_directory,
-                                                            n_workers, message_output)["p"]
+        occurrence = run_vocal_occurrence(unit, events, settings, data_root, output_directory, n_workers,
+                                          message_output)
+        results["vocal_occurrence"] = (occurrence["p"], occurrence["n_shuffles"])
     if "vocalization_identity" in steps:
-        p_values["vocalization_identity"] = run_vocalization_identity(unit, events, settings, output_directory,
-                                                                      n_workers, message_output)["p"]
+        identity = run_vocalization_identity(unit, events, settings, output_directory, n_workers, message_output)
+        results["vocalization_identity"] = (identity["p"], identity["n_permutations"])
     if "nested_vocal_manifold_position_decoding" in steps:
         run_nested_vocal_manifold_position_decoding(unit, events, settings, data_root, output_directory,
                                                     n_workers, message_output)
     if "vocal_gating" in steps:
         stored = read_unit_artifact(output_directory, unit["unit_uid"])
-        for section in ("vocal_occurrence", "vocalization_identity"):
-            if section in p_values:
+        for section, draw_key in (("vocal_occurrence", "n_shuffles"), ("vocalization_identity", "n_permutations")):
+            if section in results:
                 continue
             if section not in stored:
                 msg = (f"vocal gating needs {section}'s p-value, and {unit['unit_uid']} has no {section} "
                        f"section in {output_directory}; run {section} first")
                 raise ValueError(msg)
-            p_values[section] = stored[section]["p"]
-        run_vocal_gating(unit, settings, data_root, output_directory, n_workers, p_values["vocal_occurrence"],
-                         p_values["vocalization_identity"], message_output)
+            results[section] = (stored[section]["p"], stored[section][draw_key])
+        check_tuning_threshold_is_reachable(settings["vocal_gating"]["vocal_tuning_alpha"],
+                                            {section: n_draws for section, (_p, n_draws) in results.items()})
+        run_vocal_gating(unit, settings, data_root, output_directory, n_workers, results["vocal_occurrence"][0],
+                         results["vocalization_identity"][0], message_output)
 
 
 def dispatch(args: argparse.Namespace) -> int:
