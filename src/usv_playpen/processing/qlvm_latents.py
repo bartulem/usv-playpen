@@ -18,7 +18,9 @@ code already consume): ``qlvm1``, ``qlvm2`` (torus coordinates),
 ``qlvm_category`` (FINE cluster label, e.g. 12 classes) and ``qlvm_supercategory``
 (COARSE cluster label, e.g. 7 classes). The reference grids label every pixel
 from 1, so there is no background / noise label 0; USVs that are not embedded
-get nulls.
+get nulls. ``qlvm_model`` names the model the other four came from (the model
+package cell ``<package>/<phase>/<cell>``, or the decoder weights path), because
+labels of different models share the column names but not their meaning.
 
 Fidelity: the session spectrograms are preprocessed with the SAME resize /
 time-stretch used to build the training set (:func:`stretch_specs`), so they are
@@ -58,7 +60,7 @@ from ..time_utils import is_gui_context, smart_wait
 from .qlvm_model import decoder_head, embed_data, gen_fib_basis, gen_korobov_basis, roberts_sequence
 
 # QLVM columns written into the USV summary CSV (consumed downstream).
-QLVM_COLUMNS = ("qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory")
+QLVM_COLUMNS = ("qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_model")
 
 
 class _TorchCheckpointUnpickler(pickle.Unpickler):
@@ -589,6 +591,7 @@ class QLVMLatentInference:
             model = load_model_cell(cfg['model_cell_directory'])
             params, contract, lattice = model['params'], model['contract'], model['lattice']
             fine_grid, coarse_grid = model['fine_grid'], model['coarse_grid']
+            model_id = model['model_id']
             self.message_output(
                 f"Embedding with model package cell {model['model_id']} ({decoder_head(params)} head, "
                 f"{lattice.shape[0]}-point Fibonacci lattice)."
@@ -597,6 +600,7 @@ class QLVMLatentInference:
             params = load_decoder_params(cfg['weights_npz_path'])
             lattice = build_lattice(cfg)
             contract = load_training_contract(cfg['weights_npz_path'])
+            model_id = cfg['weights_npz_path']
             # Fine grid -> qlvm_category; coarse grid -> qlvm_supercategory. Both are
             # the torus-periodic watershed (ws_labels_periodic) of their reference file.
             # Context managers close each zip-backed NpzFile handle; the grid array is
@@ -675,7 +679,10 @@ class QLVMLatentInference:
             "qlvm2": coords[:, 1].astype(np.float64),
             "qlvm_category": category.astype(np.int64),
             "qlvm_supercategory": supercategory.astype(np.int64),
-        })
+            # Which model's torus and clusters these are: labels from different models
+            # share column names but not meanings, so an analysis can check this first.
+            "qlvm_model": [model_id] * len(usv_indices),
+        }, schema_overrides={"qlvm_model": pls.String})
 
         usv_summary_loc = first_match_or_raise(
             root=root / "audio",

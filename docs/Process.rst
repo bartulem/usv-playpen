@@ -1436,6 +1436,7 @@ The *Compute USV features* and *Infer QLVM latents* steps add columns to *usv_su
 * **qlvm1** / **qlvm2** : the two torus (latent) coordinates
 * **qlvm_category** : the FINE watershed cluster label (vocal category)
 * **qlvm_supercategory** : the COARSE watershed cluster label (every value is a cluster: the reference grids label every pixel from ``1``, with no background / noise label ``0``)
+* **qlvm_model** : the model the four columns above came from — the model package cell (``<package>/<phase>/<cell>``, e.g. ``v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked``) or the decoder weights path. Labels from different models share the column names but not their meaning (a v2 cell has 8–18 fine and at most 9 coarse clusters, numbered by size), so check this column before pooling sessions
 
 .. parsed-literal::
 
