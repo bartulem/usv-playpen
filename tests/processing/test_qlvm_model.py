@@ -193,28 +193,104 @@ def test_embed_data_chunking_matches_one_block():
         assert np.all(np.minimum(torus_gap, 1.0 - torus_gap) < 1e-5)
 
 
-def test_embed_data_conditional_decodes_each_value_with_c_appended():
-    """A conditional decoder sees one c for the whole lattice: grouping the
-    spectrograms by value must give, for every row, the embedding its own value's
-    lattice gives, and the decoder width must match the conditioning."""
-    rng = np.random.default_rng(7)
-    params = _sharp_decoder_params(rng)
-    params["0.weight"] = jnp.asarray(rng.standard_normal((2048, 5)))           # 2 * latent_dim + c_dim
-    lattice = qm.gen_korobov_basis(a=5, num_dims=2, num_points=23)
-    wrapped = qm.torus_basis_forward(lattice % 1)
-    values = np.array([0.2, 0.7, 0.2, 0.7, 0.2], dtype=np.float32)
-    low, high = (float(value) for value in np.unique(values))
-    atlases = {
-        value: qm.decoder_forward(jnp.concatenate([wrapped, jnp.full((23, 1), value)], axis=1), params)
-        for value in (low, high)
+def _lattice_shift_decoder_params(rng, lattice, shift, low, high):
+    """
+    Description
+    -----------
+    A ReLU-head decoder conditioned on one value c whose two values decode the lattice
+    ``shift`` points apart: the image it draws for lattice point ``i`` at ``c = low`` is
+    the image it draws for point ``i + shift`` at ``c = high``. Both the right answer and
+    the wrong one are then known in advance, which is what lets a test see whether each
+    spectrogram was scored against the lattice decoded at its OWN value.
+
+    It is built, not found, from three facts:
+
+    1. A rank-1 lattice is closed under addition, so point ``i + shift`` sits at point
+       ``i``'s coordinates plus point ``shift``'s: every point moves by the SAME angle
+       (hence the angle here comes from ``lattice[shift]``).
+    2. Adding a fixed angle is linear in the ``[cos, sin]`` embedding (the angle-sum
+       identities), so it is a rotation ``R`` with ``R e_i = e_{i+shift}``. The first
+       layer is a matmul, so ``(reads @ R) e_i == reads e_{i+shift}``: a half whose
+       weights carry ``R`` reads the point ``shift`` steps along.
+    3. c enters the first Linear layer additively, so it can never rotate anything, but
+       an offset in front of the ReLU can switch a unit off.
+
+    So the first layer's ``2 * half`` units split into one half reading ``reads`` and one
+    reading ``reads @ R``, and the c column adds ``+gate * (c - middle)`` to the first and
+    ``-gate * (c - middle)`` to the second. ``open_gate`` exceeds
+    ``|reads_u . e| <= ||reads_u|| * sqrt(2)`` for every unit and lattice point (``R`` is
+    orthogonal, so both halves share the bound), so exactly one half survives the ReLU at
+    either value: the first at ``high``, the second at ``low``. The second Linear layer
+    applies the same ``V`` to both halves and its bias subtracts the survivor's constant
+    ``open_gate``, leaving ``V (reads e_i)`` at ``high`` and ``V (reads e_{i+shift})`` at
+    ``low``, so the two images are equal by construction (in float32: ~3e-4 per pixel,
+    against ~0.24 between different lattice points, with a ~43000-nat best-match margin).
+    Dropping that bias subtraction keeps the equality but drives the sigmoid to 0/1 nearly
+    everywhere, flattening the posteriors this relies on. The conv stack is
+    ``_sharp_decoder_params``'s, so every image's posterior sits on one lattice point.
+
+    Parameters
+    ----------
+    rng (np.random.Generator)
+        Seeded generator for the layer weights.
+    lattice (jnp.ndarray)
+        The lattice being embedded into, shape ``(K, latent_dim)``.
+    shift (int)
+        How many lattice points apart the two conditioning values decode.
+    low (np.float32)
+        The conditioning value whose lattice is the shifted one.
+    high (np.float32)
+        The conditioning value whose lattice is read as-is.
+
+    Returns
+    -------
+    params (dict[str, jnp.ndarray])
+        ReLU-head decoder weights (Linear layers 0 and 2, convs 4/6/8/10).
+    """
+    half = 1024
+    angle = 2 * np.pi * np.asarray(lattice[shift])
+    cos, sin = np.diag(np.cos(angle)), np.diag(np.sin(angle))
+    rotation = np.block([[cos, -sin], [sin, cos]])                  # acts on [cos..., sin...]
+    reads = rng.standard_normal((half, 4))
+    # |reads @ embedding| <= |reads| * sqrt(2) for any torus embedding, so this margin
+    # keeps the open half positive and the closed half negative at every lattice point.
+    open_gate = np.sqrt(2) * np.linalg.norm(reads, axis=1).max() + 1.0
+    gate = open_gate / ((high - low) / 2)
+    middle = (low + high) / 2
+    second = rng.standard_normal((64 * 8 * 8, half)) / np.sqrt(half)
+    params = {
+        "0.weight": np.block([[reads, np.full((half, 1), gate)], [reads @ rotation, np.full((half, 1), -gate)]]),
+        "0.bias": np.concatenate([np.full(half, -gate * middle), np.full(half, gate * middle)]),
+        "2.weight": np.concatenate([second, second], axis=1),
+        "2.bias": -open_gate * second.sum(axis=1),
     }
-    data = jnp.stack([atlases[low][3], atlases[high][9], atlases[low][15], atlases[high][1], atlases[low][20]])
-    coords = np.asarray(qm.embed_data(lattice, data, params, 7, 2, condition_values=values))
-    for row, value in enumerate(values):
-        posterior = qm.posterior_over_lattice(atlases[float(value)], data[row:row + 1])
-        expected = np.asarray(qm.torus_basis_reverse(posterior @ qm.torus_basis_forward(lattice)))[0]
-        gap = np.abs(coords[row] - expected)
-        assert np.all(np.minimum(gap, 1.0 - gap) < 1e-5)
+    convs = _sharp_decoder_params(rng)
+    for idx in (3, 5, 7, 9):                                        # the ReLU head shifts conv indices by one
+        params[f"{idx + 1}.weight"], params[f"{idx + 1}.bias"] = convs[f"{idx}.weight"], convs[f"{idx}.bias"]
+    return {key: jnp.asarray(value) for key, value in params.items()}
+
+
+def test_embed_data_conditional_decodes_each_value_with_c_appended():
+    """A conditional decoder sees one c for the whole lattice, so every spectrogram must
+    be scored against the lattice decoded at its own value: with the two values decoding
+    the lattice ``shift`` points apart, the right grouping recovers each image's lattice
+    point and a swapped one lands every row ``shift`` points away. The decoder width
+    must match the conditioning."""
+    rng = np.random.default_rng(7)
+    lattice = qm.gen_korobov_basis(a=5, num_dims=2, num_points=23)
+    low, high, shift = np.float32(0.2), np.float32(0.7), 4
+    params = _lattice_shift_decoder_params(rng, lattice, shift, low, high)
+    values = np.array([high, low, high, low, high], dtype=np.float32)
+    points = np.array([3, 9, 15, 1, 20])
+    decoder_input = jnp.concatenate([qm.torus_basis_forward(lattice[points] % 1), jnp.asarray(values)[:, None]], axis=1)
+    data = qm.decoder_forward(decoder_input, params)
+    swapped_points = np.where(values == low, points + shift, points - shift) % 23
+    for condition_values, expected_points in ((values, points), (np.where(values == low, high, low), swapped_points)):
+        coords = np.asarray(qm.embed_data(lattice, data, params, 7, 2, condition_values=condition_values))
+        gap = np.abs(coords - np.asarray(lattice[expected_points] % 1))
+        # One lattice point is 1/23 away; the tolerance only has to absorb float32
+        # rounding, which GPU matmul (TF32 by default on CUDA) puts near 5e-5.
+        assert np.all(np.minimum(gap, 1.0 - gap) < 1e-3)
     with pytest.raises(ValueError, match="conditioning input"):
         qm.embed_data(lattice, data, params, 7, 2)
     with pytest.raises(ValueError, match="conditioning input"):
