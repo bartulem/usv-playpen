@@ -22,7 +22,9 @@ exact definition (validated against a pure-numpy reference in the tests), and
 ``tests/processing/test_train_qlvm.py`` runs a seeded torch decoder, exported the
 way ``train-qlvm`` exports it, through both frameworks: decoded images agree to
 1e-5 and lattice posteriors to 1e-4 against the vendored
-``QMCLVM.posterior_probability``.
+``QMCLVM.posterior_probability``. Those checks run on the CPU; on a CUDA GPU they
+hold because the decoder, the likelihood and the posterior mean multiply
+matrices at full float32 precision (see ``_MATMUL_PRECISION``).
 """
 
 from __future__ import annotations
@@ -33,6 +35,13 @@ import numpy as np
 
 # Pixel clamp from the training loss (`binary_lp`) that keeps the logs finite.
 _BINARY_LP_EPS = 1e-6
+
+# JAX on a CUDA GPU multiplies matrices in TensorFloat-32 unless told otherwise: the
+# arrays stay float32, but each product keeps only ~3-4 significant digits (a decoder
+# Linear layer came out 3.6e-4 off on an L40S, against 1e-7 on the CPU). Every product
+# here (Linear layers, transposed convolutions, the likelihood and the posterior mean)
+# asks for full float32 instead; on the CPU this changes nothing.
+_MATMUL_PRECISION = "float32"
 
 
 # --------------------------------------------------------------------------- #
@@ -195,8 +204,9 @@ def binary_lp(samples: jnp.ndarray, data: jnp.ndarray) -> jnp.ndarray:
         A ``(B, K)`` log-likelihood matrix.
     """
     samples = jnp.clip(samples, _BINARY_LP_EPS, 1 - _BINARY_LP_EPS)
-    t1 = jnp.einsum("bjdl,sjdl->bs", data, jnp.log(samples))
-    t2 = jnp.einsum("bjdl,sjdl->bs", 1 - data, jnp.log(1 - samples))
+    with jax.default_matmul_precision(_MATMUL_PRECISION):
+        t1 = jnp.einsum("bjdl,sjdl->bs", data, jnp.log(samples))
+        t2 = jnp.einsum("bjdl,sjdl->bs", 1 - data, jnp.log(1 - samples))
     return t1 + t2
 
 
@@ -205,7 +215,8 @@ def binary_lp(samples: jnp.ndarray, data: jnp.ndarray) -> jnp.ndarray:
 # --------------------------------------------------------------------------- #
 def _linear(x: jnp.ndarray, weight: jnp.ndarray, bias: jnp.ndarray) -> jnp.ndarray:
     """Apply ``torch.nn.Linear``: ``y = x @ weight.T + bias`` (weight is (out, in))."""
-    return x @ weight.T + bias
+    with jax.default_matmul_precision(_MATMUL_PRECISION):
+        return x @ weight.T + bias
 
 
 def conv_transpose2d(
@@ -259,6 +270,7 @@ def conv_transpose2d(
         lhs_dilation=(stride, stride),
         rhs_dilation=(1, 1),
         dimension_numbers=("NCHW", "OIHW", "NCHW"),
+        precision=_MATMUL_PRECISION,
     )
     return out + bias[None, :, None, None]
 
@@ -501,6 +513,7 @@ def embed_data(
             )                                                       # (chunk, K)
             evidence = jax.scipy.special.logsumexp(lls, axis=1, keepdims=True) - jnp.log(n_points)
             posterior = jax.nn.softmax(lls - evidence, axis=1)
-            weighted = posterior @ lattice_torus                    # (chunk, 2*latent_dim)
+            with jax.default_matmul_precision(_MATMUL_PRECISION):
+                weighted = posterior @ lattice_torus                # (chunk, 2*latent_dim)
             latent_coords[chunk_rows] = np.asarray(torus_basis_reverse(weighted))
     return jnp.asarray(latent_coords)
