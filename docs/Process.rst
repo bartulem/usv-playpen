@@ -85,6 +85,8 @@ On the other hand, for **processing sessions separately**, the order of processi
     #. Re-coordinate
     #. Run DAS inference
     #. Curate DAS outputs
+    #. Detect noise
+    #. Detect squeaks
     #. Prepare USV assignment
     #. Run USV assignment
     #. Generate spectrograms
@@ -784,6 +786,8 @@ The processing of audio data passes multiple stages:
     #. Concatenate all audio files to single MEMMAP file (runs locally <15 min)
     #. Run DAS inference (runs on cluster)
     #. Curate DAS outputs (runs locally <2 min)
+    #. Detect noise (runs locally, GPU recommended)
+    #. Detect squeaks (runs locally, GPU recommended)
     #. Prepare USV assignment (runs locally <1 min)
     #. Run USV assignment (runs locally <5 min)
     #. Generate per-USV spectrograms (runs on cluster)
@@ -1220,6 +1224,39 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "seam_repair_max_boundary_shift_s": 0.034
      }
 
+Detect noise
+~~~~~~~~~~~~
+
+The DAS segmenter keeps every interval a channel fired on, so a curated *usv_summary.csv* also holds segments with no vocalization in them: electrical clicks, cage knocks, broadband transients and faint smears. *Detect noise* scores every USV segment with an ensemble of five time-resolved multiple-instance classifiers (the bundle is derived from the *Spectrogram models directory* as ``noise/noise_timemil_ens5_n3562_20260916.pt``, whose name records the architecture, the ensemble size, the 3,562 training labels and the build date) and adds two columns to *usv_summary.csv*:
+
+* ``noise`` -- ``true`` / ``false`` in every row, ``noise_probability`` at or above the resolved threshold;
+* ``noise_probability`` -- the ensemble's probability in every row, so an analysis can re-threshold without re-running the step.
+
+A segment is *noise* only when it holds no vocalization at all -- neither a USV nor a squeak -- which is the rule its training labels follow, so a faint call heard on one microphone is a vocalization, not noise.
+
+The threshold is not set directly, because a bare probability says nothing about what it costs. The setting is **noise_min_precision**: the share of flagged segments that must really be noise. The bundle ships a calibration table (threshold, precision, recall, segments flagged and real calls lost per 10,000) measured on 25,400 random segments from 254 busy sessions that the models never trained on, labelled at random in three strata of the model's own score. The step takes the lowest threshold whose calibrated precision reaches the target -- the one that also catches the most noise -- and reports what it picked, for example ``noise_min_precision 0.98 -> p >= 0.45 (calibrated precision 0.987, recall 0.973; 4.0 real calls flagged per 10,000 segments)``. A target no threshold reaches stops the run and prints the table.
+
+Each segment's input is the two-band absolute-dB spectrogram (30-120 kHz and 3-30 kHz, 128 linear bins each) of the **unfiltered** per-channel *audio/hpss* wavs, averaged across channels by variance with metadata-excluded channels dropped. The audio window extends ~100 ms either side of the segment so the channel weights and STFT edges match the training inputs, and the spectrogram is then cropped back to the segment's own frames: the model judges the segment, not its neighbourhood.
+
+Run *Detect noise* after *Curate DAS outputs* (re-curating rewrites *usv_summary.csv* with its base columns only) and before *Detect squeaks*, the order the summary's column layout follows. A GPU is recommended; a 424-USV session takes about a minute on one.
+
+Detect squeaks
+~~~~~~~~~~~~~~
+
+A *squeak* is a broadband harmonic stack (fundamental around 3-8 kHz) that the ultrasonic DAS segmenter picks up as part of a USV segment. Once the curated *usv_summary.csv* exists, *Detect squeaks* scores every USV segment with a time-resolved multiple-instance classifier (``TimeMIL``, 250,118 parameters; the v3 broadband-vocalization detector trained by Dexter, whose checkpoint is derived from the *Spectrogram models directory* as ``squeak/mil_absdb_final.pt``) and adds four columns to *usv_summary.csv*:
+
+* ``squeak`` -- ``true`` / ``false`` in every row;
+* ``squeak_probability`` -- the segment probability, on squeak rows only (empty otherwise);
+* ``squeak_start`` / ``squeak_end`` -- the squeak's onset and offset in session seconds (the same clock as ``start`` / ``stop``), on squeak rows only.
+
+The classifier needs its own spectrogram, rebuilt from the **unfiltered** per-channel *audio/hpss* wavs (*audio/hpss_filtered* is high-passed above 30 kHz and carries no squeak energy): a 3-30 kHz, 128-bin, absolute-dB (fixed reference, no clamp) spectrogram, averaged across channels by variance, with metadata-excluded channels dropped. This front end reproduces the training spectrograms bit-exactly. The squeak call and probability come from the segment's first 128 STFT frames (262 ms), exactly as the model was trained and validated (decision threshold 0.385); onset and offset come from a full-length pass over the whole segment, because a longer squeak's end would otherwise be cut off at 262 ms. A squeak usually fills only part of its USV segment (a median 62 %), so ``start`` / ``stop`` bound the vocal event, not the squeak.
+
+Run *Detect squeaks* after *Curate DAS outputs*: re-curating rewrites *usv_summary.csv* with its base columns only, which removes the squeak columns (the processing run orders the two steps accordingly). A GPU is recommended.
+
+.. note::
+
+   The classifier was fitted on labelled segments from 15 sessions (20230124_172125, 20250211_165612, 20250403_205653, 20250418_184440, 20250424_175844, 20250506_155030, 20250923_203320, 20250927_160820, 20250928_185641, 20250928_212046, 20251118_103002, 20251221_111055, 20251221_114053, 20251221_124144, 20251221_142801). Its output on those sessions is a fit, not a prediction: leave them out of any cohort squeak-rate claim.
+
 Seam check-and-repair
 ~~~~~~~~~~~~~~~~~~~~~
 DAS models inferring with non-overlapping window tiling (stride equal to the window length minus a 32-sample edge trim, i.e. ``stride: 8128`` / ``nb_hist: 8192`` at 250 kHz) judge each stitched span without acoustic context from its neighbours. The consequence is a boundary artifact on *real inter-call pauses*: the faint edges of the calls flanking a pause that straddles window seams are clipped exactly to the seam positions, so the pause is recorded with a width of exactly ``k`` stride multiples (a "ladder" at 32.5 / 65.0 / 97.5 ... ms, sample-exact in the raw annotations) and the flanking calls lose up to one stride of quiet edge material. Nothing is split or duplicated -- the audio between the recorded endpoints is genuinely silent -- but the affected gap widths are quantized (which corrupts inter-USV interval statistics) and the adjacent onsets/offsets are misplaced by up to ~32 ms.
@@ -1431,6 +1468,12 @@ The *Compute USV features* and *Infer QLVM latents* steps add columns to *usv_su
     │ …      ┆ … ┆ …            ┆ …            ┆ …                 ┆ …              ┆ …             ┆ …                │
     └────────┴───┴──────────────┴──────────────┴───────────────────┴────────────────┴───────────────┴──────────────────┘
 
+*Detect noise* and *Detect squeaks* add their own columns, placed before the acoustic features:
+
+* **noise** : ``true`` / ``false`` in every row -- the segment holds no vocalization at all
+* **noise_probability** : the ensemble's probability in every row, so an analysis can re-threshold without re-running the step
+* **squeak** / **squeak_probability** / **squeak_start** / **squeak_end** : see *Detect squeaks* above
+
 *Infer QLVM latents* adds:
 
 * **qlvm1** / **qlvm2** : the two torus (latent) coordinates
@@ -1560,6 +1603,22 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
     "compute_usv_acoustic_features": {
         "low_energy_frac": 0.05,
         "high_energy_frac": 0.95
+      }
+
+*Detect noise* (``detect_usv_noise``):
+
+* **noise_model_path** : path to the noise model bundle (``.pt``); left empty it is derived from *Spectrogram models directory* as ``noise/noise_timemil_ens5_n3562_20260916.pt``
+* **noise_min_precision** : the share of flagged segments that must really be noise; the step takes the lowest threshold in the bundle's calibration table reaching it (``0.98`` resolves to ``p >= 0.45``, recall ``0.973``, about 4 real calls flagged per 10,000 segments), and stops with the table printed when no threshold reaches the target
+* **exclude_metadata_audio_channels** : drop channels the session metadata marks as excluded from the spectrogram average
+* **batch_size** : number of segments scored per forward pass
+
+.. code-block:: json
+
+    "detect_usv_noise": {
+        "noise_model_path": "",
+        "noise_min_precision": 0.98,
+        "exclude_metadata_audio_channels": true,
+        "batch_size": 256
       }
 
 *Infer QLVM latents* (``infer_qlvm_latents``):

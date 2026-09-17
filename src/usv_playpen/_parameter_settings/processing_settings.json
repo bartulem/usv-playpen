@@ -18,6 +18,8 @@
     "anipose_trm": false,
     "das_infer": false,
     "das_summarize": false,
+    "detect_usv_noise": false,
+    "detect_usv_squeaks": false,
     "prepare_assign_vocalizations": false,
     "assign_vocalizations": false,
     "generate_usv_spectrograms": false,
@@ -288,6 +290,18 @@
   "compute_usv_acoustic_features": {
     "low_energy_frac": 0.05,
     "high_energy_frac": 0.95
+  },
+  "detect_usv_noise": {
+    "noise_model_path": "",
+    "noise_min_precision": 0.98,
+    "exclude_metadata_audio_channels": true,
+    "batch_size": 256
+  },
+  "detect_usv_squeaks": {
+    "squeak_model_path": "",
+    "squeak_threshold": 0.385,
+    "exclude_metadata_audio_channels": true,
+    "batch_size": 256
   },
   "build_qlvm_training_set": {
     "length_threshold": 50.0,

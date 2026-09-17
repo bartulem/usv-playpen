@@ -54,7 +54,13 @@ import polars as pls
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import atomic_output_path, configure_path, derive_spectrogram_model_paths, first_match_or_raise
+from ..os_utils import (
+    atomic_output_path,
+    configure_path,
+    derive_spectrogram_model_paths,
+    first_match_or_raise,
+    order_usv_summary_columns,
+)
 from ..processing.build_qlvm_training_set import build_session_masks, stretch_specs
 from ..time_utils import is_gui_context, smart_wait
 from .qlvm_model import (
@@ -859,7 +865,7 @@ class QLVMLatentInference:
         usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
         usv_df = usv_df.drop([c for c in QLVM_COLUMNS if c in usv_df.columns])
         usv_df = usv_df.with_row_index(name="_usv_row")
-        merged = usv_df.join(qlvm_df, on="_usv_row", how="left").drop("_usv_row")
+        merged = order_usv_summary_columns(usv_df.join(qlvm_df, on="_usv_row", how="left").drop("_usv_row"))
         # usv_summary.csv holds every other per-USV column too: publish atomically so
         # a failed write leaves the previous file intact instead of a truncated one.
         with atomic_output_path(usv_summary_loc) as tmp_summary_path:

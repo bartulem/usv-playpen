@@ -3327,7 +3327,7 @@ class USVPlaypenWindow(QMainWindow):
         self.ProcessSettings = ProcessSettings(self)
         self.setWindowTitle(f'{app_name} (Process recordings > Settings)')
         self.setCentralWidget(self.ProcessSettings)
-        process_one_x, process_one_y = (1080, 935)
+        process_one_x, process_one_y = (1080, 995)
         self.setFixedSize(process_one_x, process_one_y)
 
         # column 1
@@ -3943,114 +3943,134 @@ class USVPlaypenWindow(QMainWindow):
         self.das_summary_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='das_summary_cb_bool'))
         self.das_summary_cb.move(column_three_x2, 490)
 
+        detect_usv_noise_cb_label = QLabel('Detect noise:', self.ProcessSettings)
+        detect_usv_noise_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        detect_usv_noise_cb_label.setStyleSheet(self.orange_label_style)
+        detect_usv_noise_cb_label.move(column_three_x1, 520)
+        self.detect_usv_noise_cb = QComboBox(self.ProcessSettings)
+        self.detect_usv_noise_cb.addItems(['No', 'Yes'])
+        self.detect_usv_noise_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.detect_usv_noise_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='detect_usv_noise_cb_bool'))
+        self.detect_usv_noise_cb.move(column_three_x2, 520)
+
+        detect_usv_squeaks_cb_label = QLabel('Detect squeaks:', self.ProcessSettings)
+        detect_usv_squeaks_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
+        detect_usv_squeaks_cb_label.setStyleSheet(self.orange_label_style)
+        detect_usv_squeaks_cb_label.move(column_three_x1, 550)
+        self.detect_usv_squeaks_cb = QComboBox(self.ProcessSettings)
+        self.detect_usv_squeaks_cb.addItems(['No', 'Yes'])
+        self.detect_usv_squeaks_cb.setStyleSheet('QComboBox { width: 80px; }')
+        self.detect_usv_squeaks_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='detect_usv_squeaks_cb_bool'))
+        self.detect_usv_squeaks_cb.move(column_three_x2, 550)
+
         prepare_assign_usv_cb_label = QLabel('Prepare USV assignment:', self.ProcessSettings)
         prepare_assign_usv_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         prepare_assign_usv_cb_label.setStyleSheet(self.orange_label_style)
-        prepare_assign_usv_cb_label.move(column_three_x1, 520)
+        prepare_assign_usv_cb_label.move(column_three_x1, 580)
         self.prepare_assign_usv_cb = QComboBox(self.ProcessSettings)
         self.prepare_assign_usv_cb.addItems(['No', 'Yes'])
         self.prepare_assign_usv_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.prepare_assign_usv_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='prepare_assign_usv_cb_bool'))
-        self.prepare_assign_usv_cb.move(column_three_x2, 520)
+        self.prepare_assign_usv_cb.move(column_three_x2, 580)
 
         assign_usv_cb_label = QLabel('Run USV assignment:', self.ProcessSettings)
         assign_usv_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         assign_usv_cb_label.setStyleSheet(self.orange_label_style)
-        assign_usv_cb_label.move(column_three_x1, 550)
+        assign_usv_cb_label.move(column_three_x1, 610)
         self.assign_usv_cb = QComboBox(self.ProcessSettings)
         self.assign_usv_cb.addItems(['No', 'Yes'])
         self.assign_usv_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.assign_usv_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='assign_usv_cb_bool'))
-        self.assign_usv_cb.move(column_three_x2, 550)
+        self.assign_usv_cb.move(column_three_x2, 610)
 
         assign_type_cb_label = QLabel('Assignment type:', self.ProcessSettings)
         assign_type_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
-        assign_type_cb_label.move(column_three_x1, 580)
+        assign_type_cb_label.move(column_three_x1, 640)
         self.assign_type_list = sorted(['vcl', 'vcl-ssl'], key=lambda x: x == self.vcl_version, reverse=True)
         self.assign_type_cb = QComboBox(self.ProcessSettings)
         self.assign_type_cb.addItems([str(assign_item) for assign_item in self.assign_type_list])
         self.assign_type_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.assign_type_cb.activated.connect(partial(self._combo_box_vcl_version, variable_id='vcl_version'))
-        self.assign_type_cb.move(column_three_x2, 580)
+        self.assign_type_cb.move(column_three_x2, 640)
 
         generate_usv_spectrograms_cb_label = QLabel('Generate spectrograms:', self.ProcessSettings)
         generate_usv_spectrograms_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         generate_usv_spectrograms_cb_label.setStyleSheet(self.orange_label_style)
-        generate_usv_spectrograms_cb_label.move(column_three_x1, 610)
+        generate_usv_spectrograms_cb_label.move(column_three_x1, 670)
         self.generate_usv_spectrograms_cb = QComboBox(self.ProcessSettings)
         self.generate_usv_spectrograms_cb.addItems(['No', 'Yes'])
         self.generate_usv_spectrograms_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.generate_usv_spectrograms_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='generate_usv_spectrograms_cb_bool'))
-        self.generate_usv_spectrograms_cb.move(column_three_x2, 610)
+        self.generate_usv_spectrograms_cb.move(column_three_x2, 670)
 
         generate_usv_masks_cb_label = QLabel('Generate masks:', self.ProcessSettings)
         generate_usv_masks_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         generate_usv_masks_cb_label.setStyleSheet(self.orange_label_style)
-        generate_usv_masks_cb_label.move(column_three_x1, 640)
+        generate_usv_masks_cb_label.move(column_three_x1, 700)
         self.generate_usv_masks_cb = QComboBox(self.ProcessSettings)
         self.generate_usv_masks_cb.addItems(['No', 'Yes'])
         self.generate_usv_masks_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.generate_usv_masks_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='generate_usv_masks_cb_bool'))
-        self.generate_usv_masks_cb.move(column_three_x2, 640)
+        self.generate_usv_masks_cb.move(column_three_x2, 700)
 
         compute_usv_acoustic_features_cb_label = QLabel('Compute USV features:', self.ProcessSettings)
         compute_usv_acoustic_features_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         compute_usv_acoustic_features_cb_label.setStyleSheet(self.orange_label_style)
-        compute_usv_acoustic_features_cb_label.move(column_three_x1, 670)
+        compute_usv_acoustic_features_cb_label.move(column_three_x1, 730)
         self.compute_usv_acoustic_features_cb = QComboBox(self.ProcessSettings)
         self.compute_usv_acoustic_features_cb.addItems(['No', 'Yes'])
         self.compute_usv_acoustic_features_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.compute_usv_acoustic_features_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='compute_usv_acoustic_features_cb_bool'))
-        self.compute_usv_acoustic_features_cb.move(column_three_x2, 670)
+        self.compute_usv_acoustic_features_cb.move(column_three_x2, 730)
 
         infer_qlvm_latents_cb_label = QLabel('Infer QLVM latents:', self.ProcessSettings)
         infer_qlvm_latents_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         infer_qlvm_latents_cb_label.setStyleSheet(self.orange_label_style)
-        infer_qlvm_latents_cb_label.move(column_three_x1, 700)
+        infer_qlvm_latents_cb_label.move(column_three_x1, 760)
         self.infer_qlvm_latents_cb = QComboBox(self.ProcessSettings)
         self.infer_qlvm_latents_cb.addItems(['No', 'Yes'])
         self.infer_qlvm_latents_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.infer_qlvm_latents_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='infer_qlvm_latents_cb_bool'))
-        self.infer_qlvm_latents_cb.move(column_three_x2, 700)
+        self.infer_qlvm_latents_cb.move(column_three_x2, 760)
 
         av_sync_label = QLabel('Synchronization between A/V files', self.ProcessSettings)
         av_sync_label.setFont(QFont(self.font_id, 13 + self.font_size_increase))
         av_sync_label.setStyleSheet('QLabel { padding-top: 3px; font-weight: bold;}')
-        av_sync_label.move(column_three_x1, 740)
+        av_sync_label.move(column_three_x1, 800)
 
         conduct_sync_cb_label = QLabel('Run A/V sync check:', self.ProcessSettings)
         conduct_sync_cb_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         conduct_sync_cb_label.setStyleSheet(self.orange_label_style)
-        conduct_sync_cb_label.move(column_three_x1, 770)
+        conduct_sync_cb_label.move(column_three_x1, 830)
         self.conduct_sync_cb = QComboBox(self.ProcessSettings)
         self.conduct_sync_cb.addItems(['No', 'Yes'])
         self.conduct_sync_cb.setStyleSheet('QComboBox { width: 80px; }')
         self.conduct_sync_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_sync_cb_bool'))
-        self.conduct_sync_cb.move(column_three_x2, 770)
+        self.conduct_sync_cb.move(column_three_x2, 830)
 
         phidget_extra_data_camera_label = QLabel('Phidget(s) camera serial:', self.ProcessSettings)
         phidget_extra_data_camera_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        phidget_extra_data_camera_label.move(column_three_x1, 800)
+        phidget_extra_data_camera_label.move(column_three_x1, 860)
         self.phidget_extra_data_camera = QLineEdit(f"{self.processing_input_dict['extract_phidget_data']['Gatherer']['prepare_data_for_analyses']['extra_data_camera']}", self.ProcessSettings)
         self.phidget_extra_data_camera.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.phidget_extra_data_camera.setStyleSheet('QLineEdit { width: 108px; }')
-        self.phidget_extra_data_camera.move(column_three_x2, 802)
+        self.phidget_extra_data_camera.move(column_three_x2, 862)
 
         a_ch_receiving_input_label = QLabel('Arduino-USGH ch (1-12):', self.ProcessSettings)
         a_ch_receiving_input_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        a_ch_receiving_input_label.move(column_three_x1, 830)
+        a_ch_receiving_input_label.move(column_three_x1, 890)
         self.a_ch_receiving_input = QLineEdit(f"{self.processing_input_dict['synchronize_files']['Synchronizer']['find_audio_sync_trains']['sync_ch_receiving_input']}", self.ProcessSettings)
         self.a_ch_receiving_input.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.a_ch_receiving_input.setStyleSheet('QLineEdit { width: 108px; }')
-        self.a_ch_receiving_input.move(column_three_x2, 832)
+        self.a_ch_receiving_input.move(column_three_x2, 892)
 
         v_camera_serial_num_label = QLabel('Sync camera serial num(s):', self.ProcessSettings)
         v_camera_serial_num_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        v_camera_serial_num_label.move(column_three_x1, 860)
+        v_camera_serial_num_label.move(column_three_x1, 920)
         self.v_camera_serial_num = QLineEdit(','.join([str(x) for x in self.processing_input_dict['synchronize_files']['Synchronizer']['find_video_sync_trains']['sync_camera_serial_num']]), self.ProcessSettings)
         self.v_camera_serial_num.setFont(QFont(self.font_id, 10 + self.font_size_increase))
         self.v_camera_serial_num.setStyleSheet('QLineEdit { width: 108px; }')
-        self.v_camera_serial_num.move(column_three_x2, 862)
+        self.v_camera_serial_num.move(column_three_x2, 922)
 
         self._create_buttons_process(seq=0, class_option=self.ProcessSettings,
                                      button_pos_y=process_one_y - 35, next_button_x_pos=process_one_x - 100)
@@ -5483,6 +5503,10 @@ class USVPlaypenWindow(QMainWindow):
         self.das_inference_cb_bool = False
         self.processing_input_dict['processing_booleans']['das_summarize'] = self.das_summary_cb_bool
         self.das_summary_cb_bool = False
+        self.processing_input_dict['processing_booleans']['detect_usv_noise'] = self.detect_usv_noise_cb_bool
+        self.detect_usv_noise_cb_bool = False
+        self.processing_input_dict['processing_booleans']['detect_usv_squeaks'] = self.detect_usv_squeaks_cb_bool
+        self.detect_usv_squeaks_cb_bool = False
         self.processing_input_dict['processing_booleans']['prepare_assign_vocalizations'] = self.prepare_assign_usv_cb_bool
         self.prepare_assign_usv_cb_bool = False
         self.processing_input_dict['processing_booleans']['assign_vocalizations'] = self.assign_usv_cb_bool
@@ -7618,7 +7642,7 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
                            'conduct_sync_cb_bool': False, 'conduct_hpss_cb_bool': False, 'generate_usv_spectrograms_cb_bool': False, 'generate_usv_masks_cb_bool': False, 'compute_usv_acoustic_features_cb_bool': False, 'infer_qlvm_latents_cb_bool': False, 'conduct_ephys_file_chaining_cb_bool': False,
                            'conduct_nv_sync_cb_bool': False, 'split_cluster_spikes_cb_bool': False, 'anipose_calibration_cb_bool': False,
                            'sleap_file_conversion_cb_bool': False, 'anipose_triangulation_cb_bool': False, 'translate_rotate_metric_cb_bool': False,
-                           'sleap_cluster_cb_bool': False, 'das_inference_cb_bool': False, 'das_summary_cb_bool': False, 'assign_usv_cb_bool': False,
+                           'sleap_cluster_cb_bool': False, 'das_inference_cb_bool': False, 'das_summary_cb_bool': False, 'detect_usv_noise_cb_bool': False, 'detect_usv_squeaks_cb_bool': False, 'assign_usv_cb_bool': False,
                            'prepare_assign_usv_cb_bool': False, 'delete_con_file_cb_bool': True, 'board_provided_cb_bool': False, 'triangulate_arena_points_cb_bool': False,
                            'display_progress_cb_bool': True, 'ransac_cb_bool': False, 'delete_original_h5_cb_bool': True,
                            'compute_behavioral_features_cb_bool': False, 'plot_behavioral_tuning_cb_bool': False, 'make_behavioral_video_cb_bool': False,

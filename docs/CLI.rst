@@ -455,6 +455,49 @@ Process
       --seam-repair-max-boundary-shift-s
                             Seam repair: maximum outward correction (s) permitted per call edge.
 
+``detect-usv-noise``
+``detect-usv-noise`` flags the USV segments of a session that hold no vocalization at all and merges two columns into ``usv_summary.csv``: ``noise`` (true / false in every row) and ``noise_probability`` (the ensemble's probability in every row, so an analysis can re-threshold without re-running). The decision threshold is not given directly: ``--noise-min-precision`` states the share of flagged segments that must really be noise, and the step takes the lowest threshold in the model bundle's calibration table that reaches it, reporting the threshold, precision and recall it picked. The input spectrogram is rebuilt from the unfiltered ``audio/hpss`` wavs (30-120 kHz and 3-30 kHz, absolute dB) over a window that extends ~100 ms either side of the segment and is then cropped back to it; run it after ``das-summarize``, which rewrites the summary without these columns, and before ``detect-usv-squeaks``. GPU recommended.
+
+.. code-block:: text
+
+    usage: detect-usv-noise [-h] --root-directory PATH
+                            [--noise-model-path TEXT] [--noise-min-precision FLOAT]
+                            [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
+                            [--batch-size INTEGER]
+
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --noise-model-path    Path to the noise model bundle (.pt); derived from spectrograms_root when empty.
+      --noise-min-precision
+                            Required share of flagged segments that are really noise; the lowest calibrated threshold reaching it is used.
+      --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
+                            Drop channels the session metadata marks as excluded from the spectrogram average.
+      --batch-size          Number of segments scored per forward pass.
+
+``detect-usv-squeaks``
+``detect-usv-squeaks`` scores every USV segment of a session for a squeak (a broadband harmonic stack) and merges four columns into ``usv_summary.csv``: ``squeak`` (true / false), and, on squeak rows only, ``squeak_probability``, ``squeak_start`` and ``squeak_end`` (session seconds). The call and probability come from the first 128 STFT frames of each segment (the model's training window); onset and offset come from a full-length pass. The input spectrogram is rebuilt from the unfiltered ``audio/hpss`` wavs (3-30 kHz, absolute dB); run it after ``das-summarize``, which rewrites the summary without these columns. GPU recommended.
+
+.. code-block:: text
+
+    usage: detect-usv-squeaks [-h] --root-directory PATH
+                            [--squeak-model-path TEXT] [--squeak-threshold FLOAT]
+                            [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
+                            [--batch-size INTEGER]
+
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --squeak-model-path   Path to the squeak classifier checkpoint (.pt); derived from spectrograms_root when empty.
+      --squeak-threshold    Decision threshold on the squeak probability, used for both the segment call and the onset / offset frames.
+      --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
+                            Drop channels the session metadata marks as excluded from the spectrogram average.
+      --batch-size          Number of 128-frame windows scored per forward pass.
+
 ``prepare-vcl-assign``
 ``prepare-vcl-assign`` is the command-line interface for preparing data for vocalization assignment using the Vocalocator sound-source localizer.
 

@@ -373,9 +373,9 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     """
     Description
     -----------
-    Fills the six spectrogram-pipeline model paths from the single
+    Fills the eight spectrogram-pipeline model paths from the single
     ``spectrograms_root`` setting, so the user configures one directory
-    instead of six. The shipped ``processing_settings.json`` leaves the six
+    instead of eight. The shipped ``processing_settings.json`` leaves the eight
     granular keys empty and carries only ``spectrograms_root``; this helper
     resolves the conventional layout beneath it:
 
@@ -385,6 +385,8 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     * ``infer_qlvm_latents.weights_npz_path`` -> ``<root>/qlvm/qmc_decoder_weights.npz``
     * ``infer_qlvm_latents.reference_arrays_fine_npz_path``   -> ``<root>/qlvm/arrays_fine.npz``
     * ``infer_qlvm_latents.reference_arrays_coarse_npz_path`` -> ``<root>/qlvm/arrays_coarse.npz``
+    * ``detect_usv_squeaks.squeak_model_path`` -> ``<root>/squeak/mil_absdb_final.pt``
+    * ``detect_usv_noise.noise_model_path`` -> ``<root>/noise/noise_timemil_ens5_n3562_20260916.pt``
 
     A granular key is filled only when it is empty, so an explicit path set in
     the JSON (or via a CLI flag) wins -- the root supplies defaults, it never
@@ -401,7 +403,8 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         The full processing-settings dictionary. When ``spectrograms_root`` is
         absent or empty the dictionary is returned unchanged (legacy settings
         files that set the granular ``generate_masks`` / ``infer_qlvm_latents``
-        paths directly keep working); otherwise those two blocks must exist.
+        paths directly keep working); otherwise the ``generate_masks``,
+        ``infer_qlvm_latents`` and ``detect_usv_squeaks`` blocks must exist.
 
     Returns
     -------
@@ -414,6 +417,9 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     root = settings['spectrograms_root']
     sam_dir = f'{root}/sam'
     qlvm_dir = f'{root}/qlvm'
+    squeak_dir = f'{root}/squeak'
+    # The noise model file name carries its training: TimeMIL, 5-seed ensemble, 3,562 labels, build date.
+    noise_dir = f'{root}/noise'
     derived = (
         ('generate_masks', 'sam2_model_dir', sam_dir),
         ('generate_masks', 'sam2_model_path', f'{sam_dir}/checkpoint.pt'),
@@ -421,6 +427,8 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         ('infer_qlvm_latents', 'weights_npz_path', f'{qlvm_dir}/qmc_decoder_weights.npz'),
         ('infer_qlvm_latents', 'reference_arrays_fine_npz_path', f'{qlvm_dir}/arrays_fine.npz'),
         ('infer_qlvm_latents', 'reference_arrays_coarse_npz_path', f'{qlvm_dir}/arrays_coarse.npz'),
+        ('detect_usv_squeaks', 'squeak_model_path', f'{squeak_dir}/mil_absdb_final.pt'),
+        ('detect_usv_noise', 'noise_model_path', f'{noise_dir}/noise_timemil_ens5_n3562_20260916.pt'),
     )
     for block, key, derived_path in derived:
         if not settings[block][key]:
@@ -958,6 +966,51 @@ def wait_for_subprocesses(
             )
 
     return status
+
+
+# Canonical column order of a session's ``*_usv_summary.csv``: the DAS event
+# (written by das_summarize), the call-level labels (emitter from vocal assignment,
+# squeak from detect_usv_squeaks), the acoustic descriptors
+# (compute_usv_acoustic_features) and the QLVM embedding plus the model it came from
+# (infer_qlvm_latents).
+# Steps that re-append their own columns reorder to this before writing, so a
+# column's position no longer depends on which step ran last.
+USV_SUMMARY_COLUMN_ORDER = (
+    "usv_id", "start", "stop", "duration", "peak_amp_ch", "mean_amp_ch", "chs_count", "chs_detected",
+    "emitter",
+    "noise", "noise_probability",
+    "squeak", "squeak_probability", "squeak_start", "squeak_end",
+    "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "spectral_entropy",
+    "mask_number",
+    "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_model",
+)
+
+
+def order_usv_summary_columns(usv_summary: Any) -> Any:
+    """
+    Description
+    -----------
+    Reorders a USV summary table to ``USV_SUMMARY_COLUMN_ORDER``. Canonical columns
+    that are present come first, in canonical order; any other column keeps its
+    relative order and follows them, so nothing is dropped and a column this
+    function does not know about is never lost. Only the column order changes: no
+    value, dtype or row is touched.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        The summary table about to be written.
+
+    Returns
+    -------
+    ordered (polars.DataFrame)
+        The same table with its columns in canonical order.
+    """
+
+    present = set(usv_summary.columns)
+    canonical = [column for column in USV_SUMMARY_COLUMN_ORDER if column in present]
+    extra = [column for column in usv_summary.columns if column not in USV_SUMMARY_COLUMN_ORDER]
+    return usv_summary.select(canonical + extra)
 
 
 def first_match_or_raise(

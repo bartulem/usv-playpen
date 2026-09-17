@@ -51,6 +51,8 @@ def compute_usv_spectrogram(
     sampling_rate: int,
     spec_params: dict,
     normalize: bool = True,
+    db_ref: float | None = None,
+    top_db: float | None = 80.0,
 ) -> tuple[np.ndarray | None, int]:
     """
     Description
@@ -60,8 +62,10 @@ def compute_usv_spectrogram(
 
     For every channel the power STFT is computed (``librosa.stft`` magnitude
     squared), band-limited to ``[min_freq, max_freq]``, converted to dB
-    (``power_to_db`` with ``ref=max``), resampled along frequency to
-    ``num_freq_bins`` and fixed along time to ``num_time_bins``. The per-channel
+    (``power_to_db`` with ``ref=max`` by default, or a fixed reference when
+    ``db_ref`` is given), resampled along frequency to ``num_freq_bins`` and
+    fixed along time to ``num_time_bins`` (or left at its native length when
+    ``num_time_bins`` is None). The per-channel
     spectrograms are then averaged with weights equal to each channel's audio
     variance (louder/cleaner channels dominate); if every channel has zero
     variance the weights fall back to uniform. The averaged spectrogram is
@@ -77,15 +81,29 @@ def compute_usv_spectrogram(
     spec_params (dict)
         Spectrogram parameters: ``num_freq_bins``, ``num_time_bins``,
         ``nperseg``, ``min_freq``, ``max_freq``, ``hop_length``,
-        ``window``.
+        ``window``. A ``num_time_bins`` of None keeps every native STFT frame
+        (no ``fix_length`` padding or truncation), which the squeak detector
+        needs to see calls longer than the model window.
     normalize (bool)
         Whether to min-max normalize the averaged spectrogram. Defaults to True.
+    db_ref (float | None)
+        Power reference for ``librosa.power_to_db``. None (the default) keeps the
+        per-segment ``ref=np.max`` the QLVM spectrograms were built with, which
+        makes every segment's loudest bin 0 dB. A float (the squeak detector
+        uses 1.0) makes the dB scale absolute, so quiet and loud calls stay
+        distinguishable across segments and sessions.
+    top_db (float | None)
+        Per-array clamp passed to ``librosa.power_to_db``. 80.0 (the default) is
+        librosa's own default and therefore reproduces the existing QLVM
+        spectrograms exactly; it is amplitude-dependent, so an absolute-dB run
+        must pass None.
 
     Returns
     -------
     avg_spectrogram (np.ndarray | None)
-        A ``(num_freq_bins, num_time_bins)`` array, or None if no channel
-        produced a valid spectrogram.
+        A ``(num_freq_bins, num_time_bins)`` array (``(num_freq_bins,
+        original_time_bins)`` when ``num_time_bins`` is None), or None if no
+        channel produced a valid spectrogram.
     original_time_bins (int)
         The native (pre-``fix_length``) STFT time-bin count for the segment;
         this is the USV's ``duration`` in spectrogram frames.
@@ -150,7 +168,11 @@ def compute_usv_spectrogram(
         )
 
         power_spec = power_spec[freq_mask]
-        spec_db = librosa.power_to_db(power_spec, ref=np.max)
+        spec_db = librosa.power_to_db(
+            power_spec,
+            ref=np.max if db_ref is None else float(db_ref),
+            top_db=top_db,
+        )
 
         # Resample along the frequency axis to the target bin count.
         if spec_db.shape[0] != num_freq_bins:
@@ -159,7 +181,7 @@ def compute_usv_spectrogram(
             ).T
 
         original_time_bins = spec_db.shape[1]
-        if spec_db.shape[1] != num_time_bins:
+        if num_time_bins is not None and spec_db.shape[1] != num_time_bins:
             spec_db = librosa.util.fix_length(spec_db, size=num_time_bins, axis=1)
 
         per_channel_specs.append(spec_db)

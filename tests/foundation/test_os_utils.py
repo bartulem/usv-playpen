@@ -14,6 +14,7 @@ import os
 import pathlib
 import time
 
+import polars as pls
 import pytest
 
 from usv_playpen import os_utils
@@ -511,6 +512,37 @@ def test_resolve_consolidated_h5_picks_newest_and_skips_other_h5(tmp_path):
     assert os_utils.resolve_consolidated_h5_path(str(tmp_path)) == str(new)
 
 
+# order_usv_summary_columns
+
+def test_order_usv_summary_columns_puts_known_columns_in_canonical_order():
+    """Known columns follow USV_SUMMARY_COLUMN_ORDER whatever order they arrive in; unknown
+    columns keep their relative order after them; values are untouched."""
+    table = pls.DataFrame({
+        "custom_b": [1], "mean_freq_hz": [2.0], "usv_id": ["000000"], "squeak": [True],
+        "start": [0.1], "custom_a": [3], "emitter": [None], "stop": [0.2], "qlvm1": [0.5],
+        "squeak_end": [0.19],
+    })
+    ordered = os_utils.order_usv_summary_columns(table)
+    assert ordered.columns == [
+        "usv_id", "start", "stop", "emitter", "squeak", "squeak_end", "mean_freq_hz", "qlvm1",
+        "custom_b", "custom_a",
+    ]
+    assert ordered.equals(table.select(ordered.columns))
+
+
+def test_usv_summary_column_order_places_squeaks_between_emitter_and_features():
+    """The agreed layout: DAS event -> emitter -> squeak block -> acoustic features -> QLVM,
+    with qlvm_model (the model the QLVM columns came from) closing the QLVM block."""
+    order = list(os_utils.USV_SUMMARY_COLUMN_ORDER)
+    assert order[-5:] == ["qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_model"]
+    assert order[order.index("squeak"):order.index("squeak") + 4] == ["squeak", "squeak_probability", "squeak_start", "squeak_end"]
+    assert order.index("emitter") + 1 == order.index("noise")
+    assert order[order.index("noise"):order.index("noise") + 2] == ["noise", "noise_probability"]
+    assert order.index("noise_probability") + 1 == order.index("squeak")
+    assert order.index("squeak_end") + 1 == order.index("mean_freq_hz")
+    assert order.index("mask_number") < order.index("qlvm1")
+
+
 # derive_spectrogram_model_paths
 
 def test_derive_spectrogram_model_paths_fills_empties_from_root():
@@ -524,6 +556,8 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
             "weights_npz_path": "", "reference_arrays_fine_npz_path": "",
             "reference_arrays_coarse_npz_path": "",
         },
+        "detect_usv_squeaks": {"squeak_model_path": ""},
+        "detect_usv_noise": {"noise_model_path": ""},
     }
     returned = os_utils.derive_spectrogram_model_paths(settings)
     root = "/mnt/falkner/Bartul/spectrograms"
@@ -536,6 +570,8 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     assert settings["infer_qlvm_latents"]["weights_npz_path"] == f"{root}/qlvm/qmc_decoder_weights.npz"
     assert settings["infer_qlvm_latents"]["reference_arrays_fine_npz_path"] == f"{root}/qlvm/arrays_fine.npz"
     assert settings["infer_qlvm_latents"]["reference_arrays_coarse_npz_path"] == f"{root}/qlvm/arrays_coarse.npz"
+    assert settings["detect_usv_squeaks"]["squeak_model_path"] == f"{root}/squeak/mil_absdb_final.pt"
+    assert settings["detect_usv_noise"]["noise_model_path"] == f"{root}/noise/noise_timemil_ens5_n3562_20260916.pt"
 
 
 def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
@@ -549,11 +585,15 @@ def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
             "weights_npz_path": "/custom/w.npz", "reference_arrays_fine_npz_path": "",
             "reference_arrays_coarse_npz_path": "",
         },
+        "detect_usv_squeaks": {"squeak_model_path": "/custom/squeak.pt"},
+        "detect_usv_noise": {"noise_model_path": ""},
     }
     os_utils.derive_spectrogram_model_paths(settings)
     # explicit (non-empty) paths win
     assert settings["generate_masks"]["sam2_model_path"] == "/custom/elsewhere/checkpoint.pt"
     assert settings["infer_qlvm_latents"]["weights_npz_path"] == "/custom/w.npz"
+    assert settings["detect_usv_squeaks"]["squeak_model_path"] == "/custom/squeak.pt"
+    assert settings["detect_usv_noise"]["noise_model_path"] == "/mnt/falkner/Bartul/spectrograms/noise/noise_timemil_ens5_n3562_20260916.pt"
     # empty siblings are still derived from the root
     assert settings["generate_masks"]["sam2_model_dir"] == "/mnt/falkner/Bartul/spectrograms/sam"
     assert settings["infer_qlvm_latents"]["reference_arrays_fine_npz_path"] == "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz"

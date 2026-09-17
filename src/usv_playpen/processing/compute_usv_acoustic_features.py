@@ -40,7 +40,7 @@ import polars as pls
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import first_match_or_raise
+from ..os_utils import first_match_or_raise, order_usv_summary_columns
 from ..time_utils import is_gui_context, smart_wait
 
 # Numerical floor that keeps divisions and logs finite on empty/degenerate regions.
@@ -437,7 +437,7 @@ class USVAcousticFeatureExtractor:
         usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
         usv_df = usv_df.drop([c for c in FEATURE_COLUMNS if c in usv_df.columns])
         usv_df = usv_df.with_row_index(name="_usv_row")
-        merged = usv_df.join(features_df, on="_usv_row", how="left").drop("_usv_row")
+        merged = order_usv_summary_columns(usv_df.join(features_df, on="_usv_row", how="left").drop("_usv_row"))
         merged.write_csv(file=str(usv_summary_loc))
 
         self.message_output(
