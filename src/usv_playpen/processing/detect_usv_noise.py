@@ -80,6 +80,9 @@ NOISE_SPEC_BASE = {
 NOISE_BANDS_HZ = ((30000.0, 120000.0), (3000.0, 30000.0))
 NOISE_DB_REF = 1.0
 HOP_SAMPLES = NOISE_SPEC_BASE["hop_length"]
+# Frame count a `batch_size` of segments is budgeted at (the median call is ~16 frames; this is the
+# model's own window), so a batch's padded size stays bounded however long the calls are.
+TYPICAL_SEGMENT_FRAMES = 128
 
 
 def _conv_block(in_channels: int, out_channels: int, pool: tuple[int, int] | None) -> nn.Sequential:
@@ -379,6 +382,46 @@ def segment_input(
     return np.concatenate([normalized, indicator], axis=0).astype(np.float32), n_used
 
 
+def frame_budget_batches(inputs: list[np.ndarray], batch_size: int) -> list[tuple[int, int]]:
+    """
+    Description
+    -----------
+    Splits the session's segments into consecutive batches that hold at most ``batch_size *
+    TYPICAL_SEGMENT_FRAMES`` frame slots, a batch always taking at least one segment. Every batch is
+    padded to its longest segment, so counting segments alone is not enough: one 512-frame call among
+    255 short ones would inflate the batch 30-fold and exhaust the GPU (measured: a cohort run with
+    eight sessions in parallel failed on batches asking for 1.8 GiB at ``batch_size`` 256). Budgeting
+    frames keeps a batch's memory roughly constant whatever the call lengths are.
+
+    Parameters
+    ----------
+    inputs (list[np.ndarray])
+        Per-segment ``(C, 128, T)`` inputs, in summary order.
+    batch_size (int)
+        Segments per forward pass at the typical call length; the frame budget is this times
+        ``TYPICAL_SEGMENT_FRAMES``.
+
+    Returns
+    -------
+    batches (list[tuple[int, int]])
+        ``(start, stop)`` index pairs covering ``inputs`` in order.
+    """
+
+    budget = max(1, batch_size) * TYPICAL_SEGMENT_FRAMES
+    batches: list[tuple[int, int]] = []
+    start = 0
+    width = 0
+    for position, item in enumerate(inputs):
+        candidate_width = max(width, item.shape[2])
+        if position > start and (position - start + 1) * candidate_width > budget:
+            batches.append((start, position))
+            start, width = position, item.shape[2]
+        else:
+            width = candidate_width
+    batches.append((start, len(inputs)))
+    return batches
+
+
 def score_noise_rows(
     session_root: pathlib.Path,
     usv_summary: pls.DataFrame,
@@ -410,7 +453,7 @@ def score_noise_rows(
     exclude_metadata_audio_channels (bool)
         Drop channels the session metadata marks as excluded from the average.
     batch_size (int)
-        Segments per forward pass.
+        Segments per forward pass at the typical call length (see :func:`frame_budget_batches`).
     message_output (Callable)
         Logging callback.
 
@@ -458,8 +501,8 @@ def score_noise_rows(
         for model in bundle["models"]:
             out = []
             with torch.no_grad():
-                for start_index in range(0, len(inputs), batch_size):
-                    chunk = inputs[start_index:start_index + batch_size]
+                for start_index, stop_index in frame_budget_batches(inputs, batch_size):
+                    chunk = inputs[start_index:stop_index]
                     width = max(item.shape[2] for item in chunk)
                     x = np.full((len(chunk), chunk[0].shape[0], 128, width), -1.0, dtype=np.float32)
                     x[:, -1] = 0.0
@@ -469,7 +512,7 @@ def score_noise_rows(
                         valid[position, :item.shape[2]] = True
                     x_tensor = torch.from_numpy(x).to(device)
                     valid_tensor = torch.from_numpy(valid).to(device)
-                    scalar_tensor = torch.tensor(np.stack(standardized[start_index:start_index + batch_size]), device=device)
+                    scalar_tensor = torch.tensor(np.stack(standardized[start_index:stop_index]), device=device)
                     out.append(torch.sigmoid(model(x_tensor, valid_tensor, valid_tensor, scalar_tensor)).cpu().numpy())
             runs.append(np.concatenate(out))
         probability[np.asarray(scored_rows)] = np.mean(runs, axis=0)
@@ -590,7 +633,7 @@ class USVNoiseDetector:
 @click.option('--noise-model-path', 'noise_model_path', type=str, default=None, required=False, help='Path to the noise model bundle (.pt); derived from spectrograms_root when empty.')
 @click.option('--noise-min-precision', 'noise_min_precision', type=float, default=None, required=False, help='Required share of flagged segments that are really noise; the lowest calibrated threshold reaching it is used.')
 @click.option('--exclude-metadata-audio-channels/--no-exclude-metadata-audio-channels', 'exclude_metadata_audio_channels', default=None, required=False, help='Drop channels the session metadata marks as excluded from the spectrogram average.')
-@click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Number of segments scored per forward pass.')
+@click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Segments per forward pass at the typical call length; a batch is budgeted at batch-size x 128 frame slots, so one long call never inflates it.')
 @click.pass_context
 def detect_usv_noise_cli(ctx, root_directory, **kwargs) -> None:
     """

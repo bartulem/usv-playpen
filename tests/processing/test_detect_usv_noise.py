@@ -124,6 +124,18 @@ def test_segment_input_keeps_only_the_segment_frames():
     assert n_short == 0
 
 
+def test_frame_budget_batches_keep_a_long_call_from_inflating_a_batch():
+    """Batches are padded to their longest call, so a batch is budgeted in frame slots, not segments: one
+    512-frame call among short ones would otherwise make the batch 30x larger and exhaust the GPU."""
+    short = [np.zeros((3, 128, 16), dtype=np.float32)] * 6
+    long_call = np.zeros((3, 128, 512), dtype=np.float32)
+    batches = noise.frame_budget_batches([*short, long_call, *short], batch_size=1)
+    assert batches[0] == (0, 6)                       # the short calls fill one batch (6 * 16 <= 128)
+    assert (6, 7) in batches                          # the long call is scored on its own
+    assert batches[-1][1] == 13                       # every segment is covered, in order
+    assert noise.frame_budget_batches([long_call], batch_size=1) == [(0, 1)]   # never an empty batch
+
+
 def test_score_noise_rows_flags_every_row_above_the_threshold(tmp_path):
     """Every row gets a probability, including a 4 ms segment: the audio window extends a context either
     side, so even a segment far shorter than one STFT window still yields its own frame to score."""

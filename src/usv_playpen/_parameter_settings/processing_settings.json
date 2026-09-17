@@ -295,7 +295,7 @@
     "noise_model_path": "",
     "noise_min_precision": 0.98,
     "exclude_metadata_audio_channels": true,
-    "batch_size": 256
+    "batch_size": 64
   },
   "detect_usv_squeaks": {
     "squeak_model_path": "",

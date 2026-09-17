@@ -1238,7 +1238,7 @@ The threshold is not set directly, because a bare probability says nothing about
 
 Each segment's input is the two-band absolute-dB spectrogram (30-120 kHz and 3-30 kHz, 128 linear bins each) of the **unfiltered** per-channel *audio/hpss* wavs, averaged across channels by variance with metadata-excluded channels dropped. The audio window extends ~100 ms either side of the segment so the channel weights and STFT edges match the training inputs, and the spectrogram is then cropped back to the segment's own frames: the model judges the segment, not its neighbourhood.
 
-Run *Detect noise* after *Curate DAS outputs* (re-curating rewrites *usv_summary.csv* with its base columns only) and before *Detect squeaks*, the order the summary's column layout follows. A GPU is recommended; a 424-USV session takes about a minute on one.
+Run *Detect noise* after *Curate DAS outputs* (re-curating rewrites *usv_summary.csv* with its base columns only) and before *Detect squeaks*, the order the summary's column layout follows. A GPU is used when present but is not required: a 424-USV session takes about 64 s on one and 90 s on the CPU, because most of the time goes on reading and transforming the audio rather than on the network.
 
 Detect squeaks
 ~~~~~~~~~~~~~~
@@ -1610,7 +1610,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 * **noise_model_path** : path to the noise model bundle (``.pt``); left empty it is derived from *Spectrogram models directory* as ``noise/noise_timemil_ens5_n3562_20260916.pt``
 * **noise_min_precision** : the share of flagged segments that must really be noise; the step takes the lowest threshold in the bundle's calibration table reaching it (``0.98`` resolves to ``p >= 0.45``, recall ``0.973``, about 4 real calls flagged per 10,000 segments), and stops with the table printed when no threshold reaches the target
 * **exclude_metadata_audio_channels** : drop channels the session metadata marks as excluded from the spectrogram average
-* **batch_size** : number of segments scored per forward pass
+* **batch_size** : segments per forward pass at the typical call length; a batch is budgeted at ``batch_size`` x 128 frame slots and padded to its longest call, so one long call never inflates a batch (raise it on a GPU with memory to spare, lower it when several sessions run in parallel)
 
 .. code-block:: json
 
@@ -1618,7 +1618,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "noise_model_path": "",
         "noise_min_precision": 0.98,
         "exclude_metadata_audio_channels": true,
-        "batch_size": 256
+        "batch_size": 64
       }
 
 *Infer QLVM latents* (``infer_qlvm_latents``):
