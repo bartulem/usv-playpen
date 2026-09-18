@@ -298,6 +298,8 @@ def _write_usv_summary_csv(
 
     audio_dir.mkdir(parents=True, exist_ok=True)
     path = audio_dir / name
+    if "noise" not in rows:
+        rows = {**rows, "noise": [False] * len(next(iter(rows.values())))}
     pls.DataFrame(rows).write_csv(path)
     return path
 
@@ -947,6 +949,7 @@ def test_plot_usv_property_histograms(tmp_path):
             "freq_bandwidth_hz": [10_000, 20_000, 50_000, 70_000],
             "spectral_entropy": [1.0, 2.0, 3.0, 4.0],
             "vae_supercategory": [0, 1, 1, 2],
+            "noise": [True, False, False, False],
         },
     )
     txt = _write_sessions_txt(tmp_path, [sess])
@@ -983,12 +986,10 @@ def test_count_usvs_per_session(tmp_path):
     sess = tmp_path / "s"
     _write_usv_summary_csv(
         sess / "audio",
-        {"vae_supercategory": [0, 0, 1, 2, 2]},
+        {"noise": [True, True, False, False, False]},
     )
     txt = _write_sessions_txt(tmp_path, [sess])
-    counts = _count_usvs_per_session(
-        str(txt), "vae_supercategory", (0,), lambda *_: None
-    )
+    counts = _count_usvs_per_session(str(txt), True, lambda *_: None)
     assert counts.tolist() == [3.0]
 
 
@@ -1043,6 +1044,7 @@ def test_plot_session_usv_timeline(tmp_path):
             "stop": [0.2, 0.6, 1.1, 2.1],
             "emitter": ["M", "F", "ghost", "M"],
             "vae_supercategory": [1, 1, 0, 2],
+            "noise": [False, False, True, False],
         },
     )
     out = tmp_path / "timeline.svg"
@@ -1110,6 +1112,7 @@ def _write_embedding_session(root: pathlib.Path, session_id: str):
             "qlvm2": [1.5, 1.6, 1.7, 1.8],
             "vae_category": [1, 2, 1, 2],
             "vae_supercategory": [0, 1, 1, 2],
+            "noise": [True, False, False, False],
             "qlvm_category": [1, 1, 2, 2],
             "qlvm_supercategory": [1, 1, 2, 2],
             "emitter": ["M", "F", "M", "ghost"],
@@ -1137,7 +1140,7 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
         message_output=lambda *_: None,
     )
     assert cache.exists()
-    assert pooled.height == 3  # noise row (vae_supercategory == 0) dropped
+    assert pooled.height == 3  # the row the noise classifier flagged is dropped
     assert set(EMBEDDING_ALL_COLS).issubset(pooled.columns)
     assert "sex" in pooled.columns
     assert "emitter" in pooled.columns  # raw animal id retained for the explorer tooltip
@@ -1603,17 +1606,18 @@ def test_plot_umap_thumbnails_bad_category_suffix(tmp_path):
 
 
 def test_plot_umap_thumbnails_no_categories(tmp_path):
-    """A pooled frame with only noise rows raises RuntimeError."""
+    """A pooled frame with no usable category leaves nothing to draw."""
     pooled = pls.DataFrame(
         {
             "session_id": ["s", "s"],
             "row_index": [0, 1],
             "vae1": [0.1, 0.2],
             "vae2": [0.3, 0.4],
-            "vae_supercategory": [0, 0],
-        }
+            "vae_supercategory": [None, None],
+        },
+        schema_overrides={"vae_supercategory": pls.Int64},
     )
-    with pytest.raises(RuntimeError, match="No non-noise categories"):
+    with pytest.raises(RuntimeError, match="No categories found"):
         plot_embedding_with_category_thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path="unused",

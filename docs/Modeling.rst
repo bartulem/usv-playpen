@@ -199,8 +199,7 @@ cross-validation and held-out-test settings live in their own
         "usv_predictor_partner_only": true,
         "usv_predictor_smoothing_sd": 1,
         "usv_category_column_name": "qlvm_supercategory",
-        "usv_noise_column": "qlvm_supercategory",
-        "usv_noise_categories": [0],
+        "exclude_noise_usvs": true,
         "usv_manifold_column_names": ["qlvm1", "qlvm2"],
         "usv_manifold_metric": "torus",
         "usv_manifold_period": 1.0,
@@ -219,7 +218,7 @@ cross-validation and held-out-test settings live in their own
 * **usv_predictor_partner_only** — if ``true``, ingest only the *partner's* USV signals as predictors (not the target mouse's own vocal history).
 * **usv_predictor_smoothing_sd** — Gaussian σ (frames) applied to the USV-rate predictor traces.
 * **usv_category_column_name** — the USV-catalog column defining categories (``'vae_supercategory'`` / ``'qlvm_supercategory'`` / ``'vae_category'`` / ``'qlvm_category'``).
-* **usv_noise_column** / **usv_noise_categories** — the column and category indices treated as noise and excluded.
+* **exclude_noise_usvs** — whether to drop the USV segments ``detect-usv-noise`` flagged as holding no vocalization. A session whose summary lacks the ``noise`` column raises rather than contributing unfiltered detections.
 * **usv_manifold_column_names** — the two catalog columns giving the 2-D manifold position (the ``ContinuousModelingPipeline`` target).
 * **usv_manifold_metric** — ``'euclidean'`` (plane) or ``'torus'`` (wrap-aware) distance on the manifold.
 * **usv_manifold_period** — the wrap period for the ``'torus'`` metric.

@@ -45,7 +45,7 @@ from ..analyses.compute_neuronal_tuning_curves import (
     CATEGORICAL_FEATURES,
 )
 from ..analyses.decode_experiment_label import extract_information
-from ..os_utils import first_match_or_raise
+from ..os_utils import drop_noise_usvs, first_match_or_raise
 from .plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
@@ -754,7 +754,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 recursive=True,
                 label="USV summary CSV",
             )
-            usv_summary_df = pls.read_csv(str(csv_path)).filter(pls.col("vae_supercategory") != 0)
+            # Same rule as the tuning curves these rasters accompany: the segments the noise
+            # classifier flagged are not vocalizations, so they are not drawn.
+            usv_summary_df = drop_noise_usvs(pls.read_csv(str(csv_path)), csv_path.name)[0]
         except (StopIteration, FileNotFoundError):
             pass
 
@@ -5995,7 +5997,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Loaded pkl payload with keys usv_peth, usv_property_tuning,
             usv_category_tuning, usv_category_peth, usv_metadata.
         usv_summary_df (pls.DataFrame | None)
-            Filtered (post `vae_supercategory != 0`) USV summary if
+            Noise-filtered USV summary if
             available; required for the bout raster.
         segmentation (dict)
             Loaded latent-embedding segmentation per categorical feature.
@@ -6050,7 +6052,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         cluster_data (dict)
             Loaded per-cluster pkl payload.
         usv_summary_df (pls.DataFrame | None)
-            Filtered USV summary (post `vae_supercategory != 0`); used
+            Noise-filtered USV summary; used
             by the bout raster. Pass `None` to skip the raster.
         save_fig (Callable[[Figure, str], None])
             Persists the rendered figure and closes it.

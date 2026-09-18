@@ -349,7 +349,7 @@ def build_input_metadata(modeling_settings: dict,
                          feature_zoo_kept: list,
                          dyadic_engagement_features_used: list,
                          dyadic_pose_symmetric_features_used: bool,
-                         noise_vocal_categories_excluded: list,
+                         noise_usvs_excluded: bool,
                          vocal_signal_columns_added: list,
                          filter_history_seconds: float,
                          filter_history_frames: int,
@@ -378,7 +378,7 @@ def build_input_metadata(modeling_settings: dict,
     - **Behavioral feature provenance** (`feature_zoo_full`,
       `feature_zoo_kept`, `dyadic_engagement_features_used`,
       `dyadic_pose_symmetric_features_used`,
-      `noise_vocal_categories_excluded`).
+      `noise_usvs_excluded`).
     - **Vocal-input shape** (`usv_predictor_type`,
       `usv_predictor_partner_only`, `usv_predictor_smoothing_sd`,
       `vocal_signal_columns_added`).
@@ -434,9 +434,9 @@ def build_input_metadata(modeling_settings: dict,
     dyadic_pose_symmetric_features_used : bool
         The `kinematic_features.dyadic_pose_symmetric` flag that was
         active during extraction.
-    noise_vocal_categories_excluded : list of int
+    noise_usvs_excluded : bool
         mixture-model-supercategory codes stripped at load time
-        (`vocal_features.usv_noise_categories`).
+        (`vocal_features.exclude_noise_usvs`).
     vocal_signal_columns_added : list of str
         Vocal-history column names injected into the per-session DFs by
         `build_vocal_signal_columns`. Empty when `usv_predictor_type`
@@ -504,7 +504,7 @@ def build_input_metadata(modeling_settings: dict,
         'feature_zoo_kept': list(feature_zoo_kept),
         'dyadic_engagement_features_used': list(dyadic_engagement_features_used),
         'dyadic_pose_symmetric_features_used': bool(dyadic_pose_symmetric_features_used),
-        'noise_vocal_categories_excluded': list(noise_vocal_categories_excluded),
+        'noise_usvs_excluded': bool(noise_usvs_excluded),
 
         # Vocal-input shape
         'usv_predictor_type': usv_predictor_type,

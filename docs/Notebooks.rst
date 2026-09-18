@@ -1699,8 +1699,7 @@ sex metadata to one Polars DataFrame:
 
     usv_interval_df, usv_interval_summary = ivs.build_master_usv_interval_dataframe(
         session_lists=session_lists,
-        noise_col_id=usv_interval_cfg["noise_col_id"],
-        noise_categories=usv_interval_cfg["noise_categories"],
+        exclude_noise_usvs=usv_interval_cfg["exclude_noise_usvs"],
     )
 
 Then fit each mixture family for ``K = n_components_min … n_components_max`` and
@@ -2014,14 +2013,13 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 * **spectrogram_session_root** — a session directory holding a ``*_int16.mmap*`` audio file (and, for stitched mode, a ``*_usv_summary.csv`` 1:1 with the consolidated h5 entries). All other spectrogram knobs (mode, channel, ``time_window``, ``freq_limits``, ``nfft``, colorbar, save) live in the ``make_usv_spectrograms`` block of ``visualizations_settings.json``; override them on ``vis_settings``.
 * **spectrogram_cmap_choice** — ``'female'`` / ``'male'`` selects the matching per-sex colormap; ``None`` falls back to the project-wide ``vis_settings['figures']['sequential_cmap']``.
 
-**Cross-session summaries.** The second part pools many sessions. Its three ``make_usv_spectrograms`` helper figures each carry their own parameters (still the per-figure half of the hybrid layout); all three share the same noise filter, ``noise_col_id = 'vae_supercategory'`` with ``noise_categories = (0,)``, which drops noise rows before plotting.
+**Cross-session summaries.** The second part pools many sessions. Its three ``make_usv_spectrograms`` helper figures each carry their own parameters (still the per-figure half of the hybrid layout); all three share the same noise filter, ``exclude_noise_usvs = True``.
 
 **2. Property histograms.** ``plot_usv_property_histograms`` is a module-level helper (not a method on ``USVSpectrogramPlotter``) that pools per-USV properties across many sessions into a single five-panel figure: ``duration`` (ms), ``mean_amplitude`` (a.u.), ``mean_freq_hz`` (kHz), ``freq_bandwidth_hz`` (kHz), ``spectral_entropy`` (nats). Each panel uses 36 linearly-spaced bins over the FeatureZoo theoretical range; the title reports the number of sessions loaded and the total pooled vocalizations.
 
 .. code-block:: python
 
-    noise_col_id = "vae_supercategory"
-    noise_categories = (0,)
+    exclude_noise_usvs = True
 
     histograms_sessions_txt_path = configure_path(
         "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
@@ -2033,8 +2031,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
         sessions_txt_path=histograms_sessions_txt_path,
         output_path=histograms_output_path,
         fig_format=histograms_fig_format,
-        noise_col_id=noise_col_id,
-        noise_categories=noise_categories,
+        exclude_noise_usvs=exclude_noise_usvs,
     )
     plt.show()
 
@@ -2046,8 +2043,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 
 .. code-block:: python
 
-    noise_col_id = "vae_supercategory"
-    noise_categories = (0,)
+    exclude_noise_usvs = True
 
     male_female_txt_path = configure_path(
         "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
@@ -2069,8 +2065,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
         lone_male_txt_path=lone_male_txt_path,
         output_path=session_counts_output_path,
         fig_format=session_counts_fig_format,
-        noise_col_id=noise_col_id,
-        noise_categories=noise_categories,
+        exclude_noise_usvs=exclude_noise_usvs,
     )
     plt.show()
 
@@ -2081,8 +2076,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 
 .. code-block:: python
 
-    noise_col_id = "vae_supercategory"
-    noise_categories = (0,)
+    exclude_noise_usvs = True
 
     timeline_session_root = configure_path("/mnt/falkner/Bartul/Data/20230119_172410")
     timeline_window = (457, 462)  # (start_s, end_s); None shows the whole session
@@ -2096,8 +2090,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
         time_window=timeline_window,
         output_path=timeline_output_path,
         fig_format=timeline_fig_format,
-        noise_col_id=noise_col_id,
-        noise_categories=noise_categories,
+        exclude_noise_usvs=exclude_noise_usvs,
     )
     plt.show()
 
@@ -2116,8 +2109,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
     # embedding coordinates, both derived in Setup). Noise is a VAE-only label, so it is
     # ALWAYS filtered on vae_supercategory == 0 regardless of this choice.
     embedding_model = "vae"
-    noise_col_id = "vae_supercategory"
-    noise_categories = [0]
+    exclude_noise_usvs = True
 
     # Behavioral-feature column suffixes
     distance_suffix = "nose-nose"
@@ -2168,7 +2160,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 
 * **sessions_list_path** — the ``.txt`` file listing one session root per line; its name also derives ``session_type``, the prefix on every saved figure.
 * **embedding_model** — ``"vae"`` or ``"qlvm"``; picks the per-USV category basis (``usv_category_col``) and the embedding coordinates (``usv_continuous_cols``), both resolved in the Setup cell.
-* **noise_col_id** / **noise_categories** — the column and value that flag the noise bucket dropped during extraction (noise is a variational autoencoder (VAE)-only label).
+* **exclude_noise_usvs** — whether the USV segments ``detect-usv-noise`` flagged as holding no vocalization are dropped during extraction. A session whose summary lacks the ``noise`` column raises rather than contributing unfiltered detections.
 * **distance_suffix** / **mf_angle_suffix** / **fm_angle_suffix** — which behavioral-feature columns become ``distance`` / ``mf_angle`` / ``fm_angle``.
 * **save_fig_bool** — when ``True``, every cell writes its figures to disk via ``save_figure``; when ``False`` figures are only shown inline.
 * The remaining knobs are per-figure styling / binning / thresholds consumed by the individual statistics sections below.
@@ -2226,8 +2218,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 
     usv_pls, bg_pls, noise_filtered_count = uss.build_master_usv_dataframe(
         session_roots=session_roots,
-        noise_col_id=noise_col_id,
-        noise_categories=noise_categories,
+        exclude_noise_usvs=exclude_noise_usvs,
         usv_category_col=usv_category_col,
         distance_suffix=distance_suffix,
         mf_angle_suffix=mf_angle_suffix,

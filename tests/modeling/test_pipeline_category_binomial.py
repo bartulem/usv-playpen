@@ -139,8 +139,7 @@ def _write_category_usv_summary(
     integer category, which would collapse the one-vs-rest negative class to
     zero rows. This builder instead interleaves the two non-noise categories
     syllable-by-syllable inside every bout, so each session contributes both
-    classes. Category 0 stays reserved as noise (never emitted here) so the
-    ``usv_noise_categories=[0]`` filter is a no-op on this data.
+    classes. No row is flagged ``noise``, so the noise filter is a no-op on this data.
 
     Construction guarantees, per session:
       - The first ``filter_history`` seconds (plus generous slack) are silent,
@@ -236,6 +235,8 @@ def _write_category_usv_summary(
         'stop': stops,
         category_column: categories,
         'vae_category': categories,
+        # No synthesized noise here: every row is a real vocalization, so the noise filter is a no-op.
+        'noise': [False] * n_rows,
         'mask_number': [2] * n_rows,
         manifold_columns[0]: (rng.standard_normal(n_rows)).round(6).tolist(),
         manifold_columns[1]: (rng.standard_normal(n_rows)).round(6).tolist(),

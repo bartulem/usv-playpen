@@ -47,7 +47,7 @@ import polars as pls
 from scipy import ndimage, stats
 from tqdm import tqdm
 
-from ..os_utils import atomic_output_path, first_match_or_raise
+from ..os_utils import atomic_output_path, drop_noise_usvs, first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from .compute_behavioral_features import FeatureZoo
 
@@ -1438,9 +1438,10 @@ class NeuronalTuning(FeatureZoo):
             return None
 
         df = pls.read_csv(str(usv_csv))
-        if "vae_supercategory" not in df.columns:
-            return None
-        df = df.filter(pls.col("vae_supercategory") != 0)
+        # Noise segments are excluded here, not left to the caller: a tuning curve built over
+        # detections that hold no vocalization is not a vocal tuning curve. A session whose summary
+        # carries no `noise` column raises rather than silently contributing its noise.
+        df = drop_noise_usvs(df, usv_csv.name)[0]
         if df.shape[0] == 0:
             return None
 

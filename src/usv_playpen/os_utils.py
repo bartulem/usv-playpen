@@ -986,6 +986,54 @@ USV_SUMMARY_COLUMN_ORDER = (
 )
 
 
+# Column `detect_usv_noise` writes: True when the segment holds no vocalization at all.
+NOISE_COLUMN = "noise"
+
+
+def drop_noise_usvs(usv_summary: Any, source: str, message_output: Callable = print) -> tuple[Any, int]:
+    """
+    Description
+    -----------
+    Drops the USV segments a trained classifier flagged as noise -- the single definition of "noise"
+    every analysis, figure and model shares, so the rule cannot drift between them. A row survives when
+    its ``noise`` value is False, or null (a segment too short to score is a detection, not a verdict).
+
+    A summary WITHOUT the column raises rather than passing every row through: the previous convention
+    (a category value treated as noise) degraded silently when its column was missing, so analyses went
+    on reporting numbers that quietly included noise. Run ``detect-usv-noise`` on the session, or turn
+    the filter off in the settings.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table.
+    source (str)
+        What the table came from (a session id or file name), named in the error.
+    message_output (Callable)
+        Logging callback; defaults to ``print``.
+
+    Returns
+    -------
+    kept (polars.DataFrame)
+        The rows that are not noise.
+    n_dropped (int)
+        How many rows were dropped.
+    """
+
+    if NOISE_COLUMN not in usv_summary.columns:
+        error_message = (
+            f"{source} has no '{NOISE_COLUMN}' column, so its noise segments cannot be excluded. Run "
+            f"detect-usv-noise on the session, or set the analysis' exclude_noise_usvs to false to keep "
+            f"every detection."
+        )
+        raise KeyError(error_message)
+    kept = usv_summary.filter(~usv_summary[NOISE_COLUMN].fill_null(False))
+    n_dropped = usv_summary.height - kept.height
+    if n_dropped:
+        message_output(f"    {source}: dropped {n_dropped} noise segment(s) of {usv_summary.height}.")
+    return kept, n_dropped
+
+
 def order_usv_summary_columns(usv_summary: Any) -> Any:
     """
     Description

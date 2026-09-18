@@ -419,8 +419,7 @@ def _load_pooled_df(
                 sessions_txt_path=str(combined_list_path),
                 cache_path=cache_path,
                 rebuild_cache=False,
-                noise_col_id="vae_supercategory",
-                noise_categories=(0,),
+                exclude_noise_usvs=True,
             )
         except (FileNotFoundError, OSError, ValueError) as exc:
             mo.stop(

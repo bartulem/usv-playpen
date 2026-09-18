@@ -51,8 +51,7 @@ from ..os_utils import configure_path
 
 def build_master_usv_interval_dataframe(
     session_lists: list[str],
-    noise_col_id: str,
-    noise_categories: list[int],
+    exclude_noise_usvs: bool,
     message_output=print,
 ) -> tuple[pls.DataFrame, dict]:
     """
@@ -85,12 +84,9 @@ def build_master_usv_interval_dataframe(
     session_lists (list[str])
         List of text file paths, each containing session roots (one
         per line).
-    noise_col_id (str)
-        Name of the noise classification column in the USV summary
-        CSV.
-    noise_categories (list[int])
-        Integer labels in ``noise_col_id`` that identify a row as
-        noise to be excluded.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as
+        holding no vocalization.
     message_output (callable)
         Logging callable; defaults to :func:`print`.
 
@@ -122,8 +118,7 @@ def build_master_usv_interval_dataframe(
             usv_interval = compute_session_usv_intervals(
                 session_root=session_root,
                 interval_type=interval_type,
-                noise_col_id=noise_col_id,
-                noise_categories=noise_categories,
+                exclude_noise_usvs=exclude_noise_usvs,
             )
             if not usv_interval:
                 continue
@@ -1614,8 +1609,7 @@ def save_notebook_archive_to_h5(
         "git_sha": git_sha_for_provenance(Path(__file__).resolve().parent),
         "source_lists": [str(p) for p in usv_interval_cfg["session_lists"]],
         "n_sessions_loaded": int(usv_interval_summary["n_sessions_loaded"]),
-        "noise_col_id": usv_interval_cfg["noise_col_id"],
-        "noise_categories": list(usv_interval_cfg["noise_categories"]),
+        "exclude_noise_usvs": bool(usv_interval_cfg["exclude_noise_usvs"]),
         "fit_mixture_model": bool(usv_interval_cfg["fit_mixture_model"]),
         "n_components_min": int(usv_interval_cfg["n_components_min"]),
         "n_components_max": int(usv_interval_cfg["n_components_max"]),

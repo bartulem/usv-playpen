@@ -24,6 +24,7 @@ from statsmodels.stats.multicomp import pairwise_tukeyhsd
 # analyses<->visualizations near-cycle); re-imported here so this module and its
 # importers keep using them unchanged.
 from ..analyses._usv_io import extract_session_metadata, load_and_filter_usv_data
+from ..os_utils import drop_noise_usvs
 
 
 # Load the project-wide default cmap from `visualizations_settings.json`
@@ -76,8 +77,7 @@ def _figure_rng() -> np.random.Generator:
 
 def extract_category_embedding_data(
     session_roots: list[str],
-    noise_col_id: str,
-    noise_categories: list[int],
+    exclude_noise_usvs: bool,
     usv_category_col: str,
     usv_continuous_cols: tuple[str, str]
 ) -> pls.DataFrame:
@@ -96,11 +96,8 @@ def extract_category_embedding_data(
     ----------
     session_roots : list[str]
         A list of absolute paths pointing to the session directories to be analyzed.
-    noise_col_id : str
-        The name of the column in the CSV that dictates the noise classification.
-    noise_categories : list[int]
-        A list of specific integer values in the noise column that identify a row as
-        noise to be excluded.
+    exclude_noise_usvs : bool
+        Whether to drop the segments ``detect_usv_noise`` flagged as holding no vocalization.
     usv_category_col : str
         The name of the column containing the integer category/cluster ID
         (e.g., 'usv_supercategory').
@@ -132,8 +129,7 @@ def extract_category_embedding_data(
             usv_info = load_and_filter_usv_data(
                 session_root=session_root,
                 frame_rate=metadata['frame_rate'],
-                noise_col_id=noise_col_id,
-                noise_categories=noise_categories
+                exclude_noise_usvs=exclude_noise_usvs
             )
 
             # Ensure the required columns actually exist in this session's CSV
@@ -273,8 +269,7 @@ _CONTINUOUS_ACOUSTIC_FEATURES = (
 
 def build_master_usv_dataframe(
     session_roots: list[str],
-    noise_col_id: str,
-    noise_categories: list[int],
+    exclude_noise_usvs: bool,
     usv_category_col: str,
     distance_suffix: str,
     mf_angle_suffix: str,
@@ -316,11 +311,8 @@ def build_master_usv_dataframe(
     ----------
     session_roots (list[str])
         A list of absolute paths pointing to the session directories to be analyzed.
-    noise_col_id (str)
-        The name of the column in the CSV that dictates the noise classification.
-    noise_categories (list[int])
-        A list of specific integer values in the noise column that identify a row
-        as noise to be excluded.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as holding no vocalization.
     usv_category_col (str)
         The name of the column containing the integer category/cluster ID.
     distance_suffix (str)
@@ -352,7 +344,7 @@ def build_master_usv_dataframe(
         with this schema, so 'distance'/'mf_angle'/'fm_angle' column access does
         not raise.
     total_noise_filtered (int)
-        The total number of rows removed across all sessions based on noise_categories.
+        The total number of noise rows removed across all sessions.
     """
 
     all_usv_rows: list[pls.DataFrame] = []
@@ -386,8 +378,8 @@ def build_master_usv_dataframe(
         # (previously the file was read twice: once here for the count and again
         # inside load_and_filter_usv_data).
         raw_data = pls.read_csv(str(usv_file))
-        usv_clean = raw_data.filter(~pls.col(noise_col_id).is_in(noise_categories))
-        total_noise_filtered += raw_data.height - usv_clean.height
+        usv_clean, n_dropped = drop_noise_usvs(raw_data, usv_file.name) if exclude_noise_usvs else (raw_data, 0)
+        total_noise_filtered += n_dropped
         usv_info = usv_clean.with_columns(
             (pls.col('start') * frame_rate).floor().cast(pls.UInt32).alias('frame_index')
         )

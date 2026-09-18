@@ -731,7 +731,7 @@ class MultinomialModelingPipeline(FeatureZoo):
         voc_mode = voc_settings['usv_predictor_type']
         smooth_sd = voc_settings['usv_predictor_smoothing_sd']
         column_name_cats = voc_settings['usv_category_column_name']
-        noise_cats = voc_settings['usv_noise_categories']
+        exclude_noise = voc_settings['exclude_noise_usvs']
 
         filter_hist = self.modeling_settings['model_params']['filter_history']
         pred_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
@@ -749,8 +749,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             filter_history=filter_hist,
             vocal_output_type=voc_mode,
             proportion_smoothing_sd=smooth_sd,
-            noise_vocal_categories=noise_cats,
-            noise_column=voc_settings['usv_noise_column'],
+            exclude_noise_usvs=exclude_noise,
         )
 
         # extract multinomial targets (integer USV category labels) across sessions
@@ -935,7 +934,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             feature_zoo_kept=feature_zoo_kept_md,
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
             dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
-            noise_vocal_categories_excluded=list(noise_cats),
+            noise_usvs_excluded=exclude_noise,
             vocal_signal_columns_added=vocal_columns_md,
             filter_history_seconds=float(filter_hist),
             filter_history_frames=int(self.history_frames),
@@ -945,12 +944,12 @@ class MultinomialModelingPipeline(FeatureZoo):
                 'categories_kept': sorted(class_counts_md.keys()),
                 'class_counts': class_counts_md,
                 # Auto-derived from the cohort-pooled labels after the
-                # `usv_noise_categories` filter has been applied (see
+                # `exclude_noise_usvs` filter has been applied (see
                 # `find_usv_categories`). Replaces the former hand-set
                 # `vocal_features.usv_category_number` JSON key so that
                 # the splitter's coverage gate stays in lockstep with
                 # whatever combination of `usv_category_column_name` +
-                # `usv_noise_categories` is in force.
+                # `exclude_noise_usvs` is in force.
                 'usv_category_number': len(class_counts_md),
                 'usv_category_column_name': column_name_cats,
             },
@@ -1381,7 +1380,7 @@ class MultinomialModelRunner:
         # it back here so the splitter's cohort/fold coverage gate
         # validates against the same count the extractor observed,
         # independent of whatever `usv_category_column_name` or
-        # `usv_noise_categories` are currently configured.
+        # `exclude_noise_usvs` is currently configured.
         with open(pkl_path, 'rb') as _md_fh:
             _input_md = pickle.load(_md_fh)['_input_metadata']
         n_categories_total = int(_input_md['analysis_specific']['usv_category_number'])

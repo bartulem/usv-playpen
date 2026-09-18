@@ -154,6 +154,8 @@ def _build_synthetic_figure_session(
         "max_amplitude":     rng.uniform(0.5, 8.0, n_usvs).tolist(),
         "spectral_entropy":  rng.uniform(1.0, 4.0, n_usvs).tolist(),
         "mask_number":       rng.integers(1, 12, n_usvs).tolist(),
+        # Every synthetic call is real; the figures drop noise-flagged rows.
+        "noise":             [False] * n_usvs,
     })
     usv_df.write_csv(root / "audio" / "sync" / "vid1_usv_summary.csv")
 

@@ -867,7 +867,7 @@ class ContinuousModelingPipeline(FeatureZoo):
         voc_mode = voc_settings['usv_predictor_type']
         smooth_sd = voc_settings['usv_predictor_smoothing_sd']
         column_name_cats = voc_settings['usv_category_column_name']
-        noise_cats = voc_settings['usv_noise_categories']
+        exclude_noise = voc_settings['exclude_noise_usvs']
         manifold_cols = voc_settings['usv_manifold_column_names']
 
         if not isinstance(manifold_cols, (list, tuple)) or len(manifold_cols) < 2:
@@ -896,9 +896,8 @@ class ContinuousModelingPipeline(FeatureZoo):
             filter_history=filter_hist,
             vocal_output_type=voc_mode,
             proportion_smoothing_sd=smooth_sd,
-            noise_vocal_categories=noise_cats,
+            exclude_noise_usvs=exclude_noise,
             manifold_column_names=manifold_cols,
-            noise_column=voc_settings['usv_noise_column'],
         )
 
         print("Extracting continuous targets and computing Global Inverse Density Weights...")
@@ -1126,7 +1125,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             feature_zoo_kept=feature_zoo_kept_md,
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
             dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
-            noise_vocal_categories_excluded=list(noise_cats),
+            noise_usvs_excluded=exclude_noise,
             vocal_signal_columns_added=vocal_columns_md,
             filter_history_seconds=float(filter_hist),
             filter_history_frames=int(self.history_frames),

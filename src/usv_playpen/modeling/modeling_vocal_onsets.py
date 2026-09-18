@@ -152,7 +152,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         Pipeline Steps:
         1.  Calls `find_onset_epochs` to detect vocal bouts.
             - Uses `mixture_model_component_index` and `mixture_model_z_score` to calculate a dynamic IBI threshold per mouse.
-            - Filters out specific noise categories (e.g., [0, 19]) via `noise_vocal_categories`.
+            - Filters out the segments holding no vocalization via `exclude_noise_usvs`.
             - Enforces `min_usv_per_bout` constraints.
             - Returns positive (`positive_events`) and negative (`negative_events`) event times.
         2. Removes sessions where the target mouse has 0 valid bouts.
@@ -210,7 +210,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             mixture_model_component_index=self.modeling_settings['model_params']['mixture_model_component_index'],
             mixture_model_z_score=self.modeling_settings['model_params']['mixture_model_z_score'],
             mixture_model_params=self.modeling_settings['mixture_model_params'],
-            noise_vocal_categories=self.modeling_settings['vocal_features']['usv_noise_categories'],
+            exclude_noise_usvs=self.modeling_settings['vocal_features']['exclude_noise_usvs'],
             proportion_smoothing_sd=self.modeling_settings['vocal_features']['usv_predictor_smoothing_sd'],
             vocal_output_type=self.modeling_settings['vocal_features']['usv_predictor_type'],
             filter_history=self.modeling_settings['model_params']['filter_history'],
@@ -219,7 +219,6 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             min_usv_per_bout=self.modeling_settings['model_params']['usv_per_bout_floor'],
             category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
             target_category=self.modeling_settings['model_params']['onset_target_category'],
-            noise_column=self.modeling_settings['vocal_features']['usv_noise_column'],
         )
 
         predictor_mouse_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
@@ -422,7 +421,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             feature_zoo_kept=feature_zoo_kept_md,
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
             dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
-            noise_vocal_categories_excluded=list(voc_settings['usv_noise_categories']),
+            noise_usvs_excluded=voc_settings['exclude_noise_usvs'],
             # `build_vocal_signal_columns` emits exactly these per-mouse suffixes
             # (from `continuous_vocal_signals`): the scalar `usv_event` /
             # `usv_rate` traces and any number of per-category `usv_cat_<int>`

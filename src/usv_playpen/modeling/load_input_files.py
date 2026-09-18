@@ -25,6 +25,8 @@ import re
 from pathlib import Path
 import pickle
 import polars as pls
+
+from ..os_utils import drop_noise_usvs
 from astropy.convolution import convolve
 from astropy.convolution import Gaussian1DKernel
 
@@ -302,10 +304,9 @@ def find_onset_epochs(root_directories: list = None,
                      mixture_model_z_score: float = 2.58,
                      mixture_model_params: dict = None,
                      vocal_output_type: str = None,
-                     noise_vocal_categories: list = None,
+                     exclude_noise_usvs: bool = True,
                      category_column: str = 'usv_category',
-                     target_category: int = None,
-                     noise_column: str = 'usv_supercategory') -> dict:
+                     target_category: int = None) -> dict:
     """
     Loads USV information data from a .csv file and samples epochs based on prediction mode.
     (See 'find_usv_categories' for category-based sampling).
@@ -352,8 +353,9 @@ def find_onset_epochs(root_directories: list = None,
         - 'pooled_rate': Aggregate smoothed density of all biological USVs ('usv_rate').
         - 'categories_rate': Individual smoothed density per category ('usv_cat_X').
         - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
-    noise_vocal_categories : list, optional
-        List of USV categories to ignore (e.g., [0, 19] for noise/background).
+    exclude_noise_usvs : bool, optional
+        Whether to drop the segments ``detect_usv_noise`` flagged as holding no
+        vocalization (default True). A summary without the ``noise`` column raises.
     category_column : str, optional
         Name of the per-USV category column in the summary .csv (e.g.
         'vae_supercategory', 'qlvm_supercategory', 'vae_category',
@@ -371,10 +373,6 @@ def find_onset_epochs(root_directories: list = None,
         interval distribution and would mis-group a category-sparsified
         sequence; in those modes all categories are pooled as before. If None
         (default), all USV categories are pooled (original behavior).
-    noise_column : str, optional
-        Name of the supercategory column used for global noise filtering. Kept
-        separate from `category_column` so noise removal stays cohort-stable
-        regardless of which experimental category column is chosen.
 
     Returns
     -------
@@ -410,9 +408,8 @@ def find_onset_epochs(root_directories: list = None,
         usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
 
         has_category = category_column in usv_summary_data.columns
-        has_noise_col = noise_column in usv_summary_data.columns
-        if noise_vocal_categories and has_noise_col:
-            usv_summary_data = usv_summary_data.filter(~pls.col(noise_column).is_in(list(noise_vocal_categories)))
+        if exclude_noise_usvs:
+            usv_summary_data = drop_noise_usvs(usv_summary_data, Path(csv_path).name)[0]
 
         if session_id not in mouse_ids_dict:
             print(f"Warning: No mouse names registered for {session_id}. Skipping.")
@@ -654,9 +651,8 @@ def find_usv_categories(root_directories: list = None,
                         filter_history: int | float = 0.0,
                         vocal_output_type: str = None,
                         proportion_smoothing_sd: float = 1.0,
-                        noise_vocal_categories: list = None,
-                        manifold_column_names: list = None,
-                        noise_column: str = 'usv_supercategory') -> dict:
+                        exclude_noise_usvs: bool = True,
+                        manifold_column_names: list = None) -> dict:
     """
     Parses USV data for either one-vs-rest (binary) or multinomial (all-category) analysis,
     as well as extracting continuous spatial targets (acoustic manifold coordinates) for
@@ -697,19 +693,15 @@ def find_usv_categories(root_directories: list = None,
         - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
     proportion_smoothing_sd : float, default 1.0
         Standard deviation for Gaussian smoothing (in frames).
-    noise_vocal_categories : list, optional
-        List of category IDs to exclude from continuous signals, models, and streams.
+    exclude_noise_usvs : bool, optional
+        Whether to drop the segments ``detect_usv_noise`` flagged as holding no
+        vocalization (default True). A summary without the ``noise`` column raises.
     manifold_column_names : list, optional
         Ordered list of column names in the USV summary CSV that encode each USV's
         coordinates on the continuous acoustic manifold. If any of the configured
         columns is missing from the CSV for a given session/mouse, no continuous
         targets are written for that mouse. When None or empty, continuous target
         extraction is skipped entirely.
-    noise_column : str, default 'usv_supercategory'
-        Name of the supercategory column used for global noise filtering (removing
-        the categories in `noise_vocal_categories`). Kept separate from
-        `category_column` so the cohort-stable noise scheme stays fixed regardless
-        of which experimental-category column the caller varies.
 
     Returns
     -------
@@ -781,13 +773,11 @@ def find_usv_categories(root_directories: list = None,
             # Filter by mouse
             mouse_usvs = usv_summary_data.filter(pls.col('emitter') == mouse_name).sort('start')
 
-            # Filter noise categories (global removal). The noise filter
-            # uses `noise_column` rather than `category_column` so the
-            # cohort-stable noise scheme (typically `usv_supercategory`)
-            # can be combined with any experimental-category column
-            # (`category_column`) the caller wants to vary independently.
-            if noise_vocal_categories and noise_column in mouse_usvs.columns:
-                mouse_usvs = mouse_usvs.filter(~pls.col(noise_column).is_in(list(noise_vocal_categories)))
+            # Drop the segments holding no vocalization (global removal). This is independent of
+            # `category_column`: the noise verdict comes from the classifier, so the experimental
+            # category the caller models can vary without changing which rows are real calls.
+            if exclude_noise_usvs:
+                mouse_usvs = drop_noise_usvs(mouse_usvs, f"{session_id} ({mouse_name})")[0]
 
             # Filter history period (at start of session)
             mouse_usvs = mouse_usvs.filter(pls.col('start') > filter_history)
@@ -953,9 +943,8 @@ def find_variable_length_bouts(root_directories: list = None,
                                filter_history: float = 4.0,
                                proportion_smoothing_sd: float = 1.0,
                                vocal_output_type: str = None,
-                               noise_vocal_categories: list = None,
-                               category_column: str = 'usv_category',
-                               noise_column: str = 'usv_supercategory') -> dict:
+                               exclude_noise_usvs: bool = True,
+                               category_column: str = 'usv_category') -> dict:
     """
     Identifies variable-length vocal bouts and generates continuous vocal density signals
     for regression analysis.
@@ -965,9 +954,9 @@ def find_variable_length_bouts(root_directories: list = None,
     ensure mechanical noise does not artificially bridge gaps between biological syllables.
 
     Process Outline:
-    1.  Noise Filtering: Immediately removes rows where `usv_category` matches
-        any integer in `noise_vocal_categories`. This prevents noise from acting as a "bridge"
-        that merges distinct bouts and ensures continuous signals represent only biological audio.
+    1.  Noise Filtering: Immediately removes the segments `detect_usv_noise` flagged as holding
+        no vocalization. This prevents noise from acting as a "bridge" that merges distinct bouts
+        and ensures continuous signals represent only biological audio.
     2.  Mixture-model Thresholding: Selects sex-specific mixture-model parameters (from `mixture_model_params`).
         Calculates a dynamic inter-bout interval (IBI) threshold using the log-mean
         and log-sd of the specified component (usually respiratory rhythm) plus a Z-score buffer.
@@ -1015,20 +1004,14 @@ def find_variable_length_bouts(root_directories: list = None,
         - 'pooled_rate': Aggregate smoothed density of all biological USVs ('usv_rate').
         - 'categories_rate': Individual smoothed density per category ('usv_cat_X').
         - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
-    noise_vocal_categories : list, optional
-        List of USV category integers to exclude (e.g., [0, 19]). When `None`,
-        no category-based noise filtering is applied — pass an explicit list
-        if you want noise rows dropped before bout detection.
+    exclude_noise_usvs : bool, optional
+        Whether to drop the segments ``detect_usv_noise`` flagged as holding no
+        vocalization (default True). A summary without the ``noise`` column raises.
     category_column : str, default 'usv_category'
         Name of the per-USV experimental-category column in the summary .csv,
         used for the per-category continuous predictor signals ('usv_cat_X')
         when `vocal_output_type` requests them. May vary independently between
         runs.
-    noise_column : str, default 'usv_supercategory'
-        Name of the supercategory column used for global noise filtering
-        (removing the categories in `noise_vocal_categories`). Kept separate from
-        `category_column` so the cohort-stable noise scheme stays fixed regardless
-        of which experimental-category column the caller varies.
 
     Returns
     -------
@@ -1060,7 +1043,6 @@ def find_variable_length_bouts(root_directories: list = None,
 
         has_mask = 'mask_number' in usv_summary_data.columns
         has_category = category_column in usv_summary_data.columns
-        has_noise_col = noise_column in usv_summary_data.columns
         if not has_mask:
             print(f"Warning: 'mask_number' missing in {session_id}. "
                   f"Complexity defaults to the per-bout syllable count (mask = 1 per USV).")
@@ -1116,10 +1098,10 @@ def find_variable_length_bouts(root_directories: list = None,
             # Filter for mouse and sort by start time
             mouse_usvs = usv_summary_data.filter(pls.col('emitter') == mouse_name).sort('start')
 
-            # Remove noise categories using `noise_column` (cohort-stable),
-            # not `category_column` (experimental, may change between runs).
-            if noise_vocal_categories and has_noise_col:
-                mouse_usvs = mouse_usvs.filter(~pls.col(noise_column).is_in(list(noise_vocal_categories)))
+            # Drop the segments holding no vocalization; independent of `category_column`, which
+            # is experimental and may change between runs.
+            if exclude_noise_usvs:
+                mouse_usvs = drop_noise_usvs(mouse_usvs, f"{session_id} ({mouse_name})")[0]
 
             # Generate continuous vocal signals based on specified output type
             if vocal_output_type in ['pooled_binary', 'pooled_rate', 'categories_rate', 'all_rate']:

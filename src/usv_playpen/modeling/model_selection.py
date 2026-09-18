@@ -3683,10 +3683,10 @@ def multinomial_vocal_category_model_selection(
     # uniformly. `n_categories` is read back from the Level-1
     # `_input_metadata` block harvested above — the extractor
     # auto-derives this value from the cohort-pooled labels after the
-    # `usv_noise_categories` filter (see
+    # `exclude_noise_usvs` filter (see
     # `extract_and_save_multinomial_input_data`), so there is no
     # hand-set JSON literal that could go stale if
-    # `usv_category_column_name` or `usv_noise_categories` change.
+    # `usv_category_column_name` or `exclude_noise_usvs` change.
     #
     # Fold the DEVELOPMENT sessions only, then remap the dev-relative indices the
     # splitter returns back into full-array index space via `_dev_positions`, so

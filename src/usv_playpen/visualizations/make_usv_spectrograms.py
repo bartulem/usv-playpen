@@ -54,7 +54,9 @@ from scipy.signal.windows import tukey
 from sklearn.neighbors import KNeighborsClassifier
 
 from ..os_utils import (
+    NOISE_COLUMN,
     configure_path,
+    drop_noise_usvs,
     first_match_or_raise,
     resolve_consolidated_h5_path,
     resolve_embedding_arrays_path,
@@ -1598,8 +1600,7 @@ def plot_usv_property_histograms(
     sessions_txt_path: str,
     output_path: str | None = None,
     fig_format: str | None = None,
-    noise_col_id: str = "vae_supercategory",
-    noise_categories: tuple[int, ...] = (0,),
+    exclude_noise_usvs: bool = True,
     fig_size: tuple[float, float] = (15.0, 3.0),
     fig_dpi: int = 300,
     message_output: Callable | None = None,
@@ -1616,7 +1617,7 @@ def plot_usv_property_histograms(
     path (each line of the txt file is run through
     ``os_utils.configure_path`` first so paths that were written for a
     different OS / mountpoint still resolve here). Rows whose
-    ``noise_col_id`` value is in ``noise_categories`` are dropped
+    the ``noise`` classifier flagged are dropped
     before pooling so the histograms reflect the non-noise
     distribution.
 
@@ -1643,11 +1644,9 @@ def plot_usv_property_histograms(
         regardless of any extension on ``output_path``. When ``None``,
         the extension is taken from ``output_path`` (matplotlib's
         default inference).
-    noise_col_id (str)
-        CSV column used to identify noise rows; default
-        ``"vae_supercategory"``.
-    noise_categories (tuple of int)
-        Values of ``noise_col_id`` to drop as noise; default ``(0,)``.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as
+        holding no vocalization; default ``True``.
     fig_size (tuple of float)
         Figure size in inches; default ``(15, 3)`` for a 5-wide row.
     fig_dpi (int)
@@ -1679,7 +1678,7 @@ def plot_usv_property_histograms(
     n_sessions_loaded = 0
     n_usvs_total = 0
 
-    columns_to_read = list(set(properties_in_csv + [noise_col_id]))
+    columns_to_read = list(set(properties_in_csv + [NOISE_COLUMN]))
     for session_root in session_roots:
         try:
             csv_path = first_match_or_raise(
@@ -1698,8 +1697,8 @@ def plot_usv_property_histograms(
         except (OSError, IOError) as exc:
             message_output(f"[skip] {csv_path}: {exc}")
             continue
-        if noise_col_id in df.columns and noise_categories:
-            df = df.filter(~pls.col(noise_col_id).is_in(list(noise_categories)))
+        if exclude_noise_usvs:
+            df = drop_noise_usvs(df, csv_path.name, message_output)[0]
         if df.height == 0:
             continue
         n_sessions_loaded += 1
@@ -1819,8 +1818,7 @@ def plot_usv_property_histograms(
 
 def _count_usvs_per_session(
     sessions_txt_path: str,
-    noise_col_id: str,
-    noise_categories: tuple[int, ...],
+    exclude_noise_usvs: bool,
     message_output: Callable,
 ) -> np.ndarray:
     """
@@ -1838,10 +1836,9 @@ def _count_usvs_per_session(
     ----------
     sessions_txt_path (str)
         Path to a text file listing one session root per line.
-    noise_col_id (str)
-        Column in the per-session CSV used to flag noise rows.
-    noise_categories (tuple of int)
-        Values of ``noise_col_id`` that mark noise rows to drop.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as
+        holding no vocalization; default ``True``.
     message_output (Callable)
         Logger for per-session load failures.
 
@@ -1861,7 +1858,7 @@ def _count_usvs_per_session(
         ]
 
     counts: list[int] = []
-    columns_to_read = [noise_col_id] if noise_col_id and noise_categories else None
+    columns_to_read = [NOISE_COLUMN] if exclude_noise_usvs else None
     for session_root in session_roots:
         try:
             csv_path = first_match_or_raise(
@@ -1883,8 +1880,8 @@ def _count_usvs_per_session(
         except (OSError, IOError) as exc:
             message_output(f"[skip] {csv_path}: {exc}")
             continue
-        if noise_col_id in df.columns and noise_categories:
-            df = df.filter(~pls.col(noise_col_id).is_in(list(noise_categories)))
+        if exclude_noise_usvs:
+            df = drop_noise_usvs(df, csv_path.name, message_output)[0]
         counts.append(df.height)
 
     return np.asarray(counts, dtype=float)
@@ -1896,8 +1893,7 @@ def plot_session_type_usv_counts(
     lone_male_txt_path: str,
     output_path: str | None = None,
     fig_format: str | None = None,
-    noise_col_id: str = "vae_supercategory",
-    noise_categories: tuple[int, ...] = (0,),
+    exclude_noise_usvs: bool = True,
     fig_size: tuple[float, float] = (6.0, 3.0),
     fig_dpi: int = 300,
     male_color: str = SESSION_TYPE_MALE_COLOR,
@@ -1925,8 +1921,8 @@ def plot_session_type_usv_counts(
     ``plot_usv_property_histograms``: one session root per line,
     ``#`` / blank lines skipped, every path run through
     ``configure_path``. For each session the function discovers the
-    ``*_usv_summary.csv``, drops rows whose ``noise_col_id`` value is
-    in ``noise_categories``, and counts the remaining rows. Sessions
+    ``*_usv_summary.csv``, drops the rows the ``noise`` classifier
+    flagged, and counts the remaining rows. Sessions
     whose CSV is unreadable (missing or SMB timeout) are logged and
     excluded from that type's mean / SEM.
 
@@ -1944,11 +1940,9 @@ def plot_session_type_usv_counts(
     fig_format (str | None)
         Optional output extension override (``"svg"``, ``"pdf"``, etc).
         Replaces any extension on ``output_path`` when given.
-    noise_col_id (str)
-        CSV column used to flag noise rows; default
-        ``"vae_supercategory"``.
-    noise_categories (tuple of int)
-        Values of ``noise_col_id`` to drop as noise; default ``(0,)``.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as
+        holding no vocalization; default ``True``.
     fig_size (tuple of float)
         Figure size in inches; default ``(6, 3)``.
     fig_dpi (int)
@@ -1973,13 +1967,13 @@ def plot_session_type_usv_counts(
         message_output = print
 
     mf_counts = _count_usvs_per_session(
-        male_female_txt_path, noise_col_id, noise_categories, message_output
+        male_female_txt_path, exclude_noise_usvs, message_output
     )
     ff_counts = _count_usvs_per_session(
-        female_female_txt_path, noise_col_id, noise_categories, message_output
+        female_female_txt_path, exclude_noise_usvs, message_output
     )
     lm_counts = _count_usvs_per_session(
-        lone_male_txt_path, noise_col_id, noise_categories, message_output
+        lone_male_txt_path, exclude_noise_usvs, message_output
     )
 
     def _mean_sem(arr: np.ndarray) -> tuple[float, float, int]:
@@ -2099,8 +2093,7 @@ def plot_session_usv_timeline(
     time_window: tuple[float, float] | None = None,
     output_path: str | None = None,
     fig_format: str | None = None,
-    noise_col_id: str = "vae_supercategory",
-    noise_categories: tuple[int, ...] = (0,),
+    exclude_noise_usvs: bool = True,
     fig_size: tuple[float, float] = (7.5, 1.6),
     fig_dpi: int = 300,
     male_color: str = USV_TIMELINE_MALE_COLOR,
@@ -2127,7 +2120,7 @@ def plot_session_usv_timeline(
     convention as ``usv_summary_statistics.extract_session_metadata``:
     ``track_names[0]`` is male, ``track_names[1]`` is female). The
     USV summary CSV is read non-recursively from ``<session>/audio``
-    and rows whose ``noise_col_id`` value is in ``noise_categories``
+    and rows the ``noise`` classifier flagged
     are dropped before rendering.
 
     Parameters
@@ -2142,11 +2135,9 @@ def plot_session_usv_timeline(
         Optional save path. Run through ``configure_path``.
     fig_format (str | None)
         Optional extension override (``"svg"``, ``"pdf"``, ...).
-    noise_col_id (str)
-        CSV column used to identify noise; default
-        ``"vae_supercategory"``.
-    noise_categories (tuple of int)
-        Values of ``noise_col_id`` to drop; default ``(0,)``.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as
+        holding no vocalization; default ``True``.
     fig_size (tuple of float)
         Figure size in inches; default ``(7.5, 1.6)`` for a wide,
         short timeline strip.
@@ -2186,8 +2177,8 @@ def plot_session_usv_timeline(
         label="USV summary CSV",
     )
     df = pls.read_csv(str(csv_path))
-    if noise_col_id in df.columns and noise_categories:
-        df = df.filter(~pls.col(noise_col_id).is_in(list(noise_categories)))
+    if exclude_noise_usvs:
+        df = drop_noise_usvs(df, csv_path.name, message_output)[0]
 
     df = df.with_columns(
         pls.when(pls.col("emitter") == male_id).then(pls.lit("male"))
@@ -2309,8 +2300,7 @@ def build_pooled_embeddings_df(
     sessions_txt_path: str,
     cache_path: str | None = None,
     rebuild_cache: bool = False,
-    noise_col_id: str = "vae_supercategory",
-    noise_categories: tuple[int, ...] = (0,),
+    exclude_noise_usvs: bool = True,
     message_output: Callable | None = None,
 ) -> pls.DataFrame:
     """
@@ -2349,12 +2339,9 @@ def build_pooled_embeddings_df(
     rebuild_cache (bool)
         If True, ignore any existing cache file and rebuild from
         CSVs (then overwrite the cache).
-    noise_col_id (str)
-        CSV column used to flag noise rows; default
-        ``"vae_supercategory"``.
-    noise_categories (tuple of int)
-        Values of ``noise_col_id`` to drop as noise; default
-        ``(0,)``.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as
+        holding no vocalization; default ``True``.
     message_output (Callable | None)
         Logger; defaults to ``print``. Per-session load failures
         (missing CSV, SMB timeouts, missing columns) are logged and
@@ -2416,7 +2403,7 @@ def build_pooled_embeddings_df(
         ]
 
     select_cols = list(
-        set(EMBEDDING_ALL_COLS) | set(EMBEDDING_EXTRA_COLS) | {noise_col_id}
+        set(EMBEDDING_ALL_COLS) | set(EMBEDDING_EXTRA_COLS) | {NOISE_COLUMN}
     )
 
     frames: list[pls.DataFrame] = []
@@ -2467,8 +2454,8 @@ def build_pooled_embeddings_df(
         ]
         if casts:
             df = df.with_columns(casts)
-        if noise_col_id in df.columns and noise_categories:
-            df = df.filter(~pls.col(noise_col_id).is_in(list(noise_categories)))
+        if exclude_noise_usvs:
+            df = drop_noise_usvs(df, csv_path.name, message_output)[0]
 
         # Look up the session's male / female track ids from the
         # tracking h5 so we can map ``emitter`` -> ``sex``. Failure
@@ -3173,8 +3160,7 @@ def plot_embedding_with_category_thumbnails(
     fig_dpi: int = 300,
     output_path: str | None = None,
     fig_format: str | None = None,
-    noise_col_id: str = "vae_supercategory",
-    noise_categories: tuple[int, ...] = (0,),
+    exclude_noise_usvs: bool = True,
     scatter_max_points: int = 50_000,
     scatter_point_size: float = 4.0,
     scatter_point_alpha: float = 0.5,
@@ -3291,7 +3277,7 @@ def plot_embedding_with_category_thumbnails(
     output_path, fig_format (str | None)
         Optional save path; ``fig_format`` overrides any extension on
         ``output_path``. Both run through ``configure_path``.
-    noise_col_id, noise_categories
+    exclude_noise_usvs
         Noise filtering passed through to
         ``build_pooled_embeddings_df`` (only used when ``pooled_df`` is
         ``None``).
@@ -3362,17 +3348,14 @@ def plot_embedding_with_category_thumbnails(
             sessions_txt_path=sessions_txt_path,
             cache_path=embeddings_cache_path,
             rebuild_cache=rebuild_embeddings_cache,
-            noise_col_id=noise_col_id,
-            noise_categories=noise_categories,
+            exclude_noise_usvs=exclude_noise_usvs,
             message_output=message_output,
         )
 
     df_clean = pooled_df.drop_nulls(subset=[x_col, y_col, cat_col])
-    categories = sorted(
-        c for c in set(df_clean[cat_col].to_list()) if c not in noise_categories
-    )
+    categories = sorted(set(df_clean[cat_col].to_list()))
     if not categories:
-        msg = "No non-noise categories found in pooled_df."
+        msg = "No categories found in pooled_df."
         raise RuntimeError(msg)
     n_categories = len(categories)
 

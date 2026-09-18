@@ -105,7 +105,7 @@ def _make_synthetic_session(
     n_unassigned: int = 1,
     include_behavioral: bool = True,
     include_embedding: bool = True,
-    noise_col: str = "cluster",
+    write_noise_column: bool = True,
     cat_col: str = "usv_supercategory",
     n_noise: int = 2,
 ):
@@ -151,7 +151,7 @@ def _make_synthetic_session(
         rows_start.append(t)
         rows_dur.append(0.05)
         rows_emitter.append(male_id)
-        rows_noise.append(0)  # not noise
+        rows_noise.append(False)  # a real vocalization
         rows_cat.append(1)
         rows_umap_x.append(np.random.RandomState(0).rand())
         rows_umap_y.append(np.random.RandomState(1).rand())
@@ -160,7 +160,7 @@ def _make_synthetic_session(
         rows_start.append(t)
         rows_dur.append(0.05)
         rows_emitter.append(female_id)
-        rows_noise.append(0)
+        rows_noise.append(False)
         rows_cat.append(2)
         rows_umap_x.append(0.5)
         rows_umap_y.append(0.5)
@@ -169,7 +169,7 @@ def _make_synthetic_session(
         rows_start.append(t)
         rows_dur.append(0.05)
         rows_emitter.append("UNKNOWN")
-        rows_noise.append(0)
+        rows_noise.append(False)
         rows_cat.append(3)
         rows_umap_x.append(0.7)
         rows_umap_y.append(0.7)
@@ -178,7 +178,7 @@ def _make_synthetic_session(
         rows_start.append(t)
         rows_dur.append(0.01)
         rows_emitter.append(male_id)
-        rows_noise.append(99)  # noise category
+        rows_noise.append(True)  # flagged by the noise classifier
         rows_cat.append(99)
         rows_umap_x.append(0.0)
         rows_umap_y.append(0.0)
@@ -188,8 +188,9 @@ def _make_synthetic_session(
         "start": rows_start,
         "duration": rows_dur,
         "emitter": rows_emitter,
-        noise_col: rows_noise,
     }
+    if write_noise_column:
+        cols["noise"] = rows_noise
     if include_embedding:
         cols[cat_col] = rows_cat
         cols["umap_x"] = rows_umap_x
@@ -269,7 +270,7 @@ def test_load_and_filter_usv_data_drops_noise_and_adds_frame_index(tmp_path):
     md = extract_session_metadata(str(sess))
     df = load_and_filter_usv_data(
         session_root=str(sess), frame_rate=md["frame_rate"],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
     )
     # Only non-noise rows survive: 2 male + 1 female = 3
     assert df.height == 3
@@ -278,26 +279,29 @@ def test_load_and_filter_usv_data_drops_noise_and_adds_frame_index(tmp_path):
     assert df["frame_index"][0] == int(0.05 * 150.0)
 
 
-def test_load_and_filter_usv_data_keeps_everything_when_the_noise_column_is_absent(tmp_path, capsys):
-    """A summary written by das-summarize carries no classification column: the
-    acoustic-embedding columns are added later and are dropped whenever the merge
-    is re-run. Referencing a missing column raised ColumnNotFoundError and killed
-    the whole analysis on its first session, so an absent column now keeps every
-    row and says so once."""
+def test_load_and_filter_usv_data_raises_when_the_noise_column_is_absent(tmp_path):
+    """A summary written by das-summarize carries no ``noise`` column until
+    detect-usv-noise has run. Silently keeping every row there is how the previous
+    convention quietly stopped filtering, so the loader now refuses and the error
+    names both ways out."""
     sess = tmp_path / "20260101_120000"
     _make_synthetic_session(sess, n_male_calls=2, n_female_calls=1,
-                            n_unassigned=0, n_noise=3)
+                            n_unassigned=0, n_noise=3, write_noise_column=False)
     md = extract_session_metadata(str(sess))
 
-    df = load_and_filter_usv_data(
-        session_root=str(sess), frame_rate=md["frame_rate"],
-        noise_col_id="qlvm_supercategory", noise_categories=[0],
-    )
+    with pytest.raises(KeyError, match="detect-usv-noise"):
+        load_and_filter_usv_data(
+            session_root=str(sess), frame_rate=md["frame_rate"],
+            exclude_noise_usvs=True,
+        )
 
-    # Nothing is filtered -- the three "noise" rows survive alongside the rest.
-    assert df.height == 6
-    assert "frame_index" in df.columns
-    assert "qlvm_supercategory" in capsys.readouterr().out
+    # With the filter off the same summary loads untouched.
+    kept = load_and_filter_usv_data(
+        session_root=str(sess), frame_rate=md["frame_rate"],
+        exclude_noise_usvs=False,
+    )
+    assert kept.height == 6
+    assert "frame_index" in kept.columns
 
 
 def test_load_and_filter_usv_data_missing_csv_raises(tmp_path):
@@ -306,7 +310,7 @@ def test_load_and_filter_usv_data_missing_csv_raises(tmp_path):
     sess.mkdir()
     with pytest.raises(FileNotFoundError):
         load_and_filter_usv_data(str(sess), frame_rate=150.0,
-                                 noise_col_id="cluster", noise_categories=[])
+                                 exclude_noise_usvs=True)
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +326,7 @@ def test_extract_category_embedding_data_concats_sessions(tmp_path):
     _make_synthetic_session(sess2)
     df = extract_category_embedding_data(
         session_roots=[str(sess1), str(sess2)],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
         usv_category_col="usv_supercategory",
         usv_continuous_cols=("umap_x", "umap_y"),
     )
@@ -339,7 +343,7 @@ def test_extract_category_embedding_data_skips_missing_columns(tmp_path):
     _make_synthetic_session(sess, include_embedding=False)
     df = extract_category_embedding_data(
         session_roots=[str(sess)],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
         usv_category_col="usv_supercategory",
         usv_continuous_cols=("umap_x", "umap_y"),
     )
@@ -351,7 +355,7 @@ def test_extract_category_embedding_data_skips_bad_session(tmp_path):
     """A non-existent session is skipped silently (FileNotFoundError caught)."""
     df = extract_category_embedding_data(
         session_roots=["/no/such/session"],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
         usv_category_col="usv_supercategory",
         usv_continuous_cols=("umap_x", "umap_y"),
     )
@@ -386,7 +390,7 @@ def test_merge_usv_and_behavioral_features_join_shape(tmp_path):
     sess = tmp_path / "20260101_120000"
     _make_synthetic_session(sess, include_behavioral=True)
     md = extract_session_metadata(str(sess))
-    usv = load_and_filter_usv_data(str(sess), md["frame_rate"], "cluster", [99])
+    usv = load_and_filter_usv_data(str(sess), md["frame_rate"], True)
     beh = get_session_behavioral_features(str(sess))
     out = merge_usv_and_behavioral_features(
         usv_info=usv, behavioral_features=beh,
@@ -414,7 +418,7 @@ def test_build_master_usv_dataframe_returns_two_frames_and_count(tmp_path):
     _make_synthetic_session(sess2, n_noise=3)
     usv_df, bg_df, n_noise_total = build_master_usv_dataframe(
         session_roots=[str(sess1), str(sess2)],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
         usv_category_col="usv_supercategory",
         distance_suffix="nose-nose",
         mf_angle_suffix="allo_yaw-nose",
@@ -446,7 +450,7 @@ def test_build_master_usv_dataframe_handles_heterogeneous_session_dtypes(tmp_pat
     pls.read_csv(csv2).with_columns(pls.col("start").cast(pls.Int64)).write_csv(csv2)
     usv_df, _bg, _n = build_master_usv_dataframe(
         session_roots=[str(sess1), str(sess2)],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
         usv_category_col="usv_supercategory",
         distance_suffix="nose-nose",
         mf_angle_suffix="allo_yaw-nose",
@@ -460,7 +464,7 @@ def test_build_master_usv_dataframe_raises_when_all_skipped(tmp_path):
     with pytest.raises(RuntimeError, match="loaded 0 sessions"):
         build_master_usv_dataframe(
             session_roots=[str(tmp_path / "absent")],
-            noise_col_id="cluster", noise_categories=[],
+            exclude_noise_usvs=True,
             usv_category_col="usv_supercategory",
             distance_suffix="nose-nose",
             mf_angle_suffix="allo_yaw-nose",
@@ -479,7 +483,7 @@ def test_build_master_usv_dataframe_skips_session_without_category_col(tmp_path)
     with pytest.raises(RuntimeError):
         build_master_usv_dataframe(
             session_roots=[str(sess1), str(sess2)],
-            noise_col_id="cluster", noise_categories=[99],
+            exclude_noise_usvs=True,
             usv_category_col="some_missing_col",  # neither session has this
             distance_suffix="nose-nose",
             mf_angle_suffix="allo_yaw-nose",
@@ -687,7 +691,7 @@ def test_build_master_usv_interval_dataframe_empty_when_no_sessions(tmp_path):
     list_file.write_text("/nonexistent/session\n")
     df, summary = build_master_usv_interval_dataframe(
         session_lists=[str(list_file)],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
         message_output=lambda *_a, **_kw: None,
     )
     assert df.height == 0
@@ -706,7 +710,7 @@ def test_build_master_usv_interval_dataframe_aggregates_two_sessions(tmp_path):
     list_file.write_text(f"{sess1}\n{sess2}\n")
     df, summary = build_master_usv_interval_dataframe(
         session_lists=[str(list_file)],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
         message_output=lambda *_a, **_kw: None,
     )
     assert df.height > 0

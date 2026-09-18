@@ -52,7 +52,9 @@ def _write_usv_summary(session_root, rows: dict, csv_sep: str = ',') -> None:
     rows (dict)
         Column-name -> value-list mapping passed straight to
         ``polars.DataFrame``; must include at least the ``emitter``, ``start``
-        and ``stop`` columns the loaders rely on.
+        and ``stop`` columns the loaders rely on. A ``noise`` column of all-False
+        is added when the caller does not supply one, since the loaders filter on
+        it and raise when it is missing.
     csv_sep (str)
         Field separator written into the CSV (mirrors the loaders' ``csv_sep``).
 
@@ -64,6 +66,8 @@ def _write_usv_summary(session_root, rows: dict, csv_sep: str = ',') -> None:
     audio_dir = session_root / 'audio'
     audio_dir.mkdir(parents=True, exist_ok=True)
     csv_path = audio_dir / f'{session_root.name}_usv_summary.csv'
+    if 'noise' not in rows:
+        rows = {**rows, 'noise': [False] * len(next(iter(rows.values())))}
     pls.DataFrame(rows).write_csv(file=csv_path, separator=csv_sep)
 
 
@@ -428,22 +432,21 @@ class TestFindBoutEpochs:
         assert 'usv_event' in signals
         assert set(np.unique(signals['usv_event'])).issubset({0.0, 1.0})
 
-    def test_noise_categories_filtered_out(self, tmp_path):
-        """Rows whose ``usv_supercategory`` is in ``noise_vocal_categories``
-        are dropped before any sampling."""
+    def test_noise_flagged_rows_filtered_out(self, tmp_path):
+        """Rows the noise classifier flagged are dropped before any sampling."""
 
         rows = {
             'emitter': ['male', 'male', 'male'],
             'start': [2.0, 2.1, 2.2],
             'stop': [2.05, 2.15, 2.25],
             'usv_category': [1, 1, 1],
-            'usv_supercategory': [0, 0, 0],
+            'noise': [True, True, True],
         }
         kwargs = self._build(tmp_path, rows)
         out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
-                               noise_vocal_categories=[0],
+                               exclude_noise_usvs=True,
                                **kwargs)
         # All male USVs were noise -> no positive events, empty start array.
         assert out['sess_B']['male']['start'].size == 0
@@ -911,20 +914,19 @@ class TestFindUsvCategories:
         assert out['sess_D']['male']['events_by_category'] == {}
         assert out['sess_D']['male']['target_events'] is None
 
-    def test_noise_categories_filtered_globally(self, tmp_path):
-        """USVs whose ``usv_supercategory`` is in ``noise_vocal_categories``
-        are removed before any per-mouse processing."""
+    def test_noise_flagged_rows_filtered_globally(self, tmp_path):
+        """USVs the noise classifier flagged are removed before any per-mouse processing."""
 
         rows = {
             'emitter': ['male', 'male'],
             'start': [2.0, 3.0], 'stop': [2.05, 3.05],
-            'usv_category': [1, 2], 'usv_supercategory': [0, 1],
+            'usv_category': [1, 2], 'noise': [True, False],
         }
         out = find_usv_categories(target_category=None, filter_history=1.0,
-                                  noise_vocal_categories=[0],
+                                  exclude_noise_usvs=True,
                                   **self._kwargs(tmp_path, rows))
         male = out['sess_D']['male']
-        # Only the supercategory-1 USV (usv_category 2) survives.
+        # Only the row the classifier left alone (usv_category 2) survives.
         assert set(male['events_by_category'].keys()) == {2}
 
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
@@ -1031,26 +1033,26 @@ class TestFindVariableLengthBouts:
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     def test_all_rate_signals_and_noise_filter(self, tmp_path):
         """``vocal_output_type='all_rate'`` writes pooled and per-category
-        signals, and ``noise_vocal_categories`` drops the noise rows first."""
+        signals, and the noise-flagged rows are dropped first."""
 
         rows = {
             'emitter': ['male', 'male', 'male'],
             'start': [2.0, 2.1, 2.2],
             'stop': [2.05, 2.15, 2.25],
             'usv_category': [1, 1, 4],
-            'usv_supercategory': [1, 1, 0],
+            'noise': [False, False, True],
             'mask_number': [1, 1, 1],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
                                          mixture_model_params=_mixture_model_params(),
                                          proportion_smoothing_sd=2.0,
                                          vocal_output_type='all_rate',
-                                         noise_vocal_categories=[0],
+                                         exclude_noise_usvs=True,
                                          **self._kwargs(tmp_path, rows))
         signals = out['sess_E']['male']['continuous_vocal_signals']
         assert 'usv_rate' in signals
         assert 'usv_cat_1' in signals
-        # The noise category (supercategory 0 -> usv_category 4) is excluded.
+        # The row the classifier flagged (usv_category 4) is excluded.
         assert 'usv_cat_4' not in signals
 
     def test_ibi_threshold_recorded(self, tmp_path):

@@ -1694,6 +1694,8 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
         "stop": stops.tolist(),
         "duration": durations.tolist(),
         "emitter": ["m1"] * n_usvs,
+        # Every synthetic call is real; the tuning-curve loader drops noise-flagged rows.
+        "noise": [False] * n_usvs,
         "vae_supercategory": rng.integers(1, 5, size=n_usvs).tolist(),
         "vae_category":      rng.integers(1, 8, size=n_usvs).tolist(),
         "qlvm_supercategory": rng.integers(1, 4, size=n_usvs).tolist(),
@@ -2282,8 +2284,7 @@ def test_compute_session_usv_intervals_invalid_type_raises():
         compute_session_usv_intervals(
             session_root="/whatever",
             interval_type="bogus",
-            noise_col_id="cluster",
-            noise_categories=[],
+            exclude_noise_usvs=True,
         )
 
 
@@ -2297,8 +2298,7 @@ def test_compute_session_usv_intervals_missing_session_returns_empty(monkeypatch
     out = compute_session_usv_intervals(
         session_root="/missing",
         interval_type="s2s",
-        noise_col_id="cluster",
-        noise_categories=[],
+        exclude_noise_usvs=True,
     )
     assert out == {}
 
@@ -2320,7 +2320,7 @@ def test_compute_session_usv_intervals_basic_pairs(monkeypatch):
                         lambda **kw: fake_usv)
     out = compute_session_usv_intervals(
         session_root="/ok", interval_type="s2s",
-        noise_col_id="cluster", noise_categories=[],
+        exclude_noise_usvs=True,
     )
     # M-M interval: start[1]-start[0] = 0.5
     # F-F interval: start[3]-start[2] = 0.7
@@ -2346,7 +2346,7 @@ def test_compute_session_usv_intervals_empty_usv_returns_empty_arrays(monkeypatc
                         }))
     out = compute_session_usv_intervals(
         session_root="/ok", interval_type="s2s",
-        noise_col_id="cluster", noise_categories=[],
+        exclude_noise_usvs=True,
     )
     assert out["male"].size == 0 and out["female"].size == 0
 
@@ -2367,7 +2367,7 @@ def test_compute_session_usv_intervals_e2s_drops_overlapping(monkeypatch):
                         lambda **kw: fake_usv)
     out = compute_session_usv_intervals(
         session_root="/ok", interval_type="e2s",
-        noise_col_id="cluster", noise_categories=[],
+        exclude_noise_usvs=True,
     )
     # First M-M pair: start[1]-stop[0] = 0.5 - 0.6 = -0.1 → dropped
     # Second M-M pair: start[2]-stop[1] = 1.0 - 0.7 = 0.3 → kept

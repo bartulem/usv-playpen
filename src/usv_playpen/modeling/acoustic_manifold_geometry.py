@@ -36,7 +36,7 @@ future region-conditional analysis:
 
 Notes on noise filtering
 ------------------------
-The pipeline's `noise_vocal_categories` setting (typically `[0]`) marks
+The embedding's own noise cluster label (`noise_label`, typically `0`) marks
 USVs that are not biological vocalisations. `derive_cluster_centers_empirically`
 accepts a `drop_label` argument so the noise label is excluded from the
 returned centres without the caller having to pre-filter; the default

@@ -357,8 +357,7 @@ def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
 @click.command(name='generate-usv-interval-distributions')
 @click.option('--session-list', 'session_lists', type=click.Path(exists=True, file_okay=True, dir_okay=False), multiple=True, required=False, help='Path to a text file containing session root directories (one per line). Repeatable.')
 @click.option('--output-directory', 'output_directory', type=click.Path(file_okay=False, dir_okay=True), default=None, required=False, help='Directory in which to write the consolidated usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5 archive.')
-@click.option('--noise-col-id', 'noise_col_id', type=str, default=None, required=False, help='Name of the noise classification column in the USV summary CSV.')
-@click.option('--noise-categories', 'noise_categories', multiple=True, type=int, default=None, required=False, help='Integer label(s) in noise_col_id that mark a USV as noise.')
+@click.option('--exclude-noise-usvs/--no-exclude-noise-usvs', 'exclude_noise_usvs', default=None, required=False, help='Drop the USV segments detect-usv-noise flagged as holding no vocalization.')
 @click.option('--fit-mixture-model/--no-fit-mixture-model', 'fit_mixture_model', default=None, required=False, help='Whether to run the mixture-model sweep after inter-USV interval extraction.')
 @click.option('--n-components-min', 'n_components_min', type=int, default=None, required=False, help='Minimum number of mixture-model components.')
 @click.option('--n-components-max', 'n_components_max', type=int, default=None, required=False, help='Maximum number of mixture-model components.')
@@ -395,7 +394,7 @@ def generate_usv_interval_distributions_cli(ctx, **kwargs) -> None:
     None
     """
 
-    parameters_lists = ['session_lists', 'noise_categories']
+    parameters_lists = ['session_lists']
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 

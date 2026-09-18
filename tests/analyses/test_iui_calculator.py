@@ -62,8 +62,7 @@ def _make_settings(tmp_path, fit_mixture_model=False):
         "compute_inter_usv_interval_distributions": {
             "session_lists": [],
             "output_directory": str(tmp_path / "out"),
-            "noise_col_id": "cluster",
-            "noise_categories": [99],
+            "exclude_noise_usvs": True,
             "fit_mixture_model": fit_mixture_model,
             "n_components_min": 1,
             "n_components_max": 3,
@@ -189,7 +188,7 @@ def _mock_session_resolution(monkeypatch, tmp_path):
     monkeypatch.setattr(iui_mod, "_session_source_map",
                         lambda lists: {sess_root: "groupA"})
 
-    def fake_compute(session_root, interval_type, noise_col_id, noise_categories):
+    def fake_compute(session_root, interval_type, exclude_noise_usvs):
         if session_root != sess_root:
             return {}
         return {

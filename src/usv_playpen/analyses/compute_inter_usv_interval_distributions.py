@@ -144,8 +144,7 @@ def _session_source_map(session_lists: list[str]) -> dict[str, str]:
 def compute_session_usv_intervals(
     session_root: str,
     interval_type: str,
-    noise_col_id: str,
-    noise_categories: list[int],
+    exclude_noise_usvs: bool,
 ) -> dict:
     """
     Description
@@ -171,11 +170,9 @@ def compute_session_usv_intervals(
         Absolute path to the session directory.
     interval_type (str)
         Either ``'s2s'`` (start-to-start) or ``'e2s'`` (end-to-start).
-    noise_col_id (str)
-        Name of the noise classification column in the USV summary CSV.
-    noise_categories (list[int])
-        Integer labels in ``noise_col_id`` that identify a row as
-        noise to be excluded.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as holding no
+        vocalization before the intervals are measured.
 
     Returns
     -------
@@ -205,8 +202,7 @@ def compute_session_usv_intervals(
         usv_info = load_and_filter_usv_data(
             session_root=session_root,
             frame_rate=metadata['frame_rate'],
-            noise_col_id=noise_col_id,
-            noise_categories=noise_categories,
+            exclude_noise_usvs=exclude_noise_usvs,
         )
     except FileNotFoundError:
         return {}
@@ -652,8 +648,7 @@ class InterUSVIntervalCalculator:
         # Both interval definitions are computed unconditionally; the cost
         # is dominated by the per-session USV CSV pass which is shared.
         interval_types = ("s2s", "e2s")
-        noise_col_id = cfg['noise_col_id']
-        noise_categories = cfg['noise_categories']
+        exclude_noise_usvs = cfg['exclude_noise_usvs']
         fit_mixture_model = cfg['fit_mixture_model']
         n_components_min = cfg['n_components_min']
         n_components_max = cfg['n_components_max']
@@ -734,8 +729,7 @@ class InterUSVIntervalCalculator:
                 usv_interval = compute_session_usv_intervals(
                     session_root=session_root,
                     interval_type=interval_type,
-                    noise_col_id=noise_col_id,
-                    noise_categories=noise_categories,
+                    exclude_noise_usvs=exclude_noise_usvs,
                 )
                 if not usv_interval:
                     continue
@@ -923,8 +917,7 @@ class InterUSVIntervalCalculator:
             "git_sha": git_sha_for_provenance(pathlib.Path(__file__).resolve().parent),
             "source_lists": [str(p) for p in session_lists],
             "n_sessions_loaded": int(len(sessions_with_data)),
-            "noise_col_id": noise_col_id,
-            "noise_categories": list(noise_categories),
+            "exclude_noise_usvs": bool(exclude_noise_usvs),
             "fit_mixture_model": bool(fit_mixture_model),
             "n_components_min": int(n_components_min),
             "n_components_max": int(n_components_max),

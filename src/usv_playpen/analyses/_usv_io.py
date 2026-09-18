@@ -19,6 +19,8 @@ from typing import Any
 import h5py
 import polars as pls
 
+from ..os_utils import drop_noise_usvs
+
 
 def extract_session_metadata(session_root: str) -> dict[str, Any]:
     """
@@ -66,8 +68,7 @@ def extract_session_metadata(session_root: str) -> dict[str, Any]:
 def load_and_filter_usv_data(
     session_root: str,
     frame_rate: float,
-    noise_col_id: str,
-    noise_categories: list[int]
+    exclude_noise_usvs: bool
 ) -> pls.DataFrame:
     """
     Description
@@ -75,9 +76,10 @@ def load_and_filter_usv_data(
     This method loads USV summary CSV data using Polars and appends calculated frame
     indices based on the provided recording frame rate.
 
-    The function filters the entire dataset to remove noise based on the provided
-    noise column and a list of noise categories. The remaining valid vocalizations
-    (male, female, and unassigned) are retained and returned.
+    When ``exclude_noise_usvs`` is set, the segments ``detect_usv_noise`` flagged as holding no
+    vocalization are dropped (:func:`os_utils.drop_noise_usvs`), leaving the valid vocalizations
+    (male, female and unassigned). A session whose summary has no ``noise`` column raises there, so a
+    missing classification can never be mistaken for a clean session.
 
     Parameters
     ----------
@@ -85,10 +87,8 @@ def load_and_filter_usv_data(
         The absolute path to the session directory.
     frame_rate (float)
         The sampling rate of the video recording used to synchronize USVs with behavioral frames.
-    noise_col_id (str)
-        The name of the column in the CSV that dictates the noise classification.
-    noise_categories (list[int])
-        A list of specific integer values in the noise column that identify a row as noise to be excluded.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments flagged as noise.
 
     Returns
     -------
@@ -106,23 +106,7 @@ def load_and_filter_usv_data(
 
     usv_info = pls.read_csv(str(usv_file))
 
-    # Remove noise across all categories provided in the list; rows whose noise value is
-    # null are not in noise_categories, so fill_null(True) retains them rather than letting
-    # the three-valued (~null -> null) logic silently drop them via filter()
-    #
-    # A summary written by das-summarize carries no classification column at all --
-    # the acoustic-embedding columns are added later and are dropped whenever the
-    # merge is re-run. Referencing a missing column here raised ColumnNotFoundError
-    # and killed the whole analysis on its first session, so an absent column now
-    # means "no noise labels available, keep every row" and says so once.
-    if noise_col_id not in usv_info.columns:
-        print(f"    no '{noise_col_id}' column in {usv_file.name}: keeping all "
-              f"{usv_info.height} rows unfiltered")
-        usv_info_clean = usv_info
-    else:
-        usv_info_clean = usv_info.filter(
-            pls.col(noise_col_id).is_in(noise_categories).not_().fill_null(True)
-        )
+    usv_info_clean = drop_noise_usvs(usv_info, usv_file.name)[0] if exclude_noise_usvs else usv_info
 
     return usv_info_clean.with_columns(
         (pls.col("start") * frame_rate).floor().cast(pls.UInt32).alias("frame_index")
