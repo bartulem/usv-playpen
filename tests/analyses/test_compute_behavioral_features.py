@@ -50,6 +50,7 @@ class TestResolveFeatureLabel:
 
         assert FeatureZoo.resolve_feature_label('nose-nose', 'male', 'female') == 'nose-nose distance'
         assert FeatureZoo.resolve_feature_label('nose-TTI', 'male', 'female') == 'nose-TTI distance'
+        assert FeatureZoo.resolve_feature_label('head-head', 'male', 'female') == 'inter-partner distance'
 
     def test_dyadic_angle_forward_and_reverse(self):
         """Both key orders (``allo_*-X`` and ``X-allo_*``) are labelled
@@ -104,3 +105,16 @@ class TestFeatureDisplayNamesCompleteness:
                 bases.append(base)
         missing = [b for b in bases if b not in FeatureZoo.feature_display_names]
         assert missing == [], f"feature_display_names missing labels for: {missing}"
+
+
+class TestSocialDistanceColumns:
+    """The five dyadic distances and their derivatives are registered consistently."""
+
+    def test_head_head_is_registered_like_the_other_distances(self):
+        """A distance the plotting code cannot find an axis range or label for silently
+        drops out of the figures, so head-head must sit in every registry the older four do."""
+        for suffix in ('', '_1st_der', '_2nd_der'):
+            feature = f'head-head{suffix}'
+            reference = f'nose-nose{suffix}'
+            assert FeatureZoo.feature_boundaries[feature] == FeatureZoo.feature_boundaries[reference]
+            assert FeatureZoo.resolve_feature_label(feature).startswith('inter-partner distance')

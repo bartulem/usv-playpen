@@ -10,7 +10,7 @@ Computes behavioral features for files containing 3D tracked mouse body points.
 (24) Body yaw (25) Body yaw der (26) Body yaw 2der (27) Tail curvature (28) Tail curvature der (29) Tail curvature 2der
 
 [B] SOCIAL FEATURES (DISTANCES & ANGLES)
-(0) Nose-Nose distance (1) Nose-Nose distance der (2) Nose-Nose distance 2der (3) TTI-TTI distance (4) TTI-TTI distance der (5) TTI-TTI distance 2der
+(0) Nose-Nose distance (1) Nose-Nose distance der (2) Nose-Nose distance 2der (3) TTI-TTI distance (4) TTI-TTI distance der (5) TTI-TTI distance 2der (head-head distance and its two derivatives are computed alongside them)
 (6) Nose-TTI distance (7) Nose-TTI distance der (8) Nose-TTI distance 2der (9) TTI-Nose distance (10) TTI-Nose distance der (11) TTI-Nose distance 2der
 (12) Yaw-Nose (13) Yaw-Nose der (14) Yaw-Nose 2der (15) Nose-Yaw (16) Nose-Yaw der (17) Nose-Yaw 2der
 (18) Yaw-TTI (19) Yaw-TTI der (20) Yaw-TTI 2der (21) TTI-Yaw (22) TTI-Yaw der (23) TTI-Yaw 2der
@@ -1153,6 +1153,9 @@ class FeatureZoo:
         "nose-nose": [0, 90],
         "nose-nose_1st_der": [-54, 54],
         "nose-nose_2nd_der": [-240, 240],
+        "head-head": [0, 90],
+        "head-head_1st_der": [-54, 54],
+        "head-head_2nd_der": [-240, 240],
         "TTI-TTI": [0, 90],
         "TTI-TTI_1st_der": [-54, 54],
         "TTI-TTI_2nd_der": [-240, 240],
@@ -1230,6 +1233,9 @@ class FeatureZoo:
             "nose-nose": "near -- (cm) -- far",
             "nose-nose_1st_der": "near -- (cm/s) -- far",
             "nose-nose_2nd_der": "near -- (cm/s²) -- far",
+            "head-head": "near -- (cm) -- far",
+            "head-head_1st_der": "near -- (cm/s) -- far",
+            "head-head_2nd_der": "near -- (cm/s²) -- far",
             "TTI-TTI": "near -- (cm) -- far",
             "TTI-TTI_1st_der": "near -- (cm/s) -- far",
             "TTI-TTI_2nd_der": "near -- (cm/s²) -- far",
@@ -1332,6 +1338,7 @@ class FeatureZoo:
         "tail_curvature": "tail curvature",
         # dyadic distances (sex-neutral)
         "nose-nose": "nose-nose distance",
+        "head-head": "inter-partner distance",
         "TTI-TTI": "TTI-TTI distance",
         "nose-TTI": "nose-TTI distance",
         "TTI-nose": "TTI-nose distance",
@@ -1775,7 +1782,7 @@ class FeatureZoo:
               derivatives.
 
         For every ordered pair of mice the function then computes the
-        social distances (nose-nose, TTI-TTI, nose-TTI, TTI-nose) and
+        social distances (nose-nose, TTI-TTI, nose-TTI, TTI-nose, head-head) and
         the egocentric social angles via `get_egocentric_direction`,
         which expresses each target body point (Nose / TTI of the
         partner) in the observer's anatomical head frame and returns
@@ -2381,7 +2388,7 @@ class FeatureZoo:
 
             for mouse1_idx, mouse2_idx in mouse_pairs:
                 # # social distances (cm) for the current pair
-                social_distances = np.zeros((mouse_data.shape[0], 4))
+                social_distances = np.zeros((mouse_data.shape[0], 5))
 
                 # nose to nose distance
                 social_distances[:, 0] = (
@@ -2418,6 +2425,17 @@ class FeatureZoo:
                         np.linalg.norm(
                             mouse_data[:, mouse1_idx, node_idx["TTI"], :]
                             - mouse_data[:, mouse2_idx, node_idx["Nose"], :],
+                            axis=1,
+                        )
+                        * 100
+                )
+
+                # head to head distance: the Head node is the skull centroid, so this tracks how close
+                # the two animals' heads are without the snout's own pitch/yaw excursions moving it.
+                social_distances[:, 4] = (
+                        np.linalg.norm(
+                            mouse_data[:, mouse1_idx, node_idx["Head"], :]
+                            - mouse_data[:, mouse2_idx, node_idx["Head"], :],
                             axis=1,
                         )
                         * 100
@@ -2480,6 +2498,16 @@ class FeatureZoo:
 
                 # add this pair's social features to the DataFrame
                 pair_name = f"{track_names[mouse1_idx]}-{track_names[mouse2_idx]}"
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.head-head", social_distances[:, 4])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.head-head_1st_der", social_distances_1st_der[:, 4])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.head-head_2nd_der", social_distances_2nd_der[:, 4])
+                )
 
                 behavioral_features_df = behavioral_features_df.with_columns(
                     pls.Series(f"{pair_name}.nose-nose", social_distances[:, 0])

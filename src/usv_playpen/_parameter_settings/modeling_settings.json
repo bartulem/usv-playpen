@@ -49,7 +49,7 @@
       "tail_curvature"
     ],
     "dyadic_pose": [
-      "nose-nose",
+      "head-head",
       "allo_yaw-nose",
       "nose-allo_yaw",
       "allo_pitch-nose",
