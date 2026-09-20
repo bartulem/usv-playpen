@@ -86,6 +86,9 @@ def check_settings(settings: dict) -> None:
     ----------
     settings (dict)
         The ``vocal_gating`` block.
+    fit_rows (np.ndarray)
+        Boolean mask of universe rows the two universe-scored terms are FITTED on; every row is scored
+        regardless. ``None`` fits on everything.
 
     Returns
     -------
@@ -154,7 +157,7 @@ def should_run_gating(vocal_occurrence_significant: bool, vocalization_identity_
 
 def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
                         session_index: np.ndarray, ridge_fraction: float, irls_steps: int,
-                        calibration_steps: int) -> dict:
+                        calibration_steps: int, fit_rows: np.ndarray = None) -> dict:
     """
     Description
     -----------
@@ -170,6 +173,16 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
     unit the raw interaction term diverged to 1e5-1e6 while the held-out deviance stayed finite and
     interpretable. The ridge scales with the training row count for the same reason -- at ~50k rows a
     fixed small ridge is about a thousand times too weak to restrain it.
+
+    ``fit_rows`` subsamples the rows the models are FITTED on while every row is still SCORED, and the
+    ridge is taken from the full training count rather than the subsample's. That combination is what
+    makes the quiet subsample a computational device instead of part of the statistic. Fitting and
+    scoring on the same capped set does not: measured on the calibration unit, the interaction over the
+    vocal main effect then runs 5.63 at a 2,000-frame cap to 1.12 at 24,000, with no value to converge
+    on, because a vocalization indicator explains more deviance the more silence it is shown while the
+    interaction column is identically zero on quiet rows. Scoring everything and pinning the ridge, the
+    same ratios read 2.69, 1.85, 1.47, 1.37, 1.32 against 1.33 uncapped -- an approximation that tightens
+    as the cap rises, which a cap can legitimately be.
 
     Parameters
     ----------
@@ -187,6 +200,9 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
         Newton steps for the slope fits.
     calibration_steps (int)
         Newton steps for the held-out intercept recalibration.
+    fit_rows (np.ndarray)
+        Boolean mask of rows the models are fitted on; ``None`` fits on every row. Scoring and the ridge
+        always use every row, so this changes only how much data the fit sees.
 
     Returns
     -------
@@ -200,13 +216,16 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
         msg = f"gating needs at least two sessions for leave-one-session-out; got {len(sessions)}."
         raise ValueError(msg)
 
+    fitted = np.ones(spikes.size, dtype=bool) if fit_rows is None else np.asarray(fit_rows, dtype=bool)
     per_fold, total = [], 0.0
     for held_out in sessions:
         test = np.flatnonzero(session_index == held_out)
-        train = np.flatnonzero(session_index != held_out)
-        if test.size == 0 or train.size == 0:
+        train = np.flatnonzero((session_index != held_out) & fitted)
+        calibration_rows = np.flatnonzero((session_index == held_out) & fitted)
+        if test.size == 0 or train.size == 0 or calibration_rows.size == 0:
             continue
-        ridge = ridge_fraction * float(train.size)
+        # From the FULL training count, not the subsample's, so the shrinkage does not move with the cap.
+        ridge = ridge_fraction * float(np.count_nonzero(session_index != held_out))
 
         deviances = []
         for design in (base, full):
@@ -226,7 +245,13 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
                 # Only the SLOPES are carried to the held-out session; its intercept is refitted, so
                 # the statistic tests the relationship rather than the level.
                 offset = design[test] @ coefficients[1:]
-            intercept = calibrate_intercept(offset, spikes[test], calibration_steps)
+            # Recalibrated on the held-out session's FIT rows rather than on everything it is scored on,
+            # so the scored set's composition cannot decide how much of an effect the intercept absorbs.
+            if design.shape[1] == 0:
+                calibration_offset = np.zeros(calibration_rows.size, dtype=np.float64)
+            else:
+                calibration_offset = design[calibration_rows] @ coefficients[1:]
+            intercept = calibrate_intercept(calibration_offset, spikes[calibration_rows], calibration_steps)
             deviances.append(bernoulli_deviance(offset + intercept, spikes[test]))
 
         added = float(deviances[0] - deviances[1])
@@ -277,7 +302,8 @@ def gating_terms(feature: np.ndarray, vocal: np.ndarray) -> dict:
 def feature_gating_statistic(feature_vocal: np.ndarray, feature_quiet: np.ndarray,
                              vocal: np.ndarray, spikes_universe: np.ndarray,
                              spikes_quiet: np.ndarray, session_universe: np.ndarray,
-                             session_quiet: np.ndarray, settings: dict) -> dict:
+                             session_quiet: np.ndarray, settings: dict,
+                             fit_rows: np.ndarray = None) -> dict:
     """
     Description
     -----------
@@ -320,9 +346,9 @@ def feature_gating_statistic(feature_vocal: np.ndarray, feature_quiet: np.ndarra
     main = loso_added_deviance(*quiet_blocks["feature_main"], spikes_quiet, session_quiet,
                                ridge, steps, calibration)
     vocal_main = loso_added_deviance(*blocks["vocal_main"], spikes_universe, session_universe,
-                                     ridge, steps, calibration)
+                                     ridge, steps, calibration, fit_rows)
     interaction = loso_added_deviance(*blocks["interaction"], spikes_universe, session_universe,
-                                      ridge, steps, calibration)
+                                      ridge, steps, calibration, fit_rows)
 
     # The SIGN comes from a strongly-ridged fit and the MAGNITUDE from the deviance: an unridged
     # interaction coefficient quasi-separates and its sign is then read off a diverged number.
@@ -578,7 +604,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
     zeros_per_spike = settings["quiet_zeros_per_spike"]
 
     feature_parts, vocal_parts, spike_parts, index_parts = [], [], [], []
-    frame_parts, quiet_frame_parts = [], []
+    frame_parts, quiet_frame_parts, fit_parts = [], [], []
     quiet_feature_parts, quiet_spike_parts, quiet_index_parts = [], [], []
     bookkeeping: dict = {}
     feature_names = None
@@ -611,14 +637,16 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
         vocal_labels = spike_labels_at_frames(spike_frames, vocal_frames, n_frames)
         quiet_labels = spike_labels_at_frames(spike_frames, quiet_frames, n_frames)
 
-        # universe: every vocal frame, quiet capped so the fit is not swamped by silence
+        # The universe keeps EVERY quiet frame; the cap marks which of them the fit may use. Capping the
+        # universe itself would change what the statistic measures rather than how well it is estimated --
+        # see `loso_added_deviance`.
+        universe_frames = np.concatenate([vocal_frames, quiet_frames])
+        universe_vocal = np.concatenate([np.ones(vocal_frames.size), np.zeros(quiet_frames.size)])
+        universe_labels = np.concatenate([vocal_labels, quiet_labels])
+        universe_fit = np.ones(universe_frames.size, dtype=bool)
         if cap is not None and quiet_frames.size > cap:
-            chosen = np.sort(rng.choice(quiet_frames.size, cap, replace=False))
-        else:
-            chosen = np.arange(quiet_frames.size)
-        universe_frames = np.concatenate([vocal_frames, quiet_frames[chosen]])
-        universe_vocal = np.concatenate([np.ones(vocal_frames.size), np.zeros(chosen.size)])
-        universe_labels = np.concatenate([vocal_labels, quiet_labels[chosen]])
+            dropped = rng.choice(quiet_frames.size, quiet_frames.size - cap, replace=False)
+            universe_fit[vocal_frames.size + dropped] = False
 
         # quiet-only: a rare-event logistic, so the ZERO count is what needs bounding
         positives = np.flatnonzero(quiet_labels > 0)
@@ -634,6 +662,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
         vocal_parts.append(universe_vocal)
         spike_parts.append(universe_labels)
         index_parts.append(np.full(universe_frames.size, slot))
+        fit_parts.append(universe_fit)
         quiet_feature_parts.append(series[quiet_frames[quiet_rows]])
         quiet_spike_parts.append(quiet_labels[quiet_rows])
         quiet_index_parts.append(np.full(quiet_rows.size, slot))
@@ -641,7 +670,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
         bookkeeping[session_id] = {
             "n_vocal_frames": int(vocal_frames.size),
             "n_quiet_frames_available": int(quiet_frames.size),
-            "n_quiet_frames_used": int(chosen.size),
+            "n_quiet_frames_fitted": int(universe_fit.sum() - vocal_frames.size),
             "n_peri_vocal_frames_excluded": int(n_frames - vocal_frames.size - quiet_frames.size),
             "n_vocal_spikes": int(vocal_labels.sum()),
             "n_quiet_spikes": int(quiet_labels.sum()),
@@ -668,6 +697,7 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
             "vocal": stack(vocal_parts),
             "spikes": stack(spike_parts),
             "session_index": stack(index_parts).astype(np.int64),
+            "fit_rows": stack(fit_parts).astype(bool),
             "features_quiet": rows(quiet_feature_parts, width),
             "spikes_quiet": stack(quiet_spike_parts),
             "session_quiet": stack(quiet_index_parts).astype(np.int64),
@@ -744,7 +774,7 @@ def gating_null(universe: dict, feature_index: int, settings: dict, guard_second
             spikes_quiet[mask_quiet] = occupancy[frames_quiet[mask_quiet]]
 
         drawn = feature_gating_statistic(feature, feature_quiet, vocal, spikes, spikes_quiet,
-                                         index, index_quiet, settings)
+                                         index, index_quiet, settings, universe["fit_rows"])
         values["interaction"][draw] = drawn["interaction"]
         values["vocal_main"][draw] = drawn["vocal_main"]
         values["feature_main"][draw] = drawn["feature_main"]

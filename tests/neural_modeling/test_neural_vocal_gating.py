@@ -409,7 +409,10 @@ class TestTheUniverse:
                                    settings, {"vocal_emitter": "self"})
         for book in universe["per_session"].values():
             assert book["n_quiet_frames_available"] == 1000
-            assert book["n_quiet_frames_used"] == 50
+            assert book["n_quiet_frames_fitted"] == 50
+        # Every quiet frame stays in the universe and is SCORED; the cap only withholds rows from the fit.
+        assert int(np.sum(universe["vocal"] < 0.5)) == 2000
+        assert int(np.sum(universe["fit_rows"] & (universe["vocal"] < 0.5))) == 100
 
     def test_the_quiet_only_set_bounds_zeros_per_spike(self, monkeypatch):
         """alpha_f is a rare-event logistic there, so the ZERO count is what needs bounding -- a
@@ -463,6 +466,7 @@ class TestTheNull:
                                  for s in range(n_sessions)},
                 "n_frames": dict.fromkeys(range(n_sessions), per * 3),
                 "fps": dict.fromkeys(range(n_sessions), 100.0),
+                "fit_rows": np.ones(n, dtype=bool),
                 "feature_names": ["f0"], "per_session": {}}
 
     def test_all_four_arrays_come_back_aligned(self):

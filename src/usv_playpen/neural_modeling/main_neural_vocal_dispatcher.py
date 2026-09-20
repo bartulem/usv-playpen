@@ -313,7 +313,8 @@ def vocal_gating_feature_job(feature_index: int) -> tuple:
     observed = feature_gating_statistic(universe["features"][:, feature_index],
                                         universe["features_quiet"][:, feature_index], universe["vocal"],
                                         universe["spikes"], universe["spikes_quiet"],
-                                        universe["session_index"], universe["session_quiet"], settings)
+                                        universe["session_index"], universe["session_quiet"], settings,
+                                        universe["fit_rows"])
     null = gating_null(universe, feature_index, settings, state["guard_seconds"], state["n_draws"],
                        seed=state["seed"] + feature_index * state["n_draws"])
     return feature_index, observed, null
