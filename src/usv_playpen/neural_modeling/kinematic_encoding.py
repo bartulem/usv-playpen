@@ -362,7 +362,7 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
     -------
     rows (list)
         One dict per feature: ``feature``, ``name``, ``score``, ``slope``, ``p``, ``at_floor``,
-        ``survived``.
+        ``survived``, ``converged``, and the per-inner-fold ``fold_scores`` and ``fold_slopes``.
     """
 
     encoding = settings["kinematic_encoding"]
@@ -397,7 +397,11 @@ def screen_features(per_session: dict, pool_session_ids: list, n_lags: int, rng,
         survived = bool(score > 0 and slope_ok and np.isfinite(p_value) and p_value < threshold)
         rows.append({"feature": feature, "name": feature_names[feature], "score": score, "slope": slope,
                      "p": p_value, "at_floor": at_floor, "survived": survived,
-                     "converged": bool(np.all(fold_converged))})
+                     "converged": bool(np.all(fold_converged)),
+                     # The mean is what the screen decides on; the per-fold values are what says whether
+                     # the folds agreed, and they cost a refit to recover afterwards.
+                     "fold_scores": [float(value) for value in fold_scores],
+                     "fold_slopes": [float(value) for value in fold_slopes]})
         message_output(f"    screen {feature_names[feature]:<32} score {score:+.5f} | slope {slope:+.3f} "
                        f"| p {p_value:.2e} | {'PASS' if survived else 'fail'}"
                        f"{'' if np.all(fold_converged) else ' | UNCONVERGED'}")
@@ -441,7 +445,8 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
     selected (list)
         Chosen feature indices, in the order accepted.
     path (list)
-        One dict per step: ``step``, ``candidate``, ``mean``, ``improvement``, ``standard_error``,
+        One dict per step: ``step``, ``candidate``, ``mean``, ``fold_scores``, ``improvement``,
+        ``standard_error``,
         ``decision``.
     """
 
@@ -486,9 +491,13 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
     anchor, incumbent_scores, anchor_converged = max(scored, key=lambda item: finite_mean(item[1]))
     incumbent_mean = finite_mean(incumbent_scores)
     selected = [anchor]
+    # Every step keeps the per-inner-fold scores it was decided on. The stored mean and the SE of the
+    # PAIRED gain answer "was this step accepted"; they cannot answer "how much did the score move
+    # between validation sessions", and recovering that later costs a refit of every set on every fold.
     path = [{"step": 0, "candidate": feature_names[anchor], "mean": incumbent_mean,
              "improvement": np.nan, "standard_error": np.nan, "decision": "ANCHOR",
-             "converged": anchor_converged}]
+             "converged": anchor_converged,
+             "fold_scores": [float(value) for value in incumbent_scores]}]
     message_output(f"    select step 0  ANCHOR {feature_names[anchor]:<32} score {incumbent_mean:+.5f} "
                    f"| per fold {np.array2string(incumbent_scores, precision=4)}"
                    f"{'' if anchor_converged else ' | UNCONVERGED'}")
@@ -508,7 +517,8 @@ def forward_select(per_session: dict, pool_session_ids: list, survivors: list, n
         accept = np.isfinite(improvement) and improvement > standard_error
         path.append({"step": step, "candidate": feature_names[best_feature], "mean": best_mean,
                      "improvement": improvement, "standard_error": standard_error,
-                     "decision": "ACCEPT" if accept else "REJECT", "converged": best_converged})
+                     "decision": "ACCEPT" if accept else "REJECT", "converged": best_converged,
+                     "fold_scores": [float(value) for value in best_scores]})
         message_output(f"    select step {step}  {'ACCEPT' if accept else 'REJECT'} "
                        f"{feature_names[best_feature]:<32} score {best_mean:+.5f} | paired improvement "
                        f"{improvement:+.5f} vs its SE {standard_error:.5f}"

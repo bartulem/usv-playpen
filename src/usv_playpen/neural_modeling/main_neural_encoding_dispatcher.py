@@ -302,18 +302,37 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     survivors = [row["feature"] for row in screen_rows if row["survived"]]
     message_output(f"    survivors: {len(survivors)}/{len(screen_rows)}")
 
+    # A fold with no survivor has no model, and that is the RESULT -- but it still has nineteen screened
+    # features, and the best of them is what a figure of an untuned unit has to show. Fitting it costs one
+    # single-feature fit and makes every unit, tuned or not, describable by the same panels. It is fitted on
+    # the pool and scored on the held-out session exactly as a selected model is, so nothing about the
+    # scoring differs; what differs is that it was REJECTED, which `no_model` keeps saying. Its p-value is
+    # also the maximum over nineteen features scored against a single-feature null, so it is optimistic by
+    # construction and must never be read as a test.
+    best_screened = None
     if not survivors:
-        message_output("    NO MODEL — this fold contributes nothing")
+        scored_rows = [row for row in screen_rows if np.isfinite(row["score"])]
+        if scored_rows:
+            best_screened = max(scored_rows, key=lambda row: row["score"])
+            message_output(f"    NO MODEL — best screened feature {best_screened['name']} "
+                           f"(score {best_screened['score']:+.5f}, p {best_screened['p']:.2e}) is fitted for "
+                           f"description only; it failed the {len(screen_rows)}-feature correction")
+        else:
+            message_output("    NO MODEL — this fold contributes nothing")
+
+    selected = [best_screened["feature"]] if best_screened is not None else []
+    path = []
+    if survivors:
+        selected, path = forward_select(inner_sessions, inner_ids, survivors, n_lags, rng, settings,
+                                        feature_names, message_output)
+    if not selected:
         return write_fold_artifact(
             {"fold_index": fold_index, "test_id": test_id, "selected": [], "path": [],
              "no_model": True, "quiet_score": 0.0, "quiet_slope": np.nan,
              "quiet_p": 1.0, "quiet_at_floor": False,
              "eta_vocal": np.zeros(0), "labels_vocal": np.zeros(0), "pointer": pointer,
-             "gaps": gaps, "screen": screen_rows},
+             "gaps": gaps, "screen": screen_rows, "best_screened": False},
             unit, fold_index, output_directory, message_output)
-
-    selected, path = forward_select(inner_sessions, inner_ids, survivors, n_lags, rng, settings,
-                                    feature_names, message_output)
     fit_started = time.time()
     estimator, base_rate = fit_quiet_model(per_session, pool_ids, selected, n_lags, rng, encoding,
                                            message_output)
@@ -382,7 +401,8 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
                 "quiet_metrics": encoding_metrics(eta_quiet, labels_quiet,
                                                   encoding["solver"]["calibration_steps"]),
                 "selected": [feature_names[index] for index in selected],
-                "selected_indices": selected, "path": path, "no_model": False,
+                "selected_indices": selected, "path": path, "no_model": best_screened is not None,
+                "best_screened": best_screened is not None,
                 "quiet_score": quiet_score, "quiet_slope": quiet_slope, "quiet_null": quiet_null,
                 "quiet_p": quiet_p, "quiet_at_floor": quiet_at_floor,
                 "eta_vocal": vocal["eta"], "labels_vocal": vocal["labels"], "pointer": pointer,
@@ -736,6 +756,19 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
             raise FileNotFoundError(msg)
         artifacts.append(dict(np.load(path, allow_pickle=True)))
 
+    # A unit whose every fold rejected its features still has, in each fold, the best screened feature
+    # fitted and scored exactly as a selected model is. Pooling those describes an untuned unit the same
+    # way a tuned one is described -- same halves, same nulls -- while `no_model` on the written section
+    # keeps saying that nothing was selected. Nothing may read these as a test: the feature is the maximum
+    # of nineteen and it failed the correction.
+    screened_only = bool(artifacts) and all(bool(artifact["no_model"]) for artifact in artifacts) and all(
+        "best_screened" in artifact and bool(artifact["best_screened"]) for artifact in artifacts)
+    if screened_only:
+        message_output("  NO FOLD SELECTED A MODEL -- pooling each fold's best SCREENED feature, for "
+                       "description only; these numbers are not a test")
+        for artifact in artifacts:
+            artifact["no_model"] = np.asarray(False)
+
     # The `self.` role is derived from the unit's own mouse_id, not configured -- see
     # `build_zscored_feature_frames`. `vocalization_settings.vocal_emitter` is a different question (whose CALLS
     # count as the recorded animal's) and stays a knob; it is handed to the assembler so the kinematic
@@ -832,6 +865,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
         reading = "purely kinematic (no transfer)"
     else:
         reading = "not tuned on quiet"
+    if screened_only:
+        reading = f"not tuned on quiet -- best SCREENED feature only, rejected by the screen ({reading})"
     message_output(f"  UNCORRECTED READING (not persisted): {reading} | quiet p {quiet_p:.4e} "
                    f"| transfer p {transfer['p']:.4e} slope {transfer['slope']:+.3f} "
                    f"| bare threshold {level}, no FDR")
@@ -847,7 +882,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
                                    representative_features, n_lags, encoding["chunk_rows"])
            if representative_features else None)
 
-    result = {"unit_id": unit["unit_id"], "no_model": False,
+    result = {"unit_id": unit["unit_id"], "no_model": screened_only,
+              "best_screened_only": screened_only,
               "quiet_score": quiet_score, "quiet_slope": float(chosen_artifact["quiet_slope"]),
               "quiet_p": quiet_p, "quiet_at_floor": quiet_at_floor, "quiet_null": quiet_null,
               "quiet_score_fold_average": quiet_mean_across_folds,
