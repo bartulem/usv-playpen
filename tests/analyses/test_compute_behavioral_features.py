@@ -46,20 +46,20 @@ class TestResolveFeatureLabel:
         assert FeatureZoo.resolve_feature_label('self.ego_yaw', 'male') == 'male head yaw'
 
     def test_dyadic_distance_is_sex_neutral(self):
-        """Dyadic distances carry no sex word."""
+        """Dyadic distances carry no sex word; nose-nose reads as partner distance."""
 
-        assert FeatureZoo.resolve_feature_label('nose-nose', 'male', 'female') == 'nose-nose distance'
+        assert FeatureZoo.resolve_feature_label('nose-nose', 'male', 'female') == 'partner distance'
         assert FeatureZoo.resolve_feature_label('nose-TTI', 'male', 'female') == 'nose-TTI distance'
 
     def test_dyadic_angle_forward_and_reverse(self):
         """Both key orders (``allo_*-X`` and ``X-allo_*``) are labelled
-        ``{self}-partner`` (self first); the ``-TTI`` variant shares wording
-        with the ``-nose`` variant."""
+        ``self-partner`` (self first, literal role words even when sexes are
+        supplied); the ``-TTI`` variant shares wording with the ``-nose`` variant."""
 
-        assert FeatureZoo.resolve_feature_label('allo_yaw-nose', 'male', 'female') == 'male-partner yaw'
-        assert FeatureZoo.resolve_feature_label('allo_yaw-TTI', 'male', 'female') == 'male-partner yaw'
-        assert FeatureZoo.resolve_feature_label('nose-allo_yaw', 'male', 'female') == 'male-partner yaw'
-        assert FeatureZoo.resolve_feature_label('allo_pitch-nose', 'female', 'male') == 'female-partner pitch'
+        assert FeatureZoo.resolve_feature_label('allo_yaw-nose', 'male', 'female') == 'self-partner yaw'
+        assert FeatureZoo.resolve_feature_label('allo_yaw-TTI', 'male', 'female') == 'self-partner yaw'
+        assert FeatureZoo.resolve_feature_label('nose-allo_yaw', 'male', 'female') == 'self-partner yaw'
+        assert FeatureZoo.resolve_feature_label('allo_pitch-nose', 'female', 'male') == 'self-partner pitch'
 
     def test_sei_engagement(self):
         """SEI engagement features keep the literal 'SEI' tag."""
@@ -72,7 +72,7 @@ class TestResolveFeatureLabel:
         base label is resolved (prefix + sex still applied)."""
 
         assert FeatureZoo.resolve_feature_label('self.speed_1st_der', 'male') == 'male speed (1st derivative)'
-        assert FeatureZoo.resolve_feature_label('nose-nose_2nd_der') == 'nose-nose distance (2nd derivative)'
+        assert FeatureZoo.resolve_feature_label('nose-nose_2nd_der') == 'partner distance (2nd derivative)'
 
     def test_missing_sex_falls_back_to_role_word(self):
         """With no sexes supplied, the literal 'self'/'other'/'partner'

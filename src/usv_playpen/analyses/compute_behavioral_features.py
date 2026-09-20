@@ -1311,9 +1311,10 @@ class FeatureZoo:
     # Canonical short display labels for modeling figures, keyed by the
     # GENERIC (sex-neutral) feature base name. Egocentric bases carry no sex
     # word here -- `resolve_feature_label` prepends the per-mouse sex for
-    # `self.<base>` / `other.<base>` keys. Dyadic-angle labels embed a
-    # `{self}` placeholder (the partner side stays the literal word
-    # "partner"); dyadic distances are sex-neutral. Single source of truth
+    # `self.<base>` / `other.<base>` keys. Dyadic-angle labels use the
+    # literal role words "self" and "partner" rather than a sex word, and
+    # the nose-nose distance reads as "partner distance"; dyadic labels are
+    # sex-neutral. Single source of truth
     # consumed by `visualizations.modeling_plots` so plot labels stay
     # consistent and cohort-correct (male- vs female-target) without
     # per-figure override dicts.
@@ -1331,21 +1332,21 @@ class FeatureZoo:
         "body_dir": "body direction",
         "tail_curvature": "tail curvature",
         # dyadic distances (sex-neutral)
-        "nose-nose": "nose-nose distance",
+        "nose-nose": "partner distance",
         "TTI-TTI": "TTI-TTI distance",
         "nose-TTI": "nose-TTI distance",
         "TTI-nose": "TTI-nose distance",
-        # dyadic angles -- both key orders (``allo_*-X`` and ``X-allo_*``) now render
-        # as "{self}-partner" (self first), so the display label no longer encodes the
-        # self->partner vs partner->self feature direction (the two therefore share a label)
-        "allo_yaw-nose": "{self}-partner yaw",
-        "allo_yaw-TTI": "{self}-partner yaw",
-        "allo_pitch-nose": "{self}-partner pitch",
-        "allo_pitch-TTI": "{self}-partner pitch",
-        "nose-allo_yaw": "{self}-partner yaw",
-        "TTI-allo_yaw": "{self}-partner yaw",
-        "nose-allo_pitch": "{self}-partner pitch",
-        "TTI-allo_pitch": "{self}-partner pitch",
+        # dyadic angles -- both key orders (``allo_*-X`` and ``X-allo_*``) render as
+        # "self-partner" (self first, literal role words), so the display label does not
+        # encode the self->partner vs partner->self feature direction (the two share a label)
+        "allo_yaw-nose": "self-partner yaw",
+        "allo_yaw-TTI": "self-partner yaw",
+        "allo_pitch-nose": "self-partner pitch",
+        "allo_pitch-TTI": "self-partner pitch",
+        "nose-allo_yaw": "self-partner yaw",
+        "TTI-allo_yaw": "self-partner yaw",
+        "nose-allo_pitch": "self-partner pitch",
+        "TTI-allo_pitch": "self-partner pitch",
         # dyadic engagement (Social Engagement Index)
         "orofacial-sei": "orofacial SEI",
         "anogenital-sei": "anogenital SEI",
@@ -1363,8 +1364,9 @@ class FeatureZoo:
         suffix (re-appended as " (1st derivative)" / " (2nd derivative)"); the
         per-mouse `self.` / `other.` egocentric prefixes (the matching sex word
         is prepended); and `{self}` / `{other}` placeholders embedded in the
-        canonical label (filled with the cohort sexes -- used by the dyadic
-        angle labels). When the sexes are not supplied the literal words
+        canonical label (filled with the cohort sexes; no shipped label uses
+        one since the dyadic angles switched to the literal "self-partner").
+        When the sexes are not supplied the literal words
         "self" / "other" are used. An unrecognised key is returned verbatim so
         the caller never crashes on a feature outside the zoo.
 
