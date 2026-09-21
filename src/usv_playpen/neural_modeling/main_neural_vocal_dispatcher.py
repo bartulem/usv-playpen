@@ -489,6 +489,12 @@ def vocal_gating_payload(feature_names: list, observed: dict, nulls: dict, verdi
                              "feature_main": statistic["feature_main"],
                              "vocal_main": statistic["vocal_main"],
                              "interaction": statistic["interaction"],
+                             # The additive model entire, and what there was to explain: the comparison
+                             # the sub-analysis is for is additive against multiplicative, and dividing
+                             # either by the baseline puts it on the encoding's D2 scale.
+                             "additive": statistic["additive"],
+                             "baseline": statistic["baseline"],
+                             "quiet_baseline": statistic["quiet_baseline"],
                              "interaction_minus_vocal": statistic["interaction_minus_vocal"],
                              "gating_sign": statistic["gating_sign"],
                              "null_interaction": null["interaction"], "null_vocal_main": null["vocal_main"],
@@ -552,8 +558,20 @@ def run_vocal_occurrence(unit: dict, events: dict, settings: dict, data_root: st
         p_value, at_floor, null = escalated_empirical_pvalue(occurrence["nats_per_window"], draw_more,
                                                              settings["significance"]["escalation_ladder"],
                                                              null, message_output)
+    # SENSITIVITY, kept beside the discrimination. The statistic and the AUROC both average over every
+    # window, so a unit that fires on only part of its calls scores lower -- but neither says which of the
+    # two it is, and two units at the same score can be "fires weakly on nearly every call" or "fires hard
+    # on half of them". These two fractions separate them, and cost nothing: on the pilot units they run
+    # from 44% of calls with a spike (a unit nearly silent otherwise) to 94%.
+    vocal_rows = windows["labels"] > 0.5
     occurrence.update({"null": null, "p": p_value, "at_floor": at_floor, "n_shuffles": int(null.size),
-                       "z": null_z(occurrence["nats_per_window"], null)})
+                       "z": null_z(occurrence["nats_per_window"], null),
+                       "fraction_vocal_windows_with_spike":
+                           float(np.mean(windows["counts"][vocal_rows] > 0)),
+                       "fraction_quiet_windows_with_spike":
+                           float(np.mean(windows["counts"][~vocal_rows] > 0)),
+                       "median_spikes_per_vocal_window":
+                           float(np.median(windows["counts"][vocal_rows]))})
     message_output(f"  VOCAL OCCURRENCE  nats {occurrence['nats_per_window']:+.6f} "
                    f"| AUROC {occurrence['auroc']:.3f} | z {occurrence['z']:+.1f} | p {p_value:.4e}"
                    f"{' (at floor)' if at_floor else ''} | {null.size:,} draws")

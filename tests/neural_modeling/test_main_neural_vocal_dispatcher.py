@@ -135,6 +135,7 @@ class TestTheWrittenSections:
         artifact writer refuses them, so the payload must not carry them at any depth."""
         draws = np.zeros(4)
         observed = {"f0": {"feature_main": -3.0, "vocal_main": 400.0, "interaction": 560.0,
+                           "additive": 420.0, "baseline": 9000.0, "quiet_baseline": 700.0,
                            "interaction_minus_vocal": 160.0, "gating_sign": 1.0}}
         nulls = {"f0": {"interaction": draws, "vocal_main": draws, "feature_main": draws, "difference": draws}}
         verdicts = {"f0": {"label": "GATE", "p_interaction": 5e-4, "p_interaction_gt_vocal": 5e-4,

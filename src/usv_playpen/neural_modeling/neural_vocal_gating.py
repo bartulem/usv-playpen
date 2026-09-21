@@ -208,7 +208,8 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
     -------
     result (dict)
         ``added`` (summed held-out deviance reduction, higher means the full model predicts better),
-        ``per_fold`` and ``n_folds``.
+        ``baseline`` (the intercept-only deviance of the same rows, so ``added / baseline`` is the
+        fraction of what there was to explain), ``per_fold`` and ``n_folds``.
     """
 
     sessions = sorted({int(s) for s in session_index})
@@ -217,7 +218,7 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
         raise ValueError(msg)
 
     fitted = np.ones(spikes.size, dtype=bool) if fit_rows is None else np.asarray(fit_rows, dtype=bool)
-    per_fold, total = [], 0.0
+    per_fold, total, baseline = [], 0.0, 0.0
     for held_out in sessions:
         test = np.flatnonzero(session_index == held_out)
         train = np.flatnonzero((session_index != held_out) & fitted)
@@ -257,8 +258,14 @@ def loso_added_deviance(full: np.ndarray, base: np.ndarray, spikes: np.ndarray,
         added = float(deviances[0] - deviances[1])
         per_fold.append({"held_out": held_out, "added": added, "n_test": int(test.size)})
         total += added
+        # What there was to explain in this fold: a constant at the held-out rate, calibrated the same
+        # way. Dividing by it turns an absolute deviance into the same fraction the encoding reports as
+        # D2, which is the only way the two analyses' magnitudes can be read against each other.
+        flat = calibrate_intercept(np.zeros(calibration_rows.size, dtype=np.float64),
+                                   spikes[calibration_rows], calibration_steps)
+        baseline += bernoulli_deviance(np.full(test.size, flat), spikes[test])
 
-    return {"added": total, "per_fold": per_fold, "n_folds": len(per_fold)}
+    return {"added": total, "baseline": baseline, "per_fold": per_fold, "n_folds": len(per_fold)}
 
 
 def gating_terms(feature: np.ndarray, vocal: np.ndarray) -> dict:
@@ -296,6 +303,10 @@ def gating_terms(feature: np.ndarray, vocal: np.ndarray) -> dict:
         "vocal_main": (np.hstack([column, indicator]), column),
         # the gate: the product over feature AND vocal main effects
         "interaction": (np.hstack([column, indicator, product]), np.hstack([column, indicator])),
+        # the ADDITIVE model entire, over an intercept alone. This is what the interaction is weighed
+        # against: the question the sub-analysis asks is whether a feature and vocalizing combine by
+        # ADDING or by MULTIPLYING, so the two halves of that comparison both have to be measured.
+        "additive": (np.hstack([column, indicator]), empty),
     }
 
 
@@ -332,8 +343,10 @@ def feature_gating_statistic(feature_vocal: np.ndarray, feature_quiet: np.ndarra
     Returns
     -------
     statistic (dict)
-        ``feature_main``, ``vocal_main``, ``interaction`` (each an added deviance), their difference
-        ``interaction_minus_vocal``, and ``gating_sign``.
+        ``feature_main``, ``vocal_main``, ``interaction`` and ``additive`` (each an added deviance),
+        the difference ``interaction_minus_vocal``, ``gating_sign``, and ``baseline`` -- the intercept-only
+        deviance of the scored rows, which turns any of the terms into a fraction of what there was to
+        explain and so onto the same scale as the kinematic encoding's D2.
     """
 
     solver = settings["solver"]
@@ -349,6 +362,8 @@ def feature_gating_statistic(feature_vocal: np.ndarray, feature_quiet: np.ndarra
                                      ridge, steps, calibration, fit_rows)
     interaction = loso_added_deviance(*blocks["interaction"], spikes_universe, session_universe,
                                       ridge, steps, calibration, fit_rows)
+    additive = loso_added_deviance(*blocks["additive"], spikes_universe, session_universe,
+                                   ridge, steps, calibration, fit_rows)
 
     # The SIGN comes from a strongly-ridged fit and the MAGNITUDE from the deviance: an unridged
     # interaction coefficient quasi-separates and its sign is then read off a diverged number.
@@ -360,10 +375,13 @@ def feature_gating_statistic(feature_vocal: np.ndarray, feature_quiet: np.ndarra
     return {"feature_main": main["added"],
             "vocal_main": vocal_main["added"],
             "interaction": interaction["added"],
+            "additive": additive["added"],
+            "baseline": additive["baseline"],
+            "quiet_baseline": main["baseline"],
             "interaction_minus_vocal": interaction["added"] - vocal_main["added"],
             "gating_sign": float(np.sign(coefficients[-1])),
             "per_fold": {"feature_main": main["per_fold"], "vocal_main": vocal_main["per_fold"],
-                         "interaction": interaction["per_fold"]}}
+                         "interaction": interaction["per_fold"], "additive": additive["per_fold"]}}
 
 
 def gating_verdict(observed: dict, interaction_null: np.ndarray, difference_null: np.ndarray,
