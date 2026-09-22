@@ -19,6 +19,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
+from matplotlib.ticker import FuncFormatter, NullFormatter
 from matplotlib.transforms import offset_copy
 
 from ..analyses.compute_inter_usv_interval_distributions import (
@@ -1948,3 +1949,448 @@ def load_best_fit_from_h5(
 
     df = load_mixture_model_fits_from_h5(h5_path, interval_type)
     return reconstruct_best_model(df, sex=sex, K=int(K), ic_col=ic_col)
+
+
+def compute_serial_dependence(
+    usv_interval_df: pls.DataFrame,
+    sex: str,
+    bin_edges_ms: tuple = (20.0, 40.0, 60.0, 80.0, 100.0, 130.0, 180.0,
+                           250.0, 400.0, 700.0, 1200.0, 3000.0),
+    breath_ms: float = 80.0,
+    gap_ms: float = 180.0,
+    min_pairs_per_bin: int = 30,
+) -> pls.DataFrame:
+    """
+    Description
+    -----------
+    Summarises how the interval that FOLLOWS depends on the interval that precedes it.
+
+    This is the evidence that places the bout-merging threshold on the first mixture component
+    rather than the second. Serial dependence is the defining property of a bout: an interval
+    inside a bout carries information about the one after it, a gap between bouts does not. The
+    median of the next interval therefore rises with the current one while both belong to one
+    respiratory rhythm and then goes flat, and the position of that knee is what a candidate
+    threshold has to match.
+
+    Pairs are formed within a session from consecutive rows of ``usv_interval_df``, whose order is
+    the order the analysis wrote them, i.e. ascending in time within each session. Reading it back
+    from the archive reproduces a pairing computed independently from the session summaries exactly
+    (78,163 pairs, identical medians in every bin), so the row order is a usable temporal ordering.
+
+    Parameters
+    ----------
+    usv_interval_df (pls.DataFrame)
+        Tidy interval table for ONE interval type, as archived (columns ``session_id``, ``sex``,
+        ``interval_s``).
+    sex (str)
+        ``'male'`` or ``'female'``.
+    bin_edges_ms (tuple)
+        Bin edges for the current interval, in milliseconds.
+    breath_ms (float)
+        A following interval below this counts as a within-rhythm breath.
+    gap_ms (float)
+        A following interval above this counts as another gap.
+    min_pairs_per_bin (int)
+        Bins holding fewer pairs than this are omitted.
+
+    Returns
+    -------
+    summary (pls.DataFrame)
+        One row per bin: ``low_ms``, ``high_ms``, ``centre_ms``, ``n``, ``median_next_ms``,
+        ``q1_next_ms``, ``q3_next_ms``, ``p_breath``, ``p_gap``.
+    """
+
+    current, following = serial_dependence_pairs(usv_interval_df, sex)
+    if current.size == 0:
+        return pls.DataFrame(schema={"low_ms": pls.Float64, "high_ms": pls.Float64,
+                                     "centre_ms": pls.Float64, "n": pls.Int64,
+                                     "median_next_ms": pls.Float64, "median_lo_ms": pls.Float64,
+                                     "median_hi_ms": pls.Float64, "p_breath": pls.Float64,
+                                     "p_gap": pls.Float64})
+
+    edges = np.asarray(bin_edges_ms, dtype=float) / 1000.0
+    rows = []
+    for low, high in zip(edges[:-1], edges[1:], strict=True):
+        inside = (current >= low) & (current < high)
+        count = int(inside.sum())
+        if count < min_pairs_per_bin:
+            continue
+        nxt = np.sort(following[inside])
+        # Distribution-free 99% interval on the MEDIAN, from the order statistics (the usual
+        # normal-approximation rank bounds). This is deliberately not the interquartile range: past
+        # the knee the next interval is bimodal -- a breath or another gap -- so its spread describes
+        # the outcome, not whether the median is pinned down, and a band that wide hides the very
+        # flattening the panel exists to show.
+        half_rank = 2.576 * np.sqrt(count) / 2.0
+        low_rank = max(int(np.floor(count / 2.0 - half_rank)), 0)
+        high_rank = min(int(np.ceil(count / 2.0 + half_rank)), count - 1)
+        rows.append({
+            "low_ms": 1000.0 * low,
+            "high_ms": 1000.0 * high,
+            "centre_ms": 1000.0 * float(np.sqrt(low * high)),
+            "n": count,
+            "median_next_ms": 1000.0 * float(np.median(nxt)),
+            "median_lo_ms": 1000.0 * float(nxt[low_rank]),
+            "median_hi_ms": 1000.0 * float(nxt[high_rank]),
+            "p_breath": float(np.mean(nxt < breath_ms / 1000.0)),
+            "p_gap": float(np.mean(nxt > gap_ms / 1000.0)),
+        })
+    return pls.DataFrame(rows)
+
+
+def serial_dependence_pairs(usv_interval_df: pls.DataFrame, sex: str) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Every (current interval, next interval) pair from consecutive rows of one session.
+
+    The archived table is written session by session in time order, so consecutive rows within a
+    session are consecutive intervals. Pairing it back this way reproduces a pairing computed
+    independently from the session summaries exactly.
+
+    Parameters
+    ----------
+    usv_interval_df (pls.DataFrame)
+        Tidy interval table for ONE interval type (columns ``session_id``, ``sex``, ``interval_s``).
+    sex (str)
+        ``'male'`` or ``'female'``.
+
+    Returns
+    -------
+    current (np.ndarray)
+        A (n_pairs,) ndarray of current intervals, in seconds.
+    following (np.ndarray)
+        A (n_pairs,) ndarray of the interval that follows each, in seconds.
+    """
+
+    subset = usv_interval_df.filter(pls.col("sex") == sex)
+    current_list, following_list = [], []
+    for session in dict.fromkeys(subset["session_id"].to_list()):
+        values = subset.filter(pls.col("session_id") == session)["interval_s"].to_numpy()
+        if values.size >= 2:
+            current_list.append(values[:-1])
+            following_list.append(values[1:])
+    if not current_list:
+        return np.array([]), np.array([])
+    return np.concatenate(current_list), np.concatenate(following_list)
+
+
+def plot_serial_dependence(
+    summary: pls.DataFrame,
+    pairs: tuple[np.ndarray, np.ndarray],
+    color: str,
+    thresholds_ms: dict | None = None,
+    figsize: tuple = (11, 4.4),
+    survival_cutoffs_ms: tuple = (80.0, 121.0, 180.0, 250.0, 326.0),
+) -> tuple[plt.Figure, tuple]:
+    """
+    Description
+    -----------
+    Draws the serial-dependence evidence for the bout-merging threshold, as two panels.
+
+    The left panel plots the median of the following interval against the current one, both on the
+    same log scale because they are the same quantity, with the identity line behind it: while two
+    intervals belong to one respiratory rhythm the median tracks that diagonal, and where it peels
+    away and flattens is where the current interval stops predicting the next. The band is a
+    distribution-free 99% interval on the MEDIAN, taken from the order statistics -- not the spread
+    of the outcome. Past the knee the next interval is bimodal (a breath or another gap), so its
+    interquartile range spans both populations and describes the outcome rather than whether the
+    median is pinned down; a band that wide hides the flattening the panel exists to show.
+
+    The right panel answers the obvious objection to the left one, that "short" had to be defined
+    somewhere. It plots the probability that the next interval falls below a cutoff, for several
+    cutoffs at once. Each curve falls while the intervals are coupled and then goes flat, and the
+    knee sits in the same place for every cutoff, so the position is a property of the data rather
+    than of the constant chosen. Measured on male end-to-start intervals, normalising each curve to
+    its own shortest-bin value gives 1.00 -> 0.72 -> 0.71 for a 121 ms cutoff and 1.00 -> 0.89 ->
+    0.82 for a 326 ms one: different levels, same shape.
+
+    Statistics that summarise the whole conditional distribution were tried instead and rejected on
+    the data: Jensen-Shannon divergence from the marginal and the per-bin mutual-information
+    contribution are both NON-MONOTONE here, dipping at 60-80 ms and rising again at 100-130 ms
+    because the modal bin's conditional happens to resemble the marginal most, which would read as
+    dependence disappearing and then returning. Within-bin correlation is ~0 everywhere, since
+    binning removes the variation it would measure.
+
+    Parameters
+    ----------
+    summary (pls.DataFrame)
+        Output of :func:`compute_serial_dependence`.
+    pairs (tuple)
+        ``(current, following)`` arrays from :func:`serial_dependence_pairs`, in seconds.
+    color (str)
+        Hex colour for the median series.
+    thresholds_ms (dict or None)
+        Optional ``{label: milliseconds}`` vertical markers, e.g. per-component z-bounds. Markers
+        outside the plotted range are dropped rather than rescaling the axis.
+    figsize (tuple)
+        Figure size in inches.
+    survival_cutoffs_ms (tuple)
+        Cutoffs for the right panel, in milliseconds.
+
+    Returns
+    -------
+    figure (plt.Figure)
+        The figure.
+    axes (tuple)
+        ``(median_axis, cutoff_axis)``.
+    """
+
+    threshold_colors = ("#B2182B", "#2166AC", "#4D4D4D")
+    cutoff_colors = ("#08519C", "#3182BD", "#6BAED6", "#FDAE6B", "#E6550D")
+    centre = summary["centre_ms"].to_numpy()
+    median_next = summary["median_next_ms"].to_numpy()
+    current, following = pairs
+
+    figure, (median_axis, cutoff_axis) = plt.subplots(1, 2, figsize=figsize)
+
+    identity_span = (centre.min() * 0.75, centre.max() * 1.3)
+    median_axis.plot(identity_span, identity_span, color="#4D4D4D", linewidth=1, alpha=0.45,
+                     label="next = current")
+    median_axis.fill_between(centre, summary["median_lo_ms"].to_numpy(),
+                             summary["median_hi_ms"].to_numpy(), color=color, alpha=0.3, linewidth=0)
+    median_axis.plot(centre, median_next, marker="o", color=color, linewidth=2, markersize=5,
+                     label="median next interval (99% CI)")
+    median_axis.set_xscale("log")
+    median_axis.set_yscale("log")
+    median_axis.set_xlim(*identity_span)
+    median_axis.set_ylim(median_next.min() * 0.7, median_next.max() * 1.6)
+    median_axis.set_xlabel("current interval (ms)")
+    median_axis.set_ylabel("next interval (ms)")
+    median_axis.set_title("Median of the next interval")
+
+    low_limit, high_limit = identity_span
+    drawn = 0
+    for label, value in (thresholds_ms or {}).items():
+        if not low_limit <= value <= high_limit:
+            continue
+        for axis in (median_axis, cutoff_axis):
+            axis.axvline(value, color=threshold_colors[drawn % len(threshold_colors)],
+                         linestyle=":", linewidth=1.8, label=label if axis is median_axis else None)
+        drawn += 1
+
+    for index, cutoff in enumerate(survival_cutoffs_ms):
+        shares, centres = [], []
+        for row in summary.iter_rows(named=True):
+            inside = (current >= row["low_ms"] / 1000.0) & (current < row["high_ms"] / 1000.0)
+            if not inside.any():
+                continue
+            shares.append(100.0 * float(np.mean(following[inside] < cutoff / 1000.0)))
+            centres.append(row["centre_ms"])
+        cutoff_axis.plot(centres, shares, marker="o", markersize=4, linewidth=1.8,
+                         color=cutoff_colors[index % len(cutoff_colors)],
+                         label=f"next < {cutoff:.0f} ms")
+    cutoff_axis.set_xscale("log")
+    cutoff_axis.set_xlim(*identity_span)
+    cutoff_axis.set_ylim(0, 100)
+    cutoff_axis.set_xlabel("current interval (ms)")
+    cutoff_axis.set_ylabel("share of following intervals (%)")
+    cutoff_axis.set_title("Same knee, whatever counts as short")
+
+    # Plain millisecond tick labels: a 40-3000 ms range rendered as powers of ten reads as
+    # "4 x 10^1", which is unhelpful for a quantity people think about in milliseconds.
+    plain = FuncFormatter(lambda value, _pos: f"{value:g}")
+    for axis in (median_axis, cutoff_axis):
+        axis.xaxis.set_major_formatter(plain)
+        axis.xaxis.set_minor_formatter(NullFormatter())
+    median_axis.yaxis.set_major_formatter(plain)
+    median_axis.yaxis.set_minor_formatter(NullFormatter())
+
+    median_axis.legend(frameon=False, fontsize=8, loc="upper left")
+    cutoff_axis.legend(frameon=False, fontsize=8, loc="upper right")
+    figure.tight_layout()
+    return figure, (median_axis, cutoff_axis)
+
+
+def load_tied_model_from_h5(
+    h5_path: str | Path,
+    interval_type: str,
+    sex: str,
+    call_type: str,
+    n_peak: int | None = None,
+) -> tuple[TMixture, np.ndarray, int, pls.DataFrame]:
+    """
+    Description
+    -----------
+    Rebuilds a fitted tied-scale ("peaks plus background") mixture from an interval archive.
+
+    The archive stores the tied ladder one row per (peak count, component) in ``tied_fits``;
+    this selects one pool and one peak count and reassembles the :class:`TMixture`, keeping
+    the stored role order (peak components first) so the rebuilt model is exactly the fitted
+    one. With ``n_peak`` left as None the peak count selected by the session-corrected
+    step-up test is used, read from the mode's ``selected_n_peak_<sex>_<call_type>`` attribute.
+
+    Parameters
+    ----------
+    h5_path (str | Path)
+        Path to an interval archive written with ``fit_tied_model`` enabled.
+    interval_type (str)
+        ``'e2s'`` or ``'s2s'``.
+    sex (str)
+        ``'male'`` or ``'female'``.
+    call_type (str)
+        ``'usv'`` or ``'squeak'``.
+    n_peak (int or None)
+        Peak count to rebuild; defaults to None, meaning the selected count.
+
+    Returns
+    -------
+    model (TMixture)
+        The rebuilt mixture, peak components first.
+    order (np.ndarray)
+        Indices sorting its components by ascending log-location, for the plotting helpers.
+    n_peak (int)
+        The peak count rebuilt.
+    rows (pls.DataFrame)
+        The ``tied_fits`` rows it was built from, one per component.
+    """
+
+    archive = read_usv_interval_h5(h5_path)
+    mode = archive["modes"][interval_type]
+    fits = mode["tied_fits"]
+    if fits is None:
+        msg = f"{h5_path} has no tied_fits for {interval_type}; was fit_tied_model enabled?"
+        raise KeyError(msg)
+    if n_peak is None:
+        n_peak = int(mode["attrs"][f"selected_n_peak_{sex}_{call_type}"])
+    rows = fits.filter((pls.col("sex") == sex) & (pls.col("call_type") == call_type)
+                       & (pls.col("n_peak") == n_peak)).sort("component")
+    if rows.height == 0:
+        msg = f"no tied fit for {sex} {call_type} {interval_type} at {n_peak} peak(s)."
+        raise KeyError(msg)
+    model = TMixture(
+        weights=rows["weight"].to_numpy(),
+        means=rows["logmean"].to_numpy(),
+        covariances=rows["logscale"].to_numpy() ** 2,
+        nus=rows["nu"].to_numpy(),
+    )
+    order = np.argsort(rows["logmean"].to_numpy())
+    return model, order, int(n_peak), rows
+
+
+def plot_peak_lrt_panel(
+    peak_lrt: pls.DataFrame,
+    peak_lrt_null: pls.DataFrame,
+    color: str,
+    figsize_per_panel: tuple = (3.6, 3.0),
+) -> plt.Figure:
+    """
+    Description
+    -----------
+    One panel per rung of the session-corrected peak-count test.
+
+    Each panel is the rung's parametric bootstrap null (histogram), the observed statistic
+    before correction (dashed), the statistic after division by the session design effect
+    (solid), and the ``1 - alpha_eff`` null quantile the corrected statistic is scored against
+    (dotted). Both statistics are drawn because the correction is part of the result: the raw
+    statistic is what an iid null would be asked to judge, the corrected one is what the test
+    decided on, and the gap between them is the design effect printed in the panel title.
+
+    Parameters
+    ----------
+    peak_lrt (pls.DataFrame)
+        The archive's ``peak_lrt`` rows for ONE pool, one per rung.
+    peak_lrt_null (pls.DataFrame)
+        The matching ``peak_lrt_null`` rows.
+    color (str)
+        Histogram colour (hex).
+    figsize_per_panel (tuple)
+        Width and height of each panel in inches; defaults to (3.6, 3.0).
+
+    Returns
+    -------
+    f (plt.Figure)
+        The figure, one panel per rung, left to right in rung order.
+    """
+
+    rungs = peak_lrt.sort("n_peak_null")
+    n_rungs = rungs.height
+    f, axes = plt.subplots(1, n_rungs, figsize=(figsize_per_panel[0] * n_rungs,
+                                                figsize_per_panel[1]), squeeze=False)
+    for axis, row in zip(axes[0], rungs.iter_rows(named=True), strict=True):
+        null = peak_lrt_null.filter(pls.col("n_peak_null") == row["n_peak_null"])["lr_b"].to_numpy()
+        upper = max(float(np.max(null)), row["lr_obs"], row["lr_corrected"], row["threshold"]) * 1.08
+        axis.hist(null, bins=40, range=(min(0.0, float(np.min(null))), upper), color=color,
+                  edgecolor="#202020", linewidth=0.4)
+        axis.axvline(row["lr_obs"], color="#1F2933", linestyle=(0, (4, 2)), linewidth=1.3,
+                     label=f"LR raw = {row['lr_obs']:.2f}")
+        axis.axvline(row["lr_corrected"], color="#1F2933", linewidth=1.8,
+                     label=f"LR / deff = {row['lr_corrected']:.2f}")
+        axis.axvline(row["threshold"], color="#B4404A", linestyle=(0, (1, 1.5)), linewidth=1.6,
+                     label=f"threshold = {row['threshold']:.2f}")
+        verdict = "reject" if row["rejected"] else "keep"
+        axis.set_title(f"{row['n_peak_null']} vs {row['n_peak_alt']} peaks -- {verdict}\n"
+                       f"deff = {row['design_effect']:.2f}, "
+                       f"p = {row['p_value_corrected']:.4f} "
+                       f"($\\alpha$ = {row['alpha_used']:.4f})",
+                       fontsize=plt.rcParams["axes.titlesize"])
+        axis.set_xlabel("likelihood ratio")
+        axis.legend(frameon=False, fontsize=7)
+    axes[0][0].set_ylabel("bootstrap replicates")
+    f.tight_layout()
+    return f
+
+
+def plot_interval_pool_description(
+    values: np.ndarray,
+    summary: dict,
+    color: str,
+    title: str,
+    xlims: tuple = (-5.0, 5.0),
+    figsize: tuple = (5, 4),
+) -> tuple[plt.Figure, plt.Axes]:
+    """
+    Description
+    -----------
+    Log-interval histogram of one pool, annotated with its descriptive statistics only.
+
+    This is the figure for a pool archived for description and not fitted -- the female's
+    squeaks, 237 end-to-start intervals from 70 of 121 sessions, too few for the peak-count
+    test -- so it deliberately carries no fitted curve. The median and quartiles are drawn on
+    the histogram and printed with the interval and session counts, because for a sparse pool
+    the coverage is part of what a reader needs to weigh the numbers.
+
+    Parameters
+    ----------
+    values (np.ndarray)
+        A (n_intervals,) ndarray of intervals in seconds.
+    summary (dict)
+        The pool's row from the archive's ``pool_summary`` table.
+    color (str)
+        Histogram colour (hex).
+    title (str)
+        Axes title.
+    xlims (tuple)
+        Log-space x limits; defaults to (-5.0, 5.0).
+    figsize (tuple)
+        Figure size; defaults to (5, 4).
+
+    Returns
+    -------
+    f (plt.Figure)
+        The figure.
+    ax (plt.Axes)
+        Its axes.
+    """
+
+    f, ax = plt.subplots(figsize=figsize)
+    if values.size:
+        # A few hundred points at most for the pools this is used on, so bins follow the data;
+        # a fixed 80-bin histogram of 237 values would be mostly empty bins.
+        bins = max(12, int(np.sqrt(values.size)))
+        ax.hist(np.log(values), bins=bins, color=color, edgecolor="#202020", linewidth=0.5)
+        for key, style in (("p25_s", (0, (3, 2))), ("median_s", "solid"), ("p75_s", (0, (3, 2)))):
+            if np.isfinite(summary[key]):
+                ax.axvline(np.log(summary[key]), color="#B4404A", linestyle=style, linewidth=1.3)
+    ax.set_xlim(*xlims)
+    ax.set_xlabel("$\\log_{interval}$ (s)")
+    ax.set_ylabel("count")
+    ax.set_title(title, fontsize=plt.rcParams["axes.titlesize"])
+    ax.text(0.97, 0.95,
+            f"n = {summary['n_intervals']:,} intervals\n"
+            f"{summary['n_sessions']} sessions\n"
+            f"median {summary['median_s'] * 1e3:,.0f} ms\n"
+            f"IQR {summary['p25_s'] * 1e3:,.0f}-{summary['p75_s'] * 1e3:,.0f} ms",
+            transform=ax.transAxes, ha="right", va="top", fontsize=8, color="#202020")
+    f.tight_layout()
+    return f, ax

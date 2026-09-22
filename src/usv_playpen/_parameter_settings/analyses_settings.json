@@ -34,22 +34,17 @@
     "spatial_hist_num_bins": 196
   },
   "compute_inter_usv_interval_distributions": {
-    "seam_ladder_thin_bool": true,
-    "seam_ladder_stride_samples": 8128,
-    "seam_ladder_half_width_ms": 1.5,
-    "seam_ladder_max_rung": 6,
-    "seam_ladder_seed": 0,
     "session_lists": [
       "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
     ],
     "output_directory": "/mnt/falkner/Bartul/modeling/usv_interval_results",
     "figures_directory": "/mnt/falkner/Bartul/figures",
     "exclude_noise_usvs": true,
-    "fit_mixture_model": true,
+    "fit_mixture_model": false,
     "n_components_min": 2,
     "n_components_max": 6,
     "n_repeats": 10,
-    "max_modes_reported": 3,
+    "max_modes_reported": 6,
     "random_seed_base": 0,
     "cv_n_folds": 5,
     "cv_n_init": 5,
@@ -68,7 +63,28 @@
     "bootstrap_lrt_alpha": 0.01,
     "bootstrap_lrt_bonferroni": true,
     "bootstrap_lrt_n_jobs": 24,
-    "bootstrap_lrt_n_init": 10
+    "bootstrap_lrt_n_init": 10,
+    "interval_pools": [
+      {
+        "sex": "male",
+        "call_type": "usv",
+        "adjacency": "filtered",
+        "fit": true
+      },
+      {
+        "sex": "female",
+        "call_type": "squeak",
+        "adjacency": "strict",
+        "fit": false
+      }
+    ],
+    "min_intervals_for_fitting": 5000,
+    "tied_n_background": 2,
+    "tied_peak_grid": [1, 2, 3],
+    "tied_n_init": 4,
+    "tied_n_init_boot": 2,
+    "tied_design_bootstrap": 2000,
+    "fit_tied_model": true
   },
   "send_email": {
     "analyses_pc_list": [

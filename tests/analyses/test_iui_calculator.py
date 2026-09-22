@@ -56,8 +56,9 @@ def test_polars_h5_roundtrip_nullable_int_and_bool(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _make_settings(tmp_path, fit_mixture_model=False):
-    """Build the analyses_settings sub-block expected by the class."""
+def _make_settings(tmp_path, fit_mixture_model=False, fit_tied_model=False):
+    """Build the analyses_settings sub-block expected by the class, including the pool spec:
+    the male's ultrasonic calls (fitted) and the female's squeaks (described only)."""
     return {
         "compute_inter_usv_interval_distributions": {
             "session_lists": [],
@@ -81,6 +82,17 @@ def _make_settings(tmp_path, fit_mixture_model=False):
             "bootstrap_lrt_n_init": 1,
             "bootstrap_lrt_alpha": 0.05,
             "bootstrap_lrt_bonferroni": True,
+            "interval_pools": [
+                {"sex": "male", "call_type": "usv", "adjacency": "filtered", "fit": True},
+                {"sex": "female", "call_type": "squeak", "adjacency": "strict", "fit": False},
+            ],
+            "min_intervals_for_fitting": 1,
+            "fit_tied_model": fit_tied_model,
+            "tied_n_background": 2,
+            "tied_peak_grid": [1, 2, 3],
+            "tied_n_init": 1,
+            "tied_n_init_boot": 1,
+            "tied_design_bootstrap": 10,
         }
     }
 
@@ -188,7 +200,8 @@ def _mock_session_resolution(monkeypatch, tmp_path):
     monkeypatch.setattr(iui_mod, "_session_source_map",
                         lambda lists: {sess_root: "groupA"})
 
-    def fake_compute(session_root, interval_type, exclude_noise_usvs):
+    def fake_compute(session_root, interval_type, exclude_noise_usvs, call_type=None,
+                     adjacency="filtered"):
         if session_root != sess_root:
             return {}
         return {
@@ -230,10 +243,14 @@ def test_save_iui_writes_archive_when_fit_mixture_model_false(tmp_path, mocker, 
     assert set(per_mode.keys()) == {"s2s", "e2s"}
     # Both modes have intervals + drop_counts; mixture_model_fits / bootstrap_lrt are None
     for mode in per_mode.values():
-        assert mode["intervals"].height == 5  # 3 male + 2 female per mode
+        assert mode["intervals"].height == 5  # 3 male USV + 2 female squeak per mode
+        assert set(mode["intervals"]["call_type"].unique()) == {"usv", "squeak"}
+        assert mode["pool_summary"].height == 2
         assert mode["mixture_model_fits"] is None
         assert mode["bootstrap_lrt"] is None
         assert mode["bootstrap_lrt_null"] is None
+        assert mode["tied_fits"] is None
+        assert mode["peak_lrt"] is None
 
 
 def test_save_iui_writes_archive_when_fit_mixture_model_true(tmp_path, mocker, monkeypatch):
@@ -285,9 +302,9 @@ def test_save_iui_writes_archive_when_fit_mixture_model_true(tmp_path, mocker, m
         assert mode["mixture_model_fits"] is not None
         assert mode["bootstrap_lrt"] is not None
         assert mode["bootstrap_lrt_null"] is not None
-        # Per-mode attrs include the step-up selected K values
+        # Only the fitted pool (the male's USVs) is swept; the female's squeaks are described only.
         assert "K_selected_male" in mode["attrs"]
-        assert "K_selected_female" in mode["attrs"]
+        assert "K_selected_female" not in mode["attrs"]
 
 
 def test_save_iui_creates_output_directory(tmp_path, mocker, monkeypatch):
@@ -313,3 +330,42 @@ def test_save_iui_creates_output_directory(tmp_path, mocker, monkeypatch):
     calc.save_inter_usv_interval_distributions_to_file()
 
     assert nested_out.is_dir()
+
+
+def test_save_iui_runs_tied_model_on_fitted_pools_only(tmp_path, mocker, monkeypatch):
+    """fit_tied_model=True -> the tied peak ladder and session-corrected test run on the pool
+    marked ``fit`` and not on the described-only pool; their tables and the selected peak count
+    reach the archive. The expensive fit is mocked and its call arguments checked."""
+    list_file = tmp_path / "sessions.txt"
+    list_file.write_text("/dummy/session\n")
+    settings = _make_settings(tmp_path, fit_tied_model=True)
+    settings["compute_inter_usv_interval_distributions"]["session_lists"] = [str(list_file)]
+    _mock_session_resolution(monkeypatch, tmp_path)
+
+    calls: list[dict] = []
+
+    def fake_tied(**kwargs):
+        calls.append(kwargs)
+        identity = kwargs["pool_identity"]
+        one = pls.DataFrame([{**identity, "n_peak": 2}])
+        return one, one, one, one, 2, 0.0033
+
+    monkeypatch.setattr(iui_mod, "fit_tied_peak_ladder_and_lrt", fake_tied)
+    write_mock = mocker.patch.object(iui_mod, "write_ivi_h5",
+                                     return_value=Path(tmp_path / "out" / "stub.h5"))
+    monkeypatch.setattr(iui_mod, "git_sha_for_provenance", lambda _p: "stub")
+
+    InterUSVIntervalCalculator(input_parameter_dict=settings,
+                               message_output=lambda *_a, **_kw: None
+                               ).save_inter_usv_interval_distributions_to_file()
+
+    assert len(calls) == 2  # one fitted pool x two interval types
+    assert all(c["pool_identity"]["sex"] == "male" for c in calls)
+    assert all(c["session_labels"].size == c["values"].size for c in calls)
+    per_mode = write_mock.call_args.kwargs["per_mode"]
+    for mode in per_mode.values():
+        assert mode["tied_fits"] is not None
+        assert mode["peak_lrt"] is not None
+        assert mode["attrs"]["selected_n_peak_male_usv"] == 2
+        fitted = dict(zip(mode["pool_summary"]["sex"], mode["pool_summary"]["fitted"]))
+        assert fitted == {"male": True, "female": False}
