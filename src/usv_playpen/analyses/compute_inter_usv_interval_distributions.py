@@ -920,8 +920,12 @@ class InterUSVIntervalCalculator:
         for the full schema):
 
         * Root ``/attrs`` -- every JSON parameter that drove the run,
-          plus ``created_at_iso``, ``git_sha``, ``source_lists`` and
-          ``n_sessions_loaded``.
+          plus ``created_at_iso``, ``git_sha``, ``source_lists``,
+          ``n_sessions_loaded`` and ``session_roots`` (the sorted session
+          directories that contributed data). ``source_lists`` names the
+          list files; ``session_roots`` is what they resolved to on the
+          day, so the archive still says which sessions it holds after a
+          list file is edited.
         * ``/<mode>/intervals`` -- tidy one-row-per-inter-USV interval table with
           ``session_id``, ``source_list``, ``interval_type``, ``sex``,
           ``interval_s``, ``log_interval``, ``emitter_id`` (the animal the
@@ -1262,6 +1266,7 @@ class InterUSVIntervalCalculator:
             "git_sha": git_sha_for_provenance(pathlib.Path(__file__).resolve().parent),
             "source_lists": [str(p) for p in session_lists],
             "n_sessions_loaded": int(len(sessions_with_data)),
+            "session_roots": sorted(sessions_with_data),
             "exclude_noise_usvs": bool(exclude_noise_usvs),
             "interval_pools": interval_pools,
             "min_intervals_for_fitting": int(min_intervals_for_fitting),

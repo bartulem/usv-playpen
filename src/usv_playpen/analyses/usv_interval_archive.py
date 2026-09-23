@@ -10,7 +10,7 @@ self-describing HDF5 file, structured as::
     ├── /attrs                  analysis-level provenance (every JSON
     │                           parameter that drove the run, plus
     │                           created_at_iso / git_sha / source_lists /
-    │                           n_sessions_loaded)
+    │                           n_sessions_loaded / session_roots)
     ├── /<mode>/                mode group (``s2s`` and/or ``e2s``)
     │   ├── /attrs              mode-level provenance
     │   │                       (alpha_effective, K_selected_male,
@@ -293,8 +293,10 @@ def write_ivi_h5(
         Provenance attributes attached to the file root. Should include
         every JSON parameter that drove the run (so a re-render months
         later is fully self-describing) plus ``created_at_iso``,
-        ``git_sha``, ``source_lists`` (list of resolved paths), and
-        ``n_sessions_loaded``.
+        ``git_sha``, ``source_lists`` (list of resolved paths),
+        ``n_sessions_loaded`` and ``session_roots`` (the session
+        directories that contributed data, so the archive identifies its
+        sessions even after a list file changes).
     per_mode (dict)
         Mapping ``mode -> {'attrs': {...}, 'intervals': pls.DataFrame,
         'drop_counts': pls.DataFrame, 'mixture_model_fits': pls.DataFrame |

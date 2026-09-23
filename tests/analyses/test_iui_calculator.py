@@ -221,7 +221,8 @@ def _mock_session_resolution(monkeypatch, tmp_path):
 def test_save_iui_writes_archive_when_fit_mixture_model_false(tmp_path, mocker, monkeypatch):
     """fit_mixture_model=False → archive contains intervals + drop_counts but NOT
     mixture_model_fits / bootstrap_lrt tables. Verifies write_ivi_h5 was invoked once
-    with the expected per_mode payload shape."""
+    with the expected per_mode payload shape, and that the provenance names both the
+    list files and the session directories they resolved to."""
     list_file = tmp_path / "sessions.txt"
     list_file.write_text("/dummy/session\n")
 
@@ -242,6 +243,10 @@ def test_save_iui_writes_archive_when_fit_mixture_model_false(tmp_path, mocker, 
     assert write_mock.call_count == 1
     per_mode = write_mock.call_args.kwargs["per_mode"]
     assert set(per_mode.keys()) == {"s2s", "e2s"}
+    # the archive names the session directories it holds, not only the list files
+    attrs = write_mock.call_args.kwargs["analysis_attrs"]
+    assert attrs["session_roots"] == [str(tmp_path / "20260101_120000")]
+    assert attrs["source_lists"] == [str(list_file)]
     # Both modes have intervals + drop_counts; mixture_model_fits / bootstrap_lrt are None
     for mode in per_mode.values():
         assert mode["intervals"].height == 5  # 3 male USV + 2 female squeak per mode
