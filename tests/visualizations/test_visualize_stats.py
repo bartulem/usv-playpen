@@ -62,6 +62,7 @@ from usv_playpen.visualizations.usv_interval_summary_statistics import (
     plot_qq,
     plot_best_fit_with_annotations,
     plot_bootstrap_lrt_panel,
+    serial_dependence_pairs,
 )
 from usv_playpen.visualizations import usv_interval_summary_statistics as uiss
 from usv_playpen.analyses.compute_inter_usv_interval_distributions import fit_mixture_model_sweep
@@ -491,8 +492,10 @@ def test_build_master_usv_dataframe_skips_session_without_category_col(tmp_path)
 # ===========================================================================
 
 
-def _build_archive(tmp_path: Path, *, with_mixture_model: bool = True, with_lrt: bool = True) -> Path:
-    """Constructs a usv_interval_analysis_<ts>.h5 file with both modes populated."""
+def _build_archive(tmp_path: Path, *, with_mixture_model: bool = True, with_lrt: bool = True,
+                   corrected_lrt: bool = False) -> Path:
+    """Constructs a usv_interval_analysis_<ts>.h5 file with both modes populated.
+    ``corrected_lrt`` adds the session-corrected columns a current sweep writes."""
     intervals_df = pls.DataFrame({
         "session_id": ["s1", "s1", "s1", "s2"],
         "source_list": ["g", "g", "g", "g"],
@@ -556,6 +559,13 @@ def _build_archive(tmp_path: Path, *, with_mixture_model: bool = True, with_lrt:
             "null_max": [2.5, 2.1],
             "K_selected_step_up": [2, 3],
         })
+        if corrected_lrt:
+            payload["s2s"]["bootstrap_lrt"] = payload["s2s"]["bootstrap_lrt"].with_columns(
+                pls.Series("design_effect", [1.5, 2.0]),
+                pls.Series("design_effect_raw", [1.5, 2.0]),
+                pls.Series("lr_corrected", [3.0, 3.25]),
+                pls.Series("p_value_corrected", [0.2, 0.4]),
+            )
         payload["s2s"]["bootstrap_lrt_null"] = pls.DataFrame({
             "sex": ["male"] * 5,
             "K_null": [1] * 5,
@@ -651,6 +661,30 @@ def test_load_lrt_sweep_from_h5_returns_dict(tmp_path):
     assert "lr_null" in male_entry
     # lr_null restored to numpy array
     assert isinstance(male_entry["lr_null"], np.ndarray)
+
+
+def test_load_lrt_sweep_from_h5_reads_the_corrected_statistic(tmp_path):
+    """A session-corrected sweep is read like the tied test: lr_obs / p_value are the
+    corrected ones the step-up decided on, and the raw ones sit next to the design effect."""
+    arc = _build_archive(tmp_path, with_mixture_model=True, with_lrt=True, corrected_lrt=True)
+    entry = load_lrt_sweep_from_h5(str(arc), interval_type="s2s")["male"][(1, 2)]
+    assert entry["lr_obs"] == 3.0 and entry["p_value"] == 0.2
+    assert entry["lr_raw"] == 4.5 and entry["p_value_raw"] == 0.02
+    assert entry["design_effect"] == 1.5
+
+
+def test_serial_dependence_pairs_never_chains_two_animals_of_one_sex():
+    """Two females in one session: each animal's intervals pair only among themselves, so
+    the last interval of one female is never paired with the first of the other."""
+    df = pls.DataFrame({
+        "session_id": ["s1"] * 5,
+        "sex": ["female"] * 5,
+        "interval_s": [0.1, 0.2, 0.3, 5.0, 6.0],
+        "emitter_id": ["A", "A", "A", "B", "B"],
+    })
+    current, following = serial_dependence_pairs(df, "female")
+    np.testing.assert_allclose(current, [0.1, 0.2, 5.0])
+    np.testing.assert_allclose(following, [0.2, 0.3, 6.0])
 
 
 def test_load_lrt_sweep_from_h5_missing_tables_raises(tmp_path):

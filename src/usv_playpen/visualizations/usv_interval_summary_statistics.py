@@ -1219,6 +1219,13 @@ def load_lrt_sweep_from_h5(
     per-pair summary stats and ``/<mode>/bootstrap_lrt_null`` for the
     long-form null distributions used in :func:`plot_bootstrap_lrt_panel`.
 
+    Archives whose sweep was session-corrected (they carry ``lr_corrected``
+    and ``p_value_corrected``) are read the way :func:`load_peak_lrt_sweep_from_h5`
+    reads the tied test: ``lr_obs`` and ``p_value`` hold the CORRECTED statistic
+    and its p-value, because that is what the step-up decided on, and the raw
+    ones move to ``lr_raw`` / ``p_value_raw`` next to ``design_effect``. Older
+    archives, written before the correction existed, are read as they were.
+
     Parameters
     ----------
     h5_path (str)
@@ -1232,7 +1239,8 @@ def load_lrt_sweep_from_h5(
     sweep (dict)
         Mapping ``sex -> {(K_null, K_alt) -> result_dict}`` with
         every key the compute path wrote, including ``'lr_null'``
-        as a numpy array.
+        as a numpy array, and -- for a session-corrected sweep --
+        ``'lr_raw'``, ``'p_value_raw'`` and ``'design_effect'``.
     """
 
     archive = read_usv_interval_h5(h5_path)
@@ -1257,6 +1265,7 @@ def load_lrt_sweep_from_h5(
             msg
         )
 
+    corrected = "lr_corrected" in summary_df.columns
     sweep: dict = {}
     for row in summary_df.iter_rows(named=True):
         sex = row["sex"]
@@ -1282,6 +1291,14 @@ def load_lrt_sweep_from_h5(
             "null_p95": float(row["null_p95"]),
             "null_max": float(row["null_max"]),
         }
+        if corrected:
+            sweep[sex][(K_n, K_a)].update({
+                "lr_obs": float(row["lr_corrected"]),
+                "p_value": float(row["p_value_corrected"]),
+                "lr_raw": float(row["lr_obs"]),
+                "p_value_raw": float(row["p_value"]),
+                "design_effect": float(row["design_effect"]),
+            })
     return sweep
 
 
