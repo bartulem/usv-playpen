@@ -1009,7 +1009,7 @@ class InterUSVIntervalCalculator:
         tied_peak_grid = list(cfg['tied_peak_grid'])
         tied_n_init = cfg['tied_n_init']
         tied_n_init_boot = cfg['tied_n_init_boot']
-        tied_design_bootstrap = cfg['tied_design_bootstrap']
+        design_bootstrap = cfg['design_bootstrap']
 
         if model_class not in ('gauss', 't', 'ig'):
             msg = f"compute_inter_usv_interval_distributions: model_class must be 'gauss', 't' or 'ig', got {model_class!r}."
@@ -1145,7 +1145,7 @@ class InterUSVIntervalCalculator:
                         reg_covar=mixture_model_reg_covar, B=bootstrap_lrt_B,
                         n_subsample=bootstrap_lrt_n_subsample, alpha=bootstrap_lrt_alpha,
                         bonferroni=bootstrap_lrt_bonferroni,
-                        n_design_bootstrap=tied_design_bootstrap, seed=random_seed_base,
+                        n_design_bootstrap=design_bootstrap, seed=random_seed_base,
                         n_jobs=bootstrap_lrt_n_jobs, message=message,
                     )
                     tied_tables["tied_fits"].append(fits)
@@ -1210,7 +1210,7 @@ class InterUSVIntervalCalculator:
                                 reg_covar=mixture_model_reg_covar, seed=random_seed_base,
                                 n_jobs=bootstrap_lrt_n_jobs,
                                 session_labels=pool_sessions[fit_keys[sex]],
-                                n_design_bootstrap=tied_design_bootstrap,
+                                n_design_bootstrap=design_bootstrap,
                             )
                             pair_results[(K_n, K_n + 1)] = res
                             message(
@@ -1275,7 +1275,7 @@ class InterUSVIntervalCalculator:
             "tied_peak_grid": tied_peak_grid,
             "tied_n_init": int(tied_n_init),
             "tied_n_init_boot": int(tied_n_init_boot),
-            "tied_design_bootstrap": int(tied_design_bootstrap),
+            "design_bootstrap": int(design_bootstrap),
             "fit_mixture_model": bool(fit_mixture_model),
             "n_components_min": int(n_components_min),
             "n_components_max": int(n_components_max),

@@ -1754,7 +1754,7 @@ and writes per-pool descriptive statistics. The test uses ``bootstrap_lrt_alpha 
 effective per-rung level of ``0.0033``). Design effects are estimated by resampling sessions on the
 test's own subsample and floored at one, so the correction can only make the test more conservative.
 The unconstrained component sweep and its LRT are written as well only when ``fit_mixture_model`` is
-true; that LRT is session-corrected the same way (``tied_design_bootstrap`` sets the session
+true; that LRT is session-corrected the same way (``design_bootstrap`` sets the session
 resampling for both), selects on the corrected p-value, and archives the raw statistic and p-value
 next to the corrected ones.
 

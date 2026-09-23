@@ -92,7 +92,7 @@ def _make_settings(tmp_path, fit_mixture_model=False, fit_tied_model=False):
             "tied_peak_grid": [1, 2, 3],
             "tied_n_init": 1,
             "tied_n_init_boot": 1,
-            "tied_design_bootstrap": 10,
+            "design_bootstrap": 10,
         }
     }
 

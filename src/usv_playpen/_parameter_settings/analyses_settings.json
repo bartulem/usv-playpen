@@ -83,7 +83,7 @@
     "tied_peak_grid": [1, 2, 3],
     "tied_n_init": 4,
     "tied_n_init_boot": 2,
-    "tied_design_bootstrap": 2000,
+    "design_bootstrap": 2000,
     "fit_tied_model": true
   },
   "send_email": {
