@@ -3439,6 +3439,8 @@ def bootstrap_lrt(
     reg_covar: float = 1e-4,
     seed: int = 0,
     message_output=None,
+    session_labels: np.ndarray | None = None,
+    n_design_bootstrap: int = 2000,
 ) -> dict:
     """
     Description
@@ -3497,6 +3499,21 @@ def bootstrap_lrt(
     message_output (callable)
         Optional logging callable for progress messages; if None,
         progress is silent.
+    session_labels (np.ndarray or None)
+        A (n_intervals,) array of session identifiers aligned with
+        ``intervals_sec``. When supplied, the observed statistic is
+        corrected for sessions exactly as :func:`tied_peak_bootstrap_lrt`
+        corrects its own: the design effect is computed from the
+        per-observation log-likelihood differences of the SAME two
+        fits that produced ``lr_obs``, on the SAME subsample, and
+        ``lr_obs / design_effect`` is scored against the same null.
+        The parametric null is drawn iid and has no session structure,
+        so without the correction every rung is compared against a null
+        that is too narrow. Defaults to None, which reports the
+        uncorrected statistic only and leaves the result unchanged.
+    n_design_bootstrap (int)
+        Session-resampling replicates for the design effect; defaults
+        to 2000.
 
     Returns
     -------
@@ -3504,7 +3521,11 @@ def bootstrap_lrt(
         Keys: ``'K_null'``, ``'K_alt'``, ``'B'``, ``'n_subsample'``,
         ``'lr_obs'``, ``'lr_null'`` (length-B array),
         ``'p_value'``, ``'null_mean'``, ``'null_p95'``,
-        ``'null_max'``, ``'model_class'``.
+        ``'null_max'``, ``'model_class'``, and -- when
+        ``session_labels`` is given -- ``'design_effect'`` (floored at
+        one), ``'design_effect_raw'``, ``'clustered_se'``,
+        ``'independent_se'``, ``'effective_n'``, ``'lr_corrected'``,
+        ``'p_value_corrected'``.
     """
 
     if K_alt <= K_null:
@@ -3525,7 +3546,7 @@ def bootstrap_lrt(
     rng = np.random.default_rng(seed)
     # Keyed on the interval VALUES, not their positions, so that a small change to the pool makes a
     # small change to the subsample. See stable_subsample for the measurement that motivated it.
-    intervals_sub = stable_subsample(intervals_sec, n_subsample, seed)
+    intervals_sub, chosen = stable_subsample(intervals_sec, n_subsample, seed, return_indices=True)
     log_x = np.log(intervals_sub)
     N_sub = log_x.size
 
@@ -3559,6 +3580,14 @@ def bootstrap_lrt(
             "increase n_init_obs or fix the initialization."
         )
         raise RuntimeError(msg)
+
+    correction: dict = {}
+    if session_labels is not None:
+        log_x_2d = log_x.reshape(-1, 1)
+        delta = m_alt_obs.score_samples(log_x_2d) - m_null_obs.score_samples(log_x_2d)
+        correction = _session_corrected_statistic(
+            lr_obs, delta, session_labels, np.asarray(intervals_sec).size, chosen,
+            n_design_bootstrap, seed, "bootstrap_lrt")
 
     # Bootstrap null distribution. n_jobs == 1 preserves the legacy sequential
     # path bit-for-bit (one shared resampling RNG stream); n_jobs > 1 runs the
@@ -3599,6 +3628,9 @@ def bootstrap_lrt(
         "null_mean": float(lr_null.mean()),
         "null_p95": float(np.percentile(lr_null, 95)),
         "null_max": float(lr_null.max()),
+        **correction,
+        **({"p_value_corrected": float(np.mean(lr_null >= correction["lr_corrected"]))}
+           if correction and np.isfinite(correction["lr_corrected"]) else {}),
     }
 
 
@@ -3712,6 +3744,83 @@ def _session_design_effect(
     return (clustered_se / independent_se) ** 2, clustered_se, independent_se
 
 
+def _session_corrected_statistic(
+    lr_obs: float,
+    delta: np.ndarray,
+    session_labels: np.ndarray,
+    n_values: int,
+    chosen: np.ndarray,
+    n_design_bootstrap: int,
+    seed: int,
+    caller: str,
+) -> dict:
+    """
+    Description
+    -----------
+    First-order Rao-Scott correction of an observed likelihood-ratio statistic for sessions.
+
+    Shared by :func:`tied_peak_bootstrap_lrt` and :func:`bootstrap_lrt` so both tests correct
+    their statistic with the same arithmetic. ``delta`` is the per-observation log-likelihood
+    difference (alternative minus null) of the SAME two fits that produced ``lr_obs``, on the
+    SAME subsample, so the design effect belongs to the statistic being tested; the sessions of
+    that subsample are ``session_labels[chosen]``.
+
+    Parameters
+    ----------
+    lr_obs (float)
+        The observed statistic, ``2 * sum(delta)``.
+    delta (np.ndarray)
+        A (n_subsample,) ndarray of per-observation log-likelihood differences.
+    session_labels (np.ndarray)
+        A (n_values,) array of session identifiers aligned with the full pool.
+    n_values (int)
+        Size of the full pool the subsample was drawn from.
+    chosen (np.ndarray)
+        Indices of the subsample in the full pool, from :func:`stable_subsample`.
+    n_design_bootstrap (int)
+        Session-resampling replicates for the design effect.
+    seed (int)
+        Seed for the session resampling.
+    caller (str)
+        Name of the calling test, for the error message.
+
+    Returns
+    -------
+    correction (dict)
+        ``'design_effect_raw'``, ``'design_effect'`` (floored at one), ``'clustered_se'``,
+        ``'independent_se'``, ``'effective_n'`` and ``'lr_corrected'``.
+
+    Raises
+    ------
+    ValueError
+        ``session_labels`` is not aligned with the pool.
+    """
+
+    labels = np.asarray(session_labels).ravel()
+    if labels.size != n_values:
+        msg = f"{caller}: session_labels has {labels.size} entries for {n_values} intervals."
+        raise ValueError(msg)
+    _, session_index = np.unique(labels[chosen], return_inverse=True)
+    raw_design_effect, clustered_se, independent_se = _session_design_effect(
+        delta, session_index, n_design_bootstrap, seed)
+    # Floored at one so the correction can only shrink the statistic. A design effect
+    # below one would mean negative within-session correlation; in practice it is
+    # estimation noise from resampling too few sessions -- on a 4-session pool the
+    # bootstrap returned 0.33, which would have tripled a statistic the correction
+    # exists to make MORE conservative. On the 118-session male pool the estimates
+    # were 1.26-1.56 and the floor does not bind.
+    design_effect = max(float(raw_design_effect), 1.0) if np.isfinite(raw_design_effect) \
+        else np.nan
+    return {
+        "design_effect_raw": float(raw_design_effect),
+        "design_effect": float(design_effect),
+        "clustered_se": clustered_se,
+        "independent_se": independent_se,
+        "effective_n": float(delta.size / design_effect) if design_effect > 0 else np.nan,
+        "lr_corrected": float(lr_obs / design_effect) if design_effect > 0 else np.nan,
+    }
+
+
 def tied_peak_bootstrap_lrt(
     intervals_sec: np.ndarray,
     n_peak_null: int,
@@ -3805,31 +3914,10 @@ def tied_peak_bootstrap_lrt(
 
     correction: dict = {}
     if session_labels is not None:
-        labels = np.asarray(session_labels).ravel()
-        if labels.size != values.size:
-            msg = (f"tied_peak_bootstrap_lrt: session_labels has {labels.size} entries for "
-                   f"{values.size} intervals.")
-            raise ValueError(msg)
-        _, session_index = np.unique(labels[chosen], return_inverse=True)
         delta = (alt_model.score_samples(log_sub) - null_model.score_samples(log_sub))
-        raw_design_effect, clustered_se, independent_se = _session_design_effect(
-            delta, session_index, n_design_bootstrap, seed)
-        # Floored at one so the correction can only shrink the statistic. A design effect
-        # below one would mean negative within-session correlation; in practice it is
-        # estimation noise from resampling too few sessions -- on a 4-session pool the
-        # bootstrap returned 0.33, which would have tripled a statistic the correction
-        # exists to make MORE conservative. On the 118-session male pool the estimates
-        # were 1.26-1.56 and the floor does not bind.
-        design_effect = max(float(raw_design_effect), 1.0) if np.isfinite(raw_design_effect) \
-            else np.nan
-        correction = {
-            "design_effect_raw": float(raw_design_effect),
-            "design_effect": float(design_effect),
-            "clustered_se": clustered_se,
-            "independent_se": independent_se,
-            "effective_n": float(subsample.size / design_effect) if design_effect > 0 else np.nan,
-            "lr_corrected": float(lr_obs / design_effect) if design_effect > 0 else np.nan,
-        }
+        correction = _session_corrected_statistic(
+            lr_obs, delta, session_labels, values.size, chosen, n_design_bootstrap, seed,
+            "tied_peak_bootstrap_lrt")
 
     replicates = Parallel(n_jobs=n_jobs)(
         delayed(_tied_peak_lrt_replicate)(null_model, subsample.size, n_peak_null,

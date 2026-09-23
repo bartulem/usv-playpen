@@ -888,3 +888,34 @@ def test_tied_peak_bootstrap_lrt_floors_design_effect_at_one():
 
     assert result["design_effect"] >= 1.0
     assert result["lr_corrected"] <= result["lr_obs"] + 1e-9
+
+
+def test_bootstrap_lrt_session_correction_matches_its_own_statistic():
+    """
+    With session labels, the unconstrained test corrects its own statistic: the design effect is
+    floored at one, the corrected statistic is exactly lr_obs / design_effect, the corrected
+    p-value scores it against the same null, and the uncorrected fields are identical to a run
+    without labels (up to floating-point reduction order). Misaligned labels raise instead of
+    being silently truncated.
+    """
+    rng = np.random.default_rng(3)
+    pool = np.exp(np.concatenate([rng.normal(-2.7, 0.25, 1500), rng.normal(0.0, 1.2, 700)]))
+    labels = np.repeat(np.arange(20), pool.size // 20 + 1)[:pool.size]
+    kwargs = dict(K_null=2, K_alt=3, B=4, n_subsample=1500, model_class="t", n_init_obs=1,
+                  n_init_boot=1, seed=0)
+    plain = bootstrap_lrt(pool, **kwargs)
+    corrected = bootstrap_lrt(pool, **kwargs, session_labels=labels, n_design_bootstrap=100)
+
+    assert "lr_corrected" not in plain
+    # identical up to floating-point reduction order in the EM fits
+    for key in ("lr_obs", "p_value", "null_mean", "null_p95", "null_max"):
+        assert corrected[key] == pytest.approx(plain[key], rel=1e-9)
+    np.testing.assert_allclose(corrected["lr_null"], plain["lr_null"], rtol=1e-9)
+    assert corrected["design_effect"] >= 1.0
+    assert corrected["lr_corrected"] == pytest.approx(corrected["lr_obs"] / corrected["design_effect"])
+    assert corrected["p_value_corrected"] == pytest.approx(
+        float(np.mean(corrected["lr_null"] >= corrected["lr_corrected"])))
+    assert corrected["p_value_corrected"] >= corrected["p_value"]
+
+    with pytest.raises(ValueError, match="session_labels has"):
+        bootstrap_lrt(pool, **kwargs, session_labels=labels[:-1], n_design_bootstrap=10)
