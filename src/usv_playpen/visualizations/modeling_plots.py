@@ -47,7 +47,9 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.patheffects as mpe
 import matplotlib.transforms as mtransforms
-from matplotlib.colors import ListedColormap
+from matplotlib.collections import LineCollection
+from matplotlib.transforms import offset_copy
+from matplotlib.colors import ListedColormap, Normalize
 from matplotlib.patches import Patch, Rectangle
 from matplotlib.lines import Line2D
 import numpy as np
@@ -56,6 +58,7 @@ import pathlib
 import pickle
 import re
 import seaborn as sns
+from scipy import stats
 from scipy.stats import gaussian_kde
 from sklearn.metrics import confusion_matrix, roc_auc_score
 from sklearn.cluster import KMeans
@@ -7442,3 +7445,568 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
         'n_features': n_features,
         'configured_filter_history': cfg_hist,
     }
+
+
+# Display names for the behavioural-response figures. `ego_yaw` is the head's yaw
+# relative to the body, which the settings key does not say to a reader.
+_BEHAVIORAL_RESPONSE_NAMES = {
+    'speed': 'female speed',
+    'neck_elevation': 'female neck elevation',
+    'allo_roll': 'female head roll',
+    'allo_pitch': 'female head pitch',
+    'ego_yaw': 'female head yaw',
+    'back_pitch': 'female back pitch',
+    'back_yaw': 'female back yaw',
+    'tail_curvature': 'female tail curvature',
+}
+
+
+def _benjamini_hochberg(p_values: np.ndarray, false_discovery_rate: float) -> np.ndarray:
+    """
+    Benjamini-Hochberg step-up procedure.
+
+    Parameters
+    ----------
+    p_values : np.ndarray
+        Raw p-values.
+    false_discovery_rate : float
+        Target proportion of false positives among the rejections.
+
+    Returns
+    -------
+    rejected : np.ndarray
+        Boolean mask of hypotheses rejected at ``false_discovery_rate``.
+    """
+
+    finite = np.isfinite(p_values)
+    rejected = np.zeros(p_values.shape, dtype=bool)
+    if not np.any(finite):
+        return rejected
+    values = p_values[finite]
+    order = np.argsort(values)
+    ranks = np.arange(1, values.size + 1)
+    passing = values[order] <= false_discovery_rate * ranks / values.size
+    if np.any(passing):
+        rejected[finite] = values <= values[order][np.flatnonzero(passing)[-1]]
+    return rejected
+
+
+def _reportable_effect(term: dict, likelihood: str, alpha: float) -> tuple:
+    """
+    Puts one coefficient and its interval on the scale it should be read in.
+
+    The interval is rebuilt from the coefficient and its standard error at the
+    requested alpha rather than taken from the artifact, whose stored bounds are
+    95%, so a figure cannot drift from the alpha its caption claims.
+
+    Parameters
+    ----------
+    term : dict
+        One term's ``coefficient`` and ``std_error``.
+    likelihood : str
+        ``'lognormal'`` (multiplicative) or ``'gaussian'`` (additive).
+    alpha : float
+        Two-sided error rate for the interval.
+
+    Returns
+    -------
+    value, low, high, unit : tuple
+        Effect, interval edges and the unit label.
+    """
+
+    half = stats.norm.ppf(1.0 - alpha / 2.0) * term['std_error']
+    low, high = term['coefficient'] - half, term['coefficient'] + half
+    if likelihood == 'lognormal':
+        as_percent = lambda number: 100.0 * (np.exp(number) - 1.0)  # noqa: E731
+        return (as_percent(term['coefficient']), as_percent(low), as_percent(high),
+                '% change in median')
+    return (term['coefficient'], low, high, 'degrees')
+
+
+def plot_behavioral_response_forest(
+        contrast_results_path: str,
+        alpha: float = 0.01,
+        false_discovery_rate: float = 0.05,
+        axis_limits: tuple = ((-15.0, 15.0), (-5.0, 5.0), (-6.0, 6.0), (-2.0, 2.0)),
+        duration_sd_factor: float = 2.25,
+        save_plot: bool = False,
+        output_dir: str = None,
+) -> None:
+    """
+    Both behavioural-response questions as forest plots, one row per feature.
+
+    The left column carries the fitted model, a schematic of the windows and the
+    variance each model explains; the two right columns carry the estimates. The
+    first is the contrast itself -- behaviour in the forward window after a bout
+    offset against the matched control -- and the second is the
+    ``vocal x log(duration)`` slope, which answers whether longer bouts do more.
+
+    Two units, two panel rows
+    -------------------------
+    The likelihood is derived from each feature's support rather than chosen, so
+    the features do not share a scale and cannot share an axis. Non-negative
+    features are fitted on ``log y``, where ``exp(beta_V)`` is a ratio of medians
+    and is shown as a percent change; the signed ones (``allo_pitch``,
+    ``back_pitch``) are fitted on ``y`` and land in degrees. A percent of a
+    signed angle is undefined -- zero means horizontal, not "none of it" -- so
+    the two groups get separate rows with their own axes.
+
+    The duration slope reads per STANDARD DEVIATION of log duration, not per
+    e-fold: ``build_continuous_design_matrix`` z-scores the log term across the
+    vocal rows. ``duration_sd_factor`` states what that SD is in bout lengths so
+    the axis can say so.
+
+    Reading it
+    ----------
+    A filled marker survived Benjamini-Hochberg correction across all features at
+    ``false_discovery_rate``; an open one did not. The FDR level and ``alpha``
+    are different guarantees: an FDR of 0.01 says at most 1% of everything
+    declared significant is false, which over eight features puts the
+    second-smallest p-value's threshold at 0.0025. The conventional 0.05 is used
+    for the correction while the intervals stay at ``1 - alpha``.
+
+    The variance panels are ordered by fit, which makes the inverse relation
+    legible: the features the model explains least from behaviour alone are the
+    ones the vocal terms contribute most to. The share axis is logarithmic
+    because it spans more than two decades, and on a linear axis most features
+    would sit on the spine.
+
+    Parameters
+    ----------
+    contrast_results_path : str
+        Pickle written by ``behavioral_response_contrast``.
+    alpha : float
+        Two-sided error rate for the plotted intervals.
+    false_discovery_rate : float
+        Level for the Benjamini-Hochberg correction deciding marker fill.
+    axis_limits : tuple
+        Four ``(low, high)`` pairs: contrast percent, contrast degrees, duration
+        percent, duration degrees. Fixed rather than per-panel so the two
+        questions are read on comparable scales.
+    duration_sd_factor : float
+        Bout-length factor corresponding to one SD of log duration, for the
+        axis heading.
+    save_plot : bool
+        Whether to write the figure to ``output_dir``.
+    output_dir : str
+        Destination directory when saving.
+
+    Returns
+    -------
+    None
+    """
+
+    with open(contrast_results_path, 'rb') as handle:
+        payload = pickle.load(handle)
+    features = payload['response_features']
+    likelihoods = payload['response_likelihoods']
+    columns = (('behaviour after a bout\nvs matched silence', 'vocal'),
+               (f'effect of bout duration\n(per SD of log duration, {duration_sd_factor:g}x)',
+                'vocal_x_log_duration'))
+    groups = [[f for f in features if likelihoods[f] == 'lognormal'],
+              [f for f in features if likelihoods[f] != 'lognormal']]
+
+    equations = (
+        (r'$\log y_i = \beta_0 + \beta_V V_i + \beta_D\, V_i \log d_i'
+         r' + \sum_k \gamma_k x_{ik} + \varepsilon_i$',
+         ('non-negative features, fitted on log y',
+          r'$\beta_V$ is a log ratio; $\exp(\beta_V)$ is the vocal/control',
+          'median ratio, shown as % change')),
+        (r'$y_i = \beta_0 + \beta_V V_i + \beta_D\, V_i \log d_i'
+         r' + \sum_k \gamma_k x_{ik} + \varepsilon_i$',
+         ('signed features, fitted on y',
+          r'$\beta_V$ is additive, in degrees')),
+    )
+    key_entries = (
+        (r'$y_i$', r'mean of the feature over the forward window'),
+        (r'$V_i$', '1 after a bout offset, 0 in the control'),
+        (r'$d_i$', 'bout duration (s), standardised in log; control rows carry none'),
+        (r'$x_{ik}$', 'pre-anchor covariates, each Yeo-Johnson transformed,'),
+        ('', r'$\lambda$ by ML, then standardised'),
+        (r'$\varepsilon_i$', r'$\mathbb{E}[\varepsilon_i \mid X] = 0$; SEs cluster-robust on session'),
+    )
+
+    fig = plt.figure(figsize=(3.4 * (len(columns) + 1.45), 0.42 * len(features) + 2.4))
+    grid = fig.add_gridspec(len(groups), len(columns) + 1,
+                            width_ratios=[1.45] + [1.0] * len(columns),
+                            height_ratios=[len(group) for group in groups])
+    axes = [[fig.add_subplot(grid[row, column + 1]) for column in range(len(columns))]
+            for row in range(len(groups))]
+
+    for column, (heading, term_name) in enumerate(columns):
+        raw = np.array([payload['per_feature'][f]['window']['terms'][term_name]['p_value']
+                        for f in features])
+        corrected = _benjamini_hochberg(raw, false_discovery_rate)
+        print(f"  {term_name}: BH q<{false_discovery_rate} passes "
+              f"{[f for f, flag in zip(features, corrected) if flag] or 'nothing'}")
+
+        for row, group in enumerate(groups):
+            axis = axes[row][column]
+            for offset, feature in enumerate(reversed(group)):
+                term = payload['per_feature'][feature]['window']['terms'][term_name]
+                value, low, high, unit = _reportable_effect(
+                    term, likelihoods[feature], alpha)
+                significant = bool(corrected[features.index(feature)])
+                colour = female_color if significant else DYADIC_COLOR
+                axis.plot([low, high], [offset, offset], color=colour, linewidth=1.4,
+                          solid_capstyle='butt', zorder=2)
+                axis.plot(value, offset, marker='o', markersize=5.0, zorder=3,
+                          color=colour if significant else '#FFFFFF',
+                          markeredgecolor=colour, markeredgewidth=1.2)
+
+            axis.set_xlim(*axis_limits[column * len(groups) + row])
+            axis.axvline(0.0, color='#000000', linewidth=0.8, linestyle=':')
+            axis.set_yticks(range(len(group)))
+            axis.set_yticklabels([_BEHAVIORAL_RESPONSE_NAMES[f] for f in reversed(group)],
+                                 fontsize=8)
+            axis.set_ylim(-0.7, len(group) - 0.3)
+            axis.tick_params(labelsize=7)
+            axis.set_xlabel(unit, fontsize=8)
+            if row == 0:
+                axis.set_title(f"{heading}\n{int((1 - alpha) * 100)}% CI, "
+                               f"filled = BH q<{false_discovery_rate}", fontsize=9)
+
+    _draw_behavioral_response_key(fig=fig, grid=grid, payload=payload,
+                                  features=features, equations=equations,
+                                  key_entries=key_entries)
+
+    if save_plot:
+        out_name = os.path.join(output_dir,
+                                _figure_filename('behavioral_response_forest'))
+        fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI)
+        print(f"Figure saved to: {out_name}")
+    plt.show()
+
+
+def _draw_behavioral_response_key(fig, grid, payload: dict, features: list,
+                                  equations: tuple, key_entries: tuple) -> None:
+    """
+    Draws the left column: the model, the window schematic and the fit panels.
+
+    Everything sits on ONE blank axis spanning every row and is laid out from the
+    top down, so the spacing between an equation and its note is set here rather
+    than inherited from the height ratios of the panels beside it. The block
+    overshoots the axis top on purpose: that axis begins at the top of the
+    PANELS, and the panel titles sit above it.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        Figure being drawn into.
+    grid : matplotlib.gridspec.GridSpec
+        Layout whose first column this fills.
+    payload : dict
+        Contrast artifact, read for ``variance_explained`` and the settings block.
+    features : list of str
+        Response features, in artifact order.
+    equations : tuple
+        ``(equation, note_lines)`` per likelihood family.
+    key_entries : tuple
+        ``(symbol, description)`` per rendered line of the symbol key.
+
+    Returns
+    -------
+    None
+    """
+
+    panel = fig.add_subplot(grid[:, 0])
+    panel.axis('off')
+    left_edge, cursor = -0.20, 1.075
+    for equation, note in equations:
+        panel.text(left_edge, cursor, equation, fontsize=10.5, va='top', ha='left',
+                   clip_on=False)
+        cursor -= 0.052
+        for line in note:
+            panel.text(left_edge, cursor, line, fontsize=7.5, va='top', ha='left',
+                       color=DYADIC_COLOR, clip_on=False)
+            cursor -= 0.032
+        cursor -= 0.030
+    for symbol, description in key_entries:
+        if symbol:
+            panel.text(left_edge, cursor, symbol, fontsize=7.0, va='top', ha='left',
+                       clip_on=False)
+        panel.text(left_edge + 0.085, cursor, description, fontsize=7.0, va='top',
+                   ha='left', clip_on=False)
+        cursor -= 0.032
+
+    # The schematic draws the covariate windows themselves, so their widths come
+    # from `covariate_summary_seconds` rather than from the pre-anchor history:
+    # a window the model never summarises would be a window the figure invents.
+    settings = payload['_input_metadata']['analysis_specific']
+    summary_widths = sorted(float(s) for s in settings['covariate_summary_seconds'])
+    short, history = summary_widths[0], summary_widths[-1]
+    window = float(settings['target_window_seconds'])
+    schematic = panel.inset_axes([left_edge, cursor - 0.035 - 0.115, 0.92, 0.115])
+    for level, start, stop, colour, label in (
+            (2, -history, 0.0, '#BDC3C7', f'long history, {history:g} s'),
+            (1, -short, 0.0, DYADIC_COLOR, f'short history, {short:g} s'),
+            (0, 0.0, window, female_color, f'response $y_i$, no further bout')):
+        schematic.barh(level, stop - start, left=start, height=0.62, color=colour,
+                       alpha=0.55, linewidth=0)
+        schematic.text(stop + 0.10, level, label, fontsize=6.5, va='center', ha='left')
+    schematic.axvline(0.0, color='#000000', linewidth=0.9, linestyle='--')
+    schematic.text(0.0, 2.95, 'bout offset', fontsize=6.5, ha='center', va='bottom')
+    schematic.set_xlim(-history - 0.3, window + 0.3)
+    schematic.set_ylim(-0.6, 2.9)
+    schematic.set_yticks([])
+    schematic.set_xticks([-history, 0.0, window])
+    schematic.set_xticklabels([f'{-history:g}', '0', f'+{window:g}'])
+    schematic.tick_params(labelsize=6.5, length=2, pad=1)
+    schematic.set_xlabel('time from bout offset (s)', fontsize=6.5, labelpad=1)
+    for side in ('top', 'right', 'left'):
+        schematic.spines[side].set_visible(False)
+
+    statistics = {f: payload['per_feature'][f]['variance_explained'] for f in features}
+    ordered = sorted(features, key=lambda name: -statistics[name]['r_squared_full'])
+    positions = np.arange(len(ordered))[::-1]
+    fit_axis = panel.inset_axes([left_edge + 0.205, 0.03, 0.30, 0.26])
+    share_axis = panel.inset_axes([left_edge + 0.665, 0.03, 0.30, 0.26])
+    fit_axis.barh(positions, [statistics[f]['r_squared_full'] for f in ordered],
+                  height=0.82, color=female_color, alpha=0.85, linewidth=0)
+    share_axis.barh(positions, [statistics[f]['vocal_share_percent'] for f in ordered],
+                    height=0.82, color=female_color, alpha=0.85, linewidth=0)
+    share_axis.set_xscale('log')
+    share_axis.set_xlim(left=5e-4)
+    for axis, label in ((fit_axis, 'R$^2$ of the full model'),
+                        (share_axis, '% of explained variance\nfrom the vocal terms')):
+        axis.set_yticks(positions)
+        axis.set_xlabel(label, fontsize=6.5, labelpad=1)
+        axis.tick_params(axis='x', labelsize=6.0, length=2, pad=1)
+        axis.tick_params(axis='y', labelsize=6.5, length=0, pad=2)
+        axis.set_ylim(-0.6, len(ordered) - 0.4)
+        for side in ('top', 'right'):
+            axis.spines[side].set_visible(False)
+    fit_axis.set_yticklabels([_BEHAVIORAL_RESPONSE_NAMES[f] for f in ordered], fontsize=6.5)
+    share_axis.set_yticklabels([])
+
+
+def plot_matched_divergence(
+        divergence_results_path: str,
+        alpha: float = 0.01,
+        display_seconds: tuple = (-2.0, 2.0),
+        panel_columns: int = 4,
+        between_block_gap: float = 0.30,
+        onset_run_seconds: float = 1.0,
+        save_plot: bool = False,
+        output_dir: str = None,
+) -> None:
+    """
+    Female kinematics around a male bout offset, against baseline-matched silence.
+
+    Reads the pickle written by
+    :meth:`MatchedDivergencePipeline.extract_and_save_matched_divergence`. Both
+    arms are clean of every vocalization across their windows, and each vocal
+    anchor carries the mean of the silent anchors whose pre-anchor level matched
+    it, so the two conditions enter the anchor from a comparable state and what
+    follows is divergence rather than a level difference.
+
+    Layout
+    ------
+    Each feature gets two stacked panels: the two arms above, and the paired
+    difference below. Pairing removes the between-anchor variance that dominates
+    the upper panel, so the lower one is far more sensitive and is what should be
+    read. The difference curve is coloured by its own value off a diverging map,
+    and its band is split AT ZERO -- the part of each frame's interval below zero
+    is blue and the part above is red -- rather than by the sign of the mean,
+    which breaks the band into slivers wherever the curve crosses.
+
+    Statistics are printed rather than drawn: a per-bin paired t-test on the
+    difference, Benjamini-Hochberg corrected across all bins within a feature,
+    plus the onset -- the start of the first run of ``onset_run_seconds`` of
+    consecutive significant bins, so a single crossing cannot be read as a
+    separation. Bins are heavily autocorrelated, so the corrected count describes
+    where an effect lives rather than standing as that many independent tests.
+
+    A pair contributes to a frame only where BOTH arms are tracked. Missingness
+    is condition-dependent, since bout offsets happen when the animals are close
+    and occluding, and averaging the arms over their own separate sets of usable
+    pairs makes the two curves incomparable -- at one point that alone flipped
+    the sign of the speed difference at t=0.
+
+    Parameters
+    ----------
+    divergence_results_path : str
+        Pickle written by ``MatchedDivergencePipeline``.
+    alpha : float
+        Two-sided error rate for the intervals and the per-bin tests.
+    display_seconds : tuple
+        ``(from, to)`` window to draw; the stored curves usually run wider.
+    panel_columns : int
+        Features per block. Panel size is held fixed, so the figure grows
+        downward rather than the panels stretching.
+    between_block_gap : float
+        Height of the spacer row between blocks, as a fraction of a panel. A
+        feature's two panels belong together, so they are packed tight and the
+        blocks are separated instead.
+    onset_run_seconds : float
+        Consecutive significant time required before an onset is reported.
+    save_plot : bool
+        Whether to write the figure to ``output_dir``.
+    output_dir : str
+        Destination directory when saving.
+
+    Returns
+    -------
+    None
+    """
+
+    with open(divergence_results_path, 'rb') as handle:
+        payload = pickle.load(handle)
+    features = payload['features']
+    anchor_index = payload['anchor_index']
+    camera_fps = payload['camera_fps']
+
+    n_columns = min(panel_columns, len(features))
+    n_blocks = int(np.ceil(len(features) / n_columns))
+    height_ratios = []
+    for block in range(n_blocks):
+        if block:
+            height_ratios.append(between_block_gap)
+        height_ratios.extend([1.0, 1.0])
+    fig = plt.figure(figsize=(2.1 * n_columns, 1.7 * sum(height_ratios)))
+    grid = fig.add_gridspec(len(height_ratios), n_columns, height_ratios=height_ratios,
+                            hspace=0.30, wspace=0.52)
+    colour_map = plt.get_cmap(_DIVERGING_CMAP)
+
+    for position, feature in enumerate(features):
+        block, column = divmod(position, n_columns)
+        top = fig.add_subplot(grid[3 * block, column])
+        bottom = fig.add_subplot(grid[3 * block + 1, column])
+
+        vocal = payload['pairs'][feature]['vocal']
+        silence = payload['pairs'][feature]['silence']
+        complete = np.isfinite(vocal) & np.isfinite(silence)
+        vocal = np.where(complete, vocal, np.nan)
+        silence = np.where(complete, silence, np.nan)
+        time_axis = (np.arange(vocal.shape[1]) - anchor_index) / camera_fps
+        shown = (time_axis >= display_seconds[0]) & (time_axis <= display_seconds[1])
+
+        def band(values: np.ndarray) -> tuple:
+            """
+            Per-frame mean and a two-sided interval across pairs.
+
+            The number of contributing pairs varies by frame, so the t quantile
+            is taken per frame from that frame's own degrees of freedom.
+
+            Parameters
+            ----------
+            values : np.ndarray
+                ``(n_pairs, n_frames)`` array.
+
+            Returns
+            -------
+            mean, low, high : tuple of np.ndarray
+                Point estimate and interval edges.
+            """
+
+            counts = np.sum(np.isfinite(values), axis=0)
+            mean = np.nanmean(values, axis=0)
+            error = np.nanstd(values, axis=0, ddof=1) / np.sqrt(np.maximum(counts, 1))
+            half = stats.t.ppf(1.0 - alpha / 2.0, np.maximum(counts - 1, 1)) * error
+            return mean, mean - half, mean + half
+
+        # The two arms hold different amounts of data: one curve per vocal anchor
+        # against every control curve averaged into those anchors' means. The
+        # control total counts a silent period once per anchor it serves.
+        control_total = int(np.sum(payload['pair_control_counts'][feature]))
+        for values, colour, label, count in ((vocal, female_color, 'vocal', vocal.shape[0]),
+                                             (silence, DYADIC_COLOR, 'silence',
+                                              control_total)):
+            mean, low, high = band(values)
+            top.plot(time_axis, mean, color=colour, linewidth=1.1,
+                     label=f'{label} (N={count:,})')
+            top.fill_between(time_axis, low, high, color=colour, alpha=0.20, linewidth=0)
+        top.axhline(0.0, color='#000000', linewidth=0.7, linestyle=':')
+        top.axvline(0.0, color='#000000', linewidth=0.7, linestyle=':')
+        top.set_title(_BEHAVIORAL_RESPONSE_NAMES[feature], fontsize=8, pad=10)
+        top.annotate(f'{vocal.shape[0]} anchors', xy=(0.5, 1.0), xycoords='axes fraction',
+                     ha='center', va='bottom', fontsize=6)
+        top.set_ylabel('z-score (pooled)', fontsize=7)
+        top.set_xlim(*display_seconds)
+        top.tick_params(labelsize=6)
+        if position == 0:
+            top.legend(fontsize=6, frameon=False, loc='best')
+
+        difference = vocal - silence
+        mean, low, high = band(difference)
+        _, p_values = stats.ttest_1samp(difference, 0.0, axis=0, nan_policy='omit')
+        corrected = _benjamini_hochberg(np.asarray(p_values, dtype=float), alpha)
+        run, onset = 0, None
+        for index, flag in enumerate(corrected):
+            run = run + 1 if flag else 0
+            if run >= int(round(onset_run_seconds * camera_fps)) and onset is None:
+                onset = time_axis[index - int(round(onset_run_seconds * camera_fps)) + 1]
+
+        extent = np.nanmax(np.abs(mean[shown])) or 1.0
+        normaliser = Normalize(vmin=-extent, vmax=extent)
+        vertices = np.column_stack([time_axis, mean])
+        bottom.add_collection(LineCollection(
+            np.stack([vertices[:-1], vertices[1:]], axis=1),
+            colors=colour_map(normaliser(0.5 * (mean[:-1] + mean[1:]))),
+            linewidth=1.3, zorder=3))
+        bottom.fill_between(time_axis, low, np.minimum(high, 0.0), where=low < 0.0,
+                            color=colour_map(0.15), alpha=0.28, linewidth=0)
+        bottom.fill_between(time_axis, np.maximum(low, 0.0), high, where=high > 0.0,
+                            color=colour_map(0.85), alpha=0.28, linewidth=0)
+        bottom.axhline(0.0, color='#000000', linewidth=0.7, linestyle=':')
+        bottom.axvline(0.0, color='#000000', linewidth=0.7, linestyle=':')
+        bottom.set_ylabel('vocal - matched control\n(z-score)', fontsize=7)
+        bottom.set_xlabel('time from male bout offset (s)', fontsize=7)
+        bottom.set_xlim(*display_seconds)
+        bottom.tick_params(labelsize=6)
+        visible = np.concatenate([low[shown], high[shown]])
+        margin = 0.05 * (visible.max() - visible.min())
+        bottom.set_ylim(visible.min() - margin, visible.max() + margin)
+
+        # The extremum that matters is the response, so the search is restricted
+        # to t > 0: the largest excursion anywhere in the window is often the
+        # approach into the anchor, which is not what the marker is claiming.
+        after = shown & (time_axis > 0.0)
+        peak = int(np.flatnonzero(after)[np.nanargmax(np.abs(mean[after]))])
+        peak_colour = colour_map(0.85 if mean[peak] > 0.0 else 0.15)
+        # Offset by half the marker's height in INCHES through a transform, so
+        # the tip lands on the curve whatever the dpi and however the layout
+        # resizes the axes.
+        marker_size = 7.0
+        bottom.plot(time_axis[peak], mean[peak], marker='^', markersize=marker_size,
+                    color=peak_colour, markeredgewidth=0.0, clip_on=False, zorder=5,
+                    transform=offset_copy(bottom.transData, fig=fig, x=0.0,
+                                          y=-0.5 * marker_size / 72.0, units='inches'))
+        ticks = [tick for tick in bottom.get_xticks()
+                 if display_seconds[0] <= tick <= display_seconds[1]
+                 and abs(tick - time_axis[peak]) > 0.3]
+        positions = sorted(ticks + [float(time_axis[peak])])
+        bottom.set_xticks(positions)
+        bottom.set_xticklabels([f'{value:.1f}' if value == time_axis[peak] else f'{value:g}'
+                                for value in positions])
+        for tick_label, value in zip(bottom.get_xticklabels(), positions):
+            if value == time_axis[peak]:
+                tick_label.set_color(peak_colour)
+
+        # One colour key for the figure, in the first difference panel.
+        if position == 0:
+            key = bottom.inset_axes([0.05, 0.10, 0.045, 0.26])
+            key.imshow(np.linspace(0.0, 1.0, 256).reshape(-1, 1), aspect='auto',
+                       cmap=colour_map, origin='lower')
+            key.set_yticks([0, 255])
+            key.set_yticklabels(['min', 'max'], fontsize=5.0)
+            key.yaxis.tick_right()
+            key.set_xticks([])
+            key.tick_params(length=0, pad=1)
+            for spine in key.spines.values():
+                spine.set_visible(False)
+
+        print(f"  {feature:16s} n={vocal.shape[0]:5d}  BH {int(corrected.sum()):4d}/"
+              f"{corrected.size}  peak {mean[peak]:+.3f} at {time_axis[peak]:+.2f}s  "
+              f"onset {f'{onset:+.2f}s' if onset is not None else 'none':>8s}")
+
+    for spare in range(len(features), n_blocks * n_columns):
+        spare_block, spare_column = divmod(spare, n_columns)
+        fig.add_subplot(grid[3 * spare_block, spare_column]).set_visible(False)
+        fig.add_subplot(grid[3 * spare_block + 1, spare_column]).set_visible(False)
+
+    if save_plot:
+        out_name = os.path.join(output_dir, _figure_filename('matched_divergence'))
+        fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI)
+        print(f"Figure saved to: {out_name}")
+    plt.show()
