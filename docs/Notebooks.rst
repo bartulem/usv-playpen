@@ -1624,11 +1624,20 @@ Compute is split from plotting: one compute cell runs the same analysis as the
 plot cells read that archive back, so figures can be re-rendered without refitting -- even across
 kernel restarts.
 
-The analysis works on **pools** declared in ``interval_pools``: each names an emitter, a call type
+The analysis works on **pools** declared in ``interval_pools``: each names an emitter sex, a call type
 and an adjacency rule, and whether it is modelled. The shipped settings model the male's ultrasonic
 calls and describe the female's squeaks, which are too sparse to model (a few hundred intervals across
 under half the sessions). Squeaks are kept out of the ultrasonic pool: a squeak between two calls
 would replace one long interval with two short ones.
+
+Each animal's sex is read from the ``Subjects`` block of the session's ``*_metadata.yaml``, not from
+its track slot, and intervals are only ever measured between two calls of the *same* animal. A pool
+therefore holds every animal of its sex in a session -- one in courtship, both in a female-female
+session -- without pairing the two with each other; the ``intervals`` table records each interval's
+``emitter_id``. A session whose metadata does not record an animal's sex raises instead of being
+guessed. The archive's root attributes name both the list files (``source_lists``) and the session
+directories they resolved to (``session_roots``), so an archive still says which sessions it holds
+after a list is edited.
 
 Each modelled pool is fitted with a **tied-scale Student-t mixture**: ``n_peak`` narrow components
 share one fitted width and ``tied_n_background`` free components carry the broad background. An
@@ -1745,7 +1754,9 @@ and writes per-pool descriptive statistics. The test uses ``bootstrap_lrt_alpha 
 effective per-rung level of ``0.0033``). Design effects are estimated by resampling sessions on the
 test's own subsample and floored at one, so the correction can only make the test more conservative.
 The unconstrained component sweep and its LRT are written as well only when ``fit_mixture_model`` is
-true.
+true; that LRT is session-corrected the same way (``tied_design_bootstrap`` sets the session
+resampling for both), selects on the corrected p-value, and archives the raw statistic and p-value
+next to the corrected ones.
 
 .. code-block:: python
 
