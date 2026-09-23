@@ -1617,56 +1617,83 @@ Source: `usv_neuronal_coactivity_analyses.ipynb <https://github.com/bartulem/usv
 
 Inter-USV interval analyses
 ---------------------------
-**inter_usv_interval_analyses.ipynb** fits and visualises mixture models on
-the distribution of inter-USV intervals (in seconds, log-transformed) across one
-or more sessions. Compute is split from plotting: the compute cells build a master
-interval DataFrame, run an information criterion (IC) sweep and a bootstrap likelihood-ratio test (LRT) over candidate component
-counts for the selected mixture family (Gaussian, Student-t or inverse-Gaussian, per ``model_class``), and persist everything to a single
-self-describing HDF5 archive. The plot cells then read that archive back, so figures
-can be re-rendered without refitting — even across kernel restarts.
+**inter_usv_interval_analyses.ipynb** models the distribution of inter-USV intervals (in seconds,
+log-transformed) pooled across sessions, and tests how many distinct timescales it contains.
+Compute is split from plotting: one compute cell runs the same analysis as the
+``generate-usv-interval-distributions`` CLI and writes a single self-describing HDF5 archive, and the
+plot cells read that archive back, so figures can be re-rendered without refitting -- even across
+kernel restarts.
 
-Two cells configure everything — **Imports** (styling, palette, and the
-settings JSONs) and **Configuration** (session lists, interval modes, and plot
-knobs) — after which the compute cells run once and the plot cells re-read the
-newest archive.
+The analysis works on **pools** declared in ``interval_pools``: each names an emitter, a call type
+and an adjacency rule, and whether it is modelled. The shipped settings model the male's ultrasonic
+calls and describe the female's squeaks, which are too sparse to model (a few hundred intervals across
+under half the sessions). Squeaks are kept out of the ultrasonic pool: a squeak between two calls
+would replace one long interval with two short ones.
 
-**Imports.** Import the interval-summary helpers, apply the shared plot style, and load the
-``visualizations_settings.json`` / ``analyses_settings.json`` blocks that drive the
-run (the cell also enables ``autoreload`` so source edits are picked up without a
-kernel restart).
+Each modelled pool is fitted with a **tied-scale Student-t mixture**: ``n_peak`` narrow components
+share one fitted width and ``tied_n_background`` free components carry the broad background. An
+unconstrained mixture has no stable component count on this distribution -- every extra component
+tiles a little more of the misfit around the second peak -- whereas tying the peak widths separates
+the timescales from the nuisance background. The number of peaks is chosen by a **step-up parametric
+bootstrap likelihood-ratio test**, with each rung's statistic divided by its **session design
+effect** before it is scored: intervals are nested in sessions and the bootstrap null is not, so an
+uncorrected test rejects too readily.
+
+**Imports.** Import the analysis and plotting helpers, apply the shared plot style, and load the
+``visualizations_settings.json`` / ``analyses_settings.json`` blocks that drive the run (the cell also
+enables ``autoreload`` so source edits are picked up without a kernel restart).
 
 .. code-block:: python
+
+    # Auto-reload package modules whenever they change on disk, so edits to
+    # the usv_playpen package are picked up without restarting the kernel.
+
+
+    import json
+    from pathlib import Path
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import polars as pls
 
     from usv_playpen.os_utils import configure_path
     from usv_playpen.visualizations.plot_style import apply_plot_style
     from usv_playpen.visualizations.figure_io import save_figure
+    from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
+        InterUSVIntervalCalculator,
+    )
     import usv_playpen.visualizations.usv_interval_summary_statistics as ivs
 
     apply_plot_style()
 
     base_path = Path.cwd().parent
     with open(
-        base_path / "_parameter_settings" / "visualizations_settings.json"
+        base_path / "_parameter_settings" / "visualizations_settings.json", "r"
     ) as vis_settings_file:
         vis_settings = json.load(vis_settings_file)
+
     with open(
-        base_path / "_parameter_settings" / "analyses_settings.json"
+        base_path / "_parameter_settings" / "analyses_settings.json", "r"
     ) as ana_settings_file:
         ana_settings = json.load(ana_settings_file)
 
     male_color = vis_settings["male_colors"][0]
     female_color = vis_settings["female_colors"][0]
+
+    # All compute / display knobs live in analyses_settings.json -> compute_inter_usv_interval_distributions
     usv_interval_cfg = ana_settings["compute_inter_usv_interval_distributions"]
 
-* **usv_interval_cfg** — the ``compute_inter_usv_interval_distributions`` block; every numeric compute / display knob lives here, so the notebook itself only assigns convenience aliases.
-* **male_color** / **female_color** — per-sex palette entries pulled from the visualizations settings.
+* **usv_interval_cfg** -- the ``compute_inter_usv_interval_distributions`` block; every numeric compute / display knob lives here, so the notebook itself only assigns convenience aliases.
+* **male_color** / **female_color** -- per-sex palette entries pulled from the visualizations settings.
 
-**Configuration.** Resolve the session lists to include, name the two interval modes, and read the
-plot-only knobs straight from the settings block. This is the single place to
-change what gets analysed.
+**Configuration.** Resolve the session lists, name the interval definitions, and read the plot-only
+knobs straight from the settings block.
 
 .. code-block:: python
 
+    # Single source of truth for paths and labels. All numeric parameters live
+    # in analyses_settings.json; this cell only assigns notebook-local convenience
+    # aliases.
     output_directory = usv_interval_cfg["output_directory"]
     session_lists = [
         str(Path(configure_path(p))) for p in usv_interval_cfg["session_lists"]
@@ -1678,195 +1705,218 @@ change what gets analysed.
         "e2s": "end-to-start USV intervals",
     }
 
+    # Plot-only knobs (read straight from JSON; plot_log_xlims/bins_per_sex not archived in the HDF5, tau is)
     plot_log_xlims = tuple(usv_interval_cfg["plot_log_xlims"])
     bins_per_sex = usv_interval_cfg["bins_per_sex"]
     tau = usv_interval_cfg["tau"]
     model_class = usv_interval_cfg["model_class"]
 
-* **output_directory** — where the HDF5 archive is written and where the plot cells look for the newest run.
-* **session_lists** — the configured session-list files, each ``configure_path``-resolved to the host OS.
-* **interval_types** / **mode_label** — the two interval definitions (``s2s`` start-to-start, ``e2s`` end-to-start) and their human-readable titles; every compute and plot cell loops over these.
-* **density_as_bin_means** — when ``true`` the best-fit overlay draws the mixture as the bar heights it *predicts* (its density averaged over each histogram bin) rather than as the point-wise curve. A histogram bar is a bin average while the curve is a point density, so a point-wise curve necessarily rides above the bars wherever a bin straddles the peak and reads as an overshoot the fit does not have — on the male end-to-start ``K=3`` fit the apex sat 14% above the tallest bar but 0.1% below it once averaged over that same bin. Set ``false`` to restore the point-wise curve.
-* **model_class** — ``"gauss"``, ``"t"`` or ``"ig"``, selecting the Gaussian, Student-t or inverse-Gaussian mixture family for the whole run. The inverse-Gaussian is fit in linear time and scored in the shared log-space measure, so BIC/AIC/ICL/CV remain cross-family comparable.
-* **plot_log_xlims** / **bins_per_sex** — plot-only knobs read straight from JSON (not archived in the HDF5); **tau** is likewise read from JSON but *is* archived in the HDF5.
+    print(f"output_directory: {output_directory}")
+    print(f"session_lists ({len(session_lists)}):")
+    for p in session_lists:
+        print(f"  {p}")
+    print(f"model_class: {model_class!r}")
 
-**Compute the fits.** Run once. First, walk every session in the list, read its ``*_usv_summary.csv``,
-compute consecutive inter-USV intervals for both modes, and append them with
-sex metadata to one Polars DataFrame:
+    # Interval definitions are both COMPUTED, but only e2s is drawn unless asked for:
+    # the tied peaks-plus-background model is defined on end-to-start gaps, and
+    # start-to-start intervals carry each call's own duration, which smears the gap
+    # structure (the s2s peak test runs to the top of its grid with broad "peaks").
+    # Add "s2s" here to draw it anyway.
+    plot_interval_types = ("e2s",)
+    interval_label = {
+        "s2s": "start-to-start intervals",
+        "e2s": "end-to-start intervals",
+    }
+    call_label = {"usv": "USV", "squeak": "squeak"}
 
-.. code-block:: python
+* **output_directory** -- where the HDF5 archive is written and where the plot cells look for the newest run.
+* **interval_types** -- both interval definitions (``s2s`` start-to-start, ``e2s`` end-to-start) are computed.
+* **plot_interval_types** -- which of them are DRAWN; ``e2s`` only by default. The peaks-plus-background model is defined on end-to-start gaps: start-to-start intervals include each call's own duration, which smears the gap structure, and the s2s peak test runs to the top of its grid with broad "peaks". Add ``"s2s"`` to draw it anyway.
+* **interval_label** / **call_label** -- titles and legend text; the legend names the call type because the pools are different vocalizations.
+* **density_as_bin_means** -- when ``true`` the best-fit overlay draws the mixture as the bar heights it *predicts* (its density averaged over each histogram bin) rather than as the point-wise curve. A histogram bar is a bin average while the curve is a point density, so a point-wise curve necessarily rides above the bars wherever a bin straddles the peak and reads as an overshoot the fit does not have. Set ``false`` to restore the point-wise curve.
+* **plot_log_xlims** / **bins_per_sex** -- plot-only knobs read straight from JSON (not archived in the HDF5); **tau** is likewise read from JSON but *is* archived in the HDF5.
 
-    usv_interval_df, usv_interval_summary = ivs.build_master_usv_interval_dataframe(
-        session_lists=session_lists,
-        exclude_noise_usvs=usv_interval_cfg["exclude_noise_usvs"],
-    )
-
-Then fit each mixture family for ``K = n_components_min … n_components_max`` and
-record every IC per ``K`` (the minimum-IC point is the preliminary model order):
-
-.. code-block:: python
-
-    mixture_model_fits_by_mode = {}
-    for it in interval_types:
-        sub = usv_interval_df.filter(pls.col("interval_type") == it)
-        mixture_model_fits_by_mode[it] = ivs.run_bic_sweep(
-            usv_interval_df=sub,
-            n_components_min=usv_interval_cfg["n_components_min"],
-            n_components_max=usv_interval_cfg["n_components_max"],
-            n_repeats=usv_interval_cfg["n_repeats"],
-            max_modes_reported=usv_interval_cfg["max_modes_reported"],
-            random_seed_base=usv_interval_cfg["random_seed_base"],
-            model_class=model_class,
-        )
-
-Next, the slow step: for each candidate ``K`` resample the data, refit, and build
-the empirical null distribution of the log-likelihood-ratio of ``K`` vs. ``K-1``
-components (the step-up selection rule is applied later, at save time):
+**Compute.** Run once (about an hour, dominated by the peak-count test). It runs
+``InterUSVIntervalCalculator`` -- the code the CLI runs -- so the notebook and the CLI write identical
+archives: per interval type and pool, it builds the pool, fits the tied ladder over ``tied_peak_grid``
+(background count fixed at ``tied_n_background``), runs the session-corrected step-up peak-count test,
+and writes per-pool descriptive statistics. The test uses ``bootstrap_lrt_alpha = 0.01`` with
+``bootstrap_lrt_bonferroni = true``, divided across the rungs (three over the shipped grid, an
+effective per-rung level of ``0.0033``). Design effects are estimated by resampling sessions on the
+test's own subsample and floored at one, so the correction can only make the test more conservative.
+The unconstrained component sweep and its LRT are written as well only when ``fit_mixture_model`` is
+true.
 
 .. code-block:: python
 
-    lrt_sweep_by_mode = {}
-    for it in interval_types:
-        sub = usv_interval_df.filter(pls.col("interval_type") == it)
-        male_arr = sub.filter(pls.col("sex") == "male")["interval_s"].to_numpy()
-        female_arr = sub.filter(pls.col("sex") == "female")["interval_s"].to_numpy()
-        lrt_sweep_by_mode[it] = ivs.run_bootstrap_lrt_sweep(
-            intervals_by_key={"male": male_arr, "female": female_arr},
-            n_components_min=usv_interval_cfg["n_components_min"],
-            n_components_max=usv_interval_cfg["n_components_max"],
-            B=usv_interval_cfg["bootstrap_lrt_B"],
-            n_subsample=usv_interval_cfg["bootstrap_lrt_n_subsample"],
-            model_class=model_class,
-            n_init_obs=usv_interval_cfg["mixture_model_n_init"],
-            n_init_boot=max(1, usv_interval_cfg["mixture_model_n_init"] - 7),
-            reg_covar=usv_interval_cfg["mixture_model_reg_covar"],
-            seed=usv_interval_cfg["random_seed_base"],
-            n_jobs=usv_interval_cfg["bootstrap_lrt_n_jobs"],
-        )
+    InterUSVIntervalCalculator(
+        input_parameter_dict=ana_settings,
+        message_output=print,
+    ).save_inter_usv_interval_distributions_to_file()
 
-Finally, bundle the master DataFrame, the IC sweep, the LRT results, and the
-best-fit models into one ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5`` archive
-(the step-up rule is applied here, so the per-mode selected-``K`` attrs match the
-alpha / bonferroni settings). The shipped settings test each consecutive
-``(K, K+1)`` pair at ``bootstrap_lrt_alpha = 0.01`` with
-``bootstrap_lrt_bonferroni = true``, i.e. the threshold is divided by the number
-of pairwise comparisons (four over the shipped ``K`` range), giving an effective
-per-comparison alpha of ``0.0025``. Because the step-up rule is applied at
-archive-write time, changing either setting requires re-writing the archive for
-the stored ``K_selected_*`` attrs to reflect it -- the pairwise ``p``-values
-themselves are unaffected:
+    h5_path = ivs.find_latest_archive(output_directory)
+    print(f"archive written: {h5_path}")
 
-.. code-block:: python
-
-    h5_path = ivs.save_notebook_archive_to_h5(
-        output_directory=output_directory,
-        usv_interval_df=usv_interval_df,
-        usv_interval_summary=usv_interval_summary,
-        usv_interval_cfg=usv_interval_cfg,
-        mixture_model_fits_by_mode=mixture_model_fits_by_mode,
-        lrt_sweep_by_mode=lrt_sweep_by_mode,
-    )
-
-**Select the archive.** Pick the archive every plot cell reads from and decide whether figures are written
-to disk. ``find_latest_archive`` picks the newest run so the plot cells survive
-kernel restarts; assign ``h5_path`` manually to re-render an older run.
+**Select the archive.** Pick the archive every plot cell reads from and decide whether figures are
+written to disk. ``find_latest_archive`` picks the newest run so the plot cells survive kernel
+restarts; assign ``h5_path`` manually to re-render an older run.
 
 .. code-block:: python
 
     save_fig_bool = False
+
+    # Pick up the most-recent archive so plot cells survive kernel restarts.
+    # Override by assigning `h5_path = Path("...absolute/path/usv_interval_analysis_xxx.h5")`.
     h5_path = ivs.find_latest_archive(output_directory)
+    print(f"reading from: {h5_path}")
 
-* **save_fig_bool** — when ``True``, each plot cell also calls ``save_figure`` into the configured figure directory.
-* **h5_path** — the archive to plot from; override with an absolute path to compare cohorts across runs.
+* **save_fig_bool** -- when ``True``, each plot cell also calls ``save_figure`` into the configured figure directory.
+* **h5_path** -- the archive to plot from; override with an absolute path to compare cohorts across runs.
 
-**Diagnostics.** Three read-only figures, each looping over both interval modes. First, the
-sanity-check histogram of ``log(interval)`` per sex with its empirical density
-(confirming the short intra-bout / long inter-bout bimodality before any model is
-fit):
+**Interval distributions.** The sanity-check histogram of ``log(interval)`` for both pools on one
+axis:
 
 .. code-block:: python
 
-    for it in interval_types:
+    # One axis per interval type, both pools overlaid. The pools are different
+    # vocalizations -- the male's ultrasonic calls and the female's squeaks -- so the
+    # legend names the call type rather than the sex alone.
+    for it in plot_interval_types:
         sub = ivs.load_intervals_from_h5(str(h5_path), it)
+        pools = {
+            row["sex"]: row["call_type"]
+            for row in ivs.read_usv_interval_h5(str(h5_path))["modes"][it][
+                "pool_summary"
+            ].iter_rows(named=True)
+        }
         fig, ax, hist_stats = ivs.plot_log_usv_interval_histograms(
             usv_interval_df=sub,
             bins=max(bins_per_sex.values()),
             male_color=male_color,
             female_color=female_color,
             xlims=plot_log_xlims,
+            male_label=f"male {call_label[pools['male']]}",
+            female_label=f"female {call_label[pools['female']]}",
         )
-        ax.set_title(f"log_interval distribution -- {mode_label[it]}")
+        ax.set_title(f"log_interval distribution -- {interval_label[it]}")
         if save_fig_bool:
             save_figure(fig, f"ivi_log_histogram_{it}", vis_settings)
         plt.show()
+        display({**hist_stats, "interval_type": it})
 
-Second, the bootstrap LRT null distribution against the observed statistic for each
-``K``-vs-``(K-1)`` comparison (the p-value is the right-tail mass):
-
-.. code-block:: python
-
-    for it in interval_types:
-        sweep = ivs.load_lrt_sweep_from_h5(str(h5_path), it)
-        fig, _ = ivs.plot_bootstrap_lrt_panel(sweep)
-        fig.suptitle(f"Bootstrap LRT null distributions -- {mode_label[it]}", y=1.02)
-        fig.tight_layout()
-        if save_fig_bool:
-            save_figure(fig, f"ivi_bootstrap_lrt_{it}", vis_settings)
-        plt.show()
-        selected = ivs.selected_K_from_h5(str(h5_path), it)
-
-Third, the Bayesian information criterion (BIC) and Akaike information criterion (AIC) curves vs. ``K`` on twin axes (male left, female right),
-with the LRT-selected ``K`` marked:
+**Peak-count test.** One panel per rung (1 vs 2 peaks, 2 vs 3, 3 vs 4) on each modelled pool: the
+bootstrap null, the observed statistic divided by its design effect (red), and the null quantile at
+the corrected level (dotted). The step-up rule stops at the first rung that keeps.
 
 .. code-block:: python
 
-    for it in interval_types:
-        df_ic = ivs.load_mixture_model_fits_from_h5(str(h5_path), it)
-        selected = ivs.selected_K_from_h5(str(h5_path), it)
-        for ic_to_plot in ("bic", "aic"):
+    # One panel per rung of the peak-count test on each fitted pool. The red line is
+    # the CORRECTED statistic -- the observed likelihood ratio divided by its session
+    # design effect -- and the dotted line is the null quantile at the
+    # Bonferroni-corrected level the test used; the p-value is the corrected one.
+    for it in plot_interval_types:
+        summary = ivs.read_usv_interval_h5(str(h5_path))["modes"][it]["pool_summary"]
+        for row in summary.filter(pls.col("fitted")).iter_rows(named=True):
+            sweep, alpha_used = ivs.load_peak_lrt_sweep_from_h5(
+                str(h5_path), it, row["sex"], row["call_type"]
+            )
+            fig, _ = ivs.plot_bootstrap_lrt_panel(
+                sweep,
+                alpha=alpha_used,
+                pair_title="{key}: {K_n} vs {K_a} peaks",
+                obs_label="LR corrected",
+                threshold_label="corrected 99%",
+            )
+            fig.suptitle(
+                f"Bootstrap LRT null distributions -- {row['sex']} "
+                f"{call_label[row['call_type']]} {interval_label[it]}",
+                y=1.08,
+            )
+            fig.tight_layout()
+            if save_fig_bool:
+                save_figure(fig, f"ivi_bootstrap_lrt_{it}", vis_settings)
+            plt.show()
+            _, _, n_peak, _ = ivs.load_tied_model_from_h5(
+                str(h5_path), it, row["sex"], row["call_type"]
+            )
+            print(
+                f"[{interval_label[it]}] step-up (session-corrected) selected: {n_peak} peak(s)"
+            )
+
+**BIC vs number of peaks.** BIC of each fit on the tied ladder, with the test-selected count outlined.
+BIC keeps falling past the selected count because it charges each parameter ``log(n)`` at the nominal
+``n``, which over-counts the evidence when intervals are nested in sessions.
+
+.. code-block:: python
+
+    # BIC of each fit on the tied ladder (background count fixed), with the peak count
+    # the corrected step-up test selected outlined. BIC keeps falling past the
+    # selected count: it charges each parameter log(n) at the nominal n, which
+    # over-counts the evidence when intervals are nested in sessions -- the same
+    # clustering the corrected test accounts for.
+    for it in plot_interval_types:
+        summary = ivs.read_usv_interval_h5(str(h5_path))["modes"][it]["pool_summary"]
+        for row in summary.filter(pls.col("fitted")).iter_rows(named=True):
+            df_ic = ivs.load_tied_ic_table_from_h5(
+                str(h5_path), it, row["sex"], row["call_type"]
+            )
+            _, _, n_peak, _ = ivs.load_tied_model_from_h5(
+                str(h5_path), it, row["sex"], row["call_type"]
+            )
             fig, (ax_left, ax_right), _ = ivs.plot_ic_curves(
                 df_results=df_ic,
                 male_color=male_color,
                 female_color=female_color,
-                ic_col=ic_to_plot,
-                selected_n_components=selected,
+                ic_col="bic",
+                selected_n_components={row["sex"]: n_peak},
             )
-            ax_left.set_title(f"{ic_to_plot.upper()} vs n_components -- {mode_label[it]}")
+            ax_left.set_xlabel("number of peaks")
+            ax_left.set_title(
+                f"BIC vs number of peaks -- {row['sex']} "
+                f"{call_label[row['call_type']]} {interval_label[it]}"
+            )
             if save_fig_bool:
-                save_figure(fig, f"ivi_{ic_to_plot}_curve_{it}", vis_settings)
+                save_figure(fig, f"ivi_bic_curve_{it}", vis_settings)
             plt.show()
 
-**Best-fit overlay.** For each mode and sex, reconstruct the best-rep fitted mixture at the LRT-selected
-``K`` directly from the archive (no refit) and overlay its density on the
-``log(interval)`` histogram, with a quantile-quantile (Q-Q) inset comparing empirical to model
-quantiles. Component log-means are marked with triangles; tail deviations are where
-the Gaussian assumption breaks down, which is what the t-mixture variant exists for.
+**Best-fit overlay.** The selected tied model, rebuilt from the archive (no refit), over the
+``log(interval)`` histogram with a quantile-quantile (Q-Q) inset. Triangles mark each component, with
+medians in the text legend; ``show_mixture_components`` switches the individual weighted components on
+or off.
 
 .. code-block:: python
 
-    color_for = {"male": male_color, "female": female_color}
-    model_class_label = {"t": "t-distribution", "gauss": "Gaussian"}.get(
-        model_class, model_class
-    )
+    # The tied-scale model rebuilt from the archive at the peak count the corrected
+    # step-up test selected -- no refit. Triangles mark each component, (a)/(b)/...
+    # ascending, with medians in the text legend. Only fitted pools are drawn.
+    #
+    # Toggle: when True, overlay each individual mixture component (its weighted
+    # density, so the components sum to the black mixture curve) on the histogram;
+    # when False only the mixture curve is drawn.
     show_mixture_components = False
+    color_for = {"male": male_color, "female": female_color}
+    model_class_label = {
+        "t": "t-distribution",
+        "gauss": "Gaussian",
+        "ig": "inverse-Gaussian",
+    }.get(model_class, model_class)
+    density_as_bin_means = usv_interval_cfg["density_as_bin_means"]
 
-    for it in interval_types:
+    for it in plot_interval_types:
         sub = ivs.load_intervals_from_h5(str(h5_path), it)
-        selected = ivs.selected_K_from_h5(str(h5_path), it)
-        intervals_by_sex = {
-            "male": sub.filter(pls.col("sex") == "male")["interval_s"].to_numpy(),
-            "female": sub.filter(pls.col("sex") == "female")["interval_s"].to_numpy(),
-        }
-        for sex, intervals_sec in intervals_by_sex.items():
-            if intervals_sec.size < 2 or sex not in selected:
-                continue
-            n_comp = int(selected[sex])
-            mixture_model, mixture_model_order = ivs.load_best_fit_from_h5(
-                h5_path=str(h5_path),
-                interval_type=it,
-                sex=sex,
-                K=n_comp,
+        summary = ivs.read_usv_interval_h5(str(h5_path))["modes"][it]["pool_summary"]
+        for row in summary.filter(pls.col("fitted")).iter_rows(named=True):
+            sex, call_type = row["sex"], row["call_type"]
+            intervals_sec = sub.filter(
+                (pls.col("sex") == sex) & (pls.col("call_type") == call_type)
+            )["interval_s"].to_numpy()
+            mixture_model, mixture_model_order, n_peak, rows = ivs.load_tied_model_from_h5(
+                str(h5_path),
+                it,
+                sex,
+                call_type,
             )
+            n_background = int(rows["n_background"][0])
             kw = (
                 dict(auto_inset_below_legend=True, auto_inset_size=(0.45, 0.45))
                 if sex == "male"
@@ -1883,40 +1933,106 @@ the Gaussian assumption breaks down, which is what the t-mixture variant exists 
                 tau=tau,
                 legend_corner="upper right",
                 show_components=show_mixture_components,
+                density_as_bin_means=density_as_bin_means,
                 **kw,
             )
             ax_fit.set_title(
-                f"{mode_label[it].capitalize()} {model_class_label} "
-                f"mixture model LRT-selected K={n_comp}"
+                f"{interval_label[it].capitalize()} of {sex} {call_label[call_type]}s -- {model_class_label} "
+                f"mixture model LRT-selected {n_peak} peaks + {n_background} background"
             )
             if save_fig_bool:
                 save_figure(fig_fit, f"ivi_best_fit_{model_class}_{sex}_{it}", vis_settings)
             plt.show()
+            print(f"  [{sex}] log-log Pearson r (Q-Q) = {fit_summary['qq_pearson_r']:.4f}")
 
-**Fitted parameters.** Final summary: pull the LRT-selected best-rep components straight from the archive
-and print the per-sex log-mean and log-sd for each component, ready to cite as
-numerical results (the notebook formats them into a pasteable ``mixture_model_params`` JSON block).
+**Fitted parameters.** The selected model's components, ascending, in the ``mixture_model_params``
+layout the modeling pipeline reads; component 0 is the first peak, from which the inter-bout threshold
+``exp(mu_0 + 2.58 * sd_0)`` is derived.
 
 .. code-block:: python
 
-    for it in interval_types:
-        selected = ivs.selected_K_from_h5(str(h5_path), it)
-        for sex in ("male", "female"):
-            if sex not in selected:
-                continue
-            K = int(selected[sex])
-            mixture_model, _ = ivs.load_best_fit_from_h5(
-                h5_path=str(h5_path),
-                interval_type=it,
-                sex=sex,
-                K=K,
+    import json
+
+    for it in plot_interval_types:
+        summary = ivs.read_usv_interval_h5(str(h5_path))["modes"][it]["pool_summary"]
+        blocks = []
+        for row in summary.filter(pls.col("fitted")).iter_rows(named=True):
+            _, _, n_peak, rows = ivs.load_tied_model_from_h5(
+                str(h5_path), it, row["sex"], row["call_type"]
             )
-            means = [round(float(m), 5) for m in np.asarray(mixture_model.means_).flatten()]
-            sds = [
-                round(float(s), 5)
-                for s in np.sqrt(np.asarray(mixture_model.covariances_).reshape(-1))
+            rows = rows.sort("logmean")
+            means = [round(float(m), 5) for m in rows["logmean"]]
+            sds = [round(float(s), 5) for s in rows["logscale"]]
+            roles = rows["role"].to_list()
+            blocks.append(
+                f'    "{row["sex"]}": {{\n'
+                f'      "means": {json.dumps(means)},\n'
+                f'      "sds": {json.dumps(sds)}\n'
+                f"    }}"
+            )
+            threshold_ms = 1000.0 * float(np.exp(means[0] + 2.58 * sds[0]))
+            print(
+                f"[{it}] {row['sex']} {call_label[row['call_type']]}: roles {roles}; "
+                f"inter-bout threshold exp(mu_0 + 2.58 sd_0) = {threshold_ms:.1f} ms"
+            )
+        print("{")
+        print('  "mixture_model_params": {')
+        print(",\n".join(blocks))
+        print("  }")
+        print("}")
+
+**Serial dependence.** The mixture says where the timescales are, not which of them separates a
+within-bout pause from a between-bout gap. That is settled by serial dependence: a gap inside a bout
+carries information about the gap that follows it, a gap between bouts does not. The panel is the joint
+distribution of consecutive intervals (square, both axes on the same log scale) with the median next
+interval in equal-count bins of the current one. Below the bout boundary the median runs along the
+``next = current`` diagonal; beyond it the typical next interval is the same whatever the length of the
+current gap. The coupling fades gradually, so the boundary marks where it is gone rather than a sharp
+switch.
+
+.. code-block:: python
+
+    # Pairs are consecutive rows of the archived interval table within a session, which
+    # is the order the analysis wrote them (ascending in time). The boundary is the first
+    # peak's exp(mu + z * sd) with the same z the modeling pipeline uses for its
+    # inter-bout threshold, so the line drawn here IS that threshold.
+    color_for = {"male": male_color, "female": female_color}
+    serial_dependence_z = 2.58
+
+    for it in plot_interval_types:
+        sub = ivs.load_intervals_from_h5(str(h5_path), it)
+        summary = ivs.read_usv_interval_h5(str(h5_path))["modes"][it]["pool_summary"]
+        for row in summary.filter(pls.col("fitted")).iter_rows(named=True):
+            sex, call_type = row["sex"], row["call_type"]
+            pool = sub.filter((pls.col("sex") == sex) & (pls.col("call_type") == call_type))
+            pairs = ivs.serial_dependence_pairs(pool, sex)
+            _, _, _, rows = ivs.load_tied_model_from_h5(str(h5_path), it, sex, call_type)
+            first_peak = (
+                rows.filter(pls.col("role") == "peak").sort("logmean").row(0, named=True)
+            )
+            boundary_ms = 1000.0 * float(
+                np.exp(first_peak["logmean"] + serial_dependence_z * first_peak["logscale"])
+            )
+
+            fig_sd, ax_sd, sd_stats = ivs.plot_serial_dependence(
+                pairs=pairs,
+                color=color_for[sex],
+                boundary_ms=boundary_ms,
+            )
+            if save_fig_bool:
+                save_figure(fig_sd, f"ivi_serial_dependence_{sex}_{it}", vis_settings)
+            plt.show()
+
+            beyond = sd_stats["bin_median_next_ms"][
+                sd_stats["bin_current_ms"] > boundary_ms
             ]
-            print(it, sex, means, sds)
+            print(
+                f"  [{it}] [{sex} {call_label[call_type]}]: {sd_stats['n_pairs']} pairs; "
+                f"bout boundary {boundary_ms:.0f} ms; beyond it the median next interval stays within "
+                f"{beyond.min():.0f}-{beyond.max():.0f} ms"
+                if beyond.size
+                else ""
+            )
 
 Source: `inter_usv_interval_analyses.ipynb <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/inter_usv_interval_analyses.ipynb>`_.
 

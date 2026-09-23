@@ -7,7 +7,6 @@ compute / data-loading helpers when wired to synthetic sessions on disk.
 
 from __future__ import annotations
 
-import glob
 import json
 from pathlib import Path
 
@@ -52,7 +51,6 @@ from usv_playpen.visualizations.usv_summary_statistics import (
     plot_estrous_category_kde_grid,
 )
 from usv_playpen.visualizations.usv_interval_summary_statistics import (
-    build_master_usv_interval_dataframe,
     find_latest_archive,
     load_intervals_from_h5,
     load_mixture_model_fits_from_h5,
@@ -63,13 +61,10 @@ from usv_playpen.visualizations.usv_interval_summary_statistics import (
     plot_ic_curves,
     plot_qq,
     plot_best_fit_with_annotations,
-    run_bic_sweep,
-    run_bootstrap_lrt_sweep,
-    select_n_components_from_lrt_sweep,
     plot_bootstrap_lrt_panel,
-    save_notebook_archive_to_h5,
 )
 from usv_playpen.visualizations import usv_interval_summary_statistics as uiss
+from usv_playpen.analyses.compute_inter_usv_interval_distributions import fit_mixture_model_sweep
 from usv_playpen.analyses.usv_interval_archive import write_ivi_h5
 
 
@@ -682,40 +677,6 @@ def test_selected_K_from_h5_unknown_mode_raises(tmp_path):
         selected_K_from_h5(str(arc), interval_type="e2s")
 
 
-# ---- build_master_usv_interval_dataframe ---------------------------------
-
-
-def test_build_master_usv_interval_dataframe_empty_when_no_sessions(tmp_path):
-    """Session list resolves to no readable sessions → empty frame, not error."""
-    list_file = tmp_path / "sessions.txt"
-    list_file.write_text("/nonexistent/session\n")
-    df, summary = build_master_usv_interval_dataframe(
-        session_lists=[str(list_file)],
-        exclude_noise_usvs=True,
-        message_output=lambda *_a, **_kw: None,
-    )
-    assert df.height == 0
-    assert summary["n_sessions_loaded"] == 0
-    # Schema is still set up so downstream filter() calls don't crash
-    assert "interval_type" in df.columns
-
-
-def test_build_master_usv_interval_dataframe_aggregates_two_sessions(tmp_path):
-    """Two synthetic sessions → tidy interval frame with both modes present."""
-    sess1 = tmp_path / "20260101_120000"
-    sess2 = tmp_path / "20260102_120000"
-    _make_synthetic_session(sess1, n_male_calls=4, n_female_calls=3, n_unassigned=0)
-    _make_synthetic_session(sess2, n_male_calls=3, n_female_calls=3, n_unassigned=0)
-    list_file = tmp_path / "sessions.txt"
-    list_file.write_text(f"{sess1}\n{sess2}\n")
-    df, summary = build_master_usv_interval_dataframe(
-        session_lists=[str(list_file)],
-        exclude_noise_usvs=True,
-        message_output=lambda *_a, **_kw: None,
-    )
-    assert df.height > 0
-    assert set(df["interval_type"].unique().to_list()) == {"s2s", "e2s"}
-    assert summary["n_sessions_loaded"] == 2
 
 
 # Smoke tests for the figure-rendering functions of usv_summary_statistics.
@@ -1387,14 +1348,13 @@ def test_plot_best_fit_with_annotations():
     plt.close(fig)
 
 
-def test_run_bic_sweep_feeds_plot_ic_curves():
+def test_fit_mixture_model_sweep_feeds_plot_ic_curves():
     """
     Description
     -----------
-    `run_bic_sweep` must fit the mixture-model sweep across n_components for each sex
-    from a tidy {sex, interval_s} frame and return a tidy results table;
-    that table must then drive `plot_ic_curves` end-to-end (real compute ->
-    real figure), exercising the fit_mixture_model_sweep wrap path with no mocks.
+    The CLI's `fit_mixture_model_sweep` must fit the mixture-model sweep across
+    n_components for each sex and return a tidy results table; that table must then
+    drive `plot_ic_curves` end-to-end (real compute -> real figure) with no mocks.
 
     Parameters
     ----------
@@ -1405,14 +1365,11 @@ def test_run_bic_sweep_feeds_plot_ic_curves():
     """
 
     rng = np.random.default_rng(16)
-    usv_interval_df = pls.DataFrame({
-        "sex": (["male"] * 200) + (["female"] * 200),
-        "interval_s": np.exp(np.concatenate([
-            rng.normal(-0.5, 0.6, 200), rng.normal(0.6, 0.6, 200),
-        ])).tolist(),
-    })
-    df_results = run_bic_sweep(
-        usv_interval_df,
+    df_results = fit_mixture_model_sweep(
+        intervals_by_key={
+            "male": np.exp(rng.normal(-0.5, 0.6, 200)),
+            "female": np.exp(rng.normal(0.6, 0.6, 200)),
+        },
         n_components_min=1, n_components_max=3, n_repeats=2,
         max_modes_reported=3, random_seed_base=0, model_class="gauss",
     )
@@ -1949,7 +1906,7 @@ def test_plot_estrous_category_kde_grid_degenerate_grid_shapes(cats, stages, wan
 # notebook -> HDF5 archive writer.
 #
 # The panel / cell-pair / step-up / archive paths consume hand-built sweep
-# dicts (shaped exactly like run_bootstrap_lrt_sweep / bootstrap_lrt output)
+# dicts (shaped exactly like load_lrt_sweep_from_h5 / bootstrap_lrt output)
 # so the broken-axis, normal, and empty-fill rendering branches are all
 # driven without paying the bootstrap cost; one small real sweep covers the
 # compute loop and its size<2 skip.
@@ -1961,8 +1918,7 @@ def _lrt_res(K_n, K_a, lr_obs, lr_null, p_value):
     -----------
     Build one `(K_null, K_alt)` bootstrap-LRT result dict shaped exactly
     like `mixture_model_utils.bootstrap_lrt` returns it, so the same dict
-    drives `plot_bootstrap_lrt_panel`, `select_n_components_from_lrt_sweep`,
-    and `save_notebook_archive_to_h5`.
+    drives `plot_bootstrap_lrt_panel`.
 
     Parameters
     ----------
@@ -2079,146 +2035,6 @@ def test_plot_bootstrap_lrt_panel_empty_sweep_returns_single_axis():
     fig, axes = plot_bootstrap_lrt_panel({})
     assert axes.shape == (1, 1)
     plt.close(fig)
-
-
-@pytest.mark.parametrize("bonferroni", [False, True])
-def test_select_n_components_from_lrt_sweep(bonferroni):
-    """
-    Description
-    -----------
-    `select_n_components_from_lrt_sweep` must apply the per-key step-up
-    rule, returning one selected K per key, and (when `bonferroni=True`)
-    divide alpha by the per-key test count before delegating to the
-    step-up selector.
-
-    Parameters
-    ----------
-    bonferroni (bool)
-        Whether to apply the Bonferroni correction.
-
-    Returns
-    -------
-    None
-    """
-
-    selected = select_n_components_from_lrt_sweep(
-        _lrt_sweep(), alpha=0.05, bonferroni=bonferroni,
-    )
-    assert set(selected) == {"male", "female"}
-    assert all(isinstance(v, int) for v in selected.values())
-
-
-def test_run_bootstrap_lrt_sweep_small_and_skips_tiny_key():
-    """
-    Description
-    -----------
-    `run_bootstrap_lrt_sweep` must run the parametric bootstrap LRT for
-    every consecutive K-pair per key, while skipping keys with fewer than
-    two intervals. Uses a tiny `B` and Gaussian model class to keep the
-    real `bootstrap_lrt` calls fast.
-
-    Parameters
-    ----------
-
-    Returns
-    -------
-    None
-    """
-
-    rng = np.random.default_rng(201)
-    intervals_by_key = {
-        "male": np.exp(rng.normal(-0.4, 0.5, 150)),
-        "tiny": np.array([0.5]),  # size < 2 -> skipped
-    }
-    sweep = run_bootstrap_lrt_sweep(
-        intervals_by_key,
-        n_components_min=1, n_components_max=2,
-        B=3, n_subsample=120, model_class="gauss",
-        n_init_obs=1, n_init_boot=1, seed=0,
-        message_output=lambda *a, **k: None,
-    )
-    assert "tiny" not in sweep, "single-interval key should be skipped"
-    assert (1, 2) in sweep["male"]
-    res = sweep["male"][(1, 2)]
-    assert {"lr_obs", "lr_null", "p_value", "null_max"}.issubset(res)
-
-
-def test_save_notebook_archive_to_h5_round_trips(tmp_path):
-    """
-    Description
-    -----------
-    `save_notebook_archive_to_h5` must consolidate the notebook's in-memory
-    interval frame + mixture-model sweep + bootstrap-LRT sweep into a single
-    `usv_interval_analysis_<ts>.h5` archive (applying the step-up rule and
-    writing the `K_selected_step_up` column), skipping the empty `e2s`
-    mode entirely. Asserts the archive is written and reloads via the
-    existing HDF5 loaders, with the per-sex selected-K attrs intact.
-
-    Parameters
-    ----------
-    tmp_path (pathlib.Path)
-        Pytest temp directory used as the archive output directory.
-
-    Returns
-    -------
-    None
-    """
-
-    intervals_df = pls.DataFrame({
-        "session_id":   ["s1", "s1", "s1", "s2"],
-        "source_list":  ["g", "g", "g", "g"],
-        "interval_type": ["s2s"] * 4,
-        "sex":          ["male", "male", "female", "male"],
-        "interval_s":   [0.5, 0.7, 0.3, 0.9],
-        "log_interval": np.log([0.5, 0.7, 0.3, 0.9]).tolist(),
-        "male_id":      ["M"] * 4,
-        "female_id":    ["F"] * 4,
-    })
-    summary = {
-        "n_sessions_loaded": 2,
-        "n_dropped": {"s2s": {"male": 1, "female": 0}},
-    }
-    settings_path = glob.glob("**/analyses_settings.json", recursive=True)[0]
-    cfg = json.loads(
-        Path(settings_path).read_text()
-    )["compute_inter_usv_interval_distributions"]
-
-    mixture_model_rows = []
-    for sex in ("male", "female"):
-        for K in (1, 2):
-            row = {
-                "sex": sex, "n_comp": K, "rep": 0,
-                "bic": 10.0, "aic": 10.0, "icl": 10.0,
-                "cv_neg_loglik": 1.0, "model_class": "gauss",
-            }
-            for k in range(2):
-                row[f"weight_{k+1}"] = 0.5 if k < K else float("nan")
-                row[f"logmean_{k+1}"] = float(k - 0.5) if k < K else float("nan")
-                row[f"logsd_{k+1}"] = 0.5 if k < K else float("nan")
-                row[f"nu_{k+1}"] = float("nan")
-            mixture_model_rows.append(row)
-
-    h5_path = save_notebook_archive_to_h5(
-        output_directory=str(tmp_path),
-        usv_interval_df=intervals_df,
-        usv_interval_summary=summary,
-        usv_interval_cfg=cfg,
-        mixture_model_fits_by_mode={"s2s": pls.DataFrame(mixture_model_rows)},
-        lrt_sweep_by_mode={"s2s": _lrt_sweep()},
-        message_output=lambda *a, **k: None,
-    )
-
-    assert h5_path.exists()
-    assert h5_path.name.startswith("usv_interval_analysis_")
-
-    # Reloads through the existing loader family.
-    df_back = load_intervals_from_h5(str(h5_path), interval_type="s2s")
-    assert df_back.height == 4
-    lrt_back = load_lrt_sweep_from_h5(str(h5_path), interval_type="s2s")
-    assert lrt_back, "bootstrap_lrt table should round-trip"
-    selected = selected_K_from_h5(str(h5_path), interval_type="s2s")
-    assert set(selected) == {"male", "female"}
-    assert all(isinstance(v, int) for v in selected.values())
 
 
 def _fit_two_comp_gmm(seed: int):
