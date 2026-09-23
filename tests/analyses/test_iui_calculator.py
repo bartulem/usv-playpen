@@ -257,7 +257,9 @@ def test_save_iui_writes_archive_when_fit_mixture_model_false(tmp_path, mocker, 
 def test_save_iui_writes_archive_when_fit_mixture_model_true(tmp_path, mocker, monkeypatch):
     """fit_mixture_model=True → invokes fit_mixture_model_sweep AND bootstrap_lrt; the resulting
     archive carries the mixture_model_fits + bootstrap_lrt + bootstrap_lrt_null tables.
-    Both expensive calls are mocked."""
+    Both expensive calls are mocked. Every rung is handed the pool's session labels, the
+    step-up selects on the CORRECTED p-value (raw 0.0 would reject, corrected 0.5 keeps), and
+    the archived table carries both."""
     list_file = tmp_path / "sessions.txt"
     list_file.write_text("/dummy/session\n")
 
@@ -280,12 +282,22 @@ def test_save_iui_writes_archive_when_fit_mixture_model_true(tmp_path, mocker, m
         "K_null": 1, "K_alt": 2, "B": 2, "n_subsample": 5,
         "model_class": "gauss",
         "lr_obs": 1.0, "lr_null": np.array([0.5, 1.5]),
-        "p_value": 0.5, "null_mean": 1.0, "null_p95": 1.5, "null_max": 1.5,
+        "p_value": 0.0, "null_mean": 1.0, "null_p95": 1.5, "null_max": 1.5,
+        "design_effect": 2.0, "design_effect_raw": 2.0, "lr_corrected": 0.5,
+        "p_value_corrected": 0.5,
     }
-    monkeypatch.setattr(iui_mod, "bootstrap_lrt",
-                        lambda **kw: fake_lrt_res)
-    monkeypatch.setattr(iui_mod, "select_n_components_step_up_lrt",
-                        lambda pair_results, alpha: 1)
+    lrt_calls: list[dict] = []
+
+    def fake_bootstrap_lrt(**kw):
+        lrt_calls.append(kw)
+        return fake_lrt_res
+    monkeypatch.setattr(iui_mod, "bootstrap_lrt", fake_bootstrap_lrt)
+    selector_inputs: list[dict] = []
+
+    def fake_select(pair_results, alpha):
+        selector_inputs.append(pair_results)
+        return 1
+    monkeypatch.setattr(iui_mod, "select_n_components_step_up_lrt", fake_select)
 
     write_mock = mocker.patch.object(iui_mod, "write_ivi_h5",
                                      return_value=Path(tmp_path / "out" / "stub.h5"))
@@ -306,6 +318,11 @@ def test_save_iui_writes_archive_when_fit_mixture_model_true(tmp_path, mocker, m
         # Only the fitted pool (the male's USVs) is swept; the female's squeaks are described only.
         assert "K_selected_male" in mode["attrs"]
         assert "K_selected_female" not in mode["attrs"]
+        assert mode["bootstrap_lrt"]["p_value_corrected"].to_list()[0] == 0.5
+        assert mode["bootstrap_lrt"]["p_value"].to_list()[0] == 0.0
+    # the male pool is 3 intervals from one session, and its labels travel with it
+    assert lrt_calls and all(list(kw["session_labels"]) == ["20260101_120000"] * 3 for kw in lrt_calls)
+    assert all(res["p_value"] == 0.5 for inputs in selector_inputs for res in inputs.values())
 
 
 def test_save_iui_creates_output_directory(tmp_path, mocker, monkeypatch):

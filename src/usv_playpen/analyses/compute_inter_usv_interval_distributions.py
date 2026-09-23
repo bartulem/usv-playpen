@@ -7,9 +7,12 @@ mixture model -- either a Gaussian or a Student-t mixture, selected via
 log-inter-USV interval samples.
 
 Convention
-Within each session, ``track_names[0]`` is treated as the male and
-``track_names[1]`` as the female. Inter-vocalization intervals are
-computed only between consecutive USVs emitted by the *same* animal.
+Each animal's sex is read from the session metadata
+(:func:`._usv_io.extract_animal_sexes`), never from its track slot, and
+inter-vocalization intervals are computed only between consecutive USVs
+emitted by the *same* animal. A pool of one sex therefore holds every
+animal of that sex in a session: one per session in courtship, both
+animals in a female-female session.
 Two interval definitions are supported:
 
 * ``s2s``: ``start[i+1] - start[i]`` (literature standard).
@@ -168,8 +171,9 @@ def compute_session_usv_intervals(
     metadata (:func:`extract_animal_sexes`) rather than from its track
     slot: in a female-female session both animals are female, their
     intervals both land in the ``'female'`` pool, and a call of one
-    female is never paired with a call of the other. The "current pointer" advances on
-    every row regardless of whether an interval was recorded — this is
+    female is never paired with a call of the other. The "current
+    pointer" advances on every row regardless of whether an interval
+    was recorded — this is
     intentional: it preserves chronological order of the conversation
     so a male->female->male triplet does not record a male-male
     interval that skips over the female call. Intervals strictly
@@ -935,8 +939,12 @@ class InterUSVIntervalCalculator:
           the best-rep row to rebuild the fitted mixture without
           refitting.
         * ``/<mode>/bootstrap_lrt`` -- parametric bootstrap LRT per
-          ``(sex, K_null, K_alt)`` pair plus the per-sex step-up
-          selection in the constant ``K_selected_step_up`` column.
+          ``(sex, K_null, K_alt)`` pair, session-corrected like the
+          tied peak test (``design_effect``, ``design_effect_raw``,
+          ``lr_corrected``, ``p_value_corrected`` next to the raw
+          ``lr_obs`` / ``p_value``), plus the per-sex step-up selection,
+          made on the corrected p-value, in the constant
+          ``K_selected_step_up`` column.
         * ``/<mode>/bootstrap_lrt_null`` -- long-form null
           distribution: one row per ``(sex, K_null, K_alt, b)``, used
           to re-render the panel plot without re-running the test.
@@ -1161,9 +1169,13 @@ class InterUSVIntervalCalculator:
             # The unconstrained K sweep and its LRT are kept available behind fit_mixture_model
             # but are off by default: the tied peak ladder above is the model and the test this
             # analysis reports. When enabled they run on the fitted pools only, keyed by sex.
+            # Every rung is session-corrected exactly as the tied peak test is (the pool's
+            # session labels travel with it, and the step-up stops on the corrected p-value);
+            # the uncorrected statistic and p-value are archived alongside for comparison.
             if fit_mixture_model:
-                fit_pools = {spec['sex']: pool_values[(spec['sex'], spec['call_type'], spec['adjacency'])]
-                             for spec in interval_pools if spec['fit']}
+                fit_keys = {spec['sex']: (spec['sex'], spec['call_type'], spec['adjacency'])
+                            for spec in interval_pools if spec['fit']}
+                fit_pools = {k: pool_values[key] for k, key in fit_keys.items()}
                 fit_pools = {k: v for k, v in fit_pools.items() if v.size >= 2}
                 if fit_pools:
                     mode_payload["mixture_model_fits"] = fit_mixture_model_sweep(
@@ -1193,20 +1205,39 @@ class InterUSVIntervalCalculator:
                                 n_init_boot=bootstrap_lrt_n_init,
                                 reg_covar=mixture_model_reg_covar, seed=random_seed_base,
                                 n_jobs=bootstrap_lrt_n_jobs,
+                                session_labels=pool_sessions[fit_keys[sex]],
+                                n_design_bootstrap=tied_design_bootstrap,
                             )
                             pair_results[(K_n, K_n + 1)] = res
+                            message(
+                                f"    [{interval_type}] {sex} unconstrained {K_n}v{K_n + 1}: "
+                                f"LR={res['lr_obs']:.2f} deff={res['design_effect']:.2f} "
+                                f"LR_corr={res['lr_corrected']:.2f} p_raw={res['p_value']:.4f} "
+                                f"p_corr={res['p_value_corrected']:.4f}"
+                            )
                         n_tests = len(pair_results)
                         alpha_eff = (bootstrap_lrt_alpha / n_tests
                                      if (bootstrap_lrt_bonferroni and n_tests > 0)
                                      else bootstrap_lrt_alpha)
-                        K_sel = select_n_components_step_up_lrt(pair_results, alpha=alpha_eff)
+                        # the step-up reads 'p_value', so it is handed the corrected one
+                        K_sel = select_n_components_step_up_lrt(
+                            {pair: {"p_value": res["p_value_corrected"]}
+                             for pair, res in pair_results.items()},
+                            alpha=alpha_eff)
+                        message(f"    [{interval_type}] {sex} unconstrained: K={K_sel} selected "
+                                f"(session-corrected step-up, alpha={alpha_eff:.4f})")
                         mode_payload["attrs"][f"K_selected_{sex}"] = int(K_sel)
                         for (K_n, K_a), res in pair_results.items():
                             lrt_rows.append({
                                 "sex": sex, "K_null": res["K_null"], "K_alt": res["K_alt"],
                                 "lr_obs": res["lr_obs"], "null_mean": res["null_mean"],
                                 "null_p95": res["null_p95"], "null_max": res["null_max"],
-                                "p_value": res["p_value"], "B": res["B"],
+                                "p_value": res["p_value"],
+                                "design_effect": res["design_effect"],
+                                "design_effect_raw": res["design_effect_raw"],
+                                "lr_corrected": res["lr_corrected"],
+                                "p_value_corrected": res["p_value_corrected"],
+                                "B": res["B"],
                                 "n_subsample": res["n_subsample"],
                                 "model_class": res["model_class"],
                                 "alpha_used": float(alpha_eff),
