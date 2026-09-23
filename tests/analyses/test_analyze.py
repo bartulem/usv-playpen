@@ -2310,6 +2310,9 @@ def test_compute_session_usv_intervals_basic_pairs(monkeypatch):
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
         "male_id": "M", "female_id": "F", "frame_rate": 150.0,
     })
+    monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
+        "M": "male", "F": "female",
+    })
     fake_usv = pls.DataFrame({
         "start": [0.0, 0.5, 1.0, 1.7],
         "stop":  [0.1, 0.6, 1.1, 1.8],
@@ -2337,6 +2340,9 @@ def test_compute_session_usv_intervals_empty_usv_returns_empty_arrays(monkeypatc
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
         "male_id": "M", "female_id": "F", "frame_rate": 150.0,
     })
+    monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
+        "M": "male", "F": "female",
+    })
     monkeypatch.setattr(cmod, "load_and_filter_usv_data",
                         lambda **kw: pls.DataFrame({
                             "start": pls.Series([], dtype=pls.Float64),
@@ -2357,6 +2363,9 @@ def test_compute_session_usv_intervals_e2s_drops_overlapping(monkeypatch):
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
         "male_id": "M", "female_id": "F", "frame_rate": 150.0,
     })
+    monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
+        "M": "male", "F": "female",
+    })
     fake_usv = pls.DataFrame({
         "start": [0.0, 0.5, 1.0],
         "stop":  [0.6, 0.7, 1.2],
@@ -2373,6 +2382,53 @@ def test_compute_session_usv_intervals_e2s_drops_overlapping(monkeypatch):
     # Second M-M pair: start[2]-stop[1] = 1.0 - 0.7 = 0.3 → kept
     np.testing.assert_allclose(out["male"], [0.3])
     assert out["n_dropped_male"] == 1
+
+
+def test_compute_session_usv_intervals_same_sex_session_pairs_per_animal(monkeypatch):
+    """
+    A female-female session: both animals are female by their metadata, so both
+    animals' intervals land in the 'female' pool and nothing in 'male'; a call of
+    one female is never paired with a call of the other (the A->B step breaks the
+    chain), and each interval carries the animal it belongs to.
+    """
+    import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
+    monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
+        "male_id": "A", "female_id": "B", "frame_rate": 150.0,
+    })
+    monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
+        "A": "female", "B": "female",
+    })
+    fake_usv = pls.DataFrame({
+        "start": [0.0, 0.5, 1.0, 1.7, 2.0],
+        "stop":  [0.1, 0.6, 1.1, 1.8, 2.1],
+        "duration": [0.1] * 5,
+        "emitter": ["A", "A", "B", "B", "A"],
+    })
+    monkeypatch.setattr(cmod, "load_and_filter_usv_data", lambda **kw: fake_usv)
+    out = compute_session_usv_intervals(
+        session_root="/ok", interval_type="s2s", exclude_noise_usvs=True,
+    )
+    # A-A 0.5 (rows 0-1) and B-B 0.7 (rows 2-3); B->A (rows 3-4) is not a pair
+    assert out["male"].size == 0
+    np.testing.assert_allclose(out["female"], [0.5, 0.7])
+    assert list(out["emitter_female"]) == ["A", "B"]
+
+
+def test_extract_animal_sexes_reads_metadata_and_refuses_to_guess(tmp_path):
+    """
+    Sex comes from the metadata Subjects block, matched on the stripped track
+    name; a track without a recorded sex raises instead of falling back to its slot.
+    """
+    from usv_playpen.analyses._usv_io import extract_animal_sexes
+    (tmp_path / "20260101_120000_metadata.yaml").write_text(
+        "Subjects:\n- subject_id: '124784_2'\n  sex: female\n"
+        "- subject_id: '124784_3'\n  sex: female\n")
+    assert extract_animal_sexes(str(tmp_path), ["124784_2\x00", "124784_3"]) == {
+        "124784_2": "female", "124784_3": "female"}
+    with pytest.raises(ValueError, match="no subject with a recorded sex"):
+        extract_animal_sexes(str(tmp_path), ["124784_2", "999999_1"])
+    with pytest.raises(FileNotFoundError):
+        extract_animal_sexes(str(tmp_path / "absent"), ["124784_2"])
 
 
 # ===========================================================================

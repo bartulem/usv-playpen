@@ -34,6 +34,7 @@ import polars as pls
 
 from ..os_utils import configure_path
 from ._usv_io import (
+    extract_animal_sexes,
     extract_session_metadata,
     load_and_filter_usv_data,
 )
@@ -162,7 +163,12 @@ def compute_session_usv_intervals(
 
     For each consecutive pair of USVs in the session's noise-filtered
     summary CSV, an interval is recorded only if both vocalizations
-    are emitted by the same animal. The "current pointer" advances on
+    are emitted by the same animal. Pairing is on the animal's identity,
+    never on its sex, and each animal's sex is read from the session
+    metadata (:func:`extract_animal_sexes`) rather than from its track
+    slot: in a female-female session both animals are female, their
+    intervals both land in the ``'female'`` pool, and a call of one
+    female is never paired with a call of the other. The "current pointer" advances on
     every row regardless of whether an interval was recorded — this is
     intentional: it preserves chronological order of the conversation
     so a male->female->male triplet does not record a male-male
@@ -206,10 +212,21 @@ def compute_session_usv_intervals(
     -------
     out (dict)
         Keys: ``'male'``, ``'female'`` (np.ndarray of intervals in
-        seconds), ``'n_dropped_male'``, ``'n_dropped_female'`` (int),
-        ``'male_id'``, ``'female_id'``, ``'interval_type'``.
+        seconds, pooled over every animal of that sex in the session),
+        ``'emitter_male'``, ``'emitter_female'`` (np.ndarray of str, the
+        animal each interval belongs to, aligned with ``'male'`` /
+        ``'female'`` and grouped animal by animal, each animal's
+        intervals in time order), ``'n_dropped_male'``,
+        ``'n_dropped_female'`` (int), ``'animal_sex'`` (dict, stripped
+        track name -> sex) and ``'interval_type'``.
         Returns an empty dict ``{}`` if the session is missing
         tracking or USV files.
+
+    Raises
+    ------
+    FileNotFoundError, ValueError
+        From :func:`extract_animal_sexes`, when the session has tracking
+        but its metadata does not record both animals' sexes.
     """
 
     if interval_type not in ('s2s', 'e2s'):
@@ -224,10 +241,7 @@ def compute_session_usv_intervals(
     except (FileNotFoundError, IndexError):
         return {}
 
-    raw_male_id = metadata['male_id']
-    raw_female_id = metadata['female_id']
-    male_id = str(raw_male_id).strip('\x00').strip()
-    female_id = str(raw_female_id).strip('\x00').strip()
+    animal_sex = extract_animal_sexes(session_root, [metadata['male_id'], metadata['female_id']])
 
     try:
         # Under 'filtered' the other call types are removed before pairing, so the loader
@@ -250,27 +264,16 @@ def compute_session_usv_intervals(
         empty = np.array([], dtype=float)
         return {
             "male": empty, "female": empty,
+            "emitter_male": np.array([], dtype=object), "emitter_female": np.array([], dtype=object),
             "n_dropped_male": 0, "n_dropped_female": 0,
-            "male_id": male_id, "female_id": female_id,
+            "animal_sex": animal_sex,
             "interval_type": interval_type,
         }
 
-    # build a polars frame with start, stop, sex (mirroring the
-    # `with_columns(when().then()...)` pattern used in
-    # ``visualizations.usv_summary_statistics.build_master_usv_dataframe``).
-    # We accept either the raw H5-decoded ID or the stripped variant in
-    # the emitter column, since the CSV's emitter values can lack the
-    # null-byte / whitespace padding that ``track_names`` carry; comparing
-    # only the raw form silently routes every row to "unassigned" when
-    # the CSV is clean, which is what produced the previous M=0, F=0 result.
-    sex_expr = (
-        pls.when(pls.col("emitter") == raw_male_id).then(pls.lit("male"))
-        .when(pls.col("emitter") == raw_female_id).then(pls.lit("female"))
-        .when(pls.col("emitter") == male_id).then(pls.lit("male"))
-        .when(pls.col("emitter") == female_id).then(pls.lit("female"))
-        .otherwise(pls.lit("unassigned"))
-        .alias("sex")
-    )
+    # The emitter column is compared after stripping, since the CSV's emitter values can lack
+    # the null-byte / whitespace padding that the H5 ``track_names`` carry; anything that is not
+    # one of the two tracked animals (unassigned calls) maps to None and never forms a pair.
+    emitter_expr = pls.col("emitter").cast(pls.Utf8).str.strip_chars("\x00").str.strip_chars().alias("emitter")
     # Under 'strict' the target-type flag has to survive into the pairing loop, so it is
     # carried alongside start/stop/sex rather than applied as a row filter.
     target_expr = (
@@ -278,69 +281,68 @@ def compute_session_usv_intervals(
         else (pls.col("squeak") if call_type == "squeak" else ~pls.col("squeak")).alias("is_target")
     )
     if "stop" in usv_info.columns:
-        sub = usv_info.with_columns([sex_expr, target_expr]).select(
-            ["start", "stop", "sex", "is_target"])
+        sub = usv_info.with_columns([emitter_expr, target_expr]).select(
+            ["start", "stop", "emitter", "is_target"])
     else:
         sub = usv_info.with_columns([
             (pls.col("start") + pls.col("duration")).alias("stop"),
-            sex_expr,
+            emitter_expr,
             target_expr,
-        ]).select(["start", "stop", "sex", "is_target"])
+        ]).select(["start", "stop", "emitter", "is_target"])
 
     # extract to numpy arrays for the streaming pointer iteration; this avoids
     # per-row Polars overhead and keeps the same-emitter gating readable
     start_arr = sub["start"].to_numpy()
     stop_arr = sub["stop"].to_numpy()
-    sex_arr = sub["sex"].to_numpy()
+    emitter_arr = np.array([e if e in animal_sex else None for e in sub["emitter"].to_list()], dtype=object)
     target_arr = sub["is_target"].to_numpy()
 
     col_for_tag = {"start": start_arr, "stop": stop_arr}
     usv0_col = col_for_tag[usv0_tag]
     usv1_col = col_for_tag[usv1_tag]
 
-    intervals = {"male": [], "female": []}
+    intervals = {animal: [] for animal in animal_sex}
     n_dropped = {"male": 0, "female": 0}
 
     usv0_time = usv0_col[0]
-    usv0_sex = sex_arr[0]
+    usv0_emitter = emitter_arr[0]
     usv0_target = target_arr[0]
 
-    for r in range(1, len(sex_arr)):
+    for r in range(1, len(emitter_arr)):
         usv1_time = usv1_col[r]
-        usv1_sex = sex_arr[r]
+        usv1_emitter = emitter_arr[r]
         usv1_target = target_arr[r]
 
-        # same identified emitter (skip unassigned-unassigned pairs), and under 'strict'
+        # same identified animal (skip unassigned-unassigned pairs), and under 'strict'
         # both members must also be the requested call type -- anything else between them
         # breaks the pair rather than being skipped over
-        if (usv0_sex == usv1_sex) and (usv0_sex in ("male", "female")) \
+        if (usv0_emitter is not None) and (usv0_emitter == usv1_emitter) \
                 and usv0_target and usv1_target:
             interval = usv1_time - usv0_time
             if interval > 0:
-                intervals[usv0_sex].append(interval)
+                intervals[usv0_emitter].append(interval)
             else:
-                n_dropped[usv0_sex] += 1
+                n_dropped[animal_sex[usv0_emitter]] += 1
 
         usv0_time = usv0_col[r]
-        usv0_sex = usv1_sex
+        usv0_emitter = usv1_emitter
         usv0_target = usv1_target
 
-    male_arr = np.asarray(intervals["male"], dtype=float)
-    female_arr = np.asarray(intervals["female"], dtype=float)
+    # pool by sex, animal by animal, so each animal's intervals stay contiguous and in time order
+    out: dict = {"animal_sex": animal_sex, "interval_type": interval_type}
+    for sex in ("male", "female"):
+        animals = [animal for animal, animal_sex_value in animal_sex.items() if animal_sex_value == sex]
+        values = [np.asarray(intervals[animal], dtype=float) for animal in animals]
+        owners = [np.full(len(intervals[animal]), animal, dtype=object) for animal in animals]
+        out[sex] = np.concatenate(values) if values else np.array([], dtype=float)
+        out[f"emitter_{sex}"] = np.concatenate(owners) if owners else np.array([], dtype=object)
+        out[f"n_dropped_{sex}"] = int(n_dropped[sex])
 
     # boundary safety: log() is taken downstream and requires strictly positive input
-    assert np.all(male_arr > 0) and np.all(female_arr > 0), \
+    assert np.all(out["male"] > 0) and np.all(out["female"] > 0), \
         "Non-positive intervals leaked past the > 0 filter; refusing to log."
 
-    return {
-        "male": male_arr,
-        "female": female_arr,
-        "n_dropped_male": int(n_dropped["male"]),
-        "n_dropped_female": int(n_dropped["female"]),
-        "male_id": male_id,
-        "female_id": female_id,
-        "interval_type": interval_type,
-    }
+    return out
 
 
 def fit_mixture_model_sweep(
@@ -918,7 +920,10 @@ class InterUSVIntervalCalculator:
           ``n_sessions_loaded``.
         * ``/<mode>/intervals`` -- tidy one-row-per-inter-USV interval table with
           ``session_id``, ``source_list``, ``interval_type``, ``sex``,
-          ``interval_s``, ``log_interval``, ``male_id``, ``female_id``.
+          ``interval_s``, ``log_interval``, ``emitter_id`` (the animal the
+          interval belongs to; pairing is per animal and an animal's sex comes
+          from the session metadata, so a same-sex session contributes both
+          animals to one pool).
         * ``/<mode>/drop_counts`` -- per-sex count of dropped
           non-positive intervals (only meaningful for ``e2s`` mode).
         * ``/<mode>/mixture_model_fits`` (only when ``fit_mixture_model`` is true) -- the
@@ -1046,8 +1051,7 @@ class InterUSVIntervalCalculator:
             "adjacency": pls.Utf8,
             "interval_s": pls.Float64,
             "log_interval": pls.Float64,
-            "male_id": pls.Utf8,
-            "female_id": pls.Utf8,
+            "emitter_id": pls.Utf8,
         }
 
         for interval_type in interval_types:
@@ -1098,8 +1102,7 @@ class InterUSVIntervalCalculator:
                         "adjacency": [adjacency] * arr.size,
                         "interval_s": arr.astype(float),
                         "log_interval": np.log(arr),
-                        "male_id": [usv_interval["male_id"]] * arr.size,
-                        "female_id": [usv_interval["female_id"]] * arr.size,
+                        "emitter_id": usv_interval[f"emitter_{sex}"].astype(str),
                     })
 
                 values = np.concatenate(arrays) if arrays else np.array([], dtype=float)

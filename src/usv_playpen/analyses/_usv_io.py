@@ -20,6 +20,7 @@ import h5py
 import polars as pls
 
 from ..os_utils import drop_noise_usvs
+from ..yaml_utils import load_session_metadata
 
 
 def extract_session_metadata(session_root: str) -> dict[str, Any]:
@@ -64,6 +65,70 @@ def extract_session_metadata(session_root: str) -> dict[str, Any]:
             'experiment_code': h5_file['experimental_code'][()].decode("utf-8"),
             'tracking_file': tracking_file
         }
+
+
+def extract_animal_sexes(session_root: str, track_names: list[str]) -> dict[str, str]:
+    """
+    Description
+    -----------
+    Reads the sex of every tracked animal from the session's ``*_metadata.yaml``.
+
+    :func:`extract_session_metadata` names the two tracks ``male_id`` and ``female_id`` by
+    their position in the tracking file, which is right for a courtship session (track 0 is
+    always the male there) and wrong for any other pairing: in a female-female session the
+    track it calls ``male_id`` is a female. The sex of an animal is a recorded property of
+    that animal, not of its track slot, and the session metadata records it for every
+    subject in its ``Subjects`` block (``subject_id`` + ``sex``). ``subject_id`` is the
+    same string the tracking file stores as a track name and the USV summary stores as an
+    ``emitter``, so this map is what lets a same-sex session be read at all.
+
+    Names are compared after stripping null bytes and whitespace, because the H5-decoded
+    track names can carry padding that the YAML and CSV strings do not.
+
+    Parameters
+    ----------
+    session_root (str)
+        The session directory holding the ``*_metadata.yaml`` file.
+    track_names (list of str)
+        The animals to resolve, typically ``[metadata['male_id'], metadata['female_id']]``
+        from :func:`extract_session_metadata`.
+
+    Returns
+    -------
+    animal_sex (dict)
+        ``{stripped track name: 'male' | 'female'}`` for every entry of ``track_names``.
+
+    Raises
+    ------
+    FileNotFoundError
+        The session has no readable ``*_metadata.yaml``.
+    ValueError
+        A track name has no subject in the metadata, the subject has no ``sex``, or the
+        recorded sex is neither ``'male'`` nor ``'female'``. None of these is guessed.
+    """
+
+    metadata, metadata_path = load_session_metadata(session_root)
+    if metadata is None:
+        msg = f"No readable *_metadata.yaml in {session_root}; the animals' sexes cannot be resolved."
+        raise FileNotFoundError(msg)
+
+    subject_sex = {str(subject['subject_id']).strip('\x00').strip(): subject['sex']
+                   for subject in metadata['Subjects'] if 'sex' in subject}
+
+    animal_sex: dict[str, str] = {}
+    for name in track_names:
+        stripped = str(name).strip('\x00').strip()
+        if stripped not in subject_sex:
+            msg = (f"Track '{stripped}' has no subject with a recorded sex in {metadata_path}; "
+                   f"subjects with a sex: {sorted(subject_sex)}.")
+            raise ValueError(msg)
+        sex = str(subject_sex[stripped]).strip().lower()
+        if sex not in ('male', 'female'):
+            msg = f"Subject '{stripped}' in {metadata_path} has sex '{subject_sex[stripped]}'; expected male or female."
+            raise ValueError(msg)
+        animal_sex[stripped] = sex
+    return animal_sex
+
 
 def load_and_filter_usv_data(
     session_root: str,

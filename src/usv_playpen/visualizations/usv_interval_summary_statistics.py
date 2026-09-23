@@ -1486,16 +1486,23 @@ def serial_dependence_pairs(usv_interval_df: pls.DataFrame, sex: str) -> tuple[n
     """
     Description
     -----------
-    Every (current interval, next interval) pair from consecutive rows of one session.
+    Every (current interval, next interval) pair from consecutive rows of one animal in one session.
 
-    The archived table is written session by session in time order, so consecutive rows within a
-    session are consecutive intervals. Pairing it back this way reproduces a pairing computed
-    independently from the session summaries exactly.
+    The archived table is written session by session and, within a session, animal by animal in
+    time order, so consecutive rows of one animal are its consecutive intervals. Pairing it back
+    this way reproduces a pairing computed independently from the session summaries exactly.
+
+    The animal is the ``emitter_id`` column. It matters whenever a session holds two animals of
+    the same sex (a female-female session puts both females in the ``'female'`` pool), where
+    pairing by session alone would chain the last interval of one female to the first of the
+    other. Archives written before ``emitter_id`` existed hold one animal per sex per session,
+    so for them the session alone identifies the animal and is used instead.
 
     Parameters
     ----------
     usv_interval_df (pls.DataFrame)
-        Tidy interval table for ONE interval type (columns ``session_id``, ``sex``, ``interval_s``).
+        Tidy interval table for ONE interval type (columns ``session_id``, ``sex``, ``interval_s``,
+        and ``emitter_id`` in archives that record it).
     sex (str)
         ``'male'`` or ``'female'``.
 
@@ -1508,9 +1515,11 @@ def serial_dependence_pairs(usv_interval_df: pls.DataFrame, sex: str) -> tuple[n
     """
 
     subset = usv_interval_df.filter(pls.col("sex") == sex)
+    group_columns = ["session_id", "emitter_id"] if "emitter_id" in subset.columns else ["session_id"]
     current_list, following_list = [], []
-    for session in dict.fromkeys(subset["session_id"].to_list()):
-        values = subset.filter(pls.col("session_id") == session)["interval_s"].to_numpy()
+    for group in dict.fromkeys(subset.select(group_columns).iter_rows()):
+        values = subset.filter(pls.all_horizontal(
+            [pls.col(c) == v for c, v in zip(group_columns, group)]))["interval_s"].to_numpy()
         if values.size >= 2:
             current_list.append(values[:-1])
             following_list.append(values[1:])

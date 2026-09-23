@@ -209,8 +209,9 @@ def _mock_session_resolution(monkeypatch, tmp_path):
             "female": np.array([0.3, 0.4]),
             "n_dropped_male": 0 if interval_type == "s2s" else 1,
             "n_dropped_female": 0,
-            "male_id": "M",
-            "female_id": "F",
+            "emitter_male": np.array(["M"] * 3, dtype=object),
+            "emitter_female": np.array(["F"] * 2, dtype=object),
+            "animal_sex": {"M": "male", "F": "female"},
             "interval_type": interval_type,
         }
     monkeypatch.setattr(iui_mod, "compute_session_usv_intervals", fake_compute)
