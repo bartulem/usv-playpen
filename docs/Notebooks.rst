@@ -1745,7 +1745,35 @@ knobs straight from the settings block.
 * **density_as_bin_means** -- when ``true`` the best-fit overlay draws the mixture as the bar heights it *predicts* (its density averaged over each histogram bin) rather than as the point-wise curve. A histogram bar is a bin average while the curve is a point density, so a point-wise curve necessarily rides above the bars wherever a bin straddles the peak and reads as an overshoot the fit does not have. Set ``false`` to restore the point-wise curve.
 * **plot_log_xlims** / **bins_per_sex** -- plot-only knobs read straight from JSON (not archived in the HDF5); **tau** is likewise read from JSON but *is* archived in the HDF5.
 
-**Compute.** Run once (about an hour, dominated by the peak-count test). It runs
+**Settings block.** Every key of ``analyses_settings.json -> compute_inter_usv_interval_distributions``
+the analysis reads (all of them are archived in the root ``/attrs`` except the plot-only ones marked):
+
+* **session_lists** -- session-list text files, one session root per line; their union, de-duplicated, is the cohort.
+* **output_directory** -- where the archive is written; **figures_directory** -- where the notebook saves figures (not read by the analysis).
+* **exclude_noise_usvs** -- drop the segments ``detect-usv-noise`` flagged as holding no vocalization.
+* **interval_pools** -- the pools, each ``{sex, call_type, adjacency, fit}``: ``call_type`` ``usv`` or ``squeak``; ``adjacency`` ``filtered`` (other call types removed before pairing) or ``strict`` (two calls pair only if nothing lies between them in the full record -- required for sparse callers and whenever many calls are unassigned); ``fit`` whether the models run on it.
+* **min_intervals_for_fitting** -- a fitted pool smaller than this is archived for description only (5000).
+* **fit_tied_model**, **tied_peak_grid**, **tied_n_background**, **tied_n_init**, **tied_n_init_boot** -- the tied-scale peak model: whether it runs, the peak counts tested (``[1, 2, 3]``, each against one more), the fixed background count (2), and the EM restarts of the observed fits (4) and of the bootstrap refits (2).
+* **design_bootstrap** -- session resamples for the design effect of every corrected test, tied and unconstrained (2000).
+* **bootstrap_lrt_B**, **bootstrap_lrt_n_subsample**, **bootstrap_lrt_alpha**, **bootstrap_lrt_bonferroni**, **bootstrap_lrt_n_jobs** -- shared by both tests: bootstrap replicates per rung (1000), the subsample the observed and null statistics are computed on (10000), the step-up level (0.01), Bonferroni across the rungs (``true``), and parallel workers (24, also used by the serial-dependence resamples).
+* **fit_mixture_model**, **model_class**, **n_components_min**, **n_components_max**, **n_repeats**, **mixture_model_n_init**, **mixture_model_reg_covar**, **bootstrap_lrt_n_init**, **cv_n_folds**, **cv_n_init**, **max_modes_reported** -- the unconstrained sweep: whether it runs, the family (``t``), the K range (2-6), fits per K (10) with their EM restarts (10), the variance floor (1e-4, also used by the tied model), the EM restarts of its bootstrap refits (10), the cross-validation folds and restarts of the diagnostic CV likelihood (5, 5), and the modes recorded per fit (6).
+* **random_seed_base** -- seeds every fit, subsample, bootstrap null and session resample (0).
+* **tau** -- posterior threshold of the inter-component boundaries recorded for Gaussian fits (0.5).
+* **fit_serial_dependence**, **serial_dependence_n_knots**, **serial_dependence_corner_widths**, **serial_dependence_bootstrap**, **serial_dependence_level**, **serial_dependence_bend_bounds_ms**, **serial_dependence_grid_percentiles**, **serial_dependence_max_iter** -- the serial-dependence fits: whether they run, the spline's knots (6, at quantiles of the current interval), the bent line's candidate corner widths (``[0.05, 0.15, 0.3]`` natural-log units, the best on the full data kept), session resamples (1000), band and bend-interval coverage (99%), the range searched for the bend (30-600 ms), the percentiles of the current interval between which the curves are evaluated (1-99), and the median-regression iteration cap (20000; refits that reach it are counted in the archive).
+* **plot_log_xlims**, **bins_per_sex**, **density_as_bin_means** -- plot only, not archived.
+
+**Archive layout.** ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5``; every table carries ``sex``,
+``call_type`` and ``adjacency``, because a mode group holds several pools.
+
+* root ``/attrs`` -- every setting above except the plot-only ones, plus ``created_at_iso``, ``git_sha``, ``source_lists`` (the list files), ``session_roots`` (the session directories that contributed data) and ``n_sessions_loaded``.
+* ``/<mode>/attrs`` (``s2s``, ``e2s``) -- ``selected_n_peak_<sex>_<call_type>`` and ``alpha_effective_<sex>_<call_type>`` of the tied test; ``K_selected_<sex>`` of the unconstrained sweep.
+* ``intervals`` -- one row per interval: ``session_id``, ``source_list``, ``interval_type``, ``interval_s``, ``log_interval``, ``emitter_id`` (the animal; archives before 2026-09-23 have ``male_id`` / ``female_id`` instead).
+* ``drop_counts`` -- non-positive intervals dropped per pool; ``pool_summary`` -- per pool ``n_intervals``, ``n_sessions``, the 5/25/50/75/95th percentiles and whether it was ``fitted``.
+* ``tied_fits``, ``tied_modes``, ``peak_lrt``, ``peak_lrt_null`` -- the tied ladder (one row per peak count and component: role, parameters, likelihood, BIC, shared peak scale), its modes, the peak test per rung (raw and corrected statistic, design effect, threshold, raw and corrected p) and its null draws.
+* ``mixture_model_fits``, ``bootstrap_lrt``, ``bootstrap_lrt_null`` -- the unconstrained sweep (every K and rep, with per-component parameters and the diagnostic information criteria), its LRT per rung (raw and corrected, with the step-up selection) and its null draws.
+* ``serial_dependence_curves``, ``serial_dependence_fit``, ``serial_dependence_bends`` -- the spline and bent line with their bands on a grid of the current interval; the bend, its interval, slope, flat level and the counts of refits at the iteration cap; and the replicate bends.
+
+**Compute.** Run once (about an hour, dominated by the peak-count test; the serial-dependence fits add a few minutes per fitted pool). It runs
 ``InterUSVIntervalCalculator`` -- the code the CLI runs -- so the notebook and the CLI write identical
 archives: per interval type and pool, it builds the pool, fits the tied ladder over ``tied_peak_grid``
 (background count fixed at ``tied_n_background``), runs the session-corrected step-up peak-count test,
@@ -1756,7 +1784,8 @@ test's own subsample and floored at one, so the correction can only make the tes
 The unconstrained component sweep and its LRT are written as well only when ``fit_mixture_model`` is
 true; that LRT is session-corrected the same way (``design_bootstrap`` sets the session
 resampling for both), selects on the corrected p-value, and archives the raw statistic and p-value
-next to the corrected ones.
+next to the corrected ones. With ``fit_serial_dependence`` true, the serial-dependence fits run on the
+same fitted pools (see *Serial dependence*, below).
 
 .. code-block:: python
 

@@ -3339,3 +3339,17 @@ def test_fit_serial_dependence_recovers_a_known_bend():
     assert curves.height == 50 and bends.height == 20
     assert set(curves["sex"].to_list()) == {"male"}
     assert (curves["spline_low_ms"] <= curves["spline_high_ms"]).all()
+
+
+def test_summarize_interval_pool_reports_counts_and_percentiles():
+    """The descriptive summary written for every pool: count, sessions and the 5/25/50/75/95th
+    percentiles; an empty pool gives NaN percentiles rather than raising."""
+    from usv_playpen.analyses.compute_inter_usv_interval_distributions import summarize_interval_pool
+    values = np.arange(1, 101, dtype=float) / 1000.0
+    out = summarize_interval_pool(values, 7)
+    assert out["n_intervals"] == 100 and out["n_sessions"] == 7
+    assert out["median_s"] == pytest.approx(np.percentile(values, 50))
+    assert out["p05_s"] == pytest.approx(np.percentile(values, 5))
+    assert out["p95_s"] == pytest.approx(np.percentile(values, 95))
+    empty = summarize_interval_pool(np.array([]), 0)
+    assert empty["n_intervals"] == 0 and np.isnan(empty["median_s"])

@@ -951,35 +951,43 @@ The output directory is not a CLI option: it is ``naturalistic_usv_repository_di
 The repository is not selected by an explicit file path: ``context_label`` picks the sex subdirectory + context, and the newest matching build in ``<naturalistic_usv_repository_dir>/<sex>/`` is used. ``playback_seed`` (for a reproducible stimulus) is the one parameter without a command-line flag — set it in the ``create_naturalistic_usv_playback_wav`` block of *analyses_settings.json*.
 
 ``generate-usv-interval-distributions``
-``generate-usv-interval-distributions`` is the command-line interface for computing inter-vocalization-interval (inter-USV interval) distributions across one or more session-list text files and (optionally) sweeping a 1D mixture model (Gaussian or Student-t) on the pooled log-inter-USV intervals.
+``generate-usv-interval-distributions`` is the command-line interface for computing inter-USV interval distributions across one or more session-list text files and modelling them. It runs the same code as the ``inter_usv_interval_analyses.ipynb`` compute cell and writes the same archive.
 
-By convention, ``track_names[0]`` is treated as the male and ``track_names[1]`` as the female. Each session-list text file contains one session root directory per line; paths are run through ``configure_path`` so Mac/Linux/Windows entries resolve correctly on the host platform. ``--session-list`` may be passed multiple times to merge multiple cohorts.
+**Pools and pairing.** The analysis works on the pools declared in ``interval_pools`` (JSON only): each names an emitter sex, a call type (``usv`` or ``squeak``), an adjacency rule (``filtered`` or ``strict``) and whether it is fitted. Each animal's sex is read from the ``Subjects`` block of the session's ``*_metadata.yaml``, not from its track slot, and a session whose metadata does not record an animal's sex raises. Intervals are measured only between two consecutive calls of the *same* animal, so a pool holds every animal of its sex in a session -- one in courtship, both in a female-female session -- without ever pairing the two. Each session-list text file contains one session root directory per line; paths are run through ``configure_path`` so Mac/Linux/Windows entries resolve correctly on the host platform. ``--session-list`` may be passed multiple times to merge multiple cohorts.
 
-Both interval definitions are computed unconditionally on every run: ``s2s`` = ``start[i+1] - start[i]`` (literature standard), and ``e2s`` = ``start[i+1] - stop[i]`` (alternate; can be negative for overlapping calls and is dropped via the ``> 0`` filter, with the drop count reported per session per mode). Both definitions share the same per-session pass over the noise-filtered USV table, so there is no compute saving from omitting one.
+Both interval definitions are computed unconditionally on every run: ``s2s`` = ``start[i+1] - start[i]`` (literature standard), and ``e2s`` = ``start[i+1] - stop[i]`` (can be negative for overlapping calls and is dropped via the ``> 0`` filter, with the drop count reported per pool). Both definitions share the same per-session pass over the noise-filtered USV table.
 
-The command writes a single self-describing HDF5 archive ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5`` to ``--output-directory``. Per interval mode it holds the tidy one-row-per-interval table, the per-sex drop counts, and (when ``--fit-mixture-model``) the full Gaussian / Student-t mixture sweep — all four information criteria plus per-component parameters — and the bootstrap-LRT results; the root ``/attrs`` records every parameter that drove the run (plus ``git_sha`` and the source lists), so the archive is fully self-describing. See :doc:`Notebooks` for the complete archive schema and the plotting notebook that reads it.
+**Models.** On every fitted pool with at least ``min_intervals_for_fitting`` intervals, three analyses run as the JSON enables them:
+
+* ``fit_tied_model`` -- the tied-scale Student-t peak model (``tied_peak_grid`` peak counts, each with ``tied_n_background`` free background components) and its step-up peak-count test, every rung's likelihood ratio divided by its session design effect (``design_bootstrap`` session resamples) before it is scored against the parametric-bootstrap null. This is the model the male courtship analysis reports.
+* ``fit_mixture_model`` -- the unconstrained mixture sweep (``n_components_min`` to ``n_components_max``, ``--model-class``) and its step-up LRT, session-corrected the same way. This is the model the female-female analysis reports.
+* ``fit_serial_dependence`` -- median regressions of the next interval on the current one over all consecutive same-animal pairs: a spline and a bent line whose bend estimates the bout boundary from serial dependence alone, with session-bootstrap bands (``serial_dependence_*`` keys).
+
+The options below override the JSON for the extraction and the unconstrained sweep; the pools, the tied model and the serial-dependence knobs are set in the JSON (see :doc:`Notebooks`, *Inter-USV interval analyses*, for every key and the archive layout).
+
+**Output.** A single self-describing HDF5 archive ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5`` in ``--output-directory``. Per interval type it holds the tidy one-row-per-interval table (with each interval's ``emitter_id``), per-pool drop counts and descriptive summaries, and the tables of every analysis that ran; the root ``/attrs`` record every parameter that drove the run, the ``git_sha``, the list files (``source_lists``) and the session directories they resolved to (``session_roots``).
 
 .. code-block:: text
 
-    usage: generate-usv-interval-distributions [-h] [--session-list PATH...] [--output-directory PATH]
-                            [--noise-col-id TEXT] [--noise-categories INTEGER...]
+    usage: generate-usv-interval-distributions [--session-list FILE...] [--output-directory DIRECTORY]
+                            [--exclude-noise-usvs | --no-exclude-noise-usvs]
                             [--fit-mixture-model | --no-fit-mixture-model]
                             [--n-components-min INTEGER] [--n-components-max INTEGER]
                             [--n-repeats INTEGER] [--max-modes-reported INTEGER]
                             [--random-seed-base INTEGER]
                             [--cv-n-folds INTEGER] [--cv-n-init INTEGER]
                             [--mixture-model-n-init INTEGER] [--mixture-model-reg-covar FLOAT]
-                            [--tau FLOAT] [--figures-directory PATH]
+                            [--tau FLOAT] [--figures-directory DIRECTORY]
                             [--model-class {gauss,t,ig}]
                             [--bootstrap-lrt-B INTEGER]
-                            [--bootstrap-lrt-n-init INTEGER]
-                            [--bootstrap-lrt-n-jobs INTEGER]
                             [--bootstrap-lrt-n-subsample INTEGER]
                             [--bootstrap-lrt-alpha FLOAT]
+                            [--bootstrap-lrt-n-init INTEGER]
+                            [--bootstrap-lrt-n-jobs INTEGER]
                             [--bootstrap-lrt-bonferroni | --no-bootstrap-lrt-bonferroni]
+                            [--help]
 
     optional arguments:
-      -h, --help                  Show this help message and exit.
       --session-list              Path to a text file containing session root
                                   directories (one per line). Repeatable.
       --output-directory          Directory in which to write the consolidated
@@ -992,64 +1000,72 @@ The command writes a single self-describing HDF5 archive ``usv_interval_analysis
                                   detections through unfiltered; run
                                   ``detect-usv-noise`` on it, or pass
                                   ``--no-exclude-noise-usvs``.
-      --fit-mixture-model / --no-fit-mixture-model    Whether to run the mixture-model sweep after inter-USV interval extraction.
-      --n-components-min          Minimum number of mixture components.
-      --n-components-max          Maximum number of mixture components.
-      --n-repeats                 Number of EM-init repeats per (key, n_components).
+      --fit-mixture-model / --no-fit-mixture-model
+                                  Whether to run the unconstrained mixture sweep
+                                  and its session-corrected LRT on the fitted pools.
+      --n-components-min          Minimum number of mixture components. Default 2.
+      --n-components-max          Maximum number of mixture components. Default 6.
+      --n-repeats                 Number of EM-init repeats per (pool, n_components).
+                                  Default 10.
       --max-modes-reported        Maximum number of mixture modes recorded per fit.
-      --random-seed-base          Base seed; rep r uses random_seed_base + r.
+                                  Default 6.
+      --random-seed-base          Base seed; rep r uses random_seed_base + r. It
+                                  also seeds the subsamples, the bootstrap nulls
+                                  and the session resamples. Default 0.
       --cv-n-folds                Number of K-fold splits for CV log-likelihood.
                                   Default 5.
       --cv-n-init                 EM restarts per fold during CV. Default 5.
-      --mixture-model-n-init      EM restarts per in-sample mixture-model fit. Default 10.
-      --mixture-model-reg-covar   Covariance regularisation passed to sklearn's
-                                  GaussianMixture. Default 1e-4.
+      --mixture-model-n-init      EM restarts per in-sample mixture-model fit.
+                                  Default 10.
+      --mixture-model-reg-covar   Variance floor of the EM solver (also used by
+                                  the tied model). Default 1e-4.
       --tau                       Posterior threshold for the LEFT component
                                   when computing inter-component decision
                                   boundaries. Default 0.5 (standard Bayes
                                   boundary).
       --figures-directory         Directory the inter-USV interval notebook uses to save
-                                  rendered figures.
-      --model-class               Mixture class. 't' = Student-t mixture
-                                  (default; one heavy-tailed component
-                                  absorbs the long-pause tail). 'gauss' =
-                                  log-Gaussian mixture (classical). 'ig' =
-                                  inverse-Gaussian mixture in linear time
-                                  (first-passage-time family for waiting
-                                  times).
-      --bootstrap-lrt-B           Number of parametric bootstrap replicates
-                                  per pairwise LRT. Default 1000.
-      --bootstrap-lrt-n-init      EM restarts for the bootstrap REFITS, separate
-                                  from --mixture-model-n-init which governs the
-                                  observed fit. Default 1. Restarts dominate the
-                                  cost of this test and barely move its answer:
-                                  measured on one male end-to-start K=4 vs K=5
-                                  comparison, going 3 -> 10 -> 20 moved the
-                                  failed-refit rate 75% -> 70% -> 65% and p
-                                  0.0090 -> 0.0080 -> 0.0070, at 38 and 57
-                                  minutes for a SINGLE pair. A high failure rate
-                                  is not necessarily an optimiser problem: it
-                                  also arises when the larger K is simply not
-                                  identifiable on the data.
+                                  rendered figures (not used by the analysis itself).
+      --model-class               Mixture class of the unconstrained sweep. 't' =
+                                  Student-t mixture in log space (default;
+                                  heavy-tailed components absorb the long-pause
+                                  tail). 'gauss' = log-Gaussian mixture
+                                  (classical). 'ig' = inverse-Gaussian mixture in
+                                  linear time (first-passage-time family for
+                                  waiting times).
+      --bootstrap-lrt-B           Number of parametric bootstrap replicates per
+                                  rung, for the unconstrained LRT and the tied
+                                  peak test alike. Default 1000.
+      --bootstrap-lrt-n-subsample Subsample size for both observed and bootstrap
+                                  fits. Default 10000. This is the effective
+                                  sample size of the whole test, not just of the
+                                  null: the observed statistic is computed on the
+                                  same subsample, so raising it increases the
+                                  test's power rather than sharpening the null
+                                  against a fixed value.
+      --bootstrap-lrt-alpha       Significance threshold for the step-up rule,
+                                  before any Bonferroni correction. Default 0.01.
+      --bootstrap-lrt-n-init      EM restarts for the bootstrap REFITS of the
+                                  unconstrained LRT, separate from
+                                  --mixture-model-n-init which governs the observed
+                                  fit. Default 10. Restarts dominate the cost of
+                                  this test and barely move its answer: measured on
+                                  one male end-to-start K=4 vs K=5 comparison,
+                                  going 3 -> 10 -> 20 moved the failed-refit rate
+                                  75% -> 70% -> 65% and p 0.0090 -> 0.0080 ->
+                                  0.0070, at 38 and 57 minutes for a SINGLE pair.
+                                  A high failure rate is not necessarily an
+                                  optimiser problem: it also arises when the
+                                  larger K is simply not identifiable on the data.
       --bootstrap-lrt-n-jobs      Number of parallel workers for the bootstrap
-                                  LRT replicates (1 = sequential legacy path).
-      --bootstrap-lrt-n-subsample Subsample size for both observed and
-                                  bootstrap fits. Default 10000. This is the
-                                  effective sample size of the whole test, not
-                                  just of the null: the observed statistic is
-                                  computed on the same subsample, so raising it
-                                  increases the test's power rather than
-                                  sharpening the null against a fixed value.
-      --bootstrap-lrt-alpha       Significance threshold for the step-up
-                                  rule. Default 0.01.
+                                  replicates and the serial-dependence resamples
+                                  (1 = sequential). Default 24.
       --bootstrap-lrt-bonferroni / --no-bootstrap-lrt-bonferroni
-                                  Divide alpha by the number of pairwise
-                                  tests before applying the step-up rule
-                                  (default: enabled). With the shipped
-                                  K range there are four comparisons per
-                                  sex and interval type, so the effective
-                                  per-comparison threshold is 0.01 / 4 =
-                                  0.0025.
+                                  Divide alpha by the number of rungs before
+                                  applying the step-up rule (default: enabled).
+                                  With the shipped grids the unconstrained sweep
+                                  has four rungs (2 vs 3 ... 5 vs 6, per-rung
+                                  0.01 / 4 = 0.0025) and the tied peak test three
+                                  (1 vs 2 ... 3 vs 4 peaks, 0.01 / 3 = 0.0033).
 
 ``generate-rm``
 ``generate-rm`` is the command-line interface for calculating per-cluster neuronal tuning curves (behavioral + vocal in one pass). Behavioral tuning runs when the session's ``*_behavioral_features.csv`` exists; vocal tuning runs when the ``*_usv_summary.csv`` and synced spike data exist. Sessions missing both inputs return cleanly without producing any tuning files.

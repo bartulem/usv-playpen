@@ -65,6 +65,9 @@ from usv_playpen.visualizations.usv_interval_summary_statistics import (
     serial_dependence_pairs,
     load_serial_dependence_from_h5,
     plot_serial_dependence,
+    load_tied_model_from_h5,
+    load_peak_lrt_sweep_from_h5,
+    load_tied_ic_table_from_h5,
 )
 from usv_playpen.visualizations import usv_interval_summary_statistics as uiss
 from usv_playpen.analyses.compute_inter_usv_interval_distributions import fit_mixture_model_sweep
@@ -2216,3 +2219,74 @@ def test_plot_serial_dependence_draws_spline_and_bent_panels():
     # the one colorbar is an inset of the right panel, none on the left
     assert len(axes[1].child_axes) == 1 and len(axes[0].child_axes) == 0
     plt.close(f)
+
+
+def _tied_archive(tmp_path):
+    """An archive holding a male USV tied ladder at 1 and 2 peaks (plus 2 background components
+    each), the session-corrected peak test for both rungs with their null draws, and the
+    selected peak count (2) in the mode attributes."""
+    rows = []
+    for n_peak, loglik, bic in ((1, -100.0, 230.0), (2, -90.0, 215.0)):
+        roles = ["peak"] * n_peak + ["background"] * 2
+        means = [-2.8, -1.7][:n_peak] + [-1.2, 2.4]
+        scales = [0.24] * n_peak + [1.2, 1.1]
+        for component, (role, mean, scale) in enumerate(zip(roles, means, scales)):
+            rows.append({"sex": "male", "call_type": "usv", "adjacency": "filtered", "n_peak": n_peak,
+                         "n_background": 2, "component": component, "role": role, "logmean": mean,
+                         "median_sec": float(np.exp(mean)), "logscale": scale, "nu": 20.0,
+                         "weight": 1.0 / len(roles), "log_likelihood": loglik, "n_parameters": 10 + n_peak,
+                         "bic": bic, "shared_peak_scale": 0.24})
+    peak_lrt = pls.DataFrame({
+        "sex": ["male"] * 2, "call_type": ["usv"] * 2, "adjacency": ["filtered"] * 2,
+        "n_peak_null": [1, 2], "n_peak_alt": [2, 3], "n_background": [2, 2],
+        "lr_obs": [68.0, 11.3], "design_effect": [1.56, 1.35], "design_effect_raw": [1.56, 1.35],
+        "effective_n": [6400.0, 7400.0], "lr_corrected": [43.5, 8.4], "null_p95": [6.0, 7.0],
+        "threshold": [10.0, 12.4], "p_value": [0.0, 0.009], "p_value_corrected": [0.0, 0.028],
+        "negative_fraction": [0.0, 0.01], "B": [3, 3], "n_subsample": [10000, 10000],
+        "alpha_used": [0.0033, 0.0033], "rejected": [True, False]})
+    peak_lrt_null = pls.DataFrame({
+        "sex": ["male"] * 6, "call_type": ["usv"] * 6, "adjacency": ["filtered"] * 6,
+        "n_peak_null": [1, 1, 1, 2, 2, 2], "b": [2, 0, 1, 0, 1, 2],
+        "lr_b": [3.0, 1.0, 2.0, 4.0, 5.0, 6.0]})
+    out = tmp_path / "usv_interval_analysis_20260101_120000.h5"
+    write_ivi_h5(out, analysis_attrs={"git_sha": "abc"},
+                 per_mode={"e2s": {"attrs": {"selected_n_peak_male_usv": 2, "alpha_effective_male_usv": 0.0033},
+                                   "tied_fits": pls.DataFrame(rows), "peak_lrt": peak_lrt,
+                                   "peak_lrt_null": peak_lrt_null}})
+    return out
+
+
+def test_load_tied_model_from_h5_rebuilds_the_selected_and_requested_fits(tmp_path):
+    """Without n_peak the selected count (2) is rebuilt from its components; an explicit count is
+    honoured; a pool with no fit raises."""
+    arc = _tied_archive(tmp_path)
+    model, order, n_peak, rows = load_tied_model_from_h5(arc, "e2s", "male", "usv")
+    assert n_peak == 2 and rows.height == 4
+    np.testing.assert_allclose(np.asarray(model.means_).ravel(), [-2.8, -1.7, -1.2, 2.4])
+    np.testing.assert_allclose(np.asarray(model.covariances_).ravel(), np.array([0.24, 0.24, 1.2, 1.1]) ** 2)
+    np.testing.assert_array_equal(order, [0, 1, 2, 3])
+    assert rows["role"].to_list() == ["peak", "peak", "background", "background"]
+    _, _, n_one, rows_one = load_tied_model_from_h5(arc, "e2s", "male", "usv", n_peak=1)
+    assert n_one == 1 and rows_one.height == 3
+    with pytest.raises(KeyError):
+        load_tied_model_from_h5(arc, "e2s", "male", "usv", n_peak=4)
+
+
+def test_load_peak_lrt_sweep_from_h5_reads_the_corrected_statistic(tmp_path):
+    """Each rung is keyed (n_null, n_alt) and carries the CORRECTED statistic and p-value the test
+    decided on, the null draws in replicate order, and the per-rung level the test used."""
+    sweep, alpha = load_peak_lrt_sweep_from_h5(_tied_archive(tmp_path), "e2s", "male", "usv")
+    assert alpha == 0.0033
+    assert list(sweep["male"]) == [(1, 2), (2, 3)]
+    first = sweep["male"][(1, 2)]
+    assert first["lr_obs"] == 43.5 and first["p_value"] == 0.0
+    np.testing.assert_allclose(first["lr_null"], [1.0, 2.0, 3.0])
+    assert sweep["male"][(2, 3)]["p_value"] == 0.028 and sweep["male"][(2, 3)]["null_max"] == 6.0
+
+
+def test_load_tied_ic_table_from_h5_gives_one_row_per_peak_count(tmp_path):
+    """One row per peak count in the plot_ic_curves layout, n_comp holding the PEAK count."""
+    table = load_tied_ic_table_from_h5(_tied_archive(tmp_path), "e2s", "male", "usv")
+    assert table["n_comp"].to_list() == [1, 2]
+    assert table["bic"].to_list() == [230.0, 215.0]
+    assert set(table["sex"].to_list()) == {"male"} and set(table["rep"].to_list()) == {0}

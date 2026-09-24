@@ -374,7 +374,7 @@ def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--bootstrap-lrt-B', 'bootstrap_lrt_B', type=int, default=None, required=False, help='Number of bootstrap replicates per pairwise LRT (McLachlan 1987). Defaults to JSON value (1000); reduce to ~100-200 only for fast-iteration debugging.')
 @click.option('--bootstrap-lrt-n-subsample', 'bootstrap_lrt_n_subsample', type=int, default=None, required=False, help='Subsample size used for both observed and bootstrap fits in the LRT, so the LR statistic is on the same N scale. Defaults to JSON value (10000).')
 @click.option('--bootstrap-lrt-alpha', 'bootstrap_lrt_alpha', type=float, default=None, required=False, help='Significance threshold for the step-up LRT decision rule, before any Bonferroni correction. Defaults to JSON value (0.01).')
-@click.option('--bootstrap-lrt-n-init', 'bootstrap_lrt_n_init', type=int, default=None, required=False, help='EM restarts for the bootstrap REFITS, separate from mixture_model_n_init which governs the observed fit. Restarts dominate this test\'s cost and barely move its answer. Defaults to JSON value (1).')
+@click.option('--bootstrap-lrt-n-init', 'bootstrap_lrt_n_init', type=int, default=None, required=False, help='EM restarts for the bootstrap REFITS, separate from mixture_model_n_init which governs the observed fit. Restarts dominate this test\'s cost and barely move its answer. Defaults to JSON value (10).')
 @click.option('--bootstrap-lrt-n-jobs', 'bootstrap_lrt_n_jobs', type=int, default=None, required=False, help='Number of parallel workers for the bootstrap LRT replicates (1 = sequential legacy path).')
 @click.option('--bootstrap-lrt-bonferroni/--no-bootstrap-lrt-bonferroni', 'bootstrap_lrt_bonferroni', default=None, required=False, help='If set, divide alpha by the number of pairwise tests (per key) before applying the step-up rule.')
 @click.pass_context
@@ -383,8 +383,16 @@ def generate_usv_interval_distributions_cli(ctx, **kwargs) -> None:
     Description
     -----------
     A command-line tool to compute inter-vocalization-interval (inter-USV interval)
-    distributions across one or more session lists, and (optionally)
-    sweep a 1D mixture model on the pooled log-inter-USV intervals.
+    distributions across one or more session lists into one HDF5 archive. Per
+    interval pool declared in the JSON (``interval_pools``) it extracts the
+    intervals (each animal's sex read from the session metadata), and on the
+    fitted pools it runs, as the JSON enables them: the tied-scale peak model
+    with its session-corrected peak-count test (``fit_tied_model``), the
+    unconstrained mixture sweep with its session-corrected LRT
+    (``fit_mixture_model``), and the serial-dependence fits
+    (``fit_serial_dependence``). The options below override the JSON for the
+    extraction and the unconstrained sweep; the pools, the tied model and the
+    serial-dependence knobs are set in the JSON only.
 
     Parameters
     ----------
