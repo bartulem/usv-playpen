@@ -3296,3 +3296,46 @@ def test_anchor_bin_validity_grid_post_and_prior():
     )
     assert grid.shape == (1, 2)
     assert grid.dtype == bool
+
+
+def test_consecutive_interval_pairs_stay_within_one_animal_of_one_session():
+    """Neighbouring intervals pair only when they share the session AND the animal: the switch
+    from female A to female B, and from one session to the next, never forms a pair."""
+    from usv_playpen.analyses.compute_inter_usv_interval_distributions import consecutive_interval_pairs
+    values = np.array([0.1, 0.2, 0.3, 5.0, 6.0, 0.4, 0.5])
+    sessions = np.array(["s1"] * 5 + ["s2"] * 2)
+    emitters = np.array(["A", "A", "A", "B", "B", "A", "A"])
+    current, following, pair_sessions = consecutive_interval_pairs(values, sessions, emitters)
+    np.testing.assert_allclose(current, [0.1, 0.2, 5.0, 0.4])
+    np.testing.assert_allclose(following, [0.2, 0.3, 6.0, 0.5])
+    assert list(pair_sessions) == ["s1", "s1", "s1", "s2"]
+
+
+def test_fit_serial_dependence_recovers_a_known_bend():
+    """
+    Pairs whose median log(next) rises with slope 0.6 below 100 ms and is flat above it (Laplace
+    noise, 30 sessions): the bent line recovers the bend near 100 ms with an interval that
+    covers it, the slope near 0.6, and the tables carry the pool identity and one bend per
+    replicate.
+    """
+    from usv_playpen.analyses.compute_inter_usv_interval_distributions import fit_serial_dependence
+    rng = np.random.default_rng(0)
+    n = 6000
+    x = rng.uniform(np.log(0.02), np.log(5.0), n)
+    c = np.log(0.1)
+    y = -1.0 + 0.6 * np.minimum(x, c) + rng.laplace(0.0, 0.25, n)
+    sessions = np.repeat(np.arange(30).astype(str), n // 30)
+    identity = {"sex": "male", "call_type": "usv", "adjacency": "filtered"}
+    curves, fit, bends = fit_serial_dependence(
+        current=np.exp(x), following=np.exp(y), pair_sessions=sessions, pool_identity=identity,
+        n_knots=5, corner_widths=[0.05, 0.15], n_bootstrap=20, level=90.0,
+        bend_bounds_ms=(30.0, 600.0), grid_percentiles=(1.0, 99.0), max_iter=5000, seed=0,
+        n_jobs=1, n_grid=50)
+    row = fit.row(0, named=True)
+    assert 85.0 < row["bend_ms"] < 118.0
+    assert row["bend_low_ms"] <= 100.0 <= row["bend_high_ms"]
+    assert 0.5 < row["slope"] < 0.7
+    assert row["n_pairs"] == n and row["n_sessions"] == 30
+    assert curves.height == 50 and bends.height == 20
+    assert set(curves["sex"].to_list()) == {"male"}
+    assert (curves["spline_low_ms"] <= curves["spline_high_ms"]).all()

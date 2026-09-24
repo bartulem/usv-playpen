@@ -23,8 +23,14 @@ self-describing HDF5 file, structured as::
     │   │                       store; pick the best rep at load time)
     │   ├── bootstrap_lrt       per-pair LRT summary plus per-sex
     │   │                       step-up-selected K
-    │   └── bootstrap_lrt_null  long-form null draws used by the
-    │                           bootstrap-LRT panel plot
+    │   ├── bootstrap_lrt_null  long-form null draws used by the
+    │   │                       bootstrap-LRT panel plot
+    │   ├── serial_dependence_curves  median spline and bent line of
+    │   │                       log(next) on log(current) with their
+    │   │                       session-bootstrap bands, per fitted pool
+    │   ├── serial_dependence_fit     the bend and its interval, slope,
+    │   │                       flat level and solver diagnostics
+    │   └── serial_dependence_bends   the bootstrap bends, one per replicate
 
 The corresponding loaders return shapes identical to the in-memory
 objects produced by the compute path, so plot helpers can run off-line
@@ -68,6 +74,9 @@ ARCHIVE_TABLES = (
     "tied_modes",
     "peak_lrt",
     "peak_lrt_null",
+    "serial_dependence_curves",
+    "serial_dependence_fit",
+    "serial_dependence_bends",
 )
 
 def _polars_to_h5(group: h5py.Group, name: str, df: pls.DataFrame) -> None:

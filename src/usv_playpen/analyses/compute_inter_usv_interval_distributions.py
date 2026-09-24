@@ -32,8 +32,15 @@ from __future__ import annotations
 import pathlib
 from datetime import datetime
 
+import warnings
+
 import numpy as np
 import polars as pls
+import statsmodels.api as sm
+from joblib import Parallel, delayed
+from scipy.optimize import minimize_scalar
+from sklearn.preprocessing import SplineTransformer
+from statsmodels.tools.sm_exceptions import IterationLimitWarning
 
 from ..os_utils import configure_path
 from ._usv_io import (
@@ -640,7 +647,7 @@ def summarize_interval_pool(values: np.ndarray, n_sessions: int) -> dict:
     Descriptive summary of one interval pool, written for every pool whether or not it is fitted.
 
     Pools too small for mixture modelling -- the female's squeaks give 237 end-to-start
-    intervals across 70 sessions -- are reported by these numbers alone, so they have to be
+    intervals across 44 sessions -- are reported by these numbers alone, so they have to be
     computed identically for the pools that are fitted, where they sit beside the model.
 
     Parameters
@@ -668,6 +675,385 @@ def summarize_interval_pool(values: np.ndarray, n_sessions: int) -> dict:
         "p75_s": float(quantiles[3]),
         "p95_s": float(quantiles[4]),
     }
+
+
+def consecutive_interval_pairs(
+    values: np.ndarray,
+    session_labels: np.ndarray,
+    emitter_ids: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Every (current interval, next interval) pair of one animal in one session.
+
+    A pool is built session by session and, within a session, animal by animal in time order,
+    so two neighbouring entries are consecutive intervals of the same animal exactly when they
+    share both the session and the animal. Pairing on the session alone would, in a session
+    holding two animals of the pool's sex (female-female), chain the last interval of one
+    animal to the first of the other.
+
+    Parameters
+    ----------
+    values (np.ndarray)
+        A (n_intervals,) ndarray of intervals in seconds, in pool order.
+    session_labels (np.ndarray)
+        A (n_intervals,) array of session identifiers aligned with ``values``.
+    emitter_ids (np.ndarray)
+        A (n_intervals,) array of animal identifiers aligned with ``values``.
+
+    Returns
+    -------
+    current (np.ndarray)
+        A (n_pairs,) ndarray of current intervals, in seconds.
+    following (np.ndarray)
+        A (n_pairs,) ndarray of the interval that follows each, in seconds.
+    pair_sessions (np.ndarray)
+        A (n_pairs,) array with each pair's session.
+    """
+
+    values = np.asarray(values, dtype=float)
+    sessions = np.asarray(session_labels)
+    emitters = np.asarray(emitter_ids)
+    same = (sessions[1:] == sessions[:-1]) & (emitters[1:] == emitters[:-1])
+    return values[:-1][same], values[1:][same], sessions[:-1][same]
+
+
+def _median_regression(design: np.ndarray, y: np.ndarray, max_iter: int) -> tuple[np.ndarray, float, bool]:
+    """
+    Description
+    -----------
+    Median (0.5-quantile) regression by statsmodels' iteratively reweighted least squares.
+
+    A median rather than a mean regression because the interval that follows a gap is a
+    mixture of within-rhythm breaths and further gaps: a mean is pulled up by the gaps and
+    would sit above the core of the joint distribution, whereas the median describes the
+    typical next interval.
+
+    Parameters
+    ----------
+    design (np.ndarray)
+        A (n, p) design matrix including the intercept.
+    y (np.ndarray)
+        A (n,) ndarray of log next intervals.
+    max_iter (int)
+        Iteration cap of the solver.
+
+    Returns
+    -------
+    beta (np.ndarray)
+        A (p,) ndarray of coefficients.
+    loss (float)
+        Sum of absolute residuals, the median-regression objective.
+    converged (bool)
+        False when the solver stopped at ``max_iter``.
+    """
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", IterationLimitWarning)
+        result = sm.QuantReg(y, design).fit(q=0.5, max_iter=int(max_iter))
+    converged = not any(issubclass(w.category, IterationLimitWarning) for w in caught)
+    beta = np.asarray(result.params, dtype=float)
+    return beta, float(np.abs(y - design @ beta).sum()), converged
+
+
+def _soft_minimum(x: np.ndarray, bend: float, corner_width: float) -> np.ndarray:
+    """
+    Description
+    -----------
+    Smooth minimum of ``x`` and ``bend``: ``bend - w * log(1 + exp((bend - x) / w))``.
+
+    It equals ``x`` well below the bend and ``bend`` well above it, with the corner rounded over
+    ``w`` log units; as ``w`` goes to zero it becomes the hard minimum of a broken stick.
+
+    Parameters
+    ----------
+    x (np.ndarray)
+        Log current intervals (natural log seconds).
+    bend (float)
+        Bend location, natural log seconds.
+    corner_width (float)
+        Rounding width ``w``, natural log units.
+
+    Returns
+    -------
+    z (np.ndarray)
+        The smooth minimum, same shape as ``x``.
+    """
+
+    return bend - corner_width * np.logaddexp(0.0, (bend - x) / corner_width)
+
+
+def _fit_bent_median_line(
+    x: np.ndarray,
+    y: np.ndarray,
+    corner_width: float,
+    bend_bounds: tuple[float, float],
+    max_iter: int,
+) -> tuple[float, np.ndarray, float, bool]:
+    """
+    Description
+    -----------
+    Bent-line median regression: ``median(y) = a + b * softmin(x, c; w)``.
+
+    For a fixed bend ``c`` the model is linear in ``(a, b)``, so ``c`` is profiled: a bounded
+    one-dimensional search minimises the median-regression objective over ``c`` and the
+    coefficients are those of the best bend.
+
+    Parameters
+    ----------
+    x (np.ndarray)
+        Log current intervals.
+    y (np.ndarray)
+        Log next intervals.
+    corner_width (float)
+        Rounding width of the corner, held fixed.
+    bend_bounds (tuple)
+        ``(low, high)`` search interval for the bend, natural log seconds.
+    max_iter (int)
+        Iteration cap of each median regression.
+
+    Returns
+    -------
+    bend (float)
+        Fitted bend, natural log seconds.
+    beta (np.ndarray)
+        ``(a, b)``: intercept and the slope below the bend.
+    loss (float)
+        Sum of absolute residuals at the fitted bend.
+    converged (bool)
+        Whether the regression at the fitted bend converged.
+    """
+
+    ones = np.ones_like(x)
+
+    def objective(bend: float) -> float:
+        return _median_regression(np.column_stack([ones, _soft_minimum(x, bend, corner_width)]), y,
+                                  max_iter)[1]
+
+    bend = float(minimize_scalar(objective, bounds=bend_bounds, method="bounded",
+                                 options={"xatol": 1e-3}).x)
+    beta, loss, converged = _median_regression(
+        np.column_stack([ones, _soft_minimum(x, bend, corner_width)]), y, max_iter)
+    return bend, beta, loss, converged
+
+
+def _serial_dependence_replicate(
+    b: int,
+    x: np.ndarray,
+    y: np.ndarray,
+    session_rows: list[np.ndarray],
+    spline: SplineTransformer,
+    grid: np.ndarray,
+    corner_width: float,
+    bend_bounds: tuple[float, float],
+    seed: int,
+    max_iter: int,
+) -> tuple[np.ndarray, bool, float, np.ndarray, bool]:
+    """
+    Description
+    -----------
+    One session-level bootstrap replicate of both serial-dependence fits.
+
+    Sessions are drawn with replacement and every pair of a drawn session is kept, so the
+    replicate preserves the dependence between consecutive pairs of a session -- the
+    dependence the figure is about. Both fits use the same resample; the spline keeps the
+    knots placed on the full data, and the bent line keeps the corner width chosen there.
+
+    Parameters
+    ----------
+    b (int)
+        Replicate index; the resample is seeded with ``seed + 1 + b``.
+    x, y (np.ndarray)
+        Log current / log next intervals of the full pool.
+    session_rows (list of np.ndarray)
+        Row indices of each session's pairs.
+    spline (SplineTransformer)
+        The basis fitted on the full data.
+    grid (np.ndarray)
+        Log-current grid the curves are evaluated on.
+    corner_width (float)
+        The bent line's corner width.
+    bend_bounds (tuple)
+        Search interval for the bend.
+    seed (int)
+        Base seed.
+    max_iter (int)
+        Iteration cap of each median regression.
+
+    Returns
+    -------
+    spline_curve (np.ndarray)
+        The replicate's spline evaluated on ``grid``.
+    spline_converged (bool)
+        Whether its regression converged.
+    bend (float)
+        The replicate's bend, natural log seconds.
+    bent_curve (np.ndarray)
+        The replicate's bent line evaluated on ``grid``.
+    bent_converged (bool)
+        Whether its regression at the bend converged.
+    """
+
+    rng = np.random.default_rng(seed + 1 + b)
+    idx = np.concatenate([session_rows[k] for k in rng.integers(0, len(session_rows), len(session_rows))])
+    beta_spline, _, spline_converged = _median_regression(spline.transform(x[idx, None]), y[idx], max_iter)
+    bend, beta_bent, _, bent_converged = _fit_bent_median_line(x[idx], y[idx], corner_width, bend_bounds,
+                                                               max_iter)
+    return (spline.transform(grid[:, None]) @ beta_spline, spline_converged, bend,
+            beta_bent[0] + beta_bent[1] * _soft_minimum(grid, bend, corner_width), bent_converged)
+
+
+def fit_serial_dependence(
+    current: np.ndarray,
+    following: np.ndarray,
+    pair_sessions: np.ndarray,
+    pool_identity: dict,
+    n_knots: int,
+    corner_widths: list[float],
+    n_bootstrap: int,
+    level: float,
+    bend_bounds_ms: tuple[float, float],
+    grid_percentiles: tuple[float, float],
+    max_iter: int,
+    seed: int,
+    n_jobs: int,
+    n_grid: int = 200,
+) -> tuple[pls.DataFrame, pls.DataFrame, pls.DataFrame]:
+    """
+    Description
+    -----------
+    Median regressions of the next interval on the current one, with session-bootstrap bands.
+
+    Serial dependence is the defining property of a bout: an interval inside a bout carries
+    information about the one that follows it, a gap between bouts does not. It is measured on
+    every consecutive pair of the pool, on log-log axes, by two median regressions of
+    ``log(next)`` on ``log(current)``:
+
+    * a **spline** -- a cubic B-spline basis with ``n_knots`` knots at quantiles of the current
+      interval -- which describes the relation without assuming its shape;
+    * a **bent line**, ``median(log next) = a + b * softmin(log current, c; w)``, which rises with
+      slope ``b`` below the bend ``c`` and is flat above it. ``c`` is an estimate of the bout
+      boundary from serial dependence alone, independent of the interval-distribution mixture
+      whose first-peak bound is the boundary the modeling uses, so the two can be compared.
+      The corner width ``w`` is chosen from ``corner_widths`` on the full data (smallest
+      objective) and held fixed in the bootstrap.
+
+    Uncertainty comes from resampling SESSIONS with replacement (``n_bootstrap`` replicates),
+    because consecutive pairs of a session are dependent and a pair-level bootstrap would give
+    bands that are too narrow. Bands are pointwise ``level``% percentile intervals of the
+    replicate curves, and the bend's interval is the same percentile interval of the replicate
+    bends. Replicates whose solver stopped at ``max_iter`` are counted and reported; they are
+    kept, and their number is archived so its effect can be judged.
+
+    Parameters
+    ----------
+    current (np.ndarray)
+        A (n_pairs,) ndarray of current intervals, in seconds.
+    following (np.ndarray)
+        A (n_pairs,) ndarray of next intervals, in seconds.
+    pair_sessions (np.ndarray)
+        A (n_pairs,) array with each pair's session.
+    pool_identity (dict)
+        ``{'sex', 'call_type', 'adjacency'}``, written into every output row.
+    n_knots (int)
+        Spline knots, placed at quantiles of the log current interval.
+    corner_widths (list of float)
+        Candidate corner widths of the bent line, natural log units.
+    n_bootstrap (int)
+        Session resamples.
+    level (float)
+        Coverage of the bands and of the bend interval, in percent.
+    bend_bounds_ms (tuple)
+        ``(low, high)`` search interval for the bend, in ms.
+    grid_percentiles (tuple)
+        Percentiles of the current interval between which the curves are evaluated; outside
+        them the fits extrapolate from few pairs.
+    max_iter (int)
+        Iteration cap of each median regression.
+    seed (int)
+        Base seed of the resamples.
+    n_jobs (int)
+        Parallel workers for the replicates.
+    n_grid (int)
+        Grid points; defaults to 200.
+
+    Returns
+    -------
+    curves (pls.DataFrame)
+        One row per grid point: ``current_ms``, ``spline_ms``, ``spline_low_ms``,
+        ``spline_high_ms``, ``bent_ms``, ``bent_low_ms``, ``bent_high_ms``, plus the pool identity.
+    fit (pls.DataFrame)
+        One row: ``n_pairs``, ``n_sessions``, ``n_knots``, ``corner_width``, ``bend_ms``,
+        ``bend_low_ms``, ``bend_high_ms``, ``slope``, ``flat_level_ms``, ``level``,
+        ``n_bootstrap``, ``spline_not_converged``, ``bent_not_converged``, the objective at each
+        candidate corner width (``loss_w_<w>``, the decimal point written as ``p``, e.g.
+        ``loss_w_0p05``), plus the pool identity.
+    bends (pls.DataFrame)
+        One row per replicate: ``b`` and ``bend_ms``, plus the pool identity.
+    """
+
+    x = np.log(np.asarray(current, dtype=float))
+    y = np.log(np.asarray(following, dtype=float))
+    names, inverse = np.unique(np.asarray(pair_sessions), return_inverse=True)
+    session_rows = [np.flatnonzero(inverse == k) for k in range(names.size)]
+    grid = np.linspace(*np.percentile(x, list(grid_percentiles)), int(n_grid))
+    bend_bounds = (float(np.log(bend_bounds_ms[0] / 1e3)), float(np.log(bend_bounds_ms[1] / 1e3)))
+    tail = (100.0 - float(level)) / 2.0
+
+    spline = SplineTransformer(n_knots=int(n_knots), degree=3, knots="quantile", extrapolation="linear",
+                               include_bias=True).fit(x[:, None])
+    beta_spline, _, _ = _median_regression(spline.transform(x[:, None]), y, max_iter)
+    spline_curve = spline.transform(grid[:, None]) @ beta_spline
+
+    candidates = {float(w): _fit_bent_median_line(x, y, float(w), bend_bounds, max_iter) for w in corner_widths}
+    corner_width = min(candidates, key=lambda w: candidates[w][2])
+    bend, beta_bent, _, _ = candidates[corner_width]
+    bent_curve = beta_bent[0] + beta_bent[1] * _soft_minimum(grid, bend, corner_width)
+
+    replicates = Parallel(n_jobs=n_jobs)(
+        delayed(_serial_dependence_replicate)(b, x, y, session_rows, spline, grid, corner_width,
+                                              bend_bounds, seed, max_iter)
+        for b in range(int(n_bootstrap)))
+    spline_band = np.percentile(np.array([r[0] for r in replicates]), [tail, 100.0 - tail], axis=0)
+    bends = np.array([r[2] for r in replicates])
+    bent_band = np.percentile(np.array([r[3] for r in replicates]), [tail, 100.0 - tail], axis=0)
+    bend_low, bend_high = np.percentile(bends, [tail, 100.0 - tail])
+
+    in_ms = lambda v: 1e3 * np.exp(v)
+    curves = pls.DataFrame({
+        **{k: [v] * grid.size for k, v in pool_identity.items()},
+        "current_ms": in_ms(grid),
+        "spline_ms": in_ms(spline_curve),
+        "spline_low_ms": in_ms(spline_band[0]),
+        "spline_high_ms": in_ms(spline_band[1]),
+        "bent_ms": in_ms(bent_curve),
+        "bent_low_ms": in_ms(bent_band[0]),
+        "bent_high_ms": in_ms(bent_band[1]),
+    })
+    fit = pls.DataFrame([{
+        **pool_identity,
+        "n_pairs": int(x.size),
+        "n_sessions": int(names.size),
+        "n_knots": int(n_knots),
+        "corner_width": float(corner_width),
+        "bend_ms": float(in_ms(bend)),
+        "bend_low_ms": float(in_ms(bend_low)),
+        "bend_high_ms": float(in_ms(bend_high)),
+        "slope": float(beta_bent[1]),
+        "flat_level_ms": float(in_ms(beta_bent[0] + beta_bent[1] * bend)),
+        "level": float(level),
+        "n_bootstrap": int(n_bootstrap),
+        "spline_not_converged": int(sum(not r[1] for r in replicates)),
+        "bent_not_converged": int(sum(not r[4] for r in replicates)),
+        **{f"loss_w_{w:g}".replace(".", "p"): float(candidates[w][2]) for w in candidates},
+    }])
+    bends_df = pls.DataFrame({
+        **{k: [v] * bends.size for k, v in pool_identity.items()},
+        "b": np.arange(bends.size),
+        "bend_ms": in_ms(bends),
+    })
+    return curves, fit, bends_df
 
 
 def fit_tied_peak_ladder_and_lrt(
@@ -952,6 +1338,16 @@ class InterUSVIntervalCalculator:
         * ``/<mode>/bootstrap_lrt_null`` -- long-form null
           distribution: one row per ``(sex, K_null, K_alt, b)``, used
           to re-render the panel plot without re-running the test.
+        * ``/<mode>/serial_dependence_curves``,
+          ``/<mode>/serial_dependence_fit``,
+          ``/<mode>/serial_dependence_bends`` (only when
+          ``fit_serial_dependence`` is true, for every fitted pool of at
+          least ``min_intervals_for_fitting`` intervals) -- the median
+          spline and bent line of the next interval on the current one
+          with their session-bootstrap bands, the bend (an estimate of
+          the bout boundary from serial dependence alone) with its
+          interval, and the replicate bends; see
+          :func:`fit_serial_dependence`.
         * ``/<mode>/attrs`` -- ``alpha_effective`` and the per-sex
           step-up selected K (``K_selected_male``, ``K_selected_female``).
 
@@ -1010,6 +1406,17 @@ class InterUSVIntervalCalculator:
         tied_n_init = cfg['tied_n_init']
         tied_n_init_boot = cfg['tied_n_init_boot']
         design_bootstrap = cfg['design_bootstrap']
+        # Serial dependence of consecutive intervals, fitted on every fitted pool: a median
+        # spline and a bent median line of log(next) on log(current), with session-bootstrap
+        # bands; the bent line's bend estimates the bout boundary from serial dependence alone.
+        fit_serial_dependence_bool = cfg['fit_serial_dependence']
+        serial_dependence_n_knots = cfg['serial_dependence_n_knots']
+        serial_dependence_corner_widths = list(cfg['serial_dependence_corner_widths'])
+        serial_dependence_bootstrap = cfg['serial_dependence_bootstrap']
+        serial_dependence_level = cfg['serial_dependence_level']
+        serial_dependence_bend_bounds_ms = tuple(cfg['serial_dependence_bend_bounds_ms'])
+        serial_dependence_grid_percentiles = tuple(cfg['serial_dependence_grid_percentiles'])
+        serial_dependence_max_iter = cfg['serial_dependence_max_iter']
 
         if model_class not in ('gauss', 't', 'ig'):
             msg = f"compute_inter_usv_interval_distributions: model_class must be 'gauss', 't' or 'ig', got {model_class!r}."
@@ -1072,8 +1479,10 @@ class InterUSVIntervalCalculator:
             summary_rows: list[dict] = []
             pool_values: dict[tuple, np.ndarray] = {}
             pool_sessions: dict[tuple, np.ndarray] = {}
-            tied_tables: dict[str, list[pls.DataFrame]] = {
-                "tied_fits": [], "tied_modes": [], "peak_lrt": [], "peak_lrt_null": []}
+            pool_tables: dict[str, list[pls.DataFrame]] = {
+                "tied_fits": [], "tied_modes": [], "peak_lrt": [], "peak_lrt_null": [],
+                "serial_dependence_curves": [], "serial_dependence_fit": [],
+                "serial_dependence_bends": []}
             mode_attrs: dict = {}
 
             for spec in interval_pools:
@@ -1084,6 +1493,7 @@ class InterUSVIntervalCalculator:
                 key = (sex, call_type, adjacency)
                 arrays: list[np.ndarray] = []
                 labels: list[np.ndarray] = []
+                emitters: list[np.ndarray] = []
                 n_dropped = 0
                 rows: list[dict] = []
 
@@ -1105,6 +1515,7 @@ class InterUSVIntervalCalculator:
                     session_id = pathlib.Path(session_root).name
                     arrays.append(arr)
                     labels.append(np.full(arr.size, session_id, dtype=object))
+                    emitters.append(usv_interval[f"emitter_{sex}"].astype(str))
                     rows.append({
                         "session_id": [session_id] * arr.size,
                         "source_list": [source_map.get(session_root, "")] * arr.size,
@@ -1133,6 +1544,34 @@ class InterUSVIntervalCalculator:
                     f"median={summary['median_s']:.4f} s (dropped non-positive: {n_dropped})"
                 )
 
+                if (fit_serial_dependence_bool and spec['fit']
+                        and values.size >= min_intervals_for_fitting):
+                    current, following, pair_sessions = consecutive_interval_pairs(
+                        values, session_labels, np.concatenate(emitters))
+                    curves, sd_fit, sd_bends = fit_serial_dependence(
+                        current=current, following=following, pair_sessions=pair_sessions,
+                        pool_identity=identity, n_knots=serial_dependence_n_knots,
+                        corner_widths=serial_dependence_corner_widths,
+                        n_bootstrap=serial_dependence_bootstrap, level=serial_dependence_level,
+                        bend_bounds_ms=serial_dependence_bend_bounds_ms,
+                        grid_percentiles=serial_dependence_grid_percentiles,
+                        max_iter=serial_dependence_max_iter, seed=random_seed_base,
+                        n_jobs=bootstrap_lrt_n_jobs,
+                    )
+                    pool_tables["serial_dependence_curves"].append(curves)
+                    pool_tables["serial_dependence_fit"].append(sd_fit)
+                    pool_tables["serial_dependence_bends"].append(sd_bends)
+                    row = sd_fit.row(0, named=True)
+                    message(
+                        f"    [{interval_type}] {sex} {call_type} serial dependence: "
+                        f"{row['n_pairs']} pairs from {row['n_sessions']} sessions; bend "
+                        f"{row['bend_ms']:.1f} ms ({row['level']:.0f}% "
+                        f"{row['bend_low_ms']:.1f}-{row['bend_high_ms']:.1f}), slope "
+                        f"{row['slope']:.3f}, flat at {row['flat_level_ms']:.1f} ms; refits at the "
+                        f"iteration cap: spline {row['spline_not_converged']}, bent "
+                        f"{row['bent_not_converged']} of {row['n_bootstrap']}"
+                    )
+
                 if fit_tied_model and spec['fit']:
                     if values.size < min_intervals_for_fitting:
                         message(f"    below min_intervals_for_fitting ({min_intervals_for_fitting}); "
@@ -1148,10 +1587,10 @@ class InterUSVIntervalCalculator:
                         n_design_bootstrap=design_bootstrap, seed=random_seed_base,
                         n_jobs=bootstrap_lrt_n_jobs, message=message,
                     )
-                    tied_tables["tied_fits"].append(fits)
-                    tied_tables["tied_modes"].append(modes)
-                    tied_tables["peak_lrt"].append(lrt)
-                    tied_tables["peak_lrt_null"].append(lrt_null)
+                    pool_tables["tied_fits"].append(fits)
+                    pool_tables["tied_modes"].append(modes)
+                    pool_tables["peak_lrt"].append(lrt)
+                    pool_tables["peak_lrt_null"].append(lrt_null)
                     summary_rows[-1]["fitted"] = True
                     mode_attrs[f"selected_n_peak_{sex}_{call_type}"] = int(selected)
                     mode_attrs[f"alpha_effective_{sex}_{call_type}"] = float(alpha_eff)
@@ -1167,7 +1606,7 @@ class InterUSVIntervalCalculator:
                 "bootstrap_lrt": None,
                 "bootstrap_lrt_null": None,
             }
-            for table_name, frames in tied_tables.items():
+            for table_name, frames in pool_tables.items():
                 mode_payload[table_name] = pls.concat(frames) if frames else None
 
             # The unconstrained K sweep and its LRT are kept available behind fit_mixture_model
@@ -1276,6 +1715,14 @@ class InterUSVIntervalCalculator:
             "tied_n_init": int(tied_n_init),
             "tied_n_init_boot": int(tied_n_init_boot),
             "design_bootstrap": int(design_bootstrap),
+            "fit_serial_dependence": bool(fit_serial_dependence_bool),
+            "serial_dependence_n_knots": int(serial_dependence_n_knots),
+            "serial_dependence_corner_widths": [float(w) for w in serial_dependence_corner_widths],
+            "serial_dependence_bootstrap": int(serial_dependence_bootstrap),
+            "serial_dependence_level": float(serial_dependence_level),
+            "serial_dependence_bend_bounds_ms": [float(v) for v in serial_dependence_bend_bounds_ms],
+            "serial_dependence_grid_percentiles": [float(v) for v in serial_dependence_grid_percentiles],
+            "serial_dependence_max_iter": int(serial_dependence_max_iter),
             "fit_mixture_model": bool(fit_mixture_model),
             "n_components_min": int(n_components_min),
             "n_components_max": int(n_components_max),

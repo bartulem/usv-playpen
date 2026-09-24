@@ -84,6 +84,14 @@
     "tied_n_init": 4,
     "tied_n_init_boot": 2,
     "design_bootstrap": 2000,
+    "fit_serial_dependence": true,
+    "serial_dependence_n_knots": 6,
+    "serial_dependence_corner_widths": [0.05, 0.15, 0.3],
+    "serial_dependence_bootstrap": 1000,
+    "serial_dependence_level": 99.0,
+    "serial_dependence_bend_bounds_ms": [30.0, 600.0],
+    "serial_dependence_grid_percentiles": [1.0, 99.0],
+    "serial_dependence_max_iter": 20000,
     "fit_tied_model": true
   },
   "send_email": {

@@ -56,7 +56,7 @@ def test_polars_h5_roundtrip_nullable_int_and_bool(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _make_settings(tmp_path, fit_mixture_model=False, fit_tied_model=False):
+def _make_settings(tmp_path, fit_mixture_model=False, fit_tied_model=False, fit_serial_dependence=False):
     """Build the analyses_settings sub-block expected by the class, including the pool spec:
     the male's ultrasonic calls (fitted) and the female's squeaks (described only)."""
     return {
@@ -93,6 +93,14 @@ def _make_settings(tmp_path, fit_mixture_model=False, fit_tied_model=False):
             "tied_n_init": 1,
             "tied_n_init_boot": 1,
             "design_bootstrap": 10,
+            "fit_serial_dependence": fit_serial_dependence,
+            "serial_dependence_n_knots": 4,
+            "serial_dependence_corner_widths": [0.05, 0.15],
+            "serial_dependence_bootstrap": 5,
+            "serial_dependence_level": 99.0,
+            "serial_dependence_bend_bounds_ms": [30.0, 600.0],
+            "serial_dependence_grid_percentiles": [1.0, 99.0],
+            "serial_dependence_max_iter": 1000,
         }
     }
 
@@ -392,3 +400,47 @@ def test_save_iui_runs_tied_model_on_fitted_pools_only(tmp_path, mocker, monkeyp
         assert mode["attrs"]["selected_n_peak_male_usv"] == 2
         fitted = dict(zip(mode["pool_summary"]["sex"], mode["pool_summary"]["fitted"]))
         assert fitted == {"male": True, "female": False}
+
+
+def test_save_iui_fits_serial_dependence_on_fitted_pools_only(tmp_path, mocker, monkeypatch):
+    """fit_serial_dependence=True → the fit runs on the fitted pool only (the male's USVs, not the
+    female's squeaks), is handed that pool's consecutive same-animal pairs with their sessions,
+    and its three tables land in every mode's payload."""
+    list_file = tmp_path / "sessions.txt"
+    list_file.write_text("/dummy/session\n")
+    settings = _make_settings(tmp_path, fit_serial_dependence=True)
+    settings["compute_inter_usv_interval_distributions"]["session_lists"] = [str(list_file)]
+    _mock_session_resolution(monkeypatch, tmp_path)
+
+    calls: list[dict] = []
+
+    def fake_fit(**kw):
+        calls.append(kw)
+        identity = kw["pool_identity"]
+        return (pls.DataFrame({**{k: [v] for k, v in identity.items()}, "current_ms": [1.0]}),
+                pls.DataFrame([{**identity, "n_pairs": kw["current"].size, "n_sessions": 1,
+                                "bend_ms": 110.0, "bend_low_ms": 100.0, "bend_high_ms": 120.0,
+                                "slope": 0.5, "flat_level_ms": 90.0, "level": 99.0,
+                                "n_bootstrap": 5, "spline_not_converged": 0,
+                                "bent_not_converged": 0}]),
+                pls.DataFrame({**{k: [v] for k, v in identity.items()}, "b": [0], "bend_ms": [110.0]}))
+    monkeypatch.setattr(iui_mod, "fit_serial_dependence", fake_fit)
+    write_mock = mocker.patch.object(iui_mod, "write_ivi_h5",
+                                     return_value=Path(tmp_path / "out" / "stub.h5"))
+    monkeypatch.setattr(iui_mod, "git_sha_for_provenance", lambda _p: "stub")
+
+    InterUSVIntervalCalculator(input_parameter_dict=settings,
+                               message_output=lambda *_a, **_kw: None
+                               ).save_inter_usv_interval_distributions_to_file()
+
+    # one call per interval type, all on the male pool: 3 intervals of one animal -> 2 pairs
+    assert [kw["pool_identity"]["sex"] for kw in calls] == ["male", "male"]
+    for kw in calls:
+        np.testing.assert_allclose(kw["current"], [0.5, 0.7])
+        np.testing.assert_allclose(kw["following"], [0.7, 0.9])
+        assert list(kw["pair_sessions"]) == ["20260101_120000"] * 2
+    per_mode = write_mock.call_args.kwargs["per_mode"]
+    for mode in per_mode.values():
+        for table in ("serial_dependence_curves", "serial_dependence_fit", "serial_dependence_bends"):
+            assert mode[table] is not None and set(mode[table]["sex"].to_list()) == {"male"}
+    assert write_mock.call_args.kwargs["analysis_attrs"]["serial_dependence_level"] == 99.0
