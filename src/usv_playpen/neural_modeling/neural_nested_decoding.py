@@ -166,13 +166,19 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
     """
     Description
     -----------
-    The behaviour control's feature set: P1's selected model, READ from P1's own result file and
-    ASSERTED against the frozen list in settings.
+    The behaviour control's feature set: READ from the cohort selection's result file and ASSERTED
+    against the frozen list in settings.
 
-    Reading alone would let a re-run of P1 silently redefine what "beyond behaviour" means after
-    transformation counts are banked. Freezing alone would let the control drift out of step with the
-    selection it is meant to be. Doing both catches the drift instead of absorbing it, and is the same
-    "check rather than assume" the emitter and dyad resolutions use.
+    Reading alone would let a re-run of the selection silently redefine what "beyond behaviour" means
+    after transformation counts are banked. Freezing alone would let the control drift out of step with
+    the selection it is meant to be. Doing both catches the drift instead of absorbing it, and is the
+    same "check rather than assume" the emitter and dyad resolutions use.
+
+    REPOINTED 2026-09-23. This used to read P1's selection, from 121 untethered behavioural sessions.
+    P1's FITTED MAP does not transfer to the ephys preparation -- measured at -0.00113 over 41,087 calls
+    -- while the same estimator refitted in domain predicts perfectly well, so the control is now
+    selected and fitted on the ephys cohort. A file in P1's format is REFUSED with that explanation
+    rather than read, because its schema would otherwise raise an unhelpful KeyError.
 
     The file is an INPUT to the run, so it lives in the ``data`` block beside the session lists.
 
@@ -202,11 +208,18 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
 
     with path.open("rb") as handle:
         selection = pickle.load(handle)
-    selected = list(selection["steps"][-1]["final_model_features"])
+    if "selected_features" not in selection:
+        msg = (f"{path.name} is not a cohort selection result"
+               f"{' (it carries P1 selection steps)' if 'steps' in selection else ''}. The behaviour "
+               f"control is now selected and fitted on the ephys cohort, because P1's fitted map does "
+               f"not transfer to this preparation. Point data.behaviour_selection_result_path at the "
+               f"artifact written by behaviour_control_model.select_control_features.")
+        raise ValueError(msg)
+    selected = list(selection["selected_features"])
     if selected != frozen:
-        msg = (f"behaviour selection drift: {path.name} ends at {selected}, but settings freeze "
+        msg = (f"behaviour selection drift: {path.name} selected {selected}, but settings freeze "
                f"{frozen}. The behaviour control would silently change meaning; update the settings "
-               f"deliberately if P1 was re-run.")
+               f"deliberately if the selection was re-run.")
         raise ValueError(msg)
     return selected
 
@@ -678,7 +691,17 @@ def no_behaviour_predictions(design: dict, settings: dict, n_lags: int) -> np.nd
     beats the BEHAVIOUR MODEL -- not that it carries information beyond behaviour itself -- and that is only
     worth claiming when the behaviour model predicts. The behaviour model's pooled score minus this model's is
     its held-out improvement over having no behaviour at all. It is stored per unit and judged at the cohort
-    step; both example recording days gave about +0.04.
+    step.
+
+    MEASURED 2026-09-22, and the condition FAILS for the behaviour model as it is built above: the per-unit
+    refit scores BELOW this baseline on both example recording days (-0.0090 and -0.0062). Five features over
+    six hundred lags is three thousand columns, and a unit carries about two thousand calls; P1's own data
+    cut to that size reproduces the failure exactly (median +0.00000 over eight draws against +0.06356 on all
+    of it), so the shortfall is the call count and not the ephys sessions. A behaviour model fitted on the
+    ephys cohort and held out by recording day DOES predict (+0.042 pooled over 41,087 calls), and the fix is
+    to carry that model in as its predicted position rather than to refit its columns here. An earlier
+    docstring quoted "about +0.04" for both days; that figure came from a script whose constant was fitted on
+    P1's calls and applied to ephys ones, which is a baseline at the wrong centre.
 
     No null is attached, deliberately. The behaviour features' ability to predict call position was already
     tested when they were selected, against a within-session permutation of call positions on independent

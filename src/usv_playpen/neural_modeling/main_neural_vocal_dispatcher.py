@@ -42,6 +42,7 @@ from datetime import datetime
 
 import numpy as np
 
+from .behaviour_control_model import apply_behaviour_control, load_control_model
 from .main_neural_encoding_dispatcher import build_unit_record, load_settings
 from .neural_artifacts import read_unit_artifact, write_unit_section
 from .neural_design_assembly import (
@@ -403,7 +404,7 @@ def vocalization_identity_payload(identity: dict, null: np.ndarray, p_value: flo
 
 
 def nested_decoding_payload(scores: dict, session_ids: list, null: np.ndarray, p_value: float, at_floor: bool,
-                            no_behaviour: float) -> dict:
+                            no_behaviour: float, behaviour_control: dict) -> dict:
     """
     Description
     -----------
@@ -426,6 +427,10 @@ def nested_decoding_payload(scores: dict, session_ids: list, null: np.ndarray, p
         Whether ``p_value`` sits at its resolution floor.
     no_behaviour (float)
         The pooled score of the no-behaviour model on the same calls; see ``no_behaviour_predictions``.
+    behaviour_control (dict)
+        Which cohort control produced the reduced model -- its features, the day held out of its fit,
+        and the settings hash it was fitted under. Without this an added score cannot be traced to the
+        control that made it, and the control is now an external artifact rather than a refit.
 
     Returns
     -------
@@ -441,7 +446,10 @@ def nested_decoding_payload(scores: dict, session_ids: list, null: np.ndarray, p
                          for fold in scores["per_fold"]],
             "null": null, "p": p_value, "at_floor": at_floor, "z": null_z(scores["added"], null),
             "n_draws": int(null.size), "no_behaviour": no_behaviour,
-            "behaviour_over_no_behaviour": scores["reduced"] - no_behaviour}
+            "behaviour_over_no_behaviour": scores["reduced"] - no_behaviour,
+            "behaviour_control": {"features": list(behaviour_control["features"]),
+                                  "held_out_day": behaviour_control["held_out_day"],
+                                  "settings_sha256": behaviour_control["settings_sha256"]}}
 
 
 def vocal_gating_payload(feature_names: list, observed: dict, nulls: dict, verdicts: dict, unit_p: dict,
@@ -678,9 +686,16 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
                                          settings["vocalization_settings"]["clean_against"],
                                          settings["vocalization_settings"]["vocal_emitter"])
     fps = per_session[unit["courtship_sessions"][0]]["fps"]
-    n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
+    history_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     reduced = reduced_model_features(settings)
-    design = nested_design(events, per_session, reduced, n_lags, nested["sigma_floor"])
+    design = nested_design(events, per_session, reduced, history_lags, nested["sigma_floor"])
+    # The behaviour control is FITTED AT COHORT SCALE and carried in as its prediction. Refitting it
+    # here is the failure it exists to fix: this unit has ~2,000 calls against the thousands of columns
+    # the raw block carries, and such a control scores BELOW a constant fitted on the same calls. As
+    # four columns the behaviour information comes from the whole cohort and only four coefficients are
+    # estimated on the unit. `n_lags` changes with the block, which is why the swap returns both.
+    control = load_control_model(settings)
+    design, n_lags = apply_behaviour_control(design, control, str(unit["rec_date"]), settings)
     reduced_predicted = reduced_predictions(design, nested, n_lags)
     scores = nested_scores(design, nested, n_lags, reduced_predicted=reduced_predicted)
     message_output(f"  NESTED DECODING  added {scores['added']:+.5f} over {scores['n_events']} events")
@@ -703,7 +718,8 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
         p_value, at_floor, null = escalated_empirical_pvalue(scores["added"], draw_more,
                                                              settings["significance"]["escalation_ladder"],
                                                              null, message_output)
-    payload = nested_decoding_payload(scores, events["session_ids"], null, p_value, at_floor, no_behaviour)
+    payload = nested_decoding_payload(scores, events["session_ids"], null, p_value, at_floor,
+                                      no_behaviour, design["behaviour_control"])
     message_output(f"    null z {payload['z']:+.1f} | p {p_value:.4e}{' (at floor)' if at_floor else ''} "
                    f"| {null.size:,} draws")
     write_unit_section(output_directory, unit, "nested_vocal_manifold_position_decoding", payload, settings)

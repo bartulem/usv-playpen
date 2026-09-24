@@ -156,8 +156,13 @@ class TestTheEstimatorFits:
 
 
 class TestTheBehaviourControl:
-    """Read P1's selection AND assert it against the frozen list -- reading alone lets a P1 re-run
-    silently redefine 'beyond behaviour'; freezing alone lets the control drift from the selection."""
+    """Read the COHORT selection AND assert it against the frozen list -- reading alone lets a re-run
+    silently redefine 'beyond behaviour'; freezing alone lets the control drift from the selection.
+
+    REPOINTED 2026-09-23: the control used to be P1's selection, from untethered behavioural sessions.
+    P1's fitted map does not transfer to the ephys preparation (-0.00113 over 41,087 calls) while the
+    same estimator refitted in domain predicts perfectly well, so the control is selected and fitted on
+    the ephys cohort. A file in P1's format is now REFUSED rather than read."""
 
     FROZEN: ClassVar[list[str]] = ["self.neck_elevation", "nose-nose", "allo_yaw-nose",
                                    "self.back_pitch", "self.allo_roll"]
@@ -166,8 +171,24 @@ class TestTheBehaviourControl:
     def _fake_selection(tmp_path, features):
         path = tmp_path / "selection.pkl"
         with path.open("wb") as handle:
+            pickle.dump({"selected_features": list(features)}, handle)
+        return path
+
+    @staticmethod
+    def _p1_selection(tmp_path, features):
+        """A file in P1's own format, which is no longer what the control is selected from."""
+        path = tmp_path / "p1_selection.pkl"
+        with path.open("wb") as handle:
             pickle.dump({"steps": [{"final_model_features": list(features)}]}, handle)
         return path
+
+    def test_a_p1_format_file_is_refused_rather_than_read(self, tmp_path):
+        """Its schema would otherwise raise an unhelpful KeyError deep inside the reader."""
+        settings = _settings()
+        settings["data"]["behaviour_selection_result_path"] = str(
+            self._p1_selection(tmp_path, self.FROZEN))
+        with pytest.raises(ValueError, match="not a cohort selection result"):
+            reduced_model_features(settings)
 
     def test_the_shipped_settings_freeze_p1s_five_features(self):
         assert _settings()["nested_vocal_manifold_position_decoding"]["reduced_model_features"] == self.FROZEN

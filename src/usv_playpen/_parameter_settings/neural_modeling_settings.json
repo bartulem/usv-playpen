@@ -4,7 +4,7 @@
       "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_intact_partners_sessions_list.txt",
       "/mnt/falkner/Bartul/modeling/input_files/ephys_courtship_mute_female_sessions_list.txt"
     ],
-    "behaviour_selection_result_path": "/mnt/falkner/Bartul/modeling/model_selection_results/model_selection_final_male_intact_partners_manifold_qlvm_supercategory_session_20260806_222842Z.pkl",
+    "behaviour_selection_result_path": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_selection_ephys_cohort.pkl",
     "brain_areas": ["PAG"],
     "area_mode": "include",
     "pool_areas": false,
@@ -14,7 +14,8 @@
   "data_roots": {
     "ephys_root": "/mnt/falkner/Bartul/EPHYS",
     "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
-    "data_root": "/mnt/falkner/Bartul/Data"
+    "data_root": "/mnt/falkner/Bartul/Data",
+    "vocal_summary_root": "/mnt/falkner/Bartul/PC_transfer/backedup_vocal/Bartul"
   },
   "data_sufficiency": {
     "min_courtship_sessions": 2,
@@ -189,6 +190,7 @@
       "self.back_pitch",
       "self.allo_roll"
     ],
+    "behaviour_control_model_path": "/mnt/falkner/Bartul/modeling/model_selection_results/behaviour_control_model_ephys_cohort.pkl",
     "vm_score_mode": "macro",
     "region_label_column": "qlvm_supercategory",
     "min_region_events": 20,

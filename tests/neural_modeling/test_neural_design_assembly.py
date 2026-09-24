@@ -360,7 +360,7 @@ class TestSettingsInvariants:
             "max_quiet_tiles_per_session", "vocal_occurrence", "geodesic_metrics", "tuning_surface",
             "discrimination_null", "record_overdispersion_index"}
         assert set(settings["nested_vocal_manifold_position_decoding"]) == {
-            "behaviour_control", "reduced_model_features",
+            "behaviour_control", "reduced_model_features", "behaviour_control_model_path",
             "vm_score_mode", "region_label_column", "min_region_events", "lambda_smooth", "l2_reg",
             "smoothness_derivative_order", "sigma_floor", "prevocal_window_n_bins", "rate_transform",
             "rate_basis"}
