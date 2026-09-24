@@ -1994,19 +1994,27 @@ layout the modeling pipeline reads; component 0 is the first peak, from which th
 
 **Serial dependence.** The mixture says where the timescales are, not which of them separates a
 within-bout pause from a between-bout gap. That is settled by serial dependence: a gap inside a bout
-carries information about the gap that follows it, a gap between bouts does not. The panel is the joint
-distribution of consecutive intervals (square, both axes on the same log scale) with the median next
-interval in equal-count bins of the current one. Below the bout boundary the median runs along the
-``next = current`` diagonal; beyond it the typical next interval is the same whatever the length of the
-current gap. The coupling fades gradually, so the boundary marks where it is gone rather than a sharp
-switch.
+carries information about the gap that follows it, a gap between bouts does not. Two panels, side by
+side, show the joint distribution of consecutive intervals of one animal (square, both axes on the same
+log scale) with a **median regression** of the next interval on the current one drawn over it. The
+fits are made by the pipeline on every pair (``fit_serial_dependence``) and read from the archive; each
+line carries a pointwise band from resampling sessions (``serial_dependence_bootstrap`` = 1000
+resamples, ``serial_dependence_level`` = 99%), because consecutive pairs of a session are dependent.
+Panel **A** is a median spline (``serial_dependence_n_knots`` = 6 knots at quantiles of the current
+interval), which assumes no shape. Panel **B** is a bent median line -- rising below a bend and flat
+above it, the corner rounded over a width chosen from ``serial_dependence_corner_widths`` -- whose bend,
+drawn with its interval, estimates the bout boundary from serial dependence alone, to be read against
+the dotted line (the first peak's ``exp(mu + 2.58 sd)``). For male end-to-start intervals the bend falls
+at 111 ms (99% 102-127 ms) against a 115.5 ms boundary. The archive also records how many bootstrap
+refits stopped at the solver's iteration cap (``serial_dependence_max_iter``).
 
 .. code-block:: python
 
-    # Pairs are consecutive rows of the archived interval table within a session, which
-    # is the order the analysis wrote them (ascending in time). The boundary is the first
-    # peak's exp(mu + z * sd) with the same z the modeling pipeline uses for its
-    # inter-bout threshold, so the line drawn here IS that threshold.
+    # Pairs are consecutive rows of one animal in one session of the archived interval table,
+    # the order the analysis wrote them (ascending in time). The fits and their bands come from
+    # the archive (fit_serial_dependence in the pipeline). The boundary is the first peak's
+    # exp(mu + z * sd) with the same z the modeling pipeline uses for its inter-bout threshold,
+    # so the dotted line IS that threshold.
     color_for = {"male": male_color, "female": female_color}
     serial_dependence_z = 2.58
 
@@ -2017,6 +2025,9 @@ switch.
             sex, call_type = row["sex"], row["call_type"]
             pool = sub.filter((pls.col("sex") == sex) & (pls.col("call_type") == call_type))
             pairs = ivs.serial_dependence_pairs(pool, sex)
+            sd_curves, sd_fit = ivs.load_serial_dependence_from_h5(
+                str(h5_path), it, sex, call_type
+            )
             _, _, _, rows = ivs.load_tied_model_from_h5(str(h5_path), it, sex, call_type)
             first_peak = (
                 rows.filter(pls.col("role") == "peak").sort("logmean").row(0, named=True)
@@ -2025,24 +2036,24 @@ switch.
                 np.exp(first_peak["logmean"] + serial_dependence_z * first_peak["logscale"])
             )
 
-            fig_sd, ax_sd, sd_stats = ivs.plot_serial_dependence(
+            fig_sd, axes_sd, sd_stats = ivs.plot_serial_dependence(
                 pairs=pairs,
                 color=color_for[sex],
+                curves=sd_curves,
+                fit=sd_fit,
                 boundary_ms=boundary_ms,
             )
             if save_fig_bool:
                 save_figure(fig_sd, f"ivi_serial_dependence_{sex}_{it}", vis_settings)
             plt.show()
 
-            beyond = sd_stats["bin_median_next_ms"][
-                sd_stats["bin_current_ms"] > boundary_ms
-            ]
             print(
-                f"  [{it}] [{sex} {call_label[call_type]}]: {sd_stats['n_pairs']} pairs; "
-                f"bout boundary {boundary_ms:.0f} ms; beyond it the median next interval stays within "
-                f"{beyond.min():.0f}-{beyond.max():.0f} ms"
-                if beyond.size
-                else ""
+                f"  [{it}] [{sex} {call_label[call_type]}]: {sd_stats['n_pairs']} pairs; bout boundary "
+                f"{boundary_ms:.1f} ms; bend {sd_stats['bend_ms']:.1f} ms ({sd_stats['level']:.0f}% "
+                f"{sd_stats['bend_low_ms']:.1f}-{sd_stats['bend_high_ms']:.1f}), slope {sd_stats['slope']:.3f} "
+                f"below it, flat at {sd_stats['flat_level_ms']:.1f} ms above it; refits at the solver's "
+                f"iteration cap: spline {sd_fit['spline_not_converged']}, bent {sd_fit['bent_not_converged']} "
+                f"of {sd_fit['n_bootstrap']}"
             )
 
 Source: `inter_usv_interval_analyses.ipynb <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/inter_usv_interval_analyses.ipynb>`_.

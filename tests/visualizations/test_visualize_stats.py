@@ -63,6 +63,8 @@ from usv_playpen.visualizations.usv_interval_summary_statistics import (
     plot_best_fit_with_annotations,
     plot_bootstrap_lrt_panel,
     serial_dependence_pairs,
+    load_serial_dependence_from_h5,
+    plot_serial_dependence,
 )
 from usv_playpen.visualizations import usv_interval_summary_statistics as uiss
 from usv_playpen.analyses.compute_inter_usv_interval_distributions import fit_mixture_model_sweep
@@ -2161,3 +2163,56 @@ def test_plot_best_fit_with_annotations_invalid_corner_raises():
             intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE,
             legend_corner="middle",
         )
+
+
+def _serial_dependence_tables():
+    """Archived-shape serial-dependence tables for one male USV pool: a curve rising to a flat
+    level near 90 ms, bands around it, a bend at 110 ms, and five replicate bends."""
+    grid = np.geomspace(30.0, 20000.0, 40)
+    line = np.minimum(grid, 110.0) * 0.8
+    identity = {"sex": ["male"] * grid.size, "call_type": ["usv"] * grid.size,
+                "adjacency": ["filtered"] * grid.size}
+    curves = pls.DataFrame({**identity, "current_ms": grid, "spline_ms": line,
+                            "spline_low_ms": line * 0.95, "spline_high_ms": line * 1.05,
+                            "bent_ms": line, "bent_low_ms": line * 0.97, "bent_high_ms": line * 1.03})
+    fit = pls.DataFrame([{"sex": "male", "call_type": "usv", "adjacency": "filtered", "n_pairs": 500,
+                          "n_sessions": 10, "n_knots": 6, "corner_width": 0.05, "bend_ms": 110.0,
+                          "bend_low_ms": 100.0, "bend_high_ms": 125.0, "slope": 0.55,
+                          "flat_level_ms": 88.0, "level": 99.0, "n_bootstrap": 5,
+                          "spline_not_converged": 0, "bent_not_converged": 0, "loss_w_0p05": 1.0}])
+    bends = pls.DataFrame({"sex": ["male"] * 5, "call_type": ["usv"] * 5, "adjacency": ["filtered"] * 5,
+                           "b": np.arange(5), "bend_ms": [105.0, 108.0, 110.0, 112.0, 120.0]})
+    return curves, fit, bends
+
+
+def test_load_serial_dependence_from_h5_round_trips_one_pool(tmp_path):
+    """The three serial-dependence tables survive the archive; the loader returns the pool's curves
+    ascending in the current interval and its fit row, and refuses a pool with no fit."""
+    curves, fit, bends = _serial_dependence_tables()
+    out = tmp_path / "usv_interval_analysis_20260101_120000.h5"
+    write_ivi_h5(out, analysis_attrs={"git_sha": "abc"},
+                 per_mode={"e2s": {"attrs": {}, "serial_dependence_curves": curves.reverse(),
+                                   "serial_dependence_fit": fit, "serial_dependence_bends": bends}})
+    loaded_curves, loaded_fit = load_serial_dependence_from_h5(out, "e2s", "male", "usv")
+    np.testing.assert_allclose(loaded_curves["current_ms"].to_numpy(), curves["current_ms"].to_numpy())
+    assert loaded_fit["bend_ms"] == 110.0 and loaded_fit["level"] == 99.0
+    with pytest.raises(KeyError, match="no serial-dependence fit"):
+        load_serial_dependence_from_h5(out, "e2s", "female", "usv")
+
+
+def test_plot_serial_dependence_draws_spline_and_bent_panels():
+    """Two square panels share the pairs; the right one carries the bend with its interval and the
+    single colorbar, and the stats echo the fit."""
+    curves, fit, _ = _serial_dependence_tables()
+    rng = np.random.default_rng(0)
+    current = np.exp(rng.uniform(np.log(0.03), np.log(5.0), 500))
+    following = np.exp(rng.uniform(np.log(0.03), np.log(5.0), 500))
+    f, axes, stats = plot_serial_dependence((current, following), "#4C9BB5", curves,
+                                            fit.row(0, named=True), boundary_ms=115.5)
+    assert len(axes) == 2 and stats["n_pairs"] == 500
+    assert stats["bend_ms"] == 110.0 and stats["bend_high_ms"] == 125.0
+    assert "bend 110 ms (100-125, 99%)" in [t.get_text() for t in axes[1].get_legend().get_texts()]
+    assert axes[0].get_title() == "A: median spline" and axes[1].get_title() == "B: bent-line median fit"
+    # the one colorbar is an inset of the right panel, none on the left
+    assert len(axes[1].child_axes) == 1 and len(axes[0].child_axes) == 0
+    plt.close(f)

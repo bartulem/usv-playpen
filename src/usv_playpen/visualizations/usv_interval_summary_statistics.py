@@ -22,6 +22,7 @@ from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.ticker import MaxNLocator
 from matplotlib.transforms import offset_copy
 
+from ..analyses.compute_inter_usv_interval_distributions import consecutive_interval_pairs
 from ..analyses.mixture_model_utils import (
     IGMixture,
     TMixture,
@@ -1506,8 +1507,9 @@ def serial_dependence_pairs(usv_interval_df: pls.DataFrame, sex: str) -> tuple[n
     Every (current interval, next interval) pair from consecutive rows of one animal in one session.
 
     The archived table is written session by session and, within a session, animal by animal in
-    time order, so consecutive rows of one animal are its consecutive intervals. Pairing it back
-    this way reproduces a pairing computed independently from the session summaries exactly.
+    time order, so consecutive rows of one animal are its consecutive intervals; the pairing is
+    :func:`..analyses.compute_inter_usv_interval_distributions.consecutive_interval_pairs`, the one
+    the pipeline fits on.
 
     The animal is the ``emitter_id`` column. It matters whenever a session holds two animals of
     the same sex (a female-female session puts both females in the ``'female'`` pool), where
@@ -1532,115 +1534,147 @@ def serial_dependence_pairs(usv_interval_df: pls.DataFrame, sex: str) -> tuple[n
     """
 
     subset = usv_interval_df.filter(pls.col("sex") == sex)
-    group_columns = ["session_id", "emitter_id"] if "emitter_id" in subset.columns else ["session_id"]
-    current_list, following_list = [], []
-    for group in dict.fromkeys(subset.select(group_columns).iter_rows()):
-        values = subset.filter(pls.all_horizontal(
-            [pls.col(c) == v for c, v in zip(group_columns, group)]))["interval_s"].to_numpy()
-        if values.size >= 2:
-            current_list.append(values[:-1])
-            following_list.append(values[1:])
-    if not current_list:
-        return np.array([]), np.array([])
-    return np.concatenate(current_list), np.concatenate(following_list)
+    sessions = subset["session_id"].to_numpy()
+    animals = subset["emitter_id"].to_numpy() if "emitter_id" in subset.columns else sessions
+    current, following, _ = consecutive_interval_pairs(subset["interval_s"].to_numpy(), sessions, animals)
+    return current, following
 
 
-
-def plot_serial_dependence(
-    pairs: tuple[np.ndarray, np.ndarray],
-    color: str,
-    boundary_ms: float | None = None,
-    n_bins: int = 20,
-    lims_ms: tuple = (15.0, 20000.0),
-    grid_bins: int = 70,
-    figsize: tuple = (3.0, 2.6),
-) -> tuple[plt.Figure, plt.Axes, dict]:
+def load_serial_dependence_from_h5(
+    h5_path: str | Path,
+    interval_type: str,
+    sex: str,
+    call_type: str,
+) -> tuple[pls.DataFrame, dict]:
     """
     Description
     -----------
-    Serial dependence between consecutive inter-USV intervals, as one square panel: the joint
-    distribution of (current, next) interval with the median next interval drawn over it.
-
-    Both axes are the same quantity on the same log range, and the box is forced square so a
-    decade has the same length on x and y and the ``next = current`` diagonal sits at 45 degrees.
-    Within a bout consecutive gaps are coupled and the median runs along that diagonal (on male
-    end-to-start intervals, from ~45 to ~100 ms); once a gap exceeds the bout boundary the median
-    goes flat, because the length of a long gap no longer predicts the typical length of the next.
-    Showing the joint density rather than a single summary curve avoids having to choose a cutoff
-    for "short": an earlier version plotted P(next < cutoff), which made the figure depend on the
-    constant it was meant to justify.
-
-    The median is taken in EQUAL-COUNT bins of the current interval (quantiles of the current
-    interval), so every point is the median of the same number of pairs and the sampling noise is
-    uniform along the line; log-spaced bins left the sparse tail as a handful of thin bins whose
-    medians spiked. No smoothing is applied. The density is drawn on bin centres with Gouraud
-    shading on ``log10(1 + count)``, with single-pair bins left white -- at that level the
-    interpolated shading only lays a haze over empty regions.
+    Reads one pool's archived serial-dependence fits.
 
     Parameters
     ----------
-    pairs (tuple)
-        ``(current, following)`` arrays from :func:`serial_dependence_pairs`, in seconds.
-    color (str)
-        Hex colour the density colormap runs through (white -> ``color`` -> dark).
-    boundary_ms (float or None)
-        Bout boundary to mark as a dotted vertical line, in ms; defaults to None (not drawn).
-    n_bins (int)
-        Number of equal-count bins for the median; defaults to 20.
-    lims_ms (tuple)
-        ``(low, high)`` limits of both axes in ms; defaults to (15, 20000).
-    grid_bins (int)
-        Bins per axis of the joint density; defaults to 70.
-    figsize (tuple)
-        Figure size in inches; defaults to (3.0, 2.6). The colorbar sits outside the axes on the
-        right so it does not take width from the square box.
+    h5_path (str | Path)
+        Path to an interval archive written with ``fit_serial_dependence`` enabled.
+    interval_type (str)
+        ``'e2s'`` or ``'s2s'``.
+    sex (str)
+        ``'male'`` or ``'female'``.
+    call_type (str)
+        ``'usv'`` or ``'squeak'``.
 
     Returns
     -------
-    f (plt.Figure)
-        The figure.
-    ax (plt.Axes)
-        The joint-distribution axes.
-    stats (dict)
-        ``'n_pairs'``, and ``'bin_current_ms'`` / ``'bin_median_next_ms'`` -- the plotted medians,
-        one per equal-count bin, ascending in the current interval.
+    curves (pls.DataFrame)
+        The spline and bent line with their bands on a grid of the current interval
+        (``current_ms``, ``spline_ms``, ``spline_low_ms``, ``spline_high_ms``, ``bent_ms``,
+        ``bent_low_ms``, ``bent_high_ms``), ascending in ``current_ms``.
+    fit (dict)
+        The pool's ``serial_dependence_fit`` row: the bend and its interval, slope, flat level,
+        coverage level, bootstrap size and solver diagnostics.
+
+    Raises
+    ------
+    KeyError
+        The archive holds no serial-dependence fit for this pool.
     """
 
-    current_ms = np.asarray(pairs[0], dtype=float) * 1000.0
-    following_ms = np.asarray(pairs[1], dtype=float) * 1000.0
-    keep = (current_ms > 0) & (following_ms > 0)
-    log_current, log_following = np.log10(current_ms[keep]), np.log10(following_ms[keep])
-    lim = (np.log10(lims_ms[0]), np.log10(lims_ms[1]))
+    mode = read_usv_interval_h5(h5_path)["modes"][interval_type]
+    if mode["serial_dependence_fit"] is None:
+        msg = f"{h5_path} has no serial_dependence_fit for {interval_type}; was fit_serial_dependence enabled?"
+        raise KeyError(msg)
+    pool = (pls.col("sex") == sex) & (pls.col("call_type") == call_type)
+    fit = mode["serial_dependence_fit"].filter(pool)
+    if fit.height == 0:
+        msg = f"{h5_path} has no serial-dependence fit for {sex} {call_type} ({interval_type})."
+        raise KeyError(msg)
+    return mode["serial_dependence_curves"].filter(pool).sort("current_ms"), fit.row(0, named=True)
 
-    f, ax = plt.subplots(figsize=figsize)
+
+def _draw_serial_dependence_panel(
+    f: plt.Figure,
+    ax: plt.Axes,
+    log_current: np.ndarray,
+    log_following: np.ndarray,
+    color: str,
+    current_ms: np.ndarray,
+    line_ms: np.ndarray,
+    low_ms: np.ndarray,
+    high_ms: np.ndarray,
+    line_label: str,
+    boundary_ms: float | None,
+    lims_ms: tuple,
+    grid_bins: int,
+    bend: tuple | None,
+    colorbar: bool,
+) -> None:
+    """
+    Description
+    -----------
+    One serial-dependence panel: the joint density of consecutive intervals with a fitted median
+    line and its band drawn over it.
+
+    Everything is drawn in log10(ms) coordinates with millisecond tick labels, on square axes.
+
+    Parameters
+    ----------
+    f (plt.Figure)
+        Parent figure (for the colorbar).
+    ax (plt.Axes)
+        Panel.
+    log_current, log_following (np.ndarray)
+        log10 of the current / next intervals in ms.
+    color (str)
+        Density colour.
+    current_ms, line_ms, low_ms, high_ms (np.ndarray)
+        The fitted line and its band on a grid of the current interval, in ms.
+    line_label (str)
+        Legend label of the line.
+    boundary_ms (float or None)
+        Bout boundary drawn as a dotted vertical line, or None.
+    lims_ms (tuple)
+        Axis limits in ms, identical on both axes.
+    grid_bins (int)
+        Bins per axis of the 2-D histogram behind the density.
+    bend (tuple or None)
+        ``(bend_ms, low_ms, high_ms, level, y_ms)``: the bend drawn as a point with a horizontal
+        interval, or None.
+    colorbar (bool)
+        Whether this panel carries the pair-count colorbar.
+
+    Returns
+    -------
+    None
+    """
+
+    lim = (np.log10(lims_ms[0]), np.log10(lims_ms[1]))
     counts, x_edges, y_edges = np.histogram2d(log_current, log_following, bins=grid_bins,
                                               range=[lim, lim])
-    x_centres = 0.5 * (x_edges[:-1] + x_edges[1:])
-    y_centres = 0.5 * (y_edges[:-1] + y_edges[1:])
     shade = np.log10(counts.T + 1.0)
     cmap = LinearSegmentedColormap.from_list("serial_dependence", ["#FFFFFF", color, "#1F3A45"])
     cmap.set_under("#FFFFFF")
-    mesh = ax.pcolormesh(x_centres, y_centres, shade, shading="gouraud", cmap=cmap,
+    mesh = ax.pcolormesh(0.5 * (x_edges[:-1] + x_edges[1:]), 0.5 * (y_edges[:-1] + y_edges[1:]),
+                         shade, shading="gouraud", cmap=cmap,
                          norm=Normalize(np.log10(2.0), max(float(shade.max()), np.log10(3.0))),
                          rasterized=True)
-
-    edges = np.quantile(log_current, np.linspace(0.0, 1.0, n_bins + 1))
-    bin_x, bin_y = [], []
-    for low, high in zip(edges[:-1], edges[1:], strict=True):
-        in_bin = (log_current >= low) & (log_current <= high)
-        if in_bin.any():
-            bin_x.append(float(np.median(log_current[in_bin])))
-            bin_y.append(float(np.median(log_following[in_bin])))
-    ax.plot(bin_x, bin_y, color="#000000", lw=1.0, marker="o", ms=0.4,
-            label="median next interval")
     ax.plot(lim, lim, color="#8A8F98", lw=0.8, ls=(0, (4, 3)))
     if boundary_ms is not None:
         # Round dots: a zero-length dash with round caps; the gap is in units of line width.
         ax.axvline(np.log10(boundary_ms), color="#B4404A", lw=1.0, ls=(0, (0.01, 4.4)),
                    dash_capstyle="round", label=f"bout boundary ({boundary_ms:.0f} ms)")
 
-    ticks = [t for t in (10, 30, 100, 300, 1000, 3000, 10000, 30000)
-             if lims_ms[0] <= t <= lims_ms[1]]
+    x = np.log10(current_ms)
+    ax.fill_between(x, np.log10(low_ms), np.log10(high_ms), color="#1F1F1F", alpha=0.25, lw=0,
+                    zorder=3)
+    ax.plot(x, np.log10(line_ms), color="#000000", lw=1.0, zorder=4, label=line_label)
+    if bend is not None:
+        bend_ms, bend_low, bend_high, level, y_ms = bend
+        ax.errorbar([np.log10(bend_ms)], [np.log10(y_ms)],
+                    xerr=[[np.log10(bend_ms) - np.log10(bend_low)],
+                          [np.log10(bend_high) - np.log10(bend_ms)]],
+                    fmt="o", color="#000000", ms=2.0, lw=0.8, capsize=1.5, zorder=5,
+                    label=f"bend {bend_ms:.0f} ms ({bend_low:.0f}-{bend_high:.0f}, {level:.0f}%)")
+
+    ticks = [t for t in (10, 30, 100, 300, 1000, 3000, 10000, 30000) if lims_ms[0] <= t <= lims_ms[1]]
     for axis in ("x", "y"):
         getattr(ax, f"set_{axis}ticks")(np.log10(ticks))
         getattr(ax, f"set_{axis}ticklabels")([f"{t:g}" for t in ticks])
@@ -1648,23 +1682,110 @@ def plot_serial_dependence(
     ax.set_ylim(lim)
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel("current inter-USV interval (ms)")
-    ax.set_ylabel("next inter-USV interval (ms)")
     ax.legend(frameon=False, fontsize=5, loc="upper left")
 
-    cax = ax.inset_axes([1.04, 0.72, 0.045, 0.25])
-    colorbar = f.colorbar(mesh, cax=cax)
-    colorbar_ticks = [t for t in (2, 10, 100, 1000, 10000) if np.log10(t + 1.0) <= shade.max()]
-    colorbar.set_ticks(np.log10(np.array(colorbar_ticks, dtype=float) + 1.0))
-    colorbar.set_ticklabels([f"{t:g}" for t in colorbar_ticks])
-    colorbar.ax.tick_params(labelsize=6)
-    cax.set_title("pairs", fontsize=7, pad=3)
+    if colorbar:
+        cax = ax.inset_axes([1.04, 0.72, 0.045, 0.25])
+        cb = f.colorbar(mesh, cax=cax)
+        cb_ticks = [t for t in (2, 10, 100, 1000, 10000) if np.log10(t + 1.0) <= shade.max()]
+        cb.set_ticks(np.log10(np.array(cb_ticks, dtype=float) + 1.0))
+        cb.set_ticklabels([f"{t:g}" for t in cb_ticks])
+        cb.ax.tick_params(labelsize=6)
+        cax.set_title("pairs", fontsize=7, pad=3)
+
+
+def plot_serial_dependence(
+    pairs: tuple[np.ndarray, np.ndarray],
+    color: str,
+    curves: pls.DataFrame,
+    fit: dict,
+    boundary_ms: float | None = None,
+    lims_ms: tuple = (15.0, 20000.0),
+    grid_bins: int = 70,
+    figsize: tuple = (6.2, 2.6),
+) -> tuple[plt.Figure, np.ndarray, dict]:
+    """
+    Description
+    -----------
+    Serial dependence of consecutive inter-USV intervals: two panels, side by side, each the joint
+    distribution of (current, next) interval with a fitted median line drawn over it.
+
+    Serial dependence is the defining property of a bout: an interval inside a bout carries
+    information about the one that follows it, a gap between bouts does not. Both panels show the
+    same pairs; they differ in the median regression of the next interval on the current one,
+    fitted by the pipeline (:func:`..analyses.compute_inter_usv_interval_distributions.fit_serial_dependence`)
+    and read from the archive (:func:`load_serial_dependence_from_h5`):
+
+    * **A: median spline** -- no assumed shape; the relation as the data give it.
+    * **B: bent-line median fit** -- rising below a bend and flat above it, with the bend drawn
+      as a point and its session-bootstrap interval as a horizontal bar. The bend is an estimate
+      of the bout boundary from serial dependence alone, so it can be read against the
+      ``boundary_ms`` line, which is the first mixture peak's bound.
+
+    Each line carries its pointwise session-bootstrap band at the archived coverage level. The
+    density is a 2-D histogram of the pairs on log axes, Gouraud-shaded; the grey dashed line is
+    next = current; the axes are square and share one scale; a single pair-count colorbar sits
+    outside the right panel.
+
+    Parameters
+    ----------
+    pairs (tuple)
+        ``(current, next)`` intervals in seconds, e.g. from :func:`serial_dependence_pairs`.
+    color (str)
+        Density colour (the pool's sex colour).
+    curves (pls.DataFrame)
+        The archived fitted curves of this pool.
+    fit (dict)
+        The archived ``serial_dependence_fit`` row of this pool.
+    boundary_ms (float or None)
+        Bout boundary drawn on both panels; None draws none. Defaults to None.
+    lims_ms (tuple)
+        Axis limits in ms, identical on both axes; defaults to (15, 20000).
+    grid_bins (int)
+        Bins per axis of the 2-D histogram; defaults to 70.
+    figsize (tuple)
+        Figure size in inches; defaults to (6.2, 2.6).
+
+    Returns
+    -------
+    f (plt.Figure)
+        The figure.
+    axes (np.ndarray)
+        The two panels, spline then bent line.
+    stats (dict)
+        ``'n_pairs'`` (pairs drawn), ``'bend_ms'``, ``'bend_low_ms'``, ``'bend_high_ms'``,
+        ``'level'``, ``'slope'`` and ``'flat_level_ms'`` from the fit.
+    """
+
+    current_ms = np.asarray(pairs[0], dtype=float) * 1000.0
+    following_ms = np.asarray(pairs[1], dtype=float) * 1000.0
+    keep = (current_ms > 0) & (following_ms > 0)
+    log_current, log_following = np.log10(current_ms[keep]), np.log10(following_ms[keep])
+    grid_ms = curves["current_ms"].to_numpy()
+
+    f, axes = plt.subplots(1, 2, figsize=figsize)
+    _draw_serial_dependence_panel(
+        f, axes[0], log_current, log_following, color, grid_ms, curves["spline_ms"].to_numpy(),
+        curves["spline_low_ms"].to_numpy(), curves["spline_high_ms"].to_numpy(),
+        "median next interval (fit)", boundary_ms, lims_ms, grid_bins, bend=None, colorbar=False)
+    bent_ms = curves["bent_ms"].to_numpy()
+    _draw_serial_dependence_panel(
+        f, axes[1], log_current, log_following, color, grid_ms, bent_ms,
+        curves["bent_low_ms"].to_numpy(), curves["bent_high_ms"].to_numpy(),
+        "median next interval (fit)", boundary_ms, lims_ms, grid_bins,
+        bend=(fit["bend_ms"], fit["bend_low_ms"], fit["bend_high_ms"], fit["level"],
+              float(np.exp(np.interp(np.log(fit["bend_ms"]), np.log(grid_ms), np.log(bent_ms))))),
+        colorbar=True)
+    axes[0].set_ylabel("next inter-USV interval (ms)")
+    axes[0].set_title("A: median spline", fontsize=7)
+    axes[1].set_title("B: bent-line median fit", fontsize=7)
 
     stats = {
         "n_pairs": int(log_current.size),
-        "bin_current_ms": 10.0 ** np.asarray(bin_x),
-        "bin_median_next_ms": 10.0 ** np.asarray(bin_y),
+        **{k: float(fit[k]) for k in ("bend_ms", "bend_low_ms", "bend_high_ms", "level", "slope",
+                                      "flat_level_ms")},
     }
-    return f, ax, stats
+    return f, axes, stats
 
 
 def load_tied_model_from_h5(
