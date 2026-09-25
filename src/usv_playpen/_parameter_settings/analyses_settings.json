@@ -37,7 +37,7 @@
     "session_lists": [
       "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
     ],
-    "output_directory": "/mnt/falkner/Bartul/modeling/usv_interval_results",
+    "output_directory": "/mnt/falkner/Bartul/modeling/usv_interval_results/male_female",
     "figures_directory": "/mnt/falkner/Bartul/figures",
     "exclude_noise_usvs": true,
     "fit_mixture_model": false,
