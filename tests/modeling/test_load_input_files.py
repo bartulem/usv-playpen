@@ -52,9 +52,9 @@ def _write_usv_summary(session_root, rows: dict, csv_sep: str = ',') -> None:
     rows (dict)
         Column-name -> value-list mapping passed straight to
         ``polars.DataFrame``; must include at least the ``emitter``, ``start``
-        and ``stop`` columns the loaders rely on. A ``noise`` column of all-False
-        is added when the caller does not supply one, since the loaders filter on
-        it and raise when it is missing.
+        and ``stop`` columns the loaders rely on. ``noise`` and ``squeak``
+        columns of all-False are added when the caller does not supply them, since
+        the loaders filter on both and raise when either is missing.
     csv_sep (str)
         Field separator written into the CSV (mirrors the loaders' ``csv_sep``).
 
@@ -68,6 +68,8 @@ def _write_usv_summary(session_root, rows: dict, csv_sep: str = ',') -> None:
     csv_path = audio_dir / f'{session_root.name}_usv_summary.csv'
     if 'noise' not in rows:
         rows = {**rows, 'noise': [False] * len(next(iter(rows.values())))}
+    if 'squeak' not in rows:
+        rows = {**rows, 'squeak': [False] * len(next(iter(rows.values())))}
     pls.DataFrame(rows).write_csv(file=csv_path, separator=csv_sep)
 
 
@@ -513,6 +515,66 @@ class TestFindBoutEpochs:
                                target_category=None,
                                **kwargs)
         np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0, 3.0, 4.0])
+
+    def test_target_call_type_selects_the_positive_onsets(self, tmp_path):
+        """The ``squeak`` column decides which onsets are positive: 'usv' (the
+        default) keeps the ultrasonic calls only, 'squeak' the squeaks only, 'all'
+        both; the silent-epoch negatives are the same in all three because they are
+        sampled against every call of the mouse."""
+
+        rows = {
+            'emitter': ['male', 'male', 'male'],
+            'start': [2.0, 3.0, 4.0],
+            'stop': [2.05, 3.05, 4.05],
+            'usv_category': [1, 1, 1],
+            'usv_supercategory': [1, 1, 1],
+            'squeak': [False, True, False],
+        }
+        kwargs = self._build(tmp_path, rows)
+        common = dict(prediction_mode='individual', filter_history=1.0,
+                      usv_bout_time=0.5, min_usv_per_bout=2,
+                      proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
+        out = {kind: find_onset_epochs(target_call_type=kind, **common, **kwargs)['sess_B']['male']
+               for kind in ('usv', 'squeak', 'all')}
+        np.testing.assert_allclose(out['usv']['positive_events'], [2.0, 4.0])
+        np.testing.assert_allclose(out['squeak']['positive_events'], [3.0])
+        np.testing.assert_allclose(out['all']['positive_events'], [2.0, 3.0, 4.0])
+        np.testing.assert_allclose(out['usv']['negative_events'], out['squeak']['negative_events'])
+        np.testing.assert_allclose(out['usv']['negative_events'], out['all']['negative_events'])
+        # the default is 'usv'
+        default = find_onset_epochs(**common, **kwargs)['sess_B']['male']
+        np.testing.assert_allclose(default['positive_events'], [2.0, 4.0])
+
+    def test_target_call_type_refuses_what_it_cannot_do(self, tmp_path):
+        """Squeak onsets outside 'individual' mode, an unknown call type, and a
+        summary without a ``squeak`` column (unless 'all') all raise rather than
+        silently falling back to every call."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [2.0, 3.0],
+            'stop': [2.05, 3.05],
+            'usv_category': [1, 1],
+            'usv_supercategory': [1, 1],
+            'squeak': [False, True],
+        }
+        kwargs = self._build(tmp_path, rows)
+        common = dict(filter_history=1.0, usv_bout_time=0.5, min_usv_per_bout=2,
+                      proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
+        with pytest.raises(ValueError, match="'individual' mode only"):
+            find_onset_epochs(prediction_mode='bout', target_call_type='squeak', **common, **kwargs)
+        with pytest.raises(ValueError, match="Unknown target_call_type"):
+            find_onset_epochs(prediction_mode='individual', target_call_type='chirp', **common, **kwargs)
+
+        bare = tmp_path / 'bare'
+        bare_kwargs = self._build(bare, {'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
+                                         'usv_category': [1], 'usv_supercategory': [1]})
+        csv_path = next((bare / 'sess_B' / 'audio').glob('*_usv_summary.csv'))
+        pls.read_csv(csv_path).drop('squeak').write_csv(csv_path)
+        with pytest.raises(ValueError, match="no 'squeak' column"):
+            find_onset_epochs(prediction_mode='individual', target_call_type='usv', **common, **bare_kwargs)
+        out = find_onset_epochs(prediction_mode='individual', target_call_type='all', **common, **bare_kwargs)
+        np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0])
 
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     def test_target_category_predictors_unaffected(self, tmp_path):

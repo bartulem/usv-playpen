@@ -237,6 +237,7 @@ def _write_category_usv_summary(
         'vae_category': categories,
         # No synthesized noise here: every row is a real vocalization, so the noise filter is a no-op.
         'noise': [False] * n_rows,
+        'squeak': [False] * n_rows,
         'mask_number': [2] * n_rows,
         manifold_columns[0]: (rng.standard_normal(n_rows)).round(6).tolist(),
         manifold_columns[1]: (rng.standard_normal(n_rows)).round(6).tolist(),

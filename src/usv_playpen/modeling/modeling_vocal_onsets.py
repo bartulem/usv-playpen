@@ -252,6 +252,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             min_usv_per_bout=self.modeling_settings['model_params']['usv_per_bout_floor'],
             category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
             target_category=self.modeling_settings['model_params']['onset_target_category'],
+            target_call_type=self.modeling_settings['model_params']['onset_target_call_type'],
             **bout_offset_kwargs,
         )
 
@@ -394,10 +395,15 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # `category_<col>_<idx>` convention), so VAE-vs-QLVM and
         # category-vs-supercategory are unambiguous in every downstream
         # artifact name and provenance block.
+        # The onset call type ('usv' default, 'squeak', 'all') joins the tag whenever it
+        # is not the default, so a squeak-onset run and a USV-onset run of the same
+        # cohort never share an artifact name.
+        onset_call_type = self.modeling_settings['model_params']['onset_target_call_type']
+        call_type_seg = "" if onset_call_type == 'usv' else f"_{onset_call_type}"
         if onset_category_active:
-            analysis_tag = f"{target_vocal_type}_cat_{cat_col}_{onset_cat}"
+            analysis_tag = f"{target_vocal_type}{call_type_seg}_cat_{cat_col}_{onset_cat}"
         else:
-            analysis_tag = target_vocal_type
+            analysis_tag = f"{target_vocal_type}{call_type_seg}"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         file_name_ = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
@@ -475,6 +481,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             ibi_thresholds=ibi_thresholds_md,
             analysis_specific={
                 'model_target_vocal_type': target_vocal_type,
+                'onset_target_call_type': onset_call_type,
                 'usv_bout_time': self.modeling_settings['model_params']['usv_bout_time'],
                 'usv_per_bout_floor': self.modeling_settings['model_params']['usv_per_bout_floor'],
                 **({'onset_target_category': int(onset_cat),

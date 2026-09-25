@@ -122,7 +122,8 @@ cross-validation and held-out-test settings live in their own
         "selection_ci_level": 0.99,
         "usv_bout_time": 2,
         "usv_per_bout_floor": 2,
-        "onset_target_category": null
+        "onset_target_category": null,
+        "onset_target_call_type": "usv"
     }
 
 * **filter_history** — seconds of behavioral history preceding each event that feed the temporal filter (× ``camera_sampling_rate`` → frames).
@@ -137,6 +138,7 @@ cross-validation and held-out-test settings live in their own
 * **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout'`` mode: a candidate silent-epoch onset is kept only if no USV (from any source) starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
 * **usv_per_bout_floor** — the minimum number of USVs a positive bout must contain (``'bout'`` mode).
 * **onset_target_category** — restrict positive onsets to a single USV category (``'individual'`` mode only); ``null`` pools all categories (see the single-category note under :ref:`Modeling input data <modeling-extract>`).
+* **onset_target_call_type** — which calls are the positive onsets, from the summary's ``squeak`` column (written by the squeak classifier): ``'usv'`` (default) the ultrasonic calls only, ``'squeak'`` the squeaks only (``'individual'`` mode only), ``'all'`` both. Applied in every onset mode (``'bout'``, ``'individual'``, ``'bout_offset'``) before ``onset_target_category``; any value other than ``'usv'`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``).
 
 **model_validation** — the held-out test set and cross-validation splitting.
 
@@ -552,11 +554,23 @@ pipeline:
 .. note::
 
    **Modeling onsets for a single USV category.** By default
-   ``VocalOnsetModelingPipeline`` pools *all* of the target mouse's USVs when
-   it derives positive onset events. When overall vocal output is too sparse
-   for bout-onset modeling but one category is plentiful — e.g. female
-   broadband vocalizations (BBVs) — you can restrict the positive onsets to a
-   single category by setting two knobs in ``model_params``:
+   ``VocalOnsetModelingPipeline`` derives positive onset events from the target
+   mouse's calls of one **call type** (``onset_target_call_type``): by default
+   its ultrasonic calls, so squeaks are neither USV onsets nor bout members (a
+   squeak between two USVs no longer joins or splits a bout). To model **squeak
+   onsets** — e.g. the female's, which are plentiful in courtship when her USVs
+   are not — set ``model_target_vocal_type = 'individual'`` and
+   ``onset_target_call_type = 'squeak'``; this replaces the VAE-era route of
+   targeting squeak category 6. Squeaks are available in ``'individual'`` mode
+   only, since bout grouping needs an inter-bout threshold and the per-sex
+   thresholds are derived from ultrasonic-call intervals; asking for them in a
+   bout mode raises. A summary without a ``squeak`` column raises unless the
+   call type is ``'all'``.
+
+   Within that call type, when overall vocal output is too sparse for
+   bout-onset modeling but one category is plentiful, you can restrict the
+   positive onsets to a single category by setting two knobs in
+   ``model_params``:
 
    - ``model_target_vocal_type = 'individual'`` — each qualifying USV onset
      (rather than a clustered bout onset) becomes a positive event;
@@ -567,10 +581,11 @@ pipeline:
      ``qlvm_category`` can be targeted. Leave it ``null`` (default) to pool all
      categories exactly as before.
 
-   Only the *positive* onsets are filtered: the behavioral / vocal predictors
-   and the silent-epoch (No-USV) negative reference are still computed over
-   **all** of the mouse's USVs, so the category choice changes only *which*
-   onsets count as events — never the predictors or the negatives. The filter
+   Only the *positive* onsets are filtered, by call type and by category alike:
+   the behavioral / vocal predictors and the silent-epoch (No-USV) negative
+   reference are still computed over **all** of the mouse's calls, squeaks
+   included, so these choices change only *which* onsets count as events —
+   never the predictors or the negatives. The filter
    is honoured in ``'individual'`` mode only; in ``'bout'`` mode it is
    ignored, because the mixture-model inter-syllable-interval threshold used
    for bout grouping is calibrated on the all-USV interval distribution and

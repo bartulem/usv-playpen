@@ -57,6 +57,7 @@ from pathlib import Path
 
 import matplotlib
 import numpy as np
+import polars as pls
 import pytest
 
 matplotlib.use('Agg')
@@ -814,3 +815,54 @@ class TestExtractionGuards:
         assert md['analysis_tag'] == expected_tag
         assert md['analysis_specific']['onset_target_category'] == 1
         assert md['analysis_specific']['usv_category_column_name'] == 'qlvm_supercategory'
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_extraction_squeak_onsets_tag_and_metadata(self, tmp_path):
+        """
+        With ``onset_target_call_type='squeak'`` in 'individual' mode, the squeak
+        onsets are the positives, the saved input pickle's filename and
+        ``analysis_tag`` carry ``_squeak`` (so a squeak-onset run never shares an
+        artifact name with a USV-onset run), and ``analysis_specific`` records the
+        call type. Every synthetic call is relabelled a squeak, so the squeak
+        target keeps every onset and both sessions survive.
+        """
+
+        session_roots = build_session_tree(
+            base_dir=tmp_path / 'sessions',
+            n_sessions=2,
+            n_frames=3600,
+            camera_fps=CAMERA_FPS,
+            filter_history=FILTER_HISTORY,
+            egocentric_features=['speed'],
+            n_bouts=8,
+            usv_per_bout=3,
+        )
+        for root in session_roots:
+            csv_path = next((Path(root) / 'audio').glob('*_usv_summary.csv'))
+            pls.read_csv(csv_path).with_columns(pls.lit(True).alias('squeak')).write_csv(csv_path)
+        list_file = write_session_list_file(session_roots, tmp_path / 'session_list.txt')
+        save_dir = tmp_path / 'out'
+        save_dir.mkdir(parents=True, exist_ok=True)
+        settings = build_modeling_settings(
+            session_list_file=list_file,
+            save_directory=save_dir,
+            camera_sampling_rate=CAMERA_FPS,
+            filter_history=FILTER_HISTORY,
+            egocentric_features=['speed'],
+        )
+        settings['model_params']['usv_bout_time'] = FILTER_HISTORY
+        settings['model_params']['model_target_vocal_type'] = 'individual'
+        settings['model_params']['onset_target_call_type'] = 'squeak'
+
+        pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
+        pipeline.extract_and_save_modeling_input_data()
+
+        pkls = list(save_dir.glob('modeling_*.pkl'))
+        assert len(pkls) == 1
+        assert 'individual_squeak' in pkls[0].name
+        with pkls[0].open('rb') as fh:
+            artifact = pickle.load(fh)
+        md = artifact['_input_metadata']
+        assert md['analysis_tag'] == 'individual_squeak'
+        assert md['analysis_specific']['onset_target_call_type'] == 'squeak'

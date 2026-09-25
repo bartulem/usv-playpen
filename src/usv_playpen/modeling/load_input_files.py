@@ -446,6 +446,7 @@ def find_onset_epochs(root_directories: list = None,
                      exclude_noise_usvs: bool = True,
                      category_column: str = 'usv_category',
                      target_category: int = None,
+                     target_call_type: str = 'usv',
                      negative_scheme: str = None,
                      min_singing_after_negative: int | float = None,
                      time_since_bout_onset_tolerance: int | float = None,
@@ -516,6 +517,20 @@ def find_onset_epochs(root_directories: list = None,
         interval distribution and would mis-group a category-sparsified
         sequence; in those modes all categories are pooled as before. If None
         (default), all USV categories are pooled (original behavior).
+    target_call_type : str, optional
+        Which calls are the POSITIVE onset source, read from the summary's boolean
+        ``squeak`` column (written by the squeak classifier): ``'usv'`` (default)
+        keeps the ultrasonic calls only, ``'squeak'`` the squeaks only, ``'all'``
+        both. Applied before `target_category`, in every mode whose positives are
+        call times ('bout', 'individual', 'bout_offset'), so in 'usv' mode bouts are
+        grouped from ultrasonic calls alone -- a squeak between two calls no longer
+        joins or splits a bout -- and squeak onsets are no longer counted as USV
+        onsets. As with `target_category`, the predictor vocal traces and the
+        silent-epoch (negative) reference still use ALL of the mouse's calls, so a
+        negative window is silent of squeaks too. ``'squeak'`` is accepted in
+        'individual' mode only: bout grouping needs an inter-bout threshold, and
+        the per-sex thresholds are calibrated on ultrasonic-call intervals, not on
+        squeaks. A summary without a ``squeak`` column raises unless ``'all'``.
     negative_scheme : str, optional
         ``'bout_offset'`` mode only. ``'cross_bout'``: each positive (the last
         call's offset of a bout) is paired with an interior call's offset from
@@ -561,6 +576,15 @@ def find_onset_epochs(root_directories: list = None,
             'usv_rate': Gaussian-smoothed density trace over the full per-mouse USV set.
     """
 
+    if target_call_type not in ('usv', 'squeak', 'all'):
+        raise ValueError(f"Unknown target_call_type: {target_call_type!r}. Must be 'usv', 'squeak' or 'all'.")
+    if target_call_type == 'squeak' and prediction_mode != 'individual':
+        raise ValueError(
+            f"target_call_type 'squeak' is supported in 'individual' mode only, not {prediction_mode!r}: "
+            "bout grouping needs an inter-bout threshold, and the per-sex thresholds come from "
+            "ultrasonic-call intervals."
+        )
+
     # mixture-model parameters (modeling inter-USV interval distributions)
     male_mixture_model_params = mixture_model_params['male']
     female_mixture_model_params = mixture_model_params['female']
@@ -581,6 +605,11 @@ def find_onset_epochs(root_directories: list = None,
         has_category = category_column in usv_summary_data.columns
         if exclude_noise_usvs:
             usv_summary_data = drop_noise_usvs(usv_summary_data, Path(csv_path).name)[0]
+        if target_call_type != 'all' and 'squeak' not in usv_summary_data.columns:
+            raise ValueError(
+                f"{Path(csv_path).name} has no 'squeak' column, so target_call_type {target_call_type!r} "
+                "cannot be applied; run the squeak classifier on the session, or use 'all'."
+            )
 
         if session_id not in mouse_ids_dict:
             print(f"Warning: No mouse names registered for {session_id}. Skipping.")
@@ -629,15 +658,23 @@ def find_onset_epochs(root_directories: list = None,
             # drives the predictor vocal traces below, and the all-USV frame
             # still drives the silent-epoch (negative) reference, so neither the
             # predictors nor the negatives are affected by the category choice.
+            # The call type is applied first: ultrasonic calls, squeaks, or both.
+            if target_call_type == 'usv':
+                typed_source_df = mouse_usvs_df.filter(~pls.col('squeak'))
+            elif target_call_type == 'squeak':
+                typed_source_df = mouse_usvs_df.filter(pls.col('squeak'))
+            else:
+                typed_source_df = mouse_usvs_df
             if target_category is not None and prediction_mode == 'individual':
                 if has_category:
-                    positive_source_df = mouse_usvs_df.filter(pls.col(category_column) == target_category)
+                    positive_source_df = typed_source_df.filter(pls.col(category_column) == target_category)
                 else:
                     print(f"Warning: category column '{category_column}' absent for {session_id}; "
-                          f"cannot restrict onsets to category {target_category}. Using all USVs.")
-                    positive_source_df = mouse_usvs_df
+                          f"cannot restrict onsets to category {target_category}. Using all "
+                          f"{target_call_type} calls.")
+                    positive_source_df = typed_source_df
             else:
-                positive_source_df = mouse_usvs_df
+                positive_source_df = typed_source_df
 
             usv_data_dict[session_id][mouse_name]['start'] = np.array(positive_source_df['start'])
             usv_data_dict[session_id][mouse_name]['stop'] = np.array(positive_source_df['stop'])

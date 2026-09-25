@@ -21,7 +21,8 @@
     "selection_ci_level": 0.99,
     "usv_bout_time": 2,
     "usv_per_bout_floor": 2,
-    "onset_target_category": null
+    "onset_target_category": null,
+    "onset_target_call_type": "usv"
   },
 
   "model_validation": {
