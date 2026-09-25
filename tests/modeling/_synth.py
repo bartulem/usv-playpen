@@ -217,7 +217,7 @@ def build_usv_summary_csv(
     -----------
     Writes a synthetic ``*_usv_summary.csv`` under ``<session_root>/audio`` that
     yields a controllable number of valid vocal *bouts* for the target mouse
-    when run through ``find_onset_epochs`` in ``'bout'`` prediction mode.
+    when run through ``find_onset_epochs`` in ``'bout_onset'`` prediction mode.
 
     Construction guarantees, per bout:
       - ``usv_per_bout`` syllables packed tightly (gap << IBI threshold) so they
@@ -569,7 +569,7 @@ def build_modeling_settings(
     mp = settings['model_params']
     mp['filter_history'] = filter_history
     mp['model_engine'] = model_engine
-    mp['model_target_vocal_type'] = 'bout'
+    mp['model_target_vocal_type'] = 'bout_onset'
     mp['model_predictor_mouse_index'] = 1
     mp['usv_per_bout_floor'] = 2
 

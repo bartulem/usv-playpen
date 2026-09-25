@@ -114,7 +114,7 @@ cross-validation and held-out-test settings live in their own
         "model_basis_function": "raised_cosine",
         "model_engine": "pygam",
         "model_predictor_mouse_index": 1,
-        "model_target_vocal_type": "bout",
+        "model_target_vocal_type": "bout_onset",
         "model_target_variable": "bout_durations",
         "selection_p_val": 0.01,
         "selection_effect_floor": 0.1,
@@ -123,7 +123,7 @@ cross-validation and held-out-test settings live in their own
         "usv_bout_time": 2,
         "usv_per_bout_floor": 2,
         "onset_target_category": null,
-        "onset_target_call_type": "usv"
+        "onset_target_type": "usv"
     }
 
 * **filter_history** — seconds of behavioral history preceding each event that feed the temporal filter (× ``camera_sampling_rate`` → frames).
@@ -131,14 +131,14 @@ cross-validation and held-out-test settings live in their own
 * **model_basis_function** — temporal-filter basis over the history window: ``'raised_cosine'`` / ``'bspline'`` / ``'laplacian_pyramid'`` (parameters in ``hyperparameters.basis_functions``), or ``'identity'`` (the raw per-frame history, no projection). Only relevant when ``model_engine = 'sklearn'`` — the ``'pygam'`` engine uses its own tensor-product splines instead.
 * **model_engine** — univariate model backend: ``'pygam'`` (tensor-product-spline GAM, a generalized additive model) or ``'sklearn'`` (basis-projected linear).
 * **model_predictor_mouse_index** — which mouse (``0`` / ``1``) is the **partner**; the **target** — the mouse whose vocal behavior is being predicted — is defined as the other one. Both mice's kinematics enter the predictor set.
-* **model_target_vocal_type** — onset target mode, one of ``'bout'`` (clustered bout onsets, both positive and negative pre-event windows kept clean), ``'individual'`` (per-USV onsets), ``'state'`` (the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent, with no clean-history requirement), or ``'bout_offset'`` (the END of a bout against an interior call of a bout that continued; configured by the ``bout_offset`` block, see :ref:`Bout offsets <modeling-bout-offsets>`); used only by ``VocalOnsetModelingPipeline``.
+* **model_target_vocal_type** — onset target mode, one of ``'bout_onset'`` (clustered bout onsets, both positive and negative pre-event windows kept clean), ``'individual'`` (per-USV onsets), ``'state'`` (the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent, with no clean-history requirement), or ``'bout_offset'`` (the END of a bout against an interior call of a bout that continued; configured by the ``bout_offset`` block, see :ref:`Bout offsets <modeling-bout-offsets>`); used only by ``VocalOnsetModelingPipeline``.
 * **model_target_variable** — for ``BoutParameterPipeline``, which per-bout quantity to regress: ``'bout_durations'`` (first-to-last-USV span, seconds), ``'mean_mask_complexity'`` (per-USV mean spectrogram-mask complexity), or ``'total_mask_complexity'`` (summed over the bout).
 * **selection_p_val** — the significance level gating whether a candidate feature is admitted during forward-stepwise model selection (default ``0.01``); on the acoustic-manifold target it is the Benjamini–Hochberg FDR ``q`` used to screen candidates.
 * **selection_effect_floor** / **selection_n_bootstrap** / **selection_ci_level** — the acoustic-manifold selection's **fold-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds. ``selection_effect_floor`` is the relative effect floor a screened feature must clear — a fraction of the top surviving driver's margin (default ``0.1`` = 10%); ``selection_n_bootstrap`` is the number of fold bootstrap resamples (default ``1000``); ``selection_ci_level`` is the bootstrap confidence level whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (default ``0.99``). These three apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone.
-* **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout'`` mode: a candidate silent-epoch onset is kept only if no USV (from any source) starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
-* **usv_per_bout_floor** — the minimum number of USVs a positive bout must contain (``'bout'`` mode).
+* **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout_onset'`` mode: a candidate silent-epoch onset is kept only if no USV (from any source) starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
+* **usv_per_bout_floor** — the minimum number of USVs a positive bout must contain (``'bout_onset'`` mode).
 * **onset_target_category** — restrict positive onsets to a single USV category (``'individual'`` mode only); ``null`` pools all categories (see the single-category note under :ref:`Modeling input data <modeling-extract>`).
-* **onset_target_call_type** — which calls are the positive onsets, from the summary's ``squeak`` column (written by the squeak classifier): ``'usv'`` (default) the ultrasonic calls only, ``'squeak'`` the squeaks only (``'individual'`` mode only), ``'all'`` both. Applied in every onset mode (``'bout'``, ``'individual'``, ``'bout_offset'``) before ``onset_target_category``; any value other than ``'usv'`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``).
+* **onset_target_type** — which vocal segments are the positive onsets, from the summary's ``squeak`` column (written by the squeak classifier): ``'usv'`` (default) only segments without a squeak, ``'squeak'`` only squeak segments (``'individual'`` mode only), ``'all'`` every segment, without filtering on ``squeak``. Noise segments are removed first in every case when ``vocal_features.exclude_noise_usvs`` is ``true``. Applied in every onset mode (``'bout_onset'``, ``'individual'``, ``'bout_offset'``) before ``onset_target_category``; any value other than ``'usv'`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``).
 
 **model_validation** — the held-out test set and cross-validation splitting.
 
@@ -387,7 +387,7 @@ is ``'bout_offset'``.
         "max_negatives_per_bout": 3
     }
 
-* **filter_history** — the history window (s) of this target, deliberately its own key: ``model_params.filter_history`` also sets the silent-tile width, the clean-history criterion of ``'bout'`` mode and the ``'state'`` grid, none of which this target uses, and the offset question lives on a shorter timescale (the kinematic changes that precede a bout end sit in the last ~0.5 s).
+* **filter_history** — the history window (s) of this target, deliberately its own key: ``model_params.filter_history`` also sets the silent-tile width, the clean-history criterion of ``'bout_onset'`` mode and the ``'state'`` grid, none of which this target uses, and the offset question lives on a shorter timescale (the kinematic changes that precede a bout end sit in the last ~0.5 s).
 * **negative_scheme** — ``'cross_bout'`` or ``'within_bout'``; see below.
 * **min_singing_after_negative_seconds** — a negative's bout must keep singing for at least this long after the negative's call, so the negative sits outside the ending itself (the measured ending process spans ~0.3 s).
 * **time_since_bout_onset_tolerance_seconds** — ``'cross_bout'`` only: how far apart the time since bout onset of a positive and its negative may be.
@@ -555,19 +555,27 @@ pipeline:
 
    **Modeling onsets for a single USV category.** By default
    ``VocalOnsetModelingPipeline`` derives positive onset events from the target
-   mouse's calls of one **call type** (``onset_target_call_type``): by default
+   mouse's vocal segments of one **target type** (``onset_target_type``): by default
    its ultrasonic calls, so squeaks are neither USV onsets nor bout members (a
    squeak between two USVs no longer joins or splits a bout). To model **squeak
    onsets** — e.g. the female's, which are plentiful in courtship when her USVs
    are not — set ``model_target_vocal_type = 'individual'`` and
-   ``onset_target_call_type = 'squeak'``; this replaces the VAE-era route of
+   ``onset_target_type = 'squeak'``; this replaces the VAE-era route of
    targeting squeak category 6. Squeaks are available in ``'individual'`` mode
    only, since bout grouping needs an inter-bout threshold and the per-sex
    thresholds are derived from ultrasonic-call intervals; asking for them in a
    bout mode raises. A summary without a ``squeak`` column raises unless the
-   call type is ``'all'``.
+   target type is ``'all'``.
 
-   Within that call type, when overall vocal output is too sparse for
+   A USV and a squeak can fall in the same segment: DAS was trained to detect
+   both, so a segment the squeak classifier flags may also hold a USV, and
+   nothing in the summary tells which ones do. Under ``'usv'`` such a segment is
+   dropped whole, so USVs that overlap a squeak are **not** positive onsets —
+   the price of keeping squeak onsets out of the USV target. ``'all'`` keeps
+   them, together with the pure squeak onsets; comparing the two runs shows
+   whether the overlap matters for a given question.
+
+   Within that target type, when overall vocal output is too sparse for
    bout-onset modeling but one category is plentiful, you can restrict the
    positive onsets to a single category by setting two knobs in
    ``model_params``:
@@ -581,12 +589,12 @@ pipeline:
      ``qlvm_category`` can be targeted. Leave it ``null`` (default) to pool all
      categories exactly as before.
 
-   Only the *positive* onsets are filtered, by call type and by category alike:
+   Only the *positive* onsets are filtered, by target type and by category alike:
    the behavioral / vocal predictors and the silent-epoch (No-USV) negative
    reference are still computed over **all** of the mouse's calls, squeaks
    included, so these choices change only *which* onsets count as events —
    never the predictors or the negatives. The filter
-   is honoured in ``'individual'`` mode only; in ``'bout'`` mode it is
+   is honoured in ``'individual'`` mode only; in ``'bout_onset'`` mode it is
    ignored, because the mixture-model inter-syllable-interval threshold used
    for bout grouping is calibrated on the all-USV interval distribution and
    would mis-group a category-sparsified sequence (a warning is printed if the

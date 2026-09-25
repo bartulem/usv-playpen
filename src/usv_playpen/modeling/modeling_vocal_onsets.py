@@ -5,7 +5,7 @@ Module for modeling vocal event boundaries from behavioural history.
 This module provides the core pipeline for classifying a binary vocal event
 from the 3D-extracted kinematic history that precedes it. Which event is the
 target is set by ``model_params.model_target_vocal_type``: the onset of a USV
-bout (``'bout'``), the onset of a single USV (``'individual'``), whether the
+bout (``'bout_onset'``), the onset of a single USV (``'individual'``), whether the
 animal is vocalizing at a grid time (``'state'``), or the END of a bout against
 an interior call of a bout that continued (``'bout_offset'``, configured by the
 ``bout_offset`` settings block). The module name predates the offset target and
@@ -252,7 +252,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             min_usv_per_bout=self.modeling_settings['model_params']['usv_per_bout_floor'],
             category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
             target_category=self.modeling_settings['model_params']['onset_target_category'],
-            target_call_type=self.modeling_settings['model_params']['onset_target_call_type'],
+            target_type=self.modeling_settings['model_params']['onset_target_type'],
             **bout_offset_kwargs,
         )
 
@@ -369,7 +369,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # vae_supercategory 6). The category COLUMN is the existing
         # `usv_category_column_name`; only the integer index lives in
         # `onset_target_category`. Category filtering is honoured in
-        # 'individual' mode only (see `find_onset_epochs`): in 'bout'/'state'
+        # 'individual' mode only (see `find_onset_epochs`): in 'bout_onset'/'state'
         # mode the setting is ignored and the run pools all USVs as before, so
         # warn the user that their category choice has no effect there.
         onset_cat = self.modeling_settings['model_params']['onset_target_category']
@@ -395,15 +395,15 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # `category_<col>_<idx>` convention), so VAE-vs-QLVM and
         # category-vs-supercategory are unambiguous in every downstream
         # artifact name and provenance block.
-        # The onset call type ('usv' default, 'squeak', 'all') joins the tag whenever it
+        # The onset target type ('usv' default, 'squeak', 'all') joins the tag whenever it
         # is not the default, so a squeak-onset run and a USV-onset run of the same
         # cohort never share an artifact name.
-        onset_call_type = self.modeling_settings['model_params']['onset_target_call_type']
-        call_type_seg = "" if onset_call_type == 'usv' else f"_{onset_call_type}"
+        onset_target_type = self.modeling_settings['model_params']['onset_target_type']
+        target_type_seg = "" if onset_target_type == 'usv' else f"_{onset_target_type}"
         if onset_category_active:
-            analysis_tag = f"{target_vocal_type}{call_type_seg}_cat_{cat_col}_{onset_cat}"
+            analysis_tag = f"{target_vocal_type}{target_type_seg}_cat_{cat_col}_{onset_cat}"
         else:
-            analysis_tag = f"{target_vocal_type}{call_type_seg}"
+            analysis_tag = f"{target_vocal_type}{target_type_seg}"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         file_name_ = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
@@ -481,7 +481,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             ibi_thresholds=ibi_thresholds_md,
             analysis_specific={
                 'model_target_vocal_type': target_vocal_type,
-                'onset_target_call_type': onset_call_type,
+                'onset_target_type': onset_target_type,
                 'usv_bout_time': self.modeling_settings['model_params']['usv_bout_time'],
                 'usv_per_bout_floor': self.modeling_settings['model_params']['usv_per_bout_floor'],
                 **({'onset_target_category': int(onset_cat),

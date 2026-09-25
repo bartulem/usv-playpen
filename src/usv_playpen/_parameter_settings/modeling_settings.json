@@ -13,7 +13,7 @@
     "model_basis_function": "raised_cosine",
     "model_engine": "pygam",
     "model_predictor_mouse_index": 1,
-    "model_target_vocal_type": "bout",
+    "model_target_vocal_type": "bout_onset",
     "model_target_variable": "bout_durations",
     "selection_p_val": 0.01,
     "selection_effect_floor": 0.1,
@@ -22,7 +22,7 @@
     "usv_bout_time": 2,
     "usv_per_bout_floor": 2,
     "onset_target_category": null,
-    "onset_target_call_type": "usv"
+    "onset_target_type": "usv"
   },
 
   "model_validation": {

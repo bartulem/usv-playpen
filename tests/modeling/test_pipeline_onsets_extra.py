@@ -257,7 +257,7 @@ class TestInitBranches:
         offset_pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
         assert offset_pipeline.history_frames == int(np.floor(camera_rate * shared / 2.0))
         assert offset_pipeline.history_seconds == shared / 2.0
-        settings['model_params']['model_target_vocal_type'] = 'bout'
+        settings['model_params']['model_target_vocal_type'] = 'bout_onset'
         onset_pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
         assert onset_pipeline.history_frames == int(np.floor(camera_rate * shared))
 
@@ -820,7 +820,7 @@ class TestExtractionGuards:
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     def test_extraction_squeak_onsets_tag_and_metadata(self, tmp_path):
         """
-        With ``onset_target_call_type='squeak'`` in 'individual' mode, the squeak
+        With ``onset_target_type='squeak'`` in 'individual' mode, the squeak
         onsets are the positives, the saved input pickle's filename and
         ``analysis_tag`` carry ``_squeak`` (so a squeak-onset run never shares an
         artifact name with a USV-onset run), and ``analysis_specific`` records the
@@ -853,7 +853,7 @@ class TestExtractionGuards:
         )
         settings['model_params']['usv_bout_time'] = FILTER_HISTORY
         settings['model_params']['model_target_vocal_type'] = 'individual'
-        settings['model_params']['onset_target_call_type'] = 'squeak'
+        settings['model_params']['onset_target_type'] = 'squeak'
 
         pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
         pipeline.extract_and_save_modeling_input_data()
@@ -865,4 +865,4 @@ class TestExtractionGuards:
             artifact = pickle.load(fh)
         md = artifact['_input_metadata']
         assert md['analysis_tag'] == 'individual_squeak'
-        assert md['analysis_specific']['onset_target_call_type'] == 'squeak'
+        assert md['analysis_specific']['onset_target_type'] == 'squeak'

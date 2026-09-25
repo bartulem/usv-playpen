@@ -299,7 +299,7 @@ class TestOnsetInputExtraction:
 
         md = artifact['_input_metadata']
         assert md['analysis_type'] == 'onset'
-        assert md['analysis_tag'] == 'bout'
+        assert md['analysis_tag'] == 'bout_onset'
         assert sorted(md['feature_zoo_kept']) == feature_keys
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")

@@ -436,7 +436,7 @@ def find_onset_epochs(root_directories: list = None,
                      csv_sep: str = ',',
                      proportion_smoothing_sd: int | float = None,
                      filter_history: int | float = None,
-                     prediction_mode: str = 'bout',
+                     prediction_mode: str = 'bout_onset',
                      usv_bout_time: int | float = None,
                      min_usv_per_bout: int = None,
                      mixture_model_component_index: int = 0,
@@ -446,7 +446,7 @@ def find_onset_epochs(root_directories: list = None,
                      exclude_noise_usvs: bool = True,
                      category_column: str = 'usv_category',
                      target_category: int = None,
-                     target_call_type: str = 'usv',
+                     target_type: str = 'usv',
                      negative_scheme: str = None,
                      min_singing_after_negative: int | float = None,
                      time_since_bout_onset_tolerance: int | float = None,
@@ -473,15 +473,15 @@ def find_onset_epochs(root_directories: list = None,
         Amount of time (in s) preceding each event.
     prediction_mode : str, optional
         Controls sampling logic:
-        - 'bout': Clean USV bout onsets (clean history + future bout)
+        - 'bout_onset': Clean USV bout onsets (clean history + future bout)
                   vs.
                   Clean silent epochs (clean history + future silence).
         - 'individual': All valid USV onsets vs. Clean silent epochs.
         - 'state': Vocalizing state vs. Non-vocalizing state.
     usv_bout_time : int / float
-        Duration of the "post-onset" window (in s). Used in 'bout' mode logic for NEGATIVE events.
+        Duration of the "post-onset" window (in s). Used in 'bout_onset' mode logic for NEGATIVE events.
     min_usv_per_bout : int
-        Min USVs for a positive 'bout' event. Used in 'bout' mode.
+        Min USVs for a positive 'bout_onset' event. Used in 'bout_onset' mode.
     mixture_model_component_index : int
         mixture-model component index for IBI threshold calculation (default 0).
     mixture_model_z_score : float
@@ -512,17 +512,17 @@ def find_onset_epochs(root_directories: list = None,
         vocal traces ('usv_rate'/'usv_count'/'usv_cat_X') and the silent-epoch
         (negative) reference are still computed over ALL of the mouse's USVs, so
         the category choice changes only which onsets count as positive events.
-        Ignored in 'bout' and 'state' modes, because the mixture-model inter-syllable-
+        Ignored in 'bout_onset' and 'state' modes, because the mixture-model inter-syllable-
         interval threshold used for bout grouping is calibrated on the all-USV
         interval distribution and would mis-group a category-sparsified
         sequence; in those modes all categories are pooled as before. If None
         (default), all USV categories are pooled (original behavior).
-    target_call_type : str, optional
+    target_type : str, optional
         Which calls are the POSITIVE onset source, read from the summary's boolean
         ``squeak`` column (written by the squeak classifier): ``'usv'`` (default)
         keeps the ultrasonic calls only, ``'squeak'`` the squeaks only, ``'all'``
         both. Applied before `target_category`, in every mode whose positives are
-        call times ('bout', 'individual', 'bout_offset'), so in 'usv' mode bouts are
+        call times ('bout_onset', 'individual', 'bout_offset'), so in 'usv' mode bouts are
         grouped from ultrasonic calls alone -- a squeak between two calls no longer
         joins or splits a bout -- and squeak onsets are no longer counted as USV
         onsets. As with `target_category`, the predictor vocal traces and the
@@ -576,11 +576,11 @@ def find_onset_epochs(root_directories: list = None,
             'usv_rate': Gaussian-smoothed density trace over the full per-mouse USV set.
     """
 
-    if target_call_type not in ('usv', 'squeak', 'all'):
-        raise ValueError(f"Unknown target_call_type: {target_call_type!r}. Must be 'usv', 'squeak' or 'all'.")
-    if target_call_type == 'squeak' and prediction_mode != 'individual':
+    if target_type not in ('usv', 'squeak', 'all'):
+        raise ValueError(f"Unknown target_type: {target_type!r}. Must be 'usv', 'squeak' or 'all'.")
+    if target_type == 'squeak' and prediction_mode != 'individual':
         raise ValueError(
-            f"target_call_type 'squeak' is supported in 'individual' mode only, not {prediction_mode!r}: "
+            f"target_type 'squeak' is supported in 'individual' mode only, not {prediction_mode!r}: "
             "bout grouping needs an inter-bout threshold, and the per-sex thresholds come from "
             "ultrasonic-call intervals."
         )
@@ -605,9 +605,9 @@ def find_onset_epochs(root_directories: list = None,
         has_category = category_column in usv_summary_data.columns
         if exclude_noise_usvs:
             usv_summary_data = drop_noise_usvs(usv_summary_data, Path(csv_path).name)[0]
-        if target_call_type != 'all' and 'squeak' not in usv_summary_data.columns:
+        if target_type != 'all' and 'squeak' not in usv_summary_data.columns:
             raise ValueError(
-                f"{Path(csv_path).name} has no 'squeak' column, so target_call_type {target_call_type!r} "
+                f"{Path(csv_path).name} has no 'squeak' column, so target_type {target_type!r} "
                 "cannot be applied; run the squeak classifier on the session, or use 'all'."
             )
 
@@ -658,10 +658,10 @@ def find_onset_epochs(root_directories: list = None,
             # drives the predictor vocal traces below, and the all-USV frame
             # still drives the silent-epoch (negative) reference, so neither the
             # predictors nor the negatives are affected by the category choice.
-            # The call type is applied first: ultrasonic calls, squeaks, or both.
-            if target_call_type == 'usv':
+            # The target type is applied first: ultrasonic calls, squeaks, or both.
+            if target_type == 'usv':
                 typed_source_df = mouse_usvs_df.filter(~pls.col('squeak'))
-            elif target_call_type == 'squeak':
+            elif target_type == 'squeak':
                 typed_source_df = mouse_usvs_df.filter(pls.col('squeak'))
             else:
                 typed_source_df = mouse_usvs_df
@@ -671,7 +671,7 @@ def find_onset_epochs(root_directories: list = None,
                 else:
                     print(f"Warning: category column '{category_column}' absent for {session_id}; "
                           f"cannot restrict onsets to category {target_category}. Using all "
-                          f"{target_call_type} calls.")
+                          f"{target_type} calls.")
                     positive_source_df = typed_source_df
             else:
                 positive_source_df = typed_source_df
@@ -741,8 +741,8 @@ def find_onset_epochs(root_directories: list = None,
 
             session_duration_sec = session_duration_frames / session_fps
 
-            ### Mode 1: 'bout' (both USV and no-USV pre-bout periods must be clean)
-            if prediction_mode == 'bout':
+            ### Mode 1: 'bout_onset' (both USV and no-USV pre-bout periods must be clean)
+            if prediction_mode == 'bout_onset':
 
                 # Get USV events (positive class)
                 starts = usv_data_dict[session_id][mouse_name]['start']
@@ -847,7 +847,7 @@ def find_onset_epochs(root_directories: list = None,
                     max_negatives_per_bout=max_negatives_per_bout)
 
             else:
-                raise ValueError(f"Unknown prediction_mode: {prediction_mode}. Must be 'bout', 'individual', 'state' or 'bout_offset'.")
+                raise ValueError(f"Unknown prediction_mode: {prediction_mode}. Must be 'bout_onset', 'individual', 'state' or 'bout_offset'.")
 
             usv_data_dict[session_id][mouse_name]['positive_events'] = np.sort(usv_events_positive)
             usv_data_dict[session_id][mouse_name]['negative_events'] = np.sort(usv_events_negative)

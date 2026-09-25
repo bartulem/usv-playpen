@@ -229,7 +229,7 @@ def _build_default_output_filename(input_metadata: dict,
         `'intact_partners_male'` → `'intact_partners'`).
       * `analysis_tag` — `input_metadata['analysis_tag']` embedded
         verbatim. The modeling pipelines now mint canonical short
-        tags directly (`'bout'`, `'durations'`,
+        tags directly (`'bout_onset'`, `'durations'`,
         `'multinomial_vae_supercategory'`,
         `'manifold_qlvm_category'`,
         `'category_vae_supercategory_3'`), so no token slicing is

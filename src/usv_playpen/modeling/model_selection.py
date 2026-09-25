@@ -887,12 +887,12 @@ def vocal_onset_model_selection(univariate_results_path: str,
         cat_seg = f"_cat_{cat_col}_{onset_cat}"
     else:
         cat_seg = ""
-    # The onset call type joins the prefix when it is not the default 'usv', as in the
+    # The onset target type joins the prefix when it is not the default 'usv', as in the
     # Level-1 analysis_tag, so squeak-onset and USV-onset step files never collide.
-    onset_call_type = settings['model_params']['onset_target_call_type']
-    call_type_seg = "" if onset_call_type == 'usv' else f"_{onset_call_type}"
+    onset_target_type = settings['model_params']['onset_target_type']
+    target_type_seg = "" if onset_target_type == 'usv' else f"_{onset_target_type}"
 
-    prefix = f"model_selection_{target_condition}_{prediction_mode}{call_type_seg}{cat_seg}_{split_strategy}_step_"
+    prefix = f"model_selection_{target_condition}_{prediction_mode}{target_type_seg}{cat_seg}_{split_strategy}_step_"
 
     existing_steps = []
     if model_selection_dir.is_dir():

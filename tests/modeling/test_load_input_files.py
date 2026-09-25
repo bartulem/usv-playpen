@@ -302,7 +302,7 @@ class TestFindBoutEpochs:
         }
 
     def test_bout_mode_positive_and_negative_events(self, tmp_path):
-        """In 'bout' mode a clean cluster of >= ``min_usv_per_bout`` syllables
+        """In 'bout_onset' mode a clean cluster of >= ``min_usv_per_bout`` syllables
         becomes one positive onset, and the silent tail tiles into negative
         (no-USV) onsets."""
 
@@ -314,7 +314,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_onset_epochs(prediction_mode='bout', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
@@ -341,7 +341,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_onset_epochs(prediction_mode='bout', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=3,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
@@ -402,7 +402,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_onset_epochs(prediction_mode='bout', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=2.0, mixture_model_params=_mixture_model_params(),
                                vocal_output_type='all_rate',
@@ -425,7 +425,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_onset_epochs(prediction_mode='bout', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                vocal_output_type='pooled_binary',
@@ -516,7 +516,7 @@ class TestFindBoutEpochs:
                                **kwargs)
         np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0, 3.0, 4.0])
 
-    def test_target_call_type_selects_the_positive_onsets(self, tmp_path):
+    def test_target_type_selects_the_positive_onsets(self, tmp_path):
         """The ``squeak`` column decides which onsets are positive: 'usv' (the
         default) keeps the ultrasonic calls only, 'squeak' the squeaks only, 'all'
         both; the silent-epoch negatives are the same in all three because they are
@@ -534,7 +534,7 @@ class TestFindBoutEpochs:
         common = dict(prediction_mode='individual', filter_history=1.0,
                       usv_bout_time=0.5, min_usv_per_bout=2,
                       proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
-        out = {kind: find_onset_epochs(target_call_type=kind, **common, **kwargs)['sess_B']['male']
+        out = {kind: find_onset_epochs(target_type=kind, **common, **kwargs)['sess_B']['male']
                for kind in ('usv', 'squeak', 'all')}
         np.testing.assert_allclose(out['usv']['positive_events'], [2.0, 4.0])
         np.testing.assert_allclose(out['squeak']['positive_events'], [3.0])
@@ -545,7 +545,7 @@ class TestFindBoutEpochs:
         default = find_onset_epochs(**common, **kwargs)['sess_B']['male']
         np.testing.assert_allclose(default['positive_events'], [2.0, 4.0])
 
-    def test_target_call_type_refuses_what_it_cannot_do(self, tmp_path):
+    def test_target_type_refuses_what_it_cannot_do(self, tmp_path):
         """Squeak onsets outside 'individual' mode, an unknown call type, and a
         summary without a ``squeak`` column (unless 'all') all raise rather than
         silently falling back to every call."""
@@ -562,9 +562,9 @@ class TestFindBoutEpochs:
         common = dict(filter_history=1.0, usv_bout_time=0.5, min_usv_per_bout=2,
                       proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
         with pytest.raises(ValueError, match="'individual' mode only"):
-            find_onset_epochs(prediction_mode='bout', target_call_type='squeak', **common, **kwargs)
-        with pytest.raises(ValueError, match="Unknown target_call_type"):
-            find_onset_epochs(prediction_mode='individual', target_call_type='chirp', **common, **kwargs)
+            find_onset_epochs(prediction_mode='bout_onset', target_type='squeak', **common, **kwargs)
+        with pytest.raises(ValueError, match="Unknown target_type"):
+            find_onset_epochs(prediction_mode='individual', target_type='chirp', **common, **kwargs)
 
         bare = tmp_path / 'bare'
         bare_kwargs = self._build(bare, {'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
@@ -572,8 +572,8 @@ class TestFindBoutEpochs:
         csv_path = next((bare / 'sess_B' / 'audio').glob('*_usv_summary.csv'))
         pls.read_csv(csv_path).drop('squeak').write_csv(csv_path)
         with pytest.raises(ValueError, match="no 'squeak' column"):
-            find_onset_epochs(prediction_mode='individual', target_call_type='usv', **common, **bare_kwargs)
-        out = find_onset_epochs(prediction_mode='individual', target_call_type='all', **common, **bare_kwargs)
+            find_onset_epochs(prediction_mode='individual', target_type='usv', **common, **bare_kwargs)
+        out = find_onset_epochs(prediction_mode='individual', target_type='all', **common, **bare_kwargs)
         np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0])
 
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
@@ -608,7 +608,7 @@ class TestFindBoutEpochs:
         assert male['usv_count'].sum() > 0
 
     def test_target_category_ignored_in_bout_mode(self, tmp_path):
-        """``target_category`` is honoured only in 'individual' mode; in 'bout'
+        """``target_category`` is honoured only in 'individual' mode; in 'bout_onset'
         mode it is ignored (all categories pooled), so the positive events match
         the unfiltered bout result."""
 
@@ -620,7 +620,7 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        common = dict(prediction_mode='bout', filter_history=1.0, usv_bout_time=0.5,
+        common = dict(prediction_mode='bout_onset', filter_history=1.0, usv_bout_time=0.5,
                       min_usv_per_bout=2, proportion_smoothing_sd=None,
                       mixture_model_params=_mixture_model_params())
         out_all = find_onset_epochs(target_category=None, **common, **kwargs)
@@ -660,7 +660,7 @@ class TestFindBoutEpochs:
                                mouse_ids_dict={'sess_empty': ['male', 'female']},
                                camera_fps_dict={'sess_empty': 100.0},
                                features_dict={'sess_empty': _features_df(100)},
-                               prediction_mode='bout', filter_history=1.0,
+                               prediction_mode='bout_onset', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
         assert out['sess_empty'] == {}
@@ -679,7 +679,7 @@ class TestFindBoutEpochs:
                                mouse_ids_dict={},
                                camera_fps_dict={'sess_C': 100.0},
                                features_dict={'sess_C': _features_df(100)},
-                               prediction_mode='bout', filter_history=1.0,
+                               prediction_mode='bout_onset', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
         assert out['sess_C'] == {}
@@ -706,7 +706,7 @@ class TestFindBoutEpochs:
             'usv_category': [1], 'usv_supercategory': [1],
         })
         with pytest.raises(ValueError, match='Invalid mixture_model_component_index'):
-            find_onset_epochs(prediction_mode='bout', filter_history=1.0,
+            find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
                              usv_bout_time=0.5, min_usv_per_bout=2,
                              mixture_model_component_index=5,
                              proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
@@ -729,7 +729,7 @@ class TestFindBoutEpochs:
         # only 0.45 s away (< filter_history = 1.0) -> rejected.
         mixture_model = {'male': {'means': [np.log(0.3)], 'sds': [0.0]},
                'female': {'means': [np.log(0.3)], 'sds': [0.0]}}
-        out = find_onset_epochs(prediction_mode='bout', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=mixture_model,
                                **kwargs)
@@ -766,7 +766,7 @@ class TestFindBoutEpochs:
             'usv_category': [1], 'usv_supercategory': [1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_onset_epochs(prediction_mode='bout', filter_history=1.0,
+        out = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=1,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                                **kwargs)
