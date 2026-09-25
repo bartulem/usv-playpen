@@ -670,7 +670,7 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --spectrograms-root   Output directory the consolidated store is written to.
 
 ``build-qlvm-training-set``
-``build-qlvm-training-set`` aggregates a list of session root directories into a single curated ``.npz`` training set (``train_data.npz`` + ``val_data.npz``, or ``full_data.npz``) for the QLVM. With ``--masking-type sam`` (default), each kept spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group (background zeroed; a call with no detected mask keeps an all-ones mask); ``--masking-type none`` keeps raw spectrograms.
+``build-qlvm-training-set`` aggregates a list of session root directories into a single curated ``.npz`` training set (``train_data.npz`` + ``val_data.npz``, or ``full_data.npz``) for the QLVM. With ``--masking-type sam`` (default), each kept spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group (background zeroed; a call with no detected mask keeps an all-ones mask); ``--masking-type none`` keeps raw spectrograms. Every session's spectrogram H5 is fingerprinted as it is read: its SHA-256, row count and the number of its rows that entered the set go into ``metadata.npz`` and into two sidecars, ``SESSION_H5.sha256`` (checkable with ``sha256sum -c``) and ``SESSION_H5.tsv``. ``spec_id`` is a row number in that H5, so a consumer should compare the hash before joining on it: a rebuilt H5 renumbers its rows.
 
 .. code-block:: text
 

@@ -9,6 +9,8 @@ from two synthetic per-session spectrogram H5 files into train/val (and full)
 
 from __future__ import annotations
 
+import hashlib
+
 import h5py
 import numpy as np
 import pytest
@@ -16,6 +18,7 @@ import pytest
 from usv_playpen.processing.build_qlvm_training_set import (
     QLVMTrainingSetBuilder,
     compute_selected_indices,
+    file_sha256,
     stretch_specs,
 )
 
@@ -212,3 +215,46 @@ def test_build_sam_masking_without_mask_group_falls_back(tmp_path, mocker):
     assert (full["masks_len"] == 0).all()          # no detected instances
     assert full["spectrograms"].any()              # signal preserved (all-ones mask)
     assert set(np.unique(full["masks"]).tolist()).issubset({0.0, 1.0})
+
+
+def test_build_fingerprints_every_session_h5(tmp_path, mocker):
+    """
+    The builder records each session H5's SHA-256 (identical to hashing its bytes),
+    its row count and how many rows entered the set: in metadata.npz, in a
+    sha256sum-format SESSION_H5.sha256, and in SESSION_H5.tsv laid out like the v2
+    package's baseline. Session B has 2 of its 6 calls above the length threshold,
+    so only 4 of its rows enter the set.
+    """
+    root_a = _write_session_h5(tmp_path, "20230119_155302", n=6)
+    root_b = _write_session_h5(tmp_path, "20230119_162529", n=6)
+    h5_b = root_b / "audio" / "spectrograms" / "20230119_162529_spectrograms.h5"
+    with h5py.File(h5_b, "r+") as h5_file:
+        durations = h5_file["spectrogram/20230119_162529/durations"]
+        durations[:2] = 60
+    out_dir = tmp_path / "out"
+    mocker.patch("usv_playpen.processing.build_qlvm_training_set.smart_wait")
+    QLVMTrainingSetBuilder(
+        root_directories=[str(root_a), str(root_b)],
+        output_directory=str(out_dir),
+        input_parameter_dict={"build_qlvm_training_set": {**_CFG, "full_dataset": True}},
+        message_output=lambda *_a, **_kw: None,
+    ).build()
+
+    h5_a = root_a / "audio" / "spectrograms" / "20230119_155302_spectrograms.h5"
+    expected = {str(h5_a): hashlib.sha256(h5_a.read_bytes()).hexdigest(),
+                str(h5_b): hashlib.sha256(h5_b.read_bytes()).hexdigest()}
+    assert file_sha256(h5_a, chunk_bytes=7) == expected[str(h5_a)]
+
+    meta = np.load(out_dir / "metadata.npz", allow_pickle=True)
+    paths = meta["spectrogram_h5_paths"].tolist()
+    assert meta["spectrogram_h5_sha256"].tolist() == [expected[p] for p in paths]
+    assert meta["session_ids"].tolist() == ["20230119_155302", "20230119_162529"]
+    assert meta["spectrogram_h5_rows"].tolist() == [6, 6]
+    assert meta["spectrogram_h5_corpus_rows"].tolist() == [6, 4]
+
+    lines = (out_dir / "SESSION_H5.sha256").read_text().splitlines()
+    assert lines == [f"{expected[p]}  {p}" for p in paths]
+    tsv = (out_dir / "SESSION_H5.tsv").read_text().splitlines()
+    assert tsv[0].split("\t") == ["session", "h5_rows", "corpus_rows", "bytes", "sha256", "path"]
+    assert tsv[2].split("\t")[:3] == ["20230119_162529", "6", "4"]
+    assert tsv[2].split("\t")[3] == str(h5_b.stat().st_size)

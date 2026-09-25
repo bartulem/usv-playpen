@@ -32,10 +32,23 @@ Each output ``.npz`` is row-aligned on dim 0 = N samples and holds:
 ``spectrograms`` (N, F, T) float32 (mask-applied under ``"sam"``), ``masks``
 (N, F, T) float32 (binarized region; all-zero under ``"none"``), ``masks_len``
 (N,) int64, ``durations`` (N,) int64, and ``spec_id`` (N,) str.
+
+Session fingerprints. ``spec_id`` is ``{session}_{row}``, a row number in the
+session's spectrogram H5, so it points at the right call only while that file is
+unchanged; a rebuilt H5 renumbers its rows and every consumer joining on
+``spec_id`` silently attaches the wrong calls (session 20251004_201051 of the v2
+package went stale exactly this way). The builder therefore records, for every
+session H5 it reads, the SHA-256 of the file's bytes, its row count and how many of
+its rows entered the set -- in ``metadata.npz`` and in two sidecars laid out like the
+v2 package's baseline: ``SESSION_H5.sha256`` (``sha256sum -c`` format) and
+``SESSION_H5.tsv`` (session, h5_rows, corpus_rows, bytes, sha256, path). A consumer
+compares the hash before joining; the summary CSV is not hashed, because it is
+legitimately rewritten (columns added) while its rows stay aligned.
 """
 
 from __future__ import annotations
 
+import hashlib
 import pathlib
 from collections.abc import Callable
 from datetime import datetime
@@ -51,6 +64,33 @@ from sklearn.model_selection import train_test_split
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
+
+
+def file_sha256(path: str | pathlib.Path, chunk_bytes: int = 8 * 1024 * 1024) -> str:
+    """
+    Description
+    -----------
+    SHA-256 of a file's bytes, read in chunks so a multi-GB spectrogram H5 never
+    has to fit in memory. Identical to ``sha256sum`` on the same file.
+
+    Parameters
+    ----------
+    path (str | pathlib.Path)
+        The file to hash.
+    chunk_bytes (int)
+        Read size; defaults to 8 MiB.
+
+    Returns
+    -------
+    digest (str)
+        The 64-character lowercase hexadecimal digest.
+    """
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_bytes), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def compute_selected_indices(
@@ -405,9 +445,13 @@ class QLVMTrainingSetBuilder:
 
         # Phase 1: cheap per-session durations, keyed by the session id that
         # names the ``spectrogram/<session>`` group inside each file.
+        # Each file is fingerprinted here, before any row is taken from it (see the
+        # module docstring, "Session fingerprints").
         durations_by_key: dict[str, np.ndarray] = {}
         session_by_path: dict[str, str] = {}
+        sha256_by_path: dict[str, str] = {}
         for h5_path in spectrogram_h5_paths:
+            sha256_by_path[h5_path] = file_sha256(h5_path)
             with h5py.File(h5_path, "r") as h5_file:
                 session_id = next(iter(h5_file["spectrogram"].keys()))
                 session_by_path[h5_path] = session_id
@@ -510,10 +554,27 @@ class QLVMTrainingSetBuilder:
             written[filename] = int(resized.shape[0])
             self.message_output(f"  Wrote {written[filename]} samples -> {output_dir / filename}.")
 
+        session_ids = [session_by_path[h5_path] for h5_path in spectrogram_h5_paths]
+        h5_rows = [int(durations_by_key[session_id].size) for session_id in session_ids]
+        corpus_rows = [int(selected[session_id].size) for session_id in session_ids]
+        h5_bytes = [pathlib.Path(h5_path).stat().st_size for h5_path in spectrogram_h5_paths]
+        with (output_dir / "SESSION_H5.sha256").open("w") as sha_file:
+            for h5_path in spectrogram_h5_paths:
+                sha_file.write(f"{sha256_by_path[h5_path]}  {h5_path}\n")
+        with (output_dir / "SESSION_H5.tsv").open("w") as tsv_file:
+            tsv_file.write("session\th5_rows\tcorpus_rows\tbytes\tsha256\tpath\n")
+            for h5_path, session_id, n_rows, n_corpus, n_bytes in zip(
+                    spectrogram_h5_paths, session_ids, h5_rows, corpus_rows, h5_bytes, strict=True):
+                tsv_file.write(f"{session_id}\t{n_rows}\t{n_corpus}\t{n_bytes}\t{sha256_by_path[h5_path]}\t{h5_path}\n")
+
         np.savez(
             output_dir / "metadata.npz",
             root_directories=np.array(self.root_directories),
             spectrogram_h5_paths=np.array(spectrogram_h5_paths),
+            session_ids=np.array(session_ids),
+            spectrogram_h5_sha256=np.array([sha256_by_path[h5_path] for h5_path in spectrogram_h5_paths]),
+            spectrogram_h5_rows=np.array(h5_rows, dtype=np.int64),
+            spectrogram_h5_corpus_rows=np.array(corpus_rows, dtype=np.int64),
             length_threshold=length_threshold,
             dataset_size_constraint=np.nan if dataset_size_constraint is None else dataset_size_constraint,
             validation_split=validation_split,
