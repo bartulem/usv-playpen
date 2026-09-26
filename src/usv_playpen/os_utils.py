@@ -386,7 +386,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     * ``infer_qlvm_latents.reference_arrays_fine_npz_path``   -> ``<root>/qlvm/arrays_fine.npz``
     * ``infer_qlvm_latents.reference_arrays_coarse_npz_path`` -> ``<root>/qlvm/arrays_coarse.npz``
     * ``detect_usv_squeaks.squeak_model_path`` -> ``<root>/squeak/mil_absdb_final.pt``
-    * ``detect_usv_noise.noise_model_path`` -> ``<root>/noise/noise_timemil_ens5_n3562_20260916.pt``
+    * ``detect_usv_noise.noise_model_path`` -> ``<root>/noise/noise_timemil_ens5_n4680_20260926.pt``
 
     A granular key is filled only when it is empty, so an explicit path set in
     the JSON (or via a CLI flag) wins -- the root supplies defaults, it never
@@ -428,7 +428,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         ('infer_qlvm_latents', 'reference_arrays_fine_npz_path', f'{qlvm_dir}/arrays_fine.npz'),
         ('infer_qlvm_latents', 'reference_arrays_coarse_npz_path', f'{qlvm_dir}/arrays_coarse.npz'),
         ('detect_usv_squeaks', 'squeak_model_path', f'{squeak_dir}/mil_absdb_final.pt'),
-        ('detect_usv_noise', 'noise_model_path', f'{noise_dir}/noise_timemil_ens5_n3562_20260916.pt'),
+        ('detect_usv_noise', 'noise_model_path', f'{noise_dir}/noise_timemil_ens5_n4680_20260926.pt'),
     )
     for block, key, derived_path in derived:
         if not settings[block][key]:

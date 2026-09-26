@@ -571,7 +571,7 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     assert settings["infer_qlvm_latents"]["reference_arrays_fine_npz_path"] == f"{root}/qlvm/arrays_fine.npz"
     assert settings["infer_qlvm_latents"]["reference_arrays_coarse_npz_path"] == f"{root}/qlvm/arrays_coarse.npz"
     assert settings["detect_usv_squeaks"]["squeak_model_path"] == f"{root}/squeak/mil_absdb_final.pt"
-    assert settings["detect_usv_noise"]["noise_model_path"] == f"{root}/noise/noise_timemil_ens5_n3562_20260916.pt"
+    assert settings["detect_usv_noise"]["noise_model_path"] == f"{root}/noise/noise_timemil_ens5_n4680_20260926.pt"
 
 
 def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
@@ -593,7 +593,7 @@ def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
     assert settings["generate_masks"]["sam2_model_path"] == "/custom/elsewhere/checkpoint.pt"
     assert settings["infer_qlvm_latents"]["weights_npz_path"] == "/custom/w.npz"
     assert settings["detect_usv_squeaks"]["squeak_model_path"] == "/custom/squeak.pt"
-    assert settings["detect_usv_noise"]["noise_model_path"] == "/mnt/falkner/Bartul/spectrograms/noise/noise_timemil_ens5_n3562_20260916.pt"
+    assert settings["detect_usv_noise"]["noise_model_path"] == "/mnt/falkner/Bartul/spectrograms/noise/noise_timemil_ens5_n4680_20260926.pt"
     # empty siblings are still derived from the root
     assert settings["generate_masks"]["sam2_model_dir"] == "/mnt/falkner/Bartul/spectrograms/sam"
     assert settings["infer_qlvm_latents"]["reference_arrays_fine_npz_path"] == "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz"

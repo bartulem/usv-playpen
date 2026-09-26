@@ -1227,14 +1227,16 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 Detect noise
 ~~~~~~~~~~~~
 
-The DAS segmenter keeps every interval a channel fired on, so a curated *usv_summary.csv* also holds segments with no vocalization in them: electrical clicks, cage knocks, broadband transients and faint smears. *Detect noise* scores every USV segment with an ensemble of five time-resolved multiple-instance classifiers (the bundle is derived from the *Spectrogram models directory* as ``noise/noise_timemil_ens5_n3562_20260916.pt``, whose name records the architecture, the ensemble size, the 3,562 training labels and the build date) and adds two columns to *usv_summary.csv*:
+The DAS segmenter keeps every interval a channel fired on, so a curated *usv_summary.csv* also holds segments with no vocalization in them: electrical clicks, cage knocks, broadband transients and faint smears. *Detect noise* scores every USV segment with an ensemble of five time-resolved multiple-instance classifiers (the bundle is derived from the *Spectrogram models directory* as ``noise/noise_timemil_ens5_n4680_20260926.pt``, whose name records the architecture, the ensemble size, the 4,680 training labels and the build date) and adds two columns to *usv_summary.csv*:
 
-* ``noise`` -- ``true`` / ``false`` in every row, ``noise_probability`` at or above the resolved threshold;
-* ``noise_probability`` -- the ensemble's probability in every row, so an analysis can re-threshold without re-running the step.
+* ``noise`` -- ``true`` / ``false`` in every row; ``true`` **excludes** the segment, because the model is not confident it holds a vocalization (``noise_probability`` at or above the bundle's exclusion cut-off, 0.14);
+* ``noise_probability`` -- the ensemble's probability in every row, so an analysis can tell confident noise (at or above 0.82) from the uncertain band, or re-threshold, without re-running the step.
 
-A segment is *noise* only when it holds no vocalization at all -- neither a USV nor a squeak -- which is the rule its training labels follow, so a faint call heard on one microphone is a vocalization, not noise.
+A segment is *noise* only when it holds no vocalization at all -- neither a USV nor a squeak -- which is the rule its training labels follow, so a faint call heard on one microphone, or a call mixed with noise, is a vocalization, not noise.
 
-The threshold is not set directly, because a bare probability says nothing about what it costs. The setting is **noise_min_precision**: the share of flagged segments that must really be noise. The bundle ships a calibration table (threshold, precision, recall, segments flagged and real calls lost per 10,000) measured on 25,400 random segments from 254 busy sessions that the models never trained on, labelled at random in three strata of the model's own score. The step takes the lowest threshold whose calibrated precision reaches the target -- the one that also catches the most noise -- and reports what it picked, for example ``noise_min_precision 0.98 -> p >= 0.45 (calibrated precision 0.987, recall 0.973; 4.0 real calls flagged per 10,000 segments)``. A target no threshold reaches stops the run and prints the table.
+The decision is fixed by the model bundle, not by a setting. The ensemble's probability splits the segments into confident vocalizations (below 0.14), an uncertain band (0.14-0.82) and confident noise (0.82 and above), and ``noise`` is ``true`` for the last two: uncertain segments are excluded with the noise rather than guessed. The cut-offs are the narrowest uncertain band whose confident decisions reach precision and recall of 0.95 on 1,118 segments drawn at random from all listed sessions and labelled by consensus (the majority of up to four blind passes), weighted to the cohort. Applied held out -- the cut-offs chosen on four session folds and scored on the fifth, each segment judged by an ensemble that never saw its session -- the confident decisions reach **precision 0.944 and recall 0.955**, with 0.9% of segments uncertain. The exclusion costs about 71 real calls per 10,000 segments (65 of them in the uncertain band, which holds mostly faint, short calls heard on one or two microphones). The step prints these numbers on every run.
+
+An earlier bundle (``noise_timemil_ens5_n3562_20260916.pt``) described its calibration as measured on sessions the models never trained on; it was not -- 422 of its 633 calibration segments were training labels -- and on new, cohort-representative labels it reached precision 0.78 and recall 0.95 at its threshold, not the 0.987 / 0.973 it reported. The detector refuses bundles without the validated decision block.
 
 Each segment's input is the two-band absolute-dB spectrogram (30-120 kHz and 3-30 kHz, 128 linear bins each) of the **unfiltered** per-channel *audio/hpss* wavs, averaged across channels by variance with metadata-excluded channels dropped. The audio window extends ~100 ms either side of the segment so the channel weights and STFT edges match the training inputs, and the spectrogram is then cropped back to the segment's own frames: the model judges the segment, not its neighbourhood.
 
@@ -1607,8 +1609,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 
 *Detect noise* (``detect_usv_noise``):
 
-* **noise_model_path** : path to the noise model bundle (``.pt``); left empty it is derived from *Spectrogram models directory* as ``noise/noise_timemil_ens5_n3562_20260916.pt``
-* **noise_min_precision** : the share of flagged segments that must really be noise; the step takes the lowest threshold in the bundle's calibration table reaching it (``0.98`` resolves to ``p >= 0.45``, recall ``0.973``, about 4 real calls flagged per 10,000 segments), and stops with the table printed when no threshold reaches the target
+* **noise_model_path** : path to the noise model bundle (``.pt``); left empty it is derived from *Spectrogram models directory* as ``noise/noise_timemil_ens5_n4680_20260926.pt``. The bundle also fixes the decision (exclusion cut-off 0.14; see *Detect noise* above), so there is no threshold setting
 * **exclude_metadata_audio_channels** : drop channels the session metadata marks as excluded from the spectrogram average
 * **batch_size** : segments per forward pass at the typical call length; a batch is budgeted at ``batch_size`` x 128 frame slots and padded to its longest call, so one long call never inflates a batch (raise it on a GPU with memory to spare, lower it when several sessions run in parallel)
 
@@ -1616,7 +1617,6 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 
     "detect_usv_noise": {
         "noise_model_path": "",
-        "noise_min_precision": 0.98,
         "exclude_metadata_audio_channels": true,
         "batch_size": 64
       }

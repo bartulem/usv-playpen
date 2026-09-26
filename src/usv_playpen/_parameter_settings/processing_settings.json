@@ -293,7 +293,6 @@
   },
   "detect_usv_noise": {
     "noise_model_path": "",
-    "noise_min_precision": 0.98,
     "exclude_metadata_audio_channels": true,
     "batch_size": 64
   },

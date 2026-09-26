@@ -2,10 +2,10 @@
 @author: bartulem
 Tests for processing/detect_usv_noise -- the step that flags USV segments holding no vocalization.
 
-The load-bearing checks are the ones a wrong answer would be silent about: the threshold the settings'
-``noise_min_precision`` resolves to, the input the models are handed (segment frames only, cut out of a
-context window), and the merge, which must replace stale noise columns and leave the summary in the
-canonical column order with the noise block before the squeak block.
+The load-bearing checks are the ones a wrong answer would be silent about: the exclusion threshold taken
+from the bundle's ``decision`` block (and the refusal of a bundle without one), the input the models are
+handed (segment frames only, cut out of a context window), and the merge, which must replace stale noise
+columns and leave the summary in the canonical column order with the noise block before the squeak block.
 """
 
 from __future__ import annotations
@@ -24,6 +24,11 @@ from usv_playpen.processing import detect_usv_noise as noise
 
 SESSION_ID = "20250913_193920"
 SAMPLING_RATE = noise.NOISE_SAMPLING_RATE
+DECISION = {
+    "exclude_at_or_above": 0.14, "noise_at_or_above": 0.82, "held_out_precision": 0.944,
+    "held_out_recall": 0.955, "held_out_uncertain_share": 0.0089, "uncertain_share": 0.0103,
+    "real_calls_excluded_per_10000": 71.0,
+}
 CALIBRATION = [
     {"threshold": 0.30, "precision": 0.949, "recall": 0.992, "flagged_per_10000": 342.0, "calls_lost_per_10000": 17.6},
     {"threshold": 0.45, "precision": 0.987, "recall": 0.973, "flagged_per_10000": 322.0, "calls_lost_per_10000": 4.0},
@@ -44,6 +49,7 @@ def _forced_bundle(logit: float, in_channels: int = 3) -> dict:
         "scalar_mean": np.zeros(2, dtype=np.float32), "scalar_std": np.ones(2, dtype=np.float32),
         "db_floor": -100.0, "db_ceil": 50.0, "db_center": -25.0, "db_half": 75.0,
         "max_frames": 512, "context_frames": 49, "bands_hz": noise.NOISE_BANDS_HZ, "calibration": CALIBRATION,
+        "decision": DECISION,
     }
 
 
@@ -93,19 +99,34 @@ def _build_session(tmp_path: pathlib.Path, excluded_channels: list[str] | None =
     return root
 
 
-def test_resolve_threshold_takes_the_lowest_threshold_reaching_the_target():
-    """The lowest reaching threshold is the one that also catches the most noise, so that is the pick."""
-    assert noise.resolve_threshold(CALIBRATION, 0.98)["threshold"] == 0.45
-    assert noise.resolve_threshold(CALIBRATION, 0.94)["threshold"] == 0.30
-    assert noise.resolve_threshold(CALIBRATION, 1.0)["threshold"] == 0.60
+def test_load_noise_model_refuses_a_bundle_without_a_decision(tmp_path):
+    """A bundle that predates the validated decision rule carries no exclusion cut-offs with held-out
+    precision and recall; guessing a threshold for it would bring back unreported error rates."""
+    model = noise.NoiseTimeMIL(in_channels=3, n_scalars=2)
+    path = tmp_path / "bundle.pt"
+    torch.save({
+        "state_dicts": [model.state_dict()], "in_channels": 3, "n_scalars": 2,
+        "scalar_mean": [0.0, 0.0], "scalar_std": [1.0, 1.0],
+        "db_floor": -100.0, "db_ceil": 50.0, "db_center": -25.0, "db_half": 75.0,
+        "max_frames": 512, "context_frames": 49, "bands_hz": [list(b) for b in noise.NOISE_BANDS_HZ],
+        "calibration": CALIBRATION,
+    }, path)
+    with pytest.raises(ValueError, match="decision"):
+        noise.load_noise_model(str(path), torch.device("cpu"))
 
 
-def test_resolve_threshold_refuses_an_unreachable_target_and_shows_the_table():
-    """Flagging more real calls than the user allowed is worse than stopping, so a target no threshold
-    reaches raises, with the table in the message so the user can see what is on offer."""
-    with pytest.raises(ValueError, match="calibration") as excinfo:
-        noise.resolve_threshold(CALIBRATION[:2], 0.999)
-    assert "0.45" in str(excinfo.value)
+def test_load_noise_model_returns_the_decision(tmp_path):
+    """The decision block travels with the loaded bundle, so the step thresholds at its cut-off."""
+    model = noise.NoiseTimeMIL(in_channels=3, n_scalars=2)
+    path = tmp_path / "bundle.pt"
+    torch.save({
+        "state_dicts": [model.state_dict()], "in_channels": 3, "n_scalars": 2,
+        "scalar_mean": [0.0, 0.0], "scalar_std": [1.0, 1.0],
+        "db_floor": -100.0, "db_ceil": 50.0, "db_center": -25.0, "db_half": 75.0,
+        "max_frames": 512, "context_frames": 49, "bands_hz": [list(b) for b in noise.NOISE_BANDS_HZ],
+        "calibration": CALIBRATION, "decision": DECISION,
+    }, path)
+    assert noise.load_noise_model(str(path), torch.device("cpu"))["decision"]["exclude_at_or_above"] == 0.14
 
 
 def test_segment_input_keeps_only_the_segment_frames():
@@ -205,7 +226,6 @@ def test_detect_and_merge_writes_the_noise_columns_before_the_squeak_block(tmp_p
         input_parameter_dict={
             "detect_usv_noise": {
                 "noise_model_path": "unused.pt",
-                "noise_min_precision": 0.98,
                 "exclude_metadata_audio_channels": True,
                 "batch_size": 256,
             }
@@ -219,7 +239,7 @@ def test_detect_and_merge_writes_the_noise_columns_before_the_squeak_block(tmp_p
     assert written["noise"].to_list() == [True, True, True]
     assert written["noise_probability"].null_count() == 0
     assert written["mean_freq_hz"].to_list() == [40000.0, 40000.0, 40000.0]
-    assert any("noise_min_precision 0.98 -> p >= 0.45" in message for message in messages)
+    assert any("noise = p >= 0.14" in message and "precision 0.944" in message for message in messages)
 
 
 def test_detect_usv_noise_cli_routes(mocker, tmp_path):

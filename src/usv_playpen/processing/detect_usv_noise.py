@@ -8,19 +8,25 @@ with no call in them: electrical clicks, cage knocks, broadband transients and f
 scores every segment with an ensemble of five time-resolved multiple-instance classifiers and writes two
 columns:
 
-* ``noise`` -- True / False in every row, ``noise_probability >= threshold``;
-* ``noise_probability`` -- the ensemble's probability in every row, so an analysis can re-threshold
-  without re-running this step.
+* ``noise`` -- True / False in every row: True EXCLUDES the segment, because the ensemble is not
+  confident it holds a vocalization (``noise_probability`` at or above the bundle's
+  ``decision['exclude_at_or_above']``);
+* ``noise_probability`` -- the ensemble's probability in every row, so an analysis can separate confident
+  noise (at or above ``decision['noise_at_or_above']``) from the uncertain band, or re-threshold, without
+  re-running this step.
 
 A segment is NOISE only when it contains no vocalization at all -- neither a USV nor a squeak -- which is
-also the rule its training labels follow, so a faint call on one channel is a vocalization, not noise.
+also the rule its training labels follow, so a faint call on one channel, or a call mixed with noise, is
+a vocalization, not noise.
 
-Choosing the threshold. Bare probabilities mean nothing to a reader, so the setting is
-``noise_min_precision``: the share of flagged segments that must really be noise. The model file ships a
-calibration table (threshold, precision, recall, segments flagged and real calls lost per 10,000)
-measured on a random sample of a busy-session population the models never trained on, and this step takes
-the lowest threshold whose calibrated precision reaches the target, reporting the recall that comes with
-it. A target the table cannot reach fails the run and prints the table.
+The decision is fixed by the model bundle, not by a setting. The ensemble's probabilities split the
+segments three ways -- confident vocalization, uncertain, confident noise -- and ``noise`` is True for
+the last two: uncertain segments are excluded with the noise rather than guessed. The two cut-offs were
+chosen as the narrowest uncertain band whose confident decisions reach precision and recall of 0.95 on
+consensus-labelled segments drawn at random from the whole cohort, and the same rule applied held out
+(by session) gave precision 0.944 and recall 0.955 with 0.9% of segments uncertain. The bundle's
+``decision`` block records the cut-offs, those held-out numbers and the cost of the exclusion (about 71
+real calls per 10,000 segments, most of them in the uncertain band); this step prints them on every run.
 
 Input contract (fixed by the trained models, therefore constants rather than settings): for every segment
 the two-band absolute-dB spectrogram (30-120 kHz and 3-30 kHz, 128 linear bins each) is rebuilt from the
@@ -280,6 +286,12 @@ def load_noise_model(noise_model_path: str, device: torch.device) -> dict:
     if [tuple(band) for band in checkpoint["bands_hz"]] != [tuple(band) for band in NOISE_BANDS_HZ]:
         error_message = f"{path} was trained on bands {checkpoint['bands_hz']}, but this module builds {list(NOISE_BANDS_HZ)}."
         raise ValueError(error_message)
+    if "decision" not in checkpoint:
+        error_message = (
+            f"{path} carries no 'decision' block (exclusion cut-offs with their held-out precision and recall); "
+            "it predates the validated decision rule. Use noise_timemil_ens5_n4680_20260926.pt or later."
+        )
+        raise ValueError(error_message)
     models = []
     for state_dict in checkpoint["state_dicts"]:
         model = NoiseTimeMIL(in_channels=checkpoint["in_channels"], n_scalars=checkpoint["n_scalars"]).to(device)
@@ -294,41 +306,8 @@ def load_noise_model(noise_model_path: str, device: torch.device) -> dict:
         "db_center": float(checkpoint["db_center"]), "db_half": float(checkpoint["db_half"]),
         "max_frames": int(checkpoint["max_frames"]), "context_frames": int(checkpoint["context_frames"]),
         "bands_hz": NOISE_BANDS_HZ, "calibration": checkpoint["calibration"],
+        "decision": checkpoint["decision"],
     }
-
-
-def resolve_threshold(calibration: list[dict], min_precision: float) -> dict:
-    """
-    Description
-    -----------
-    Picks the operating point the settings ask for: the lowest threshold in the model's calibration table
-    whose measured precision reaches ``min_precision``, which is the one that also catches the most noise.
-    A target no threshold reaches raises, listing the table, because silently flagging more real calls
-    than the user allowed is worse than stopping.
-
-    Parameters
-    ----------
-    calibration (list[dict])
-        The bundle's table: ``threshold``, ``precision``, ``recall``, ``flagged_per_10000``,
-        ``calls_lost_per_10000``.
-    min_precision (float)
-        Required share of flagged segments that are really noise.
-
-    Returns
-    -------
-    operating_point (dict)
-        The chosen calibration row.
-    """
-
-    reaching = [row for row in sorted(calibration, key=lambda row: row["threshold"]) if row["precision"] >= min_precision]
-    if not reaching:
-        table = "\n  ".join(f"p >= {row['threshold']:.2f}: precision {row['precision']:.3f}, recall {row['recall']:.3f}" for row in calibration)
-        error_message = (
-            f"No threshold in the noise model's calibration reaches precision {min_precision}. Lower "
-            f"processing_settings['detect_usv_noise']['noise_min_precision'] or use a different model. The table is:\n  {table}"
-        )
-        raise ValueError(error_message)
-    return reaching[0]
 
 
 def segment_input(
@@ -568,9 +547,9 @@ class USVNoiseDetector:
         """
         Description
         -----------
-        Loads the model bundle, resolves the threshold from ``noise_min_precision``, scores every row of
-        the session's USV summary and writes ``noise`` and ``noise_probability`` into it, replacing any
-        existing noise columns. Run it after ``das_summarize``: re-summarizing rewrites the CSV with its
+        Loads the model bundle, takes the exclusion threshold from its ``decision`` block, scores every
+        row of the session's USV summary and writes ``noise`` and ``noise_probability`` into it,
+        replacing any existing noise columns. Run it after ``das_summarize``: re-summarizing rewrites the CSV with its
         base columns only and would remove these.
 
         Parameters
@@ -590,11 +569,12 @@ class USVNoiseDetector:
         cfg = self.input_parameter_dict['detect_usv_noise']
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         bundle = load_noise_model(cfg['noise_model_path'], device)
-        operating_point = resolve_threshold(bundle['calibration'], cfg['noise_min_precision'])
+        decision = bundle['decision']
         self.message_output(
-            f"noise_min_precision {cfg['noise_min_precision']} -> p >= {operating_point['threshold']:.2f} "
-            f"(calibrated precision {operating_point['precision']:.3f}, recall {operating_point['recall']:.3f}; "
-            f"{operating_point['calls_lost_per_10000']:.1f} real calls flagged per 10,000 segments)."
+            f"noise = p >= {decision['exclude_at_or_above']:.2f}: confident noise (p >= {decision['noise_at_or_above']:.2f}) "
+            f"plus the uncertain band, which is excluded rather than guessed. Held out, the confident decisions "
+            f"reach precision {decision['held_out_precision']:.3f} and recall {decision['held_out_recall']:.3f}; "
+            f"the exclusion costs about {decision['real_calls_excluded_per_10000']:.0f} real calls per 10,000 segments."
         )
 
         root = pathlib.Path(self.root_directory)
@@ -612,7 +592,7 @@ class USVNoiseDetector:
             usv_summary=usv_df,
             bundle=bundle,
             device=device,
-            threshold=operating_point['threshold'],
+            threshold=decision['exclude_at_or_above'],
             exclude_metadata_audio_channels=cfg['exclude_metadata_audio_channels'],
             batch_size=cfg['batch_size'],
             message_output=self.message_output,
@@ -631,7 +611,6 @@ class USVNoiseDetector:
 @click.command(name="detect-usv-noise")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--noise-model-path', 'noise_model_path', type=str, default=None, required=False, help='Path to the noise model bundle (.pt); derived from spectrograms_root when empty.')
-@click.option('--noise-min-precision', 'noise_min_precision', type=float, default=None, required=False, help='Required share of flagged segments that are really noise; the lowest calibrated threshold reaching it is used.')
 @click.option('--exclude-metadata-audio-channels/--no-exclude-metadata-audio-channels', 'exclude_metadata_audio_channels', default=None, required=False, help='Drop channels the session metadata marks as excluded from the spectrogram average.')
 @click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Segments per forward pass at the typical call length; a batch is budgeted at batch-size x 128 frame slots, so one long call never inflates it.')
 @click.pass_context

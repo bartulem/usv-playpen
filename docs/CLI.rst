@@ -456,12 +456,12 @@ Process
                             Seam repair: maximum outward correction (s) permitted per call edge.
 
 ``detect-usv-noise``
-``detect-usv-noise`` flags the USV segments of a session that hold no vocalization at all and merges two columns into ``usv_summary.csv``: ``noise`` (true / false in every row) and ``noise_probability`` (the ensemble's probability in every row, so an analysis can re-threshold without re-running). The decision threshold is not given directly: ``--noise-min-precision`` states the share of flagged segments that must really be noise, and the step takes the lowest threshold in the model bundle's calibration table that reaches it, reporting the threshold, precision and recall it picked. The input spectrogram is rebuilt from the unfiltered ``audio/hpss`` wavs (30-120 kHz and 3-30 kHz, absolute dB) over a window that extends ~100 ms either side of the segment and is then cropped back to it; run it after ``das-summarize``, which rewrites the summary without these columns, and before ``detect-usv-squeaks``. A GPU is used when present but is not required (about 64 s against 90 s on the CPU for a 424-USV session).
+``detect-usv-noise`` flags the USV segments of a session that hold no vocalization at all and merges two columns into ``usv_summary.csv``: ``noise`` (true / false in every row; true excludes the segment) and ``noise_probability`` (the ensemble's probability in every row, so an analysis can separate confident noise from the uncertain band, or re-threshold, without re-running). The decision comes from the model bundle, not from an option: ``noise`` is true for confident noise and for the uncertain band (``noise_probability`` >= 0.14), whose confident decisions reach a held-out precision of 0.944 and recall of 0.955 (0.9% of segments uncertain; see *Detect noise* in :doc:`Process`). The step prints these numbers on every run. The input spectrogram is rebuilt from the unfiltered ``audio/hpss`` wavs (30-120 kHz and 3-30 kHz, absolute dB) over a window that extends ~100 ms either side of the segment and is then cropped back to it; run it after ``das-summarize``, which rewrites the summary without these columns, and before ``detect-usv-squeaks``. A GPU is used when present but is not required (about 64 s against 90 s on the CPU for a 424-USV session).
 
 .. code-block:: text
 
     usage: detect-usv-noise [-h] --root-directory PATH
-                            [--noise-model-path TEXT] [--noise-min-precision FLOAT]
+                            [--noise-model-path TEXT]
                             [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
                             [--batch-size INTEGER]
 
@@ -471,8 +471,6 @@ Process
     optional arguments:
       -h, --help            Show this help message and exit.
       --noise-model-path    Path to the noise model bundle (.pt); derived from spectrograms_root when empty.
-      --noise-min-precision
-                            Required share of flagged segments that are really noise; the lowest calibrated threshold reaching it is used.
       --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
                             Drop channels the session metadata marks as excluded from the spectrogram average.
       --batch-size          Segments per forward pass at the typical call length; a batch is budgeted at batch-size x 128 frame slots, so one long call never inflates it.
