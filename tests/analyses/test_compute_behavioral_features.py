@@ -118,3 +118,16 @@ class TestSocialDistanceColumns:
             reference = f'nose-nose{suffix}'
             assert FeatureZoo.feature_boundaries[feature] == FeatureZoo.feature_boundaries[reference]
             assert FeatureZoo.resolve_feature_label(feature).startswith('inter-partner distance')
+
+
+class TestSocialHeadYawColumns:
+    """The partner-Head yaw pair and its derivatives are registered like the partner-nose pair."""
+
+    def test_head_yaw_is_registered_like_the_nose_yaw(self):
+        """allo_yaw-head / head-allo_yaw must share the axis range, axis units and display label of
+        allo_yaw-nose / nose-allo_yaw, since the plotting code looks each feature up by name and a
+        missing entry silently drops the feature from the figures."""
+        for head_feature, nose_feature in (('allo_yaw-head', 'allo_yaw-nose'), ('head-allo_yaw', 'nose-allo_yaw')):
+            for suffix in ('', '_1st_der', '_2nd_der'):
+                assert FeatureZoo.feature_boundaries[f'{head_feature}{suffix}'] == FeatureZoo.feature_boundaries[f'{nose_feature}{suffix}']
+            assert FeatureZoo.resolve_feature_label(head_feature, 'male', 'female') == 'male-partner yaw'

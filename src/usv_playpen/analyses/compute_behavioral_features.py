@@ -10,12 +10,14 @@ Computes behavioral features for files containing 3D tracked mouse body points.
 (24) Body yaw (25) Body yaw der (26) Body yaw 2der (27) Tail curvature (28) Tail curvature der (29) Tail curvature 2der
 
 [B] SOCIAL FEATURES (DISTANCES & ANGLES)
-(0) Nose-Nose distance (1) Nose-Nose distance der (2) Nose-Nose distance 2der (3) TTI-TTI distance (4) TTI-TTI distance der (5) TTI-TTI distance 2der (head-head distance and its two derivatives are computed alongside them)
-(6) Nose-TTI distance (7) Nose-TTI distance der (8) Nose-TTI distance 2der (9) TTI-Nose distance (10) TTI-Nose distance der (11) TTI-Nose distance 2der
-(12) Yaw-Nose (13) Yaw-Nose der (14) Yaw-Nose 2der (15) Nose-Yaw (16) Nose-Yaw der (17) Nose-Yaw 2der
-(18) Yaw-TTI (19) Yaw-TTI der (20) Yaw-TTI 2der (21) TTI-Yaw (22) TTI-Yaw der (23) TTI-Yaw 2der
-(24) Pitch-Nose (25) Pitch-Nose der (26) Pitch-Nose 2der (27) Nose-Pitch (28) Nose-Pitch der (29) Nose-Pitch 2der
-(30) Pitch-TTI (31) Pitch-TTI der (32) Pitch-TTI 2der (33) TTI-Pitch (34) TTI-Pitch der (35) TTI-Pitch 2der
+(0) Head-Head distance (1) Head-Head distance der (2) Head-Head distance 2der
+(3) Nose-Nose distance (4) Nose-Nose distance der (5) Nose-Nose distance 2der (6) TTI-TTI distance (7) TTI-TTI distance der (8) TTI-TTI distance 2der
+(9) Nose-TTI distance (10) Nose-TTI distance der (11) Nose-TTI distance 2der (12) TTI-Nose distance (13) TTI-Nose distance der (14) TTI-Nose distance 2der
+(15) Yaw-Nose (16) Yaw-Nose der (17) Yaw-Nose 2der (18) Nose-Yaw (19) Nose-Yaw der (20) Nose-Yaw 2der
+(21) Yaw-TTI (22) Yaw-TTI der (23) Yaw-TTI 2der (24) TTI-Yaw (25) TTI-Yaw der (26) TTI-Yaw 2der
+(27) Yaw-Head (28) Yaw-Head der (29) Yaw-Head 2der (30) Head-Yaw (31) Head-Yaw der (32) Head-Yaw 2der
+(33) Pitch-Nose (34) Pitch-Nose der (35) Pitch-Nose 2der (36) Nose-Pitch (37) Nose-Pitch der (38) Nose-Pitch 2der
+(39) Pitch-TTI (40) Pitch-TTI der (41) Pitch-TTI 2der (42) TTI-Pitch (43) TTI-Pitch der (44) TTI-Pitch 2der
 
 NB: Yaw-* and Pitch-* are egocentric — the yaw/pitch components of the
 target body point expressed in the observer's anatomical head frame
@@ -1177,6 +1179,12 @@ class FeatureZoo:
         "TTI-allo_yaw": [-180, 180],
         "TTI-allo_yaw_1st_der": [-480, 480],
         "TTI-allo_yaw_2nd_der": [-4500, 4500],
+        "allo_yaw-head": [-180, 180],
+        "allo_yaw-head_1st_der": [-480, 480],
+        "allo_yaw-head_2nd_der": [-4500, 4500],
+        "head-allo_yaw": [-180, 180],
+        "head-allo_yaw_1st_der": [-480, 480],
+        "head-allo_yaw_2nd_der": [-4500, 4500],
         "allo_pitch-nose": [-90, 90],
         "allo_pitch-nose_1st_der": [-480, 480],
         "allo_pitch-nose_2nd_der": [-4500, 4500],
@@ -1257,6 +1265,12 @@ class FeatureZoo:
             "TTI-allo_yaw": "ccw -- (°) -- cw",
             "TTI-allo_yaw_1st_der": "ccw -- (°/s) -- cw",
             "TTI-allo_yaw_2nd_der": "ccw -- (°/s²) -- cw",
+            "allo_yaw-head": "ccw -- (°) -- cw",
+            "allo_yaw-head_1st_der": "ccw -- (°/s) -- cw",
+            "allo_yaw-head_2nd_der": "ccw -- (°/s²) -- cw",
+            "head-allo_yaw": "ccw -- (°) -- cw",
+            "head-allo_yaw_1st_der": "ccw -- (°/s) -- cw",
+            "head-allo_yaw_2nd_der": "ccw -- (°/s²) -- cw",
             "allo_pitch-nose": "down -- (°) -- up",
             "allo_pitch-nose_1st_der": "down -- (°/s) -- up",
             "allo_pitch-nose_2nd_der": "down -- (°/s²) -- up",
@@ -1347,10 +1361,12 @@ class FeatureZoo:
         # self->partner vs partner->self feature direction (the two therefore share a label)
         "allo_yaw-nose": "{self}-partner yaw",
         "allo_yaw-TTI": "{self}-partner yaw",
+        "allo_yaw-head": "{self}-partner yaw",
         "allo_pitch-nose": "{self}-partner pitch",
         "allo_pitch-TTI": "{self}-partner pitch",
         "nose-allo_yaw": "{self}-partner yaw",
         "TTI-allo_yaw": "{self}-partner yaw",
+        "head-allo_yaw": "{self}-partner yaw",
         "nose-allo_pitch": "{self}-partner pitch",
         "TTI-allo_pitch": "{self}-partner pitch",
         # dyadic engagement (Social Engagement Index)
@@ -1791,7 +1807,11 @@ class FeatureZoo:
         target_node) pair are stored, yielding eight angle quartets:
         allo_yaw-nose, nose-allo_yaw, allo_yaw-TTI, TTI-allo_yaw plus
         the matching allo_pitch-nose, nose-allo_pitch, allo_pitch-TTI,
-        TTI-allo_pitch. The orofacial and anogenital social engagement
+        TTI-allo_pitch. The yaw of the partner's Head node (the skull
+        centroid) is stored the same way, as allo_yaw-head (mouse1
+        observes mouse2's Head) and head-allo_yaw (mouse2 observes
+        mouse1's Head), each with its two derivatives; its pitch is not
+        stored. The orofacial and anogenital social engagement
         indices are computed via `calculate_sei`, whose gaze gate uses a
         3D cosine similarity; the egocentric yaw/pitch columns above are
         emitted separately but do not drive the gate (see the history
@@ -2496,6 +2516,24 @@ class FeatureZoo:
                     capture_fr=empirical_camera_sr,
                 )
 
+                # egocentric yaw of the partner's Head node (skull centroid), which, unlike the
+                # nose, does not swing with the partner's own head pitch/yaw; column 0 = mouse1
+                # observes mouse2's Head (allo_yaw-head), column 1 = mouse2 observes mouse1's
+                # Head (head-allo_yaw). The pitch halves are not stored.
+                head_yaw_angles = np.zeros((mouse_data.shape[0], 2))
+                head_yaw_angles[:, 0], _ = get_egocentric_direction(
+                    head_root=root1, head_pivot=head1, target_point=head2
+                )
+                head_yaw_angles[:, 1], _ = get_egocentric_direction(
+                    head_root=root2, head_pivot=head2, target_point=head1
+                )
+                head_yaw_angles_1st_der, head_yaw_angles_2nd_der = calculate_derivatives(
+                    input_arr=head_yaw_angles,
+                    diff_bins=self.behavioral_parameters_dict["derivative_bins"],
+                    is_angle=True,
+                    capture_fr=empirical_camera_sr,
+                )
+
                 # add this pair's social features to the DataFrame
                 pair_name = f"{track_names[mouse1_idx]}-{track_names[mouse2_idx]}"
 
@@ -2587,6 +2625,26 @@ class FeatureZoo:
                 )
                 behavioral_features_df = behavioral_features_df.with_columns(
                     pls.Series(f"{pair_name}.TTI-allo_yaw_2nd_der", social_angles_2nd_der[:, 3])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_yaw-head", head_yaw_angles[:, 0])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_yaw-head_1st_der", head_yaw_angles_1st_der[:, 0])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.allo_yaw-head_2nd_der", head_yaw_angles_2nd_der[:, 0])
+                )
+
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.head-allo_yaw", head_yaw_angles[:, 1])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.head-allo_yaw_1st_der", head_yaw_angles_1st_der[:, 1])
+                )
+                behavioral_features_df = behavioral_features_df.with_columns(
+                    pls.Series(f"{pair_name}.head-allo_yaw_2nd_der", head_yaw_angles_2nd_der[:, 1])
                 )
 
                 behavioral_features_df = behavioral_features_df.with_columns(

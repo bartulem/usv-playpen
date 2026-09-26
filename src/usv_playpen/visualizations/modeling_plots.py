@@ -333,7 +333,7 @@ def plot_feature_ranking(
 
             if is_significant:
                 dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                                   "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                                   "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI",
                                    "allo_pitch-nose", "nose-allo_pitch",
                                    "allo_pitch-TTI", "TTI-allo_pitch"]
                 if any(x in feature_name for x in dyadic_keywords):
@@ -510,7 +510,7 @@ def plot_significant_filters(
             continue
 
         dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                           "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                           "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI",
                            "allo_pitch-nose", "nose-allo_pitch",
                            "allo_pitch-TTI", "TTI-allo_pitch"]
         if any(x in feature for x in dyadic_keywords):
@@ -744,7 +744,7 @@ def plot_significant_filters_grid(
         all_y_values.extend(ci_upper_corrected)
 
         if any(x in beh_feature for x in ["nose-nose", "nose-TTI", "TTI-nose", "neck_elevation_diff",
-                                          "allo_yaw-nose", "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                                          "allo_yaw-nose", "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI",
                                           "allo_pitch-nose", "nose-allo_pitch",
                                           "allo_pitch-TTI", "TTI-allo_pitch"]):
             c = dyadic_color
@@ -1367,7 +1367,7 @@ def plot_model_selection_results(
     # of each model self-explanatory without needing a legend.
 
     dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI",
                        "allo_pitch-nose", "nose-allo_pitch",
                        "allo_pitch-TTI", "TTI-allo_pitch"]
 
@@ -1741,7 +1741,7 @@ def plot_model_selection_results(
     axes_grid = axes_grid.flatten()
 
     dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI",
                        "allo_pitch-nose", "nose-allo_pitch",
                        "allo_pitch-TTI", "TTI-allo_pitch"]
 
@@ -2582,7 +2582,7 @@ def plot_multinomial_selection_trajectory(
     # plotter so the same feature always gets the same colour across
     # figures).
     dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI",
                        "allo_pitch-nose", "nose-allo_pitch",
                        "allo_pitch-TTI", "TTI-allo_pitch"]
 
@@ -3591,7 +3591,7 @@ def plot_manifold_selection_trajectory(
     dyadic_keywords = [
         "nose-nose", "nose-TTI", "TTI-nose",
         "allo_yaw-nose", "nose-allo_yaw",
-        "allo_yaw-TTI", "TTI-allo_yaw",
+        "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI",
         "allo_pitch-nose", "nose-allo_pitch",
         "allo_pitch-TTI", "TTI-allo_pitch",
     ]
@@ -4193,7 +4193,7 @@ def plot_manifold_filter_atlas(
     else:
         self_col, other_col = male_color, female_color
     _dyadic_kw = ("nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                  "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                  "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI",
                   "allo_pitch-nose", "nose-allo_pitch", "allo_pitch-TTI",
                   "TTI-allo_pitch")
 
