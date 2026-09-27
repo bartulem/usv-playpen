@@ -19,8 +19,12 @@ import polars as pls
 import pytest
 
 import usv_playpen.analyses.compute_inter_usv_interval_distributions as iui_mod
+from usv_playpen.analyses._usv_io import extract_animal_sexes, load_and_filter_usv_data
 from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
     InterUSVIntervalCalculator,
+    compute_session_usv_intervals,
+    fit_mixture_model_sweep,
+    fit_tied_peak_ladder_and_lrt,
 )
 from usv_playpen.analyses.usv_interval_archive import _polars_to_h5, _h5_to_polars
 
@@ -51,9 +55,7 @@ def test_polars_h5_roundtrip_nullable_int_and_bool(tmp_path):
     assert back["f"].to_list() == [1.5, 2.5, 3.5]
 
 
-# ---------------------------------------------------------------------------
 # Fixture: minimal valid input_parameter_dict
-# ---------------------------------------------------------------------------
 
 
 def _make_settings(tmp_path, fit_mixture_model=False, fit_tied_model=False, fit_serial_dependence=False):
@@ -105,9 +107,7 @@ def _make_settings(tmp_path, fit_mixture_model=False, fit_tied_model=False, fit_
     }
 
 
-# ---------------------------------------------------------------------------
 # __init__
-# ---------------------------------------------------------------------------
 
 
 def test_iui_calculator_init_rejects_unknown_kwargs():
@@ -124,9 +124,7 @@ def test_iui_calculator_init_accepts_expected_kwargs():
     assert calc.input_parameter_dict == {}
 
 
-# ---------------------------------------------------------------------------
 # save_inter_usv_interval_distributions_to_file — validation paths
-# ---------------------------------------------------------------------------
 
 
 def test_save_iui_invalid_model_class_raises(tmp_path):
@@ -193,9 +191,7 @@ def test_save_iui_zero_resolved_sessions_logs_skip(tmp_path, mocker, monkeypatch
     assert any("zero sessions resolved" in m for m in msgs)
 
 
-# ---------------------------------------------------------------------------
 # save_inter_usv_interval_distributions_to_file — happy paths (mocked)
-# ---------------------------------------------------------------------------
 
 
 def _mock_session_resolution(monkeypatch, tmp_path):
@@ -444,3 +440,218 @@ def test_save_iui_fits_serial_dependence_on_fitted_pools_only(tmp_path, mocker, 
         for table in ("serial_dependence_curves", "serial_dependence_fit", "serial_dependence_bends"):
             assert mode[table] is not None and set(mode[table]["sex"].to_list()) == {"male"}
     assert write_mock.call_args.kwargs["analysis_attrs"]["serial_dependence_level"] == 99.0
+
+
+def _two_peak_intervals(n_sessions=6, per_session=120, seed=0):
+    """
+    Draws synthetic end-to-start intervals with the male pool's shape: a dominant narrow
+    log-normal peak near 63 ms, a smaller one near 180 ms sharing its log-scale, and a broad
+    background near 0.3 s, split evenly across ``n_sessions`` sessions.
+
+    Returns
+    -------
+    values (np.ndarray)
+        Intervals in seconds.
+    session_labels (np.ndarray)
+        The session each interval came from, aligned with ``values``.
+    """
+
+    rng = np.random.default_rng(seed)
+    n = n_sessions * per_session
+    role = rng.choice(3, size=n, p=[0.65, 0.1, 0.25])
+    log_values = np.where(role == 0, rng.normal(np.log(0.063), 0.24, n),
+                          np.where(role == 1, rng.normal(np.log(0.18), 0.24, n),
+                                   rng.normal(np.log(0.3), 1.1, n)))
+    labels = np.repeat(np.arange(n_sessions), per_session).astype(str)
+    return np.exp(log_values), labels
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_fit_tied_peak_ladder_and_lrt_tables_and_selection():
+    """
+    Runs the real tied-scale ladder and session-corrected peak-count test on a small
+    two-peak pool (tiny B, subsample and design bootstrap so it stays fast) and checks the
+    contract of all four tables and the two scalars: the ladder fits every peak count from the
+    grid's minimum to one past its maximum, each fit carries n_peak peak rows plus the
+    background rows sharing one peak scale, the modes table has at least one mode per fit, the
+    LRT table has one row per rung with a finite design effect of at least one and the
+    Bonferroni-divided alpha, the null table holds B draws per rung, the pool identity is
+    stamped on every row, and the selection is a count the grid can return.
+    """
+
+    values, labels = _two_peak_intervals()
+    identity = {"sex": "male", "call_type": "usv"}
+    messages = []
+    fits, modes, lrt, null, selected, alpha_eff = fit_tied_peak_ladder_and_lrt(
+        values=values, session_labels=labels, pool_identity=identity, peak_grid=[1, 2],
+        n_background=1, n_init=1, n_init_boot=1, reg_covar=1e-4, B=19, n_subsample=300,
+        alpha=0.01, bonferroni=True, n_design_bootstrap=50, seed=0, n_jobs=1,
+        message=messages.append)
+
+    assert sorted(fits["n_peak"].unique().to_list()) == [1, 2, 3]
+    for n_peak in (1, 2, 3):
+        rows = fits.filter(pls.col("n_peak") == n_peak)
+        assert rows.height == n_peak + 1
+        assert (rows["role"] == "peak").sum() == n_peak
+        peaks = rows.filter(pls.col("role") == "peak")
+        assert np.allclose(peaks["logscale"].to_numpy(), rows["shared_peak_scale"][0])
+        assert np.isclose(rows["weight"].sum(), 1.0)
+    assert set(modes["n_peak"].unique().to_list()) == {1, 2, 3}
+    assert lrt.height == 2 and lrt["n_peak_null"].to_list() == [1, 2]
+    assert (lrt["design_effect"] >= 1.0).all()
+    assert np.allclose(lrt["alpha_used"].to_numpy(), 0.005)
+    assert alpha_eff == pytest.approx(0.005)
+    assert null.height == 2 * 19
+    for table in (fits, modes, lrt, null):
+        assert (table["sex"] == "male").all() and (table["call_type"] == "usv").all()
+    assert selected in (1, 2, 3)
+    assert any("step-up selection" in m for m in messages)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+def test_fit_tied_peak_ladder_and_lrt_without_bonferroni_keeps_alpha():
+    """
+    With ``bonferroni=False`` the per-rung level is the family level itself, and a single-rung
+    grid still fits one peak count past the grid (the alternative of its only rung).
+    """
+
+    values, labels = _two_peak_intervals(seed=1)
+    fits, _modes, lrt, null, selected, alpha_eff = fit_tied_peak_ladder_and_lrt(
+        values=values, session_labels=labels, pool_identity={"sex": "female"}, peak_grid=[1],
+        n_background=1, n_init=1, n_init_boot=1, reg_covar=1e-4, B=9, n_subsample=200,
+        alpha=0.05, bonferroni=False, n_design_bootstrap=20, seed=3, n_jobs=1,
+        message=lambda _m: None)
+
+    assert alpha_eff == pytest.approx(0.05)
+    assert sorted(fits["n_peak"].unique().to_list()) == [1, 2]
+    assert lrt.height == 1 and null.height == 9
+    assert selected in (1, 2)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+@pytest.mark.parametrize("model_class", ["gauss", "ig", "t"])
+def test_fit_mixture_model_sweep_model_class_branches(model_class):
+    """
+    The sweep is model-class agnostic, and the calculator tests stub it out, so each model
+    class (Gaussian, inverse-Gaussian and the Student-t ladder, where each K starts from the
+    K-1 solution) is run here for real: cross-validated likelihood, fit and per-model
+    statistics. Checks one row per (key, repeat, K), finite information
+    criteria and CV likelihoods, and that a key too short for the CV folds gets NaN CV values
+    rather than being dropped from the fits.
+    """
+
+    values, _ = _two_peak_intervals(n_sessions=2, per_session=150, seed=2)
+    table = fit_mixture_model_sweep(
+        intervals_by_key={"male": values, "female": values[:4]}, n_components_min=1,
+        n_components_max=2, n_repeats=1, max_modes_reported=2, random_seed_base=0,
+        cv_n_folds=5, cv_n_init=1, mixture_model_n_init=1, model_class=model_class)
+
+    male = table.filter(pls.col("sex") == "male")
+    assert male.height == 2 and sorted(male["n_comp"].to_list()) == [1, 2]
+    assert (table["model_class"] == model_class).all()
+    assert np.isfinite(table["bic"].to_numpy()).all()
+    male_cv = male["cv_neg_loglik"].to_numpy()
+    female_cv = table.filter(pls.col("sex") == "female")["cv_neg_loglik"].to_numpy()
+    assert np.isfinite(male_cv).all()
+    assert np.isnan(female_cv).all()
+
+
+def test_fit_mixture_model_sweep_rejects_unknown_model_class():
+    """An unknown ``model_class`` is a ValueError before any fitting."""
+
+    with pytest.raises(ValueError, match="model_class"):
+        fit_mixture_model_sweep(intervals_by_key={"male": np.array([0.1, 0.2])}, n_components_min=1,
+                                n_components_max=2, n_repeats=1, max_modes_reported=1,
+                                random_seed_base=0, model_class="lognormal")
+
+
+def test_compute_session_usv_intervals_rejects_unknown_adjacency():
+    """``adjacency`` other than 'filtered' / 'strict' is a ValueError before any I/O."""
+
+    with pytest.raises(ValueError, match="Unknown adjacency"):
+        compute_session_usv_intervals(session_root="/whatever", interval_type="e2s",
+                                      exclude_noise_usvs=True, adjacency="loose")
+
+
+def _write_metadata(root: Path, subjects: list[dict]) -> None:
+    """Writes a minimal ``<session>_metadata.yaml`` holding only the ``Subjects`` block."""
+
+    lines = ["Subjects:"]
+    for subject in subjects:
+        lines.append(f"  - subject_id: '{subject['subject_id']}'")
+        for key, value in subject.items():
+            if key != "subject_id":
+                lines.append(f"    {key}: {value}")
+    (root / f"{root.name}_metadata.yaml").write_text("\n".join(lines) + "\n")
+
+
+def test_extract_animal_sexes_reads_and_normalises(tmp_path):
+    """Sexes come from the metadata's Subjects block, with padding stripped from the track
+    names and the recorded value lower-cased."""
+
+    _write_metadata(tmp_path, [{"subject_id": "A_0", "sex": "Male"}, {"subject_id": "B_1", "sex": "female"}])
+    assert extract_animal_sexes(str(tmp_path), [" A_0\x00", "B_1"]) == {"A_0": "male", "B_1": "female"}
+
+
+def test_extract_animal_sexes_missing_metadata_raises(tmp_path):
+    """A session with no metadata file cannot resolve sexes: FileNotFoundError, never a guess."""
+
+    with pytest.raises(FileNotFoundError, match="metadata"):
+        extract_animal_sexes(str(tmp_path), ["A_0"])
+
+
+def test_extract_animal_sexes_track_without_sex_raises(tmp_path):
+    """A track whose subject has no recorded sex is a ValueError naming the subjects that do."""
+
+    _write_metadata(tmp_path, [{"subject_id": "A_0", "sex": "male"}, {"subject_id": "B_1"}])
+    with pytest.raises(ValueError, match="no subject with a recorded sex"):
+        extract_animal_sexes(str(tmp_path), ["A_0", "B_1"])
+
+
+def test_extract_animal_sexes_invalid_sex_raises(tmp_path):
+    """A recorded sex other than male / female is a ValueError, not silently mapped."""
+
+    _write_metadata(tmp_path, [{"subject_id": "A_0", "sex": "unknown"}])
+    with pytest.raises(ValueError, match="expected male or female"):
+        extract_animal_sexes(str(tmp_path), ["A_0"])
+
+
+def _write_summary(root: Path, with_squeak: bool) -> None:
+    """Writes a three-row ``audio/<session>_usv_summary.csv``, with or without a squeak column."""
+
+    audio = root / "audio"
+    audio.mkdir(parents=True, exist_ok=True)
+    frame = pls.DataFrame({"start": [1.0, 2.0, 3.0], "stop": [1.1, 2.1, 3.1], "noise": [False, False, False]})
+    if with_squeak:
+        frame = frame.with_columns(pls.Series("squeak", [False, True, False]))
+    frame.write_csv(str(audio / f"{root.name}_usv_summary.csv"))
+
+
+def test_load_and_filter_usv_data_call_type_filters(tmp_path):
+    """``call_type='usv'`` keeps the non-squeak rows and ``'squeak'`` the squeak rows."""
+
+    _write_summary(tmp_path, with_squeak=True)
+    usv = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="usv")
+    squeak = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="squeak")
+    assert usv.height == 2 and squeak.height == 1
+
+
+def test_load_and_filter_usv_data_rejects_unknown_call_type(tmp_path):
+    """An unknown ``call_type`` is a ValueError."""
+
+    _write_summary(tmp_path, with_squeak=True)
+    with pytest.raises(ValueError, match="call_type"):
+        load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="bark")
+
+
+def test_load_and_filter_usv_data_without_squeak_column_raises(tmp_path):
+    """Asking for a call type on a summary the squeak detector never ran on is a KeyError that
+    says which step to run, rather than treating every row as a USV."""
+
+    _write_summary(tmp_path, with_squeak=False)
+    with pytest.raises(KeyError, match="detect_usv_squeaks"):
+        load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="usv")
