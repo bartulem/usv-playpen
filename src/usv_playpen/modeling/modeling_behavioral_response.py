@@ -1622,10 +1622,13 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
                   f"{int(np.median(held)) if held.size else 0}, "
                   f"{caliper_rejected[feature]} without an eligible control")
 
-        save_directory = configure_path(self.modeling_settings['io']['save_directory'])
+        # Created here, as in `_save_extracted_data`: a missing directory would
+        # otherwise fail only at this last step, after the whole cohort has loaded.
+        save_directory = Path(configure_path(self.modeling_settings['io']['save_directory']))
+        save_directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         cohort = derive_experimental_condition(self.modeling_settings)
-        save_path = Path(save_directory) / f"matched_divergence_{cohort}_{stamp}.pkl"
+        save_path = save_directory / f"matched_divergence_{cohort}_{stamp}.pkl"
         with atomic_output_path(save_path) as temporary_path:
             with Path(temporary_path).open('wb') as handle:
                 pickle.dump(artifact, handle)
