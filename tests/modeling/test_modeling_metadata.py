@@ -485,7 +485,7 @@ def _full_modeling_settings(model_engine='sklearn',
             'usv_predictor_type': 'rate',
             'usv_predictor_partner_only': True,
             'usv_predictor_smoothing_sd': 0.1,
-            'usv_noise_categories': [0],
+            'exclude_noise_usvs': True,
             # Manifold geometry: drives the geometry-determined continuous
             # inner-CV metric recorded by build_run_metadata (`vm_logscore` on
             # the torus, `dcor_xy` on euclidean).

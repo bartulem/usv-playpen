@@ -164,8 +164,8 @@ def build_multinomial_usv_summary_csv(
         ``filter_history`` warm-up region so its pre-event window never clips
         before frame 0, and all events spread across the usable session so the
         per-class onset frame indices are distinct.
-      - a handful of noise rows (category ``0``) that the
-        ``usv_noise_categories`` filter strips before label extraction, so the
+      - a handful of noise rows (category ``0``, flagged ``noise`` True) that the
+        ``exclude_noise_usvs`` filter strips before label extraction, so the
         noise-filter branch in ``find_usv_categories`` is genuinely exercised.
       - a couple of sparse partner-mouse rows late in the session so partner
         vocal predictors have content without polluting the target's events.
@@ -196,7 +196,7 @@ def build_multinomial_usv_summary_csv(
     events_per_category (int)
         Isolated target events written per non-noise category.
     category_column (str)
-        Integer category column name (also the noise column by default).
+        Integer category column name.
     manifold_columns (tuple of str)
         Two synthetic acoustic-manifold coordinate column names.
     seed (int)

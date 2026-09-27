@@ -874,7 +874,8 @@ def find_usv_categories(root_directories: list = None,
 
     This function applies a consistent "Single Pipeline" filter to the raw data:
     1. Filters by mouse.
-    2. Removes specified noise categories globally.
+    2. Removes the segments the noise classifier flagged (``noise`` column), when
+       ``exclude_noise_usvs`` is True.
     3. Removes "history" (period of filter duration at session start) to ensure model stability.
 
     All outputs (modeling events, continuous signals, category streams, and continuous targets)

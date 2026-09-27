@@ -257,7 +257,7 @@ def build_usv_summary_csv(
         Syllables packed into each bout.
     category_column (str)
         Name of the integer category column written (default matches the JSON's
-        ``usv_category_column_name`` / ``usv_noise_column``).
+        ``usv_category_column_name``).
     manifold_columns (tuple of str)
         Two column names holding synthetic acoustic-manifold coordinates.
     seed (int)

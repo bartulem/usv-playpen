@@ -1682,7 +1682,19 @@ def _draw_serial_dependence_panel(
     ax.set_ylim(lim)
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel("current inter-USV interval (ms)")
-    ax.legend(frameon=False, fontsize=5, loc="upper left")
+    # The legend sits at the top, just right of the bout boundary, in the sparse region between
+    # the boundary line and the diagonal; anchored at the upper left it ran over the boundary.
+    # Its longest entry (the bend) can still reach the diagonal, so it gets an opaque white
+    # background drawn above the lines.
+    legend_x = 0.0
+    if boundary_ms is not None:
+        legend_x = (np.log10(boundary_ms) - lim[0]) / (lim[1] - lim[0]) + 0.02
+    legend = ax.legend(frameon=True, fontsize=5, loc="upper left", bbox_to_anchor=(legend_x, 1.0),
+                       borderpad=0.3, handletextpad=0.5)
+    legend.get_frame().set_facecolor("#FFFFFF")
+    legend.get_frame().set_edgecolor("#FFFFFF")
+    legend.get_frame().set_alpha(1.0)
+    legend.set_zorder(10)
 
     if colorbar:
         cax = ax.inset_axes([1.04, 0.72, 0.045, 0.25])
