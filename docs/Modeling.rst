@@ -173,19 +173,20 @@ cross-validation and held-out-test settings live in their own
     "kinematic_features": {
         "egocentric": ["speed", "neck_elevation", "allo_roll", "allo_pitch",
                        "ego_yaw", "back_pitch", "back_yaw", "tail_curvature"],
-        "dyadic_pose": ["nose-nose", "allo_yaw-nose", "nose-allo_yaw",
-                        "allo_pitch-nose", "nose-allo_pitch"],
-        "dyadic_engagement": ["orofacial-sei"],
+        "dyadic_pose": ["head-head", "allo_yaw-head", "head-allo_yaw",
+                        "allo_pitch-head", "head-allo_pitch"],
+        "dyadic_engagement": [],
         "dyadic_pose_symmetric": false,
         "include_1st_derivatives": false,
         "include_2nd_derivatives": false,
         "abs_features": ["allo_roll", "allo_yaw-nose", "nose-allo_yaw",
+                         "allo_yaw-head", "head-allo_yaw",
                          "allo_yaw-TTI", "TTI-allo_yaw"],
         "smooth_abs_features": {"ego_yaw": 1.0, "back_yaw": 0.5}
     }
 
 * **egocentric** — single-mouse posture / movement features of the predictor mouse.
-* **dyadic_pose** — relative-pose features between the two mice (``<self>-<other>`` naming).
+* **dyadic_pose** — relative-pose features between the two mice (``<self>-<other>`` naming). ``head-head`` is the inter-partner distance between the two Head nodes (skull centroids); ``allo_yaw-head`` / ``allo_pitch-head`` are the egocentric yaw / pitch of the partner's Head seen from the predictor mouse's head frame, and ``head-allo_yaw`` / ``head-allo_pitch`` the reverse direction. The Nose- and TTI-anchored equivalents (``allo_yaw-nose``, ``allo_pitch-TTI``, ...) remain available in every behavioral-features CSV.
 * **dyadic_engagement** — social-engagement features (e.g. ``orofacial-sei``).
 * **dyadic_pose_symmetric** — if ``true``, include both ``A-B`` and ``B-A`` orientations of each dyadic-pose feature.
 * **include_1st_derivatives** / **include_2nd_derivatives** — also add the velocity / acceleration of each feature.

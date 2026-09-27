@@ -1407,6 +1407,8 @@ class Create3DVideo:
                                      "nose-allo_pitch": "N-Pitch(°)", "nose-allo_pitch_1st_der": "N-Pitch'(°/s)", "nose-allo_pitch_2nd_der": "N-Pitch''(°/s²)",
                                      "allo_pitch-TTI": "Pitch-T(°)", "allo_pitch-TTI_1st_der": "Pitch-T'(°/s)", "allo_pitch-TTI_2nd_der": "Pitch-T''(°/s²)",
                                      "TTI-allo_pitch": "T-Pitch(°)", "TTI-allo_pitch_1st_der": "T-Pitch'(°/s)", "TTI-allo_pitch_2nd_der": "T-Pitch''(°/s²)",
+                                     "allo_pitch-head": "Pitch-H(°)", "allo_pitch-head_1st_der": "Pitch-H'(°/s)", "allo_pitch-head_2nd_der": "Pitch-H''(°/s²)",
+                                     "head-allo_pitch": "H-Pitch(°)", "head-allo_pitch_1st_der": "H-Pitch'(°/s)", "head-allo_pitch_2nd_der": "H-Pitch''(°/s²)",
                                      "orofacial-sei": "SEI(a.u.)", "orofacial-sei_1st_der": "SEI'(a.u./s)", "orofacial-sei_2nd_der": "SEI''(a.u./s²)",
                                      "anogenital-sei": "SEI(a.u.)", "anogenital-sei_1st_der": "SEI'(a.u./s)", "anogenital-sei_2nd_der": "SEI''(a.u./s²)"}
 

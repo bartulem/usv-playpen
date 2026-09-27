@@ -131,3 +131,11 @@ class TestSocialHeadYawColumns:
             for suffix in ('', '_1st_der', '_2nd_der'):
                 assert FeatureZoo.feature_boundaries[f'{head_feature}{suffix}'] == FeatureZoo.feature_boundaries[f'{nose_feature}{suffix}']
             assert FeatureZoo.resolve_feature_label(head_feature, 'male', 'female') == 'male-partner yaw'
+
+    def test_head_pitch_is_registered_like_the_nose_pitch(self):
+        """allo_pitch-head / head-allo_pitch must share the axis range, axis units and display label
+        of allo_pitch-nose / nose-allo_pitch, for the same reason as the yaw pair."""
+        for head_feature, nose_feature in (('allo_pitch-head', 'allo_pitch-nose'), ('head-allo_pitch', 'nose-allo_pitch')):
+            for suffix in ('', '_1st_der', '_2nd_der'):
+                assert FeatureZoo.feature_boundaries[f'{head_feature}{suffix}'] == FeatureZoo.feature_boundaries[f'{nose_feature}{suffix}']
+            assert FeatureZoo.resolve_feature_label(head_feature, 'male', 'female') == 'male-partner pitch'
