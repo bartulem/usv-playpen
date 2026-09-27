@@ -1109,4 +1109,3 @@ class TestSelectCovariateColumns:
         with settings_path.open('r') as handle:
             choice = json.load(handle)['behavioral_response']['covariate_features']
         assert choice in ('self', 'partner', 'both')
-
