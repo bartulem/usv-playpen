@@ -33,6 +33,12 @@ torch, its ``training_contract.json`` fixes the head (legacy or ReLU), the input
 normalization (min-max, and the loudness floor of floor-trained cells) and the
 duration window, its Fibonacci embedding lattice is rebuilt, and its
 ``cluster/fine`` and ``cluster/coarse`` ``label_grid.npy`` supply the categories.
+Conditional cells take one conditioning value per call: phase 10 cells
+(``qlvm_models_latest/v2``, duration or mean frequency) decode it at the frozen
+corpus bin mean, phase 11 cells (``qlvm_models_latest/v3``, duration, mean
+frequency, bandwidth or loudness) at the call's own value clamped to the training
+range or snapped to the cell's decode grid, as the contract's ``condition.decode``
+says (:func:`frozen_condition_values`).
 """
 
 from __future__ import annotations
@@ -63,6 +69,7 @@ from ..os_utils import (
 )
 from ..processing.build_qlvm_training_set import build_session_masks, stretch_specs
 from ..time_utils import is_gui_context, smart_wait
+from .compute_usv_loudness import session_image_level_db
 from .qlvm_model import (
     decoder_head,
     embed_data,
@@ -74,6 +81,9 @@ from .qlvm_model import (
 
 # QLVM columns written into the USV summary CSV (consumed downstream).
 QLVM_COLUMNS = ("qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_model")
+
+# Conditions a package decoder may be trained on (phase 10: the first two; phase 11: all four).
+CONDITION_NAMES = ("duration", "mean_freq", "bandwidth", "loudness")
 
 
 class _TorchCheckpointUnpickler(pickle.Unpickler):
@@ -345,10 +355,20 @@ def load_model_cell(model_cell_directory: str) -> dict:
         raise ValueError(error_message)
     condition_bins = None
     if contract["c_dim"]:
-        # Conditional cells: the frozen table of the corpus's quantile bins of c and
-        # each bin's mean c, which new calls are decoded at.
+        # Conditional cells: the frozen table new calls are decoded from. Phase 10
+        # holds the corpus quantile bins of c and each bin's mean c; phase 11 holds
+        # its training range and decode grid instead (see frozen_condition_values).
         with np.load(cell / contract["condition_bins"], allow_pickle=False) as bins:
-            condition_bins = {"edges": bins["edges"], "bin_mean": bins["bin_mean"]}
+            condition_bins = {key: bins[key] for key in bins.files}
+        decode = (contract["condition"] or {}).get("decode")
+        phase11_bins = "decode_grid" in condition_bins
+        if phase11_bins != (decode is not None) or (not phase11_bins and "bin_mean" not in condition_bins):
+            error_message = (
+                f"{cell}: training_contract.json condition.decode is {decode!r} but condition_bins.npz holds "
+                f"{sorted(condition_bins)}; a phase 10 cell needs edges + bin_mean and no decode, a phase 11 cell "
+                f"decode_grid + train_c_min/train_c_max and a decode of 'grid' or 'exact'."
+            )
+            raise ValueError(error_message)
     return {
         "params": load_decoder_params(str(cell / "checkpoint.tar")),
         "contract": contract,
@@ -360,18 +380,29 @@ def load_model_cell(model_cell_directory: str) -> dict:
     }
 
 
-def compute_condition_values(condition: dict, durations: np.ndarray, masked_spectrograms: np.ndarray | None) -> np.ndarray:
+def compute_condition_values(
+    condition: dict,
+    durations: np.ndarray,
+    masked_spectrograms: np.ndarray | None,
+    raw_values: np.ndarray | None = None,
+) -> np.ndarray:
     """
     Description
     -----------
     Each call's own conditioning value, as a conditional QLVM model package
     defines it in its training contract's ``condition`` block (float32, the
-    package's ``condition_value``). ``"duration"``:
+    package's ``condition_value`` / ``condition_from_raw``). ``"duration"``:
     ``(d - duration_min) / (duration_max - duration_min + epsilon)`` on the
     pre-resize duration in time bins (the corpus range fixes min and max).
     ``"mean_freq"``: the energy-weighted centroid of the frequency rows of the
     resized, SAM-masked spectrogram before any normalization, divided by the
-    number of rows, with the energy clamped at ``epsilon``.
+    number of rows, with the energy clamped at ``epsilon`` (phase 11 trained on
+    ``(mean_freq_hz - 30000) * 127 / (128 * 90000)``, which equals it to 1.5e-7).
+    ``"bandwidth"`` (phase 11): ``clip(freq_bandwidth_hz / 90000, 0, 1)``.
+    ``"loudness"`` (phase 11): ``clip((dB - lo) / (hi - lo), 0, 1)`` of the masked
+    image-level loudness, with ``[lo, hi]`` the contract's ``db_range``. The two
+    raw-unit maps run in float64 and round to float32, as the training sets
+    stored them.
 
     Parameters
     ----------
@@ -381,12 +412,24 @@ def compute_condition_values(condition: dict, durations: np.ndarray, masked_spec
         ``(N,)`` durations in time bins.
     masked_spectrograms (np.ndarray | None)
         ``(N, F, T)`` resized SAM-masked spectrograms; required for ``"mean_freq"``.
+    raw_values (np.ndarray | None)
+        ``(N,)`` raw values in Hz (``"bandwidth"``: ``freq_bandwidth_hz``) or dB
+        (``"loudness"``: ``image_level_db``); required for those two. Defaults to None.
 
     Returns
     -------
     values (np.ndarray)
         ``(N,)`` float32 conditioning values.
     """
+    if condition["name"] in ("bandwidth", "loudness"):
+        if raw_values is None:
+            error_message = f"compute_condition_values: {condition['name']} needs each call's raw value."
+            raise ValueError(error_message)
+        raw = np.asarray(raw_values, dtype=np.float64)
+        if condition["name"] == "bandwidth":
+            return np.clip(raw / 90000.0, 0.0, 1.0).astype(np.float32)
+        low, high = (float(value) for value in condition["db_range"])
+        return np.clip((raw - low) / (high - low), 0.0, 1.0).astype(np.float32)
     if condition["name"] == "duration":
         duration = np.asarray(durations).astype(np.float32)
         low, high = np.float32(condition["duration_min"]), np.float32(condition["duration_max"])
@@ -400,34 +443,60 @@ def compute_condition_values(condition: dict, durations: np.ndarray, masked_spec
         rows = np.arange(n_rows, dtype=np.float32)[None, :, None]
         energy = np.maximum(spectrograms.sum(axis=(1, 2)), np.float32(condition["epsilon"]))
         return ((spectrograms * rows).sum(axis=(1, 2)) / energy / np.float32(n_rows)).astype(np.float32)
-    error_message = f"compute_condition_values: unknown condition {condition['name']!r} (expected duration|mean_freq)."
+    error_message = (
+        f"compute_condition_values: unknown condition {condition['name']!r} "
+        f"(expected {'|'.join(CONDITION_NAMES)})."
+    )
     raise ValueError(error_message)
 
 
-def frozen_condition_values(values: np.ndarray, condition_bins: dict) -> np.ndarray:
+def frozen_condition_values(values: np.ndarray, condition_bins: dict, decode: str | None = None) -> np.ndarray:
     """
     Description
     -----------
-    The conditioning value to decode new calls at: the corpus mean of the
-    quantile bin each call's own value falls in, ``bin_mean[digitize(value,
-    edges[1:-1])]`` (the package's ``frozen_condition_value``). A package's
-    corpus embedding decoded batches at their mean value, which a new session
-    cannot reproduce; the frozen bin mean comes closest, and gives at most one
-    lattice decode per bin. Values beyond the corpus range fall in the first or
-    last bin.
+    The conditioning value to decode new calls at (the package's
+    ``frozen_condition_value``), by the rule the cell's embedding used.
+
+    Phase 11 (``condition_bins`` has a ``decode_grid``): with ``decode``
+    ``"exact"`` (duration, bandwidth) each call's own value clamped to the
+    training range ``[train_c_min, train_c_max]``; with ``"grid"`` (mean
+    frequency, loudness) the nearest point of ``decode_grid``, a value beyond
+    the grid decoding at its end point. The package embedded every corpus call
+    this way, so a new call is decoded exactly like a corpus call.
+
+    Phase 10 (``bin_mean``): the corpus mean of the quantile bin each call's own
+    value falls in, ``bin_mean[digitize(value, edges[1:-1])]``. That corpus
+    embedding decoded batches at their mean value, which a new session cannot
+    reproduce; the frozen bin mean comes closest. Values beyond the corpus range
+    fall in the first or last bin.
 
     Parameters
     ----------
     values (np.ndarray)
         ``(N,)`` each call's own conditioning value.
     condition_bins (dict)
-        ``edges`` and ``bin_mean`` of the cell's ``condition_bins.npz``.
+        The cell's ``condition_bins.npz``: ``edges`` and ``bin_mean`` (phase 10),
+        or ``decode_grid``, ``train_c_min`` and ``train_c_max`` (phase 11).
+    decode (str | None)
+        The contract's ``condition.decode``, ``"grid"`` or ``"exact"``; required
+        for phase 11 bins, unused for phase 10. Defaults to None.
 
     Returns
     -------
     frozen (np.ndarray)
-        ``(N,)`` float32 values, one of ``bin_mean`` per call.
+        ``(N,)`` float32 values.
     """
+    if "decode_grid" in condition_bins:
+        own = np.asarray(values, dtype=np.float32).reshape(-1).astype(np.float64)
+        if decode == "exact":
+            low, high = float(condition_bins["train_c_min"]), float(condition_bins["train_c_max"])
+            return np.clip(own, low, high).astype(np.float32)
+        if decode == "grid":
+            grid = np.asarray(condition_bins["decode_grid"], dtype=np.float64)
+            midpoints = 0.5 * (grid[:-1] + grid[1:])
+            return grid[np.searchsorted(midpoints, np.clip(own, grid[0], grid[-1]), side="left")].astype(np.float32)
+        error_message = f"frozen_condition_values: phase 11 bins need decode 'grid' or 'exact', got {decode!r}."
+        raise ValueError(error_message)
     edges = np.asarray(condition_bins["edges"])
     bin_mean = np.asarray(condition_bins["bin_mean"], dtype=np.float32)
     values = np.asarray(values, dtype=np.float32).reshape(-1)
@@ -511,7 +580,8 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
     set's; the weights' head (:func:`qlvm_model.decoder_head`) must be the
     contract's ``decoder_head``. The contract must also describe a decoder this
     module can run: no conditioning input (``c_dim`` 0) or one conditioning value
-    of a model package's ``"duration"`` / ``"mean_freq"`` condition, an
+    of a model package's ``"duration"`` / ``"mean_freq"`` / ``"bandwidth"`` /
+    ``"loudness"`` condition (a phase 11 ``decode`` of ``"grid"`` or ``"exact"``), an
     ``input_normalization`` of ``"none"`` or ``"minmax"``, and a ``floor`` that is
     null or in ``[0, 1)``.
 
@@ -545,12 +615,14 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
     # Unconditional decoders (every train-qlvm contract) record "condition": null.
     condition = contract["condition"]
     if contract["c_dim"] != 0 and not (
-        contract["c_dim"] == 1 and condition is not None and condition["name"] in ("duration", "mean_freq")
+        contract["c_dim"] == 1 and condition is not None and condition["name"] in CONDITION_NAMES
     ):
         mismatches.append(
-            f"c_dim: this module embeds unconditional decoders and decoders conditioned on duration or mean_freq, "
-            f"trained c_dim {contract['c_dim']!r} with condition {condition!r}"
+            f"c_dim: this module embeds unconditional decoders and decoders conditioned on one of "
+            f"{', '.join(CONDITION_NAMES)}, trained c_dim {contract['c_dim']!r} with condition {condition!r}"
         )
+    if condition is not None and condition.get("decode", "grid") not in ("grid", "exact"):
+        mismatches.append(f"condition.decode: expected 'grid' or 'exact', trained {condition['decode']!r}")
     if contract["input_normalization"] not in ("none", "minmax"):
         mismatches.append(f"input_normalization: expected 'none' or 'minmax', trained {contract['input_normalization']!r}")
     if contract["floor"] is not None and not 0.0 <= contract["floor"] < 1.0:
@@ -691,11 +763,16 @@ class QLVMLatentInference:
         and its ``length_threshold`` applies; otherwise the settings'
         ``length_threshold`` does (``null`` embeds every positive duration). When
         the contract's training set kept only calls with a SAM mask
-        (``require_mask``) or the decoder conditions on mean frequency, USVs
-        without a mask instance are skipped and get nulls too. When the decoder
-        needs SAM masks at all (those cases, or ``masking_type`` ``"sam"``), a
-        session H5 without a ``mask/<session>`` group raises. The summary is
-        rewritten atomically.
+        (``require_mask``) or the decoder conditions on mean frequency or
+        loudness, USVs without a mask instance are skipped and get nulls too.
+        When the decoder needs SAM masks at all (those cases, or ``masking_type``
+        ``"sam"``), a session H5 without a ``mask/<session>`` group raises. A
+        conditional package decoder is decoded at :func:`frozen_condition_values`
+        of each call's own value (:func:`compute_condition_values`); a bandwidth
+        condition reads it from the summary's ``freq_bandwidth_hz`` (missing
+        column raises), a loudness condition measures it from the session audio
+        (:func:`compute_usv_loudness.session_image_level_db`), and calls with no
+        value get nulls. The summary is rewritten atomically.
 
         Parameters
         ----------
@@ -782,25 +859,27 @@ class QLVMLatentInference:
             # decoder is out-of-distribution and yields unreliable coordinates.
             # masking_type "none" keeps raw spectrograms (correct only if the decoder
             # was trained without masking).
-            # A mean-frequency condition is always computed on the masked call, even
-            # for a decoder fed unmasked (floored) spectrograms, so it needs the masks too.
+            # A mean-frequency or loudness condition is always computed on the masked
+            # call, even for a decoder fed unmasked (floored) spectrograms, so it needs
+            # the masks too.
             condition = contract['condition'] if contract is not None and contract['c_dim'] else None
-            mean_freq_condition = condition is not None and condition['name'] == 'mean_freq'
+            masked_call_condition = condition is not None and condition['name'] in ('mean_freq', 'loudness')
             require_mask = contract is not None and contract['require_mask']
             # build_session_masks gives a call without mask instances an all-ones mask.
             # A set built with require_mask left such calls out, and their mean frequency
-            # would span the whole call, so those decoders give them null columns. Sets
-            # without require_mask (the shipped model, train-qlvm on a main-built set)
-            # trained on them under that all-ones mask, so they are embedded as before.
-            drop_maskless = require_mask or mean_freq_condition
+            # or loudness would span the whole call, so those decoders give them null
+            # columns. Sets without require_mask (the shipped model, train-qlvm on a
+            # main-built set) trained on them under that all-ones mask, so they are
+            # embedded as before.
+            drop_maskless = require_mask or masked_call_condition
             masks = None
             if cfg['masking_type'] == 'sam' or drop_maskless:
                 # Without a mask group every call would get the all-ones fallback.
                 if f"mask/{root.name}" not in h5_file:
                     error_message = (
                         f"{h5_loc} has no mask/{root.name} group. This decoder needs SAM masks (masking_type 'sam', "
-                        f"a mean-frequency condition, or a training contract with require_mask), and without them "
-                        f"every USV would be embedded unmasked. Run generate-usv-masks on the session first."
+                        f"a mean-frequency or loudness condition, or a training contract with require_mask), and "
+                        f"without them every USV would be embedded unmasked. Run generate-usv-masks on the session first."
                     )
                     raise ValueError(error_message)
                 masks, mask_counts = build_session_masks(
@@ -815,8 +894,48 @@ class QLVMLatentInference:
                     masks = masks[has_mask]
             specs = specs[usv_indices].astype(np.float32)
             durations = durations[usv_indices]
-            if cfg['masking_type'] == 'sam':
-                specs = specs * masks
+
+        usv_summary_loc = first_match_or_raise(
+            root=root / "audio",
+            pattern="*_usv_summary.csv",
+            recursive=True,
+            label="USV summary CSV",
+        )
+        usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
+
+        # Bandwidth and loudness conditions (phase 11) take each call's raw value from
+        # outside the stored spectrogram; a call without one gets null columns.
+        raw_values = None
+        if condition is not None and condition['name'] == 'bandwidth':
+            if "freq_bandwidth_hz" not in usv_df.columns:
+                error_message = (
+                    f"{usv_summary_loc.name} has no freq_bandwidth_hz column, which this bandwidth-conditioned "
+                    f"decoder is decoded at. Run generate-usv-acoustic-features on the session first."
+                )
+                raise ValueError(error_message)
+            raw_values = usv_df["freq_bandwidth_hz"].cast(pls.Float64).fill_null(np.nan).to_numpy()[usv_indices]
+        elif condition is not None and condition['name'] == 'loudness':
+            self.message_output(f"Measuring the image-level loudness of {len(usv_indices)} USVs from the audio.")
+            raw_values = session_image_level_db(
+                root_directory=str(root),
+                starts=usv_df["start"].to_numpy()[usv_indices],
+                stops=usv_df["stop"].to_numpy()[usv_indices],
+                regions=masks > 0.5,
+                spec_params=self.input_parameter_dict['generate_spectrograms'],
+                message_output=self.message_output,
+            )
+        if raw_values is not None:
+            has_value = np.isfinite(raw_values)
+            self.message_output(
+                f"{int(np.count_nonzero(~has_value))} USVs without a {condition['name']} value get null qlvm_* columns."
+            )
+            usv_indices, specs, durations, raw_values = (
+                usv_indices[has_value], specs[has_value], durations[has_value], raw_values[has_value]
+            )
+            masks = masks[has_value] if masks is not None else None
+
+        if cfg['masking_type'] == 'sam':
+            specs = specs * masks
 
         # Preprocess identically to the training set (same resize/time-stretch), then
         # normalize the way the decoder's contract says it was fed.
@@ -824,8 +943,8 @@ class QLVMLatentInference:
         resized = stretch_specs(specs, durations, target_shape, cfg['time_stretch'])
         data = jnp.asarray(normalize_model_inputs(resized, contract)[:, None, :, :])
 
-        # A conditional package decoder is decoded at the frozen corpus bin mean of
-        # each call's own condition value.
+        # A conditional package decoder is decoded at the value its cell's rule gives
+        # each call's own condition value (frozen_condition_values).
         condition_values = None
         if condition is not None:
             masked_resized = None
@@ -833,10 +952,23 @@ class QLVMLatentInference:
                 masked_resized = resized if cfg['masking_type'] == 'sam' else stretch_specs(
                     specs * masks, durations, target_shape, cfg['time_stretch']
                 )
-            own_values = compute_condition_values(condition, durations, masked_resized)
-            condition_values = frozen_condition_values(own_values, condition_bins)
+            own_values = compute_condition_values(condition, durations, masked_resized, raw_values)
+            decode = condition.get('decode')
+            condition_values = frozen_condition_values(own_values, condition_bins, decode)
+            if decode is None:
+                rule = "frozen corpus bin means"
+            else:
+                rule = f"'{decode}' decode values"
+                n_clamped = int(np.count_nonzero(
+                    (own_values < condition_bins['train_c_min']) | (own_values > condition_bins['train_c_max'])
+                ))
+                self.message_output(
+                    f"{n_clamped} USVs have a {condition['name']} value outside the training range "
+                    f"[{float(condition_bins['train_c_min']):.4f}, {float(condition_bins['train_c_max']):.4f}] "
+                    f"and are decoded at the end of the {'range' if decode == 'exact' else 'decode grid'} nearest them."
+                )
             self.message_output(
-                f"Conditioning on {condition['name']}: {len(np.unique(condition_values))} frozen corpus bin means "
+                f"Conditioning on {condition['name']}: {len(np.unique(condition_values))} {rule} "
                 f"for {len(own_values)} USVs."
             )
 
@@ -856,13 +988,6 @@ class QLVMLatentInference:
             "qlvm_model": [model_id] * len(usv_indices),
         }, schema_overrides={"qlvm_model": pls.String})
 
-        usv_summary_loc = first_match_or_raise(
-            root=root / "audio",
-            pattern="*_usv_summary.csv",
-            recursive=True,
-            label="USV summary CSV",
-        )
-        usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
         usv_df = usv_df.drop([c for c in QLVM_COLUMNS if c in usv_df.columns])
         usv_df = usv_df.with_row_index(name="_usv_row")
         merged = order_usv_summary_columns(usv_df.join(qlvm_df, on="_usv_row", how="left").drop("_usv_row"))

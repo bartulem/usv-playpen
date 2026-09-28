@@ -599,8 +599,9 @@ def _make_model_cell(
     """Synthesize a QLVM model package cell (checkpoint.tar, training_contract.json,
     cluster/{fine,coarse}/label_grid.npy) with a ReLU-head decoder; with a
     ``condition`` block, a conditional one (one extra decoder input) and its
-    ``condition_bins.npz`` (``bins`` = (edges, bin_mean)). ``require_mask`` True, as
-    in every v2 cell, says its corpus kept only calls with a SAM mask."""
+    ``condition_bins.npz`` (``bins`` = (edges, bin_mean) for phase 10, or a dict of
+    the phase 11 keys, see :func:`_phase11_bins`). ``require_mask`` True, as in every
+    v2 and v3 cell, says its corpus kept only calls with a SAM mask."""
     torch = pytest.importorskip("torch")
     cell = tmp_path / "pkg" / "phase_test" / "cell_test"
     (cell / "cluster" / "fine").mkdir(parents=True)
@@ -608,10 +609,13 @@ def _make_model_cell(
     arrays = _relu_state_dict(rng)
     if condition is not None:
         arrays["decoder.0.weight"] = (rng.standard_normal((2048, 5)) * 0.05).astype(np.float32)
-        edges, bin_mean = bins
-        np.savez(cell / "condition_bins.npz", conditional=np.array(condition["name"]), n_bins=np.array(len(bin_mean)),
-                 edges=np.asarray(edges, dtype=np.float64), bin_mean=np.asarray(bin_mean, dtype=np.float32),
-                 bin_count=np.ones(len(bin_mean), dtype=np.int64))
+        if isinstance(bins, dict):
+            np.savez(cell / "condition_bins.npz", **bins)
+        else:
+            edges, bin_mean = bins
+            np.savez(cell / "condition_bins.npz", conditional=np.array(condition["name"]), n_bins=np.array(len(bin_mean)),
+                     edges=np.asarray(edges, dtype=np.float64), bin_mean=np.asarray(bin_mean, dtype=np.float32),
+                     bin_count=np.ones(len(bin_mean), dtype=np.int64))
     state = {key: torch.from_numpy(value) for key, value in arrays.items()}
     torch.save({"model": state, "optimizer": {}, "run info": []}, cell / "checkpoint.tar")
     contract = {
@@ -629,6 +633,20 @@ def _make_model_cell(
     np.save(cell / "cluster" / "fine" / "label_grid.npy", fine_grid)
     np.save(cell / "cluster" / "coarse" / "label_grid.npy", coarse_grid)
     return cell
+
+
+def _phase11_bins(name, c_min, c_max, step):
+    """A phase 11 condition_bins.npz, as the v3 package writes it: the capped training
+    edges and groups, the training c range and a decode grid from its low end; no
+    bin_mean."""
+    grid = c_min + step * np.arange(round((c_max - c_min) / step) + 1)
+    return {
+        "conditional": np.array(name), "bin_scheme": np.array("quantile_capped"), "n_bins": np.array(2),
+        "edges": np.array([c_min, 0.5, c_max]), "group_ids": np.array([0, 1]), "group_sizes": np.array([10, 10]),
+        "group_means": np.array([0.25, 0.75], dtype=np.float32),
+        "train_c_min": np.float32(c_min), "train_c_max": np.float32(c_max),
+        "decode_grid": grid.astype(np.float64), "decode_grid_step": np.float64(step), "run_decode_grid_step": np.float64(0.01),
+    }
 
 
 def test_infer_and_merge_with_a_model_package_cell(tmp_path, mocker):
@@ -747,6 +765,191 @@ def test_infer_and_merge_conditional_cell_decodes_at_frozen_mean_freq(tmp_path, 
     df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
     assert df["qlvm1"][0] is not None
     assert df["qlvm1"][2] is not None
+
+
+def test_frozen_condition_values_phase11_exact_clamps_to_the_training_range():
+    """Duration and bandwidth cells decode each call at its own c, clamped to the
+    range the cell was trained on."""
+    bins = _phase11_bins("bandwidth", 0.05, 0.95, 0.01)
+    got = ql.frozen_condition_values(np.array([-0.1, 0.05, 0.3337, 0.95, 1.2]), bins, "exact")
+    np.testing.assert_array_equal(got, np.array([0.05, 0.05, 0.3337, 0.95, 0.95], dtype=np.float32))
+    assert got.dtype == np.float32
+
+
+def test_frozen_condition_values_phase11_grid_snaps_to_the_nearest_grid_point():
+    """Mean-frequency and loudness cells decode at the nearest decode_grid point: a
+    midpoint goes to the lower point and a c beyond the grid to its end point."""
+    bins = _phase11_bins("loudness", 0.0, 1.0, 0.25)
+    got = ql.frozen_condition_values(np.array([-0.3, 0.1, 0.125, 0.126, 0.6, 1.4]), bins, "grid")
+    np.testing.assert_array_equal(got, np.array([0.0, 0.0, 0.0, 0.25, 0.5, 1.0], dtype=np.float32))
+    with pytest.raises(ValueError, match="decode 'grid' or 'exact'"):
+        ql.frozen_condition_values(np.array([0.5]), bins)
+
+
+def test_compute_condition_values_maps_bandwidth_and_loudness_from_raw_units():
+    """Phase 11's frozen maps: bandwidth Hz / 90 kHz and loudness dB over the
+    contract's db_range, clipped to [0, 1], in float64 rounded to float32."""
+    durations = np.zeros(5, dtype=np.int64)
+    bandwidth = {"name": "bandwidth", "decode": "exact"}
+    np.testing.assert_array_equal(
+        ql.compute_condition_values(bandwidth, durations, None, np.array([0.0, 45000.0, 90000.0, 99000.0, 3000.3])),
+        np.array([0.0, 0.5, 1.0, 1.0, 3000.3 / 90000.0], dtype=np.float32),
+    )
+    loudness = {"name": "loudness", "db_range": [28.83, 95.85], "decode": "grid"}
+    np.testing.assert_array_equal(
+        ql.compute_condition_values(loudness, durations, None, np.array([28.83, 95.85, 62.34, 10.0, 120.0])),
+        np.array([0.0, 1.0, (62.34 - 28.83) / (95.85 - 28.83), 0.0, 1.0], dtype=np.float32),
+    )
+    with pytest.raises(ValueError, match="needs each call's raw value"):
+        ql.compute_condition_values(loudness, durations, None)
+
+
+def test_enforce_training_contract_accepts_the_phase11_conditions():
+    """Bandwidth and loudness conditions are embeddable; an unknown condition or
+    decode rule is refused."""
+    cfg = _contract_cfg()
+    params = {"0.weight": np.zeros((2, 4)), "1.weight": np.zeros((2, 2))}
+    for condition in ({"name": "bandwidth", "decode": "exact"}, {"name": "loudness", "db_range": [0, 1], "decode": "grid"}):
+        assert ql.enforce_training_contract(_matching_contract(cfg, c_dim=1, condition=condition), cfg, params) == 128.0
+    with pytest.raises(ValueError, match=r"condition\.decode"):
+        ql.enforce_training_contract(
+            _matching_contract(cfg, c_dim=1, condition={"name": "loudness", "decode": "batch_mean"}), cfg, params
+        )
+    with pytest.raises(ValueError, match="c_dim"):
+        ql.enforce_training_contract(_matching_contract(cfg, c_dim=1, condition={"name": "pitch"}), cfg, params)
+
+
+@pytest.mark.parametrize(
+    ("condition", "bins"),
+    [
+        ({"name": "duration", "duration_min": 8, "duration_max": 127, "epsilon": 1e-8, "decode": "exact"},
+         (np.array([0.0, 0.5, 1.0]), np.array([0.2, 0.8], dtype=np.float32))),
+        ({"name": "duration", "duration_min": 8, "duration_max": 127, "epsilon": 1e-8},
+         _phase11_bins("duration", 0.0, 1.0, 0.01)),
+    ],
+)
+def test_load_model_cell_refuses_bins_that_disagree_with_the_contract(tmp_path, condition, bins):
+    """Phase 10 bins (bin means) with a phase 11 decode rule, or phase 11 bins (no
+    bin_mean) without one, would decode at the wrong c: the cell is refused."""
+    rng = np.random.default_rng(20)
+    grid = np.ones((8, 8), dtype=np.int16)
+    cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid,
+                            condition=condition, bins=bins)
+    with pytest.raises(ValueError, match=r"condition_bins\.npz holds"):
+        ql.load_model_cell(str(cell))
+
+
+def _phase11_session(tmp_path, rng, condition, bins, summary_columns=None):
+    """A session whose rows 0 and 2 are real calls with SAM masks in the low and the
+    high frequency rows, a phase 11 cell for ``condition`` and settings pointing at
+    it; ``summary_columns`` are added to usv_summary.csv."""
+    grid = rng.integers(1, 5, size=(8, 8)).astype(np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid, with_masks=False)
+    _set_session_durations(root, session_id, [64, 0, 64])
+    low_rows, high_rows = np.zeros((128, 128), dtype=bool), np.zeros((128, 128), dtype=bool)
+    low_rows[:32, :] = True
+    high_rows[96:, :] = True
+    _write_session_masks(root, session_id, {0: low_rows, 2: high_rows})
+    if summary_columns:
+        summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+        pls.read_csv(summary_path).with_columns(**summary_columns).write_csv(summary_path)
+    cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid,
+                            condition=condition, bins=bins)
+    cfg["model_cell_directory"] = str(cell)
+    cfg["masking_type"] = "none"
+    return root, session_id, cfg, (low_rows, high_rows)
+
+
+def _run_capturing_c(root, cfg, mocker, extra_settings=None):
+    """Run infer_and_merge, returning the condition values embed_data was given and
+    the messages."""
+    captured = {}
+    real_embed = ql.embed_data
+
+    def _capture(lattice, data, params, lattice_batch_size, data_batch_size, condition_values=None):
+        captured["condition_values"] = condition_values
+        return real_embed(lattice, data, params, lattice_batch_size, data_batch_size, condition_values)
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    mocker.patch("usv_playpen.processing.qlvm_latents.embed_data", side_effect=_capture)
+    messages = []
+    ql.QLVMLatentInference(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_latents": cfg, **(extra_settings or {})},
+        message_output=messages.append,
+    ).infer_and_merge()
+    return captured["condition_values"], messages
+
+
+def test_infer_and_merge_phase11_bandwidth_reads_the_summary(tmp_path, mocker):
+    """A bandwidth cell decodes each call at its summary freq_bandwidth_hz / 90 kHz,
+    clamped to the training range; a call without a bandwidth gets null columns."""
+    rng = np.random.default_rng(21)
+    condition = {"name": "bandwidth", "source": "usv_summary freq_bandwidth_hz", "decode": "exact"}
+    root, session_id, cfg, _masks = _phase11_session(
+        tmp_path, rng, condition, _phase11_bins("bandwidth", 0.05, 0.95, 0.01),
+        summary_columns={"freq_bandwidth_hz": pls.Series([89100.0, 5000.0, None])},
+    )
+
+    condition_values, messages = _run_capturing_c(root, cfg, mocker)
+
+    np.testing.assert_array_equal(condition_values, np.array([0.95], dtype=np.float32))   # 0.99, clamped
+    assert any("1 USVs without a bandwidth value" in message for message in messages)
+    assert any("1 USVs have a bandwidth value outside the training range" in message for message in messages)
+    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+    assert df["qlvm1"][0] is not None
+    assert df["qlvm1"][1] is None
+    assert df["qlvm1"][2] is None
+    assert df["freq_bandwidth_hz"][0] == 89100.0
+
+
+def test_infer_and_merge_phase11_bandwidth_needs_the_summary_column(tmp_path, mocker):
+    """Without generate-usv-acoustic-features' freq_bandwidth_hz there is no c: the
+    run stops before anything is written."""
+    rng = np.random.default_rng(22)
+    condition = {"name": "bandwidth", "decode": "exact"}
+    root, session_id, cfg, _masks = _phase11_session(tmp_path, rng, condition, _phase11_bins("bandwidth", 0.05, 0.95, 0.01))
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    before = summary_path.read_bytes()
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    with pytest.raises(ValueError, match="no freq_bandwidth_hz column"):
+        ql.QLVMLatentInference(
+            root_directory=str(root),
+            input_parameter_dict={"infer_qlvm_latents": cfg},
+            message_output=lambda *_a, **_kw: None,
+        ).infer_and_merge()
+    assert summary_path.read_bytes() == before
+
+
+def test_infer_and_merge_phase11_loudness_measures_the_masked_calls(tmp_path, mocker):
+    """A loudness cell measures each call's image-level dB over its SAM mask region
+    from the audio, maps it through db_range and snaps it to the decode grid; a
+    call with no measurable loudness gets null columns."""
+    rng = np.random.default_rng(23)
+    condition = {"name": "loudness", "db_range": [28.83, 95.85], "decode": "grid"}
+    root, session_id, cfg, (low_rows, high_rows) = _phase11_session(
+        tmp_path, rng, condition, _phase11_bins("loudness", 0.0, 1.0, 0.0025)
+    )
+    measured = {}
+
+    def _loudness(**kwargs):
+        measured.update(kwargs)
+        return np.array([62.34, np.nan], dtype=np.float32)
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.session_image_level_db", side_effect=_loudness)
+    spec_params = {"offset": 0.0}
+    condition_values, messages = _run_capturing_c(root, cfg, mocker, {"generate_spectrograms": spec_params})
+
+    np.testing.assert_array_equal(measured["starts"], [0.1, 0.5])
+    np.testing.assert_array_equal(measured["regions"], np.stack([low_rows, high_rows]))
+    assert measured["spec_params"] is spec_params
+    own = np.clip((np.float64(np.float32(62.34)) - 28.83) / (95.85 - 28.83), 0.0, 1.0)
+    grid = 0.0025 * np.arange(401)
+    np.testing.assert_array_equal(condition_values, np.array([grid[np.argmin(np.abs(grid - own))]], dtype=np.float32))
+    assert any("1 USVs without a loudness value" in message for message in messages)
+    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+    assert df["qlvm1"][0] is not None
+    assert df["qlvm1"][2] is None
 
 
 def test_export_model_cell_arrays_writes_the_reference_layout(tmp_path):

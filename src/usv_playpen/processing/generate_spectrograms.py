@@ -202,6 +202,77 @@ def compute_usv_spectrogram(
     return avg_spectrogram, original_time_bins
 
 
+def open_hpss_audio(root: pathlib.Path) -> tuple[np.memmap, int]:
+    """
+    Description
+    -----------
+    Opens a session's concatenated HPSS-filtered audio memmap read-only, parsing
+    its layout from the file name exactly as ``das_inference.summarize_das_findings``
+    does (``..._<sampling rate>_<samples>_<channels>_<dtype>.mmap``).
+
+    Parameters
+    ----------
+    root (pathlib.Path)
+        Session root directory (contains ``audio/hpss_filtered``).
+
+    Returns
+    -------
+    audio (np.memmap)
+        ``(n_samples, n_channels)`` audio.
+    sampling_rate (int)
+        Audio sampling rate in Hz.
+    """
+
+    audio_file_loc = first_match_or_raise(
+        root=root / "audio" / "hpss_filtered",
+        pattern="*.mmap",
+        label="concatenated audio mmap",
+    )
+    name_parts = audio_file_loc.name.split("_")
+    data_type, channel_num, sample_num, sampling_rate = (
+        name_parts[-1][:-5],
+        int(name_parts[-2]),
+        int(name_parts[-3]),
+        int(name_parts[-4]),
+    )
+    audio = np.memmap(filename=audio_file_loc, mode="r", dtype=data_type, shape=(sample_num, channel_num))
+    return audio, sampling_rate
+
+
+def excluded_audio_columns(root_directory: str, logger: Callable = print) -> tuple[list[str], set[int]]:
+    """
+    Description
+    -----------
+    A session's hardware-excluded microphones (per-session metadata record,
+    ``Equipment -> audio_Avisoft -> excluded_channels``; empty for healthy
+    sessions) and their audio memmap columns: 'm_chNN' -> column NN-1 and
+    's_chNN' -> 12 + NN-1, since the master device occupies columns 0-11
+    and the slave device columns 12-23 (the concatenated-audio channel layout,
+    matching das_inference's channel map).
+
+    Parameters
+    ----------
+    root_directory (str)
+        Session root directory.
+    logger (Callable)
+        Logging callback passed to ``read_excluded_audio_channels``. Defaults to ``print``.
+
+    Returns
+    -------
+    excluded_channels (list[str])
+        The excluded channel names.
+    excluded_columns (set[int])
+        Their memmap column indices.
+    """
+
+    excluded_channels = read_excluded_audio_channels(root_directory, logger=logger)
+    excluded_columns = {
+        (12 if channel_name.startswith('s') else 0) + int(channel_name[-2:]) - 1
+        for channel_name in excluded_channels
+    }
+    return excluded_channels, excluded_columns
+
+
 class SpectrogramGenerator:
     """
     Description
@@ -370,37 +441,15 @@ class SpectrogramGenerator:
         )
         usv_summary_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
 
-        audio_file_loc = first_match_or_raise(
-            root=root / "audio" / "hpss_filtered",
-            pattern="*.mmap",
-            label="concatenated audio mmap",
-        )
-        audio_file_name = audio_file_loc.name
-        data_type, channel_num, sample_num, audio_sampling_rate = (
-            audio_file_name.split("_")[-1][:-5],
-            int(audio_file_name.split("_")[-2]),
-            int(audio_file_name.split("_")[-3]),
-            int(audio_file_name.split("_")[-4]),
-        )
-        audio_file_data = np.memmap(
-            filename=audio_file_loc,
-            mode="r",
-            dtype=data_type,
-            shape=(sample_num, channel_num),
-        )
+        audio_file_data, audio_sampling_rate = open_hpss_audio(root)
+        sample_num, channel_num = audio_file_data.shape
 
-        # Hardware-excluded microphones for this session (per-session metadata
-        # record, ``Equipment -> audio_Avisoft -> excluded_channels``; empty
-        # for healthy sessions) are dropped from the variance-weighted average
-        # so artifact energy on a compromised channel cannot dominate it.
-        # 'm_chNN'/'s_chNN' -> mmap column: the master device occupies columns
-        # 0-11 and the slave device columns 12-23 (the concatenated-audio
-        # channel layout, matching das_inference's channel map).
-        excluded_channels = read_excluded_audio_channels(self.root_directory, logger=self.message_output)
-        excluded_channel_indices = {
-            (12 if channel_name.startswith('s') else 0) + int(channel_name[-2:]) - 1
-            for channel_name in excluded_channels
-        }
+        # Hardware-excluded microphones for this session are dropped from the
+        # variance-weighted average so artifact energy on a compromised channel
+        # cannot dominate it.
+        excluded_channels, excluded_channel_indices = excluded_audio_columns(
+            self.root_directory, logger=self.message_output
+        )
         eligible_channel_indices = [ch for ch in range(channel_num) if ch not in excluded_channel_indices]
         if excluded_channel_indices:
             self.message_output(
