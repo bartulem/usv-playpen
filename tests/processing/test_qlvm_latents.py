@@ -903,6 +903,29 @@ def test_infer_and_merge_phase11_bandwidth_reads_the_summary(tmp_path, mocker):
     assert df["freq_bandwidth_hz"][0] == 89100.0
 
 
+def test_infer_and_merge_phase11_grid_counts_against_the_decode_grid(tmp_path, mocker):
+    """A 'grid' cell clips to the ends of its decode grid, which can extend past the
+    training range (as the v3 mean-frequency grid does), so the log counts calls against
+    the grid's ends: a call between the training maximum and the grid's end decodes at
+    its own grid point and is not counted, while one beyond the grid's end is."""
+    rng = np.random.default_rng(23)
+    condition = {"name": "bandwidth", "source": "usv_summary freq_bandwidth_hz", "decode": "grid"}
+    bins = _phase11_bins("bandwidth", 0.05, 0.95, 0.01)
+    bins["train_c_max"] = np.float32(0.90)
+    root, _session_id, cfg, _masks = _phase11_session(
+        tmp_path, rng, condition, bins,
+        summary_columns={"freq_bandwidth_hz": pls.Series([0.93 * 90000.0, 5000.0, 0.99 * 90000.0])},
+    )
+
+    condition_values, messages = _run_capturing_c(root, cfg, mocker)
+
+    # Row 0 (0.93, past the training maximum but inside the grid) keeps its own grid point;
+    # row 2 (0.99, beyond the grid) decodes at the grid's end.
+    np.testing.assert_allclose(condition_values, np.array([0.93, 0.95], dtype=np.float32), atol=1e-6)
+    assert any("1 USVs have a bandwidth value outside the decode grid [0.0500, 0.9500]" in message
+               for message in messages)
+
+
 def test_infer_and_merge_phase11_bandwidth_needs_the_summary_column(tmp_path, mocker):
     """Without generate-usv-acoustic-features' freq_bandwidth_hz there is no c: the
     run stops before anything is written."""

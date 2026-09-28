@@ -360,7 +360,9 @@ def load_model_cell(model_cell_directory: str) -> dict:
         # its training range and decode grid instead (see frozen_condition_values).
         with np.load(cell / contract["condition_bins"], allow_pickle=False) as bins:
             condition_bins = {key: bins[key] for key in bins.files}
-        decode = (contract["condition"] or {}).get("decode")
+        # Phase 10 contracts carry no decode rule; phase 11 contracts name one.
+        condition = contract["condition"]
+        decode = condition["decode"] if condition is not None and "decode" in condition else None
         phase11_bins = "decode_grid" in condition_bins
         if phase11_bins != (decode is not None) or (not phase11_bins and "bin_mean" not in condition_bins):
             error_message = (
@@ -621,7 +623,7 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
             f"c_dim: this module embeds unconditional decoders and decoders conditioned on one of "
             f"{', '.join(CONDITION_NAMES)}, trained c_dim {contract['c_dim']!r} with condition {condition!r}"
         )
-    if condition is not None and condition.get("decode", "grid") not in ("grid", "exact"):
+    if condition is not None and "decode" in condition and condition["decode"] not in ("grid", "exact"):
         mismatches.append(f"condition.decode: expected 'grid' or 'exact', trained {condition['decode']!r}")
     if contract["input_normalization"] not in ("none", "minmax"):
         mismatches.append(f"input_normalization: expected 'none' or 'minmax', trained {contract['input_normalization']!r}")
@@ -953,19 +955,23 @@ class QLVMLatentInference:
                     specs * masks, durations, target_shape, cfg['time_stretch']
                 )
             own_values = compute_condition_values(condition, durations, masked_resized, raw_values)
-            decode = condition.get('decode')
+            decode = condition['decode'] if 'decode' in condition else None
             condition_values = frozen_condition_values(own_values, condition_bins, decode)
             if decode is None:
                 rule = "frozen corpus bin means"
             else:
                 rule = f"'{decode}' decode values"
-                n_clamped = int(np.count_nonzero(
-                    (own_values < condition_bins['train_c_min']) | (own_values > condition_bins['train_c_max'])
-                ))
+                # An 'exact' cell clamps to its training range; a 'grid' cell clips to the ends
+                # of its decode grid, which can lie past the training range, so each rule is
+                # counted against the bounds it actually applies.
+                if decode == 'exact':
+                    low, high, bound_name = condition_bins['train_c_min'], condition_bins['train_c_max'], "training range"
+                else:
+                    low, high, bound_name = condition_bins['decode_grid'][0], condition_bins['decode_grid'][-1], "decode grid"
+                n_clamped = int(np.count_nonzero((own_values < low) | (own_values > high)))
                 self.message_output(
-                    f"{n_clamped} USVs have a {condition['name']} value outside the training range "
-                    f"[{float(condition_bins['train_c_min']):.4f}, {float(condition_bins['train_c_max']):.4f}] "
-                    f"and are decoded at the end of the {'range' if decode == 'exact' else 'decode grid'} nearest them."
+                    f"{n_clamped} USVs have a {condition['name']} value outside the {bound_name} "
+                    f"[{float(low):.4f}, {float(high):.4f}] and are decoded at the end of it nearest them."
                 )
             self.message_output(
                 f"Conditioning on {condition['name']}: {len(np.unique(condition_values))} {rule} "
