@@ -1624,6 +1624,8 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 *Infer QLVM latents* (``infer_qlvm_latents``):
 
 * **model_cell_directory** : one cell of a QLVM model package, e.g. ``/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked`` (default ``""``, unused). When set, the cell replaces ``weights_npz_path``, both ``reference_arrays_*`` paths and the lattice keys: the decoder comes from its ``checkpoint.tar`` (read without torch; the legacy or ReLU head is read from the weights), the input normalization and duration window from its ``training_contract.json``, the lattice from the contract's Fibonacci ``embedding_fib_m`` (``24``, 46,368 points), and the categories from its ``cluster/fine/label_grid.npy`` and ``cluster/coarse/label_grid.npy``. ``masking_type``, ``target_shape``, ``time_stretch`` and ``latent_dim`` must still agree with the contract (``masking_type`` ``"sam"`` for phase 9 cells, ``"none"`` for phase 6, 10 and 11 cells). Package cells were trained on min-maxed spectrograms (phase 6 and 10 cells also with a 0.2 loudness floor), which is applied automatically. Conditional cells decode each USV at a value derived from its own conditioning value — the normalized duration; the mean frequency of its SAM-masked spectrogram, which needs the session's masks even though the input is unmasked; and, in phase 11 (``qlvm_models_latest/v3``), ``clip(freq_bandwidth_hz / 90000, 0, 1)`` from the summary (run *Generate USV acoustic features* first) or the loudness mapped through the contract's ``db_range`` (the masked, variance-weighted image-level dB, measured from the session's ``hpss_filtered`` audio with the spectrogram generator's own slice and STFT; about 40–90 ms per USV on one core). USVs without a value get null ``qlvm_*`` columns. Phase 10 cells (duration, mean frequency) decode at the frozen corpus bin mean of ``condition_bins.npz`` (the lattice is decoded once per distinct bin mean, up to 32 per session). Phase 11 cells (duration, mean frequency, bandwidth, loudness) follow the contract's ``condition.decode``: ``"exact"`` (duration, bandwidth) is the value clamped to the cell's training range ``[train_c_min, train_c_max]``, ``"grid"`` (mean frequency, loudness) the nearest point of the cell's ``decode_grid`` (0.0025 apart); the log counts the USVs outside the range each rule applies (the training range for ``"exact"``, the ends of the decode grid for ``"grid"``). This is how the package embedded every corpus call, and the lattice is decoded once per distinct value (about 100–250 per ~900-USV session)
+* **model_cells** : column prefix → model package cell, e.g. ``{"qlvm_dur": ".../v3/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor"}`` (default ``{}``, unused). When non-empty, one run places the session on the torus of **every** listed cell and writes, per prefix ``P``, exactly two float columns ``P1`` / ``P2`` (torus coordinates in ``[0, 1)``; nulls for calls a cell does not place); no ``qlvm_category``, ``qlvm_supercategory`` or ``qlvm_model`` is written, and stale ones, together with earlier ``P1`` / ``P2`` columns of the listed prefixes, are removed first (a ``qlvm1`` / ``qlvm2`` pair is kept unless ``qlvm`` is a listed prefix). A prefix must be a Python identifier (letters, digits, underscores, not starting with a digit), may appear once, and ``P1`` / ``P2`` may not be another column of the USV summary. Each cell is loaded once per run and checked against ``masking_type``, ``target_shape``, ``time_stretch``, ``latent_dim`` and ``length_threshold`` like ``model_cell_directory``, so all listed cells must share them (``masking_type`` ``"none"`` for phase 6, 10 and 11 cells). Setting both ``model_cells`` and ``model_cell_directory`` stops the run. See *Several QLVM models in one run* below for the production mapping and how each model's coordinates are obtained
+* **prefer_package_values** : with ``model_cells``, take a corpus session's coordinates from each cell's own corpus embedding when the session's spectrogram H5 is verifiably the one the package was built from, and infer them otherwise (default ``true``); ``false`` infers every session with every cell. Unused without ``model_cells``
 * **weights_npz_path** : path to the QLVM decoder weights ``.npz`` (written by *Train QLVM*)
 * **reference_arrays_fine_npz_path** : path to the FINE reference ``arrays.npz`` (its ``ws_labels_periodic`` grid → ``qlvm_category``)
 * **reference_arrays_coarse_npz_path** : path to the COARSE reference ``arrays.npz`` (its ``ws_labels_periodic`` grid → ``qlvm_supercategory``)
@@ -1643,6 +1645,8 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 
     "infer_qlvm_latents": {
         "model_cell_directory": "",
+        "model_cells": {},
+        "prefer_package_values": true,
         "weights_npz_path": "",
         "reference_arrays_fine_npz_path": "",
         "reference_arrays_coarse_npz_path": "",
@@ -1658,6 +1662,30 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "lattice_batch_size": 4096,
         "data_batch_size": 8192
       }
+
+*Several QLVM models in one run* (``model_cells``). The production setting places every session on the regular (phase 6) torus and the four phase 11 conditional tori of ``qlvm_models_latest/v3``, all of the ``natural_5strata_N29000_unmasked_floor`` design, with ``masking_type`` ``"none"`` (the shipped default stays ``{}``; the paths are set per run or by a backfill):
+
+.. code-block:: json
+
+    "model_cells": {
+        "qlvm": "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3/phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor",
+        "qlvm_dur": "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor",
+        "qlvm_mf": "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3/phase11_cond_mean_freq_floor/natural_5strata_N29000_unmasked_floor",
+        "qlvm_bw": "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3/phase11_cond_bandwidth_floor/natural_5strata_N29000_unmasked_floor",
+        "qlvm_loud": "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3/phase11_cond_loudness_floor/natural_5strata_N29000_unmasked_floor"
+    }
+
+This writes ``qlvm1`` / ``qlvm2`` (regular), ``qlvm_dur1`` / ``qlvm_dur2`` (duration), ``qlvm_mf1`` / ``qlvm_mf2`` (mean frequency), ``qlvm_bw1`` / ``qlvm_bw2`` (bandwidth) and ``qlvm_loud1`` / ``qlvm_loud2`` (loudness); the bandwidth model needs ``freq_bandwidth_hz`` in the summary and the loudness and mean-frequency models the session's SAM masks, as with ``model_cell_directory``. Cluster labels and model provenance are not written to the summary.
+
+For each model and session the coordinates come from one of two routes, and the log names the route and the reason (e.g. ``qlvm_dur (v3/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor): package values (sha256 + 907 rows verified).``). The *package route* copies the package's own embedding of the call: the cell's ``posterior_cache.npz`` ``torus_weighted`` (turned into ``[0, 1)`` coordinates) joined to the summary row through ``recon_mse_breakdown.npz``'s ``spec_id`` (``<session>_<H5 row>``). Because a ``spec_id`` names a call only by its row in the session's spectrogram H5, it is taken only when all of these hold:
+
+* ``prefer_package_values`` is ``true`` and a ``SESSION_H5_BASELINE.tsv`` is found in the cell directory or one of its parents (the package root);
+* the session is listed in that baseline (it is one of the package's corpus sessions);
+* the SHA-256 of the session's ``audio/spectrograms/<session>_spectrograms.h5`` equals the baseline's (the H5 was not rebuilt since; it is hashed once per session, not once per model);
+* ``usv_summary.csv`` has as many rows as the H5;
+* the cell holds rows of the session, all inside the H5, and each row's ``durations`` and ``mask_counts`` in ``recon_mse_breakdown.npz`` equal the H5's (``spectrogram/<session>/durations`` and the number of ``mask/<session>/spectrogram_index`` entries naming the row).
+
+Otherwise the *inference route* embeds the session with that cell exactly as ``model_cell_directory`` would (the log says why: ``session not in the package corpus``, ``spectrogram H5 changed since the package: sha256 mismatch``, a row-count or per-row disagreement, no baseline above the cell, or ``prefer_package_values is false``). Both routes place the same calls of a verified corpus session (those inside the duration window with a SAM mask and, for conditional cells, a conditioning value), and inferred coordinates differ from the package's only where the package's TF32 embedding and the float32 embedding here round a spread-out posterior differently (see the phase 11 check above), so the columns are comparable across sessions whichever route filled them.
 
 Train spectrogram-pipeline models
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
