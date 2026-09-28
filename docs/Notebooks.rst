@@ -2554,6 +2554,42 @@ The §6 category-embedding panel reads its own knobs from the **Statistics param
 * **polar_grid_threshold_male** / **polar_grid_threshold_female** — minimum per-category USV count to render a panel in the sex likelihood grids.
 * **estrous_kde_min_points** — minimum count to render a category × estrous-stage panel.
 
+**§20 Per-session squeak timing.** ``uss.plot_session_squeak_time_heatmap`` draws one row per session showing where in the recording its squeaks (broadband vocalizations, the ``squeak`` column written by ``detect-usv-squeaks``) sit. The share is estimated continuously along each row, like a kernel-smoothed firing rate: every segment contributes a Gaussian in time, and the colour is the kernel-weighted percentage of nearby vocalizations that are squeaks, so a lone squeak is weighed against the calls around it rather than being 1 of 1 in a bin. Rows are never smoothed into one another. Where no vocalization is nearby the share is undefined and left blank (white) — not the same as vocalizing with no squeak (the faint tint of the block's colour). Rows are grouped by condition and sorted by the session's overall squeak rate, shown as bars on the right; a strip between the heatmap and the bars colours each row by condition, the condition legend sits in the rate panel, and a short colour bar sits at the top left. Every session with at least the minimum number of vocal segments is drawn, including sessions with no squeak (pale rows); the legend counts the rows drawn per condition. Noise segments are removed first when ``exclude_noise_usvs`` is set, so the rate is squeaks among vocal segments. Each condition block has its own colour ramp (``create_colormap``), from a faint tint of the condition's colour at 0 % to the colour itself at 100 %, and the key on the left is the same ramp in grey, from the same tint to a grey as light as the condition colours on average. The cell carries its own parameters; condition colours and labels come from ``session_condition_styles`` in ``visualizations_settings.json``. Adapted from Dexter's BBV corpus figure; playback sessions are left out because they were never processed.
+
+.. code-block:: python
+
+    fig_squeak_time, axes_squeak_time, stats_squeak_time = (
+        uss.plot_session_squeak_time_heatmap(
+            condition_session_lists={
+                condition: [configure_path(f"{squeak_input_dir}/{name}") for name in names]
+                for condition, names in squeak_condition_lists.items()
+            },
+            condition_styles=vis_settings["session_condition_styles"],
+            exclude_noise_usvs=exclude_noise_usvs,
+            kernel_sigma_s=squeak_kernel_sigma_s,
+            grid_step_s=squeak_grid_step_s,
+            min_vocal_density=squeak_min_vocal_density,
+            session_length_s=squeak_session_length_s,
+            min_session_segments=squeak_min_session_segments,
+            vmax_percent=squeak_vmax_percent,
+            zero_tint=squeak_zero_tint,
+            nodata_color=squeak_nodata_color,
+        )
+    )
+    if save_fig_bool:
+        save_figure(fig_squeak_time, "session_squeak_time_heatmap", vis_settings)
+    plt.show()
+
+* **squeak_condition_lists** — condition → session-list file names (joined to **squeak_input_dir**); the dict's order is the row-block order, and a session listed under two conditions raises.
+* **squeak_kernel_sigma_s** — width (s) of the Gaussian time kernel; larger is smoother.
+* **squeak_grid_step_s** — step (s) of the time grid the share is evaluated on.
+* **squeak_min_vocal_density** — kernel-summed vocal density (1 at a segment's own start) below which the share is left blank; 0.5 is roughly one vocalization within ±1 σ.
+* **squeak_session_length_s** — length of the time axis (s).
+* **squeak_min_session_segments** — sessions with fewer (non-noise) segments are dropped.
+* **squeak_vmax_percent** — top of the colour scale (%); below 100 the colour bar carries an arrow, so values above it show as saturated.
+* **squeak_zero_tint** — share of each condition's colour at the 0 % end of its ramp (0 = white, 1 = full colour); kept above 0 so 0 % differs from a silent stretch.
+* **squeak_nodata_color** — the colour where no vocalization is nearby (white draws it as empty).
+
 Source: `usv_general_analyses.ipynb <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/usv_general_analyses.ipynb>`_.
 
 USV embedding explorer

@@ -97,6 +97,7 @@ lists (index ``0`` primary, ``1`` secondary) while the grouped palettes are name
 maps.
 
 * **male_colors** / **female_colors** / **unassigned_colors** : per-emitter USV colours (male / female / no-emitter-assigned), used by the USV-timeline, spectrogram-overlay, embedding-scatter and modeling figures.
+* **session_condition_styles** : per-condition ``color`` and ``label`` of the session types (courtship intact partners, courtship mute female, female-female, male-male, isolated male), used by the per-session squeak-timing heatmap (``plot_session_squeak_time_heatmap``): female-female takes ``female_colors[0]``, male-male ``male_colors[0]``, courtship intact partners the channel-wise mean of the two (``#CD928A``) and courtship mute female the same at 50 % opacity; isolated male is ``#2A9D8F``. Colours may carry an alpha channel (8-digit hex).
 * **social_colors** : the single colour for social / dyadic features (e.g. the social-feature ratemaps and the timescale-audit "social" trace).
 * **manifold_colors** : the two torus output-coordinate colours (manifold-x / manifold-y, index ``0`` / ``1``) for the last-bin manifold-filter bars; deliberately far from the male / female / social colours so a manifold axis never reads as an animal identity.
 * **brain_area_colors** : per-brain-region palette (a seven-bucket map: ``PAG`` / ``MRN`` / ``VTA`` / ``SC`` / ``CENT`` / ``MB`` / ``other``) shared by the behavioral-video overlays and the anatomy / tuning figures.
@@ -111,6 +112,13 @@ maps.
     "female_colors": ["#FF6347", "#B851B4"],
     "social_colors": ["#5A6470"],
     "unassigned_colors": ["#C0C0C0"],
+    "session_condition_styles": {
+        "courtship_intact_partners": {"color": "#CD928A", "label": "courtship intact partners"},
+        "courtship_mute_female": {"color": "#CD928A80", "label": "courtship mute female"},
+        "female_female": {"color": "#FF6347", "label": "female-female"},
+        "courtship_male_male": {"color": "#9AC0CD", "label": "male-male"},
+        "lone_male": {"color": "#2A9D8F", "label": "isolated male"}
+    },
     "brain_area_colors": {"PAG": "#677470", "MRN": "#939884", "VTA": "#F5D27A",
                           "SC": "#9FB7D8", "CENT": "#D88080", "MB": "#9BBE85", "other": "#B8B8B8"},
     "cell_type_colors": ["#1A1A1A", "#7A7A7A", "#CFCFCF"],

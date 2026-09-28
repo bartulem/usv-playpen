@@ -43,6 +43,7 @@ from usv_playpen.visualizations.usv_summary_statistics import (
     plot_category_estrous_rates_grid,
     plot_category_estrous_ratio_grid,
     plot_unassigned_proportion_vs_distance_jointplot,
+    plot_session_squeak_time_heatmap,
     plot_hourly_regressions,
     plot_local_fatigue_binned_trends,
     plot_category_local_fatigue_heatmap,
@@ -2290,3 +2291,125 @@ def test_load_tied_ic_table_from_h5_gives_one_row_per_peak_count(tmp_path):
     assert table["n_comp"].to_list() == [1, 2]
     assert table["bic"].to_list() == [230.0, 215.0]
     assert set(table["sex"].to_list()) == {"male"} and set(table["rep"].to_list()) == {0}
+
+
+_SQUEAK_STYLES = {
+    "courtship": {"color": "#023047", "label": "courtship"},
+    "female_female": {"color": "#C1121F", "label": "female-female"},
+}
+
+
+def _write_squeak_session(root: Path, starts: list[float], squeak: list[bool], noise: list[bool]) -> None:
+    """Writes ``<root>/audio/<name>_usv_summary.csv`` with the three columns the heatmap reads."""
+
+    (root / "audio").mkdir(parents=True)
+    pls.DataFrame({"start": starts, "squeak": squeak, "noise": noise}).write_csv(
+        str(root / "audio" / f"{root.name}_usv_summary.csv"))
+
+
+def _squeak_cohort(tmp_path: Path) -> dict[str, list[str]]:
+    """
+    Three sessions over two conditions, written to disk with one session-list file per
+    condition:
+
+    * ``s_hi`` (courtship): a cluster at 10-13 s of which 2 of 4 segments are squeaks, one
+      plain segment at 90 s, and one noise-flagged squeak at 95 s that the noise filter must
+      remove -- rate 2/5;
+    * ``s_lo`` (courtship): 5 segments at 10-14 s, 1 squeak -- rate 1/5;
+    * ``s_none`` (female_female): 5 segments, no squeak -- drawn as a 0 % row.
+    """
+
+    sessions = {
+        "s_hi": ([10.0, 11.0, 12.0, 13.0, 90.0, 95.0], [True, False, False, True, False, True],
+                 [False, False, False, False, False, True]),
+        "s_lo": ([10.0, 11.0, 12.0, 13.0, 14.0], [True, False, False, False, False], [False] * 5),
+        "s_none": ([10.0, 11.0, 12.0, 13.0, 14.0], [False] * 5, [False] * 5),
+    }
+    for name, (starts, squeak, noise) in sessions.items():
+        _write_squeak_session(tmp_path / name, starts, squeak, noise)
+    courtship_list = tmp_path / "courtship.txt"
+    courtship_list.write_text(f"{tmp_path / 's_lo'}\n{tmp_path / 's_hi'}\n")
+    female_list = tmp_path / "female_female.txt"
+    female_list.write_text(f"{tmp_path / 's_none'}\n")
+    return {"courtship": [str(courtship_list)], "female_female": [str(female_list)]}
+
+
+def _squeak_heatmap(lists, exclude_noise_usvs, min_session_segments):
+    """Runs the heatmap on a 180 s axis with a 1 s grid and a 2 s kernel."""
+
+    return plot_session_squeak_time_heatmap(
+        condition_session_lists=lists, condition_styles=_SQUEAK_STYLES,
+        exclude_noise_usvs=exclude_noise_usvs, kernel_sigma_s=2.0, grid_step_s=1.0,
+        min_vocal_density=0.5, session_length_s=180.0, min_session_segments=min_session_segments,
+        vmax_percent=100.0, zero_tint=0.12, nodata_color="#FFFFFF")
+
+
+def test_plot_session_squeak_time_heatmap_rates_order_and_silence(tmp_path):
+    """
+    Checks the numbers behind the figure: noise segments are dropped before counting, a
+    session without any squeak is still drawn (as a 0 % row), drawn rows are sorted by squeak rate
+    within their condition, the kernel share at the centre of the 10-13 s cluster equals the
+    cluster's squeak fraction (the two squeaks sit at 10 s and 13 s, symmetric about 11.5 s,
+    so the share there is exactly the weight of the outer pair, strictly between 0 and 1/2),
+    a lone non-squeak far from any squeak reads 0 %, and a stretch with no vocalization within
+    the kernel's reach is NaN (blank) rather than 0.
+    """
+
+    fig, axes, stats = _squeak_heatmap(_squeak_cohort(tmp_path), exclude_noise_usvs=True,
+                                       min_session_segments=2)
+    try:
+        sessions = stats["sessions"].sort("session_id")
+        assert sessions["session_id"].to_list() == ["s_hi", "s_lo", "s_none"]
+        assert sessions["n_segments"].to_list() == [5, 5, 5]
+        assert sessions["n_noise_dropped"].to_list() == [1, 0, 0]
+        assert sessions["drawn"].to_list() == [True, True, True]
+        assert stats["n_drawn"] == 3 and stats["n_no_squeak"] == 1 and stats["n_too_few"] == 0
+        matrix, grid = stats["rate_matrix"], stats["grid_s"]
+        assert matrix.shape == (3, 180) and grid[0] == pytest.approx(0.5)
+        # Row 2 is s_none (female_female block, after both courtship rows): 0 % where it vocalizes.
+        assert matrix[2, int(np.argmin(np.abs(grid - 12.5)))] == pytest.approx(0.0, abs=1e-9)
+        at = int(np.argmin(np.abs(grid - 11.5)))
+        outer = 2.0 * np.exp(-0.5 * (1.5 / 2.0) ** 2)
+        inner = 2.0 * np.exp(-0.5 * (0.5 / 2.0) ** 2)
+        # Row 0 is s_hi (rate 2/5 beats s_lo's 1/5).
+        assert matrix[0, at] == pytest.approx(outer / (outer + inner), abs=1e-3)
+        assert matrix[0, int(np.argmin(np.abs(grid - 90.5)))] == pytest.approx(0.0, abs=1e-6)
+        assert np.isnan(matrix[0, int(np.argmin(np.abs(grid - 50.5)))])
+        assert np.isnan(matrix[1, int(np.argmin(np.abs(grid - 150.5)))])
+        assert np.nanmax(matrix) <= 1.0 and np.nanmin(matrix) >= 0.0
+        assert len(axes) == 4
+    finally:
+        plt.close(fig)
+
+
+def test_plot_session_squeak_time_heatmap_keeps_noise_when_asked(tmp_path):
+    """With ``exclude_noise_usvs=False`` the noise-flagged squeak is counted, and sessions below
+    the segment minimum are reported as too few rather than drawn."""
+
+    fig, _axes, stats = _squeak_heatmap(_squeak_cohort(tmp_path), exclude_noise_usvs=False,
+                                        min_session_segments=6)
+    try:
+        sessions = stats["sessions"].sort("session_id")
+        assert sessions["n_squeaks"].to_list() == [3, 1, 0]
+        assert stats["n_drawn"] == 1 and stats["n_too_few"] == 2
+    finally:
+        plt.close(fig)
+
+
+def test_plot_session_squeak_time_heatmap_rejects_session_in_two_conditions(tmp_path):
+    """A session listed under two conditions is a ValueError, since its row would be ambiguous."""
+
+    lists = _squeak_cohort(tmp_path)
+    lists["female_female"].append(lists["courtship"][0])
+    with pytest.raises(ValueError, match="listed under both"):
+        _squeak_heatmap(lists, exclude_noise_usvs=True, min_session_segments=2)
+
+
+def test_plot_session_squeak_time_heatmap_missing_summary_raises(tmp_path):
+    """A listed session without a USV summary is a FileNotFoundError naming its audio folder."""
+
+    (tmp_path / "s_empty").mkdir()
+    session_list = tmp_path / "list.txt"
+    session_list.write_text(f"{tmp_path / 's_empty'}\n")
+    with pytest.raises(FileNotFoundError, match="usv_summary"):
+        _squeak_heatmap({"courtship": [str(session_list)]}, exclude_noise_usvs=True, min_session_segments=2)

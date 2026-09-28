@@ -28,6 +28,19 @@
   "social_colors": ["#5A6470"],
   "manifold_colors": ["#7B3FA0", "#C8860A"],
   "unassigned_colors": ["#C0C0C0"],
+  "session_condition_styles": {
+    "courtship_intact_partners": {
+      "color": "#CD928A",
+      "label": "courtship intact partners"
+    },
+    "courtship_mute_female": {
+      "color": "#CD928A80",
+      "label": "courtship mute female"
+    },
+    "female_female": { "color": "#FF6347", "label": "female-female" },
+    "courtship_male_male": { "color": "#9AC0CD", "label": "male-male" },
+    "lone_male": { "color": "#2A9D8F", "label": "isolated male" }
+  },
   "brain_area_colors": {
     "PAG": "#677470",
     "MRN": "#939884",
