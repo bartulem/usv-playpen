@@ -93,6 +93,36 @@ def test_infer_qlvm_latents_cli_routes(runner, mocker, tmp_path):
     mock_cls.return_value.infer_and_merge.assert_called_once()
 
 
+def test_infer_qlvm_latents_cli_model_cell_pairs_become_model_cells(runner, mocker, tmp_path):
+    """Repeated --model-cell PREFIX CELL options become the model_cells object (prefix
+    -> cell, in the given order), written after the generic overrides, which never see
+    them; a prefix given twice is refused."""
+    mock_cls = mocker.patch("usv_playpen.processing.qlvm_latents.QLVMLatentInference")
+    spy = mocker.patch(
+        "usv_playpen.processing.qlvm_latents.modify_settings_json_for_cli",
+        return_value={"infer_qlvm_latents": {"model_cells": {}}},
+    )
+    result = runner.invoke(infer_qlvm_latents_cli, [
+        "--root-directory", str(tmp_path),
+        "--model-cell", "qlvm", "/pkg/phase6/cell",
+        "--model-cell", "qlvm_dur", "/pkg/phase11_duration/cell",
+        "--no-prefer-package-values",
+    ])
+    assert result.exit_code == 0, result.output
+    assert spy.call_args.kwargs["provided_params"] == ["prefer_package_values"]
+    settings = mock_cls.call_args.kwargs["input_parameter_dict"]["infer_qlvm_latents"]
+    assert settings["model_cells"] == {"qlvm": "/pkg/phase6/cell", "qlvm_dur": "/pkg/phase11_duration/cell"}
+    assert list(settings["model_cells"]) == ["qlvm", "qlvm_dur"]
+
+    result = runner.invoke(infer_qlvm_latents_cli, [
+        "--root-directory", str(tmp_path),
+        "--model-cell", "qlvm", "/a",
+        "--model-cell", "qlvm", "/b",
+    ])
+    assert result.exit_code != 0
+    assert "prefixes listed more than once" in str(result.exception)
+
+
 def test_train_qlvm_cli_routes(runner, mocker, tmp_path):
     """train-qlvm resolves settings and calls QLVMTrainer.train once."""
     mock_cls = mocker.patch("usv_playpen.processing.train_qlvm.QLVMTrainer")

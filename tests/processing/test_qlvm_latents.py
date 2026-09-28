@@ -17,11 +17,13 @@ import pickle
 import zipfile
 
 import h5py
+import jax.numpy as jnp
 import numpy as np
 import polars as pls
 import pytest
 
 from usv_playpen.processing import qlvm_latents as ql
+from usv_playpen.processing.build_qlvm_training_set import file_sha256
 
 
 def test_load_decoder_params_strips_prefix(tmp_path):
@@ -112,6 +114,8 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
 
     cfg = {
         "model_cell_directory": "",
+        "model_cells": {},
+        "prefer_package_values": True,
         "weights_npz_path": str(weights),
         "reference_arrays_fine_npz_path": str(fine_arrays),
         "reference_arrays_coarse_npz_path": str(coarse_arrays),
@@ -195,6 +199,8 @@ def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid, with_masks
 
     cfg = {
         "model_cell_directory": "",
+        "model_cells": {},
+        "prefer_package_values": True,
         "weights_npz_path": str(weights),
         "reference_arrays_fine_npz_path": str(fine_arrays),
         "reference_arrays_coarse_npz_path": str(coarse_arrays),
@@ -594,16 +600,18 @@ def test_normalize_model_inputs_follows_the_contract():
 
 
 def _make_model_cell(
-    tmp_path, rng, *, masking_type, floor, fine_grid, coarse_grid, fib_m=8, condition=None, bins=None, require_mask=True
+    tmp_path, rng, *, masking_type, floor, fine_grid, coarse_grid, fib_m=8, condition=None, bins=None, require_mask=True,
+    cell_name="cell_test",
 ):
     """Synthesize a QLVM model package cell (checkpoint.tar, training_contract.json,
     cluster/{fine,coarse}/label_grid.npy) with a ReLU-head decoder; with a
     ``condition`` block, a conditional one (one extra decoder input) and its
     ``condition_bins.npz`` (``bins`` = (edges, bin_mean) for phase 10, or a dict of
     the phase 11 keys, see :func:`_phase11_bins`). ``require_mask`` True, as in every
-    v2 and v3 cell, says its corpus kept only calls with a SAM mask."""
+    v2 and v3 cell, says its corpus kept only calls with a SAM mask. The cell is
+    ``<tmp_path>/pkg/phase_test/<cell_name>``, so several cells share one package."""
     torch = pytest.importorskip("torch")
-    cell = tmp_path / "pkg" / "phase_test" / "cell_test"
+    cell = tmp_path / "pkg" / "phase_test" / cell_name
     (cell / "cluster" / "fine").mkdir(parents=True)
     (cell / "cluster" / "coarse").mkdir(parents=True)
     arrays = _relu_state_dict(rng)
@@ -1144,3 +1152,245 @@ def test_infer_and_merge_unmasked_decoder_needs_no_masks(tmp_path, mocker):
     ).infer_and_merge()
 
     assert captured["n_embedded"] == 2
+
+
+def _model_cells_session(tmp_path, rng, prefixes=("qlvm", "qlvm_x")):
+    """A session whose rows 0 and 2 are real 64-bin calls with a SAM mask (row 1 a
+    placeholder), one unmasked floor-trained package cell per prefix (all in one
+    package, ``<tmp_path>/pkg``) and settings listing them in ``model_cells``."""
+    grid = np.ones((8, 8), dtype=np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid)
+    _set_session_durations(root, session_id, [64, 0, 64])
+    cfg["masking_type"] = "none"
+    cfg["model_cells"] = {
+        prefix: str(_make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid,
+                                     cell_name=f"cell_{prefix}"))
+        for prefix in prefixes
+    }
+    return root, session_id, cfg
+
+
+def _write_fake_package(tmp_path, root, session_id, cfg, rng, *, baseline_session=None, sha256=None,
+                        durations=(64.0, 64.0), mask_counts=(1.0, 1.0)):
+    """Give the ``<tmp_path>/pkg`` package of ``cfg['model_cells']`` what the package
+    route reads: a SESSION_H5_BASELINE.tsv (for ``baseline_session``, default the
+    session, with ``sha256``, default the session H5's) and, per cell, a
+    recon_mse_breakdown.npz / posterior_cache.npz holding the session's rows 0 and 2
+    (with the given package ``durations`` / ``mask_counts``) plus one row of another
+    session. Returns each prefix's expected (2, 2) coordinates of rows 0 and 2."""
+    h5_path = root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5"
+    digest = file_sha256(h5_path) if sha256 is None else sha256
+    listed = session_id if baseline_session is None else baseline_session
+    (tmp_path / "pkg" / "SESSION_H5_BASELINE.tsv").write_text(
+        "session\th5_rows\tcorpus_rows\tbytes\tsha256\tpath\n"
+        f"{listed}\t3\t2\t{h5_path.stat().st_size}\t{digest}\tBartul/Data/{listed}/audio/spectrograms/{listed}_spectrograms.h5\n"
+    )
+    expected = {}
+    for prefix, cell_directory in cfg["model_cells"].items():
+        cell = pathlib.Path(cell_directory)
+        angles = rng.uniform(0.0, 2 * np.pi, size=(3, 2))
+        torus_weighted = np.concatenate([np.cos(angles), np.sin(angles)], axis=1).astype(np.float32)
+        np.savez(cell / "posterior_cache.npz", torus_weighted=torus_weighted)
+        np.savez(
+            cell / "recon_mse_breakdown.npz",
+            spec_id=np.array(["20990101_000000_0", f"{session_id}_0", f"{session_id}_2"]),
+            durations=np.array([50.0, *durations], dtype=np.float32),
+            mask_counts=np.array([2.0, *mask_counts], dtype=np.float32),
+        )
+        expected[prefix] = np.asarray(ql.torus_basis_reverse(jnp.asarray(torus_weighted[1:])), dtype=np.float64)
+    return expected
+
+
+def _run_model_cells(root, cfg, mocker):
+    """Run infer_and_merge with embed_data replaced by a stand-in that records how many
+    spectrograms each call embedded and places every one at the torus center; returns
+    (embedded counts per call, messages)."""
+    embedded = []
+
+    def _fake_embed(lattice, data, params, *_rest):
+        embedded.append(data.shape[0])
+        return np.full((data.shape[0], 2), 0.5, dtype=np.float64)
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    mocker.patch("usv_playpen.processing.qlvm_latents.embed_data", side_effect=_fake_embed)
+    messages = []
+    ql.QLVMLatentInference(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_latents": cfg},
+        message_output=messages.append,
+    ).infer_and_merge()
+    return embedded, messages
+
+
+def test_model_cells_write_only_prefixed_coordinates(tmp_path, mocker):
+    """With model_cells, every listed cell places the session and each prefix gets
+    exactly <prefix>1/<prefix>2; no category or model column is written, stale ones
+    and earlier coordinates of the listed prefixes are replaced, other columns stay."""
+    rng = np.random.default_rng(30)
+    root, session_id, cfg = _model_cells_session(tmp_path, rng)
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    pls.read_csv(summary_path).with_columns(
+        quality=pls.Series([0.11, 0.22, 0.33]),
+        qlvm_category=pls.Series([3, None, 4]),
+        qlvm_supercategory=pls.Series([1, None, 2]),
+        qlvm_model=pls.Series(["old", None, "old"]),
+        qlvm_x1=pls.Series([9.0, 9.0, 9.0]),
+    ).write_csv(summary_path)
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    messages = []
+    ql.QLVMLatentInference(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_latents": cfg},
+        message_output=messages.append,
+    ).infer_and_merge()
+
+    df = pls.read_csv(summary_path)
+    assert df.columns == ["usv_id", "start", "stop", "qlvm1", "qlvm2", "quality", "qlvm_x1", "qlvm_x2"]
+    for column in ("qlvm1", "qlvm2", "qlvm_x1", "qlvm_x2"):
+        assert df[column].dtype == pls.Float64
+        assert df[column][1] is None
+        assert 0.0 <= df[column][0] < 1.0
+        assert 0.0 <= df[column][2] < 1.0
+    assert df["quality"].to_list() == [0.11, 0.22, 0.33]
+    # No package baseline above these cells: both are inferred, and the log says why.
+    assert sum("inference (no SESSION_H5_BASELINE.tsv in or above the cell" in message for message in messages) == 2
+    assert any("qlvm_x1/qlvm_x2: 2 of 3 USVs placed" in message for message in messages)
+
+
+def test_model_cells_take_package_values_when_the_session_is_verified(tmp_path, mocker):
+    """A corpus session whose H5 is unchanged (baseline SHA-256, row count, durations
+    and mask counts) takes each cell's own corpus coordinates, joined on spec_id; the
+    decoder is never run and the H5 is hashed once for all cells."""
+    rng = np.random.default_rng(31)
+    root, session_id, cfg = _model_cells_session(tmp_path, rng)
+    expected = _write_fake_package(tmp_path, root, session_id, cfg, rng)
+    hashes = mocker.patch("usv_playpen.processing.qlvm_latents.file_sha256", side_effect=file_sha256)
+
+    embedded, messages = _run_model_cells(root, cfg, mocker)
+
+    assert embedded == []
+    assert hashes.call_count == 1
+    assert sum("package values (sha256 + 2 rows verified)" in message for message in messages) == 2
+    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+    for prefix, coords in expected.items():
+        assert df[f"{prefix}1"][1] is None
+        np.testing.assert_array_equal(df[f"{prefix}1"].to_numpy()[[0, 2]], coords[:, 0])
+        np.testing.assert_array_equal(df[f"{prefix}2"].to_numpy()[[0, 2]], coords[:, 1])
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        ("not_in_baseline", "inference (session not in the package corpus)"),
+        ("sha256", "inference (spectrogram H5 changed since the package: sha256 mismatch)"),
+        ("durations", "inference (the package's durations or mask counts disagree with the spectrogram H5 on 1 of 2 rows)"),
+        ("mask_counts", "inference (the package's durations or mask counts disagree with the spectrogram H5 on 1 of 2 rows)"),
+        ("summary_rows", "inference (usv_summary.csv has 4 rows, the spectrogram H5 3)"),
+    ],
+)
+def test_model_cells_fall_back_to_inference_when_the_gate_fails(tmp_path, mocker, failure, reason):
+    """Package rows name calls only by H5 position, so any doubt that the session's
+    rows are the package's -- not in its corpus, H5 rehashed, a call's duration or
+    mask count changed, or a summary out of step with the H5 -- embeds the session."""
+    rng = np.random.default_rng(32)
+    root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm_dur",))
+    package = {
+        "not_in_baseline": {"baseline_session": "20990101_000000"},
+        "sha256": {"sha256": "0" * 64},
+        "durations": {"durations": (64.0, 65.0)},
+        "mask_counts": {"mask_counts": (1.0, 3.0)},
+        "summary_rows": {},
+    }[failure]
+    _write_fake_package(tmp_path, root, session_id, cfg, rng, **package)
+    if failure == "summary_rows":
+        summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+        summary = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+        pls.concat([summary, pls.DataFrame({"usv_id": ["0003"], "start": [0.7], "stop": [0.75]})]).write_csv(summary_path)
+
+    embedded, messages = _run_model_cells(root, cfg, mocker)
+
+    assert embedded == [2]
+    assert any(reason in message for message in messages), messages
+    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+    assert df["qlvm_dur1"].to_list()[:3] == [0.5, None, 0.5]
+
+
+def test_model_cells_prefer_package_values_false_always_infers(tmp_path, mocker):
+    """prefer_package_values false embeds even a verified corpus session, without
+    hashing its H5."""
+    rng = np.random.default_rng(33)
+    root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm",))
+    _write_fake_package(tmp_path, root, session_id, cfg, rng)
+    cfg["prefer_package_values"] = False
+    hashes = mocker.patch("usv_playpen.processing.qlvm_latents.file_sha256", side_effect=file_sha256)
+
+    embedded, messages = _run_model_cells(root, cfg, mocker)
+
+    assert embedded == [2]
+    assert hashes.call_count == 0
+    assert any("qlvm (pkg/phase_test/cell_qlvm): inference (prefer_package_values is false)" in message
+               for message in messages)
+
+
+def test_model_cells_and_model_cell_directory_are_exclusive(tmp_path, mocker):
+    """model_cells writes <prefix>1/<prefix>2 of several cells, model_cell_directory the
+    qlvm_* columns of one: setting both stops the run before anything is written."""
+    rng = np.random.default_rng(34)
+    root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm",))
+    cfg["model_cell_directory"] = cfg["model_cells"]["qlvm"]
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    before = summary_path.read_bytes()
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    with pytest.raises(ValueError, match="model_cells and model_cell_directory are both set"):
+        ql.QLVMLatentInference(
+            root_directory=str(root),
+            input_parameter_dict={"infer_qlvm_latents": cfg},
+            message_output=lambda *_a, **_kw: None,
+        ).infer_and_merge()
+    assert summary_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("pairs", "match"),
+    [
+        ([("", "/cell")], "is not a non-empty identifier"),
+        ([("1qlvm", "/cell")], "is not a non-empty identifier"),
+        ([("qlvm-dur", "/cell")], "is not a non-empty identifier"),
+        ([("qlvm_dur", "/a"), ("qlvm_dur", "/b")], r"prefixes listed more than once: \['qlvm_dur'\]"),
+        ([("qlvm_dur", "")], "has no model cell directory"),
+    ],
+)
+def test_validate_model_cells_refuses_bad_prefixes(pairs, match):
+    """A prefix names two summary columns, so it must be an identifier listed once,
+    with a cell to embed."""
+    with pytest.raises(ValueError, match=match):
+        ql.validate_model_cells(pairs)
+
+
+def test_validate_model_cells_refuses_prefixes_that_overwrite_summary_columns(mocker):
+    """<prefix>1/<prefix>2 may not be another summary column; qlvm1/qlvm2 of prefix
+    'qlvm' are the torus coordinates and are allowed."""
+    mocker.patch.object(ql, "USV_SUMMARY_COLUMN_ORDER", (*ql.USV_SUMMARY_COLUMN_ORDER, "peak1"))
+    with pytest.raises(ValueError, match=r"prefix 'peak' would overwrite the summary column\(s\) \['peak1'\]"):
+        ql.validate_model_cells([("peak", "/cell")])
+    assert ql.validate_model_cells([("qlvm", "/a"), ("qlvm_dur", "/b")]) == {"qlvm": "/a", "qlvm_dur": "/b"}
+
+
+def test_model_cells_refuse_invalid_prefixes_before_writing(tmp_path, mocker):
+    """An invalid model_cells prefix stops the run before the summary is touched."""
+    rng = np.random.default_rng(35)
+    root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm",))
+    cfg["model_cells"] = {"2d": cfg["model_cells"]["qlvm"]}
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    before = summary_path.read_bytes()
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    with pytest.raises(ValueError, match="model_cells is invalid"):
+        ql.QLVMLatentInference(
+            root_directory=str(root),
+            input_parameter_dict={"infer_qlvm_latents": cfg},
+            message_output=lambda *_a, **_kw: None,
+        ).infer_and_merge()
+    assert summary_path.read_bytes() == before

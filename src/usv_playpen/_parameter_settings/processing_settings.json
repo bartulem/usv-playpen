@@ -343,6 +343,8 @@
   },
   "infer_qlvm_latents": {
     "model_cell_directory": "",
+    "model_cells": {},
+    "prefer_package_values": true,
     "weights_npz_path": "",
     "reference_arrays_fine_npz_path": "",
     "reference_arrays_coarse_npz_path": "",

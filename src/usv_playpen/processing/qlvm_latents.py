@@ -39,16 +39,26 @@ corpus bin mean, phase 11 cells (``qlvm_models_latest/v3``, duration, mean
 frequency, bandwidth or loudness) at the call's own value clamped to the training
 range or snapped to the cell's decode grid, as the contract's ``condition.decode``
 says (:func:`frozen_condition_values`).
+
+Several models in one run: with ``model_cells`` (column prefix -> package cell)
+the session is placed on the torus of every listed cell and each prefix ``P``
+gets only the float columns ``P1`` / ``P2`` (no categories, no ``qlvm_model``).
+Per model, a corpus session whose spectrogram H5 is verifiably the one the
+package was built from (``SESSION_H5_BASELINE.tsv`` SHA-256, row count, and the
+package's per-row durations and mask counts) takes the package's own coordinates
+(:func:`package_route_verdict`, :func:`load_package_session_rows`); every other
+session is embedded with the cell as above.
 """
 
 from __future__ import annotations
 
 import collections
+import functools
 import json
 import pathlib
 import pickle
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from typing import BinaryIO
 
@@ -61,13 +71,18 @@ from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
+    USV_SUMMARY_COLUMN_ORDER,
     atomic_output_path,
     configure_path,
     derive_spectrogram_model_paths,
     first_match_or_raise,
     order_usv_summary_columns,
 )
-from ..processing.build_qlvm_training_set import build_session_masks, stretch_specs
+from ..processing.build_qlvm_training_set import (
+    build_session_masks,
+    file_sha256,
+    stretch_specs,
+)
 from ..time_utils import is_gui_context, smart_wait
 from .compute_usv_loudness import session_image_level_db
 from .qlvm_model import (
@@ -84,6 +99,10 @@ QLVM_COLUMNS = ("qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_m
 
 # Conditions a package decoder may be trained on (phase 10: the first two; phase 11: all four).
 CONDITION_NAMES = ("duration", "mean_freq", "bandwidth", "loudness")
+
+# The file that marks a QLVM model package's root: the SHA-256 and row counts of the
+# spectrogram H5 of every session its corpus was built from.
+PACKAGE_BASELINE_NAME = "SESSION_H5_BASELINE.tsv"
 
 
 class _TorchCheckpointUnpickler(pickle.Unpickler):
@@ -710,6 +729,286 @@ def labels_for_coords(
     return _lookup(fine_grid), _lookup(coarse_grid)
 
 
+def validate_model_cells(model_cells: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """
+    Description
+    -----------
+    Checks the ``infer_qlvm_latents.model_cells`` mapping (column prefix -> model
+    package cell directory) and returns it as a dict in the given order. Each
+    prefix ``P`` names the two float columns ``P1`` / ``P2`` a run writes, so it
+    must be a non-empty Python identifier (letters, digits and underscores, not
+    starting with a digit), may be listed only once, and ``P1`` / ``P2`` must not
+    be any other column of the USV summary (``USV_SUMMARY_COLUMN_ORDER``; the
+    ``qlvm1`` / ``qlvm2`` of prefix ``"qlvm"`` are allowed, since they are the
+    torus coordinates). Each cell directory must be a non-empty string. Every
+    problem is collected and raised together.
+
+    Parameters
+    ----------
+    model_cells (Iterable[tuple[str, str]])
+        ``(prefix, model_cell_directory)`` pairs, e.g. ``cfg['model_cells'].items()``
+        or the pairs of repeated ``--model-cell`` CLI options (which, unlike a JSON
+        object, can repeat a prefix).
+
+    Returns
+    -------
+    model_cells (dict[str, str])
+        The validated mapping, prefix -> cell directory, in the given order.
+    """
+    pairs = list(model_cells)
+    problems = []
+    prefixes = [prefix for prefix, _cell in pairs]
+    duplicates = sorted({prefix for prefix in prefixes if isinstance(prefix, str) and prefixes.count(prefix) > 1})
+    if duplicates:
+        problems.append(f"prefixes listed more than once: {duplicates}")
+    # qlvm1 / qlvm2 are the torus coordinates of prefix "qlvm"; every other summary
+    # column (qlvm_category, qlvm_model, acoustic features, ...) must stay untouched.
+    reserved = set(USV_SUMMARY_COLUMN_ORDER) - {"qlvm1", "qlvm2"}
+    for prefix, cell_directory in pairs:
+        if not isinstance(prefix, str) or not prefix.isidentifier():
+            problems.append(f"prefix {prefix!r} is not a non-empty identifier (letters, digits, underscores)")
+            continue
+        clashing = [column for column in (f"{prefix}1", f"{prefix}2") if column in reserved]
+        if clashing:
+            problems.append(f"prefix {prefix!r} would overwrite the summary column(s) {clashing}")
+        if not isinstance(cell_directory, str) or not cell_directory:
+            problems.append(f"prefix {prefix!r} has no model cell directory ({cell_directory!r})")
+    if problems:
+        error_message = "infer_qlvm_latents.model_cells is invalid:\n  " + "\n  ".join(problems)
+        raise ValueError(error_message)
+    return dict(pairs)
+
+
+def find_package_root(model_cell_directory: str) -> pathlib.Path | None:
+    """
+    Description
+    -----------
+    Finds the root of the QLVM model package a cell belongs to: the nearest of
+    the cell directory and its parents that holds ``SESSION_H5_BASELINE.tsv``
+    (the per-session SHA-256 baseline of the spectrogram H5s the package's corpus
+    was built from; ``<package>/<phase>/<cell>`` has it two levels up).
+
+    Parameters
+    ----------
+    model_cell_directory (str)
+        Path to the package cell.
+
+    Returns
+    -------
+    package_root (pathlib.Path | None)
+        The package root, or ``None`` when no directory on the way up holds the
+        baseline (the package route cannot then be decided).
+    """
+    cell = pathlib.Path(configure_path(model_cell_directory)).resolve()
+    for directory in (cell, *cell.parents):
+        if (directory / PACKAGE_BASELINE_NAME).is_file():
+            return directory
+    return None
+
+
+def load_package_baseline(package_root: pathlib.Path) -> dict[str, str]:
+    """
+    Description
+    -----------
+    Reads a QLVM model package's ``SESSION_H5_BASELINE.tsv`` (tab-separated,
+    columns ``session``, ``h5_rows``, ``corpus_rows``, ``bytes``, ``sha256``,
+    ``path``): the SHA-256 of each corpus session's spectrogram H5 at the time the
+    package's per-call rows were checked against it.
+
+    Parameters
+    ----------
+    package_root (pathlib.Path)
+        The package root (see :func:`find_package_root`).
+
+    Returns
+    -------
+    baseline (dict[str, str])
+        Session id -> lowercase hexadecimal SHA-256 of its spectrogram H5.
+    """
+    baseline_path = package_root / PACKAGE_BASELINE_NAME
+    table = pls.read_csv(baseline_path, separator="\t", infer_schema_length=0)
+    missing = [column for column in ("session", "sha256") if column not in table.columns]
+    if missing:
+        error_message = f"{baseline_path} has no {missing} column(s); its columns are {table.columns}."
+        raise ValueError(error_message)
+    return dict(zip(table["session"].to_list(), [digest.lower() for digest in table["sha256"].to_list()], strict=True))
+
+
+def load_package_session_rows(model_cell_directory: str, session_id: str) -> dict[str, np.ndarray]:
+    """
+    Description
+    -----------
+    The rows of one session in a QLVM model package cell's corpus embedding:
+    ``recon_mse_breakdown.npz`` names every corpus call by ``spec_id``
+    (``<session>_<row of the session's spectrogram H5>``) and records the
+    ``durations`` and ``mask_counts`` it was built with, and ``posterior_cache.npz``
+    holds, in the same row order, its posterior-mean torus embedding
+    ``torus_weighted`` (``(N, 4)`` ``[cos, sin]`` basis), which
+    :func:`qlvm_model.torus_basis_reverse` turns into coordinates in ``[0, 1)``.
+
+    Parameters
+    ----------
+    model_cell_directory (str)
+        Path to the package cell.
+    session_id (str)
+        The session whose rows to take.
+
+    Returns
+    -------
+    rows (dict[str, np.ndarray])
+        ``row`` (``(n,)`` int64 spectrogram-H5 rows, ascending), ``durations`` and
+        ``mask_counts`` (``(n,)`` float64, as the package recorded them) and
+        ``coords`` (``(n, 2)`` float64 torus coordinates ``(x, y)``); ``n`` is 0
+        when the cell holds no call of the session.
+    """
+    cell = pathlib.Path(configure_path(model_cell_directory))
+    with np.load(cell / "recon_mse_breakdown.npz", allow_pickle=False) as breakdown:
+        spec_id = breakdown["spec_id"].astype(str)
+        durations = breakdown["durations"]
+        mask_counts = breakdown["mask_counts"]
+    with np.load(cell / "posterior_cache.npz", allow_pickle=False) as cache:
+        torus_weighted = cache["torus_weighted"]
+    if torus_weighted.shape[0] != spec_id.shape[0]:
+        error_message = (
+            f"{cell}: posterior_cache.npz holds {torus_weighted.shape[0]} rows but recon_mse_breakdown.npz "
+            f"{spec_id.shape[0]}; they must describe the same corpus rows in the same order."
+        )
+        raise ValueError(error_message)
+    # A spec_id is "<session>_<row>"; the digit check keeps a longer id that merely
+    # starts with this session's out.
+    prefix = f"{session_id}_"
+    selected = np.flatnonzero(np.char.startswith(spec_id, prefix))
+    row_text = [identifier[len(prefix):] for identifier in spec_id[selected]]
+    keep = np.array([text.isdigit() for text in row_text], dtype=bool)
+    selected = selected[keep]
+    rows = np.array([int(text) for text, kept in zip(row_text, keep, strict=True) if kept], dtype=np.int64)
+    order = np.argsort(rows, kind="stable")
+    selected, rows = selected[order], rows[order]
+    coords = np.asarray(torus_basis_reverse(jnp.asarray(torus_weighted[selected])), dtype=np.float64)
+    return {
+        "row": rows,
+        "durations": durations[selected].astype(np.float64),
+        "mask_counts": mask_counts[selected].astype(np.float64),
+        "coords": coords.reshape(-1, 2),
+    }
+
+
+def session_h5_call_table(h5_loc: pathlib.Path, session_id: str) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Each spectrogram-H5 row's duration and number of SAM mask instances, the two
+    per-call quantities a QLVM model package records for its corpus rows
+    (``recon_mse_breakdown.npz`` ``durations`` / ``mask_counts``). Durations are
+    ``spectrogram/<session>/durations``; the mask count of a row is how many
+    entries of ``mask/<session>/spectrogram_index`` name it (0 for every row when
+    the H5 has no mask group). Only these two small datasets are read.
+
+    Parameters
+    ----------
+    h5_loc (pathlib.Path)
+        The session's spectrogram H5.
+    session_id (str)
+        The session id naming its groups.
+
+    Returns
+    -------
+    durations (np.ndarray)
+        ``(n_rows,)`` durations in time bins.
+    mask_counts (np.ndarray)
+        ``(n_rows,)`` int64 mask-instance counts.
+    """
+    with h5py.File(h5_loc, "r") as h5_file:
+        durations = h5_file[f"spectrogram/{session_id}/durations"][:]
+        mask_counts = np.zeros(durations.shape[0], dtype=np.int64)
+        if f"mask/{session_id}" in h5_file:
+            spectrogram_index = h5_file[f"mask/{session_id}/spectrogram_index"][:].astype(np.int64)
+            mask_counts = np.bincount(spectrogram_index, minlength=durations.shape[0])[: durations.shape[0]]
+    return durations, mask_counts
+
+
+def package_route_verdict(
+    session_id: str,
+    baseline: dict[str, str],
+    h5_sha256: Callable[[], str],
+    n_summary_rows: int,
+    h5_durations: np.ndarray,
+    h5_mask_counts: np.ndarray,
+    package_rows: Callable[[], dict[str, np.ndarray]],
+) -> tuple[bool, str, dict[str, np.ndarray] | None]:
+    """
+    Description
+    -----------
+    Decides whether a session's coordinates under one model can be taken from the
+    model package instead of being inferred. A package row names its call only by
+    position (``spec_id`` = ``<session>_<H5 row>``), so the package's values are
+    used only when all of these hold, checked in this order:
+
+    * the session is in the package's ``SESSION_H5_BASELINE.tsv``;
+    * the SHA-256 of the session's spectrogram H5 equals the baseline's (the file
+      was not rebuilt since, so its rows are the rows the package embedded);
+    * ``usv_summary.csv`` has as many rows as the H5 (summary and H5 rows are 1:1,
+      which the positional join relies on);
+    * the cell holds rows of the session, all inside the H5, and each row's
+      ``durations`` and ``mask_counts`` in the package equal the H5's.
+
+    The two costly inputs are callables, so the H5 is hashed and the cell's rows
+    are read only when the checks before them passed.
+
+    Parameters
+    ----------
+    session_id (str)
+        The session.
+    baseline (dict[str, str])
+        The package baseline (:func:`load_package_baseline`).
+    h5_sha256 (Callable[[], str])
+        Returns the SHA-256 of the session's spectrogram H5 (cached by the caller,
+        so the file is hashed once per session, not once per model).
+    n_summary_rows (int)
+        Rows of ``usv_summary.csv``.
+    h5_durations (np.ndarray)
+        ``(n_rows,)`` H5 durations (:func:`session_h5_call_table`).
+    h5_mask_counts (np.ndarray)
+        ``(n_rows,)`` H5 mask-instance counts (:func:`session_h5_call_table`).
+    package_rows (Callable[[], dict[str, np.ndarray]])
+        Returns the cell's rows of the session (:func:`load_package_session_rows`).
+
+    Returns
+    -------
+    use_package (bool)
+        True to take the package's coordinates.
+    reason (str)
+        The route and why, for the log (e.g. ``"package values (sha256 + 907 rows
+        verified)"`` or ``"inference (session not in the package corpus)"``).
+    rows (dict[str, np.ndarray] | None)
+        The cell's rows of the session when they were read (always when
+        ``use_package`` is True), else None.
+    """
+    if session_id not in baseline:
+        return False, "inference (session not in the package corpus)", None
+    if h5_sha256() != baseline[session_id]:
+        return False, "inference (spectrogram H5 changed since the package: sha256 mismatch)", None
+    n_h5_rows = h5_durations.shape[0]
+    if n_summary_rows != n_h5_rows:
+        return False, f"inference (usv_summary.csv has {n_summary_rows} rows, the spectrogram H5 {n_h5_rows})", None
+    rows = package_rows()
+    n_rows = rows["row"].shape[0]
+    if n_rows == 0:
+        return False, "inference (the package cell holds no rows of this session)", rows
+    if rows["row"][-1] >= n_h5_rows:
+        return False, f"inference (the package names H5 row {int(rows['row'][-1])}, the H5 has {n_h5_rows} rows)", rows
+    n_disagree = int(np.count_nonzero(
+        (rows["durations"] != h5_durations[rows["row"]].astype(np.float64))
+        | (rows["mask_counts"] != h5_mask_counts[rows["row"]].astype(np.float64))
+    ))
+    if n_disagree:
+        return False, (
+            f"inference (the package's durations or mask counts disagree with the spectrogram H5 "
+            f"on {n_disagree} of {n_rows} rows)"
+        ), rows
+    return True, f"package values (sha256 + {n_rows} rows verified)", rows
+
+
 class QLVMLatentInference:
     """
     Description
@@ -776,12 +1075,21 @@ class QLVMLatentInference:
         (:func:`compute_usv_loudness.session_image_level_db`), and calls with no
         value get nulls. The summary is rewritten atomically.
 
+        With a non-empty ``model_cells`` setting (column prefix -> model package
+        cell) the session is instead placed on the torus of every listed cell, and
+        each prefix ``P`` gets exactly two float columns ``P1`` / ``P2``; no
+        category or model column is written, and stale ``qlvm_category``,
+        ``qlvm_supercategory``, ``qlvm_model`` and ``P1`` / ``P2`` columns are
+        removed first (see :meth:`_merge_model_cells`). ``model_cells`` and
+        ``model_cell_directory`` cannot both be set.
+
         Parameters
         ----------
 
         Returns
         -------
-        Updated ``*_usv_summary.csv`` with the ``qlvm_*`` columns.
+        Updated ``*_usv_summary.csv`` with the ``qlvm_*`` columns (or the
+        ``P1`` / ``P2`` columns of every ``model_cells`` prefix).
         """
         self.message_output(
             f"QLVM latent inference started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
@@ -790,45 +1098,36 @@ class QLVMLatentInference:
 
         derive_spectrogram_model_paths(self.input_parameter_dict)
         cfg = self.input_parameter_dict['infer_qlvm_latents']
-        if cfg['model_cell_directory']:
-            # A QLVM model package cell brings its own weights, contract, embedding
-            # lattice and label grids; the settings' paths and lattice keys are unused.
-            model = load_model_cell(cfg['model_cell_directory'])
-            params, contract, lattice = model['params'], model['contract'], model['lattice']
-            fine_grid, coarse_grid = model['fine_grid'], model['coarse_grid']
-            condition_bins = model['condition_bins']
-            model_id = model['model_id']
-            self.message_output(
-                f"Embedding with model package cell {model['model_id']} ({decoder_head(params)} head, "
-                f"{lattice.shape[0]}-point Fibonacci lattice)."
-            )
+        if cfg['model_cells']:
+            self._merge_model_cells(cfg)
         else:
-            params = load_decoder_params(cfg['weights_npz_path'])
-            lattice = build_lattice(cfg)
-            contract = load_training_contract(cfg['weights_npz_path'])
-            condition_bins = None
-            model_id = cfg['weights_npz_path']
-            # Fine grid -> qlvm_category; coarse grid -> qlvm_supercategory. Both are
-            # the torus-periodic watershed (ws_labels_periodic) of their reference file.
-            # Context managers close each zip-backed NpzFile handle; the grid array is
-            # fully materialized on access inside the block, so closing on exit is safe.
-            with np.load(configure_path(cfg['reference_arrays_fine_npz_path'])) as fine_ref:
-                fine_grid = fine_ref['ws_labels_periodic']
-            with np.load(configure_path(cfg['reference_arrays_coarse_npz_path'])) as coarse_ref:
-                coarse_grid = coarse_ref['ws_labels_periodic']
+            self._merge_single_model(cfg)
 
-        # The decoder only knows calls shaped like its training set: check the
-        # preprocessing settings against its contract and embed only calls inside the
-        # set's duration window. Weights with no contract fall back to the settings.
-        if contract is None:
-            length_threshold = cfg['length_threshold']
-            self.message_output(
-                "No training contract beside the decoder weights; the infer_qlvm_latents settings are used as given "
-                f"(length_threshold={length_threshold})."
-            )
-        else:
-            length_threshold = enforce_training_contract(contract, cfg, params)
+        self.message_output(
+            f"QLVM latent inference ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
+        )
 
+    def _locate_session_files(self) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path, pls.DataFrame]:
+        """
+        Description
+        -----------
+        Finds the session's spectrogram H5 and its ``*_usv_summary.csv`` and reads
+        the summary.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        root (pathlib.Path)
+            The session root directory (its name is the session id).
+        h5_loc (pathlib.Path)
+            ``audio/spectrograms/<session>_spectrograms.h5``.
+        usv_summary_loc (pathlib.Path)
+            The USV summary CSV.
+        usv_df (pls.DataFrame)
+            The summary, ``usv_id`` read as a string.
+        """
         root = pathlib.Path(self.root_directory)
         # Session-keyed, NOT "*_spectrograms.h5": a session can hold other files
         # ending in that suffix (e.g. a sonic-band
@@ -839,6 +1138,280 @@ class QLVMLatentInference:
             pattern=f"{root.name}_spectrograms.h5",
             label="per-session spectrogram H5",
         )
+        usv_summary_loc = first_match_or_raise(
+            root=root / "audio",
+            pattern="*_usv_summary.csv",
+            recursive=True,
+            label="USV summary CSV",
+        )
+        usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
+        return root, h5_loc, usv_summary_loc, usv_df
+
+    def _merge_single_model(self, cfg: dict) -> None:
+        """
+        Description
+        -----------
+        The single-model run of :meth:`infer_and_merge`: embeds the session with
+        the model package cell of ``model_cell_directory``, or with the decoder
+        weights of ``weights_npz_path`` and the lattice and reference-array
+        settings, and merges ``qlvm1``, ``qlvm2``, ``qlvm_category``,
+        ``qlvm_supercategory`` and ``qlvm_model`` into the summary.
+
+        Parameters
+        ----------
+        cfg (dict)
+            The ``infer_qlvm_latents`` settings block.
+
+        Returns
+        -------
+        None
+        """
+        if cfg['model_cell_directory']:
+            # A QLVM model package cell brings its own weights, contract, embedding
+            # lattice and label grids; the settings' paths and lattice keys are unused.
+            model = load_model_cell(cfg['model_cell_directory'])
+            self.message_output(
+                f"Embedding with model package cell {model['model_id']} ({decoder_head(model['params'])} head, "
+                f"{model['lattice'].shape[0]}-point Fibonacci lattice)."
+            )
+        else:
+            params = load_decoder_params(cfg['weights_npz_path'])
+            lattice = build_lattice(cfg)
+            contract = load_training_contract(cfg['weights_npz_path'])
+            # Fine grid -> qlvm_category; coarse grid -> qlvm_supercategory. Both are
+            # the torus-periodic watershed (ws_labels_periodic) of their reference file.
+            # Context managers close each zip-backed NpzFile handle; the grid array is
+            # fully materialized on access inside the block, so closing on exit is safe.
+            with np.load(configure_path(cfg['reference_arrays_fine_npz_path'])) as fine_ref:
+                fine_grid = fine_ref['ws_labels_periodic']
+            with np.load(configure_path(cfg['reference_arrays_coarse_npz_path'])) as coarse_ref:
+                coarse_grid = coarse_ref['ws_labels_periodic']
+            model = {
+                "params": params,
+                "contract": contract,
+                "lattice": lattice,
+                "fine_grid": fine_grid,
+                "coarse_grid": coarse_grid,
+                "condition_bins": None,
+                "model_id": cfg['weights_npz_path'],
+            }
+
+        # The decoder only knows calls shaped like its training set: check the
+        # preprocessing settings against its contract and embed only calls inside the
+        # set's duration window. Weights with no contract fall back to the settings.
+        if model['contract'] is None:
+            length_threshold = cfg['length_threshold']
+            self.message_output(
+                "No training contract beside the decoder weights; the infer_qlvm_latents settings are used as given "
+                f"(length_threshold={length_threshold})."
+            )
+        else:
+            length_threshold = enforce_training_contract(model['contract'], cfg, model['params'])
+
+        root, h5_loc, usv_summary_loc, usv_df = self._locate_session_files()
+        usv_indices, coords = self._embed_session(
+            model, cfg, length_threshold, root, h5_loc, usv_df, usv_summary_loc, "qlvm_*"
+        )
+        category, supercategory = labels_for_coords(coords, model['fine_grid'], model['coarse_grid'])
+
+        qlvm_df = pls.DataFrame({
+            "_usv_row": usv_indices,
+            "qlvm1": coords[:, 0].astype(np.float64),
+            "qlvm2": coords[:, 1].astype(np.float64),
+            "qlvm_category": category.astype(np.int64),
+            "qlvm_supercategory": supercategory.astype(np.int64),
+            # Which model's torus and clusters these are: labels from different models
+            # share column names but not meanings, so an analysis can check this first.
+            "qlvm_model": [model['model_id']] * len(usv_indices),
+        }, schema_overrides={"qlvm_model": pls.String})
+
+        usv_df = usv_df.drop([c for c in QLVM_COLUMNS if c in usv_df.columns])
+        usv_df = usv_df.with_row_index(name="_usv_row")
+        merged = order_usv_summary_columns(usv_df.join(qlvm_df, on="_usv_row", how="left").drop("_usv_row"))
+        # usv_summary.csv holds every other per-USV column too: publish atomically so
+        # a failed write leaves the previous file intact instead of a truncated one.
+        with atomic_output_path(usv_summary_loc) as tmp_summary_path:
+            merged.write_csv(file=str(tmp_summary_path))
+
+        self.message_output(
+            f"Merged QLVM latents/categories for {len(usv_indices)} USVs into {usv_summary_loc.name}."
+        )
+
+    def _merge_model_cells(self, cfg: dict) -> None:
+        """
+        Description
+        -----------
+        The multi-model run of :meth:`infer_and_merge`: places the session on the
+        torus of every cell of ``model_cells`` and merges, per prefix ``P``, the
+        float columns ``P1`` / ``P2`` into the summary (nulls where a call was not
+        placed). Every cell is loaded once and checked against the settings
+        (:func:`enforce_training_contract`) before anything is embedded.
+
+        For each cell the coordinates come from one of two routes, and the log
+        names the route and why. The package route takes the cell's own corpus
+        embedding (``posterior_cache.npz`` joined on ``spec_id``,
+        :func:`load_package_session_rows`) when ``prefer_package_values`` is true,
+        a ``SESSION_H5_BASELINE.tsv`` sits in or above the cell
+        (:func:`find_package_root`), and :func:`package_route_verdict` finds the
+        session in that baseline with an unchanged spectrogram H5 (SHA-256, hashed
+        once per session), a summary as long as the H5, and the package's
+        durations and mask counts equal to the H5's on every one of its rows. Any
+        other case embeds the session with the cell (:meth:`_embed_session`),
+        exactly as the single-model run does.
+
+        No ``qlvm_category``, ``qlvm_supercategory`` or ``qlvm_model`` column is
+        written; stale ones, and earlier ``P1`` / ``P2`` columns of the listed
+        prefixes, are dropped before the merge. The summary is rewritten
+        atomically.
+
+        Parameters
+        ----------
+        cfg (dict)
+            The ``infer_qlvm_latents`` settings block.
+
+        Returns
+        -------
+        None
+        """
+        if cfg['model_cell_directory']:
+            error_message = (
+                "infer_qlvm_latents: model_cells and model_cell_directory are both set. model_cells embeds the "
+                "session with every listed cell and writes only <prefix>1/<prefix>2 columns; model_cell_directory "
+                "embeds it with one cell and writes the qlvm_* columns. Set one of them and leave the other empty."
+            )
+            raise ValueError(error_message)
+        if not isinstance(cfg['model_cells'], dict):
+            error_message = (
+                f"infer_qlvm_latents.model_cells must be an object of column prefix -> model cell directory, "
+                f"got {type(cfg['model_cells']).__name__}."
+            )
+            raise ValueError(error_message)
+        model_cells = validate_model_cells(cfg['model_cells'].items())
+
+        models = {}
+        for prefix, cell_directory in model_cells.items():
+            model = load_model_cell(cell_directory)
+            model['length_threshold'] = enforce_training_contract(model['contract'], cfg, model['params'])
+            models[prefix] = model
+            self.message_output(
+                f"{prefix}1/{prefix}2: model package cell {model['model_id']} ({decoder_head(model['params'])} head, "
+                f"{model['lattice'].shape[0]}-point Fibonacci lattice)."
+            )
+
+        root, h5_loc, usv_summary_loc, usv_df = self._locate_session_files()
+        h5_durations, h5_mask_counts = session_h5_call_table(h5_loc, root.name)
+        # Hashed on first use and reused for every cell: one read of the H5 per session.
+        h5_sha256 = functools.cache(functools.partial(file_sha256, h5_loc))
+        baselines = {}
+        coordinate_frames = []
+        for prefix, model in models.items():
+            use_package, rows = False, None
+            if not cfg['prefer_package_values']:
+                reason = "inference (prefer_package_values is false)"
+            else:
+                package_root = find_package_root(model_cells[prefix])
+                if package_root is None:
+                    reason = (
+                        f"inference (no {PACKAGE_BASELINE_NAME} in or above the cell, so the package route "
+                        f"cannot be decided)"
+                    )
+                else:
+                    if package_root not in baselines:
+                        baselines[package_root] = load_package_baseline(package_root)
+                    use_package, reason, rows = package_route_verdict(
+                        session_id=root.name,
+                        baseline=baselines[package_root],
+                        h5_sha256=h5_sha256,
+                        n_summary_rows=usv_df.height,
+                        h5_durations=h5_durations,
+                        h5_mask_counts=h5_mask_counts,
+                        package_rows=functools.partial(load_package_session_rows, model_cells[prefix], root.name),
+                    )
+            self.message_output(f"{prefix} ({model['model_id']}): {reason}.")
+            if use_package:
+                usv_indices, coords = rows['row'], rows['coords']
+            else:
+                usv_indices, coords = self._embed_session(
+                    model, cfg, model['length_threshold'], root, h5_loc, usv_df, usv_summary_loc,
+                    f"{prefix}1/{prefix}2",
+                )
+            self.message_output(f"{prefix}1/{prefix}2: {len(usv_indices)} of {usv_df.height} USVs placed.")
+            coordinate_frames.append(pls.DataFrame({
+                "_usv_row": np.asarray(usv_indices).astype(np.uint32),
+                f"{prefix}1": np.asarray(coords)[:, 0].astype(np.float64),
+                f"{prefix}2": np.asarray(coords)[:, 1].astype(np.float64),
+            }))
+
+        # Labels and provenance of these models are kept outside the summary, so any
+        # left by a single-model run go, together with this run's own earlier columns.
+        stale = ["qlvm_category", "qlvm_supercategory", "qlvm_model"]
+        stale += [f"{prefix}{axis}" for prefix in models for axis in (1, 2)]
+        merged = usv_df.drop([column for column in stale if column in usv_df.columns]).with_row_index(name="_usv_row")
+        for frame in coordinate_frames:
+            merged = merged.join(frame, on="_usv_row", how="left")
+        merged = order_usv_summary_columns(merged.drop("_usv_row"))
+        # usv_summary.csv holds every other per-USV column too: publish atomically so
+        # a failed write leaves the previous file intact instead of a truncated one.
+        with atomic_output_path(usv_summary_loc) as tmp_summary_path:
+            merged.write_csv(file=str(tmp_summary_path))
+
+        self.message_output(
+            f"Merged the torus coordinates of {len(models)} models "
+            f"({', '.join(f'{prefix}1/{prefix}2' for prefix in models)}) into {usv_summary_loc.name}."
+        )
+
+    def _embed_session(
+        self,
+        model: dict,
+        cfg: dict,
+        length_threshold: float | None,
+        root: pathlib.Path,
+        h5_loc: pathlib.Path,
+        usv_df: pls.DataFrame,
+        usv_summary_loc: pathlib.Path,
+        null_columns: str,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Description
+        -----------
+        Embeds the session's USVs with one decoder: reads the spectrogram H5,
+        keeps the calls inside the duration window (and, where the decoder needs
+        it, with a SAM mask and a conditioning value), preprocesses them as the
+        training set was built (SAM masking, resize / time-stretch, the contract's
+        input normalization), computes each call's conditioning value for a
+        conditional package decoder, and embeds them (:func:`qlvm_model.embed_data`).
+
+        Parameters
+        ----------
+        model (dict)
+            ``params``, ``contract`` (dict or None), ``lattice`` and
+            ``condition_bins`` (dict or None), as :func:`load_model_cell` returns them.
+        cfg (dict)
+            The ``infer_qlvm_latents`` settings block.
+        length_threshold (float | None)
+            Embed only calls with ``duration < length_threshold`` (None: every
+            positive duration).
+        root (pathlib.Path)
+            The session root directory.
+        h5_loc (pathlib.Path)
+            The session's spectrogram H5.
+        usv_df (pls.DataFrame)
+            The session's USV summary (rows 1:1 with the H5 rows).
+        usv_summary_loc (pathlib.Path)
+            Path of the summary, named in errors.
+        null_columns (str)
+            How the log names the columns a skipped call leaves null (e.g.
+            ``"qlvm_*"`` or ``"qlvm_dur1/qlvm_dur2"``).
+
+        Returns
+        -------
+        usv_indices (np.ndarray)
+            ``(N,)`` uint32 summary rows of the embedded calls.
+        coords (np.ndarray)
+            ``(N, 2)`` torus coordinates ``(x, y)`` in ``[0, 1)``.
+        """
+        params, contract, lattice = model['params'], model['contract'], model['lattice']
+        condition_bins = model['condition_bins']
         with h5py.File(h5_loc, "r") as h5_file:
             session_group = h5_file[f"spectrogram/{root.name}"]
             specs = session_group["spectrograms"][:]
@@ -852,7 +1425,7 @@ class QLVMLatentInference:
                 in_window &= durations < length_threshold
                 n_too_long = int(np.count_nonzero((durations > 0) & (durations >= length_threshold)))
                 self.message_output(
-                    f"{n_too_long} USVs with duration >= {length_threshold} (outside the training set) get null qlvm_* columns."
+                    f"{n_too_long} USVs with duration >= {length_threshold} (outside the training set) get null {null_columns} columns."
                 )
             usv_indices = np.flatnonzero(in_window).astype(np.uint32)
             # Apply the SAM mask exactly as build_qlvm_training_set does, so the
@@ -890,20 +1463,12 @@ class QLVMLatentInference:
                 if drop_maskless:
                     has_mask = mask_counts > 0
                     self.message_output(
-                        f"{int(np.count_nonzero(~has_mask))} USVs without a SAM mask get null qlvm_* columns."
+                        f"{int(np.count_nonzero(~has_mask))} USVs without a SAM mask get null {null_columns} columns."
                     )
                     usv_indices = usv_indices[has_mask]
                     masks = masks[has_mask]
             specs = specs[usv_indices].astype(np.float32)
             durations = durations[usv_indices]
-
-        usv_summary_loc = first_match_or_raise(
-            root=root / "audio",
-            pattern="*_usv_summary.csv",
-            recursive=True,
-            label="USV summary CSV",
-        )
-        usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
 
         # Bandwidth and loudness conditions (phase 11) take each call's raw value from
         # outside the stored spectrogram; a call without one gets null columns.
@@ -929,7 +1494,7 @@ class QLVMLatentInference:
         if raw_values is not None:
             has_value = np.isfinite(raw_values)
             self.message_output(
-                f"{int(np.count_nonzero(~has_value))} USVs without a {condition['name']} value get null qlvm_* columns."
+                f"{int(np.count_nonzero(~has_value))} USVs without a {condition['name']} value get null {null_columns} columns."
             )
             usv_indices, specs, durations, raw_values = (
                 usv_indices[has_value], specs[has_value], durations[has_value], raw_values[has_value]
@@ -981,33 +1546,7 @@ class QLVMLatentInference:
         coords = np.asarray(embed_data(
             lattice, data, params, cfg['lattice_batch_size'], cfg['data_batch_size'], condition_values
         ))                                                               # (N, 2)
-        category, supercategory = labels_for_coords(coords, fine_grid, coarse_grid)
-
-        qlvm_df = pls.DataFrame({
-            "_usv_row": usv_indices,
-            "qlvm1": coords[:, 0].astype(np.float64),
-            "qlvm2": coords[:, 1].astype(np.float64),
-            "qlvm_category": category.astype(np.int64),
-            "qlvm_supercategory": supercategory.astype(np.int64),
-            # Which model's torus and clusters these are: labels from different models
-            # share column names but not meanings, so an analysis can check this first.
-            "qlvm_model": [model_id] * len(usv_indices),
-        }, schema_overrides={"qlvm_model": pls.String})
-
-        usv_df = usv_df.drop([c for c in QLVM_COLUMNS if c in usv_df.columns])
-        usv_df = usv_df.with_row_index(name="_usv_row")
-        merged = order_usv_summary_columns(usv_df.join(qlvm_df, on="_usv_row", how="left").drop("_usv_row"))
-        # usv_summary.csv holds every other per-USV column too: publish atomically so
-        # a failed write leaves the previous file intact instead of a truncated one.
-        with atomic_output_path(usv_summary_loc) as tmp_summary_path:
-            merged.write_csv(file=str(tmp_summary_path))
-
-        self.message_output(
-            f"Merged QLVM latents/categories for {len(usv_indices)} USVs into {usv_summary_loc.name}."
-        )
-        self.message_output(
-            f"QLVM latent inference ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
-        )
+        return usv_indices, coords
 
 
 def export_model_cell_arrays(
@@ -1141,6 +1680,8 @@ def export_qlvm_reference_arrays_cli(model_cell_directory, output_directory) -> 
 @click.command(name="infer-qlvm-latents")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--model-cell-directory', 'model_cell_directory', type=str, default=None, required=False, help='A QLVM model package cell (e.g. .../qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked); when set, its checkpoint, training_contract.json, embedding lattice and label grids replace the weights, reference-arrays and lattice settings.')
+@click.option('--model-cell', 'model_cells', type=(str, str), multiple=True, default=None, required=False, help='A column prefix and a QLVM model package cell (e.g. --model-cell qlvm_dur .../qlvm_models_latest/v3/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor); repeat once per model. When given, these pairs replace the model_cells setting: the session is placed on the torus of every listed cell and only <prefix>1/<prefix>2 columns are written. Cannot be combined with a model cell directory.')
+@click.option('--prefer-package-values/--no-prefer-package-values', 'prefer_package_values', default=None, required=False, help='With model cells: take a corpus session\'s coordinates from the package\'s own embedding when its spectrogram H5 is unchanged since the package (SHA-256, row count, durations and mask counts verified), else infer them; --no-prefer-package-values infers every session.')
 @click.option('--weights-npz-path', 'weights_npz_path', type=str, default=None, required=False, help='Path to the converted decoder weights .npz.')
 @click.option('--reference-arrays-fine-npz-path', 'reference_arrays_fine_npz_path', type=str, default=None, required=False, help='Path to the FINE reference arrays.npz (ws_labels_periodic -> qlvm_category).')
 @click.option('--reference-arrays-coarse-npz-path', 'reference_arrays_coarse_npz_path', type=str, default=None, required=False, help='Path to the COARSE reference arrays.npz (ws_labels_periodic -> qlvm_supercategory).')
@@ -1161,7 +1702,8 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
     Description
     -----------
     A command-line tool to embed a session's USV spectrograms into the QLVM
-    torus and merge the latents/categories into its USV summary CSV.
+    torus and merge the latents/categories into its USV summary CSV (or, with
+    ``--model-cell`` pairs, the torus coordinates of every listed model).
 
     Parameters
     ----------
@@ -1172,13 +1714,17 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
     """
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
+    # --model-cell pairs become the model_cells object (prefix -> cell), which the
+    # generic key-by-key override cannot build; it is written after the others.
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
-        provided_params=provided_params,
+        provided_params=[key for key in provided_params if key != 'model_cells'],
         settings_dict='processing_settings',
         parameters_lists=['target_shape'],
         block='infer_qlvm_latents',
     )
+    if 'model_cells' in provided_params:
+        processing_settings_dict['infer_qlvm_latents']['model_cells'] = validate_model_cells(kwargs['model_cells'])
 
     QLVMLatentInference(
         root_directory=root_directory,
