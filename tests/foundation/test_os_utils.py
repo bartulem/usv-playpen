@@ -18,6 +18,7 @@ import polars as pls
 import pytest
 
 from usv_playpen import os_utils
+from usv_playpen.processing.qlvm_latents import validate_model_cells
 
 
 @pytest.fixture
@@ -532,9 +533,15 @@ def test_order_usv_summary_columns_puts_known_columns_in_canonical_order():
 
 def test_usv_summary_column_order_places_squeaks_between_emitter_and_features():
     """The agreed layout: DAS event -> emitter -> squeak block -> acoustic features -> QLVM,
-    with qlvm_model (the model the QLVM columns came from) closing the QLVM block."""
+    where the QLVM block is the production torus coordinates (phase 6 regular model, then the
+    duration / mean-frequency / bandwidth / loudness conditional models) and the retired
+    single-model columns (qlvm_category / qlvm_supercategory / qlvm_model) are not listed."""
     order = list(os_utils.USV_SUMMARY_COLUMN_ORDER)
-    assert order[-5:] == ["qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_model"]
+    assert order[-10:] == [
+        "qlvm1", "qlvm2", "qlvm_dur1", "qlvm_dur2", "qlvm_mf1", "qlvm_mf2",
+        "qlvm_bw1", "qlvm_bw2", "qlvm_loud1", "qlvm_loud2",
+    ]
+    assert not {"qlvm_category", "qlvm_supercategory", "qlvm_model"} & set(order)
     assert order[order.index("squeak"):order.index("squeak") + 4] == ["squeak", "squeak_probability", "squeak_start", "squeak_end"]
     assert order.index("emitter") + 1 == order.index("noise")
     assert order[order.index("noise"):order.index("noise") + 2] == ["noise", "noise_probability"]
@@ -553,8 +560,9 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
             "sam2_model_path": "", "yolo_weights": "",
         },
         "infer_qlvm_latents": {
+            "model_cells": {}, "model_cell_directory": "",
             "weights_npz_path": "", "reference_arrays_fine_npz_path": "",
-            "reference_arrays_coarse_npz_path": "",
+            "reference_arrays_coarse_npz_path": "", "masking_type": "sam",
         },
         "detect_usv_squeaks": {"squeak_model_path": ""},
         "detect_usv_noise": {"noise_model_path": ""},
@@ -567,9 +575,22 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     assert settings["generate_masks"]["yolo_weights"] == f"{root}/sam/best.pt"
     # the SAM2 config NAME is never derived
     assert settings["generate_masks"]["sam2_model_cfg"] == "configs/sam2.1/sam2.1_hiera_b+.yaml"
-    assert settings["infer_qlvm_latents"]["weights_npz_path"] == f"{root}/qlvm/qmc_decoder_weights.npz"
-    assert settings["infer_qlvm_latents"]["reference_arrays_fine_npz_path"] == f"{root}/qlvm/arrays_fine.npz"
-    assert settings["infer_qlvm_latents"]["reference_arrays_coarse_npz_path"] == f"{root}/qlvm/arrays_coarse.npz"
+    # the OLD in-house QLVM model under <root>/qlvm is never derived any more ...
+    assert settings["infer_qlvm_latents"]["weights_npz_path"] == ""
+    assert settings["infer_qlvm_latents"]["reference_arrays_fine_npz_path"] == ""
+    assert settings["infer_qlvm_latents"]["reference_arrays_coarse_npz_path"] == ""
+    assert settings["infer_qlvm_latents"]["model_cell_directory"] == ""
+    # ... instead the production v3 mapping is, with the masking its cells were trained with
+    package = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3"
+    assert settings["infer_qlvm_latents"]["model_cells"] == {
+        "qlvm": f"{package}/phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor",
+        "qlvm_dur": f"{package}/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor",
+        "qlvm_mf": f"{package}/phase11_cond_mean_freq_floor/natural_5strata_N29000_unmasked_floor",
+        "qlvm_bw": f"{package}/phase11_cond_bandwidth_floor/natural_5strata_N29000_unmasked_floor",
+        "qlvm_loud": f"{package}/phase11_cond_loudness_floor/natural_5strata_N29000_unmasked_floor",
+    }
+    assert list(settings["infer_qlvm_latents"]["model_cells"]) == ["qlvm", "qlvm_dur", "qlvm_mf", "qlvm_bw", "qlvm_loud"]
+    assert settings["infer_qlvm_latents"]["masking_type"] == "none"
     assert settings["detect_usv_squeaks"]["squeak_model_path"] == f"{root}/squeak/mil_absdb_final.pt"
     assert settings["detect_usv_noise"]["noise_model_path"] == f"{root}/noise/noise_timemil_ens5_n4680_20260926.pt"
 
@@ -582,8 +603,9 @@ def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
             "sam2_model_path": "/custom/elsewhere/checkpoint.pt", "yolo_weights": "",
         },
         "infer_qlvm_latents": {
+            "model_cells": {}, "model_cell_directory": "",
             "weights_npz_path": "/custom/w.npz", "reference_arrays_fine_npz_path": "",
-            "reference_arrays_coarse_npz_path": "",
+            "reference_arrays_coarse_npz_path": "", "masking_type": "sam",
         },
         "detect_usv_squeaks": {"squeak_model_path": "/custom/squeak.pt"},
         "detect_usv_noise": {"noise_model_path": ""},
@@ -596,7 +618,48 @@ def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
     assert settings["detect_usv_noise"]["noise_model_path"] == "/mnt/falkner/Bartul/spectrograms/noise/noise_timemil_ens5_n4680_20260926.pt"
     # empty siblings are still derived from the root
     assert settings["generate_masks"]["sam2_model_dir"] == "/mnt/falkner/Bartul/spectrograms/sam"
-    assert settings["infer_qlvm_latents"]["reference_arrays_fine_npz_path"] == "/mnt/falkner/Bartul/spectrograms/qlvm/arrays_fine.npz"
+    # an explicit legacy decoder is left entirely alone: no reference arrays, no model
+    # cells, and its masking type untouched
+    assert settings["infer_qlvm_latents"]["reference_arrays_fine_npz_path"] == ""
+    assert settings["infer_qlvm_latents"]["model_cells"] == {}
+    assert settings["infer_qlvm_latents"]["masking_type"] == "sam"
+
+
+@pytest.mark.parametrize("configured", [
+    {"model_cells": {"qlvm_x": "/custom/cell"}, "model_cell_directory": ""},
+    {"model_cells": {}, "model_cell_directory": "/custom/one_cell"},
+])
+def test_derive_spectrogram_model_paths_keeps_configured_qlvm_models(configured):
+    """A configured model package route (several cells or one cell) wins over the derived
+    production mapping, and its masking_type is not overridden."""
+    settings = {
+        "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
+        "generate_masks": {"sam2_model_dir": "", "sam2_model_path": "", "yolo_weights": ""},
+        "infer_qlvm_latents": {**configured, "weights_npz_path": "", "masking_type": "sam"},
+        "detect_usv_squeaks": {"squeak_model_path": ""},
+        "detect_usv_noise": {"noise_model_path": ""},
+    }
+    os_utils.derive_spectrogram_model_paths(settings)
+    assert settings["infer_qlvm_latents"]["model_cells"] == configured["model_cells"]
+    assert settings["infer_qlvm_latents"]["model_cell_directory"] == configured["model_cell_directory"]
+    assert settings["infer_qlvm_latents"]["masking_type"] == "sam"
+
+
+def test_derived_qlvm_model_cells_pass_model_cell_validation():
+    """The derived production prefixes write exactly the canonical coordinate columns, so the
+    model_cells validator (which forbids overwriting other summary columns) accepts them."""
+    settings = {
+        "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
+        "generate_masks": {"sam2_model_dir": "", "sam2_model_path": "", "yolo_weights": ""},
+        "infer_qlvm_latents": {"model_cells": {}, "model_cell_directory": "", "weights_npz_path": "",
+                               "masking_type": "sam"},
+        "detect_usv_squeaks": {"squeak_model_path": ""},
+        "detect_usv_noise": {"noise_model_path": ""},
+    }
+    os_utils.derive_spectrogram_model_paths(settings)
+    validated = validate_model_cells(settings["infer_qlvm_latents"]["model_cells"].items())
+    written = {f"{prefix}{axis}" for prefix in validated for axis in (1, 2)}
+    assert written == {c for c in os_utils.USV_SUMMARY_COLUMN_ORDER if c.startswith("qlvm")}
 
 
 def test_derive_spectrogram_model_paths_noop_when_root_absent():

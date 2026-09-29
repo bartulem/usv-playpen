@@ -71,6 +71,7 @@ from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
+    QLVM_PRODUCTION_MODEL_CELLS,
     USV_SUMMARY_COLUMN_ORDER,
     atomic_output_path,
     configure_path,
@@ -739,9 +740,11 @@ def validate_model_cells(model_cells: Iterable[tuple[str, str]]) -> dict[str, st
     must be a non-empty Python identifier (letters, digits and underscores, not
     starting with a digit), may be listed only once, and ``P1`` / ``P2`` must not
     be any other column of the USV summary (``USV_SUMMARY_COLUMN_ORDER``; the
-    ``qlvm1`` / ``qlvm2`` of prefix ``"qlvm"`` are allowed, since they are the
-    torus coordinates). Each cell directory must be a non-empty string. Every
-    problem is collected and raised together.
+    torus-coordinate columns of the production prefixes of
+    ``os_utils.QLVM_PRODUCTION_MODEL_CELLS`` -- ``qlvm1`` / ``qlvm2``,
+    ``qlvm_dur1`` / ``qlvm_dur2``, ... -- are allowed, since writing them is what a
+    run is for). Each cell directory must be a non-empty string. Every problem is
+    collected and raised together.
 
     Parameters
     ----------
@@ -761,9 +764,11 @@ def validate_model_cells(model_cells: Iterable[tuple[str, str]]) -> dict[str, st
     duplicates = sorted({prefix for prefix in prefixes if isinstance(prefix, str) and prefixes.count(prefix) > 1})
     if duplicates:
         problems.append(f"prefixes listed more than once: {duplicates}")
-    # qlvm1 / qlvm2 are the torus coordinates of prefix "qlvm"; every other summary
-    # column (qlvm_category, qlvm_model, acoustic features, ...) must stay untouched.
-    reserved = set(USV_SUMMARY_COLUMN_ORDER) - {"qlvm1", "qlvm2"}
+    # qlvm1 / qlvm2, qlvm_dur1 / qlvm_dur2, ... are the torus coordinates of the
+    # production prefixes; every other summary column (acoustic features, ...) must
+    # stay untouched.
+    coordinate_columns = {f"{prefix}{axis}" for prefix in QLVM_PRODUCTION_MODEL_CELLS for axis in (1, 2)}
+    reserved = set(USV_SUMMARY_COLUMN_ORDER) - coordinate_columns
     for prefix, cell_directory in pairs:
         if not isinstance(prefix, str) or not prefix.isidentifier():
             problems.append(f"prefix {prefix!r} is not a non-empty identifier (letters, digits, underscores)")

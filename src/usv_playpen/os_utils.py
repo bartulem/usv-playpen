@@ -369,22 +369,43 @@ def rebase_experimenter_in_paths(obj: object = None,
     return obj
 
 
+# The QLVM model package the production usv_summary.csv columns come from (Dexter's
+# v3 package; read-only). A module constant rather than a processing_settings.json
+# key: the GUI and the CLI re-key every experimenter name in those settings to the
+# active experimenter (`rebase_experimenter_in_paths`), which would rewrite this
+# "Dexter" path to the user's own directory, where no package exists.
+QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3"
+
+# The production embedding: column prefix -> cell of the package above. The
+# unconditional phase 6 regular model gives qlvm1/qlvm2; the four phase 11
+# tail-bin conditional models give qlvm_dur1/2, qlvm_mf1/2, qlvm_bw1/2 and
+# qlvm_loud1/2. Every cell is the natural_5strata_N29000 design, unmasked, floored.
+QLVM_PRODUCTION_MODEL_CELLS = {
+    "qlvm": "phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm_dur": "phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm_mf": "phase11_cond_mean_freq_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm_bw": "phase11_cond_bandwidth_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm_loud": "phase11_cond_loudness_floor/natural_5strata_N29000_unmasked_floor",
+}
+
+# The spectrogram preprocessing every production cell was trained with (their
+# training_contract.json `masking_type`): raw, unmasked spectrograms.
+QLVM_PRODUCTION_MASKING_TYPE = "none"
+
+
 def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     """
     Description
     -----------
-    Fills the eight spectrogram-pipeline model paths from the single
-    ``spectrograms_root`` setting, so the user configures one directory
-    instead of eight. The shipped ``processing_settings.json`` leaves the eight
-    granular keys empty and carries only ``spectrograms_root``; this helper
-    resolves the conventional layout beneath it:
+    Fills the spectrogram-pipeline model paths from the single
+    ``spectrograms_root`` setting, so the user configures one directory instead
+    of many. The shipped ``processing_settings.json`` leaves the granular keys
+    empty and carries only ``spectrograms_root``; this helper resolves the
+    conventional layout beneath it:
 
     * ``generate_masks.sam2_model_dir``  -> ``<root>/sam``
     * ``generate_masks.sam2_model_path`` -> ``<root>/sam/checkpoint.pt``
     * ``generate_masks.yolo_weights``    -> ``<root>/sam/best.pt``
-    * ``infer_qlvm_latents.weights_npz_path`` -> ``<root>/qlvm/qmc_decoder_weights.npz``
-    * ``infer_qlvm_latents.reference_arrays_fine_npz_path``   -> ``<root>/qlvm/arrays_fine.npz``
-    * ``infer_qlvm_latents.reference_arrays_coarse_npz_path`` -> ``<root>/qlvm/arrays_coarse.npz``
     * ``detect_usv_squeaks.squeak_model_path`` -> ``<root>/squeak/mil_absdb_final.pt``
     * ``detect_usv_noise.noise_model_path`` -> ``<root>/noise/noise_timemil_ens5_n4680_20260926.pt``
 
@@ -397,6 +418,23 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     them to the host mount downstream, exactly like the other model paths. The
     mutation is in place and idempotent.
 
+    The QLVM embedding is NOT derived from ``spectrograms_root`` any more: the
+    old in-house model under ``<root>/qlvm`` (``qmc_decoder_weights.npz`` and
+    its ``arrays_{fine,coarse}.npz`` watershed grids) would re-embed sessions on
+    a different torus and write ``qlvm_category`` / ``qlvm_supercategory`` back.
+    Instead, when ``infer_qlvm_latents`` names no model at all
+    (``model_cells``, ``model_cell_directory`` and ``weights_npz_path`` all
+    empty), ``infer_qlvm_latents.model_cells`` is filled with the production
+    mapping ``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``
+    (prefixes ``qlvm``, ``qlvm_dur``, ``qlvm_mf``, ``qlvm_bw``, ``qlvm_loud``),
+    and ``infer_qlvm_latents.masking_type`` is set to the cells' trained
+    ``QLVM_PRODUCTION_MASKING_TYPE`` (``"none"``). The masking type is part of
+    the derived model, not a separate choice: ``infer-qlvm-latents`` checks it
+    against each cell's training contract and refuses to embed on a mismatch,
+    so keeping the shipped ``"sam"`` would only make the derived run fail. Any
+    explicitly configured model (either kind) is left entirely alone,
+    ``masking_type`` included.
+
     Parameters
     ----------
     settings (dict)
@@ -404,7 +442,8 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         absent or empty the dictionary is returned unchanged (legacy settings
         files that set the granular ``generate_masks`` / ``infer_qlvm_latents``
         paths directly keep working); otherwise the ``generate_masks``,
-        ``infer_qlvm_latents`` and ``detect_usv_squeaks`` blocks must exist.
+        ``infer_qlvm_latents``, ``detect_usv_squeaks`` and ``detect_usv_noise``
+        blocks must exist.
 
     Returns
     -------
@@ -416,7 +455,6 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         return settings
     root = settings['spectrograms_root']
     sam_dir = f'{root}/sam'
-    qlvm_dir = f'{root}/qlvm'
     squeak_dir = f'{root}/squeak'
     # The noise model file name carries its training: TimeMIL, 5-seed ensemble, 3,562 labels, build date.
     noise_dir = f'{root}/noise'
@@ -424,15 +462,18 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         ('generate_masks', 'sam2_model_dir', sam_dir),
         ('generate_masks', 'sam2_model_path', f'{sam_dir}/checkpoint.pt'),
         ('generate_masks', 'yolo_weights', f'{sam_dir}/best.pt'),
-        ('infer_qlvm_latents', 'weights_npz_path', f'{qlvm_dir}/qmc_decoder_weights.npz'),
-        ('infer_qlvm_latents', 'reference_arrays_fine_npz_path', f'{qlvm_dir}/arrays_fine.npz'),
-        ('infer_qlvm_latents', 'reference_arrays_coarse_npz_path', f'{qlvm_dir}/arrays_coarse.npz'),
         ('detect_usv_squeaks', 'squeak_model_path', f'{squeak_dir}/mil_absdb_final.pt'),
         ('detect_usv_noise', 'noise_model_path', f'{noise_dir}/noise_timemil_ens5_n4680_20260926.pt'),
     )
     for block, key, derived_path in derived:
         if not settings[block][key]:
             settings[block][key] = derived_path
+    qlvm_cfg = settings['infer_qlvm_latents']
+    if not qlvm_cfg['model_cells'] and not qlvm_cfg['model_cell_directory'] and not qlvm_cfg['weights_npz_path']:
+        qlvm_cfg['model_cells'] = {
+            prefix: f'{QLVM_MODEL_PACKAGE_ROOT}/{cell}' for prefix, cell in QLVM_PRODUCTION_MODEL_CELLS.items()
+        }
+        qlvm_cfg['masking_type'] = QLVM_PRODUCTION_MASKING_TYPE
     return settings
 
 
@@ -971,8 +1012,12 @@ def wait_for_subprocesses(
 # Canonical column order of a session's ``*_usv_summary.csv``: the DAS event
 # (written by das_summarize), the call-level labels (emitter from vocal assignment,
 # squeak from detect_usv_squeaks), the acoustic descriptors
-# (compute_usv_acoustic_features) and the QLVM embedding plus the model it came from
-# (infer_qlvm_latents).
+# (compute_usv_acoustic_features) and the QLVM torus coordinates of the production
+# models (infer_qlvm_latents with model_cells: the phase 6 regular model's qlvm1/qlvm2,
+# then the duration, mean-frequency, bandwidth and loudness conditional models). The
+# single-model columns qlvm_category / qlvm_supercategory / qlvm_model are not listed:
+# production summaries no longer carry them (a legacy run that writes them still
+# keeps them, after the canonical columns).
 # Steps that re-append their own columns reorder to this before writing, so a
 # column's position no longer depends on which step ran last.
 USV_SUMMARY_COLUMN_ORDER = (
@@ -982,7 +1027,8 @@ USV_SUMMARY_COLUMN_ORDER = (
     "squeak", "squeak_probability", "squeak_start", "squeak_end",
     "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "spectral_entropy",
     "mask_number",
-    "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_model",
+    "qlvm1", "qlvm2", "qlvm_dur1", "qlvm_dur2", "qlvm_mf1", "qlvm_mf2", "qlvm_bw1", "qlvm_bw2",
+    "qlvm_loud1", "qlvm_loud2",
 )
 
 
