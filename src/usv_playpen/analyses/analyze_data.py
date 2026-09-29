@@ -278,13 +278,16 @@ def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
 @click.option('--total-bin-num', 'total_bin_num', type=int, default=None, required=False, help='Total number of bins for 1D tuning curves.')
 @click.option('--n-spatial-bins', 'n_spatial_bins', type=int, default=None, required=False, help='Number of spatial bins.')
 @click.option('--spatial-scale-cm', 'spatial_scale_cm', type=int, default=None, required=False, help='Spatial extent of the arena (in cm).')
-@click.option('--peth-window-seconds', 'peth_window_seconds', nargs=2, type=float, default=None, required=False, help='Pre-USV PETH window [start stop] (in s).')
+@click.option('--peth-window-seconds', 'peth_window_seconds', nargs=2, type=float, default=None, required=False, help='Peri-USV-onset PETH window [start stop] relative to each call onset (in s); default -2 0.5.')
 @click.option('--peth-bin-seconds', 'peth_bin_seconds', type=float, default=None, required=False, help='PETH bin width (in s).')
 @click.option('--bout-quiet-seconds', 'bout_quiet_seconds', type=float, default=None, required=False, help='Inter-bout silence required to define a new bout (in s).')
 @click.option('--n-usv-min-self', 'n_usv_min_self', type=int, default=None, required=False, help='Minimum self-side USV count to compute self plots.')
 @click.option('--n-usv-min-partner', 'n_usv_min_partner', type=int, default=None, required=False, help='Minimum partner-side USV count to compute partner plots.')
 @click.option('--n-usv-min-category', 'n_usv_min_category', type=int, default=None, required=False, help='Minimum per-category USV count to retain that category.')
 @click.option('--include-partner-tuning/--no-include-partner-tuning', 'include_partner_vocalization_tuning_bool', default=None, required=False, help='If set, also compute partner-side vocal tuning when partner threshold is met.')
+@click.option('--exclude-squeaks-self/--keep-squeaks-self', 'exclude_squeaks_self', default=None, required=False, help='Leave the self side\'s squeaks out of its vocal tuning anchors (default: exclude). QLVM category tuning never uses squeaks.')
+@click.option('--exclude-squeaks-partner/--keep-squeaks-partner', 'exclude_squeaks_partner', default=None, required=False, help='Leave the partner side\'s squeaks out of its vocal tuning anchors (default: keep). QLVM category tuning never uses squeaks.')
+@click.option('--excluded-behavioral-features', 'excluded_behavioral_features', multiple=True, type=str, default=None, required=False, help='Behavioral base features (derivatives included) left out of tuning; repeat once per feature (default: nose-nose, allo_yaw-nose, nose-allo_yaw, allo_pitch-nose, nose-allo_pitch).')
 @click.option('--behavioral-min-occupancy-seconds', 'behavioral_min_occupancy_seconds', type=float, default=None, required=False, help='Minimum behavioral occupancy per bin (in s) for that bin to be rendered in the 1D feature line plots; persisted into behavioral_metadata of each cluster pkl.')
 @click.option('--smoothing-sd', 'smoothing_sd', type=float, default=None, required=False, help='Standard deviation (in bins) of the Gaussian smoothing applied to ratemaps and shuffle distributions; 0 disables smoothing.')
 @click.pass_context
@@ -293,7 +296,7 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
     Description
     -----------
     A command-line tool to compute neuronal tuning curves: behavioral
-    (spike-vs-3D-feature ratemaps) and vocal (Q1 pre-USV PETH, Q2 within-USV
+    (spike-vs-3D-feature ratemaps) and vocal (Q1 peri-USV-onset PETH, Q2 within-USV
     continuous-property tuning, Q3a within-USV categorical, Q3b per-category
     PETH). Each subset is produced if its corresponding input is present in
     the session: behavioral runs when the `*_behavioral_features.csv` is
@@ -308,7 +311,7 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
     None
     """
 
-    parameters_lists = ['temporal_offsets', 'peth_window_seconds']
+    parameters_lists = ['temporal_offsets', 'peth_window_seconds', 'excluded_behavioral_features']
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 

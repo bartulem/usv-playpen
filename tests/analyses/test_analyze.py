@@ -1696,8 +1696,14 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
         "emitter": ["m1"] * n_usvs,
         # Every synthetic call is real; the tuning-curve loader drops noise-flagged rows.
         "noise": [False] * n_usvs,
+        # No squeaks: the vocal tuning drops squeak anchors, so the flag is required.
+        "squeak": [False] * n_usvs,
         "qlvm_supercategory": rng.integers(1, 4, size=n_usvs).tolist(),
         "qlvm_category":     rng.integers(1, 6, size=n_usvs).tolist(),
+        # the four conditional QLVM maps' labels (every map is tuned)
+        **{f"{qlvm_map}_{suffix}": rng.integers(1, 4, size=n_usvs).tolist()
+           for qlvm_map in ("qlvm_dur", "qlvm_mf", "qlvm_bw", "qlvm_loud")
+           for suffix in ("category", "supercategory")},
         "mean_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
         "peak_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
         "freq_bandwidth_hz": rng.uniform(5000, 30000, n_usvs).tolist(),
@@ -1751,6 +1757,10 @@ def _make_neuronal_tuning(root, *, n_shuffles=5, smoothing_sd=0.0):
             "behavioral_min_occupancy_seconds": 0.1,
             "usv_property_min_occupancy_seconds": 0.05,
             "include_partner_vocalization_tuning_bool": False,
+            "exclude_squeaks_self": True,
+            "exclude_squeaks_partner": False,
+            "excluded_behavioral_features": ["nose-nose", "allo_yaw-nose", "nose-allo_yaw",
+                                             "allo_pitch-nose", "nose-allo_pitch"],
             "smoothing_sd": smoothing_sd,
             "circular_features": ["allo_yaw", "body_dir"],
         },
@@ -1877,11 +1887,86 @@ def test_build_vocal_side_precompute_includes_self_side(synthetic_compute_sessio
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_behavioral_feature_base_strips_prefix_and_derivatives():
+    """A behavioral column's base feature drops the animal / pair prefix and any
+    derivative suffix, so an exclusion covers the feature and its derivatives."""
+    from usv_playpen.analyses.compute_neuronal_tuning_curves import behavioral_feature_base
+
+    assert behavioral_feature_base("158112_0-156693_3.allo_yaw-nose_1st_der") == "allo_yaw-nose"
+    assert behavioral_feature_base("158112_0-156693_3.nose-nose_2nd_der") == "nose-nose"
+    assert behavioral_feature_base("158112_0-156693_3.head-head") == "head-head"
+    assert behavioral_feature_base("m1.speed") == "speed"
+
+
+def test_load_behavioral_inputs_drops_excluded_features(synthetic_compute_session):
+    """Columns whose base feature is in excluded_behavioral_features (derivatives
+    included) are not tuned; their head-anchored versions and every other column stay."""
+    root, _ = synthetic_compute_session
+    beh_csv = next(root.rglob("*_behavioral_features.csv"))
+    rng = np.random.default_rng(3)
+    df = pls.read_csv(beh_csv)
+    extra = {
+        "m1-f1.nose-nose": rng.uniform(0, 30, df.height),
+        "m1-f1.nose-nose_1st_der": rng.uniform(-5, 5, df.height),
+        "m1-f1.head-head": rng.uniform(0, 30, df.height),
+        "m1-f1.allo_yaw-nose": rng.uniform(-180, 180, df.height),
+        "m1-f1.allo_yaw-head": rng.uniform(-180, 180, df.height),
+        "m1-f1.nose-TTI": rng.uniform(0, 30, df.height),
+    }
+    df.with_columns([pls.Series(name, values) for name, values in extra.items()]).write_csv(beh_csv)
+    nt = _make_neuronal_tuning(root)
+
+    columns = nt._load_behavioral_inputs()["behavioral_data"].columns
+
+    assert "m1-f1.nose-nose" not in columns and "m1-f1.nose-nose_1st_der" not in columns
+    assert "m1-f1.allo_yaw-nose" not in columns
+    assert {"m1-f1.head-head", "m1-f1.allo_yaw-head", "m1-f1.nose-TTI", "m1.speed"} <= set(columns)
+
+
+def test_squeaks_are_dropped_from_self_anchors_and_never_categorised(synthetic_compute_session):
+    """With exclude_squeaks_self (default) the self side's squeak calls are not
+    anchors; with it off they are anchors but still carry no QLVM category (every
+    map's category tuning is squeak-free), and a category held only by squeaks
+    does not appear."""
+    root, _ = synthetic_compute_session
+    usv_csv = next(root.rglob("*_usv_summary.csv"))
+    df = pls.read_csv(usv_csv)
+    squeak = np.zeros(df.height, dtype=bool)
+    squeak[:10] = True
+    # category 99 only on squeaks
+    df.with_columns(
+        pls.Series("squeak", squeak),
+        pls.when(pls.Series(squeak)).then(99).otherwise(pls.col("qlvm_category")).alias("qlvm_category"),
+    ).write_csv(usv_csv)
+
+    nt = _make_neuronal_tuning(root)
+    voc_inputs = nt._load_vocal_inputs()
+    excluded = nt._build_vocal_side_precompute(voc_inputs)["self"]
+    assert excluded["side"]["n"] == df.height - 10
+    assert not voc_inputs["is_squeak"][excluded["anchor_idx"]].any()
+
+    nt.tuning_parameters_dict["exclude_squeaks_self"] = False
+    kept = nt._build_vocal_side_precompute(voc_inputs)["self"]
+    assert kept["side"]["n"] == df.height
+    categorical = kept["anchor_categorical"]["qlvm_category"]
+    assert 99 not in categorical["unique_cats"].tolist()
+    assert (categorical["anchor_cat_idx_dense"][voc_inputs["is_squeak"][kept["anchor_idx"]]] == -1).all()
+
+
+def test_load_vocal_inputs_requires_the_squeak_column(synthetic_compute_session):
+    """A summary without a squeak column raises instead of tuning to squeaks."""
+    root, _ = synthetic_compute_session
+    usv_csv = next(root.rglob("*_usv_summary.csv"))
+    pls.read_csv(usv_csv).drop("squeak").write_csv(usv_csv)
+    with pytest.raises(KeyError, match="no 'squeak' column"):
+        _make_neuronal_tuning(root)._load_vocal_inputs()
+
+
 def test_build_vocal_side_precompute_notices_missing_qlvm_labels(synthetic_compute_session):
-    """Without qlvm_category / qlvm_supercategory (QLVM labels are not written until a
-    labelling is decided) the precompute prints a one-line notice that QLVM category
-    tuning is skipped, instead of leaving those outputs empty without a word; with the
-    labels present nothing is printed."""
+    """Without some QLVM label columns (e.g. a summary embedded before infer-qlvm-latents
+    wrote them) the precompute prints a one-line notice naming them, instead of leaving
+    those outputs empty without a word; with every map's labels present nothing is
+    printed."""
     root, _ = synthetic_compute_session
     nt = _make_neuronal_tuning(root)
     messages: list[str] = []

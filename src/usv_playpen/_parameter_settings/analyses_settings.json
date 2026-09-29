@@ -166,7 +166,7 @@
     "n_spatial_bins": 196,
     "spatial_scale_cm": 32,
     "shuffle_seconds_range": [20, 60],
-    "peth_window_seconds": [-2, 0],
+    "peth_window_seconds": [-2, 0.5],
     "peth_bin_seconds": 0.05,
     "bout_quiet_seconds": 2.0,
     "vocal_require_clean_post_anchor": true,
@@ -177,6 +177,15 @@
     "behavioral_min_occupancy_seconds": 1.0,
     "usv_property_min_occupancy_seconds": 0.25,
     "include_partner_vocalization_tuning_bool": false,
+    "exclude_squeaks_self": true,
+    "exclude_squeaks_partner": false,
+    "excluded_behavioral_features": [
+      "nose-nose",
+      "allo_yaw-nose",
+      "nose-allo_yaw",
+      "allo_pitch-nose",
+      "nose-allo_pitch"
+    ],
     "smoothing_sd": 1.0,
     "circular_features": ["allo_yaw", "body_dir"]
   },

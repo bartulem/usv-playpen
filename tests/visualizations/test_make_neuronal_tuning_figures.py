@@ -57,7 +57,7 @@ from usv_playpen.visualizations.make_neuronal_tuning_figures import (
     USV_PROPERTY_ORDER,
     _category_class_count,
     load_qlvm_package_segmentation,
-    qlvm_regular_cell_directory,
+    qlvm_cell_directory,
 )
 
 
@@ -146,6 +146,7 @@ def _build_synthetic_figure_session(
         "stop":              stops.tolist(),
         "duration":          durations.tolist(),
         "emitter":           ["m1"] * n_usvs,
+        "squeak":            [False] * n_usvs,
         "qlvm_supercategory": rng.integers(1, 4, size=n_usvs).tolist(),
         "qlvm_category":     rng.integers(1, 6, size=n_usvs).tolist(),
         "mean_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
@@ -197,7 +198,7 @@ def _make_tuning_parameters() -> dict:
         "n_spatial_bins":                           36,
         "spatial_scale_cm":                         32,
         "shuffle_seconds_range":                    [3.0, 6.0],
-        "peth_window_seconds":                      [-2.0, 0.0],
+        "peth_window_seconds":                      [-2.0, 0.5],
         "peth_bin_seconds":                         0.05,
         "bout_quiet_seconds":                       2.0,
         "vocal_require_clean_post_anchor":          True,
@@ -208,6 +209,10 @@ def _make_tuning_parameters() -> dict:
         "behavioral_min_occupancy_seconds":         0.1,
         "usv_property_min_occupancy_seconds":       0.05,
         "include_partner_vocalization_tuning_bool": False,
+        "exclude_squeaks_self":                     True,
+        "exclude_squeaks_partner":                  False,
+        "excluded_behavioral_features":             ["nose-nose", "allo_yaw-nose", "nose-allo_yaw",
+                                                     "allo_pitch-nose", "nose-allo_pitch"],
         "smoothing_sd":                             0.0,
         "circular_features":                        ["allo_yaw", "body_dir"],
     }
@@ -670,96 +675,8 @@ def test_categorical_strip_symlog_xlim_uses_geometric_buffer():
         plt.close(fig)
 
 
-@pytest.mark.filterwarnings("ignore::RuntimeWarning")
-@pytest.mark.filterwarnings("ignore::UserWarning")
-def test_category_peth_cell_curve_reaches_anchor_t_zero():
-    """
-    Description
-    -----------
-    Regression for bug #4: the per-category PETH cell anchors the
-    right x-edge at t=0 but `bin_centers_s[-1]` is half-a-bin-width
-    left of zero (e.g. -0.025 s with 50 ms bins in a [-2, 0] window).
-    The OLD code plotted `ax.plot(bin_centers, rate)` directly, so the
-    rendered curve stopped at the rightmost bin center, leaving a
-    visible air gap between the curve and the t=0 tick. The fix
-    appends a synthetic anchor point `(0.0, rate[last_finite])` to
-    the curve and the shuffle band.
-
-    Parameters
-    ----------
-
-    Returns
-    -------
-    None
-    """
-
-    bin_centers = np.arange(-1.975, 0.0, 0.05)
-    assert abs(bin_centers[-1] - (-0.025)) < 1e-9
-    n_bins = bin_centers.size
-
-    cats = np.array([1])
-    rate = np.full((1, n_bins), np.nan)
-    rate[0, -10:] = 8.0
-    p0_5 = np.full((1, n_bins), np.nan)
-    p0_5[0, -10:] = 2.0
-    p99_5 = np.full((1, n_bins), np.nan)
-    p99_5[0, -10:] = 16.0
-
-    payload_for_cat = {
-        "categories":     cats,
-        "bin_centers_s":  bin_centers,
-        "rate":           rate,
-        "null_p0_5":      p0_5,
-        "null_p99_5":     p99_5,
-        "sex":            "male",
-    }
-    # `_draw_section_d` iterates every CATEGORICAL_FEATURES entry; provide
-    # an empty payload for the others so the lookup doesn't KeyError.
-    empty_payload = {
-        "categories":     np.array([], dtype=int),
-        "bin_centers_s":  bin_centers,
-        "rate":           np.zeros((0, n_bins), dtype=float),
-        "null_p0_5":      np.zeros((0, n_bins), dtype=float),
-        "null_p99_5":     np.zeros((0, n_bins), dtype=float),
-        "sex":            "male",
-    }
-    cluster_data = {
-        "usv_category_peth": {
-            "m1": {
-                cf: (payload_for_cat if cf == CATEGORICAL_FEATURES[0]
-                     else empty_payload)
-                for cf in CATEGORICAL_FEATURES
-            }
-        }
-    }
-
-    maker = _make_figure_maker()
-    fig = plt.figure()
-    gs = fig.add_gridspec(1, 1)
-    try:
-        maker._draw_section_d(
-            fig=fig, gs=gs, emitter="m1",
-            cluster_data=cluster_data, n_cols=1,
-        )
-
-        axes = fig.axes
-        assert len(axes) == 1, (
-            f"expected 1 rendered cell (one finite category), got {len(axes)}"
-        )
-        lines = axes[0].get_lines()
-        assert lines, "no Line2D found in the rendered cell"
-        rate_xdata = lines[0].get_xdata()
-        assert abs(float(rate_xdata[-1]) - 0.0) < 1e-9, (
-            f"PETH curve right edge is at x={float(rate_xdata[-1]):.4f}, "
-            "not at the t=0 anchor — the line-extension fix is missing "
-            "or broken (the curve stops half-a-binwidth left of zero)."
-        )
-    finally:
-        plt.close(fig)
 
 
-@pytest.mark.filterwarnings("ignore::RuntimeWarning")
-@pytest.mark.filterwarnings("ignore::UserWarning")
 def test_categorical_strip_has_exactly_two_xticks():
     """
     Description
@@ -2756,25 +2673,34 @@ def test_category_class_count_grows_with_the_labels_units_hold():
     assert _category_class_count("qlvm_supercategory", {"PAG": [{"best_cat": 4}]}, {}) == 4
 
 
-def _fake_qlvm_cell(tmp_path, fine, coarse):
+def _fake_qlvm_cell(tmp_path, fine, coarse, relative_cell="phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor"):
     """A v3-layout package cell holding only the two cluster levels' label_grid.npy."""
-    cell = tmp_path / "v3" / "phase6_USVs_unmasked_floor" / "natural_5strata_N29000_unmasked_floor"
+    cell = tmp_path / "v3" / relative_cell
     for level, grid in (("fine", fine), ("coarse", coarse)):
         (cell / "inference" / f"clusters_{level}").mkdir(parents=True)
         np.save(cell / "inference" / f"clusters_{level}" / "label_grid.npy", grid)
     return cell
 
 
-def test_qlvm_segmentation_comes_from_the_regular_package_cell(tmp_path, monkeypatch):
-    """The QLVM watersheds and class counts are the production regular cell's fine
-    (qlvm_category) and coarse (qlvm_supercategory) label grids, located from the
-    os_utils package root, on the unit torus with pixel [y, x] at (x, y); they are
-    the only blocks (the VAE segmentation is retired)."""
+def test_qlvm_segmentation_comes_from_each_maps_package_cell(tmp_path, monkeypatch):
+    """Each QLVM map's watersheds and class counts are its production cell's fine
+    (<map>_category) and coarse (<map>_supercategory) label grids, located from the
+    os_utils package root, on the unit torus with pixel [y, x] at (x, y). A map whose
+    cell is missing is left out (placeholder panels) with a message naming it."""
     fine = (np.arange(16).reshape(4, 4) % 15 + 1).astype(np.int16)
     coarse = np.array([[1, 2, 3, 4], [5, 6, 7, 8], [9, 9, 1, 2], [3, 4, 5, 6]], dtype=np.int16)
     _fake_qlvm_cell(tmp_path, fine, coarse)
+    dur_fine = np.array([[1, 2], [3, 4]], dtype=np.int16)
+    dur_coarse = np.array([[1, 1], [2, 2]], dtype=np.int16)
+    _fake_qlvm_cell(tmp_path, dur_fine, dur_coarse,
+                    relative_cell=tuning_figures.QLVM_PRODUCTION_MODEL_CELLS["qlvm_dur"])
     monkeypatch.setattr(tuning_figures, "QLVM_MODEL_PACKAGE_ROOT", str(tmp_path / "v3"))
-    maker = _make_figure_maker()
+    messages = []
+    maker = NeuronalTuningFigureMaker(
+        root_directory="/tmp",
+        visualizations_parameter_dict=_make_visualizations_parameters(),
+        message_output=messages.append,
+    )
 
     segmentation = maker._load_segmentation()
 
@@ -2786,9 +2712,16 @@ def test_qlvm_segmentation_comes_from_the_regular_package_cell(tmp_path, monkeyp
     # Pixel [row=y, col=x] is centred at ((x + 0.5) / res, (y + 0.5) / res).
     assert segmentation["qlvm_category"]["xx"][1, 3] == 3.5 / 4
     assert segmentation["qlvm_category"]["yy"][1, 3] == 1.5 / 4
-    assert set(segmentation) == {"qlvm_category", "qlvm_supercategory"}
+    np.testing.assert_array_equal(segmentation["qlvm_dur_category"]["label_grid"], dur_fine)
+    np.testing.assert_array_equal(segmentation["qlvm_dur_supercategory"]["label_grid"], dur_coarse)
+    assert set(segmentation) == {"qlvm_category", "qlvm_supercategory", "qlvm_dur_category", "qlvm_dur_supercategory"}
     assert _category_class_count("qlvm_category", {}, segmentation) == 15
     assert _category_class_count("qlvm_supercategory", {}, segmentation) == 9
+    assert _category_class_count("qlvm_dur_category", {}, segmentation) == 4
+    # the three maps without a cell each say so
+    assert len(messages) == 3
+    assert all("QLVM segmentation unavailable" in m for m in messages)
+    assert {m.split("production ")[1].split(" model")[0] for m in messages} == {"qlvm_mf", "qlvm_bw", "qlvm_loud"}
 
 
 def test_qlvm_segmentation_unreachable_says_so_and_draws_placeholders(tmp_path, monkeypatch):
@@ -2805,18 +2738,18 @@ def test_qlvm_segmentation_unreachable_says_so_and_draws_placeholders(tmp_path, 
     segmentation = maker._load_segmentation()
 
     assert segmentation == {}
-    assert len(messages) == 1
-    assert "QLVM segmentation unavailable" in messages[0] and str(tmp_path / "missing") in messages[0]
+    assert len(messages) == len(tuning_figures.QLVM_MAPS)
+    assert all("QLVM segmentation unavailable" in m and str(tmp_path / "missing") in m for m in messages)
 
 
 @pytest.mark.skipif(
-    not qlvm_regular_cell_directory().is_dir(),
+    not qlvm_cell_directory("qlvm").is_dir(),
     reason="the production QLVM model package is not mounted on this host",
 )
 def test_production_qlvm_class_counts_are_15_fine_and_9_coarse():
     """On the production v3 regular cell (read-only), the fine grid holds 15 clusters
     and the coarse grid 9, labelled 1..k, which sets the tuning-figure class counts."""
-    segmentation = load_qlvm_package_segmentation(qlvm_regular_cell_directory())
+    segmentation = load_qlvm_package_segmentation("qlvm", qlvm_cell_directory("qlvm"))
     assert segmentation["qlvm_category"]["unique_labels"] == list(range(1, 16))
     assert segmentation["qlvm_supercategory"]["unique_labels"] == list(range(1, 10))
     assert _category_class_count("qlvm_category", {}, segmentation) == 15

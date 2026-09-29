@@ -1093,7 +1093,7 @@ The options below override the JSON for the extraction and the unconstrained swe
       --total-bin-num                        Total number of bins for 1D tuning curves.
       --n-spatial-bins                       Number of spatial bins.
       --spatial-scale-cm                     Spatial extent of the arena (in cm).
-      --peth-window-seconds                  Pre-USV PETH window [start stop] (in s).
+      --peth-window-seconds                  Peri-USV-onset PETH window [start stop] relative to each call onset (in s); default -2 0.5.
       --peth-bin-seconds                     PETH bin width (in s).
       --bout-quiet-seconds                   Inter-bout silence required to define a new bout (in s).
       --n-usv-min-self                       Minimum self-side USV count to compute self plots.
@@ -1101,6 +1101,15 @@ The options below override the JSON for the extraction and the unconstrained swe
       --n-usv-min-category                   Minimum per-category USV count to retain that category.
       --include-partner-tuning /
         --no-include-partner-tuning          Also compute partner-side vocal tuning when partner threshold is met.
+      --exclude-squeaks-self /
+        --keep-squeaks-self                  Leave the self side's squeaks out of its vocal tuning anchors
+                                             (default: exclude). QLVM category tuning never uses squeaks.
+      --exclude-squeaks-partner /
+        --keep-squeaks-partner               Leave the partner side's squeaks out of its vocal tuning anchors
+                                             (default: keep). QLVM category tuning never uses squeaks.
+      --excluded-behavioral-features         Behavioral base features (derivatives included) left out of
+                                             tuning; repeat once per feature (default: nose-nose,
+                                             allo_yaw-nose, nose-allo_yaw, allo_pitch-nose, nose-allo_pitch).
       --behavioral-min-occupancy-seconds     Minimum behavioral occupancy per bin (in s) for that bin
                                              to be rendered in the 1D feature line plots; persisted
                                              into ``behavioral_metadata`` of each cluster pkl.
