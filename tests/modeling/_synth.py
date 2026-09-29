@@ -504,9 +504,8 @@ def build_modeling_settings(
       - ``vocal_features.usv_category_column_name`` -> ``'qlvm_supercategory'``
         by default, the label column the synthetic summaries carry, so the
         categorical pipelines (multinomial, binomial, single-category onsets,
-        per-category predictors) keep their coverage; the shipped JSON has
-        ``null`` (QLVM labels are unavailable), and passing ``None`` exercises
-        that label-free setting.
+        per-category predictors) keep their coverage (the shipped JSON has the
+        same value); passing ``None`` exercises the label-free setting.
       - ``hyperparameters.classical.logistic_regression``: a single tiny ``cs``
         value, ``cv=2``, low ``max_iter`` so ``LogisticRegressionCV`` is fast.
       - ``hyperparameters.classical.pygam``: few splines and few iterations so
@@ -541,7 +540,7 @@ def build_modeling_settings(
         Vocal predictor mode; ``None`` disables vocal predictor columns.
     usv_category_column_name (str or None)
         Category label column the pipelines read; ``'qlvm_supercategory'``
-        (default) matches the synthetic summaries, ``None`` is the shipped
+        (default, as shipped) matches the synthetic summaries, ``None`` is the
         label-free setting.
     split_strategy (str)
         ``'mixed'`` or ``'session'`` (the two strategies model selection

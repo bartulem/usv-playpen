@@ -179,8 +179,8 @@ def manifold_tag_segment(category_column: str | None, manifold_column_names: lis
     Names the source of a continuous-manifold run in its analysis tag and in the
     model-selection step-file prefix. With a category label column configured
     the segment is that column (e.g. ``'qlvm_supercategory'``), as before; with
-    none (``usv_category_column_name`` null, the state while QLVM labels are
-    undecided) it is the embedding the coordinates come from, the first manifold
+    none (``usv_category_column_name`` null) it is the embedding the
+    coordinates come from, the first manifold
     column without its trailing digits (``['qlvm1', 'qlvm2']`` -> ``'qlvm'``), so
     the tag never reads ``manifold_None``. The extraction pipeline and the
     selector both call this, so the two always agree on the name.

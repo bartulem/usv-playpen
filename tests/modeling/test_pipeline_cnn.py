@@ -419,8 +419,8 @@ class TestRunCnnTrainingFull:
             n_per_session=N_PER_SESSION,
         )
         settings = _build_cnn_settings(save_dir, input_pkl)
-        # The shipped default leaves saliency off (no QLVM labels yet); this labelled
-        # fixture turns it on to exercise Phase 3.
+        # Saliency is on in the shipped settings; set explicitly so this labelled
+        # fixture exercises Phase 3 whatever the default.
         settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['enable'] = True
         runner = NeuralContinuousCNNRunner(modeling_settings=settings)
         data_blocks = runner.load_multivariate_data_blocks(pkl_path=str(input_pkl))
@@ -503,14 +503,17 @@ class TestRunCnnTrainingFull:
         assert len(deep['cross_validation']) == 2
         assert set(deep['feature_importance']['means'].keys()) == set(FEATURE_NAMES)
 
-    def test_shipped_default_disables_saliency(self):
-        """Every saliency segmentation is label-based and QLVM labels are not
-        available, so the shipped settings leave saliency off and the default
-        configuration runs on an unlabelled modeling pickle."""
+    def test_shipped_default_enables_saliency(self):
+        """Every saliency segmentation is label-based; the usv_summary.csv files carry
+        the QLVM labels (qlvm_category / qlvm_supercategory), so the shipped settings
+        run the saliency phase, segmented by supercategory. A modeling pickle without
+        the requested labels still stops in the saliency pre-flight check."""
 
         with open(_SETTINGS_JSON, 'r') as fh:
             shipped = json.load(fh)
-        assert shipped['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['enable'] is False
+        saliency = shipped['hyperparameters']['deep_learning']['cnn_continuous']['saliency']
+        assert saliency['enable'] is True
+        assert saliency['segmentation'] == 'supercategory'
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_run_cnn_training_restrict_to_fold(self, tmp_path):

@@ -589,8 +589,8 @@ def macro_von_mises_logscore(Y_pred: np.ndarray, Y_true: np.ndarray,
     region_labels = np.asarray(region_labels, dtype=np.float64)
     labelled = ~np.isnan(region_labels)
     if not labelled.any():
-        # No usable region labels (a pickle without supercategory labels, the
-        # state while QLVM labels are undecided) -> degrade to the pooled
+        # No usable region labels (a pickle extracted without supercategory
+        # labels) -> degrade to the pooled
         # single-region score rather than returning NaN, so the score stays
         # defined and the run proceeds (identical to `region_labels=None`). The
         # fallback is printed once per process (this is called per fold and per
@@ -599,8 +599,8 @@ def macro_von_mises_logscore(Y_pred: np.ndarray, Y_true: np.ndarray,
         # not `warnings.warn`: the test suite escalates warnings to errors.
         if not _POOLED_FALLBACK_ANNOUNCED:
             _POOLED_FALLBACK_ANNOUNCED.append(True)
-            print("WARNING [macro_von_mises_logscore]: no region labels (all NaN; QLVM labels are "
-                  "unavailable), so the macro score fell back to the pooled von Mises score.")
+            print("WARNING [macro_von_mises_logscore]: no region labels (all NaN; the modeling input "
+                  "carries no QLVM labels), so the macro score fell back to the pooled von Mises score.")
         return float(np.mean(per_point)) if per_point.size else float('nan')
     region_means = []
     for region_id in np.unique(region_labels[labelled]):
@@ -620,8 +620,8 @@ def warn_if_no_region_labels(region_labels: np.ndarray, *, metric: str, context:
     Announces, once per run, that the torus region-balanced machinery has no
     region labels to balance over. The per-event acoustic-region labels are the
     supercategory packet the extraction stage writes only when the summaries carry
-    labels; while QLVM labels are undecided there is none, the loaders fill the
-    region array with NaN, and two things fall back: the ``'macro'`` von Mises
+    labels; without it (no label column configured, or summaries without one) the
+    loaders fill the region array with NaN, and two things fall back: the ``'macro'`` von Mises
     score (:func:`macro_von_mises_logscore`, the torus selection objective
     ``vm_logscore``) becomes the pooled score (numerically ``vm_logscore_pooled``),
     and the equal-region fit reweighting

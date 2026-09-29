@@ -2011,7 +2011,7 @@ class InputDrivenManifoldGLMHMM:
         density is macro-averaged over the supercategory regions (equal weight per
         region). Predictions are unweighted -- any fit reweighting only shaped ``W_emit``,
         not this score. With no labelled event at all (no supercategory labels, e.g.
-        while QLVM labels are unavailable) the score is the pooled one, and
+        a pickle extracted without a label column) the score is the pooled one, and
         :func:`macro_von_mises_logscore` prints (once per process) that it fell back.
 
         Parameters

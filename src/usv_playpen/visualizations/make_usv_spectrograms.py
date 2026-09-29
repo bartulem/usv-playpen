@@ -2278,9 +2278,9 @@ EMBEDDING_LABEL_COLS = (
 )
 EMBEDDING_ALL_COLS = EMBEDDING_COORD_COLS + EMBEDDING_LABEL_COLS
 # Label columns carried when a summary has them but never required or null-filled:
-# the production summaries hold QLVM torus coordinates only (no QLVM cluster labels
-# until a labelling is decided), so requiring them would make a fresh cache fail its
-# own check, and null-filling them would present an all-null label as if it existed.
+# summaries embedded before infer-qlvm-latents wrote the QLVM cluster labels hold
+# torus coordinates only, so requiring them would make a cache of such summaries fail
+# its own check, and null-filling them would present an all-null label as if it existed.
 EMBEDDING_OPTIONAL_LABEL_COLS = ("qlvm_category", "qlvm_supercategory")
 
 # Parquet key-value metadata key holding the fingerprint of the summaries a pooled
@@ -2399,8 +2399,8 @@ def build_pooled_embeddings_df(
 
     ``qlvm_category`` / ``qlvm_supercategory`` are optional: kept when
     the summaries carry them, never required and never null-filled
-    (the production summaries hold QLVM coordinates only while QLVM
-    labels are undecided).
+    (summaries embedded before ``infer-qlvm-latents`` wrote the labels
+    hold QLVM coordinates only).
 
     Parameters
     ----------

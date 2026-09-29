@@ -76,10 +76,10 @@
   },
 
   "vocal_features": {
-    "usv_predictor_type": "pooled_rate",
+    "usv_predictor_type": "categories_rate",
     "usv_predictor_partner_only": true,
     "usv_predictor_smoothing_sd": 1,
-    "usv_category_column_name": null,
+    "usv_category_column_name": "qlvm_supercategory",
     "exclude_noise_usvs": true,
     "usv_manifold_column_names": ["qlvm1", "qlvm2"],
     "usv_manifold_metric": "torus",
@@ -159,7 +159,7 @@
         "masking_length_frames": 60,
         "use_hybrid_flatten": false,
         "saliency": {
-          "enable": false,
+          "enable": true,
           "segmentation": "supercategory",
           "alpha": 0.5,
           "radius_mode": "adaptive",

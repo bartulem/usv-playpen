@@ -85,15 +85,15 @@ def require_usv_category_column(category_column: str | None,
     Description
     -----------
     Fails clearly when a category-dependent analysis has no USV category label
-    column to read. The usv_summary.csv files carry torus coordinates only
-    (``qlvm1``/``qlvm2`` and the conditional ``qlvm_<condition>1/2`` pairs); the
-    QLVM cluster labels (``qlvm_category`` / ``qlvm_supercategory``) are not
-    written until a labelling is decided, so the shipped
-    ``vocal_features.usv_category_column_name`` is ``null``. Every path that
-    needs labels (per-category vocal predictors, the multinomial and binomial
-    category models, the single-category onset target) calls this first, so the
-    run stops with a message naming the setting instead of crashing obscurely
-    on a missing column or silently building nothing.
+    column to read. The usv_summary.csv files written by ``infer-qlvm-latents``
+    carry the QLVM cluster labels of the regular model (``qlvm_category`` /
+    ``qlvm_supercategory``, the shipped ``vocal_features.usv_category_column_name``
+    being ``qlvm_supercategory``), but a summary embedded before the labels
+    were written, or a setting of ``null``, leaves a path without them. Every
+    path that needs labels (per-category vocal predictors, the multinomial and
+    binomial category models, the single-category onset target) calls this
+    first, so the run stops with a message naming the setting instead of
+    crashing obscurely on a missing column or silently building nothing.
 
     Called with ``summary_columns`` = None it checks only the setting (the early,
     before-anything-is-loaded check); with the columns of one summary it also
@@ -120,9 +120,9 @@ def require_usv_category_column(category_column: str | None,
         error_message = (
             f"QLVM category labels are not available; set vocal_features.usv_category_column_name to an "
             f"existing label column. {purpose} needs a per-USV category label, and the setting is "
-            f"{category_column!r} (the usv_summary.csv files carry torus coordinates only until a "
-            f"labelling is decided). Use a label-free alternative (e.g. usv_predictor_type 'pooled_rate') "
-            f"or point the setting at a label column that exists."
+            f"{category_column!r}. Point the setting at a label column the usv_summary.csv files carry "
+            f"(e.g. 'qlvm_supercategory' or 'qlvm_category', written by infer-qlvm-latents) or use a "
+            f"label-free alternative (e.g. usv_predictor_type 'pooled_rate')."
         )
         raise ValueError(error_message)
     if summary_columns is not None and category_column not in summary_columns:
@@ -597,8 +597,7 @@ def find_onset_epochs(root_directories: list = None,
         'vae_supercategory', 'qlvm_supercategory', 'vae_category',
         'qlvm_category'). Used both for the per-category continuous predictor
         signals and, when `target_category` is set, for the onset-target filter.
-        May be None (the shipped setting while QLVM labels are undecided) when
-        neither of those needs it; a `vocal_output_type` of 'categories_rate' /
+        May be None when neither of those needs it; a `vocal_output_type` of 'categories_rate' /
         'all_rate', or a `target_category` in 'individual' mode, with a None
         column or one absent from a session's summary raises ValueError
         (see `require_usv_category_column`) before any trace is built.

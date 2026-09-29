@@ -4126,9 +4126,10 @@ def plot_manifold_filter_atlas(
         .decoder_weights_npz_path``. Routed through ``configure_path``. When those
         settings name a model package cell (``decoder_model_cell_directory``, the
         shipped v3 decoder) instead, the default raises ValueError: the atlas
-        overlays a supercategory watershed, and the package cells come with no
-        agreed supercategory labels (QLVM labels are unavailable), so both paths
-        must then be passed explicitly.
+        overlays the supercategory watershed of a reference ``arrays_coarse.npz``
+        beside a legacy decoder ``.npz`` and does not read a package cell's
+        label grids (``export-qlvm-reference-arrays`` writes a cell's
+        ``arrays_coarse.npz``), so both paths must then be passed explicitly.
     supercategory_arrays_npz_path : str, optional
         Path to the ``.npz`` holding the coarse supercategory watershed
         (``ws_labels_periodic``, 200 x 200, indexed ``[dim2, dim1]``). ``None``
@@ -4191,8 +4192,9 @@ def plot_manifold_filter_atlas(
                 "(usv_manifold_geodesic_metrics.decoder_weights_npz_path is empty"
                 + (f"; the decoder is the model package cell {_decoder_source[1]}" if _decoder_source else "")
                 + "). The atlas draws the supercategory watershed that sits beside a legacy "
-                "decoder .npz, and QLVM category labels are not available for the package cells, "
-                "so pass decoder_weights_npz_path and supercategory_arrays_npz_path explicitly."
+                "decoder .npz and does not read a package cell's label grids (export-qlvm-reference-arrays "
+                "writes a cell's arrays_coarse.npz), so pass decoder_weights_npz_path and "
+                "supercategory_arrays_npz_path explicitly."
             )
         decoder_weights_npz_path = _decoder_source[1]
     decoder_weights_npz_path = configure_path(str(decoder_weights_npz_path))

@@ -961,10 +961,9 @@ def load_animal_sessions(
     category_column : str
         ``usv_summary`` column used to split calls into groups
         (e.g. ``"qlvm_supercategory"``). A None / empty value, or a column absent
-        from a session's summary, raises ValueError before any spike train is
-        loaded: the usv_summary.csv files carry torus coordinates only (no
-        ``qlvm_category`` / ``qlvm_supercategory``) until a QLVM labelling is
-        decided.
+        from a session's summary (e.g. one embedded before ``infer-qlvm-latents``
+        wrote ``qlvm_category`` / ``qlvm_supercategory``), raises ValueError
+        before any spike train is loaded.
     group_a_ids, group_b_ids : list
         Category id values defining group A and group B.
     cluster_group : str
@@ -1047,8 +1046,8 @@ def load_animal_sessions(
         if category_column not in usv_summary_data.columns:
             error_message = (
                 f"load_animal_sessions: the category column '{category_column}' is absent from "
-                f"{usv_summary_file}. QLVM category labels are not available (the summaries carry the "
-                f"torus coordinates qlvm1/qlvm2 only, no qlvm_category / qlvm_supercategory), so calls "
+                f"{usv_summary_file}. QLVM category labels are not available in it (re-run "
+                f"infer-qlvm-latents to write qlvm_category / qlvm_supercategory), so calls "
                 f"cannot be split into groups; set the category column to an existing label column."
             )
             raise ValueError(error_message)

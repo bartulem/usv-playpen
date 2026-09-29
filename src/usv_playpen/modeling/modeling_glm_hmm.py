@@ -173,8 +173,8 @@ def _build_session_sequences(raw_data: dict, emission_features: list,
         session_entry = raw_data[emission_features[0]][session_id]
         if target_key not in session_entry:
             # A categorical target is a label packet the extraction stage writes only
-            # when the summaries carry labels (e.g. 'supercategory'); none exist while
-            # QLVM labels are undecided.
+            # when a label column is configured and the summaries carry it (e.g.
+            # 'supercategory'); a pickle extracted without one has none.
             error_message = (
                 f"GLM-HMM target '{target_key}' is missing for session {session_id}: QLVM category labels "
                 f"are not available in this modeling input pickle. The multinomial emission needs a label "

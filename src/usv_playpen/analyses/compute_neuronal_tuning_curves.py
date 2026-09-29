@@ -1826,10 +1826,10 @@ class NeuronalTuning(FeatureZoo):
         per-anchor bookkeeping that is independent of any spike train
         and can therefore be reused across observed + n_shuffles
         iterations and across clusters within a session. When the
-        summary lacks ``qlvm_category`` / ``qlvm_supercategory`` (QLVM
-        labels are not written until a labelling is decided), a one-line
-        notice says the QLVM category tuning is skipped; those features
-        then yield no categories, as before.
+        summary lacks ``qlvm_category`` / ``qlvm_supercategory`` (e.g. a
+        session embedded before ``infer-qlvm-latents`` wrote the labels), a
+        one-line notice says the QLVM category tuning is skipped; those
+        features then yield no categories, as before.
 
         Side selection
         --------------
@@ -1878,10 +1878,10 @@ class NeuronalTuning(FeatureZoo):
         duration_seconds = voc_inputs["duration_seconds"]
         usv_df = voc_inputs["usv_df"]
 
-        # QLVM cluster labels are not written into the summaries until a labelling is
-        # decided; say so once per session instead of leaving the QLVM category tuning
-        # empty without a word (the categorical loop below yields no categories for a
-        # missing column).
+        # A summary embedded before infer-qlvm-latents wrote the QLVM cluster labels
+        # lacks them; say so once per session instead of leaving the QLVM category
+        # tuning empty without a word (the categorical loop below yields no categories
+        # for a missing column).
         missing_qlvm_labels = [
             col for col in ("qlvm_category", "qlvm_supercategory") if col not in usv_df.columns
         ]

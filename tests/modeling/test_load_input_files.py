@@ -14,6 +14,7 @@ epoch's history window avoids the forbidden zone around each USV.
 
 from __future__ import annotations
 
+import json
 import pickle
 
 import h5py
@@ -33,8 +34,9 @@ from usv_playpen.modeling.load_input_files import (
     require_labels_for_vocal_predictors,
     require_usv_category_column,
 )
+from tests.modeling._synth import _SETTINGS_JSON
 
-# The message every label-dependent path raises while QLVM labels are unavailable.
+# The message every label-dependent path raises when its label column is null or absent.
 _LABELS_UNAVAILABLE = 'QLVM category labels are not available'
 
 
@@ -1541,3 +1543,18 @@ class TestCategoryLabelRequirement:
                 require_labels_for_vocal_predictors(voc)
         else:
             require_labels_for_vocal_predictors(voc)
+
+    def test_shipped_vocal_defaults_use_the_qlvm_supercategory(self):
+        """The usv_summary.csv files carry the QLVM labels (qlvm_category /
+        qlvm_supercategory of the v3 regular model), so the shipped settings build the
+        per-category rate predictors over qlvm_supercategory, and the settings-level
+        label check passes on them; the check (and its error) still guards a summary
+        that genuinely lacks the column."""
+
+        with open(_SETTINGS_JSON, 'r') as fh:
+            voc = json.load(fh)['vocal_features']
+        assert voc['usv_predictor_type'] == 'categories_rate'
+        assert voc['usv_category_column_name'] == 'qlvm_supercategory'
+        require_labels_for_vocal_predictors(voc)
+        with pytest.raises(ValueError, match='absent from s.csv'):
+            require_usv_category_column(voc['usv_category_column_name'], 'x', summary_columns=['qlvm1'], source='s.csv')
