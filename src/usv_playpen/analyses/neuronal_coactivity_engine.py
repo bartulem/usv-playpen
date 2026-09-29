@@ -960,7 +960,11 @@ def load_animal_sessions(
         Output of :func:`load_unit_catalog`.
     category_column : str
         ``usv_summary`` column used to split calls into groups
-        (e.g. ``"qlvm_supercategory"``).
+        (e.g. ``"qlvm_supercategory"``). A None / empty value, or a column absent
+        from a session's summary, raises ValueError before any spike train is
+        loaded: the usv_summary.csv files carry torus coordinates only (no
+        ``qlvm_category`` / ``qlvm_supercategory``) until a QLVM labelling is
+        decided.
     group_a_ids, group_b_ids : list
         Category id values defining group A and group B.
     cluster_group : str
@@ -981,6 +985,14 @@ def load_animal_sessions(
     """
 
     log = message_output or print
+
+    if not category_column:
+        error_message = (
+            f"load_animal_sessions: category_column is {category_column!r}. The group comparison splits "
+            f"calls by a per-USV category label, and QLVM category labels are not available; set the "
+            f"category column to an existing label column."
+        )
+        raise ValueError(error_message)
 
     by_date: dict[str, list[str]] = defaultdict(list)
     for session_name in session_names:
@@ -1032,6 +1044,14 @@ def load_animal_sessions(
 
         usv_summary_file = next(directory.glob("**/*_usv_summary.csv"))
         usv_summary_data = pls.read_csv(usv_summary_file)
+        if category_column not in usv_summary_data.columns:
+            error_message = (
+                f"load_animal_sessions: the category column '{category_column}' is absent from "
+                f"{usv_summary_file}. QLVM category labels are not available (the summaries carry the "
+                f"torus coordinates qlvm1/qlvm2 only, no qlvm_category / qlvm_supercategory), so calls "
+                f"cannot be split into groups; set the category column to an existing label column."
+            )
+            raise ValueError(error_message)
         focal_usvs = usv_summary_data.filter(pls.col("emitter") == mouse_track_names[0])
         group_a_df = focal_usvs.filter(pls.col(category_column).is_in(group_a_ids))
         group_b_df = focal_usvs.filter(pls.col(category_column).is_in(group_b_ids))

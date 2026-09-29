@@ -1879,6 +1879,29 @@ def test_build_vocal_side_precompute_includes_self_side(synthetic_compute_sessio
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_build_vocal_side_precompute_notices_missing_qlvm_labels(synthetic_compute_session):
+    """Without qlvm_category / qlvm_supercategory (QLVM labels are not written until a
+    labelling is decided) the precompute prints a one-line notice that QLVM category
+    tuning is skipped, instead of leaving those outputs empty without a word; with the
+    labels present nothing is printed."""
+    root, _ = synthetic_compute_session
+    nt = _make_neuronal_tuning(root)
+    messages: list[str] = []
+    nt.message_output = messages.append
+    voc_inputs = nt._load_vocal_inputs()
+
+    assert nt._build_vocal_side_precompute(voc_inputs) is not None
+    assert not any("QLVM category tuning skipped" in m for m in messages)
+
+    voc_inputs["usv_df"] = voc_inputs["usv_df"].drop(["qlvm_category", "qlvm_supercategory"])
+    assert nt._build_vocal_side_precompute(voc_inputs) is not None
+    notices = [m for m in messages if "QLVM category tuning skipped" in m]
+    assert len(notices) == 1
+    assert "qlvm_category, qlvm_supercategory" in notices[0]
+    assert "labels are unavailable" in notices[0]
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
 def test_compute_one_cluster_vocal_smoke(synthetic_compute_session):
     """End-to-end: vocal compute over a synthetic cluster + USV table."""
     root, cluster_path = synthetic_compute_session

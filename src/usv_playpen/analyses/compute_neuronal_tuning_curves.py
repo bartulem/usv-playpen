@@ -1825,7 +1825,11 @@ class NeuronalTuning(FeatureZoo):
         For each emitter side that passes the inclusion gates, build
         per-anchor bookkeeping that is independent of any spike train
         and can therefore be reused across observed + n_shuffles
-        iterations and across clusters within a session.
+        iterations and across clusters within a session. When the
+        summary lacks ``qlvm_category`` / ``qlvm_supercategory`` (QLVM
+        labels are not written until a labelling is decided), a one-line
+        notice says the QLVM category tuning is skipped; those features
+        then yield no categories, as before.
 
         Side selection
         --------------
@@ -1873,6 +1877,22 @@ class NeuronalTuning(FeatureZoo):
         female = voc_inputs["female"]
         duration_seconds = voc_inputs["duration_seconds"]
         usv_df = voc_inputs["usv_df"]
+
+        # QLVM cluster labels are not written into the summaries until a labelling is
+        # decided; say so once per session instead of leaving the QLVM category tuning
+        # empty without a word (the categorical loop below yields no categories for a
+        # missing column).
+        missing_qlvm_labels = [
+            col for col in ("qlvm_category", "qlvm_supercategory") if col not in usv_df.columns
+        ]
+        if missing_qlvm_labels:
+            message_output = (
+                self.message_output if hasattr(self, "message_output") else print
+            )
+            message_output(
+                f"  QLVM category tuning skipped ({', '.join(missing_qlvm_labels)}): "
+                f"QLVM category labels are unavailable in this session's usv_summary.csv."
+            )
 
         n_peth_bins = round((peth_hi - peth_lo) / peth_bin_s)
         rel_edges = peth_lo + np.arange(n_peth_bins + 1) * peth_bin_s
