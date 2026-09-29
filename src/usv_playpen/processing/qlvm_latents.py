@@ -781,7 +781,9 @@ def label_grid_lookup(coords: np.ndarray, grid: np.ndarray) -> np.ndarray:
     ``label = grid[floor(y * res) mod res, floor(x * res) mod res]``, with ``res``
     the grid's resolution (``grid.shape[0]``). This is the pixel rule of the QLVM
     model packages: on the posterior-mean coordinates of the v3 production cells
-    it reproduces the package's ``inference/clusters_<level>/cluster_labels.csv``.
+    it reproduces the package's ``inference/clusters_<level>/cluster_labels.csv``
+    on every one of the 445,742 corpus calls but one (a ``qlvm_dur`` call whose
+    coordinate lies within float32 rounding of a pixel edge).
     The ``mod`` wraps a coordinate of exactly ``1.0`` (or one whose product with
     ``res`` rounds up to ``res``) to pixel 0, the pixel it shares on the torus,
     and a negative coordinate to its periodic image, instead of clipping either
