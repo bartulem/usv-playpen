@@ -548,6 +548,7 @@ Being cohort-level, the figure is written to the project-wide ``figures.save_dir
 The layout / sampling knobs live in the ``embedding_thumbnails`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (the figure DPI and the sampling seed come from the general ``figures`` block). Core keys:
 
 * **category_col_suffix** : the label column that colors / groups the scatter and thumbnail rows — ``category`` or ``supercategory``.
+* **exclude_squeaks** : leave out the segments ``detect-usv-squeaks`` flagged as squeaks (``squeak`` True) from the scatter, the four small maps and the thumbnails (default ``true``). The QLVM models were trained without squeaks, so squeaks sit wherever the decoder places them.
 * **n_samples_per_category** : number of thumbnail spectrograms sampled per category.
 * **tile_orientation** : thumbnail grid orientation — ``vertical`` / ``horizontal``.
 * **apply_mask** : apply the SAM2 mask to each thumbnail spectrogram.
@@ -570,7 +571,7 @@ Spiral overlay:
 * **spiral_show_only_for** : restrict the overlay to one category (``null`` = all).
 * **spiral_color** : hex color of the spiral.
 * **spiral_linewidth** : spiral line width.
-* **spiral_radius_scale** / **spiral_radius_abs** : spiral radius (relative / absolute).
+* **spiral_radius_scale** / **spiral_radius_abs** : spiral radius — relative to each cluster's farthest call, or (``spiral_radius_abs``, when not ``null``) an absolute radius in torus units shared by every cluster (shipped ``0.03``, so the thumbnails stay close to each cluster's peak).
 * **spiral_n_turns** : number of spiral turns.
 * **spiral_random_phase** : randomize the spiral's starting angle.
 
@@ -588,6 +589,7 @@ Annotations / layout:
 
     "embedding_thumbnails": {
         "category_col_suffix": "supercategory",
+        "exclude_squeaks": true,
         "n_samples_per_category": 8,
         "tile_orientation": "vertical",
         "apply_mask": true,
@@ -604,7 +606,7 @@ Annotations / layout:
         "spiral_color": "#000000",
         "spiral_linewidth": 1.0,
         "spiral_radius_scale": 0.1,
-        "spiral_radius_abs": 0.1,
+        "spiral_radius_abs": 0.03,
         "spiral_n_turns": 3,
         "spiral_random_phase": true,
         "annotate_picks_on_scatter": false,

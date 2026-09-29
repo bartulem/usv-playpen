@@ -1112,6 +1112,7 @@ def _write_embedding_session(root: pathlib.Path, session_id: str):
             "qlvm_dur2": [0.5, 0.6, 0.7, 0.8],
             "qlvm_dur_category": [1, 2, 1, 2],
             "noise": [True, False, False, False],
+            "squeak": [False, True, False, False],
             "qlvm_category": [1, 1, 2, 2],
             "qlvm_supercategory": [1, 1, 2, 2],
             "emitter": ["M", "F", "M", "ghost"],
@@ -1147,6 +1148,8 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     assert "qlvm_mf_category" not in pooled.columns
     assert pooled["qlvm_dur1"].to_list() == [0.2, 0.3, 0.4]
     assert pooled["qlvm_bw1"].null_count() == pooled.height
+    # the squeak flag is carried (the thumbnails' default filter reads it)
+    assert pooled["squeak"].to_list() == [True, False, False]
     assert "sex" in pooled.columns
     assert "emitter" in pooled.columns  # raw animal id retained for the explorer tooltip
     assert set(pooled["sex"].to_list()) <= {"male", "female", "unassigned"}
@@ -1513,6 +1516,7 @@ def _make_pooled_df(session_id: str = "sessA", n_per_cat: int = 6) -> pls.DataFr
             "qlvm_dur2": rng.random(n),
             "qlvm_dur_category": cats,
             "qlvm_dur_supercategory": cats,
+            "squeak": [False] * n,
             "sex": (["male", "female"] * n)[:n],
             "duration": rng.random(n) * 0.1,
             "mean_freq_hz": rng.random(n) * 50_000 + 40_000,
@@ -1706,6 +1710,39 @@ def test_plot_umap_thumbnails_bad_category_suffix(tmp_path):
         )
 
 
+@pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+def test_plot_umap_thumbnails_excludes_squeaks_by_default(tmp_path):
+    """Squeak rows never become thumbnail picks by default; the count excluded is
+    logged, and exclude_squeaks=False keeps them."""
+    pooled = _make_pooled_df("sessS", n_per_cat=6)
+    # every category-1 row a squeak: with the default filter only category 2 is left
+    pooled = pooled.with_columns((pls.col("qlvm_supercategory") == 1).alias("squeak"))
+    h5_path = tmp_path / "store.h5"
+    _write_consolidated_h5(h5_path, "sessS", n_usvs=12, n_freq=16, n_time=24)
+    logs: list[str] = []
+    fig = plot_embedding_with_category_thumbnails(
+        sessions_txt_path="unused", consolidated_h5_path=str(h5_path),
+        n_samples_per_category=3, pooled_df=pooled, message_output=logs.append, seed=1,
+    )
+    assert isinstance(fig, plt.Figure)
+    assert any("Excluded 6 squeak(s) of 12 placed calls" in message for message in logs)
+    fig_all = plot_embedding_with_category_thumbnails(
+        sessions_txt_path="unused", consolidated_h5_path=str(h5_path), exclude_squeaks=False,
+        n_samples_per_category=3, pooled_df=pooled, message_output=lambda *_: None, seed=1,
+    )
+    assert isinstance(fig_all, plt.Figure)
+
+
+def test_plot_umap_thumbnails_squeak_filter_needs_the_column(tmp_path):
+    """Excluding squeaks from a pooled table without a squeak column raises."""
+    with pytest.raises(KeyError, match="no 'squeak' column"):
+        plot_embedding_with_category_thumbnails(
+            sessions_txt_path="unused", consolidated_h5_path="unused",
+            pooled_df=_make_pooled_df().drop("squeak"), message_output=lambda *_: None,
+        )
+
+
 def test_plot_umap_thumbnails_no_categories(tmp_path):
     """A pooled frame with no usable category leaves nothing to draw."""
     pooled = pls.DataFrame(
@@ -1715,6 +1752,7 @@ def test_plot_umap_thumbnails_no_categories(tmp_path):
             "qlvm1": [0.1, 0.2],
             "qlvm2": [0.3, 0.4],
             "qlvm_supercategory": [None, None],
+            "squeak": [False, False],
         },
         schema_overrides={"qlvm_supercategory": pls.Int64},
     )
@@ -2058,7 +2096,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
         "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir),
                              "qlvm_map": "qlvm_dur"},
         "embedding_thumbnails": {
-            "category_col_suffix": "category",
+            "category_col_suffix": "category", "exclude_squeaks": True,
             "n_samples_per_category": 6, "tile_orientation": "vertical",
             "apply_mask": False, "mask_excluded_categories": [], "category_colors": None,
             "sampling_method": "random",
@@ -2088,6 +2126,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     # block knobs forwarded verbatim
     assert captured["qlvm_map"] == "qlvm_dur"
     assert captured["category_col_suffix"] == "category"
+    assert captured["exclude_squeaks"] is True
     assert captured["n_samples_per_category"] == 6
     assert captured["tile_orientation"] == "vertical"
     assert tuple(captured["fig_size"]) == (10, 8)
@@ -2142,7 +2181,7 @@ def test_render_embedding_thumbnails_qlvm_centres_from_v3_arrays(tmp_path, monke
         "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir),
                              "qlvm_map": "qlvm"},
         "embedding_thumbnails": {
-            "category_col_suffix": suffix,
+            "category_col_suffix": suffix, "exclude_squeaks": True,
             "n_samples_per_category": 2, "tile_orientation": "vertical",
             "apply_mask": False, "mask_excluded_categories": [], "category_colors": None,
             "sampling_method": "spiral",

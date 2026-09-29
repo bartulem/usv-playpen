@@ -2283,12 +2283,18 @@ EMBEDDING_FEATURE_COLS = (
     "max_amplitude",
     "spectral_entropy",
 )
+# Per-USV squeak flag (written by detect_usv_squeaks into usv_summary.csv): True
+# when the segment holds a squeak (broadband vocalization). Carried in the pooled
+# embeddings DataFrame so the embedding figures can leave squeaks out.
+SQUEAK_COLUMN = "squeak"
+
 # Extra per-USV columns pulled into the pooled embeddings DataFrame.
-# They power the auxiliary scatters (sex, duration) and the acoustic-feature
+# They power the auxiliary scatters (sex, duration), the acoustic-feature
 # color-by metrics in ``plot_embedding_with_category_thumbnails`` / the embedding
-# explorer. The cache file is invalidated automatically when these columns are
-# missing -- see schema-check logic in ``build_pooled_embeddings_df``.
-EMBEDDING_EXTRA_COLS = ("emitter", "duration") + EMBEDDING_FEATURE_COLS
+# explorer, and the squeak filter. The cache file is invalidated automatically
+# when these columns are missing -- see schema-check logic in
+# ``build_pooled_embeddings_df``.
+EMBEDDING_EXTRA_COLS = ("emitter", "duration", SQUEAK_COLUMN) + EMBEDDING_FEATURE_COLS
 
 
 def _pooled_summaries_fingerprint(
@@ -2421,6 +2427,7 @@ def build_pooled_embeddings_df(
             emitter (Utf8)
             sex (Utf8)
             duration (Float64)
+            squeak (Boolean; null where a summary has no squeak column)
             mean_freq_hz, peak_freq_hz, freq_bandwidth_hz,
             mean_amplitude, max_amplitude, spectral_entropy (Float64)
         Columns missing from individual sessions become nulls in the
@@ -2434,7 +2441,7 @@ def build_pooled_embeddings_df(
     # disk is missing any of these (older cache), trigger a rebuild
     # transparently so the caller doesn't have to flip ``rebuild_cache``
     # every time the schema is extended.
-    required_extra_cols = {"emitter", "sex", "duration"} | set(EMBEDDING_FEATURE_COLS)
+    required_extra_cols = {"emitter", "sex", "duration", SQUEAK_COLUMN} | set(EMBEDDING_FEATURE_COLS)
     required_cols = (
         {"session_id", "row_index"}
         | (set(EMBEDDING_ALL_COLS) - set(EMBEDDING_OPTIONAL_LABEL_COLS))
@@ -2565,7 +2572,12 @@ def build_pooled_embeddings_df(
         keep_cols = ["session_id", "row_index"] + [
             c for c in EMBEDDING_ALL_COLS if c in df.columns
         ]
-        for c in ("emitter", "sex", "duration") + EMBEDDING_FEATURE_COLS:
+        if SQUEAK_COLUMN in df.columns:
+            # CSV inference reads the squeak flag as Boolean, or as String /
+            # Null in a session whose column is empty; coerce so every session
+            # frame concatenates.
+            df = df.with_columns(pls.col(SQUEAK_COLUMN).cast(pls.Boolean, strict=False))
+        for c in ("emitter", "sex", "duration", SQUEAK_COLUMN) + EMBEDDING_FEATURE_COLS:
             if c in df.columns:
                 keep_cols.append(c)
         frames.append(df.select(keep_cols))
@@ -2593,6 +2605,7 @@ def build_pooled_embeddings_df(
     # keeps it stable.
     fill_dtypes = {c: pls.Float64 for c in ("duration",) + EMBEDDING_FEATURE_COLS}
     fill_dtypes["sex"] = pls.Utf8
+    fill_dtypes[SQUEAK_COLUMN] = pls.Boolean
     # A map's coordinates absent from every session's summary (e.g. a conditional
     # map a cohort was never embedded with) would otherwise be dropped from the pooled frame
     # while the cache validator above still requires it, so a written cache would
@@ -3084,6 +3097,7 @@ def plot_embedding_with_category_thumbnails(
     output_path: str | None = None,
     fig_format: str | None = None,
     exclude_noise_usvs: bool = True,
+    exclude_squeaks: bool = True,
     scatter_max_points: int = 50_000,
     scatter_point_size: float = 4.0,
     scatter_point_alpha: float = 0.5,
@@ -3231,6 +3245,13 @@ def plot_embedding_with_category_thumbnails(
         Noise filtering passed through to
         ``build_pooled_embeddings_df`` (only used when ``pooled_df`` is
         ``None``).
+    exclude_squeaks (bool)
+        Leave out the segments ``detect_usv_squeaks`` flagged as squeaks
+        (``squeak`` True) from the scatter, the auxiliary maps and the
+        thumbnail picks; default ``True``. The QLVM models were trained
+        without squeaks, so these calls sit wherever the decoder places
+        them. Rows with a null flag (no squeak column in their summary)
+        are kept; a pooled table without the column raises.
     scatter_max_points (int)
         Optional cap on points rendered in the scatter (random sample
         using the ``seed`` argument); the per-category sampling still draws from
@@ -3297,6 +3318,17 @@ def plot_embedding_with_category_thumbnails(
         )
 
     df_clean = pooled_df.drop_nulls(subset=[x_col, y_col, cat_col])
+    if exclude_squeaks:
+        if SQUEAK_COLUMN not in df_clean.columns:
+            msg = (
+                f"The pooled embeddings table has no '{SQUEAK_COLUMN}' column, so squeaks cannot be "
+                f"excluded; rebuild the embeddings cache from summaries detect-usv-squeaks has run on, "
+                f"or pass exclude_squeaks=False."
+            )
+            raise KeyError(msg)
+        n_before = df_clean.height
+        df_clean = df_clean.filter(~pls.col(SQUEAK_COLUMN).fill_null(False))
+        message_output(f"Excluded {n_before - df_clean.height} squeak(s) of {n_before} placed calls.")
     categories = sorted(set(df_clean[cat_col].to_list()))
     if not categories:
         msg = "No categories found in pooled_df."
@@ -3470,7 +3502,7 @@ def plot_embedding_with_category_thumbnails(
     # Two rows. TOP: the big category-colored scatter (left) + the per-category
     # thumbnail grid (right) as two EQUAL-width cells, so the scatter and the whole
     # thumbnail block render at the same (square) size. BOTTOM: the four auxiliary
-    # maps (male / female emitter, duration, mean frequency) in a single line.
+    # maps (male / female emitter, duration, frequency bandwidth) in a single line.
     # ``height_ratios=[2, 1]`` keeps the top cells ~twice the side of the line below.
     outer = fig.add_gridspec(2, 1, height_ratios=[2, 1], hspace=0.16)
     top_row = outer[0, 0].subgridspec(1, 2, wspace=0.08)
@@ -3634,7 +3666,7 @@ def plot_embedding_with_category_thumbnails(
     ax_male.set_xlabel("male emitted", fontsize=10)
     ax_female.set_xlabel("female emitted", fontsize=10)
 
-    # Bottom row: duration / mean-frequency scatters colored by value
+    # Bottom row: duration / frequency-bandwidth scatters colored by value
     # (project default cmap from `figures.sequential_cmap`). Points are sorted
     # ascending by value so high (bright) values are drawn last and sit
     # on top of low (dark) ones, giving a legible gradient even with
@@ -3671,11 +3703,11 @@ def plot_embedding_with_category_thumbnails(
     else:
         ax_dur.set_xlabel("duration (n/a)", fontsize=10)
 
-    if "mean_freq_hz" in scatter_df.columns:
-        freqs = scatter_df["mean_freq_hz"].to_numpy().astype(float) / 1000.0  # Hz -> kHz
-        _render_continuous(ax_freq, freqs, "mean freq ({lo:.0f}-{hi:.0f} kHz)")
+    if "freq_bandwidth_hz" in scatter_df.columns:
+        bandwidths = scatter_df["freq_bandwidth_hz"].to_numpy().astype(float) / 1000.0  # Hz -> kHz
+        _render_continuous(ax_freq, bandwidths, "freq bandwidth ({lo:.0f}-{hi:.0f} kHz)")
     else:
-        ax_freq.set_xlabel("mean freq (n/a)", fontsize=10)
+        ax_freq.set_xlabel("freq bandwidth (n/a)", fontsize=10)
 
     # All four small panels get a full box (all 4 spines visible) at
     # slightly-thicker line width than the matplotlib default.
@@ -4009,6 +4041,7 @@ def render_embedding_thumbnails_for_cohort(
             consolidated_h5_path=store_path,
             qlvm_map=qlvm_map,
             category_col_suffix=cfg["category_col_suffix"],
+            exclude_squeaks=cfg["exclude_squeaks"],
             n_samples_per_category=cfg["n_samples_per_category"],
             apply_mask=cfg["apply_mask"],
             mask_excluded_categories=tuple(cfg["mask_excluded_categories"]),

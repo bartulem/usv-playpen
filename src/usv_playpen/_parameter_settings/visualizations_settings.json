@@ -225,6 +225,7 @@
   },
   "embedding_thumbnails": {
     "category_col_suffix": "supercategory",
+    "exclude_squeaks": true,
     "n_samples_per_category": 8,
     "tile_orientation": "vertical",
     "apply_mask": true,
@@ -241,7 +242,7 @@
     "spiral_color": "#000000",
     "spiral_linewidth": 1.0,
     "spiral_radius_scale": 0.1,
-    "spiral_radius_abs": 0.1,
+    "spiral_radius_abs": 0.03,
     "spiral_n_turns": 3,
     "spiral_random_phase": true,
     "annotate_picks_on_scatter": false,
