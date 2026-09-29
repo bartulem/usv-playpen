@@ -1167,9 +1167,9 @@ so they resolve on macOS (``/Volumes/falkner``) too.
 
     # Segmentation configuration
     CATEGORY_COLUMN = "qlvm_supercategory"
-    GROUP_A_IDS = [1]
+    GROUP_A_IDS = [4, 7, 8]
     GROUP_A_LABEL = "complex"
-    GROUP_B_IDS = [7]
+    GROUP_B_IDS = [1, 6]
     GROUP_B_LABEL = "simple"
 
     # Unit-filter configuration (cluster_group + somatic + brain area)
@@ -1225,7 +1225,7 @@ so they resolve on macOS (``/Volumes/falkner``) too.
     NULL_COLOR = "#808080"
     THRESHOLD_COLOR = "#000000"
 
-* **CATEGORY_COLUMN** / **GROUP_A_IDS** / **GROUP_B_IDS** — the ``usv_summary`` column that labels each call and the two sets of category ids contrasted (default ``complex`` [1] vs ``simple`` [7]); ``*_LABEL`` names them in tables and plots.
+* **CATEGORY_COLUMN** / **GROUP_A_IDS** / **GROUP_B_IDS** — the ``usv_summary`` column that labels each call and the two sets of category ids contrasted (default ``complex`` [4, 7, 8] vs ``simple`` [1, 6], the v3 regular model's coarse clusters grouped by the calls at each cluster's peak); ``*_LABEL`` names them in tables and plots.
 * **CATALOG_PATH** / **UNIT_BRAIN_AREAS** / **UNIT_REQUIRE_SOMATIC** / **UNIT_CLUSTER_GROUP** — the unit-catalog file and the three-criteria filter (region, somatic waveform, Kilosort ``cluster_group``) applied to select the population.
 * **ANIMALS_TO_SESSIONS** / **CHOSEN_ANIMAL** / **DATA_ROOT** — the per-animal session lists (Kilosort is per-day, so the loader keeps the single best-populated day), the focal animal for single-animal cells, and the data root.
 * The coactivity hyperparameters below are read from the ``neuronal_coactivity`` block of ``analyses_settings.json`` (loaded once in the Imports cell), so they are tuned in one place — edit the JSON to retune. The segmentation / unit-filter / animal-map values above stay inline as per-run edits.
