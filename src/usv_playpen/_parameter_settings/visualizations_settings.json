@@ -20,6 +20,7 @@
   },
   "shared_resources": {
     "spectrograms_dir": "/mnt/falkner/Bartul/spectrograms",
+    "qlvm_map": "qlvm",
     "input_files_directory": "/mnt/falkner/Bartul/modeling/input_files"
   },
   "credentials_directory": "",
@@ -106,7 +107,6 @@
     "apply_mask": true,
     "auto_open_figure": true,
     "sequence": {
-      "embedding": "qlvm",
       "draw_boundaries": true,
       "boundary_clustering": "coarse",
       "annotate_right": false,
@@ -224,7 +224,6 @@
     "accent_color": "#00FFFF"
   },
   "embedding_thumbnails": {
-    "map_type": "qlvm",
     "category_col_suffix": "supercategory",
     "n_samples_per_category": 8,
     "tile_orientation": "vertical",

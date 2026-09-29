@@ -76,7 +76,7 @@ def _build_session(base_dir, session_id, freq0=30000.0, seed=0):
                 float(rng.uniform(0.0, 1.0)) if row in EMBEDDED_ROWS else None for row in range(n_usv)
             ]
         rows[f"{prefix}_category"] = [index + row + 1 if row in EMBEDDED_ROWS else None for row in range(n_usv)]
-    rows["qlvm_supercategory"] = [row + 1 if row in EMBEDDED_ROWS else None for row in range(n_usv)]
+        rows[f"{prefix}_supercategory"] = [row + 1 if row in EMBEDDED_ROWS else None for row in range(n_usv)]
     pls.DataFrame(rows).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")
     return root
 
@@ -86,8 +86,7 @@ def _write_fake_package(tmp_path, roots):
     MANIFEST.sha256, corpus/SESSION_H5_BASELINE.tsv listing ``roots`` with their H5
     SHA-256, and every production cell with config/training_contract.json,
     config/run_config.json and inference/clusters_fine/ (plus clusters_coarse/ with
-    fine_to_coarse.csv for the regular cell, and a coarse level on a conditional cell
-    too, which the store must not write); the regular cell's
+    fine_to_coarse.csv); the regular cell's
     inference/recon_mse_breakdown.npz types each session. Returns the package root."""
     package = tmp_path / "qlvm_models_latest" / "v3"
     (package / "corpus").mkdir(parents=True)
@@ -191,14 +190,14 @@ def test_store_layout_values_and_provenance(tmp_path, mocker, corpus):
                 np.testing.assert_array_equal(stored, expected)
                 assert np.isnan(stored[[1, 2, 3]]).all()
             np.testing.assert_array_equal(f[f"spectrogram/{session_id}/qlvm_dim"][()], f[f"qlvm/{session_id}/qlvm"][()])
-            for column in ("qlvm_category", "qlvm_supercategory", "qlvm_dur_category", "qlvm_mf_category",
-                           "qlvm_bw_category", "qlvm_loud_category"):
+            for column in ("qlvm_category", "qlvm_supercategory", "qlvm_dur_category", "qlvm_dur_supercategory",
+                           "qlvm_mf_category", "qlvm_mf_supercategory", "qlvm_bw_category",
+                           "qlvm_bw_supercategory", "qlvm_loud_category", "qlvm_loud_supercategory"):
                 labels = f[f"qlvm/{session_id}/{column}"][()]
                 assert labels.dtype == np.int16
                 np.testing.assert_array_equal(labels, summary[column].fill_null(0).to_numpy())
                 assert (labels[[1, 2, 3]] == 0).all()
                 assert (labels[list(EMBEDDED_ROWS)] > 0).all()
-            assert "qlvm_dur_supercategory" not in f[f"qlvm/{session_id}"]
 
         for prefix, relative_cell in QLVM_PRODUCTION_MODEL_CELLS.items():
             model = f[f"qlvm_models/{prefix}"]
@@ -212,7 +211,7 @@ def test_store_layout_values_and_provenance(tmp_path, mocker, corpus):
                 (cell / "config" / "training_contract.json").read_text())["conditional"])
             assert json.loads(model.attrs["training_contract"]) == json.loads(
                 (cell / "config" / "training_contract.json").read_text())
-            levels = ("fine", "coarse") if prefix == "qlvm" else ("fine",)
+            levels = ("fine", "coarse")
             assert sorted(json.loads(model.attrs["label_columns"])) == sorted(levels)
             for level in levels:
                 directory = cell / "inference" / f"clusters_{level}"
@@ -220,8 +219,8 @@ def test_store_layout_values_and_provenance(tmp_path, mocker, corpus):
                 assert _h5_to_polars(model[f"boundaries_{level}"]).equals(pls.read_csv(directory / "boundaries.csv"))
                 assert model[f"label_grid_{level}"].dtype == np.int16
                 np.testing.assert_array_equal(model[f"label_grid_{level}"][()], np.load(directory / "label_grid.npy"))
-            assert ("fine_to_coarse" in model) == (prefix == "qlvm")
-            assert ("clusters_coarse" in model) == (prefix == "qlvm")
+            assert "fine_to_coarse" in model
+            assert "clusters_coarse" in model
 
         sessions = _h5_to_polars(f["sessions"])
         assert sessions["session_id"].to_list() == list(SESSIONS)
@@ -234,20 +233,6 @@ def test_store_layout_values_and_provenance(tmp_path, mocker, corpus):
         assert sessions["usv_summary_sha256"].to_list() == [
             file_sha256(root / "audio" / f"{root.name}_usv_summary.csv") for root in roots
         ]
-
-
-def test_non_default_label_level_is_stored_when_every_session_has_it(tmp_path, mocker, corpus):
-    """qlvm_dur_supercategory (not a default level) is stored once every session carries it."""
-    roots, package = corpus
-    for root in roots:
-        summary_path = root / "audio" / f"{root.name}_usv_summary.csv"
-        summary = pls.read_csv(summary_path)
-        summary.with_columns(qlvm_dur_supercategory=summary["qlvm_supercategory"]).write_csv(summary_path)
-    _stores, returned = _consolidate(tmp_path, roots, package, mocker)
-    with h5py.File(returned, "r") as f:
-        assert f[f"qlvm/{SESSIONS[0]}/qlvm_dur_supercategory"].dtype == np.int16
-        assert "clusters_coarse" in f["qlvm_models/qlvm_dur"]
-        assert "fine_to_coarse" in f["qlvm_models/qlvm_dur"]
 
 
 def test_sha_mismatch_is_refused_before_writing(tmp_path, mocker, corpus):
@@ -275,8 +260,8 @@ def test_missing_qlvm_columns_are_refused(tmp_path, mocker, corpus):
     """A summary without the production QLVM columns refuses the build, listing them."""
     roots, package = corpus
     summary_path = roots[0] / "audio" / f"{SESSIONS[0]}_usv_summary.csv"
-    pls.read_csv(summary_path).drop("qlvm_bw1", "qlvm_loud_category").write_csv(summary_path)
-    with pytest.raises(ValueError, match=r"lacks the QLVM column\(s\) \['qlvm_bw1', 'qlvm_loud_category'\]"):
+    pls.read_csv(summary_path).drop("qlvm_bw1", "qlvm_loud_category", "qlvm_loud_supercategory").write_csv(summary_path)
+    with pytest.raises(ValueError, match=r"lacks the QLVM column\(s\) \['qlvm_bw1', 'qlvm_loud_category', 'qlvm_loud_supercategory'\]"):
         _consolidate(tmp_path, roots, package, mocker)
     assert list((tmp_path / "store").iterdir()) == []
 
@@ -364,10 +349,11 @@ def test_resolver_picks_the_newest_store_of_either_name(tmp_path, mocker, corpus
 
 
 def test_readers_of_the_store_work_on_the_new_file(tmp_path, mocker, corpus):
-    """The torus-traversal video pools qlvm_dim of the new store (embedded rows only)."""
+    """The torus-traversal video pools a map's qlvm/<session>/<map> coordinates of the
+    new store (embedded rows only)."""
     roots, package = corpus
     _stores, returned = _consolidate(tmp_path, roots, package, mocker)
     with h5py.File(returned, "r") as f:
-        coords, index = pool_latents_from_h5(f)
+        coords, index = pool_latents_from_h5(f, "qlvm")
     assert coords.shape == (4, 2)
     assert index == [(session_id, row) for session_id in SESSIONS for row in EMBEDDED_ROWS]

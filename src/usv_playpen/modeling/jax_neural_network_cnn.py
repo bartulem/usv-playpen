@@ -307,8 +307,8 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
 def _output_axes_count(hp: Dict[str, Any]) -> int:
     """
     Returns the number of manifold axes the CNN predicts. The CNN
-    pipeline assumes a 2-D acoustic manifold (`vae{1,2}` /
-    `qlvm{1,2}`); this helper centralises that constant so the
+    pipeline assumes a 2-D acoustic manifold (e.g. `qlvm{1,2}` /
+    `qlvm_dur{1,2}`); this helper centralises that constant so the
     output-head sizing logic doesn't sprinkle bare `2`s through
     `init_cnn_params_and_state`, `cnn_forward`, and the loss block.
 
@@ -1425,7 +1425,6 @@ class NeuralContinuousCNNRunner:
             preflight_centres = derive_cluster_centers_empirically(
                 np.asarray(Y),
                 np.asarray(preflight_labels),
-                drop_label=saliency_cfg['noise_label'],
                 metric=self.manifold_metric,
                 period=self.manifold_period,
             )
@@ -1434,8 +1433,8 @@ class NeuralContinuousCNNRunner:
                     f"saliency.segmentation='{preflight_seg}' produces only "
                     f"{len(preflight_centres)} cluster centre(s) on this "
                     f"modeling pickle; need at least 2 for the alpha-gap "
-                    f"radius rule. Check the label coverage / noise_label "
-                    f"setting. Failing now (before Phase 1)."
+                    f"radius rule. Check the label coverage. Failing now "
+                    f"(before Phase 1)."
                 )
 
         n_feats = len(features)
@@ -2090,7 +2089,6 @@ class NeuralContinuousCNNRunner:
             centres = derive_cluster_centers_empirically(
                 np.asarray(Y),
                 labels_all_np,
-                drop_label=saliency_cfg['noise_label'],
                 metric=self.manifold_metric,
                 period=self.manifold_period,
             )
@@ -2117,7 +2115,6 @@ class NeuralContinuousCNNRunner:
                 'segmentation': segmentation,
                 'alpha': float(saliency_cfg['alpha']),
                 'radius_mode': str(saliency_cfg['radius_mode']),
-                'noise_label': saliency_cfg['noise_label'],
                 'metric': self.manifold_metric,
                 'period': float(self.manifold_period),
                 'clusters': {

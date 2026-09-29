@@ -650,7 +650,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                     # it survived, letting the tuner pick it and hand a diverging
                     # hyperparameter to the outer fit. (The closed-form torus
                     # estimator never trips this; it guards the iterative
-                    # euclidean/VAE `SmoothBivariateRegression` path. Mirror of
+                    # euclidean `SmoothBivariateRegression` path. Mirror of
                     # the multinomial tuner's guard.) `coef_` is read defensively:
                     # the real estimators always expose it, but a lightweight
                     # scoring stub may not, in which case there is nothing to
@@ -1061,7 +1061,7 @@ class ContinuousModelingPipeline(FeatureZoo):
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
         # Tag carries the USV category column the UMAP target derives
-        # from (e.g. `vae_supercategory`, `qlvm_category`) so every
+        # from (e.g. `qlvm_supercategory`, `qlvm_category`) so every
         # downstream filename — modeling input pickle, univariate pkls,
         # model-selection step pkls, consolidated artifact — makes the
         # source clustering explicit.
@@ -1144,7 +1144,7 @@ class ContinuousModelingPipeline(FeatureZoo):
                 'usv_manifold_column_names': list(manifold_cols),
                 'manifold_metric': str(voc_settings['usv_manifold_metric']),
                 'manifold_period': float(voc_settings['usv_manifold_period']),
-                # Pins the USV category column (e.g. `vae_supercategory`,
+                # Pins the USV category column (e.g. `qlvm_supercategory`,
                 # `qlvm_category`) the manifold targets were derived
                 # from so the selector can route per-step filenames +
                 # the consolidated artifact through the same tag.
@@ -1307,7 +1307,7 @@ class ContinuousModelRunner:
     so the active model and both baselines are evaluated on the same
     support:
     - `r2_spatial` — pooled spatial variance explained by the predictions;
-      bounded above by 1. **Selection score on Euclidean / VAE / UMAP
+      bounded above by 1. **Selection score on Euclidean
       manifolds** (higher is better).
     - `vm_logscore` — macro (per-region) product-von-Mises log-likelihood of
       the decoded prediction (see `manifold_metric.macro_von_mises_logscore`).
@@ -1626,7 +1626,7 @@ class ContinuousModelRunner:
         ---------------
         The headline score is geometry-dependent: `r2_spatial` (pooled-axis
         coefficient of determination against the test-fold marginal mean) on
-        Euclidean / VAE / UMAP manifolds, and `dcor_xy` (wrap-aware distance
+        Euclidean manifolds, and `dcor_xy` (wrap-aware distance
         correlation between the decoded prediction and the truth) on the
         near-uniform periodic TORUS manifold, where the centroid-referenced
         `r2_spatial` is structurally inverted. Both are directly comparable
@@ -1832,7 +1832,7 @@ class ContinuousModelRunner:
         # Canonical set of metric keys emitted by `evaluate_metrics`. Used
         # both to initialise the per-fold metric dict and to summarise at
         # the end so the two stay in lockstep. `r2_spatial` is first
-        # because it is the selection score on Euclidean/VAE/UMAP manifolds
+        # because it is the selection score on Euclidean manifolds
         # (on the torus the selection score is `vm_logscore`; `dcor_xy` is NaN
         # there and `vm_logscore` is NaN on euclidean).
         metric_keys = [

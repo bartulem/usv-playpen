@@ -146,8 +146,6 @@ def _build_synthetic_figure_session(
         "stop":              stops.tolist(),
         "duration":          durations.tolist(),
         "emitter":           ["m1"] * n_usvs,
-        "vae_supercategory": rng.integers(1, 5, size=n_usvs).tolist(),
-        "vae_category":      rng.integers(1, 8, size=n_usvs).tolist(),
         "qlvm_supercategory": rng.integers(1, 4, size=n_usvs).tolist(),
         "qlvm_category":     rng.integers(1, 6, size=n_usvs).tolist(),
         "mean_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
@@ -2744,7 +2742,7 @@ def test_render_behavioral_pages_returns_early_without_beh_offset():
 
 def test_category_class_count_grows_with_the_labels_units_hold():
     """The QLVM class counts come from the label grids (here v3-like: 15 fine, 9
-    coarse), the VAE ones from their upstream counts; units tuned to a category above
+    coarse); units tuned to a category above
     the base count widen the axis instead of dropping out, and with no grid (package
     unreachable) the units alone set the count."""
     grids = {
@@ -2756,7 +2754,6 @@ def test_category_class_count_grows_with_the_labels_units_hold():
     assert _category_class_count("qlvm_category", {"PAG": [{"best_cat": 17}]}, grids) == 17
     assert _category_class_count("qlvm_supercategory", {"PAG": [{"best_cat": 2}]}, grids) == 9
     assert _category_class_count("qlvm_supercategory", {"PAG": [{"best_cat": 4}]}, {}) == 4
-    assert _category_class_count("vae_category", {}, grids) == 10
 
 
 def _fake_qlvm_cell(tmp_path, fine, coarse):
@@ -2771,8 +2768,8 @@ def _fake_qlvm_cell(tmp_path, fine, coarse):
 def test_qlvm_segmentation_comes_from_the_regular_package_cell(tmp_path, monkeypatch):
     """The QLVM watersheds and class counts are the production regular cell's fine
     (qlvm_category) and coarse (qlvm_supercategory) label grids, located from the
-    os_utils package root, on the unit torus with pixel [y, x] at (x, y); the VAE
-    blocks still come from the bundled file, whose old QLVM grids are not used."""
+    os_utils package root, on the unit torus with pixel [y, x] at (x, y); they are
+    the only blocks (the VAE segmentation is retired)."""
     fine = (np.arange(16).reshape(4, 4) % 15 + 1).astype(np.int16)
     coarse = np.array([[1, 2, 3, 4], [5, 6, 7, 8], [9, 9, 1, 2], [3, 4, 5, 6]], dtype=np.int16)
     _fake_qlvm_cell(tmp_path, fine, coarse)
@@ -2789,15 +2786,14 @@ def test_qlvm_segmentation_comes_from_the_regular_package_cell(tmp_path, monkeyp
     # Pixel [row=y, col=x] is centred at ((x + 0.5) / res, (y + 0.5) / res).
     assert segmentation["qlvm_category"]["xx"][1, 3] == 3.5 / 4
     assert segmentation["qlvm_category"]["yy"][1, 3] == 1.5 / 4
-    assert {"vae_category", "vae_supercategory"} <= set(segmentation)
+    assert set(segmentation) == {"qlvm_category", "qlvm_supercategory"}
     assert _category_class_count("qlvm_category", {}, segmentation) == 15
     assert _category_class_count("qlvm_supercategory", {}, segmentation) == 9
 
 
 def test_qlvm_segmentation_unreachable_says_so_and_draws_placeholders(tmp_path, monkeypatch):
     """With the package unreachable, a clear message names the cell, the QLVM blocks
-    are left out (placeholder panels) rather than replaced by the bundled old grids,
-    and the VAE blocks are unaffected."""
+    are left out (placeholder panels), so the segmentation is empty."""
     monkeypatch.setattr(tuning_figures, "QLVM_MODEL_PACKAGE_ROOT", str(tmp_path / "missing"))
     messages = []
     maker = NeuronalTuningFigureMaker(
@@ -2808,8 +2804,7 @@ def test_qlvm_segmentation_unreachable_says_so_and_draws_placeholders(tmp_path, 
 
     segmentation = maker._load_segmentation()
 
-    assert "qlvm_category" not in segmentation and "qlvm_supercategory" not in segmentation
-    assert {"vae_category", "vae_supercategory"} <= set(segmentation)
+    assert segmentation == {}
     assert len(messages) == 1
     assert "QLVM segmentation unavailable" in messages[0] and str(tmp_path / "missing") in messages[0]
 

@@ -48,9 +48,10 @@ cell's ``label_grid.npy`` at the pixel of those coordinates
 (:func:`label_grid_lookup`, labels ``1..k`` with 1 the largest cluster, nulls where
 the call was not placed; no ``qlvm_model``). Which levels a prefix writes is the
 ``model_cell_label_levels`` setting (prefix -> levels among ``"fine"`` and
-``"coarse"``); its default ``{}`` writes ``qlvm_category`` (fine) and
-``qlvm_supercategory`` (coarse) for the regular model's prefix ``"qlvm"`` and
-``P_category`` (fine) for every other prefix, e.g. ``qlvm_dur_category``
+``"coarse"``); its default ``{}`` writes both levels for every prefix:
+``qlvm_category`` (fine) and ``qlvm_supercategory`` (coarse) for the regular
+model's prefix ``"qlvm"``, ``P_category`` and ``P_supercategory`` for every other
+prefix, e.g. ``qlvm_dur_category`` / ``qlvm_dur_supercategory``
 (:func:`model_cell_label_columns`).
 Per model, a corpus session whose spectrogram H5 is verifiably the one the
 package was built from (``SESSION_H5_BASELINE.tsv`` SHA-256, row count, and the
@@ -115,8 +116,8 @@ QLVM_COLUMNS = ("qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_m
 LABEL_LEVELS = ("fine", "coarse")
 LABEL_LEVEL_SUFFIXES = {"fine": "category", "coarse": "supercategory"}
 
-# The model_cells prefix of the regular (unconditional) model: it writes both label
-# levels by default, every other prefix the fine level only.
+# The model_cells prefix of the regular (unconditional) model: its label columns
+# keep the historical names qlvm_category / qlvm_supercategory.
 REGULAR_MODEL_PREFIX = "qlvm"
 
 # Conditions a package decoder may be trained on (phase 10: the first two; phase 11: all four).
@@ -933,9 +934,10 @@ def default_model_cell_label_levels(prefix: str) -> list[str]:
     -----------
     The label levels a ``model_cells`` prefix writes when
     ``infer_qlvm_latents.model_cell_label_levels`` does not list it: both levels
-    (``["fine", "coarse"]``, i.e. ``qlvm_category`` and ``qlvm_supercategory``)
-    for the regular model's prefix ``"qlvm"``, the fine level only
-    (``["fine"]``, i.e. ``P_category``) for every other prefix ``P``.
+    (``["fine", "coarse"]``) for every prefix -- ``qlvm_category`` and
+    ``qlvm_supercategory`` for the regular model's prefix ``"qlvm"``,
+    ``P_category`` and ``P_supercategory`` for every other prefix ``P`` (every
+    v3 package cell ships a fine and a coarse clustering).
 
     Parameters
     ----------
@@ -947,9 +949,7 @@ def default_model_cell_label_levels(prefix: str) -> list[str]:
     levels (list[str])
         The default levels, in column order.
     """
-    if prefix == REGULAR_MODEL_PREFIX:
-        return list(LABEL_LEVELS)
-    return ["fine"]
+    return list(LABEL_LEVELS)
 
 
 def model_cell_reserved_columns() -> set[str]:
@@ -988,7 +988,7 @@ def model_cell_label_columns(model_cells: dict[str, str], label_levels: object) 
     list of levels among ``"fine"`` and ``"coarse"``). A prefix the setting does
     not list takes :func:`default_model_cell_label_levels` (so the shipped ``{}``
     gives ``qlvm_category`` + ``qlvm_supercategory`` for ``"qlvm"`` and
-    ``P_category`` for every other prefix ``P``); an empty list writes no label
+    ``P_category`` + ``P_supercategory`` for every other prefix ``P``); an empty list writes no label
     column for that prefix. Column names follow :func:`model_cell_label_column`.
 
     The setting is validated and every problem is raised together: it must be an
@@ -1394,8 +1394,8 @@ class QLVMLatentInference:
         cell) the session is instead placed on the torus of every listed cell, and
         each prefix ``P`` gets the float columns ``P1`` / ``P2`` plus the cluster
         labels of its ``model_cell_label_levels`` (by default ``qlvm_category`` and
-        ``qlvm_supercategory`` for ``"qlvm"``, ``P_category`` for every other
-        prefix); no model column is written, and a stale ``qlvm_model`` and the
+        ``qlvm_supercategory`` for ``"qlvm"``, ``P_category`` and
+        ``P_supercategory`` for every other prefix); no model column is written, and a stale ``qlvm_model`` and the
         earlier coordinate and label columns of the listed prefixes are removed
         first (see :meth:`_merge_model_cells`). ``model_cells`` and
         ``model_cell_directory`` cannot both be set.
@@ -1565,7 +1565,7 @@ class QLVMLatentInference:
         The levels come from ``model_cell_label_levels``
         (:func:`model_cell_label_columns`; by default ``qlvm_category`` (fine) and
         ``qlvm_supercategory`` (coarse) for prefix ``"qlvm"``, ``P_category``
-        (fine) for every other prefix). Every label is the cell's
+        (fine) and ``P_supercategory`` (coarse) for every other prefix). Every label is the cell's
         ``label_grid.npy`` of that level at the pixel of the call's written
         coordinates (:func:`label_grid_lookup`): ``1..k``, 1 the largest cluster,
         as the package numbers them. The settings are validated, and every cell
@@ -1991,7 +1991,7 @@ def export_model_cell_arrays(
 
 @click.command(name="export-qlvm-reference-arrays")
 @click.option('--model-cell-directory', 'model_cell_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='A QLVM model package cell, e.g. .../qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked.')
-@click.option('--output-directory', 'output_directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write arrays_fine.npz and arrays_coarse.npz into (created if missing), e.g. <spectrograms_dir>/qlvm_v3 (the folder the QLVM visualizations read) for the production regular cell.')
+@click.option('--output-directory', 'output_directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write arrays_fine.npz and arrays_coarse.npz into (created if missing), e.g. <spectrograms_dir>/qlvm_v3/<map> (the folder the QLVM visualizations read for that map; qlvm for the production regular cell).')
 def export_qlvm_reference_arrays_cli(model_cell_directory, output_directory) -> None:
     """
     Description
@@ -2019,7 +2019,7 @@ def export_qlvm_reference_arrays_cli(model_cell_directory, output_directory) -> 
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--model-cell-directory', 'model_cell_directory', type=str, default=None, required=False, help='A QLVM model package cell (e.g. .../qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked); when set, its checkpoint, training_contract.json, embedding lattice and label grids replace the weights, reference-arrays and lattice settings.')
 @click.option('--model-cell', 'model_cells', type=(str, str), multiple=True, default=None, required=False, help='A column prefix and a QLVM model package cell (e.g. --model-cell qlvm_dur .../qlvm_models_latest/v3/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor); repeat once per model. When given, these pairs replace the model_cells setting: the session is placed on the torus of every listed cell and <prefix>1/<prefix>2 plus the cluster-label columns of each prefix (see --model-cell-labels) are written. Cannot be combined with a model cell directory.')
-@click.option('--model-cell-labels', 'model_cell_label_levels', type=(str, str), multiple=True, default=None, required=False, help='A model_cells column prefix and the comma-separated cluster-label levels it writes, among fine and coarse (e.g. --model-cell-labels qlvm_dur fine,coarse writes qlvm_dur_category and qlvm_dur_supercategory; an empty string writes none); repeat once per prefix. When given, these pairs replace the model_cell_label_levels setting; prefixes not listed keep the default (qlvm: fine and coarse -> qlvm_category, qlvm_supercategory; every other prefix P: fine -> P_category).')
+@click.option('--model-cell-labels', 'model_cell_label_levels', type=(str, str), multiple=True, default=None, required=False, help='A model_cells column prefix and the comma-separated cluster-label levels it writes, among fine and coarse (e.g. --model-cell-labels qlvm_dur fine,coarse writes qlvm_dur_category and qlvm_dur_supercategory; an empty string writes none); repeat once per prefix. When given, these pairs replace the model_cell_label_levels setting; prefixes not listed keep the default (fine and coarse: qlvm_category, qlvm_supercategory for qlvm; P_category, P_supercategory for every other prefix P).')
 @click.option('--prefer-package-values/--no-prefer-package-values', 'prefer_package_values', default=None, required=False, help='With model cells: take a corpus session\'s coordinates from the package\'s own embedding when its spectrogram H5 is unchanged since the package (SHA-256, row count, durations and mask counts verified), else infer them; --no-prefer-package-values infers every session.')
 @click.option('--weights-npz-path', 'weights_npz_path', type=str, default=None, required=False, help='Path to the converted decoder weights .npz.')
 @click.option('--reference-arrays-fine-npz-path', 'reference_arrays_fine_npz_path', type=str, default=None, required=False, help='Path to the FINE reference arrays.npz (ws_labels_periodic -> qlvm_category).')

@@ -23,7 +23,7 @@ wrap-aware metric bundle in :meth:`evaluate_metrics`, including the
 ``dcor_xy`` selection score) is computed on the native 2-D coordinates
 exactly as before.
 
-It is used ONLY for ``metric='torus'``. Euclidean / VAE runs continue to use the
+It is used ONLY for ``metric='torus'``. Euclidean runs continue to use the
 unchanged coordinate :class:`SmoothBivariateRegression`, so their results are
 byte-identical -- this class subclasses it and overrides only :meth:`fit` and
 :meth:`predict`, inheriting :meth:`evaluate_metrics` (which operates purely on
@@ -373,7 +373,7 @@ def resolve_manifold_regressor_cls(metric: str) -> type:
     the 4-D sin-cos torus embedding and therefore recovers behaviour ->
     position relationships that *wind* around the torus (the coordinate model
     returns false nulls on those -- see this module's docstring). For every
-    other metric (``'euclidean'``, i.e. flat VAE / UMAP manifolds) the unchanged
+    other metric (``'euclidean'``, i.e. flat manifolds) the unchanged
     coordinate model is returned, so those runs remain byte-identical.
 
     Both classes expose an identical constructor signature, so the caller can

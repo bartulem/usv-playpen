@@ -1311,7 +1311,7 @@ class FeatureZoo:
     # entropy axes). `mask_number` uses a 12-bin integer-centered grid
     # ([0.5, 12.5] with 12 bins puts each integer 1..12 at a bin centre).
     # Ranges cover the observed extrema in a 304-session courtship pool
-    # (post `vae_supercategory != 0` filter) with at most a few bins of
+    # (noise segments excluded) with at most a few bins of
     # padding at the edges.
     # Units are CSV-native: `duration` in seconds, `*_freq_hz` and
     # `freq_bandwidth_hz` in Hz, amplitudes and entropy unitless,

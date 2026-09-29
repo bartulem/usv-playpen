@@ -65,7 +65,7 @@ Outputs
 - `predict(X, snap=True)` -> (n_samples, 2) snapped UMAP coordinates, or
   the raw linear prediction when `snap=False`.
 - `evaluate_metrics(X, Y_true, weights=None)` returns a metric bundle
-  containing `r2_spatial` (the selection score on Euclidean / VAE / UMAP
+  containing `r2_spatial` (the selection score on Euclidean
   manifolds), `dcor_xy` (wrap-aware distance correlation between the
   decoded prediction and the truth -- the selection score on the TORUS
   manifold, `nan` on this Euclidean path), `euclidean_mae` /
@@ -923,7 +923,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
           selection objective; it is logged per candidate so a macro-driven
           forward selection can be compared, at every step, against the feature a
           micro objective would have preferred — at no extra model fit.
-        - `dcor_xy` : the **feature-selection score on EUCLIDEAN** (VAE/UMAP)
+        - `dcor_xy` : the **feature-selection score on EUCLIDEAN**
           manifolds — the wrap-aware **distance correlation**
           (`manifold_metric.dcor_prediction_truth`, subsampled). It is `nan` on
           the torus, where it is uninformative (see `vm_logscore`).

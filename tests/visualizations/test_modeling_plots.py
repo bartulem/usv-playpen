@@ -1613,8 +1613,8 @@ class TestPlotManifoldFilterAtlas:
 
     def test_default_arrays_path_is_qlvm_v3(self, tmp_path, monkeypatch):
         """The default coarse arrays of a cell decoder come from the real os_utils
-        convention, <spectrograms_dir>/qlvm_v3/arrays_coarse.npz (never the old
-        qlvm/ folder)."""
+        convention for the regular map, <spectrograms_dir>/qlvm_v3/qlvm/arrays_coarse.npz
+        (never the old qlvm/ folder)."""
 
         rng = np.random.default_rng(76)
         monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(tmp_path, rng))
@@ -1622,15 +1622,15 @@ class TestPlotManifoldFilterAtlas:
         resolved: list = []
         stand_in = _write_v3_coarse_arrays(tmp_path / "arrays_coarse.npz", rng)
 
-        def _resolve(spectrograms_dir, embedding, clustering):
-            resolved.append(real_resolve(spectrograms_dir, embedding, clustering))
+        def _resolve(spectrograms_dir, qlvm_map, clustering):
+            resolved.append(real_resolve(spectrograms_dir, qlvm_map, clustering))
             return stand_in
 
         monkeypatch.setattr(modeling_plots, "resolve_embedding_arrays_path", _resolve)
         _, arrays_path, model_id = _resolve_atlas_decoder_and_arrays("/cell", None, None)
         assert arrays_path == stand_in
         assert model_id == _FAKE_CELL_MODEL_ID
-        assert resolved[0].replace("\\", "/").endswith("/qlvm_v3/arrays_coarse.npz")
+        assert resolved[0].replace("\\", "/").endswith("/qlvm_v3/qlvm/arrays_coarse.npz")
 
     def test_arrays_from_another_model_raise(self, tmp_path, monkeypatch):
         """Coarse arrays exported from a different cell than the decoder are

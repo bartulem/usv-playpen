@@ -13,11 +13,12 @@ This is the in-house, torch-free port of ``qmc_deep_gen``'s
 ``inference_latents_video.py``. The original loaded a ``mouse_data`` dataset
 (``full_data.pt``) index-aligned with ``latent_coords``; here the per-USV latent
 coordinates AND the spectrograms both come from the consolidated H5 (per-session
-``spectrogram/<key>/qlvm_dim`` -- the production v3 regular cell's ``qlvm1`` /
-``qlvm2`` coordinates, written by ``consolidate-spectrogram-store`` -- and
+``qlvm/<key>/<qlvm_map>`` -- the torus coordinates of the production v3 cell of
+the QLVM map chosen by ``shared_resources.qlvm_map``, e.g. ``qlvm1`` / ``qlvm2``
+for the regular map, written by ``consolidate-spectrogram-store`` -- and
 ``spectrogram/<key>/spectrograms``), pooled into one ordered array. The ``.npz``
-arrays file (``<spectrograms_dir>/qlvm_v3/arrays_{coarse,fine}.npz``, the same
-cell's clustering exported by ``export-qlvm-reference-arrays``; see
+arrays file (``<spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_{coarse,fine}.npz``,
+the same cell's clustering exported by ``export-qlvm-reference-arrays``; see
 ``os_utils.resolve_embedding_arrays_path``) is used only for the ``heatmap``
 background, ``ws_labels_periodic`` contours, and cluster ``centers``.
 
@@ -106,20 +107,24 @@ def torus_forward(coords: np.ndarray) -> np.ndarray:
     return np.concatenate([np.cos(2 * np.pi * coords), np.sin(2 * np.pi * coords)], axis=1)
 
 
-def pool_latents_from_h5(h5) -> tuple[np.ndarray, list[tuple[str, int]]]:
+def pool_latents_from_h5(h5, qlvm_map: str) -> tuple[np.ndarray, list[tuple[str, int]]]:
     """
     Description
     -----------
-    Pools every session's per-USV latent coordinates from the consolidated H5's
-    ``spectrogram/<key>/qlvm_dim`` datasets (the v3 regular cell's torus
-    coordinates, written by ``consolidate-spectrogram-store``) into one array, with a parallel ``(session key, spectrogram row)`` list so a
-    nearest-neighbour hit can be mapped straight back to a spectrogram. Rows with
-    NaN coords are dropped.
+    Pools every session's per-USV latent coordinates of one QLVM map from the
+    consolidated H5's ``qlvm/<key>/<qlvm_map>`` datasets (the map's v3 cell torus
+    coordinates, written by ``consolidate-spectrogram-store``; row ``i`` is the
+    session's spectrogram row ``i``) into one array, with a parallel
+    ``(session key, spectrogram row)`` list so a nearest-neighbour hit can be
+    mapped straight back to a spectrogram. Rows with NaN coords are dropped, and
+    so are sessions without the map's dataset.
 
     Parameters
     ----------
     h5 (h5py.File)
         Open consolidated spectrogram store (read mode).
+    qlvm_map (str)
+        One of ``os_utils.QLVM_MAPS`` (e.g. ``"qlvm"``, ``"qlvm_dur"``).
 
     Returns
     -------
@@ -129,12 +134,14 @@ def pool_latents_from_h5(h5) -> tuple[np.ndarray, list[tuple[str, int]]]:
     """
     coords_chunks: list[np.ndarray] = []
     index: list[tuple[str, int]] = []
-    spec_group = h5["spectrogram"]
-    for session_key in spec_group:
-        session_h5 = spec_group[session_key]
-        if "qlvm_dim" not in session_h5:
+    if "qlvm" not in h5:
+        return np.empty((0, 2), dtype=np.float64), index
+    qlvm_group = h5["qlvm"]
+    for session_key in qlvm_group:
+        session_h5 = qlvm_group[session_key]
+        if qlvm_map not in session_h5:
             continue
-        session_coords = session_h5["qlvm_dim"][:]
+        session_coords = session_h5[qlvm_map][:]
         valid_rows = ~np.isnan(session_coords).any(axis=1)
         if not valid_rows.any():
             continue
@@ -395,7 +402,8 @@ class QLVMTorusTraversalVideo:
         cfg = self.input_parameter_dict['qlvm_torus_traversal_video']
         shared = self.input_parameter_dict['shared_resources']
         clustering = cfg['clustering']
-        arrays_path = resolve_embedding_arrays_path(shared['spectrograms_dir'], "qlvm", clustering)
+        qlvm_map = shared['qlvm_map']
+        arrays_path = resolve_embedding_arrays_path(shared['spectrograms_dir'], qlvm_map, clustering)
         fps = cfg['fps']
         dpi = cfg['dpi']
         m = cfg['m']
@@ -427,7 +435,7 @@ class QLVMTorusTraversalVideo:
         })
 
         # Arrays supply ONLY the heatmap background, label-grid contours, and
-        # cluster centers (the v3 regular cell: coarse = 9 / fine = 15).
+        # cluster centers (the map's v3 cell; coarse = 9 / fine = 15 for the regular map).
         arrays = np.load(configure_path(arrays_path))
         heatmap = arrays['heatmap']
         ws_labels = arrays['ws_labels_periodic']
@@ -439,27 +447,28 @@ class QLVMTorusTraversalVideo:
             stamp = f"{datetime.now():%Y%m%d_%H%M%S}"
             out_path = pathlib.Path(
                 configure_path(self.input_parameter_dict['figures']['save_directory'])
-            ) / f"qlvm_torus_traversal_{stamp}.mp4"
+            ) / f"qlvm_torus_traversal_{qlvm_map}_{stamp}.mp4"
         else:
             out_path = pathlib.Path(self.output_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
         with h5py.File(resolve_consolidated_h5_path(shared['spectrograms_dir']), "r") as h5:
-            # Per-USV latent coords + (session, row) come from the H5's qlvm_dim
-            # datasets; spectrograms are read from the same store on demand.
-            pooled_coords, pooled_index = pool_latents_from_h5(h5)
+            # Per-USV latent coords + (session, row) come from the H5's
+            # qlvm/<session>/<qlvm_map> datasets; spectrograms are read from the
+            # same store on demand.
+            pooled_coords, pooled_index = pool_latents_from_h5(h5, qlvm_map)
             n_samples = pooled_coords.shape[0]
             if n_samples == 0:
                 raise ValueError(
-                    "No `qlvm_dim` coordinates found in the consolidated H5 — build "
-                    "the store with consolidate-spectrogram-store so every session "
-                    "carries its qlvm_dim latent coords before rendering."
+                    f"No `qlvm/<session>/{qlvm_map}` coordinates found in the consolidated H5 — "
+                    f"build the store with consolidate-spectrogram-store so every session "
+                    f"carries the {qlvm_map!r} map's latent coords before rendering."
                 )
-            self.message_output(f"Pooled {n_samples} latents, {K} clusters ({clustering}).")
+            self.message_output(f"Pooled {n_samples} {qlvm_map} latents, {K} clusters ({clustering}).")
 
             # Spectrogram colormap, read from the shared `figures.sequential_cmap` so it
             # matches the rest of the repo rather than a module-level hard-coded
-            # "inferno". Resolved here (after the qlvm_dim validation) so a store
+            # "inferno". Resolved here (after the coordinate validation) so a store
             # lacking latents still surfaces that error first.
             spec_cmap = self.input_parameter_dict['figures']['sequential_cmap']
 

@@ -39,7 +39,6 @@ import tempfile
 from collections.abc import Callable
 from datetime import datetime
 
-import click
 import h5py
 import librosa
 import librosa.display
@@ -50,12 +49,13 @@ import polars as pls
 from matplotlib import gridspec
 from matplotlib.collections import LineCollection
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-from scipy.ndimage import gaussian_filter, gaussian_filter1d, zoom
+from scipy.ndimage import gaussian_filter1d, zoom
 from scipy.signal.windows import tukey
 from sklearn.neighbors import KNeighborsClassifier
 
 from ..os_utils import (
     NOISE_COLUMN,
+    QLVM_MAPS,
     configure_path,
     drop_noise_usvs,
     first_match_or_raise,
@@ -1148,12 +1148,10 @@ class USVSpectrogramPlotter:
         """
         Description
         -----------
-        Draw a precomputed cohort embedding landscape on ``ax``: the density
-        ``heatmap`` (gray_r) over its coordinate ``extent`` and — when
-        ``draw_boundaries`` is True — the black category lines. Serves BOTH the
-        QLVM torus (arrays ``.npz`` with no ``extent`` key → the unit square, also
-        used by the torus-traversal video) and the VAE umap (a ``vae_density``
-        ``.npz`` carrying its own ``extent``). The boundaries are a
+        Draw a precomputed cohort QLVM landscape on ``ax``: the density
+        ``heatmap`` (gray_r) over the unit torus square and — when
+        ``draw_boundaries`` is True — the black category lines (the same arrays
+        ``.npz`` the torus-traversal video reads). The boundaries are a
         uniform-thickness neighbour-difference mask, NOT ``ax.contour`` on the
         label field: contour stacks several iso-lines wherever neighbouring region
         labels differ by more than one, which renders as uneven line thickness.
@@ -1164,9 +1162,7 @@ class USVSpectrogramPlotter:
             Axes to draw the embedding / boundaries on.
         arrays_npz_path (str)
             Path to the cohort arrays ``.npz`` — keys ``heatmap`` and
-            ``ws_labels_periodic`` (the QLVM watershed field or the VAE
-            category/supercategory field), plus an optional ``extent``
-            ``[x0, x1, y0, y1]`` (absent for QLVM → the unit square).
+            ``ws_labels_periodic`` (the map's fine or coarse label grid).
         draw_boundaries (bool)
             Whether to overlay the black category lines; defaults to True.
 
@@ -1177,7 +1173,7 @@ class USVSpectrogramPlotter:
 
         arrays = np.load(configure_path(arrays_npz_path))
         heatmap = arrays["heatmap"]
-        extent = tuple(float(v) for v in arrays["extent"]) if "extent" in arrays else (0.0, 1.0, 0.0, 1.0)
+        extent = (0.0, 1.0, 0.0, 1.0)
         nonzero = heatmap[heatmap > 0]
         vmax = float(np.percentile(nonzero, 95)) if nonzero.size else None
         ax.imshow(
@@ -1211,13 +1207,13 @@ class USVSpectrogramPlotter:
         Render a per-session "USV sequence" figure for the shared analysis window
         ``time_window`` (``[start, end]`` seconds; the GUI sets it from a start +
         duration pair). LEFT:
-        an embedding -- QLVM torus (a periodic [0, 1] density heatmap with black
-        watershed category boundaries) or VAE (plain) -- where the window's USVs
+        the QLVM torus of ``shared_resources.qlvm_map`` (a periodic [0, 1] density
+        heatmap with black category boundaries) -- where the window's USVs
         are colored by emitter (male / female / unassigned), sized by call
         duration, numbered ``1..n`` in time order, and joined by a connecting line
         whose color is a white -> male time gradient and whose per-segment width
-        tracks the inter-USV silent gap (on the QLVM torus the line takes the short
-        wrap-around route across an edge when that is closer). RIGHT: ONE
+        tracks the inter-USV silent gap (the line takes the short wrap-around
+        route across an edge when that is closer). RIGHT: ONE
         continuous spectrogram over the same window -- the per-USV averaged
         spectrograms, SAM2-masked when ``apply_mask``, stitched at their true times
         onto a black background, with an optional raw-audio trace on top
@@ -1235,7 +1231,7 @@ class USVSpectrogramPlotter:
         Raises
         ------
         ValueError
-            If the chosen embedding's coordinate columns are absent from the
+            If the chosen QLVM map's coordinate columns are absent from the
             session's USV summary CSV.
         """
 
@@ -1262,14 +1258,13 @@ class USVSpectrogramPlotter:
         )
         usv_df = pls.read_csv(str(usv_summary_path)).with_row_index(name="row_index")
 
-        embedding = seq_cfg["embedding"]
-        x_col, y_col = (
-            ("vae1", "vae2") if embedding == "vae" else ("qlvm1", "qlvm2")
-        )
+        qlvm_map = shared["qlvm_map"]
+        x_col, y_col = f"{qlvm_map}1", f"{qlvm_map}2"
         if x_col not in usv_df.columns or y_col not in usv_df.columns:
             msg = (
-                f"Session {session_key!r} USV summary has no {embedding!r} embedding "
-                f"columns ({x_col!r}, {y_col!r}); choose a different 'embedding'."
+                f"Session {session_key!r} USV summary has no {qlvm_map!r} map "
+                f"columns ({x_col!r}, {y_col!r}); run infer-qlvm-latents or choose a different "
+                f"'shared_resources.qlvm_map'."
             )
             raise ValueError(msg)
 
@@ -1300,13 +1295,12 @@ class USVSpectrogramPlotter:
 
         # # # # LEFT: precomputed cohort embedding landscape (density + category
         # boundaries), resolved by convention from the shared spectrograms dir --
-        # QLVM -> <dir>/qlvm_v3/arrays_{coarse,fine}.npz (the v3 regular cell), VAE ->
-        # <dir>/vae/vae_density_{coarse,fine}.npz; boundary_clustering picks
-        # coarse/fine. If the npz is not present (e.g. the VAE density was never
-        # precomputed) fall back to bare axes, but still strip ticks so the panel
-        # never shows ticks/ticklabels.
+        # <dir>/qlvm_v3/<qlvm_map>/arrays_{coarse,fine}.npz (the map's v3 cell);
+        # boundary_clustering picks coarse/fine. If the npz is not present (e.g. the
+        # arrays were never exported) fall back to bare axes, but still strip ticks so
+        # the panel never shows ticks/ticklabels.
         arrays_path = resolve_embedding_arrays_path(
-            shared["spectrograms_dir"], embedding, seq_cfg["boundary_clustering"]
+            shared["spectrograms_dir"], qlvm_map, seq_cfg["boundary_clustering"]
         )
         if pathlib.Path(arrays_path).exists():
             self._draw_embedding_left_map(ax_left, arrays_path, draw_boundaries=bool(seq_cfg["draw_boundaries"]))
@@ -1376,14 +1370,13 @@ class USVSpectrogramPlotter:
                 frac = min(1.0, max(0.0, (gap - gap_lo) / (gap_hi - gap_lo)))
                 return _SEQ_LW_MIN + frac * (_SEQ_LW_MAX - _SEQ_LW_MIN)
 
-            # QLVM is a periodic unit torus ([0,1] in both dims), so the shortest
+            # The QLVM map is a periodic unit torus ([0,1] in both dims), so the shortest
             # route between two points may wrap across an edge rather than run
             # straight over the map. For each pair pick the nearest periodic image
             # of the second point (wrap an axis whose gap exceeds 0.5) and emit two
             # collinear sub-segments -- p1 -> image, and the mirror (p1's image) ->
             # p2 -- both clipped to the [0,1] axes so the geodesic exits one edge
-            # and re-enters the opposite. VAE is a plain plane: no wrapping.
-            is_torus = embedding == "qlvm"
+            # and re-enters the opposite.
 
             def _wrap_offset(delta: float) -> float:
                 if delta > 0.5:
@@ -1394,8 +1387,8 @@ class USVSpectrogramPlotter:
 
             def _sub_segments(i: int) -> list[list[tuple[float, float]]]:
                 (x1, y1), (x2, y2) = path_pts[i], path_pts[i + 1]
-                mx = _wrap_offset(x2 - x1) if is_torus else 0.0
-                my = _wrap_offset(y2 - y1) if is_torus else 0.0
+                mx = _wrap_offset(x2 - x1)
+                my = _wrap_offset(y2 - y1)
                 subs = [[(x1, y1), (x2 + mx, y2 + my)]]
                 if mx or my:
                     subs.append([(x1 - mx, y1 - my), (x2, y2)])
@@ -1484,7 +1477,7 @@ class USVSpectrogramPlotter:
                     solid_capstyle="butt", zorder=5,
                 )
 
-        self._save_figure(fig, f"sequence_{embedding}", file_basename)
+        self._save_figure(fig, f"sequence_{qlvm_map}", file_basename)
         return fig
 
     def make_usv_spectrograms(self) -> plt.Figure:
@@ -2261,27 +2254,19 @@ def plot_session_usv_timeline(
     return fig
 
 
-# Embedding columns expected in each session's USV summary CSV. Two
-# maps live side-by-side: VAE-based UMAP and QLVM-based UMAP. Both
-# carry a category and a supercategory integer label.
-EMBEDDING_COORD_COLS = (
-    "vae1",
-    "vae2",
-    "qlvm1",
-    "qlvm2",
-)
-EMBEDDING_LABEL_COLS = (
-    "vae_category",
-    "vae_supercategory",
-    "qlvm_category",
-    "qlvm_supercategory",
+# Embedding columns expected in each session's USV summary CSV: the torus
+# coordinates of every QLVM map (os_utils.QLVM_MAPS; map P at P1/P2) and each
+# map's fine (P_category) and coarse (P_supercategory) integer labels.
+EMBEDDING_COORD_COLS = tuple(f"{qlvm_map}{axis}" for qlvm_map in QLVM_MAPS for axis in (1, 2))
+EMBEDDING_LABEL_COLS = tuple(
+    f"{qlvm_map}_{suffix}" for qlvm_map in QLVM_MAPS for suffix in ("category", "supercategory")
 )
 EMBEDDING_ALL_COLS = EMBEDDING_COORD_COLS + EMBEDDING_LABEL_COLS
 # Label columns carried when a summary has them but never required or null-filled:
-# summaries embedded before infer-qlvm-latents wrote the QLVM cluster labels hold
+# summaries embedded before infer-qlvm-latents wrote a map's cluster labels hold
 # torus coordinates only, so requiring them would make a cache of such summaries fail
 # its own check, and null-filling them would present an all-null label as if it existed.
-EMBEDDING_OPTIONAL_LABEL_COLS = ("qlvm_category", "qlvm_supercategory")
+EMBEDDING_OPTIONAL_LABEL_COLS = EMBEDDING_LABEL_COLS
 
 # Parquet key-value metadata key holding the fingerprint of the summaries a pooled
 # embeddings cache was built from (see `_pooled_summaries_fingerprint`).
@@ -2375,10 +2360,11 @@ def build_pooled_embeddings_df(
     that pools per-USV embedding coordinates and category labels
     across every session listed in ``sessions_txt_path``. The returned
     DataFrame is the master table consumed by the marimo embedding
-    explorer notebook: it carries the four UMAP coordinate columns
-    (``vae1/2``, ``qlvm1/2``), the four label columns
-    (``vae_category``, ``vae_supercategory``, ``qlvm_category``,
-    ``qlvm_supercategory``), and — critically — a ``(session_id,
+    explorer notebook: it carries the torus coordinate columns of every
+    QLVM map (``EMBEDDING_COORD_COLS``: ``qlvm1/2``, ``qlvm_dur1/2``,
+    ``qlvm_mf1/2``, ``qlvm_bw1/2``, ``qlvm_loud1/2``), their fine / coarse
+    label columns (``EMBEDDING_LABEL_COLS``, e.g. ``qlvm_category``,
+    ``qlvm_dur_supercategory``), and — critically — a ``(session_id,
     row_index)`` pair per row that keys directly back into the
     consolidated spectrogram h5 at
     ``/spectrogram/<session_id>/spectrograms[row_index]`` (and the
@@ -2397,10 +2383,10 @@ def build_pooled_embeddings_df(
     summaries, or before fingerprints existed, is reported stale and
     rebuilt (then overwritten). Nothing is deleted.
 
-    ``qlvm_category`` / ``qlvm_supercategory`` are optional: kept when
-    the summaries carry them, never required and never null-filled
-    (summaries embedded before ``infer-qlvm-latents`` wrote the labels
-    hold QLVM coordinates only).
+    The label columns are optional: kept when the summaries carry them,
+    never required and never null-filled (summaries embedded before
+    ``infer-qlvm-latents`` wrote a map's labels hold its coordinates
+    only).
 
     Parameters
     ----------
@@ -2429,10 +2415,8 @@ def build_pooled_embeddings_df(
         Schema:
             session_id (Utf8)
             row_index (UInt32)
-            vae1, vae2 (Float64)
-            vae_category, vae_supercategory (Int64)
-            qlvm1, qlvm2 (Float64)
-            qlvm_category, qlvm_supercategory (Int64; only when some
+            <map>1, <map>2 (Float64) for every map in QLVM_MAPS
+            <map>_category, <map>_supercategory (Int64; only when some
                 summary carries them)
             emitter (Utf8)
             sex (Utf8)
@@ -2609,8 +2593,8 @@ def build_pooled_embeddings_df(
     # keeps it stable.
     fill_dtypes = {c: pls.Float64 for c in ("duration",) + EMBEDDING_FEATURE_COLS}
     fill_dtypes["sex"] = pls.Utf8
-    # An embedding family absent from every session's summary (e.g. vae_* while
-    # VAE inference is skipped) would otherwise be dropped from the pooled frame
+    # A map's coordinates absent from every session's summary (e.g. a conditional
+    # map a cohort was never embedded with) would otherwise be dropped from the pooled frame
     # while the cache validator above still requires it, so a written cache would
     # fail its own check and rebuild on every load. Filling the family with typed
     # nulls keeps the cache valid and the schema stable.
@@ -2633,152 +2617,6 @@ def build_pooled_embeddings_df(
         )
 
     return pooled
-
-
-def build_vae_density_npz(
-    sessions_txt_path: str,
-    out_npz_path: str,
-    *,
-    label_col: str = "vae_supercategory",
-    cache_path: str | None = None,
-    grid: int = 300,
-    smooth_sigma: float = 1.5,
-    knn: int = 15,
-    message_output: Callable | None = None,
-) -> str:
-    """
-    Description
-    -----------
-    Precompute the cohort VAE embedding landscape and save it to an ``.npz`` in the
-    SAME schema the sequence figure's left panel reads for QLVM, so the VAE panel can
-    show a precomputed cohort gray_r density + category boundaries (rather than
-    re-pooling ~600k coordinates on every per-session render). Unlike QLVM — whose
-    coordinates live on the periodic unit torus and whose watershed arrays ship from
-    the modeling pipeline — VAE coordinates live only in per-session
-    ``usv_summary.csv`` files, so this builds the analogue once from the pooled
-    cohort table.
-
-    The output carries three arrays:
-    ``heatmap`` — a 2-D histogram density of ``(vae1, vae2)`` over the
-    cohort's coordinate range (optionally Gaussian-smoothed into a KDE-like density
-    estimate), oriented ``[row=y, col=x]`` for ``origin="lower"``;
-    ``ws_labels_periodic`` — the category field on the same grid, assigned by a
-    nearest-neighbour classifier fit on the cohort points (the VAE analogue of the
-    QLVM watershed label field, so the figure's neighbour-difference boundary mask
-    works unchanged);
-    ``extent`` — ``[x0, x1, y0, y1]`` (the umap coordinate range; QLVM omits this and
-    defaults to the unit square).
-
-    Run once per clustering granularity: ``label_col="vae_supercategory"`` for the
-    COARSE map and ``label_col="vae_category"`` for the FINE map. Write them to
-    ``<spectrograms_dir>/vae/vae_density_{coarse,fine}.npz`` so the figure resolves
-    them from ``shared_resources.spectrograms_dir`` by convention.
-
-    Parameters
-    ----------
-    sessions_txt_path (str)
-        Path to a text file listing one session root per line (passed straight to
-        ``build_pooled_embeddings_df``).
-    out_npz_path (str)
-        Destination ``.npz`` path (run through ``configure_path``).
-    label_col (str)
-        Cohort label column to rasterize into ``ws_labels_periodic`` —
-        ``"vae_supercategory"`` (coarse) or ``"vae_category"`` (fine).
-    cache_path (str | None)
-        Optional parquet cache for the pooled DataFrame (forwarded to
-        ``build_pooled_embeddings_df``).
-    grid (int)
-        Side length of the square density / label grid (``grid x grid`` cells).
-    smooth_sigma (float)
-        Gaussian-filter sigma (in grid cells) applied to the histogram density;
-        ``0`` leaves the raw histogram.
-    knn (int)
-        Number of neighbours for the grid label classifier.
-    message_output (Callable | None)
-        Optional logger; ``None`` is silent.
-
-    Returns
-    -------
-    out_path (str)
-        The path the ``.npz`` was written to.
-    """
-
-    emit = message_output if message_output is not None else (lambda *_a, **_kw: None)
-    pooled = build_pooled_embeddings_df(
-        sessions_txt_path, cache_path=cache_path, message_output=message_output
-    )
-    sub = pooled.select(["vae1", "vae2", label_col]).drop_nulls()
-    coords_x = sub["vae1"].to_numpy().astype(np.float64)
-    coords_y = sub["vae2"].to_numpy().astype(np.float64)
-    point_labels = sub[label_col].to_numpy()
-
-    x0, x1 = float(coords_x.min()), float(coords_x.max())
-    y0, y1 = float(coords_y.min()), float(coords_y.max())
-    extent = np.array([x0, x1, y0, y1], dtype=np.float64)
-
-    # Density: 2-D histogram over the coordinate range; counts come out [x, y] so
-    # transpose to [y, x] for origin="lower". An optional Gaussian filter turns the
-    # histogram into a smooth density estimate (rendered without interpolation).
-    counts, _, _ = np.histogram2d(coords_x, coords_y, bins=grid, range=[[x0, x1], [y0, y1]])
-    heatmap = counts.T
-    if smooth_sigma > 0:
-        heatmap = gaussian_filter(heatmap, sigma=smooth_sigma)
-
-    # Label field: a nearest-neighbour classifier fit on the cohort points, predicted
-    # on the grid, yields a Voronoi-like category map (the VAE analogue of the QLVM
-    # watershed labels) on which the figure's neighbour-difference mask draws lines.
-    classifier = KNeighborsClassifier(n_neighbors=knn, weights="uniform")
-    classifier.fit(np.column_stack([coords_x, coords_y]), point_labels)
-    grid_x = np.linspace(x0, x1, grid)
-    grid_y = np.linspace(y0, y1, grid)
-    mesh_x, mesh_y = np.meshgrid(grid_x, grid_y)
-    grid_labels = classifier.predict(
-        np.column_stack([mesh_x.ravel(), mesh_y.ravel()])
-    ).reshape(grid, grid)
-
-    out_path = str(configure_path(out_npz_path))
-    np.savez(
-        out_path,
-        heatmap=heatmap.astype(np.float32),
-        ws_labels_periodic=grid_labels.astype(np.int16),
-        extent=extent,
-    )
-    emit(f"Saved VAE cohort density ({label_col}, {coords_x.size} USVs) to {out_path}.")
-    return out_path
-
-
-@click.command(name="build-vae-density")
-@click.option('--sessions-txt', type=str, required=True, help='Text file listing one session root per line.')
-@click.option('--out-coarse', type=str, required=True, help='Output .npz path for the COARSE map (vae_supercategory).')
-@click.option('--out-fine', type=str, required=True, help='Output .npz path for the FINE map (vae_category).')
-@click.option('--cache-path', type=str, default=None, required=False, help='Optional parquet cache for the pooled DataFrame.')
-@click.option('--grid', type=int, default=300, required=False, help='Density / label grid side length.')
-@click.option('--smooth-sigma', type=float, default=1.5, required=False, help='Gaussian sigma (grid cells); 0 = raw histogram.')
-@click.option('--knn', type=int, default=15, required=False, help='Neighbours for the grid label classifier.')
-def build_vae_density_cli(sessions_txt, out_coarse, out_fine, cache_path, grid, smooth_sigma, knn) -> None:
-    """
-    Description
-    -----------
-    One-off CLI that builds BOTH cohort VAE landscape files consumed by the USV
-    sequence figure: the COARSE map (``vae_supercategory`` boundaries) and the FINE
-    map (``vae_category`` boundaries). Write them to
-    ``<shared_resources.spectrograms_dir>/vae/vae_density_{coarse,fine}.npz`` so the
-    figure resolves them automatically.
-
-    Parameters
-    ----------
-    See the command options.
-
-    Returns
-    -------
-    None
-    """
-
-    for label_col, out_path in (("vae_supercategory", out_coarse), ("vae_category", out_fine)):
-        build_vae_density_npz(
-            sessions_txt, out_path, label_col=label_col, cache_path=cache_path,
-            grid=grid, smooth_sigma=smooth_sigma, knn=knn, message_output=print,
-        )
 
 
 def _pick_spiral_with_grid(
@@ -3140,7 +2978,7 @@ def _knn_boundary_grid(
     point density** (a Gaussian-smoothed 2D histogram of the same
     points): cells whose smoothed count is below
     ``density_min_count`` are set to NaN, so when the result is fed
-    to ``ax.contour`` the contour algorithm skips empty UMAP regions
+    to ``ax.contour`` the contour algorithm skips empty map regions
     and the boundaries appear only where data actually lives. The
     boundaries themselves still follow point density via k-NN, not
     centroid Voronoi geometry.
@@ -3210,7 +3048,7 @@ def _knn_boundary_grid(
 def plot_embedding_with_category_thumbnails(
     sessions_txt_path: str,
     consolidated_h5_path: str,
-    map_type: str = "vae",
+    qlvm_map: str = "qlvm",
     category_col_suffix: str = "supercategory",
     n_samples_per_category: int = 8,
     apply_mask: bool = True,
@@ -3291,9 +3129,12 @@ def plot_embedding_with_category_thumbnails(
         Path to a text file listing one session root per line.
     consolidated_h5_path (str)
         Path to the consolidated SAM2 + spectrogram HDF5 store.
-    map_type (str)
-        ``"vae"`` or ``"qlvm"`` - selects which embedding map to plot
-        (the VAE umap or the QLVM torus).
+    qlvm_map (str)
+        One of ``os_utils.QLVM_MAPS`` - selects which QLVM map to plot
+        (``"qlvm"`` the regular model; ``"qlvm_dur"``, ``"qlvm_mf"``,
+        ``"qlvm_bw"``, ``"qlvm_loud"`` the conditional ones): its
+        coordinates ``<qlvm_map>1/2`` and labels
+        ``<qlvm_map>_<category_col_suffix>``.
     category_col_suffix (str)
         ``"category"`` or ``"supercategory"`` - selects which
         categorical label to color and group by.
@@ -3319,13 +3160,13 @@ def plot_embedding_with_category_thumbnails(
     cluster_centers_npz_path (str | None)
         Reference arrays ``.npz`` whose ``centers`` array (``(K, 2)``,
         ``(peak_x, peak_y)``, row ``i`` = label ``i + 1``) gives the
-        cluster centres; second priority. For the QLVM map this is the
-        v3 regular cell's ``<spectrograms_dir>/qlvm_v3/arrays_fine.npz``
-        (``category_col_suffix="category"``, 15 centres) or
-        ``arrays_coarse.npz`` (``"supercategory"``, 9 centres), resolved
-        by ``os_utils.resolve_embedding_arrays_path`` and written by
-        ``export-qlvm-reference-arrays``; the caller must pass the level
-        that matches ``category_col_suffix``. Every category label in the
+        cluster centres; second priority. This is the map's v3 cell
+        ``<spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_fine.npz``
+        (``category_col_suffix="category"``; 15 centres for the regular
+        map) or ``arrays_coarse.npz`` (``"supercategory"``; 9 centres),
+        resolved by ``os_utils.resolve_embedding_arrays_path`` and written
+        by ``export-qlvm-reference-arrays``; the caller must pass the map
+        and level that match ``qlvm_map`` / ``category_col_suffix``. Every category label in the
         pooled table must lie in ``1..K``, otherwise ValueError: the
         centres and the labels come from different clusterings (e.g. the
         old model's 12 / 7 arrays against the v3 15 / 9 labels).
@@ -3399,8 +3240,8 @@ def plot_embedding_with_category_thumbnails(
     pooled_df (pls.DataFrame | None)
         Optionally pass a pre-built pooled-embeddings DataFrame to
         skip the loader. Must contain ``session_id``, ``row_index``,
-        the embedding coordinate columns (``vae1/2`` or
-        ``qlvm1/2``) and the category column.
+        the map's coordinate columns (``<qlvm_map>1/2``) and the
+        category column.
     embeddings_cache_path (str | None)
         Parquet cache path passed to ``build_pooled_embeddings_df``.
     rebuild_embeddings_cache (bool)
@@ -3433,9 +3274,8 @@ def plot_embedding_with_category_thumbnails(
     sessions_txt_path = configure_path(sessions_txt_path)
     consolidated_h5_path = configure_path(consolidated_h5_path)
 
-    map_prefix = map_type.lower()
-    if map_prefix not in ("vae", "qlvm"):
-        msg = f"map_type must be 'vae' or 'qlvm', got {map_type!r}."
+    if qlvm_map not in QLVM_MAPS:
+        msg = f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}."
         raise ValueError(msg)
     if category_col_suffix not in ("category", "supercategory"):
         msg = (
@@ -3444,13 +3284,8 @@ def plot_embedding_with_category_thumbnails(
         )
         raise ValueError(msg)
 
-    # The QLVM torus coordinates are named qlvm1/qlvm2 (they are not a
-    # UMAP); only the VAE embedding uses the _umap1/_umap2 suffix.
-    if map_prefix == "qlvm":
-        x_col, y_col = "qlvm1", "qlvm2"
-    else:
-        x_col, y_col = "vae1", "vae2"
-    cat_col = f"{map_prefix}_{category_col_suffix}"
+    x_col, y_col = f"{qlvm_map}1", f"{qlvm_map}2"
+    cat_col = f"{qlvm_map}_{category_col_suffix}"
 
     if pooled_df is None:
         pooled_df = build_pooled_embeddings_df(
@@ -3531,7 +3366,7 @@ def plot_embedding_with_category_thumbnails(
     y_all = scatter_df[y_col].to_numpy()
     cat_all = scatter_df[cat_col].to_numpy()
 
-    # Data-extent bounds used by ALL five UMAP panels so their axes
+    # Data-extent bounds used by ALL five map panels so their axes
     # stay pinned to the actual data range and overlays (boundaries,
     # spirals, picks) get clipped to that range instead of pushing
     # the axes outward.
@@ -3542,7 +3377,7 @@ def plot_embedding_with_category_thumbnails(
 
     # Cluster boundaries via a k-NN classifier on (x, y) -> category,
     # predicted on a 200x200 grid AND masked by point density so the
-    # contour algorithm skips empty UMAP regions and the boundary lines
+    # contour algorithm skips empty map regions and the boundary lines
     # appear only where data actually lives.
     boundary_xx = boundary_yy = boundary_labels = None
     if (
@@ -3745,13 +3580,13 @@ def plot_embedding_with_category_thumbnails(
             )
 
     # QLVM is a quasi-Monte Carlo latent variable model, not UMAP -- label
-    # accordingly.
-    map_axis_token = "DIM" if map_prefix == "qlvm" else "UMAP"
+    # the torus dimensions of the chosen map (e.g. "QLVM DUR DIM 1").
+    map_axis_name = qlvm_map.upper().replace("_", " ")
     ax_scatter.set_xlabel(
-        f"{map_prefix.upper()} {map_axis_token} 1", fontsize=12,
+        f"{map_axis_name} DIM 1", fontsize=12,
     )
     ax_scatter.set_ylabel(
-        f"{map_prefix.upper()} {map_axis_token} 2", fontsize=12,
+        f"{map_axis_name} DIM 2", fontsize=12,
     )
     ax_scatter.set_xticks([])
     ax_scatter.set_yticks([])
@@ -3855,7 +3690,7 @@ def plot_embedding_with_category_thumbnails(
         ax.set_ylim(y_lo - y_pad, y_hi + y_pad)
         ax.set_box_aspect(1)
         # Overlay cluster boundaries at lower alpha so each panel reads
-        # as living inside the same UMAP geometry.
+        # as living inside the same map geometry.
         _overlay_boundaries(ax, alpha=1.0, linewidth=1.5)
 
     # Top-right per-category x per-sample grid, filling the whole top-right cell so
@@ -4106,7 +3941,7 @@ def render_embedding_thumbnails_for_cohort(
     )
 
     # Pool every cohort session list into one deduplicated combined list (same
-    # cohort definition as the embedding explorer / VAE-density precompute). Playback
+    # cohort definition as the embedding explorer). Playback
     # lists are dropped, as the explorer drops them: playback sessions carry no
     # emitter / embedding structure (and no noise column, so pooling them with
     # exclude_noise_usvs fails).
@@ -4131,26 +3966,26 @@ def render_embedding_thumbnails_for_cohort(
         combined_sessions_txt = combined_file.name
 
     # Cluster-center provenance for the QLVM cluster-ID labels / spiral centers:
-    # the `centers` (cluster peaks) of the v3 regular cell's reference arrays,
-    # <spectrograms_dir>/qlvm_v3/arrays_{fine,coarse}.npz, at the level matching the
-    # colored label (category -> fine, 15 centres; supercategory -> coarse, 9). The
-    # same peaks sit in the consolidated store's qlvm_models/qlvm/clusters_<level>;
-    # the arrays are the one source, shared with the sequence map and the torus
-    # video. Only meaningful for the QLVM map; the VAE umap has no equivalent, so
-    # leave it unset there (centers fall back to the data-derived medoids/centroids).
+    # the `centers` (cluster peaks) of the chosen map's v3 reference arrays,
+    # <spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_{fine,coarse}.npz, at the level
+    # matching the colored label (category -> fine; supercategory -> coarse; 15 / 9
+    # for the regular map). The same peaks sit in the consolidated store's
+    # qlvm_models/<qlvm_map>/clusters_<level>; the arrays are the one source, shared
+    # with the sequence map and the torus video. When they are missing the centers
+    # fall back to the data-derived medoids/centroids.
+    qlvm_map = visualizations_parameter_dict["shared_resources"]["qlvm_map"]
     cluster_centers_npz_path = None
-    if cfg["map_type"] == "qlvm":
-        centers_level = "fine" if cfg["category_col_suffix"] == "category" else "coarse"
-        centers_candidate = resolve_embedding_arrays_path(
-            visualizations_parameter_dict["shared_resources"]["spectrograms_dir"], "qlvm", centers_level
+    centers_level = "fine" if cfg["category_col_suffix"] == "category" else "coarse"
+    centers_candidate = resolve_embedding_arrays_path(
+        visualizations_parameter_dict["shared_resources"]["spectrograms_dir"], qlvm_map, centers_level
+    )
+    if pathlib.Path(centers_candidate).is_file():
+        cluster_centers_npz_path = centers_candidate
+    else:
+        log(
+            f"[embedding-thumbnails] no QLVM reference arrays at {centers_candidate} "
+            f"(export-qlvm-reference-arrays writes them); cluster centres fall back to the data."
         )
-        if pathlib.Path(centers_candidate).is_file():
-            cluster_centers_npz_path = centers_candidate
-        else:
-            log(
-                f"[embedding-thumbnails] no QLVM reference arrays at {centers_candidate} "
-                f"(export-qlvm-reference-arrays writes them); cluster centres fall back to the data."
-            )
 
     # Pooled-embeddings cache resolved by convention from the spectrograms dir
     # (<dir>/embeddings/pooled_embeddings_qlvmv3.parquet, precomputed once on a fast mount);
@@ -4163,7 +3998,7 @@ def render_embedding_thumbnails_for_cohort(
     out_dir = pathlib.Path(configure_path(figures["save_directory"]))
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_format = figures["fig_format"]
-    stem = f"embedding_thumbnails_{cfg['map_type']}_{cfg['category_col_suffix']}"
+    stem = f"embedding_thumbnails_{qlvm_map}_{cfg['category_col_suffix']}"
     if figures["timestamp_in_name"]:
         stem = f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_path = str(out_dir / f"{stem}.{fig_format}")
@@ -4172,7 +4007,7 @@ def render_embedding_thumbnails_for_cohort(
         fig = plot_embedding_with_category_thumbnails(
             sessions_txt_path=combined_sessions_txt,
             consolidated_h5_path=store_path,
-            map_type=cfg["map_type"],
+            qlvm_map=qlvm_map,
             category_col_suffix=cfg["category_col_suffix"],
             n_samples_per_category=cfg["n_samples_per_category"],
             apply_mask=cfg["apply_mask"],

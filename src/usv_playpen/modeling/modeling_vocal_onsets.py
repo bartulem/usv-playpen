@@ -376,8 +376,8 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         target_vocal_type = self.modeling_settings['model_params']['model_target_vocal_type']
         mixture_model_idx = self.modeling_settings['model_params']['mixture_model_component_index']
 
-        # Optional single-category onset target (e.g. broadband vocalizations =
-        # vae_supercategory 6). The category COLUMN is the existing
+        # Optional single-category onset target (e.g. qlvm_supercategory 3;
+        # squeaks are targeted with onset_target_type instead). The category COLUMN is the existing
         # `usv_category_column_name`; only the integer index lives in
         # `onset_target_category`. Category filtering is honoured in
         # 'individual' mode only (see `find_onset_epochs`): in 'bout_onset'/'state'
@@ -403,7 +403,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # model-selection consolidated). Keep it tight. When a single onset
         # target category is active, embed BOTH the category column name and
         # the index (mirrors the binomial category pipeline's
-        # `category_<col>_<idx>` convention), so VAE-vs-QLVM and
+        # `category_<col>_<idx>` convention), so the QLVM map and
         # category-vs-supercategory are unambiguous in every downstream
         # artifact name and provenance block.
         # The onset target type ('usv' default, 'squeak', 'all') joins the tag whenever it

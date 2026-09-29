@@ -495,15 +495,18 @@ def test_newest_match_raises_when_empty(tmp_path):
 # resolve_embedding_arrays_path / resolve_consolidated_h5_path
 
 def test_resolve_embedding_arrays_path_conventions(tmp_path):
-    """QLVM arrays resolve under the versioned qlvm_v3 folder (the v3 regular cell's
-    export), never the old model's qlvm/ folder; VAE densities under vae/."""
+    """Each QLVM map's arrays resolve under its own subfolder of the versioned qlvm_v3
+    folder (the map's v3 cell export), never the old model's qlvm/ folder; a map outside
+    QLVM_MAPS (e.g. the retired 'vae') raises."""
     base = tmp_path / "spectrograms"
     assert os_utils.QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME == "qlvm_v3"
-    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "coarse") == str(base / "qlvm_v3" / "arrays_coarse.npz")
-    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "fine") == str(base / "qlvm_v3" / "arrays_fine.npz")
-    assert "/qlvm/" not in os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "fine").replace("\\", "/")
-    assert os_utils.resolve_embedding_arrays_path(str(base), "vae", "coarse") == str(base / "vae" / "vae_density_coarse.npz")
-    assert os_utils.resolve_embedding_arrays_path(str(base), "vae", "fine") == str(base / "vae" / "vae_density_fine.npz")
+    assert os_utils.QLVM_MAPS == ("qlvm", "qlvm_dur", "qlvm_mf", "qlvm_bw", "qlvm_loud")
+    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "coarse") == str(base / "qlvm_v3" / "qlvm" / "arrays_coarse.npz")
+    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "fine") == str(base / "qlvm_v3" / "qlvm" / "arrays_fine.npz")
+    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm_loud", "fine") == str(base / "qlvm_v3" / "qlvm_loud" / "arrays_fine.npz")
+    assert not os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "fine").replace("\\", "/").startswith(str(base / "qlvm") + "/")
+    with pytest.raises(ValueError, match="qlvm_map must be one of"):
+        os_utils.resolve_embedding_arrays_path(str(base), "vae", "coarse")
 
 
 def test_resolve_consolidated_h5_picks_newest_and_skips_other_h5(tmp_path):
@@ -539,13 +542,15 @@ def test_usv_summary_column_order_places_squeaks_between_emitter_and_features():
     """The agreed layout: DAS event -> emitter -> squeak block -> acoustic features -> QLVM,
     where the QLVM block is the production torus coordinates and labels (phase 6 regular
     model with its fine and coarse labels, then the duration / mean-frequency / bandwidth /
-    loudness conditional models, each with its fine label) and the retired single-model
-    column qlvm_model is not listed."""
+    loudness conditional models, each with its fine and coarse labels) and the retired
+    single-model column qlvm_model is not listed."""
     order = list(os_utils.USV_SUMMARY_COLUMN_ORDER)
-    assert order[-16:] == [
+    assert order[-20:] == [
         "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
-        "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category", "qlvm_mf1", "qlvm_mf2", "qlvm_mf_category",
-        "qlvm_bw1", "qlvm_bw2", "qlvm_bw_category", "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category",
+        "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category", "qlvm_dur_supercategory",
+        "qlvm_mf1", "qlvm_mf2", "qlvm_mf_category", "qlvm_mf_supercategory",
+        "qlvm_bw1", "qlvm_bw2", "qlvm_bw_category", "qlvm_bw_supercategory",
+        "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category", "qlvm_loud_supercategory",
     ]
     assert "qlvm_model" not in order
     assert order[order.index("squeak"):order.index("squeak") + 4] == ["squeak", "squeak_probability", "squeak_start", "squeak_end"]

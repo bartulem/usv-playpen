@@ -6,8 +6,8 @@ The continuous regression and CNN pipelines in this project predict 2-D
 acoustic-manifold positions from behavioural-kinematic histories. Two
 manifolds are currently supported:
 
-- **`'euclidean'`** — the VAE UMAP manifold (`vae1`, `vae2`).
-  Treats the 2-D plane as flat R^2; standard Euclidean distance,
+- **`'euclidean'`** — a flat 2-D manifold (no production embedding
+  uses it; the QLVM maps are all tori). Treats the 2-D plane as flat R^2; standard Euclidean distance,
   arithmetic mean, sample covariance.
 - **`'torus'`** — the QLVM manifold (`qlvm1`, `qlvm2`).
   Each axis is periodic with period `P` (so the manifold is the

@@ -1,5 +1,5 @@
 """
-Marimo notebook for interactively exploring USV embeddings (VAE / QLVM).
+Marimo notebook for interactively exploring USV embeddings (the QLVM maps).
 
 Usage
 -----
@@ -27,17 +27,18 @@ Architecture
   color/sample tweak never rebuilds the pooled DataFrame.
 - Pick one or more session lists; their per-session ``usv_summary.csv`` rows are
   pooled (and cached to a per-selection parquet) by ``build_pooled_embeddings_df``.
-- An altair scatter of the chosen embedding map (VAE UMAP or QLVM torus),
-  colored by a categorical label (category / supercategory / session type /
-  session id / emitter sex) OR a continuous metric through the colormap
-  (density, duration, frequencies, amplitudes, spectral entropy), with an
-  ``alt.selection_interval`` brush. Optional category-boundary contours overlay
-  the scatter: on the QLVM torus they are the v3 regular cell's own label grid
-  (15 fine / 9 coarse clusters, the ``ws_labels_periodic`` of
-  ``<spectrograms_dir>/qlvm_v3/arrays_{fine,coarse}.npz`` resolved by
+- An altair scatter of the chosen QLVM map's torus (the regular model or one of
+  the four conditional ones, ``os_utils.QLVM_MAPS``; the Map dropdown starts at
+  ``shared_resources.qlvm_map``), colored by a categorical label (category /
+  supercategory / session type / session id / emitter sex) OR a continuous metric
+  through the colormap (density, duration, frequencies, amplitudes, spectral
+  entropy), with an ``alt.selection_interval`` brush. Optional category-boundary
+  contours overlay the scatter: the map's v3 cell's own label grid (15 fine / 9
+  coarse clusters for the regular map, the ``ws_labels_periodic`` of
+  ``<spectrograms_dir>/qlvm_v3/<map>/arrays_{fine,coarse}.npz`` resolved by
   ``os_utils.resolve_embedding_arrays_path``, the same partition that wrote the
-  ``qlvm_category`` / ``qlvm_supercategory`` summary columns); on the VAE umap
-  (or when those arrays are missing) a k-NN boundary estimated from the labels. The spec inlines session_id / row_index / x / y / color per
+  ``<map>_category`` / ``<map>_supercategory`` summary columns); when those
+  arrays are missing, a k-NN boundary estimated from the labels. The spec inlines session_id / row_index / x / y / color per
   point (~200 bytes each), so the max_points ceiling is bounded by marimo's
   ``output_max_bytes`` (raised to 200 MB in pyproject.toml).
 - Brushing samples spectrograms from the selection along an Archimedean spiral
@@ -78,6 +79,7 @@ def _imports():
     alt.data_transformers.disable_max_rows()
 
     from usv_playpen.os_utils import (
+        QLVM_MAPS,
         resolve_consolidated_h5_path,
         resolve_embedding_arrays_path,
         resolve_experimenter_path,
@@ -90,6 +92,7 @@ def _imports():
     return (
         BytesIO,
         Path,
+        QLVM_MAPS,
         alt,
         base64,
         build_pooled_embeddings_df,
@@ -111,6 +114,7 @@ def _imports():
 @app.cell
 def _settings(
     Path,
+    QLVM_MAPS,
     json,
     resolve_consolidated_h5_path,
     resolve_embedding_arrays_path,
@@ -159,18 +163,29 @@ def _settings(
     except (KeyError, FileNotFoundError, RuntimeError):
         _input_dir, consolidated_h5_path = None, None
 
-    # QLVM reference arrays of the v3 regular cell under `spectrograms_dir`
-    # (<dir>/qlvm_v3/arrays_{fine,coarse}.npz, os_utils convention), keyed by the
-    # Boundaries dropdown value: "category" -> fine (15 clusters), "supercategory"
-    # -> coarse (9). Their `ws_labels_periodic` grids are the exact partition the
-    # qlvm_category / qlvm_supercategory columns were read from, so the QLVM map
-    # draws them instead of a k-NN estimate. Missing arrays -> {} (k-NN fallback).
+    # The Map dropdown's starting map: the shared `shared_resources.qlvm_map` the
+    # other QLVM figures draw (regular map when the setting is absent or unknown).
+    try:
+        default_qlvm_map = _viz["shared_resources"]["qlvm_map"]
+    except KeyError:
+        default_qlvm_map = "qlvm"
+    if default_qlvm_map not in QLVM_MAPS:
+        default_qlvm_map = "qlvm"
+
+    # QLVM reference arrays of each map's v3 cell under `spectrograms_dir`
+    # (<dir>/qlvm_v3/<map>/arrays_{fine,coarse}.npz, os_utils convention), keyed by
+    # (map, Boundaries dropdown value): "category" -> fine (15 clusters for the
+    # regular map), "supercategory" -> coarse (9). Their `ws_labels_periodic` grids
+    # are the exact partition the <map>_category / <map>_supercategory columns were
+    # read from, so the map draws them instead of a k-NN estimate. Missing arrays
+    # -> no entry (k-NN fallback).
     try:
         _spec_dir = resolve_experimenter_path(_viz["shared_resources"]["spectrograms_dir"])
         qlvm_arrays_paths = {
-            _choice: resolve_embedding_arrays_path(_spec_dir, "qlvm", _level)
+            (_map, _choice): resolve_embedding_arrays_path(_spec_dir, _map, _level)
+            for _map in QLVM_MAPS
             for _choice, _level in (("category", "fine"), ("supercategory", "coarse"))
-            if Path(resolve_embedding_arrays_path(_spec_dir, "qlvm", _level)).is_file()
+            if Path(resolve_embedding_arrays_path(_spec_dir, _map, _level)).is_file()
         }
     except KeyError:
         qlvm_arrays_paths = {}
@@ -209,6 +224,7 @@ def _settings(
         CHART_HEIGHT_PX,
         available_lists,
         consolidated_h5_path,
+        default_qlvm_map,
         global_cmap,
         list_to_sessions,
         qlvm_arrays_paths,
@@ -217,7 +233,7 @@ def _settings(
 
 
 @app.cell
-def _widgets(available_lists, mo):
+def _widgets(available_lists, default_qlvm_map, mo):
     # Session-list picker: a multiselect dropdown (pick one / some / all),
     # FIXED WIDTH so it never widens, capped height with overflow so extra chips
     # SCROLL inside the box rather than growing the layout. .style() returns a
@@ -259,9 +275,17 @@ def _widgets(available_lists, mo):
         ],
         align="center", justify="start", gap=0.6,
     )
+    # {display label -> QLVM map (os_utils.QLVM_MAPS)}; .value returns the map.
+    _map_labels = {
+        "QLVM": "qlvm",
+        "QLVM | duration": "qlvm_dur",
+        "QLVM | mean freq": "qlvm_mf",
+        "QLVM | bandwidth": "qlvm_bw",
+        "QLVM | loudness": "qlvm_loud",
+    }
     map_dropdown = mo.ui.dropdown(
-        options=["QLVM", "VAE"],
-        value="QLVM",
+        options=_map_labels,
+        value=next(_label for _label, _map in _map_labels.items() if _map == default_qlvm_map),
         label="Map",
     )
     # Color by a CATEGORICAL label (category / supercategory) OR a CONTINUOUS
@@ -525,13 +549,9 @@ def _scatter_chart(
         if pooled.height == 0:
             return None, None, None, None
 
-        map_prefix = "vae" if map_dropdown.value == "VAE" else "qlvm"
-        # QLVM torus coords are qlvm1/qlvm2 (not a UMAP); only VAE uses
-        # the _umap1/_umap2 suffix.
-        if map_prefix == "qlvm":
-            x_col, y_col = "qlvm1", "qlvm2"
-        else:
-            x_col, y_col = "vae1", "vae2"
+        map_prefix = map_dropdown.value
+        # A QLVM map P places calls at P1/P2 on the unit torus.
+        x_col, y_col = f"{map_prefix}1", f"{map_prefix}2"
 
         # Color source: category/supercategory/session_type categorical; emitter
         # colors the derived sex column; density is computed below from the 2D
@@ -610,12 +630,8 @@ def _scatter_chart(
         # No axes -- points alone. Keep the scales (data domain) but drop
         # ticks/labels/titles/spines via axis=None. Shared scales so the scatter
         # and the boundary overlay align exactly.
-        if map_prefix == "qlvm":
-            x_scale = alt.Scale(domain=[0.0, 1.0], nice=False)
-            y_scale = alt.Scale(domain=[0.0, 1.0], nice=False)
-        else:
-            x_scale = alt.Scale(domain=[5, 18], nice=False)
-            y_scale = alt.Scale(nice=False)
+        x_scale = alt.Scale(domain=[0.0, 1.0], nice=False)
+        y_scale = alt.Scale(domain=[0.0, 1.0], nice=False)
         x_enc = alt.X(x_col, type="quantitative", axis=None, scale=x_scale)
         y_enc = alt.Y(y_col, type="quantitative", axis=None, scale=y_scale)
 
@@ -728,14 +744,14 @@ def _scatter_chart(
         )
         scatter = scatter.add_params(brush)
 
-        # Boundary overlay: on the QLVM torus the v3 regular cell's label grid
-        # (ws_labels_periodic of the reference arrays, indexed [y, x] over the unit
-        # square), else a KNN-predicted category grid (density-masked); either way
+        # Boundary overlay: the map's v3 cell label grid (ws_labels_periodic of the
+        # reference arrays, indexed [y, x] over the unit square), else (arrays
+        # missing) a KNN-predicted category grid (density-masked); either way
         # one 0.5 contour per category -> one line per seg.
         layers = [scatter]
         grid_labels = None
-        if map_prefix == "qlvm" and boundary_choice in qlvm_arrays_paths:
-            with np.load(qlvm_arrays_paths[boundary_choice]) as _arrays:
+        if (map_prefix, boundary_choice) in qlvm_arrays_paths:
+            with np.load(qlvm_arrays_paths[(map_prefix, boundary_choice)]) as _arrays:
                 _grid = _arrays["ws_labels_periodic"].astype(float)
             _axis = (np.arange(_grid.shape[0]) + 0.5) / _grid.shape[0]
             grid_xx, grid_yy = np.meshgrid(_axis, _axis)
@@ -744,11 +760,7 @@ def _scatter_chart(
             bx_pts = chart_pd[x_col].to_numpy()
             by_pts = chart_pd[y_col].to_numpy()
             labels = chart_pd[boundary_col].to_numpy()
-            if map_prefix == "qlvm":
-                x_lo, x_hi, y_lo, y_hi = 0.0, 1.0, 0.0, 1.0
-            else:
-                x_lo, x_hi = float(np.min(bx_pts)), float(np.max(bx_pts))
-                y_lo, y_hi = float(np.min(by_pts)), float(np.max(by_pts))
+            x_lo, x_hi, y_lo, y_hi = 0.0, 1.0, 0.0, 1.0
             # Adapt grid resolution to point count, and keep the density mask
             # LOOSE (low min-count, strong smoothing) so the predicted-label
             # field stays connected -- a tight mask NaNs out lean cells and

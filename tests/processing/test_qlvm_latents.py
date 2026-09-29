@@ -1293,11 +1293,11 @@ def _run_model_cells(root, cfg, mocker):
 def test_model_cells_write_prefixed_coordinates_and_labels(tmp_path, mocker):
     """With model_cells and the shipped (empty) model_cell_label_levels, every listed cell
     places the session and each prefix gets exactly its coordinates <prefix>1/<prefix>2
-    plus its default labels -- qlvm_category (fine) and qlvm_supercategory (coarse) for
-    'qlvm', qlvm_x_category (fine) only for 'qlvm_x' -- each the cell's grid of that level
-    at the pixel of the written coordinates, null where the call was not placed. No model
-    column is written; stale label, model and coordinate columns of the listed prefixes
-    (including a label level this run does not write) are removed; other columns stay."""
+    plus its default labels, both levels -- qlvm_category (fine) and qlvm_supercategory
+    (coarse) for 'qlvm', qlvm_x_category and qlvm_x_supercategory for 'qlvm_x' -- each the
+    cell's grid of that level at the pixel of the written coordinates, null where the call
+    was not placed. No model column is written; stale label, model and coordinate columns
+    of the listed prefixes are replaced; other columns stay."""
     rng = np.random.default_rng(30)
     root, session_id, cfg = _model_cells_session(tmp_path, rng)
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
@@ -1321,7 +1321,7 @@ def test_model_cells_write_prefixed_coordinates_and_labels(tmp_path, mocker):
     df = pls.read_csv(summary_path)
     assert df.columns == [
         "usv_id", "start", "stop", "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
-        "quality", "qlvm_x1", "qlvm_x2", "qlvm_x_category",
+        "quality", "qlvm_x1", "qlvm_x2", "qlvm_x_category", "qlvm_x_supercategory",
     ]
     for column in ("qlvm1", "qlvm2", "qlvm_x1", "qlvm_x2"):
         assert df[column].dtype == pls.Float64
@@ -1329,9 +1329,10 @@ def test_model_cells_write_prefixed_coordinates_and_labels(tmp_path, mocker):
         assert 0.0 <= df[column][0] < 1.0
         assert 0.0 <= df[column][2] < 1.0
     _assert_labels_follow_coordinates(df, "qlvm", 0, ("fine", "coarse"))
-    _assert_labels_follow_coordinates(df, "qlvm_x", 1, ("fine",))
+    _assert_labels_follow_coordinates(df, "qlvm_x", 1, ("fine", "coarse"))
     assert df["quality"].to_list() == [0.11, 0.22, 0.33]
-    assert any("qlvm1/qlvm2/qlvm_category/qlvm_supercategory, qlvm_x1/qlvm_x2/qlvm_x_category" in message
+    assert any("qlvm1/qlvm2/qlvm_category/qlvm_supercategory, qlvm_x1/qlvm_x2/qlvm_x_category/qlvm_x_supercategory"
+               in message
                for message in messages)
     # No package baseline above these cells: both are inferred, and the log says why.
     assert sum("inference (no SESSION_H5_BASELINE.tsv in or above the cell" in message for message in messages) == 2
@@ -1419,8 +1420,7 @@ def test_model_cells_take_package_values_when_the_session_is_verified(tmp_path, 
         np.testing.assert_array_equal(df[f"{prefix}2"].to_numpy()[[0, 2]], coords[:, 1])
     # The package route labels by the same grid lookup, on the package's coordinates.
     _assert_labels_follow_coordinates(df, "qlvm", 0, ("fine", "coarse"))
-    _assert_labels_follow_coordinates(df, "qlvm_x", 1, ("fine",))
-    assert "qlvm_x_supercategory" not in df.columns
+    _assert_labels_follow_coordinates(df, "qlvm_x", 1, ("fine", "coarse"))
 
 
 @pytest.mark.parametrize(
@@ -1542,15 +1542,15 @@ def test_model_cells_refuse_invalid_prefixes_before_writing(tmp_path, mocker):
 
 def test_model_cell_label_column_names_follow_the_rule():
     """Prefix 'qlvm' keeps qlvm_category (fine) / qlvm_supercategory (coarse); every other
-    prefix P gets P_category / P_supercategory. The defaults are both levels for 'qlvm',
-    the fine level for every other prefix."""
+    prefix P gets P_category / P_supercategory. The default is both levels for every
+    prefix."""
     assert ql.model_cell_label_column("qlvm", "fine") == "qlvm_category"
     assert ql.model_cell_label_column("qlvm", "coarse") == "qlvm_supercategory"
     assert ql.model_cell_label_column("qlvm_dur", "fine") == "qlvm_dur_category"
     assert ql.model_cell_label_column("qlvm_loud", "coarse") == "qlvm_loud_supercategory"
     assert ql.model_cell_label_columns({"qlvm": "/a", "qlvm_mf": "/b"}, {}) == {
         "qlvm": {"fine": "qlvm_category", "coarse": "qlvm_supercategory"},
-        "qlvm_mf": {"fine": "qlvm_mf_category"},
+        "qlvm_mf": {"fine": "qlvm_mf_category", "coarse": "qlvm_mf_supercategory"},
     }
     # Levels come out in the fine, coarse order whatever order the setting lists them in.
     assert list(ql.model_cell_label_columns({"qlvm_bw": "/a"}, {"qlvm_bw": ["coarse", "fine"]})["qlvm_bw"]) == [

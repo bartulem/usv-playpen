@@ -594,8 +594,7 @@ def find_onset_epochs(root_directories: list = None,
         vocalization (default True). A summary without the ``noise`` column raises.
     category_column : str, optional
         Name of the per-USV category column in the summary .csv (e.g.
-        'vae_supercategory', 'qlvm_supercategory', 'vae_category',
-        'qlvm_category'). Used both for the per-category continuous predictor
+        'qlvm_supercategory', 'qlvm_category', 'qlvm_dur_category'). Used both for the per-category continuous predictor
         signals and, when `target_category` is set, for the onset-target filter.
         May be None when neither of those needs it; a `vocal_output_type` of 'categories_rate' /
         'all_rate', or a `target_category` in 'individual' mode, with a None
@@ -604,7 +603,7 @@ def find_onset_epochs(root_directories: list = None,
     target_category : int, optional
         If set (and `prediction_mode == 'individual'`), restricts the POSITIVE
         onset events to USVs whose `category_column` value equals this category
-        (e.g. broadband vocalizations = `vae_supercategory` 6). The predictor
+        (e.g. `qlvm_supercategory` 3). The predictor
         vocal traces ('usv_rate'/'usv_count'/'usv_cat_X') and the silent-epoch
         (negative) reference are still computed over ALL of the mouse's USVs, so
         the category choice changes only which onsets count as positive events.
@@ -1224,8 +1223,8 @@ def find_usv_categories(root_directories: list = None,
                     # Per-USV supercategory and category labels. Used by
                     # downstream region-conditioned analyses (CNN saliency,
                     # cluster-circle membership). Derived from the manifold
-                    # prefix: e.g., 'vae1' -> 'vae' -> 'vae_supercategory',
-                    # 'vae_category'. Stored as plain numpy arrays aligned
+                    # prefix: e.g., 'qlvm_dur1' -> 'qlvm_dur' -> 'qlvm_dur_supercategory',
+                    # 'qlvm_dur_category'. Stored as plain numpy arrays aligned
                     # 1:1 with continuous_onsets / continuous_targets above.
                     # Stored only when the columns are present in the source
                     # CSV; absent label arrays signal "this USV summary

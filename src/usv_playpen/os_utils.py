@@ -392,16 +392,23 @@ QLVM_PRODUCTION_MODEL_CELLS = {
 # training_contract.json `masking_type`): raw, unmasked spectrograms.
 QLVM_PRODUCTION_MASKING_TYPE = "none"
 
+# The QLVM maps a visualization can draw, one per production model: the column
+# prefix of QLVM_PRODUCTION_MODEL_CELLS. A map `P` places calls at `P1`/`P2` and
+# labels them `P_category` (fine) / `P_supercategory` (coarse); the visualizations
+# pick one with `shared_resources.qlvm_map` in visualizations_settings.json.
+QLVM_MAPS = tuple(QLVM_PRODUCTION_MODEL_CELLS)
+
 # The folder under the spectrograms base directory (`shared_resources.spectrograms_dir`)
-# holding the QLVM reference arrays the visualizations draw (`arrays_fine.npz` /
-# `arrays_coarse.npz`: label grids, cluster centres, corpus coordinates, density
-# heatmap). They are the production regular cell's clustering
-# (QLVM_PRODUCTION_MODEL_CELLS["qlvm"] under QLVM_MODEL_PACKAGE_ROOT), written by
-# `export-qlvm-reference-arrays` (processing.qlvm_latents.export_model_cell_arrays),
-# so the maps sit on the same torus and carry the same 15 fine / 9 coarse labels as
-# the qlvm1/qlvm2, qlvm_category and qlvm_supercategory summary columns. The folder
-# is versioned by name: the old in-house model's arrays live in `<dir>/qlvm/` and are
-# no longer read by default.
+# holding the QLVM reference arrays the visualizations draw, one subfolder per map
+# (`<map>/arrays_fine.npz` / `<map>/arrays_coarse.npz`: label grids, cluster
+# centres, corpus coordinates, density heatmap). Each subfolder is its production
+# cell's clustering (QLVM_PRODUCTION_MODEL_CELLS[<map>] under
+# QLVM_MODEL_PACKAGE_ROOT), written by `export-qlvm-reference-arrays`
+# (processing.qlvm_latents.export_model_cell_arrays), so a map sits on the same torus
+# and carries the same fine / coarse labels as its `<map>1`/`<map>2`,
+# `<map>_category` and `<map>_supercategory` summary columns (15 / 9 clusters for
+# the regular map). The folder is versioned by name: the old in-house model's
+# arrays lived in `<dir>/qlvm/`.
 QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME = "qlvm_v3"
 
 # File name of the cohort pooled-embeddings parquet cache under
@@ -1072,10 +1079,10 @@ def wait_for_subprocesses(
 # the production models (infer_qlvm_latents with model_cells: the phase 6 regular
 # model's qlvm1/qlvm2 with its fine and coarse labels qlvm_category /
 # qlvm_supercategory, then the duration, mean-frequency, bandwidth and loudness
-# conditional models, each with its fine label P_category). The single-model column
-# qlvm_model is not listed: production summaries do not carry it (a legacy run that
-# writes it still keeps it, after the canonical columns). Non-default label levels
-# (model_cell_label_levels, e.g. qlvm_dur_supercategory) also land after them.
+# conditional models, each with its fine and coarse labels P_category /
+# P_supercategory). The single-model column qlvm_model is not listed: production
+# summaries do not carry it (a legacy run that writes it still keeps it, after the
+# canonical columns).
 # Steps that re-append their own columns reorder to this before writing, so a
 # column's position no longer depends on which step ran last.
 USV_SUMMARY_COLUMN_ORDER = (
@@ -1086,10 +1093,10 @@ USV_SUMMARY_COLUMN_ORDER = (
     "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "spectral_entropy",
     "mask_number",
     "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
-    "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category",
-    "qlvm_mf1", "qlvm_mf2", "qlvm_mf_category",
-    "qlvm_bw1", "qlvm_bw2", "qlvm_bw_category",
-    "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category",
+    "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category", "qlvm_dur_supercategory",
+    "qlvm_mf1", "qlvm_mf2", "qlvm_mf_category", "qlvm_mf_supercategory",
+    "qlvm_bw1", "qlvm_bw2", "qlvm_bw_category", "qlvm_bw_supercategory",
+    "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category", "qlvm_loud_supercategory",
 )
 
 
@@ -1282,32 +1289,33 @@ def newest_match_or_raise(
 # Embedding-landscape resolution. The visualization layer reads its precomputed
 # cohort artifacts from a single base directory (``shared_resources.spectrograms_dir``)
 # by convention, rather than from several hard-coded file paths:
-#   <dir>/qlvm_v3/arrays_{coarse,fine}.npz   QLVM torus density + label grids + centres
-#                                             (QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME)
-#   <dir>/vae/vae_density_{coarse,fine}.npz  VAE umap density + category labels
+#   <dir>/qlvm_v3/<map>/arrays_{coarse,fine}.npz  QLVM torus density + label grids +
+#                                             centres of one map (QLVM_MAPS;
+#                                             QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME)
 #   <dir>/spectrograms_*.h5                   consolidated spectrogram/mask/latent store
 #   <dir>/embeddings/pooled_embeddings_qlvmv3.parquet  pooled cohort embeddings cache
 #                                             (POOLED_EMBEDDINGS_CACHE_NAME)
-def resolve_embedding_arrays_path(spectrograms_dir: str, embedding: str, clustering: str) -> str:
+def resolve_embedding_arrays_path(spectrograms_dir: str, qlvm_map: str, clustering: str) -> str:
     """
     Description
     -----------
     Build the path to a precomputed embedding-landscape ``.npz`` under the
-    spectrograms base directory, by convention -- QLVM at
-    ``<dir>/<QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME>/arrays_{coarse,fine}.npz``
-    (``<dir>/qlvm_v3/...``: the production v3 regular cell's clustering, exported
-    by ``export-qlvm-reference-arrays``; the old in-house model's ``<dir>/qlvm/``
-    arrays are not read) and VAE at ``<dir>/vae/vae_density_{coarse,fine}.npz``.
-    This is a pure path builder (run through ``configure_path``); whether the file
-    exists is the caller's concern (the sequence figure falls back to a bare
-    panel, the torus video requires it).
+    spectrograms base directory, by convention --
+    ``<dir>/<QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME>/<qlvm_map>/arrays_{coarse,fine}.npz``
+    (``<dir>/qlvm_v3/qlvm/...`` for the regular map: the production v3 cell's
+    clustering of that map, exported by ``export-qlvm-reference-arrays``; the old
+    in-house model's ``<dir>/qlvm/`` arrays are not read). This is a pure path
+    builder (run through ``configure_path``); whether the file exists is the
+    caller's concern (the sequence figure falls back to a bare panel, the torus
+    video requires it).
 
     Parameters
     ----------
     spectrograms_dir (str)
-        Base directory where the ``qlvm_v3`` / ``vae`` subdirectories branch off.
-    embedding (str)
-        ``"qlvm"`` or ``"vae"``.
+        Base directory where the ``qlvm_v3`` subdirectory branches off.
+    qlvm_map (str)
+        One of ``QLVM_MAPS`` (e.g. ``"qlvm"`` for the regular model,
+        ``"qlvm_dur"`` for the duration-conditional one).
     clustering (str)
         ``"fine"`` selects the fine map; anything else selects the coarse map.
 
@@ -1315,13 +1323,18 @@ def resolve_embedding_arrays_path(spectrograms_dir: str, embedding: str, cluster
     -------
     path (str)
         The OS-resolved ``.npz`` path (not checked for existence).
+
+    Raises
+    ------
+    ValueError
+        If ``qlvm_map`` is not one of ``QLVM_MAPS``.
     """
 
+    if qlvm_map not in QLVM_MAPS:
+        raise ValueError(f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}.")
     base = pathlib.Path(configure_path(spectrograms_dir))
     tag = "fine" if clustering == "fine" else "coarse"
-    if embedding == "vae":
-        return str(base / "vae" / f"vae_density_{tag}.npz")
-    return str(base / QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME / f"arrays_{tag}.npz")
+    return str(base / QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME / qlvm_map / f"arrays_{tag}.npz")
 
 
 def resolve_consolidated_h5_path(spectrograms_dir: str) -> str:
@@ -1370,7 +1383,7 @@ def resolve_pooled_embeddings_cache(spectrograms_dir: str) -> str:
     exists is the caller's concern -- the embedding figures pass it as
     ``embeddings_cache_path`` so that ``build_pooled_embeddings_df`` loads it when
     present and its summaries fingerprint matches (one combined table that
-    carries both the VAE and QLVM coordinates and the coarse + fine labels), and
+    carries the QLVM coordinates and the coarse + fine labels), and
     otherwise pools the cohort and writes it there.
 
     Parameters

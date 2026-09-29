@@ -20,8 +20,8 @@ Vocal path (driven by `*_usv_summary.csv` + tracking H5 + audio sync):
                           acoustic property (duration, mean / peak
                           frequency, bandwidth, amplitude, spectral
                           entropy, mask number)
-  `usv_category_tuning`   per-category within-USV firing rate (VAE /
-                          QLVM `category` and `supercategory`)
+  `usv_category_tuning`   per-category within-USV firing rate (QLVM
+                          `category` and `supercategory`)
   `usv_category_peth`     per-category time-resolved peri-USV PETH
 
 Both paths write into the same per-cluster pickle:
@@ -64,8 +64,6 @@ CONTINUOUS_PROPERTIES = (
 )
 
 CATEGORICAL_FEATURES = (
-    "vae_category",
-    "vae_supercategory",
     "qlvm_category",
     "qlvm_supercategory",
 )
@@ -1266,7 +1264,7 @@ class NeuronalTuning(FeatureZoo):
         metadata), validates and stashes the keyword arguments as attributes,
         and records GUI-vs-CLI execution context. The categorical vocal
         compute reads its category labels straight from the
-        `vae_*` / `qlvm_*` columns of the `*_usv_summary.csv`, not from any
+        `qlvm_*` columns of the `*_usv_summary.csv`, not from any
         bundled segmentation file.
 
         Parameters
@@ -1980,8 +1978,8 @@ class NeuronalTuning(FeatureZoo):
                 if cat_feat in usv_df.columns:
                     cat_values = usv_df[cat_feat].to_numpy()[anchor_idx]
                 else:
-                    # Optional categorical column absent (e.g. qlvm_category on a VAE-only
-                    # session); all-NaN -> the null-drop below yields an empty category set
+                    # Optional categorical column absent (e.g. a session never run through
+                    # QLVM inference); all-NaN -> the null-drop below yields an empty category set
                     # (n_cats == 0), so this feature produces no tuning instead of crashing.
                     cat_values = np.full(anchor_durations.shape[0], np.nan, dtype=float)
                 # Drop null sentinels regardless of dtype before building the

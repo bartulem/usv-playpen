@@ -1936,7 +1936,7 @@ def extract_univariate_headline(analysis_type: str, res: dict) -> dict:
                 }
     elif analysis_type == 'continuous':
         # Geometry selects the headline: `vm_logscore` is finite only on the
-        # torus (NaN on euclidean/VAE), `dcor_xy` only on euclidean (NaN on the
+        # torus (NaN on euclidean), `dcor_xy` only on euclidean (NaN on the
         # torus), else `r2_spatial`. Guard the unconditional `actual` read so a
         # malformed / minimal result dict (e.g. a mocked dispatcher test) yields
         # an empty summary rather than raising.

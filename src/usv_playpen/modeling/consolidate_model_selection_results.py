@@ -230,9 +230,9 @@ def _build_default_output_filename(input_metadata: dict,
       * `analysis_tag` — `input_metadata['analysis_tag']` embedded
         verbatim. The modeling pipelines now mint canonical short
         tags directly (`'bout_onset'`, `'durations'`,
-        `'multinomial_vae_supercategory'`,
+        `'multinomial_qlvm_supercategory'`,
         `'manifold_qlvm_category'`,
-        `'category_vae_supercategory_3'`), so no token slicing is
+        `'category_qlvm_supercategory_3'`), so no token slicing is
         needed.
       * `split_strategy` — `run_metadata['split_strategy']` (e.g.
         `'mixed'`).
@@ -286,7 +286,7 @@ def _build_default_output_filename(input_metadata: dict,
             else:
                 # `multinomial` → `multinomial_<col>`, `manifold` →
                 # `manifold_<col>`, and pre-augmented compound tags
-                # (e.g. `multinomial_vae_supercategory`) are skipped
+                # (e.g. `multinomial_qlvm_supercategory`) are skipped
                 # above by the substring check.
                 analysis_tag = f"{analysis_tag}_{cat_col}"
 

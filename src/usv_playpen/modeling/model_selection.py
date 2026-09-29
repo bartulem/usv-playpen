@@ -882,7 +882,7 @@ def vocal_onset_model_selection(univariate_results_path: str,
 
     # Mirror the Level-1 analysis_tag when a single onset target category is
     # active ('individual' mode only): embed the category column name and index
-    # so step files for different categories (or VAE-vs-QLVM columns) never
+    # so step files for different categories (or label columns of different QLVM maps) never
     # collide in the same model-selection directory.
     onset_cat = settings['model_params']['onset_target_category']
     if onset_cat is not None and prediction_mode == 'individual':
@@ -1887,7 +1887,7 @@ def vocal_category_model_selection(
 
     # Pin which USV category column generated the binary target so the
     # per-step prefix (and downstream consolidation) carries the choice
-    # forward in the filename — e.g. `vae_supercategory`, `qlvm_category`.
+    # forward in the filename — e.g. `qlvm_supercategory`, `qlvm_category`.
     _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
     # `target_category` is the human-readable `category_<idx>` (kept for
     # metadata + console output); strip the redundant prefix when
@@ -3856,7 +3856,7 @@ def multinomial_vocal_category_model_selection(
     target_condition = cond_match.group(1) if cond_match else "unknown"
     # Pin which USV category column generated the multinomial labels so
     # the per-step prefix (and downstream consolidation) carries the
-    # choice forward in the filename — e.g. `vae_supercategory`,
+    # choice forward in the filename — e.g. `qlvm_supercategory`,
     # `qlvm_category`.
     _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
     prefix = f"model_selection_multinomial_{_column_name_cats}_{target_condition}_{split_strategy}_step_"
@@ -4745,7 +4745,7 @@ def continuous_vocal_manifold_model_selection(
     """
     Performs forward stepwise selection for continuous manifold-position
     prediction using the geometry-resolved estimator
-    (`SmoothBivariateRegression` on Euclidean / VAE / UMAP manifolds,
+    (`SmoothBivariateRegression` on Euclidean manifolds,
     `SmoothTorusManifoldRegression` on the torus).
 
     The selector identifies the minimal set of behavioural features that
@@ -4755,7 +4755,7 @@ def continuous_vocal_manifold_model_selection(
     determination pooled across manifold axes — higher is better,
     interpretable as the fraction of test-fold spatial variance the
     model explains above the test-fold marginal mean) on Euclidean /
-    VAE / UMAP manifolds, and wrap-aware distance correlation `dcor_xy`
+    Euclidean manifolds, and wrap-aware distance correlation `dcor_xy`
     on the near-uniform periodic TORUS manifold, where the centroid-
     referenced `r2_spatial` is structurally inverted.
 
@@ -4903,7 +4903,7 @@ def continuous_vocal_manifold_model_selection(
     #     zero, rewards rescuing badly-predicted rare regions (macro averaging),
     #     and responds to the smoothness penalty (so regularisation tuning and the
     #     reflective-boundary smoothing are now meaningful).
-    #   - euclidean (VAE/UMAP): the wrap-aware distance correlation, unchanged;
+    #   - euclidean: the wrap-aware distance correlation, unchanged;
     #     `r2_spatial` is a reported descriptor only.
     # The score drives the greedy candidate/baseline ranking and (via the
     # per-fold paired margin) the accept gate; on both geometries it is
@@ -5330,7 +5330,7 @@ def continuous_vocal_manifold_model_selection(
     target_condition = cond_match.group(1) if cond_match else "unknown"
 
     # Pin which USV category column the manifold targets were derived
-    # from (e.g. `vae_supercategory`, `qlvm_category`) so the per-step
+    # from (e.g. `qlvm_supercategory`, `qlvm_category`) so the per-step
     # prefix (and downstream consolidation) carries the choice forward
     # in the filename.
     # Without a label column (null setting) the segment names the embedding
@@ -5853,7 +5853,7 @@ def continuous_vocal_manifold_model_selection(
         # The `else` below reports the all-folds-failed case; this warns on the
         # otherwise-silent partial case, where the anchor's mean is quietly
         # averaged over only the surviving folds while the run still reports
-        # success. On the euclidean/VAE path this signals iterative-fit
+        # success. On the euclidean path this signals iterative-fit
         # divergence (the closed-form torus estimator does not trip it).
         _n_anchor_folds = int(_all_anchor_scores.size)
         _n_anchor_bad = _n_anchor_folds - int(valid_scores.size)
@@ -6049,7 +6049,7 @@ def continuous_vocal_manifold_model_selection(
             # Surface PARTIAL fold failure for this candidate (some folds
             # diverged, others survived): otherwise the candidate's mean is
             # silently averaged over only the surviving folds. See the matching
-            # anchor guard above for the rationale (euclidean/VAE path only; the
+            # anchor guard above for the rationale (euclidean path only; the
             # closed-form torus estimator does not diverge).
             _n_cand_folds = int(_all_cand_scores.size)
             _n_cand_bad = _n_cand_folds - int(valid_scores.size)

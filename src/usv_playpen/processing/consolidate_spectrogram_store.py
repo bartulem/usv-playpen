@@ -326,14 +326,15 @@ class SpectrogramStoreConsolidator:
         package embedded); a session lacking a QLVM coordinate column
         (``<prefix>1`` / ``<prefix>2`` of every production prefix) or a default
         label column (``qlvm_category`` and ``qlvm_supercategory`` for ``qlvm``,
-        ``<prefix>_category`` for the others); a session without a session type
+        ``<prefix>_category`` and ``<prefix>_supercategory`` for the others,
+        :func:`default_model_cell_label_levels`); a session without a session type
         in the package; and an embedding that disagrees with the package's rules
         -- the per-call status (:func:`embedding_status`, from the H5 durations
         and the bincount of ``mask/<session>/spectrogram_index``, against the
         regular cell's ``length_threshold``) must be 0 exactly where
         ``qlvm1`` / ``qlvm2`` are non-null, and each model's labels must be
-        present exactly where its coordinates are. A non-default label column
-        (e.g. ``qlvm_dur_supercategory``) is stored when every session has it.
+        present exactly where its coordinates are. A label column outside the
+        defaults is stored when every session has it.
 
         The second pass writes the store atomically, copying one session at a
         time so memory stays bounded by one session's arrays.

@@ -33,7 +33,7 @@ pipeline:
      - the USV's vocal category across all categories jointly (multinomial)
      - per-USV starts
    * - ``ContinuousModelingPipeline``
-     - per-USV 2-D acoustic-manifold (UMAP, Uniform Manifold Approximation and Projection) position
+     - per-USV 2-D acoustic-manifold position (the QLVM torus)
      - per-USV starts
 
 Each target is fit first with **univariate** generalized additive / linear
@@ -221,7 +221,7 @@ cross-validation and held-out-test settings live in their own
 * **usv_predictor_type** — which vocal-syntax predictor traces to build: ``'pooled_binary'`` (one pooled per-frame USV-event indicator), ``'pooled_rate'`` (one pooled USV-rate trace), ``'categories_rate'`` (one per-category USV-rate trace per ``usv_category_column_name`` category; the shipped default, over ``qlvm_supercategory``), or ``'all_rate'`` (the pooled rate plus the per-category rates). A falsy value builds no vocal predictors. ``'categories_rate'`` and ``'all_rate'`` need a label column: with ``usv_category_column_name`` ``null``, or naming a column a session's summary lacks (e.g. a summary embedded before ``infer-qlvm-latents`` wrote the QLVM labels), they raise a ``ValueError`` naming the setting (before any session is loaded, for the ``null`` case) instead of silently building no category traces. The pooled modes never read a label column.
 * **usv_predictor_partner_only** — if ``true``, ingest only the *partner's* USV signals as predictors (not the target mouse's own vocal history).
 * **usv_predictor_smoothing_sd** — Gaussian σ (frames) applied to the USV-rate predictor traces.
-* **usv_category_column_name** — the USV-catalog column defining categories: ``'qlvm_supercategory'`` (shipped) or ``'qlvm_category'`` — the coarse (9 clusters) and fine (15 clusters) labels of the v3 phase 6 regular model that ``infer-qlvm-latents`` writes beside its ``qlvm1`` / ``qlvm2`` coordinates — a conditional model's fine label (``'qlvm_dur_category'``, ``'qlvm_mf_category'``, ``'qlvm_bw_category'``, ``'qlvm_loud_category'``), or a VAE column (``'vae_supercategory'`` / ``'vae_category'``). Labels are integers ``1..k``, 1 the largest cluster. ``null`` runs the label-free paths only: every label-dependent path fails clearly on ``null`` — the multinomial and binomial category pipelines, ``onset_target_category`` in ``'individual'`` mode, and the ``'categories_rate'`` / ``'all_rate'`` predictors raise ``QLVM category labels are not available; set vocal_features.usv_category_column_name to an existing label column`` before loading anything — while the continuous manifold pipeline runs without it (no category / supercategory packets; its analysis tag then names the embedding, e.g. ``manifold_qlvm``). A column that is set must exist in every summary.
+* **usv_category_column_name** — the USV-catalog column defining categories: ``'qlvm_supercategory'`` (shipped) or ``'qlvm_category'`` — the coarse (9 clusters) and fine (15 clusters) labels of the v3 phase 6 regular model that ``infer-qlvm-latents`` writes beside its ``qlvm1`` / ``qlvm2`` coordinates — or a conditional model's fine or coarse label (``'qlvm_dur_category'`` / ``'qlvm_dur_supercategory'``, and likewise for ``qlvm_mf``, ``qlvm_bw`` and ``qlvm_loud``). Labels are integers ``1..k``, 1 the largest cluster. ``null`` runs the label-free paths only: every label-dependent path fails clearly on ``null`` — the multinomial and binomial category pipelines, ``onset_target_category`` in ``'individual'`` mode, and the ``'categories_rate'`` / ``'all_rate'`` predictors raise ``QLVM category labels are not available; set vocal_features.usv_category_column_name to an existing label column`` before loading anything — while the continuous manifold pipeline runs without it (no category / supercategory packets; its analysis tag then names the embedding, e.g. ``manifold_qlvm``). A column that is set must exist in every summary.
 * **exclude_noise_usvs** — whether to drop the USV segments ``detect-usv-noise`` flagged as holding no vocalization. A session whose summary lacks the ``noise`` column raises rather than contributing unfiltered detections.
 * **usv_manifold_column_names** — the two catalog columns giving the 2-D manifold position (the ``ContinuousModelingPipeline`` target). Calls the embedding could not place have null coordinates; they are dropped at extraction (with the count printed per session and in total), so the inverse-density KDE, the regressions and the GLM-HMM never see a NaN position.
 * **usv_manifold_metric** — ``'euclidean'`` (plane) or ``'torus'`` (wrap-aware) distance on the manifold.
@@ -468,7 +468,7 @@ differ only in *what gets predicted*:
         modeling_settings_dict=None
     ).extract_and_save_multinomial_input_data()
 
-    # Continuous manifold position (2-D UMAP regression)
+    # Continuous manifold position (2-D QLVM torus regression)
     ContinuousModelingPipeline(
         modeling_settings_dict=None
     ).extract_and_save_continuous_data()
@@ -585,9 +585,9 @@ pipeline:
    - ``model_target_vocal_type = 'individual'`` — each qualifying USV onset
      (rather than a clustered bout onset) becomes a positive event;
    - ``onset_target_category = <int>`` — the category index to keep (e.g.
-     ``6`` for BBVs). The *column* this index refers to is the existing
+     ``3``). The *column* this index refers to is the existing
      ``vocal_features.usv_category_column_name``, so any existing label column
-     (e.g. ``qlvm_supercategory`` / ``qlvm_category`` / ``vae_supercategory``) can be targeted. Leave it
+     (e.g. ``qlvm_supercategory`` / ``qlvm_category`` / ``qlvm_dur_category``) can be targeted. Leave it
      ``null`` (default) to pool all categories exactly as before. With a
      ``null`` ``usv_category_column_name`` a set ``onset_target_category``
      raises a ``ValueError`` before any session is loaded, and a summary that
@@ -605,7 +605,7 @@ pipeline:
    would mis-group a category-sparsified sequence (a warning is printed if the
    setting is combined with a non-individual mode). When active, the chosen
    category column and index are embedded in the ``analysis_tag`` (e.g.
-   ``individual_cat_vae_supercategory_6``) and ``_input_metadata``, so VAE (variational autoencoder)-vs-QLVM (in-house quasi-Monte Carlo latent variable model)
+   ``individual_cat_qlvm_supercategory_3``) and ``_input_metadata``, so the QLVM (quasi-Monte Carlo latent variable model) map
    and category-vs-supercategory are unambiguous in every downstream artifact
    name and provenance block.
 
@@ -974,7 +974,7 @@ the QLVM model package cell in ``modeling_settings.json``
 (``usv_manifold_geodesic_metrics.decoder_model_cell_directory``, shipped as the v3
 regular cell the ``qlvm1`` / ``qlvm2`` coordinates come from; override with
 ``decoder_model_cell_directory``), and its white boundaries are that cell's 9
-coarse clusters from ``<spectrograms_dir>/qlvm_v3/arrays_coarse.npz`` (resolved by
+coarse clusters from ``<spectrograms_dir>/qlvm_v3/qlvm/arrays_coarse.npz`` (resolved by
 ``os_utils.resolve_embedding_arrays_path`` from ``visualizations_settings.json``
 ``shared_resources.spectrograms_dir``; written by ``export-qlvm-reference-arrays``;
 override with ``supercategory_arrays_npz_path``). The arrays must record the same
@@ -1031,14 +1031,14 @@ diagnostics computed once across folds:
             "means": {"...": "..."}, "stds": {"...": "..."}, "snrs": {"...": "..."},
             "ranked_features": ["nose-nose", "..."], "best_fold_idx": 3
         },
-        "saliency_maps": {"supercategory_0": {"contrastive_saliency": "<array>", "centroid": "...", "radius": "..."}},
+        "saliency_maps": {"supercategory_1": {"contrastive_saliency": "<array>", "centroid": "...", "radius": "..."}},
         "cluster_geometry": {"...": "..."}           # optional — cluster centroids / radii
     }
 
 * **``metadata``** — the run configuration: ``features_list`` (the ``F`` predictor order), the ``hyperparameters`` block, ``manifold_metric`` / ``manifold_period`` / ``output_encoding``, ``n_time_bins``, ``split_strategy``, and the source-pickle path.
 * **``cross_validation``** — a list, one dict per spatial-CV fold. Each holds the fold's test-set ground truth ``Y_true`` ``(N, 2)`` and the three strategies' predictions ``Y_pred_actual`` / ``Y_pred_null`` / ``Y_pred_null_model_free`` (all ``(N, 2)``), plus the scalar wrap-aware ``error_actual`` / ``error_null`` / ``error_null_model_free`` that feed the skill-score and permutation test.
 * **``feature_importance``** — permutation importance evaluated on ``best_fold_idx``: per-feature ``means`` / ``stds`` / ``snrs`` (mean Δerror, its spread, and the signal-to-noise ratio), ``ranked_features`` (sorted), and ``significant_features`` (SNR-thresholded).
-* **``saliency_maps``** (optional) — one entry per acoustic cluster (keyed ``<segmentation>_<label>``, e.g. ``supercategory_0``), each with a ``contrastive_saliency`` tensor (Input×Gradient over features × time) and the cluster ``centroid`` / ``radius``. **``cluster_geometry``** (optional) records the cluster centroids, radii, and nearest-neighbour distances that place the saliency insets.
+* **``saliency_maps``** (optional) — one entry per acoustic cluster (keyed ``<segmentation>_<label>``, e.g. ``supercategory_1``), each with a ``contrastive_saliency`` tensor (Input×Gradient over features × time) and the cluster ``centroid`` / ``radius``. **``cluster_geometry``** (optional) records the cluster centroids, radii, and nearest-neighbour distances that place the saliency insets.
 
 .. _modeling-glm-hmm:
 

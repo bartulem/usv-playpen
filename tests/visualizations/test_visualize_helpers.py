@@ -98,14 +98,10 @@ def test_fig_maker_sex_color_resolves_male_and_female(tmp_path):
     assert maker._sex_color("unknown") == "#d62728"
 
 
-def test_fig_maker_load_segmentation_caches_empty_when_file_missing(tmp_path, monkeypatch):
-    """_load_segmentation returns {} (and caches it) when the bundled (VAE)
-    segmentation file and the QLVM model package are both missing — without
-    raising."""
+def test_fig_maker_load_segmentation_caches_empty_when_package_missing(tmp_path, monkeypatch):
+    """_load_segmentation returns {} (and caches it) when the QLVM model package
+    is missing — without raising."""
     maker, _ = _make_fig_maker(str(tmp_path))
-    # Force the segmentation path to a known-missing location to exercise the
-    # "file absent" branch. The instance attribute can be overridden directly.
-    maker._segmentation_path = tmp_path / "nope.npz"
     monkeypatch.setattr(tuning_figures, "QLVM_MODEL_PACKAGE_ROOT", str(tmp_path / "no_package"))
     seg = maker._load_segmentation()
     assert seg == {}

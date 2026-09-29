@@ -162,8 +162,7 @@
           "enable": true,
           "segmentation": "supercategory",
           "alpha": 0.5,
-          "radius_mode": "adaptive",
-          "noise_label": 0
+          "radius_mode": "adaptive"
         }
       }
     },

@@ -282,7 +282,3 @@ touch. Grouped by role:
 
 - ``spike.wav`` — the short spike-sound clip mixed into behavioral videos when the
   spike-sound option is enabled.
-- ``usv_latent_embedding_segmentation.npz`` — the precomputed VAE latent-embedding segmentation used to render the
-  neuronal-tuning figures' VAE category maps. It also holds the QLVM (the in-house quasi-Monte Carlo latent variable
-  model) segmentation of an older model, which is no longer used: the QLVM maps come from the production regular
-  model package cell's ``label_grid.npy`` files.

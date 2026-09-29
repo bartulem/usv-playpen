@@ -34,13 +34,13 @@ future region-conditional analysis:
    time to gate USVs by spatial proximity to a cluster centre, in
    combination with the categorical label check.
 
-Notes on noise filtering
+Notes on label filtering
 ------------------------
-The embedding's own noise cluster label (`noise_label`, typically `0`) marks
-USVs that are not biological vocalisations. `derive_cluster_centers_empirically`
-accepts a `drop_label` argument so the noise label is excluded from the
-returned centres without the caller having to pre-filter; the default
-is `0` to match the project convention.
+`derive_cluster_centers_empirically` accepts a `drop_label` argument that
+excludes one label value from the returned centres without the caller having
+to pre-filter; the default `None` keeps every label. Noise is not a cluster
+label: segments `detect_usv_noise` flags are dropped by the noise column
+before the labels reach this module, and QLVM labels start at 1.
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ from .manifold_metric import _validate_metric_period, signed_diff
 def derive_cluster_centers_empirically(Y: np.ndarray,
                                        labels: np.ndarray,
                                        *,
-                                       drop_label: int | float | None = 0,
+                                       drop_label: int | float | None = None,
                                        min_points_per_label: int = 20,
                                        max_points_per_label: int = 30000,
                                        grid_resolution: int = 200,
@@ -88,10 +88,9 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
     labels : numpy.ndarray
         `(N,)` per-USV cluster labels, integer- or float-valued. NaN
         labels are skipped automatically.
-    drop_label : int or float or None, default 0
+    drop_label : int or float or None, default None
         Label value to exclude from the returned centres entirely (no
-        KDE fit). The project convention is `0` for "noise" / discarded
-        USVs. Pass `None` to keep every label.
+        KDE fit). `None` keeps every label.
     min_points_per_label : int, default 20
         Skip labels with fewer than this many finite-coordinate points
         (the per-label KDE is numerically unstable below this).
@@ -110,8 +109,8 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
         seeding, pass `0.8` (matches the `params_bandwidth` attribute on
         the precomputed QLVM cluster H5).
     metric : str, default 'euclidean'
-        `'euclidean'` for flat-plane manifolds (e.g. VAE-UMAP) or
-        `'torus'` for periodic ones (e.g. QLVM-UMAP). Controls the
+        `'euclidean'` for flat-plane manifolds or `'torus'` for
+        periodic ones (e.g. the QLVM torus). Controls the
         wrap-aware KDE on torus.
     period : float, default 1.0
         Per-axis wrap period; ignored when `metric == 'euclidean'`.

@@ -44,7 +44,7 @@ import pytest
 
 from usv_playpen.visualizations.make_usv_spectrograms import (
     BANDWIDTH_BIMODAL_SPLIT_KHZ,
-    EMBEDDING_ALL_COLS,
+    EMBEDDING_COORD_COLS,
     SESSION_TYPE_FEMALE_COLOR,
     SESSION_TYPE_MALE_COLOR,
     USV_TIMELINE_FEMALE_COLOR,
@@ -58,7 +58,6 @@ from usv_playpen.visualizations.make_usv_spectrograms import (
     _pick_spiral_with_grid,
     _resolve_session_emitter_ids,
     build_pooled_embeddings_df,
-    build_vae_density_npz,
     plot_embedding_with_category_thumbnails,
     plot_session_type_usv_counts,
     plot_session_usv_timeline,
@@ -131,7 +130,7 @@ def _base_settings(
     time_window (tuple of float)
         Analysis window in seconds ([start, end]; end 0 -> full file).
     spectrograms_dir (str)
-        Base dir holding qlvm/ + vae/ density npz and spectrograms_*.h5
+        Base dir holding the qlvm_v3/<map>/ arrays npz and spectrograms_*.h5
         (stitched / sequence modes resolve their inputs from it).
     apply_mask (bool)
         Master SAM2 mask toggle (stitched mode).
@@ -789,7 +788,7 @@ def _setup_stitched_session(tmp_path: pathlib.Path, *, with_mask: bool = True):
         {
             "start": [0.10, 0.30, 0.55, 0.80],
             "stop": [0.18, 0.38, 0.63, 0.88],
-            "vae_supercategory": [1, 1, 2, 2],
+            "qlvm_supercategory": [1, 1, 2, 2],
         },
     )
     return _base_settings(
@@ -832,7 +831,7 @@ def test_plot_stitched_missing_session_group(tmp_path):
     spec_dir = _write_spectrograms_dir(tmp_path / "spectrograms", "some_other_session", n_usvs=4)
     _write_usv_summary_csv(
         tmp_path / "audio",
-        {"start": [0.1], "stop": [0.2], "vae_supercategory": [1]},
+        {"start": [0.1], "stop": [0.2], "qlvm_supercategory": [1]},
     )
     settings = _base_settings(
         mode="stitched",
@@ -949,7 +948,7 @@ def test_plot_usv_property_histograms(tmp_path):
             "mean_freq_hz": [40_000, 60_000, 80_000, 100_000],
             "freq_bandwidth_hz": [10_000, 20_000, 50_000, 70_000],
             "spectral_entropy": [1.0, 2.0, 3.0, 4.0],
-            "vae_supercategory": [0, 1, 1, 2],
+            "qlvm_supercategory": [1, 1, 1, 2],
             "noise": [True, False, False, False],
         },
     )
@@ -1000,8 +999,8 @@ def test_plot_session_type_usv_counts(tmp_path):
     for kind in ("mf", "ff", "lm"):
         s1 = tmp_path / f"{kind}_1"
         s2 = tmp_path / f"{kind}_2"
-        _write_usv_summary_csv(s1 / "audio", {"vae_supercategory": [1, 1, 2]})
-        _write_usv_summary_csv(s2 / "audio", {"vae_supercategory": [1, 2, 2, 2]})
+        _write_usv_summary_csv(s1 / "audio", {"qlvm_supercategory": [1, 1, 2]})
+        _write_usv_summary_csv(s2 / "audio", {"qlvm_supercategory": [1, 2, 2, 2]})
         txts[kind] = _write_sessions_txt(tmp_path / f"list_{kind}", [s1, s2])
     out = tmp_path / "counts.pdf"
     fig = plot_session_type_usv_counts(
@@ -1044,7 +1043,7 @@ def test_plot_session_usv_timeline(tmp_path):
             "start": [0.1, 0.5, 1.0, 2.0],
             "stop": [0.2, 0.6, 1.1, 2.1],
             "emitter": ["M", "F", "ghost", "M"],
-            "vae_supercategory": [1, 1, 0, 2],
+            "qlvm_supercategory": [1, 1, 1, 2],
             "noise": [False, False, True, False],
         },
     )
@@ -1070,7 +1069,7 @@ def test_plot_session_usv_timeline_full_session(tmp_path):
             "start": [0.1, 0.5],
             "stop": [0.2, 0.6],
             "emitter": ["M", "F"],
-            "vae_supercategory": [1, 2],
+            "qlvm_supercategory": [1, 2],
         },
     )
     fig = plot_session_usv_timeline(
@@ -1107,12 +1106,11 @@ def _write_embedding_session(root: pathlib.Path, session_id: str):
     _write_usv_summary_csv(
         root / "audio",
         {
-            "vae1": [0.1, 0.2, 0.3, 0.4],
-            "vae2": [0.5, 0.6, 0.7, 0.8],
             "qlvm1": [1.1, 1.2, 1.3, 1.4],
             "qlvm2": [1.5, 1.6, 1.7, 1.8],
-            "vae_category": [1, 2, 1, 2],
-            "vae_supercategory": [0, 1, 1, 2],
+            "qlvm_dur1": [0.1, 0.2, 0.3, 0.4],
+            "qlvm_dur2": [0.5, 0.6, 0.7, 0.8],
+            "qlvm_dur_category": [1, 2, 1, 2],
             "noise": [True, False, False, False],
             "qlvm_category": [1, 1, 2, 2],
             "qlvm_supercategory": [1, 1, 2, 2],
@@ -1142,7 +1140,13 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     )
     assert cache.exists()
     assert pooled.height == 3  # the row the noise classifier flagged is dropped
-    assert set(EMBEDDING_ALL_COLS).issubset(pooled.columns)
+    # every map's coordinates (null-filled where a map is missing) and only the label
+    # columns the summaries carry (labels are optional, never null-filled)
+    assert set(EMBEDDING_COORD_COLS).issubset(pooled.columns)
+    assert {"qlvm_category", "qlvm_supercategory", "qlvm_dur_category"}.issubset(pooled.columns)
+    assert "qlvm_mf_category" not in pooled.columns
+    assert pooled["qlvm_dur1"].to_list() == [0.2, 0.3, 0.4]
+    assert pooled["qlvm_bw1"].null_count() == pooled.height
     assert "sex" in pooled.columns
     assert "emitter" in pooled.columns  # raw animal id retained for the explorer tooltip
     assert set(pooled["sex"].to_list()) <= {"male", "female", "unassigned"}
@@ -1171,8 +1175,8 @@ def test_build_pooled_embeddings_df_skips_empty_session(tmp_path):
     _write_usv_summary_csv(
         empty / "audio",
         {c: [] for c in (
-            "vae1", "vae2", "qlvm1", "qlvm2",
-            "vae_category", "vae_supercategory", "qlvm_category", "qlvm_supercategory",
+            "qlvm1", "qlvm2", "qlvm_dur1", "qlvm_dur2",
+            "qlvm_category", "qlvm_supercategory", "qlvm_dur_category",
             "emitter", "duration", "mean_freq_hz", "peak_freq_hz",
             "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "spectral_entropy")},
     )
@@ -1192,12 +1196,11 @@ def test_build_pooled_embeddings_df_coerces_string_numeric_columns(tmp_path):
     _write_usv_summary_csv(
         weird / "audio",
         {
-            "vae1": [None, None],  # all-null -> CSV-inferred as String/Null
-            "vae2": [None, None],
+            "qlvm_dur1": [None, None],  # all-null -> CSV-inferred as String/Null
+            "qlvm_dur2": [None, None],
             "qlvm1": [1.0, 2.0],
             "qlvm2": [1.0, 2.0],
-            "vae_category": [1, 2],
-            "vae_supercategory": [1, 2],
+            "qlvm_dur_category": [None, None],
             "qlvm_category": [1, 2],
             "qlvm_supercategory": [1, 2],
             "emitter": ["M", "F"],
@@ -1214,36 +1217,6 @@ def test_build_pooled_embeddings_df_coerces_string_numeric_columns(tmp_path):
     pooled = build_pooled_embeddings_df(sessions_txt_path=str(txt), message_output=lambda *_: None)
     # good: 3 non-noise rows; weird: 2 non-noise rows -> 5 total, concat succeeded
     assert pooled.height == 5
-
-
-def test_build_vae_density_npz(tmp_path):
-    """build_vae_density_npz pools the cohort VAE coords and writes an npz with a
-    density heatmap, a grid label field, and the umap extent; coarse vs fine differ
-    only in the label field they rasterize."""
-    sess = tmp_path / "20230101_000000"
-    _write_embedding_session(sess, "20230101_000000")
-    txt = _write_sessions_txt(tmp_path, [sess])
-
-    out_coarse = build_vae_density_npz(
-        str(txt), str(tmp_path / "vae_coarse.npz"), label_col="vae_supercategory",
-        grid=32, smooth_sigma=1.0, knn=1, message_output=lambda *_: None,
-    )
-    arr = np.load(out_coarse)
-    assert arr["heatmap"].shape == (32, 32)
-    assert np.isfinite(arr["heatmap"]).all()
-    assert arr["ws_labels_periodic"].shape == (32, 32)
-    assert arr["extent"].shape == (4,)
-    # extent covers the pooled (noise-filtered) vae1/vae2 coordinates
-    x0, x1, y0, y1 = (float(v) for v in arr["extent"])
-    assert x0 <= 0.2 and x1 >= 0.4 and y0 <= 0.6 and y1 >= 0.8
-
-    out_fine = build_vae_density_npz(
-        str(txt), str(tmp_path / "vae_fine.npz"), label_col="vae_category",
-        grid=32, smooth_sigma=1.0, knn=1, message_output=lambda *_: None,
-    )
-    # the coarse (supercategory) and fine (category) label fields are not identical
-    fine = np.load(out_fine)
-    assert not np.array_equal(arr["ws_labels_periodic"], fine["ws_labels_periodic"])
 
 
 def test_build_pooled_embeddings_df_rebuild_on_schema_miss(tmp_path):
@@ -1317,17 +1290,15 @@ def test_build_pooled_embeddings_df_rebuilds_a_cache_without_fingerprint(tmp_pat
 
 
 def test_build_pooled_embeddings_df_without_qlvm_labels(tmp_path):
-    """Summaries without qlvm_category / qlvm_supercategory (the production state
-    while QLVM labels are undecided) pool fine: the label columns are optional, not
+    """Summaries without any QLVM label columns (embedded before
+    infer-qlvm-latents wrote the labels) pool fine: the label columns are optional, not
     null-filled, and the written cache passes its own check on the next call."""
     sess = tmp_path / "20230106_000000"
     _write_tracking_h5(sess / "video", ("M", "F"))
     _write_usv_summary_csv(
         sess / "audio",
         {
-            "vae1": [0.1, 0.2], "vae2": [0.5, 0.6],
             "qlvm1": [0.11, 0.12], "qlvm2": [0.15, 0.16],
-            "vae_category": [1, 2], "vae_supercategory": [0, 1],
             "noise": [False, False], "emitter": ["M", "F"], "duration": [0.05, 0.06],
             "mean_freq_hz": [40_000, 60_000], "peak_freq_hz": [45_000, 65_000],
             "freq_bandwidth_hz": [5_000, 6_000], "mean_amplitude": [0.1, 0.2],
@@ -1534,14 +1505,14 @@ def _make_pooled_df(session_id: str = "sessA", n_per_cat: int = 6) -> pls.DataFr
         {
             "session_id": [session_id] * n,
             "row_index": list(range(n)),
-            "vae1": rng.random(n) + np.array(cats, dtype=float),
-            "vae2": rng.random(n) - np.array(cats, dtype=float),
-            "vae_category": cats,
-            "vae_supercategory": cats,
-            "qlvm1": rng.random(n),
-            "qlvm2": rng.random(n),
+            "qlvm1": 0.4 * rng.random(n) + 0.5 * (np.array(cats, dtype=float) - 1.0),
+            "qlvm2": 0.4 * rng.random(n) + 0.5 * (np.array(cats, dtype=float) - 1.0),
             "qlvm_category": cats,
             "qlvm_supercategory": cats,
+            "qlvm_dur1": rng.random(n),
+            "qlvm_dur2": rng.random(n),
+            "qlvm_dur_category": cats,
+            "qlvm_dur_supercategory": cats,
             "sex": (["male", "female"] * n)[:n],
             "duration": rng.random(n) * 0.1,
             "mean_freq_hz": rng.random(n) * 50_000 + 40_000,
@@ -1573,23 +1544,23 @@ def test_plot_umap_thumbnails_random(tmp_path):
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
-def test_plot_umap_thumbnails_qlvm_uses_dim_columns(tmp_path):
-    """map_type='qlvm' reads the qlvm1/qlvm2 torus coordinates (not the
-    nonexistent qlvm_umap1/2): the figure renders rather than raising a Polars
-    ColumnNotFoundError, which guards the qlvm coord-name regression."""
+def test_plot_umap_thumbnails_conditional_map_columns(tmp_path):
+    """qlvm_map='qlvm_dur' reads the duration-conditional map's qlvm_dur1/qlvm_dur2
+    coordinates and qlvm_dur_<suffix> labels, and names its axes after the map."""
     pooled = _make_pooled_df("sessQ", n_per_cat=6)
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessQ", n_usvs=12, n_freq=16, n_time=24)
     fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
-        map_type="qlvm",
+        qlvm_map="qlvm_dur",
         n_samples_per_category=4,
         pooled_df=pooled,
         message_output=lambda *_: None,
         seed=42,
     )
     assert isinstance(fig, plt.Figure)
+    assert any(axis.get_xlabel() == "QLVM DUR DIM 1" for axis in fig.axes)
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
@@ -1603,7 +1574,6 @@ def test_plot_umap_thumbnails_spiral_unstretched(tmp_path):
     fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
-        map_type="vae",
         category_col_suffix="supercategory",
         n_samples_per_category=4,
         sampling_method="spiral",
@@ -1632,7 +1602,7 @@ def test_plot_umap_thumbnails_explicit_centers(tmp_path):
         consolidated_h5_path=str(h5_path),
         n_samples_per_category=3,
         sampling_method="spiral",
-        cluster_centers_xy={1: (1.0, -1.0), 2: (2.0, -2.0)},
+        cluster_centers_xy={1: (0.2, 0.2), 2: (0.7, 0.7)},
         category_colors={1: "#FF0000", 2: "#00FF00"},
         spiral_radius_abs=0.5,
         pooled_df=pooled,
@@ -1650,7 +1620,7 @@ def test_plot_umap_thumbnails_json_provenance_centers(tmp_path):
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessD", n_usvs=10, n_freq=16, n_time=18)
     prov = tmp_path / "qlvm_provenance.json"
-    prov.write_text(json.dumps({"cluster_centers": [[1.0, -1.0], [2.0, -2.0]]}))
+    prov.write_text(json.dumps({"cluster_centers": [[0.2, 0.2], [0.7, 0.7]]}))
     fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
@@ -1678,7 +1648,7 @@ def test_plot_umap_thumbnails_reference_arrays_centers(tmp_path):
     fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
-        map_type="qlvm",
+        qlvm_map="qlvm",
         category_col_suffix="supercategory",
         n_samples_per_category=3,
         sampling_method="spiral",
@@ -1703,7 +1673,7 @@ def test_plot_umap_thumbnails_reference_arrays_label_mismatch_raises(tmp_path):
         plot_embedding_with_category_thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path="unused",
-            map_type="qlvm",
+            qlvm_map="qlvm",
             category_col_suffix="supercategory",
             cluster_centers_npz_path=str(arrays),
             pooled_df=_make_pooled_df(),
@@ -1711,13 +1681,14 @@ def test_plot_umap_thumbnails_reference_arrays_label_mismatch_raises(tmp_path):
         )
 
 
-def test_plot_umap_thumbnails_bad_map_type(tmp_path):
-    """An invalid map_type raises ValueError before any rendering."""
-    with pytest.raises(ValueError, match="map_type must be"):
+def test_plot_umap_thumbnails_bad_qlvm_map(tmp_path):
+    """A qlvm_map outside os_utils.QLVM_MAPS (e.g. the retired 'vae') raises
+    ValueError before any rendering."""
+    with pytest.raises(ValueError, match="qlvm_map must be"):
         plot_embedding_with_category_thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path="unused",
-            map_type="bogus",
+            qlvm_map="vae",
             pooled_df=_make_pooled_df(),
             message_output=lambda *_: None,
         )
@@ -1741,11 +1712,11 @@ def test_plot_umap_thumbnails_no_categories(tmp_path):
         {
             "session_id": ["s", "s"],
             "row_index": [0, 1],
-            "vae1": [0.1, 0.2],
-            "vae2": [0.3, 0.4],
-            "vae_supercategory": [None, None],
+            "qlvm1": [0.1, 0.2],
+            "qlvm2": [0.3, 0.4],
+            "qlvm_supercategory": [None, None],
         },
-        schema_overrides={"vae_supercategory": pls.Int64},
+        schema_overrides={"qlvm_supercategory": pls.Int64},
     )
     with pytest.raises(RuntimeError, match="No categories found"):
         plot_embedding_with_category_thumbnails(
@@ -1794,22 +1765,6 @@ def _write_arrays_npz(path: pathlib.Path, res: int = 8, n_clusters: int = 2) -> 
     return path
 
 
-def _write_vae_density_npz(
-    path: pathlib.Path, extent: tuple = (0.0, 5.0, -2.0, 3.0), res: int = 8, n_clusters: int = 2
-) -> pathlib.Path:
-    """Write a tiny VAE cohort-density .npz (heatmap / ws_labels_periodic / extent)
-    sufficient for the sequence figure's VAE background. Unlike the QLVM arrays it
-    carries an ``extent`` (the umap coordinate range), not the unit square."""
-    rng = np.random.default_rng(1)
-    np.savez(
-        path,
-        heatmap=rng.random((res, res)).astype(np.float32),
-        ws_labels_periodic=rng.integers(0, n_clusters + 1, size=(res, res)).astype(np.int16),
-        extent=np.array(extent, dtype=np.float64),
-    )
-    return path
-
-
 def _write_spectrograms_dir(
     base: pathlib.Path,
     session_key: str,
@@ -1819,13 +1774,12 @@ def _write_spectrograms_dir(
     n_time: int = 32,
     with_mask: bool = True,
     with_qlvm: bool = False,
-    with_vae: bool = False,
-    vae_extent: tuple = (0.0, 5.0, -2.0, 3.0),
+    qlvm_maps: tuple = ("qlvm",),
 ) -> str:
     """Lay out a ``shared_resources.spectrograms_dir`` the way the readers resolve
-    it: the consolidated store ``<base>/spectrograms_<key>.h5`` plus, optionally,
-    ``<base>/qlvm_v3/arrays_{coarse,fine}.npz`` and ``<base>/vae/vae_density_{coarse,
-    fine}.npz``. Returns ``str(base)``."""
+    it: the consolidated store ``<base>/spectrograms_<key>.h5`` plus, optionally
+    (``with_qlvm``), ``<base>/qlvm_v3/<map>/arrays_{coarse,fine}.npz`` for every map
+    in ``qlvm_maps``. Returns ``str(base)``."""
     base = pathlib.Path(base)
     base.mkdir(parents=True, exist_ok=True)
     _write_consolidated_h5(
@@ -1833,18 +1787,15 @@ def _write_spectrograms_dir(
         n_usvs=n_usvs, n_freq=n_freq, n_time=n_time, with_mask=with_mask,
     )
     if with_qlvm:
-        (base / "qlvm_v3").mkdir(exist_ok=True)
-        _write_arrays_npz(base / "qlvm_v3" / "arrays_coarse.npz")
-        _write_arrays_npz(base / "qlvm_v3" / "arrays_fine.npz")
-    if with_vae:
-        (base / "vae").mkdir(exist_ok=True)
-        _write_vae_density_npz(base / "vae" / "vae_density_coarse.npz", extent=vae_extent)
-        _write_vae_density_npz(base / "vae" / "vae_density_fine.npz", extent=vae_extent)
+        for qlvm_map in qlvm_maps:
+            (base / "qlvm_v3" / qlvm_map).mkdir(parents=True, exist_ok=True)
+            _write_arrays_npz(base / "qlvm_v3" / qlvm_map / "arrays_coarse.npz")
+            _write_arrays_npz(base / "qlvm_v3" / qlvm_map / "arrays_fine.npz")
     return str(base)
 
 
 def _write_sequence_session(
-    tmp_path: pathlib.Path, session_id: str = "20230101_120000", *, with_vae: bool = True
+    tmp_path: pathlib.Path, session_id: str = "20230101_120000", *, with_dur: bool = True
 ) -> pathlib.Path:
     """Lay out a synthetic session (audio memmap + usv_summary CSV with
     embedding columns + tracking h5) for the sequence figure. Four USVs in
@@ -1861,9 +1812,9 @@ def _write_sequence_session(
         "qlvm1": [0.2, 0.4, 0.6, 0.8],
         "qlvm2": [0.3, 0.5, 0.7, 0.2],
     }
-    if with_vae:
-        rows["vae1"] = [1.0, 2.0, 3.0, 4.0]
-        rows["vae2"] = [-1.0, 0.0, 1.0, 2.0]
+    if with_dur:
+        rows["qlvm_dur1"] = [0.1, 0.3, 0.5, 0.7]
+        rows["qlvm_dur2"] = [0.6, 0.4, 0.2, 0.9]
     _write_usv_summary_csv(audio_dir, rows, name=f"{session_id}_usv_summary.csv")
     _write_tracking_h5(
         root / "video",
@@ -1877,14 +1828,14 @@ def _seq_settings(
     spectrograms_dir: pathlib.Path,
     save_dir: pathlib.Path,
     *,
-    embedding: str = "qlvm",
+    qlvm_map: str = "qlvm",
     plot_raw_audio: bool = False,
     apply_mask: bool = True,
 ) -> dict:
     """Build a sequence-mode settings dict: a make_usv_spectrograms block (with a
-    `sequence` sub-dict) and the emitter color palettes. The embedding density npz
-    and the consolidated store are resolved from ``spectrograms_dir`` (build it with
-    ``_write_spectrograms_dir``)."""
+    `sequence` sub-dict), ``shared_resources.qlvm_map`` and the emitter color
+    palettes. The map's arrays npz and the consolidated store are resolved from
+    ``spectrograms_dir`` (build it with ``_write_spectrograms_dir``)."""
     settings = _base_settings(
         mode="sequence",
         save_dir=str(save_dir),
@@ -1897,8 +1848,8 @@ def _seq_settings(
         apply_mask=apply_mask,
         channel_of_interest=0,
     )
+    settings["shared_resources"]["qlvm_map"] = qlvm_map
     settings["make_usv_spectrograms"]["sequence"] = {
-        "embedding": embedding,
         "draw_boundaries": True,
         "boundary_clustering": "coarse",
         "annotate_right": True,
@@ -1912,52 +1863,45 @@ def _seq_settings(
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
-@pytest.mark.parametrize("embedding", ["qlvm", "vae"])
-def test_plot_sequence_writes_figure(tmp_path, embedding):
-    """A sequence figure is rendered and written for every embedding, sourcing
-    coords from the CSV and specs/audio from the store/memmap."""
+@pytest.mark.parametrize("qlvm_map", ["qlvm", "qlvm_dur"])
+def test_plot_sequence_writes_figure(tmp_path, qlvm_map):
+    """A sequence figure is rendered and written for the regular and a conditional
+    map, sourcing that map's coords from the CSV and specs/audio from the store/memmap."""
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id)
     spec_dir = _write_spectrograms_dir(
         tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
-        with_qlvm=True, with_vae=True,
+        with_qlvm=True, qlvm_maps=("qlvm", "qlvm_dur"),
     )
     save_dir = tmp_path / "out"
-    settings = _seq_settings(spec_dir, save_dir, embedding=embedding)
+    settings = _seq_settings(spec_dir, save_dir, qlvm_map=qlvm_map)
     fig = USVSpectrogramPlotter(
         root_directory=str(root), visualizations_parameter_dict=settings
     ).make_usv_spectrograms()
     assert isinstance(fig, plt.Figure)
-    assert list(save_dir.glob(f"usv_spectrogram_*sequence_{embedding}*"))
+    assert list(save_dir.glob(f"usv_spectrogram_*sequence_{qlvm_map}_*")) or list(
+        save_dir.glob(f"usv_spectrogram_*sequence_{qlvm_map}.*"))
 
 
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
-def test_plot_sequence_both_embeddings_draw_cohort_density(tmp_path):
-    """Both embeddings draw a precomputed cohort density heatmap (an image) with no
-    ticks: QLVM on the torus [0,1] square; VAE over its own npz extent."""
+def test_plot_sequence_maps_draw_their_cohort_density(tmp_path):
+    """Every QLVM map draws its own precomputed cohort density heatmap (an image) on
+    the torus [0,1] square with no ticks, read from qlvm_v3/<map>/."""
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id)
     spec_dir = _write_spectrograms_dir(
         tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
-        with_qlvm=True, with_vae=True, vae_extent=(0.0, 5.0, -2.0, 3.0),
+        with_qlvm=True, qlvm_maps=("qlvm", "qlvm_dur"),
     )
     save_dir = tmp_path / "out"
-
-    fig_q = USVSpectrogramPlotter(
-        root_directory=str(root),
-        visualizations_parameter_dict=_seq_settings(spec_dir, save_dir, embedding="qlvm"),
-    ).plot_sequence()
-    fig_v = USVSpectrogramPlotter(
-        root_directory=str(root),
-        visualizations_parameter_dict=_seq_settings(spec_dir, save_dir, embedding="vae"),
-    ).plot_sequence()
-    # Both draw a heatmap image; QLVM is the unit square, VAE is the npz extent.
-    assert len(fig_q.axes[0].images) >= 1
-    assert len(fig_v.axes[0].images) >= 1
-    assert fig_q.axes[0].get_xlim() == (0.0, 1.0)
-    assert fig_v.axes[0].get_xlim() == (0.0, 5.0)
-    # Neither panel shows ticks/ticklabels.
-    for ax in (fig_q.axes[0], fig_v.axes[0]):
+    for qlvm_map in ("qlvm", "qlvm_dur"):
+        fig = USVSpectrogramPlotter(
+            root_directory=str(root),
+            visualizations_parameter_dict=_seq_settings(spec_dir, save_dir, qlvm_map=qlvm_map),
+        ).plot_sequence()
+        ax = fig.axes[0]
+        assert len(ax.images) >= 1
+        assert ax.get_xlim() == (0.0, 1.0)
         assert len(ax.get_xticks()) == 0
         assert len(ax.get_yticks()) == 0
 
@@ -1971,7 +1915,7 @@ def test_plot_sequence_raw_audio_uses_loudest_channel(tmp_path):
     spec_dir = _write_spectrograms_dir(
         tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32, with_qlvm=True,
     )
-    settings = _seq_settings(spec_dir, tmp_path / "out", embedding="qlvm", plot_raw_audio=True)
+    settings = _seq_settings(spec_dir, tmp_path / "out", qlvm_map="qlvm", plot_raw_audio=True)
     settings["make_usv_spectrograms"]["channel_of_interest"] = 0  # differs from loudest (1)
     settings["make_usv_spectrograms"]["time_window"] = [0.0, 0.006]
     fig = USVSpectrogramPlotter(
@@ -1998,7 +1942,7 @@ def test_plot_sequence_draws_connecting_line(tmp_path):
     spec_dir = _write_spectrograms_dir(
         tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32, with_qlvm=True,
     )
-    settings = _seq_settings(spec_dir, tmp_path / "out", embedding="qlvm")
+    settings = _seq_settings(spec_dir, tmp_path / "out", qlvm_map="qlvm")
     settings["make_usv_spectrograms"]["time_window"] = [0.0, 0.006]
     fig = USVSpectrogramPlotter(
         root_directory=str(root), visualizations_parameter_dict=settings
@@ -2014,9 +1958,9 @@ def test_plot_sequence_draws_connecting_line(tmp_path):
 
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
 def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
-    """QLVM is a periodic unit torus: two USVs near opposite edges connect via the
-    short toroidal route, so that pair's segment is split into two edge-clipped
-    sub-segments. On VAE (a plain plane) the same pair is one straight segment."""
+    """Every QLVM map is a periodic unit torus: two USVs near opposite edges connect
+    via the short toroidal route, so that pair's segment is split into two
+    edge-clipped sub-segments; a pair that does not cross a seam is one segment."""
     from matplotlib.collections import LineCollection
 
     session_id = "20230101_120000"
@@ -2026,7 +1970,7 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
         "start": [0.001, 0.003], "stop": [0.002, 0.004],
         "emitter": ["male_x", "male_x"],
         "qlvm1": [0.95, 0.05], "qlvm2": [0.5, 0.5],  # opposite x-edges -> wraps
-        "vae1": [0.95, 0.05], "vae2": [0.5, 0.5],
+        "qlvm_dur1": [0.45, 0.55], "qlvm_dur2": [0.5, 0.5],  # no seam crossing
     }
     _write_usv_summary_csv(root / "audio", rows, name=f"{session_id}_usv_summary.csv")
     _write_tracking_h5(
@@ -2035,12 +1979,12 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
     )
     spec_dir = _write_spectrograms_dir(
         tmp_path / "spectrograms", session_id, n_usvs=2, n_freq=16, n_time=32,
-        with_qlvm=True, with_vae=True,
+        with_qlvm=True, qlvm_maps=("qlvm", "qlvm_dur"),
     )
 
-    def _n_subsegments(embedding: str) -> int:
+    def _n_subsegments(qlvm_map: str) -> int:
         settings = _seq_settings(
-            spec_dir, tmp_path / f"out_{embedding}", embedding=embedding
+            spec_dir, tmp_path / f"out_{qlvm_map}", qlvm_map=qlvm_map
         )
         settings["make_usv_spectrograms"]["time_window"] = [0.0, 0.006]
         fig = USVSpectrogramPlotter(
@@ -2050,22 +1994,22 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
         return len(lc.get_segments())
 
     assert _n_subsegments("qlvm") == 2  # short route wraps the seam -> two pieces
-    assert _n_subsegments("vae") == 1   # straight line on the plane
+    assert _n_subsegments("qlvm_dur") == 1   # no seam between them -> one piece
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
-def test_plot_sequence_vae_missing_coords_raises(tmp_path):
-    """Choosing VAE for a session whose CSV lacks vae1/vae2 columns raises a clear,
-    session-named ValueError."""
+def test_plot_sequence_map_missing_coords_raises(tmp_path):
+    """Choosing a map whose coordinates the session's CSV lacks (qlvm_dur1/qlvm_dur2)
+    raises a clear, session-named ValueError naming the map."""
     session_id = "20230101_120000"
-    root = _write_sequence_session(tmp_path, session_id, with_vae=False)
+    root = _write_sequence_session(tmp_path, session_id, with_dur=False)
     spec_dir = _write_spectrograms_dir(
         tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
-        with_qlvm=True, with_vae=True,
+        with_qlvm=True, qlvm_maps=("qlvm", "qlvm_dur"),
     )
-    settings = _seq_settings(spec_dir, tmp_path / "out", embedding="vae")
-    with pytest.raises(ValueError, match="vae"):
+    settings = _seq_settings(spec_dir, tmp_path / "out", qlvm_map="qlvm_dur")
+    with pytest.raises(ValueError, match="qlvm_dur"):
         USVSpectrogramPlotter(
             root_directory=str(root), visualizations_parameter_dict=settings
         ).plot_sequence()
@@ -2111,9 +2055,10 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
 
     viz = {
         "figures": {"save_directory": str(tmp_path / "figs"), "fig_format": "png", "dpi": 150, "seed": 7, "timestamp_in_name": True},
-        "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir)},
+        "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir),
+                             "qlvm_map": "qlvm_dur"},
         "embedding_thumbnails": {
-            "map_type": "vae", "category_col_suffix": "category",
+            "category_col_suffix": "category",
             "n_samples_per_category": 6, "tile_orientation": "vertical",
             "apply_mask": False, "mask_excluded_categories": [], "category_colors": None,
             "sampling_method": "random",
@@ -2141,7 +2086,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     # the throwaway combined list is unlinked after the render
     assert not pathlib.Path(captured["sessions_txt_path"]).exists()
     # block knobs forwarded verbatim
-    assert captured["map_type"] == "vae"
+    assert captured["qlvm_map"] == "qlvm_dur"
     assert captured["category_col_suffix"] == "category"
     assert captured["n_samples_per_category"] == 6
     assert captured["tile_orientation"] == "vertical"
@@ -2156,7 +2101,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert captured["unstretched_specs"] is True
     assert captured["annotate_cluster_ids"] is True
     assert captured["knn_boundary_resolution"] == 200
-    # VAE map -> no QLVM cluster-centre arrays
+    # no qlvm_v3/qlvm_dur/ arrays under spectrograms_dir -> centres fall back to the data
     assert captured["cluster_centers_npz_path"] is None
     # the pooled-embeddings cache is resolved by convention under spectrograms_dir
     assert captured["embeddings_cache_path"] == str(
@@ -2166,14 +2111,14 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert opened == [captured["output_path"]]
     # timestamp_in_name -> the filename ends with a _YYYYMMDD_HHMMSS stamp
     out_name = pathlib.Path(captured["output_path"]).name
-    assert re.fullmatch(r"embedding_thumbnails_vae_category_\d{8}_\d{6}\.png", out_name)
+    assert re.fullmatch(r"embedding_thumbnails_qlvm_dur_category_\d{8}_\d{6}\.png", out_name)
 
 
 
 @pytest.mark.parametrize("suffix, level", [("category", "fine"), ("supercategory", "coarse")])
 def test_render_embedding_thumbnails_qlvm_centres_from_v3_arrays(tmp_path, monkeypatch, suffix, level):
-    """For the QLVM map the cluster centres come from the v3 reference arrays at
-    <spectrograms_dir>/qlvm_v3/arrays_<level>.npz, the level matching the colored
+    """The cluster centres come from the shared map's v3 reference arrays at
+    <spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_<level>.npz, the level matching the colored
     label (category -> fine, supercategory -> coarse); a legacy qlvm_clusters_*.h5
     beside the store is ignored."""
     input_dir = tmp_path / "input_files"
@@ -2194,9 +2139,10 @@ def test_render_embedding_thumbnails_qlvm_centres_from_v3_arrays(tmp_path, monke
     monkeypatch.setattr("usv_playpen.visualizations.make_usv_spectrograms.is_gui_context", lambda: False)
     viz = {
         "figures": {"save_directory": str(tmp_path / "figs"), "fig_format": "png", "dpi": 100, "seed": 1, "timestamp_in_name": False},
-        "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir)},
+        "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir),
+                             "qlvm_map": "qlvm"},
         "embedding_thumbnails": {
-            "map_type": "qlvm", "category_col_suffix": suffix,
+            "category_col_suffix": suffix,
             "n_samples_per_category": 2, "tile_orientation": "vertical",
             "apply_mask": False, "mask_excluded_categories": [], "category_colors": None,
             "sampling_method": "spiral",
@@ -2214,6 +2160,6 @@ def test_render_embedding_thumbnails_qlvm_centres_from_v3_arrays(tmp_path, monke
         },
     }
     render_embedding_thumbnails_for_cohort(viz, message_output=lambda *_a, **_kw: None)
-    assert captured["cluster_centers_npz_path"] == str(pathlib.Path(spec_dir) / "qlvm_v3" / f"arrays_{level}.npz")
+    assert captured["cluster_centers_npz_path"] == str(pathlib.Path(spec_dir) / "qlvm_v3" / "qlvm" / f"arrays_{level}.npz")
     assert captured["category_col_suffix"] == suffix
     assert "cluster_centers_h5_path" not in captured

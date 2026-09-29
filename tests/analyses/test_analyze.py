@@ -1696,8 +1696,6 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
         "emitter": ["m1"] * n_usvs,
         # Every synthetic call is real; the tuning-curve loader drops noise-flagged rows.
         "noise": [False] * n_usvs,
-        "vae_supercategory": rng.integers(1, 5, size=n_usvs).tolist(),
-        "vae_category":      rng.integers(1, 8, size=n_usvs).tolist(),
         "qlvm_supercategory": rng.integers(1, 4, size=n_usvs).tolist(),
         "qlvm_category":     rng.integers(1, 6, size=n_usvs).tolist(),
         "mean_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),

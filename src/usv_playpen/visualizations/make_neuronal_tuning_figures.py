@@ -84,13 +84,12 @@ PROPERTY_ROW_ORDER = (
     ("spectral_entropy", "mask_number"),
 )
 
-# Page-2 section (c) layout: each row is one segmentation method (VAE
-# in the first row, QLVM in the second), and each row holds the
+# Page-2 section (c) layout: each row is one segmentation method (the
+# QLVM regular model is the only one), and each row holds the
 # `_category` AND `_supercategory` variants side-by-side, contributing
 # 3 cells (rate / occupancy / strip) each — so 6 cells per row in
 # total, matching the behavioral feature grid's density.
 SECTION_C_ROWS = (
-    ("vae_category", "vae_supercategory"),
     ("qlvm_category", "qlvm_supercategory"),
 )
 
@@ -152,24 +151,17 @@ USV_PROPERTY_META: dict[str, dict] = {
 }
 USV_PROPERTY_ORDER: tuple[str, ...] = tuple(USV_PROPERTY_META.keys())
 
-# Categorical USV-tuning segmentations (the four `cat_feat` axes
+# Categorical USV-tuning segmentations (the two `cat_feat` axes
 # stored in the triage pickle's `usv_category_self_<segmentation>`
-# modality keys). `USV_CATEGORY_N_CLASSES` is the upstream class count of
-# each VAE segmentation, used to bound the per-region bar charts even when
-# no units happen to land in some categories; the QLVM class counts are
-# not fixed here but read from the label grids of the production regular
-# model (`QLVM_PACKAGE_SEGMENTATIONS`; 15 fine and 9 coarse clusters in the
-# v3 package), see `_category_class_count`.
+# modality keys). Their class counts are not fixed here but read from the
+# label grids of the production regular model (`QLVM_PACKAGE_SEGMENTATIONS`;
+# 15 fine and 9 coarse clusters in the v3 package), which bound the
+# per-region bar charts even when no units happen to land in some
+# categories, see `_category_class_count`.
 USV_CATEGORY_SEGMENTATIONS: tuple[str, ...] = (
-    "vae_supercategory",
-    "vae_category",
     "qlvm_supercategory",
     "qlvm_category",
 )
-USV_CATEGORY_N_CLASSES: dict[str, int] = {
-    "vae_supercategory": 5,
-    "vae_category":      10,
-}
 
 # QLVM categorical features -> the cluster level of the production regular
 # model (os_utils.QLVM_PRODUCTION_MODEL_CELLS['qlvm'] under
@@ -227,8 +219,7 @@ def load_qlvm_package_segmentation(cell_directory: pathlib.Path) -> dict[str, di
     -------
     segmentation (dict[str, dict])
         ``cat_feat -> {label_grid, xx, yy, bounds, unique_labels}`` for
-        ``qlvm_category`` and ``qlvm_supercategory``, the layout of the bundled
-        segmentation file's blocks.
+        ``qlvm_category`` and ``qlvm_supercategory``.
 
     Raises
     ------
@@ -348,9 +339,8 @@ def _category_class_count(
     -----------
     Number of category classes to lay out for a segmentation, raised to the
     largest `best_cat` any unit holds (a fixed bound would silently drop every
-    unit tuned to a higher category). The base count of a VAE segmentation is
-    its upstream count in `USV_CATEGORY_N_CLASSES`; a QLVM segmentation takes
-    the largest label of its label grid in `segmentation_grids` (the production
+    unit tuned to a higher category). The base count is the largest label of
+    the segmentation's label grid in `segmentation_grids` (the production
     regular model's grids, :func:`load_qlvm_package_segmentation`: 15 fine and
     9 coarse clusters in the v3 package, labelled 1..k), so its count follows
     the model the labels come from instead of a hard-coded one. When neither is
@@ -374,9 +364,7 @@ def _category_class_count(
     """
 
     observed = [int(unit["best_cat"]) for units in per_group.values() for unit in units]
-    if segmentation in USV_CATEGORY_N_CLASSES:
-        base = USV_CATEGORY_N_CLASSES[segmentation]
-    elif segmentation in segmentation_grids and segmentation_grids[segmentation]["unique_labels"]:
+    if segmentation in segmentation_grids and segmentation_grids[segmentation]["unique_labels"]:
         base = int(max(segmentation_grids[segmentation]["unique_labels"]))
     else:
         base = 0
@@ -523,9 +511,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Initialize the per-cluster figure maker. Loads `FeatureZoo`
         feature definitions (vocal boundaries / vocal labels / display
         units), validates and stashes the keyword arguments as attributes,
-        records GUI-vs-CLI context, pins the path of the bundled (VAE)
-        latent-embedding segmentation file used by section (c), and primes
-        a lazy segmentation cache.
+        records GUI-vs-CLI context, and primes a lazy segmentation cache
+        for the section-(c) QLVM label grids.
 
         Parameters
         ----------
@@ -582,11 +569,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 "somatic_filter must be one of 'somatic', 'non_somatic', "
                 f"'both'; got {self.somatic_filter!r}."
             )
-        self._segmentation_path = (
-            pathlib.Path(__file__).parent.parent
-            / "_config"
-            / "usv_latent_embedding_segmentation.npz"
-        )
         self._segmentation_cache: dict | None = None
         # Memoize the deterministic triage-pickle unpickle and the
         # catalog-CSV `(mouse_id, rec_date, unit_id)` lookup, each keyed
@@ -604,15 +586,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Lazy-load the segmentations used to render the section-(c)
         categorical watersheds and to size the per-category population
-        figures. The VAE blocks come from the bundled latent-embedding
-        segmentation file (`_config/usv_latent_embedding_segmentation.npz`;
-        none when the file is absent). The QLVM blocks (`qlvm_category`,
-        `qlvm_supercategory`) come from the fine and coarse `label_grid.npy`
-        of the production regular model's package cell
-        (:func:`qlvm_regular_cell_directory`,
+        figures. The blocks (`qlvm_category`, `qlvm_supercategory`) come
+        from the fine and coarse `label_grid.npy` of the production regular
+        model's package cell (:func:`qlvm_regular_cell_directory`,
         :func:`load_qlvm_package_segmentation`) -- the grids
-        `infer-qlvm-latents` labels calls with -- never from the bundled
-        file, whose QLVM grids belong to an older model. When the package is
+        `infer-qlvm-latents` labels calls with. When the package is
         unreachable, a message names the cell and the error, and the QLVM
         panels draw the "segmentation unavailable" placeholder. Cached on
         first call.
@@ -625,28 +603,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -------
         seg (dict)
             Mapping `cat_feat -> {label_grid, xx, yy, bounds,
-            unique_labels}` for each categorical feature present in
-            the segmentation file.
+            unique_labels}` for each QLVM categorical feature (empty
+            when the package is unreachable).
         """
 
         if self._segmentation_cache is not None:
             return self._segmentation_cache
         out: dict[str, dict] = {}
-        if self._segmentation_path.exists():
-            # np.load on a .npz returns a lazy NpzFile that keeps the underlying
-            # zip handle open; use a context manager so it is closed once every
-            # array has been copied out into the cache dict.
-            with np.load(self._segmentation_path, allow_pickle=True) as data:
-                for cat_feat in CATEGORICAL_FEATURES:
-                    if cat_feat in QLVM_PACKAGE_SEGMENTATIONS or f"{cat_feat}__label_grid" not in data.files:
-                        continue
-                    out[cat_feat] = {
-                        "label_grid": data[f"{cat_feat}__label_grid"],
-                        "xx": data[f"{cat_feat}__xx"],
-                        "yy": data[f"{cat_feat}__yy"],
-                        "bounds": data[f"{cat_feat}__bounds"],
-                        "unique_labels": data[f"{cat_feat}__unique_labels"].tolist(),
-                    }
         cell_directory = qlvm_regular_cell_directory()
         try:
             out.update(load_qlvm_package_segmentation(cell_directory))
@@ -655,8 +618,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             message_output(
                 f"QLVM segmentation unavailable: the label grids of the production regular model could not be "
                 f"read from {cell_directory} ({error}). The qlvm_category / qlvm_supercategory watersheds are "
-                f"drawn as placeholders and their class counts follow the units' labels only; the bundled "
-                f"segmentation's QLVM grids belong to an older model and are not used."
+                f"drawn as placeholders and their class counts follow the units' labels only."
             )
         self._segmentation_cache = out
         return out
@@ -4113,7 +4075,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Absolute path to the `unit_triage_*.pkl` artifact.
         segmentation (str)
             One of `USV_CATEGORY_SEGMENTATIONS` (e.g.
-            `'vae_supercategory'`).
+            `'qlvm_supercategory'`).
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to `unit_catalog.csv`. Defaults to the
             `catalog_path` field embedded in the triage pickle.
@@ -4610,7 +4572,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Returns
         -------
         out_paths (list[pathlib.Path])
-            8 paths: 4 segmentations × 2 figures each.
+            4 paths: 2 segmentations × 2 figures each.
         """
 
         out_paths: list[pathlib.Path] = []
@@ -6700,7 +6662,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Render Page 2 of the vocal output for one emitter side: section
         (c) categorical watersheds (`usv_category_tuning` rate / occupancy
-        / strip — 2 rows × 6 cols, paired by VAE / QLVM method) on top
+        / strip — 1 row × 6 cols, QLVM category | supercategory) on top
         of section (d) `usv_category_peth` per-category PETH grid (flat
         sequential 6 cols / row, all-NaN entries skipped). Outer
         `height_ratios` adapts to the actual `usv_category_peth` row
@@ -6726,7 +6688,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         fig = plt.figure(figsize=VOCAL_PAGE2_FIGSIZE_INCHES, tight_layout=False)
 
-        # pre-count section (d) non-empty cells across all four
+        # pre-count section (d) non-empty cells across all the
         # categorical features so we can size the gridspec to a flat
         # 6-col flow (same density / spacing as the behavioral grid).
         d_cols = 6
@@ -6752,7 +6714,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             left=0.04, right=0.98, top=0.94, bottom=0.05,
         )
 
-        # section (c): 2 rows × 6 cols. Each row pairs the `_category`
+        # section (c): 1 row × 6 cols. Each row pairs the `_category`
         # (3 cols) and `_supercategory` (3 cols) variants of one
         # segmentation method. wspace/hspace match the behavioral grid.
         gs_c = gridspec.GridSpecFromSubplotSpec(
@@ -6768,7 +6730,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
 
         # section (d): flat sequential PETH flow at 6 cols / row,
-        # ordered VAE cat to VAE supercat to QLVM cat to QLVM supercat;
+        # ordered QLVM cat to QLVM supercat;
         # all-NaN entries are skipped so the row stays packed.
         gs_d = gridspec.GridSpecFromSubplotSpec(
             d_rows, d_cols, subplot_spec=outer[1, 0],
@@ -6797,7 +6759,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Draw section (c): 2 rows × 6 cols. Each row pairs the
+        Draw section (c): 1 row × 6 cols. Each row pairs the
         `_category` (3 cols: rate watershed | occupancy watershed |
         strip) and `_supercategory` (3 cols, same structure) variants
         of one segmentation method (`SECTION_C_ROWS`). The rate
@@ -6811,7 +6773,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         fig (matplotlib.figure.Figure)
             Parent figure.
         gs (matplotlib.gridspec.GridSpecFromSubplotSpec)
-            2×6 gridspec slot for section (c).
+            `len(SECTION_C_ROWS)`×6 gridspec slot for section (c).
         emitter (str)
             Emitter ID keying into `usv_category_tuning`.
         cluster_data (dict)
@@ -6870,8 +6832,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 ax_occ = fig.add_subplot(gs[row_idx, col_offset + 1])
                 ax_strip = fig.add_subplot(gs[row_idx, col_offset + 2])
 
-                # build a human-readable method label, e.g. vae_category
-                # to "VAE category", qlvm_supercategory to "QLVM supercategory".
+                # build a human-readable method label, e.g. qlvm_category
+                # to "QLVM category", qlvm_supercategory to "QLVM supercategory".
                 method_token, granularity = cat_feat.split("_", 1)
                 method_label = method_token.upper()
                 tuning_title = f"{method_label} {granularity} tuning"
@@ -6928,7 +6890,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Render a watershed-style imshow of per-category values over the
-        feature's segmentation grid (bundled VAE or QLVM package). Pixels with no cluster-side
+        feature's segmentation grid (QLVM package label grid). Pixels with no cluster-side
         category get a hatched fill; per-category 1-NN boundaries are
         contour-drawn in `COLOR_BLACK`. When `annotate_categories=True`,
         each region's category ID is overlaid at its centroid (or a
@@ -7048,10 +7010,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
 
         # optionally annotate each category region with its category ID
-        # at the centroid of the category mask. For non-toroidal
-        # embeddings (VAE) the arithmetic mean of (xx, yy) over the mask
-        # lands inside the blob and we use it. For toroidal embeddings
-        # (QLVM) a category can wrap across the embedding boundary, in
+        # at the centroid of the category mask. When the mask does not
+        # wrap, the arithmetic mean of (xx, yy) over the mask lands
+        # inside the blob and we use it. On the QLVM torus a category
+        # can wrap across the embedding boundary, in
         # which case the arithmetic centroid falls in the empty gap
         # between halves; we detect that case (closest pixel to the
         # arithmetic centroid is NOT inside the mask) and fall back to
@@ -7275,8 +7237,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Draw section (d) of vocal Page 2: a flat sequential
         `usv_category_peth` PETH grid at `n_cols` cols/row. Items flow
-        VAE category to VAE supercategory to QLVM category to
-        QLVM supercategory; each non-NaN per-category PETH gets one
+        QLVM category to QLVM supercategory; each non-NaN per-category PETH gets one
         cell. Each cell has its x-axis tightened to its own finite
         data extent (left), with the right edge anchored at t = 0.
         Two ticks per axis; lines doubled in width for visibility;
@@ -7304,8 +7265,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         line_color = self._sex_color(sex)
 
         # build a flat sequential list of (title, rate, p0_5, p99_5,
-        # bin_centers) tuples in the order VAE cat to VAE supercat to
-        # QLVM cat to QLVM supercat, dropping all-NaN entries so the
+        # bin_centers) tuples in the order QLVM cat to QLVM supercat, dropping all-NaN entries so the
         # display row stays packed.
         items: list[dict] = []
         for cat_feat in CATEGORICAL_FEATURES:

@@ -33,17 +33,20 @@ def test_torus_forward_shape_and_values():
 
 
 def test_pool_latents_from_h5(tmp_path):
-    """Pools qlvm_dim across sessions in order, drops NaN rows, aligns the index."""
+    """Pools one map's qlvm/<session>/<map> coords across sessions in order, drops NaN
+    rows, aligns the index, and skips sessions without that map."""
     h5_path = tmp_path / "store.h5"
     with h5py.File(h5_path, "w") as h5:
-        h5.create_dataset("spectrogram/20230101_000000/qlvm_dim",
-                          data=np.array([[0.1, 0.2], [0.3, 0.4]]))
-        h5.create_dataset("spectrogram/20230102_000000/qlvm_dim",
-                          data=np.array([[0.5, 0.6], [np.nan, np.nan]]))
+        h5.create_dataset("qlvm/20230101_000000/qlvm", data=np.array([[0.1, 0.2], [0.3, 0.4]]))
+        h5.create_dataset("qlvm/20230101_000000/qlvm_dur", data=np.array([[0.9, 0.8], [np.nan, np.nan]]))
+        h5.create_dataset("qlvm/20230102_000000/qlvm", data=np.array([[0.5, 0.6], [np.nan, np.nan]]))
     with h5py.File(h5_path, "r") as h5:
-        coords, index = pool_latents_from_h5(h5)
+        coords, index = pool_latents_from_h5(h5, "qlvm")
+        dur_coords, dur_index = pool_latents_from_h5(h5, "qlvm_dur")
     assert coords.shape == (3, 2)
     assert index == [("20230101_000000", 0), ("20230101_000000", 1), ("20230102_000000", 0)]
+    np.testing.assert_array_equal(dur_coords, [[0.9, 0.8]])
+    assert dur_index == [("20230101_000000", 0)]
 
 
 def test_build_phases_structure():
@@ -62,13 +65,14 @@ def test_build_phases_structure():
     assert n_cards == 3
 
 
-def _tiny_cfg(spectrograms_dir, peaks_only=False):
+def _tiny_cfg(spectrograms_dir, peaks_only=False, qlvm_map="qlvm"):
     """A small render input dict (the qlvm block + the shared_resources block)
     that exercises all phases quickly at low dpi. The QLVM arrays + the
     consolidated store are resolved from ``spectrograms_dir``."""
     return {
         "shared_resources": {
             "spectrograms_dir": str(spectrograms_dir),
+            "qlvm_map": qlvm_map,
         },
         "figures": {
             "sequential_cmap": "inferno",
@@ -88,16 +92,16 @@ def _tiny_cfg(spectrograms_dir, peaks_only=False):
 
 
 def _write_inputs(tmp_path, n=12, res=8, n_f=16, n_t=16):
-    """Build a shared spectrograms dir: <dir>/qlvm_v3/arrays_{coarse,fine}.npz
+    """Build a shared spectrograms dir: <dir>/qlvm_v3/qlvm/arrays_{coarse,fine}.npz
     (heatmap/ws/centers) + <dir>/spectrograms_<key>.h5 carrying per-session
-    spectrograms AND qlvm_dim coords. Returns str(<dir>)."""
+    spectrograms AND qlvm/<key>/qlvm coords. Returns str(<dir>)."""
     rng = np.random.default_rng(0)
     session_key = "20250907_190610"
     spec_dir = tmp_path / "spectrograms"
-    (spec_dir / "qlvm_v3").mkdir(parents=True, exist_ok=True)
+    (spec_dir / "qlvm_v3" / "qlvm").mkdir(parents=True, exist_ok=True)
     for tag in ("coarse", "fine"):
         np.savez(
-            spec_dir / "qlvm_v3" / f"arrays_{tag}.npz",
+            spec_dir / "qlvm_v3" / "qlvm" / f"arrays_{tag}.npz",
             heatmap=rng.random((res, res)).astype(np.float32),
             ws_labels_periodic=rng.integers(0, 3, size=(res, res)).astype(np.int16),
             centers=np.array([[0.25, 0.25], [0.7, 0.7]], dtype=np.float32),
@@ -108,7 +112,7 @@ def _write_inputs(tmp_path, n=12, res=8, n_f=16, n_t=16):
                           data=rng.random((n, n_f, n_t)).astype(np.float32))
         h5.create_dataset(f"spectrogram/{session_key}/durations",
                           data=rng.integers(4, n_t, size=n).astype(np.int64))
-        h5.create_dataset(f"spectrogram/{session_key}/qlvm_dim",
+        h5.create_dataset(f"qlvm/{session_key}/qlvm",
                           data=rng.random((n, 2)).astype(np.float64))
         # One SAM2 mask per spectrogram, so the apply_mask path is exercised.
         h5.create_dataset(f"mask/{session_key}/segmentations",
@@ -131,23 +135,25 @@ def test_make_video_writes_gif(tmp_path):
     assert out.stat().st_size > 0
 
 
-def test_make_video_errors_without_qlvm_dim(tmp_path):
-    """If the H5 has no qlvm_dim, render fails with a clear, actionable error."""
+def test_make_video_errors_without_map_coordinates(tmp_path):
+    """If the H5 has no coordinates of the chosen map, render fails with a clear,
+    actionable error naming the map."""
     rng = np.random.default_rng(1)
     spec_dir = tmp_path / "spectrograms"
-    (spec_dir / "qlvm_v3").mkdir(parents=True, exist_ok=True)
+    (spec_dir / "qlvm_v3" / "qlvm_bw").mkdir(parents=True, exist_ok=True)
     for tag in ("coarse", "fine"):
-        np.savez(spec_dir / "qlvm_v3" / f"arrays_{tag}.npz",
+        np.savez(spec_dir / "qlvm_v3" / "qlvm_bw" / f"arrays_{tag}.npz",
                  heatmap=rng.random((8, 8)).astype(np.float32),
                  ws_labels_periodic=rng.integers(0, 3, size=(8, 8)).astype(np.int16),
                  centers=np.array([[0.25, 0.25], [0.7, 0.7]], dtype=np.float32))
     with h5py.File(spec_dir / "spectrograms_20250907_190610.h5", "w") as h5:
         h5.create_dataset("spectrogram/20250907_190610/spectrograms",
                           data=rng.random((5, 16, 16)).astype(np.float32))
-    with pytest.raises(ValueError, match="qlvm_dim"):
+        h5.create_dataset("qlvm/20250907_190610/qlvm", data=rng.random((5, 2)))
+    with pytest.raises(ValueError, match="qlvm_bw"):
         QLVMTorusTraversalVideo(
             output_path=str(tmp_path / "x.gif"),
-            input_parameter_dict=_tiny_cfg(spec_dir),
+            input_parameter_dict=_tiny_cfg(spec_dir, qlvm_map="qlvm_bw"),
             message_output=lambda *_a, **_kw: None,
         ).make_video()
 

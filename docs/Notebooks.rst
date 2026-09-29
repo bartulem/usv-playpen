@@ -418,7 +418,7 @@ derived from ``io.session_list_file``.
 * **VocalOnsetModelingPipeline** — "does a frame start a vocal event (bout / USV)?"; ``Y(t)`` impulses at bout / USV onsets.
 * **BoutParameterPipeline** — per-bout duration / complexity / intensity; ``Y(t)`` impulses at bout starts.
 * **MultinomialModelingPipeline** — per-USV vocal category; ``Y(t)`` impulses at per-USV starts.
-* **ContinuousModelingPipeline** — per-USV UMAP manifold position; ``Y(t)`` impulses at per-USV starts.
+* **ContinuousModelingPipeline** — per-USV QLVM torus position; ``Y(t)`` impulses at per-USV starts.
 
 Passing ``modeling_settings_dict=None`` loads the project default settings; no
 Parameters-cell variables are consumed here.
@@ -483,7 +483,7 @@ top of one consolidated artifact, and emit a self-describing filename.
 .. code-block:: python
 
     cons_univariate_input_dir = configure_path(
-        ".../cluster/univariate_results_multi_file/male/male_multinomial_vae_supercategory"
+        ".../cluster/univariate_results_multi_file/male/male_multinomial_qlvm_supercategory"
     )
     cons_univariate_delete_individuals_after = False
     cons_selection_input_dir = configure_path(
@@ -536,7 +536,7 @@ consolidated univariate pickle and set the metric accordingly.
     figures_dir = configure_path("/mnt/falkner/Bartul/modeling/figures")
 
     uni_ranking_results = configure_path(
-        ".../univariate_results/univariate_multinomial_vae_supercategory_..._male_...Z.pkl"
+        ".../univariate_results/univariate_multinomial_qlvm_supercategory_..._male_...Z.pkl"
     )
     uni_ranking_p_val = 0.01
     uni_filters_results = configure_path(
@@ -697,7 +697,7 @@ multinomial selection artifacts.
 2-D acoustic-manifold regression) — same ``selection_*.pkl`` schema as the
 multinomial plotters but with continuous regression metrics (torus: ``vm_logscore``,
 ``euclidean_mae``, ``density_geodesic_mae``, ``pullback_geodesic_mae``;
-euclidean/VAE: ``r2_spatial``, ``mahalanobis_mae``, ``pearson_x/y``,
+euclidean: ``r2_spatial``, ``mahalanobis_mae``, ``pearson_x/y``,
 ``spearman_x/y``) and a 2-D output dim.
 
 .. code-block:: python
@@ -742,7 +742,7 @@ labels (the pre-flight check inside ``run_cnn_training`` fails fast if missing).
 .. code-block:: python
 
     cnn_input_pkl = configure_path(
-        ".../modeling_manifold_vae_supercategory_intact_partners_male_...pkl"
+        ".../modeling_manifold_qlvm_supercategory_intact_partners_male_...pkl"
     )
     cnn_results_pkl = configure_path(
         ".../cnn_manifold_integrated_predictions_male_QLVM_...pkl"
@@ -2264,17 +2264,17 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 * **timeline_window** — ``(start_s, end_s)`` clip in seconds; ``None`` shows the whole session.
 * **timeline_output_path** / **timeline_fig_format** — save location and format for the figure.
 
-**Statistics parameters.** The statistics half of the notebook is driven by one shared **Statistics parameters** cell — every knob a user might tweak lives here (data source, segmentation model, noise / category columns, feature suffixes, output toggle, and all per-figure styling / thresholds). Nothing downstream redefines these.
+**Statistics parameters.** The statistics half of the notebook is driven by one shared **Statistics parameters** cell — every knob a user might tweak lives here (data source, QLVM label level, noise filter, feature suffixes, output toggle, and all per-figure styling / thresholds). Nothing downstream redefines these.
 
 .. code-block:: python
 
     # Data source
     sessions_list_path = "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
 
-    # Segmentation model: 'vae' or 'qlvm' (drives the per-USV category basis and the
-    # embedding coordinates, both derived in Setup). Noise is a VAE-only label, so it is
-    # ALWAYS filtered on vae_supercategory == 0 regardless of this choice.
-    embedding_model = "vae"
+    # QLVM label level: 'qlvm_supercategory' (coarse) or 'qlvm_category' (fine). Drives the
+    # per-USV category basis used throughout the notebook; the section-6 embedding always
+    # plots the regular-model torus coordinates (qlvm1, qlvm2). Noise is its own column.
+    usv_category_col = "qlvm_supercategory"
     exclude_noise_usvs = True
 
     # Behavioral-feature column suffixes
@@ -2325,13 +2325,13 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
     jointplot_hist_color = "#A0A0A0"
 
 * **sessions_list_path** — the ``.txt`` file listing one session root per line; its name also derives ``session_type``, the prefix on every saved figure.
-* **embedding_model** — ``"vae"`` or ``"qlvm"``; picks the per-USV category basis (``usv_category_col``) and the embedding coordinates (``usv_continuous_cols``), both resolved in the Setup cell.
+* **usv_category_col** — the per-USV category basis: ``"qlvm_supercategory"`` (the regular model's 9 coarse clusters) or ``"qlvm_category"`` (its 15 fine clusters). The section-6 embedding panel plots ``qlvm1`` / ``qlvm2`` (``usv_continuous_cols``, set in the Setup cell).
 * **exclude_noise_usvs** — whether the USV segments ``detect-usv-noise`` flagged as holding no vocalization are dropped during extraction. A session whose summary lacks the ``noise`` column raises rather than contributing unfiltered detections.
 * **distance_suffix** / **mf_angle_suffix** / **fm_angle_suffix** — which behavioral-feature columns become ``distance`` / ``mf_angle`` / ``fm_angle``.
 * **save_fig_bool** — when ``True``, every cell writes its figures to disk via ``save_figure``; when ``False`` figures are only shown inline.
 * The remaining knobs are per-figure styling / binning / thresholds consumed by the individual statistics sections below.
 
-**Statistics setup.** The **Statistics setup** cell builds objects that follow from the parameters plus ``visualizations_settings.json`` — the ``session_type`` label, the fatigue bin count ``n_bins``, the category basis / embedding coordinates for the chosen ``embedding_model``, the per-sex colors, and one sequential per-sex colormap. You should not need to edit it.
+**Statistics setup.** The **Statistics setup** cell builds objects that follow from the parameters plus ``visualizations_settings.json`` — the ``session_type`` label, the fatigue bin count ``n_bins``, the embedding coordinates ``usv_continuous_cols``, the per-sex colors, and one sequential per-sex colormap. You should not need to edit it.
 
 .. code-block:: python
 
@@ -2340,8 +2340,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
     )
     n_bins = max_time_seconds // bin_width_seconds
 
-    usv_category_col = f"{embedding_model}_supercategory"
-    usv_continuous_cols = (f"{embedding_model}_umap1", f"{embedding_model}_umap2")
+    usv_continuous_cols = ("qlvm1", "qlvm2")
 
     with open(
         Path.cwd().parent / "_parameter_settings" / "visualizations_settings.json", "r"
@@ -2603,11 +2602,15 @@ reveals that USV's identity and acoustics.
 
 **Embedding maps.**
 
-* **VAE UMAP** — a 2-D UMAP of the variational-autoencoder acoustic latents.
-* **QLVM torus** — the toroidal (doughnut-shaped) surface of the QLVM
-  (quasi-Monte Carlo latent variable model): the production v3 regular cell's
-  ``qlvm1`` / ``qlvm2`` coordinates, with its 15 fine (``qlvm_category``) and 9 coarse
-  (``qlvm_supercategory``) cluster labels from the summaries.
+Every map is the toroidal (doughnut-shaped) surface of one QLVM (quasi-Monte Carlo latent
+variable model) of the v3 package (``os_utils.QLVM_MAPS``), with its coordinates ``P1`` /
+``P2`` and fine (``P_category``) and coarse (``P_supercategory``) cluster labels from the
+summaries:
+
+* **QLVM** (``qlvm``) — the regular (phase 6) model: 15 fine / 9 coarse clusters.
+* **QLVM | duration**, **| mean freq**, **| bandwidth**, **| loudness** (``qlvm_dur``,
+  ``qlvm_mf``, ``qlvm_bw``, ``qlvm_loud``) — the phase 11 conditional models, whose maps
+  are what is left once that acoustic variable is removed.
 
 **Controls** (stacked above the plot):
 
@@ -2616,16 +2619,17 @@ reveals that USV's identity and acoustics.
   ``~/.usv_playpen_cache`` — only when **Load** is clicked.
 * **Sessions** — narrows the loaded pool to individual sessions. Empty (the default) shows
   every session; pick one or more to isolate them.
-* **Map** — VAE UMAP or QLVM torus.
+* **Map** — one of the five QLVM maps; it starts on ``shared_resources.qlvm_map`` (the map
+  the other QLVM figures draw).
 * **Color by** — a categorical label (fine / coarse category, session type, session id, or
   emitter sex) or a continuous metric (point density, or a per-USV acoustic feature), the
   latter rendered through the project colormap.
-* **Boundaries** — optional cluster outlines for the chosen categorical label. On the QLVM
-  torus they are the v3 regular cell's own label grid (``ws_labels_periodic`` of
-  ``<spectrograms_dir>/qlvm_v3/arrays_fine.npz`` for category, ``arrays_coarse.npz`` for
-  supercategory, resolved by ``os_utils.resolve_embedding_arrays_path``), the exact partition
-  the labels were read from; on the VAE UMAP, or when those arrays are missing, a k-NN
-  estimate from the plotted labels.
+* **Boundaries** — optional cluster outlines for the chosen categorical label: the map's
+  v3 cell label grid (``ws_labels_periodic`` of
+  ``<spectrograms_dir>/qlvm_v3/<map>/arrays_fine.npz`` for category, ``arrays_coarse.npz``
+  for supercategory, resolved by ``os_utils.resolve_embedding_arrays_path``), the exact
+  partition the labels were read from; when those arrays are missing, a k-NN estimate from
+  the plotted labels.
 * **Examples (spectrograms) plotted** — 5–50, sampled along an Archimedean spiral (centre →
   edge) and laid out as a square grid, each call's width preserving its true duration.
 * **Max points** — caps how many points the scatter draws, keeping the chart under marimo's

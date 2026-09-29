@@ -93,6 +93,13 @@ male_color = _VIZ_SETTINGS["male_colors"][0]
 male_color_secondary = _VIZ_SETTINGS["male_colors"][1]
 female_color = _VIZ_SETTINGS["female_colors"][0]
 DYADIC_COLOR = _VIZ_SETTINGS["social_colors"][0]
+# Name fragments that mark a behavioral feature as dyadic (a relation between the
+# two animals, e.g. 'nose-nose' distance or 'allo_yaw-head' angle). One list, shared
+# by every plot that colours predictors by feature group.
+DYADIC_KEYWORDS = ("nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
+                   "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI",
+                   "allo_pitch-head", "head-allo_pitch", "allo_pitch-nose", "nose-allo_pitch",
+                   "allo_pitch-TTI", "TTI-allo_pitch")
 NEUTRAL_COLOR = "#D3D3D3"
 MEAN_LINE_COLOR = '#DCB400'
 TEXT_COLOR = '#202020'
@@ -333,11 +340,7 @@ def plot_feature_ranking(
             is_significant = significance_map[feature_name]
 
             if is_significant:
-                dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                                   "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI", "allo_pitch-head", "head-allo_pitch",
-                                   "allo_pitch-nose", "nose-allo_pitch",
-                                   "allo_pitch-TTI", "TTI-allo_pitch"]
-                if any(x in feature_name for x in dyadic_keywords):
+                if any(x in feature_name for x in DYADIC_KEYWORDS):
                     feat_color = DYADIC_COLOR
                 elif '-sei' in feature_name:
                     # Per the column-selection rule in `modeling_utils.select_kinematic_columns`,
@@ -510,11 +513,7 @@ def plot_significant_filters(
             print(f"Filter shapes missing for {feature}")
             continue
 
-        dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                           "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI", "allo_pitch-head", "head-allo_pitch",
-                           "allo_pitch-nose", "nose-allo_pitch",
-                           "allo_pitch-TTI", "TTI-allo_pitch"]
-        if any(x in feature for x in dyadic_keywords):
+        if any(x in feature for x in DYADIC_KEYWORDS):
             feat_color = DYADIC_COLOR
         elif '-sei' in feature:
             # SEI signals are target-attending-to-predictor (see column-selection rule);
@@ -744,10 +743,7 @@ def plot_significant_filters_grid(
         all_y_values.extend(ci_lower_corrected)
         all_y_values.extend(ci_upper_corrected)
 
-        if any(x in beh_feature for x in ["nose-nose", "nose-TTI", "TTI-nose", "neck_elevation_diff",
-                                          "allo_yaw-nose", "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI", "allo_pitch-head", "head-allo_pitch",
-                                          "allo_pitch-nose", "nose-allo_pitch",
-                                          "allo_pitch-TTI", "TTI-allo_pitch"]):
+        if any(x in beh_feature for x in DYADIC_KEYWORDS):
             c = dyadic_color
         elif '-sei' in beh_feature:
             # SEI signals are target-attending-to-predictor; target is "self" → self_color.
@@ -1367,14 +1363,10 @@ def plot_model_selection_results(
     # (renamed via ``feature_label_overrides``) makes the composition
     # of each model self-explanatory without needing a legend.
 
-    dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI", "allo_pitch-head", "head-allo_pitch",
-                       "allo_pitch-nose", "nose-allo_pitch",
-                       "allo_pitch-TTI", "TTI-allo_pitch"]
 
     def _category_color(fname: str) -> str:
         """Return the self / other / dyadic hex colour for a feature."""
-        if any(x in fname for x in dyadic_keywords):
+        if any(x in fname for x in DYADIC_KEYWORDS):
             return DYADIC_COLOR
         if '-sei' in fname:
             # SEI signals are target-attending-to-predictor; target is
@@ -1741,10 +1733,6 @@ def plot_model_selection_results(
     if nrows == 1 and ncols == 1: axes_grid = np.array([axes_grid])
     axes_grid = axes_grid.flatten()
 
-    dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI", "allo_pitch-head", "head-allo_pitch",
-                       "allo_pitch-nose", "nose-allo_pitch",
-                       "allo_pitch-TTI", "TTI-allo_pitch"]
 
     for i, feature in enumerate(feature_keys):
         ax = axes_grid[i]
@@ -1785,7 +1773,7 @@ def plot_model_selection_results(
             if mean_filter is not None:
                 filter_size_vector = np.arange(mean_filter.size)
 
-                if any(x in feature for x in dyadic_keywords):
+                if any(x in feature for x in DYADIC_KEYWORDS):
                     c = DYADIC_COLOR
                 elif '-sei' in feature:
                     # SEI signals are target-attending-to-predictor; target is "self" → self_color.
@@ -1976,7 +1964,7 @@ def plot_univariate_multinomial_performance(
             is_sig = actual_mean > thresh
 
         if is_sig:
-            if any(x in feat for x in ["nose", "TTI", "allo_yaw", "neck_elevation_diff"]):
+            if any(x in feat for x in DYADIC_KEYWORDS):
                 color = DYADIC_COLOR
             elif '-sei' in feat:
                 # SEI signals are target-attending-to-predictor; target is "self" → self_color.
@@ -2250,7 +2238,7 @@ def plot_univariate_multinomial_filters_grid(
         if not is_sig:
             continue
 
-        if any(x in feat for x in ["nose", "TTI", "allo_yaw", "neck_elevation_diff"]):
+        if any(x in feat for x in DYADIC_KEYWORDS):
             feat_color = DYADIC_COLOR
         elif '-sei' in feat:
             # SEI signals are target-attending-to-predictor; target is "self" → self_color.
@@ -2582,13 +2570,9 @@ def plot_multinomial_selection_trajectory(
     # Feature-category colour map (mirrors the bout-onset selector
     # plotter so the same feature always gets the same colour across
     # figures).
-    dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI", "allo_pitch-head", "head-allo_pitch",
-                       "allo_pitch-nose", "nose-allo_pitch",
-                       "allo_pitch-TTI", "TTI-allo_pitch"]
 
     def _category_color(fname: str) -> str:
-        if any(x in fname for x in dyadic_keywords):
+        if any(x in fname for x in DYADIC_KEYWORDS):
             return DYADIC_COLOR
         if '-sei' in fname:
             return self_col
@@ -3589,16 +3573,9 @@ def plot_manifold_selection_trajectory(
     # colour; self-prefixed and sex-emitted-from-self features get
     # self_col; everything else (other.*, partner orofacial, etc.)
     # gets other_col.
-    dyadic_keywords = [
-        "nose-nose", "nose-TTI", "TTI-nose",
-        "allo_yaw-nose", "nose-allo_yaw",
-        "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI", "allo_pitch-head", "head-allo_pitch",
-        "allo_pitch-nose", "nose-allo_pitch",
-        "allo_pitch-TTI", "TTI-allo_pitch",
-    ]
 
     def _category_color(fname: str) -> str:
-        if any(x in fname for x in dyadic_keywords):
+        if any(x in fname for x in DYADIC_KEYWORDS):
             return DYADIC_COLOR
         if '-sei' in fname:
             return self_col
@@ -4072,11 +4049,12 @@ def _resolve_atlas_decoder_and_arrays(
       (``c_dim`` 0): a conditional decoder needs one condition value per call, so
       its decode is not a function of the torus position alone.
     * **Supercategory arrays.** An explicit ``supercategory_arrays_npz_path``
-      wins. Otherwise a cell decoder takes the v3 coarse reference arrays by
-      convention, ``os_utils.resolve_embedding_arrays_path(<spectrograms_dir>,
+      wins. Otherwise a cell decoder takes the regular map's v3 coarse reference
+      arrays by convention, ``os_utils.resolve_embedding_arrays_path(<spectrograms_dir>,
       "qlvm", "coarse")`` with ``spectrograms_dir`` from
       ``visualizations_settings.json`` -> ``shared_resources`` (i.e.
-      ``<spectrograms_dir>/qlvm_v3/arrays_coarse.npz``), and a legacy ``.npz``
+      ``<spectrograms_dir>/qlvm_v3/qlvm/arrays_coarse.npz``; the regular map
+      because the decoder must be unconditional, see above), and a legacy ``.npz``
       decoder takes the ``arrays_coarse.npz`` beside its weights (the old
       layout). When the arrays record a ``model_id`` (every
       ``export-qlvm-reference-arrays`` export does) and the decoder is a cell,
@@ -4218,7 +4196,7 @@ def plot_manifold_filter_atlas(
         produced by ``continuous_vocal_manifold_model_selection`` (or a directory
         containing one; latest mtime wins). Routed through ``configure_path``.
         The run must be a **torus** manifold (4-D ``(sin, cos)`` embedding filter);
-        a euclidean/VAE run prints why and returns.
+        a euclidean run prints why and returns.
     history_window_sec : float, optional
         Duration of the behavioural-history window (labels the time axes). ``None``
         (default) reads ``filter_history_seconds`` from the artifact metadata,
@@ -4261,7 +4239,7 @@ def plot_manifold_filter_atlas(
         a model cell decoder resolves the v3 coarse reference arrays by convention,
         ``os_utils.resolve_embedding_arrays_path(<visualizations_settings.json
         shared_resources.spectrograms_dir>, "qlvm", "coarse")`` ->
-        ``<spectrograms_dir>/qlvm_v3/arrays_coarse.npz`` (written by
+        ``<spectrograms_dir>/qlvm_v3/qlvm/arrays_coarse.npz`` (written by
         ``export-qlvm-reference-arrays``), and raises ValueError when those arrays
         record (``model_id``) a different cell than the decoder, so the boundaries
         always partition the torus the atlas is decoded on. With a legacy decoder
@@ -5592,7 +5570,7 @@ class DeepResultsVisualizer:
         cbar2.set_label(r'Error Reduction ($\Delta E$)', color='#202020', rotation=270, labelpad=20, fontsize=label_fontsize)
 
         # Axis-label prefix reflects the upstream latent space:
-        # ``torus`` -> the QLVM latent; otherwise the VAE / UMAP plane.
+        # ``torus`` -> the QLVM latent; otherwise a flat plane.
         dim_prefix = 'QLVM' if self.manifold_metric == 'torus' else 'UMAP'
 
         # Formatting all axes
@@ -5903,7 +5881,7 @@ class DeepResultsVisualizer:
 
         # Axis-label prefix reflects the upstream latent space:
         # ``torus`` -> the QLVM latent (named QLVM Dimension N);
-        # otherwise the VAE / UMAP-style continuous plane.
+        # otherwise a flat continuous plane.
         dim_prefix = 'QLVM' if self.manifold_metric == 'torus' else 'UMAP'
         ax1.set_xlabel(f'{dim_prefix} Dimension 1', fontsize=12, color=text_color)
         ax1.set_ylabel(f'{dim_prefix} Dimension 2', fontsize=12, color=text_color)
