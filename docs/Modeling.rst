@@ -969,14 +969,18 @@ envelope reads cleanly). The **affinity filmstrips** panel samples each feature'
 filter at ``n_time_slices`` instants from ``-history_window_sec`` to onset and
 decodes each into the signed ``e(theta).W`` field over the torus (red = a +1 SD
 increase in the feature just before onset drives the predicted vocalization toward
-that region, blue = away), on a shared diverging scale. The QLVM decoder and
-supercategory-boundary ``.npz`` paths default from ``modeling_settings.json``
-(``usv_manifold_geodesic_metrics.decoder_weights_npz_path``, with
-``arrays_coarse.npz`` taken from the same directory); with the shipped settings,
-which name a model package cell and no ``.npz``, the default raises a
-``ValueError`` (the atlas does not read a package cell's label grids;
-``export-qlvm-reference-arrays`` writes a cell's ``arrays_coarse.npz``), so pass
-``decoder_weights_npz_path`` and ``supercategory_arrays_npz_path`` explicitly; colours come from
+that region, blue = away), on a shared diverging scale. The atlas is decoded by
+the QLVM model package cell in ``modeling_settings.json``
+(``usv_manifold_geodesic_metrics.decoder_model_cell_directory``, shipped as the v3
+regular cell the ``qlvm1`` / ``qlvm2`` coordinates come from; override with
+``decoder_model_cell_directory``), and its white boundaries are that cell's 9
+coarse clusters from ``<spectrograms_dir>/qlvm_v3/arrays_coarse.npz`` (resolved by
+``os_utils.resolve_embedding_arrays_path`` from ``visualizations_settings.json``
+``shared_resources.spectrograms_dir``; written by ``export-qlvm-reference-arrays``;
+override with ``supercategory_arrays_npz_path``). The arrays must record the same
+``model_id`` as the decoder cell, otherwise a ``ValueError`` is raised. A legacy
+in-house decoder ``.npz`` can still be passed as ``decoder_weights_npz_path`` (its
+boundaries then default to the ``arrays_coarse.npz`` beside it); colours come from
 ``visualizations_settings.json`` (``sequential_cmap`` / ``diverging_cmap``), and the temporal
 filter's smoothness is governed by the per-observation ``lambda_smooth`` prior (see
 the note above).

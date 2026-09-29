@@ -2604,8 +2604,10 @@ reveals that USV's identity and acoustics.
 **Embedding maps.**
 
 * **VAE UMAP** — a 2-D UMAP of the variational-autoencoder acoustic latents.
-* **QLVM torus** — the toroidal (doughnut-shaped) surface of the in-house QLVM
-  (quasi-Monte Carlo latent variable model).
+* **QLVM torus** — the toroidal (doughnut-shaped) surface of the QLVM
+  (quasi-Monte Carlo latent variable model): the production v3 regular cell's
+  ``qlvm1`` / ``qlvm2`` coordinates, with its 15 fine (``qlvm_category``) and 9 coarse
+  (``qlvm_supercategory``) cluster labels from the summaries.
 
 **Controls** (stacked above the plot):
 
@@ -2618,7 +2620,12 @@ reveals that USV's identity and acoustics.
 * **Color by** — a categorical label (fine / coarse category, session type, session id, or
   emitter sex) or a continuous metric (point density, or a per-USV acoustic feature), the
   latter rendered through the project colormap.
-* **Boundaries** — optional k-NN cluster outlines for the chosen categorical label.
+* **Boundaries** — optional cluster outlines for the chosen categorical label. On the QLVM
+  torus they are the v3 regular cell's own label grid (``ws_labels_periodic`` of
+  ``<spectrograms_dir>/qlvm_v3/arrays_fine.npz`` for category, ``arrays_coarse.npz`` for
+  supercategory, resolved by ``os_utils.resolve_embedding_arrays_path``), the exact partition
+  the labels were read from; on the VAE UMAP, or when those arrays are missing, a k-NN
+  estimate from the plotted labels.
 * **Examples (spectrograms) plotted** — 5–50, sampled along an Archimedean spiral (centre →
   edge) and laid out as a square grid, each call's width preserving its true duration.
 * **Max points** — caps how many points the scatter draws, keeping the chart under marimo's

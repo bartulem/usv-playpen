@@ -794,7 +794,7 @@ With one ``--model-cell PREFIX CELL`` per model (the ``model_cells`` setting; re
       --data-batch-size     Spectrograms whose lattice posteriors are computed together; memory grows with this times the lattice size.
 
 ``export-qlvm-reference-arrays``
-``export-qlvm-reference-arrays`` writes one QLVM model package cell's clustering as ``arrays_fine.npz`` and ``arrays_coarse.npz``, the reference-arrays layout the QLVM visualizations read (``qlvm-torus-traversal-video``, the sequence embedding map, the manifold atlas). Each file holds the cell's ``label_grid.npy`` as ``ws_labels_periodic`` and ``ws_labels``, the ``clusters.csv`` peaks as ``centers`` (row ``i`` for label ``i + 1``), the corpus calls' torus coordinates and labels as ``latent_coords`` / ``sample_ws`` / ``sample_ws_periodic``, a ``heatmap`` of the aggregated posterior over the cell's embedding lattice (summing to the number of corpus calls; not the reference arrays' smoothing), and ``model_id``. Write it to a ``qlvm`` folder under a separate ``spectrograms_dir`` rather than over the reference arrays, so both models stay usable.
+``export-qlvm-reference-arrays`` writes one QLVM model package cell's clustering as ``arrays_fine.npz`` and ``arrays_coarse.npz``, the reference-arrays layout the QLVM visualizations read (``qlvm-torus-traversal-video``, the sequence embedding map, the manifold atlas). Each file holds the cell's ``label_grid.npy`` as ``ws_labels_periodic`` and ``ws_labels``, the ``clusters.csv`` peaks as ``centers`` (row ``i`` for label ``i + 1``), the corpus calls' torus coordinates and labels as ``latent_coords`` / ``sample_ws`` / ``sample_ws_periodic``, a ``heatmap`` of the aggregated posterior over the cell's embedding lattice (summing to the number of corpus calls; not the reference arrays' smoothing), and ``model_id``. For the production regular cell (``phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor``) write it to ``<spectrograms_dir>/qlvm_v3``, the folder the QLVM visualizations read (``os_utils.QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME``); write any other cell under a separate ``spectrograms_dir`` so the models never overwrite each other.
 
 .. code-block:: text
 
@@ -803,7 +803,7 @@ With one ``--model-cell PREFIX CELL`` per model (the ``model_cells`` setting; re
     required arguments:
       --model-cell-directory
                             A QLVM model package cell, e.g. .../qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked.
-      --output-directory    Directory to write arrays_fine.npz and arrays_coarse.npz into (created if missing), e.g. <spectrograms_dir>/qlvm.
+      --output-directory    Directory to write arrays_fine.npz and arrays_coarse.npz into (created if missing), e.g. <spectrograms_dir>/qlvm_v3 (the folder the QLVM visualizations read) for the production regular cell.
 
     optional arguments:
       -h, --help            Show this help message and exit.
