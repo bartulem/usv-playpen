@@ -88,16 +88,16 @@ def _tiny_cfg(spectrograms_dir, peaks_only=False):
 
 
 def _write_inputs(tmp_path, n=12, res=8, n_f=16, n_t=16):
-    """Build a shared spectrograms dir: <dir>/qlvm/arrays_{coarse,fine}.npz
+    """Build a shared spectrograms dir: <dir>/qlvm_v3/arrays_{coarse,fine}.npz
     (heatmap/ws/centers) + <dir>/spectrograms_<key>.h5 carrying per-session
     spectrograms AND qlvm_dim coords. Returns str(<dir>)."""
     rng = np.random.default_rng(0)
     session_key = "20250907_190610"
     spec_dir = tmp_path / "spectrograms"
-    (spec_dir / "qlvm").mkdir(parents=True, exist_ok=True)
+    (spec_dir / "qlvm_v3").mkdir(parents=True, exist_ok=True)
     for tag in ("coarse", "fine"):
         np.savez(
-            spec_dir / "qlvm" / f"arrays_{tag}.npz",
+            spec_dir / "qlvm_v3" / f"arrays_{tag}.npz",
             heatmap=rng.random((res, res)).astype(np.float32),
             ws_labels_periodic=rng.integers(0, 3, size=(res, res)).astype(np.int16),
             centers=np.array([[0.25, 0.25], [0.7, 0.7]], dtype=np.float32),
@@ -135,9 +135,9 @@ def test_make_video_errors_without_qlvm_dim(tmp_path):
     """If the H5 has no qlvm_dim, render fails with a clear, actionable error."""
     rng = np.random.default_rng(1)
     spec_dir = tmp_path / "spectrograms"
-    (spec_dir / "qlvm").mkdir(parents=True, exist_ok=True)
+    (spec_dir / "qlvm_v3").mkdir(parents=True, exist_ok=True)
     for tag in ("coarse", "fine"):
-        np.savez(spec_dir / "qlvm" / f"arrays_{tag}.npz",
+        np.savez(spec_dir / "qlvm_v3" / f"arrays_{tag}.npz",
                  heatmap=rng.random((8, 8)).astype(np.float32),
                  ws_labels_periodic=rng.integers(0, 3, size=(8, 8)).astype(np.int16),
                  centers=np.array([[0.25, 0.25], [0.7, 0.7]], dtype=np.float32))

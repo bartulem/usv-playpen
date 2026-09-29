@@ -13,10 +13,13 @@ This is the in-house, torch-free port of ``qmc_deep_gen``'s
 ``inference_latents_video.py``. The original loaded a ``mouse_data`` dataset
 (``full_data.pt``) index-aligned with ``latent_coords``; here the per-USV latent
 coordinates AND the spectrograms both come from the consolidated H5 (per-session
-``spectrogram/<key>/qlvm_dim`` -- written once by a one-off enrichment -- and
+``spectrogram/<key>/qlvm_dim`` -- the production v3 regular cell's ``qlvm1`` /
+``qlvm2`` coordinates, written by ``consolidate-spectrogram-store`` -- and
 ``spectrogram/<key>/spectrograms``), pooled into one ordered array. The ``.npz``
-arrays file is used only for the ``heatmap`` background, ``ws_labels_periodic``
-contours, and cluster ``centers``.
+arrays file (``<spectrograms_dir>/qlvm_v3/arrays_{coarse,fine}.npz``, the same
+cell's clustering exported by ``export-qlvm-reference-arrays``; see
+``os_utils.resolve_embedding_arrays_path``) is used only for the ``heatmap``
+background, ``ws_labels_periodic`` contours, and cluster ``centers``.
 
 Layout:
   left  = [0,1]^2 latent map (heatmap + watershed contours, no axes/ticks) with a
@@ -108,8 +111,8 @@ def pool_latents_from_h5(h5) -> tuple[np.ndarray, list[tuple[str, int]]]:
     Description
     -----------
     Pools every session's per-USV latent coordinates from the consolidated H5's
-    ``spectrogram/<key>/qlvm_dim`` datasets (written once by a one-off enrichment)
-    into one array, with a parallel ``(session key, spectrogram row)`` list so a
+    ``spectrogram/<key>/qlvm_dim`` datasets (the v3 regular cell's torus
+    coordinates, written by ``consolidate-spectrogram-store``) into one array, with a parallel ``(session key, spectrogram row)`` list so a
     nearest-neighbour hit can be mapped straight back to a spectrogram. Rows with
     NaN coords are dropped.
 
@@ -423,8 +426,8 @@ class QLVMTorusTraversalVideo:
             'change_saturation': 1, 'cm_opacity': 1,
         })
 
-        # Arrays supply ONLY the heatmap background, watershed contours, and
-        # cluster centers (coarse = 7 / fine = 12).
+        # Arrays supply ONLY the heatmap background, label-grid contours, and
+        # cluster centers (the v3 regular cell: coarse = 9 / fine = 15).
         arrays = np.load(configure_path(arrays_path))
         heatmap = arrays['heatmap']
         ws_labels = arrays['ws_labels_periodic']
@@ -448,9 +451,9 @@ class QLVMTorusTraversalVideo:
             n_samples = pooled_coords.shape[0]
             if n_samples == 0:
                 raise ValueError(
-                    "No `qlvm_dim` coordinates found in the consolidated H5 — the "
-                    "store must be enriched once with per-session qlvm_dim latent "
-                    "coords before rendering."
+                    "No `qlvm_dim` coordinates found in the consolidated H5 — build "
+                    "the store with consolidate-spectrogram-store so every session "
+                    "carries its qlvm_dim latent coords before rendering."
                 )
             self.message_output(f"Pooled {n_samples} latents, {K} clusters ({clustering}).")
 

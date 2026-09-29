@@ -495,9 +495,13 @@ def test_newest_match_raises_when_empty(tmp_path):
 # resolve_embedding_arrays_path / resolve_consolidated_h5_path
 
 def test_resolve_embedding_arrays_path_conventions(tmp_path):
+    """QLVM arrays resolve under the versioned qlvm_v3 folder (the v3 regular cell's
+    export), never the old model's qlvm/ folder; VAE densities under vae/."""
     base = tmp_path / "spectrograms"
-    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "coarse") == str(base / "qlvm" / "arrays_coarse.npz")
-    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "fine") == str(base / "qlvm" / "arrays_fine.npz")
+    assert os_utils.QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME == "qlvm_v3"
+    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "coarse") == str(base / "qlvm_v3" / "arrays_coarse.npz")
+    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "fine") == str(base / "qlvm_v3" / "arrays_fine.npz")
+    assert "/qlvm/" not in os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "fine").replace("\\", "/")
     assert os_utils.resolve_embedding_arrays_path(str(base), "vae", "coarse") == str(base / "vae" / "vae_density_coarse.npz")
     assert os_utils.resolve_embedding_arrays_path(str(base), "vae", "fine") == str(base / "vae" / "vae_density_fine.npz")
 
@@ -691,9 +695,11 @@ def test_resolve_consolidated_h5_raises_when_no_store(tmp_path):
 
 
 def test_resolve_pooled_embeddings_cache_convention(tmp_path):
+    """The cache name is versioned by the QLVM model, so the v3 cache never overwrites
+    the old model's pooled_embeddings.parquet."""
     base = tmp_path / "spectrograms"
     assert os_utils.resolve_pooled_embeddings_cache(str(base)) == str(
-        base / "embeddings" / "pooled_embeddings.parquet"
+        base / "embeddings" / "pooled_embeddings_qlvmv3.parquet"
     )
 
 

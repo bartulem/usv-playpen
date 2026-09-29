@@ -392,6 +392,24 @@ QLVM_PRODUCTION_MODEL_CELLS = {
 # training_contract.json `masking_type`): raw, unmasked spectrograms.
 QLVM_PRODUCTION_MASKING_TYPE = "none"
 
+# The folder under the spectrograms base directory (`shared_resources.spectrograms_dir`)
+# holding the QLVM reference arrays the visualizations draw (`arrays_fine.npz` /
+# `arrays_coarse.npz`: label grids, cluster centres, corpus coordinates, density
+# heatmap). They are the production regular cell's clustering
+# (QLVM_PRODUCTION_MODEL_CELLS["qlvm"] under QLVM_MODEL_PACKAGE_ROOT), written by
+# `export-qlvm-reference-arrays` (processing.qlvm_latents.export_model_cell_arrays),
+# so the maps sit on the same torus and carry the same 15 fine / 9 coarse labels as
+# the qlvm1/qlvm2, qlvm_category and qlvm_supercategory summary columns. The folder
+# is versioned by name: the old in-house model's arrays live in `<dir>/qlvm/` and are
+# no longer read by default.
+QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME = "qlvm_v3"
+
+# File name of the cohort pooled-embeddings parquet cache under
+# `<spectrograms_dir>/embeddings/`. Versioned by the QLVM model its qlvm1/qlvm2 and
+# qlvm_category / qlvm_supercategory columns come from, so the cache built from the
+# v3 summaries never overwrites the one pooled from the old model's summaries.
+POOLED_EMBEDDINGS_CACHE_NAME = "pooled_embeddings_qlvmv3.parquet"
+
 
 def cell_cluster_directory(cell: pathlib.Path, level: str) -> pathlib.Path:
     """
@@ -1264,24 +1282,30 @@ def newest_match_or_raise(
 # Embedding-landscape resolution. The visualization layer reads its precomputed
 # cohort artifacts from a single base directory (``shared_resources.spectrograms_dir``)
 # by convention, rather than from several hard-coded file paths:
-#   <dir>/qlvm/arrays_{coarse,fine}.npz      QLVM torus density + watershed labels
+#   <dir>/qlvm_v3/arrays_{coarse,fine}.npz   QLVM torus density + label grids + centres
+#                                             (QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME)
 #   <dir>/vae/vae_density_{coarse,fine}.npz  VAE umap density + category labels
 #   <dir>/spectrograms_*.h5                   consolidated spectrogram/mask/latent store
+#   <dir>/embeddings/pooled_embeddings_qlvmv3.parquet  pooled cohort embeddings cache
+#                                             (POOLED_EMBEDDINGS_CACHE_NAME)
 def resolve_embedding_arrays_path(spectrograms_dir: str, embedding: str, clustering: str) -> str:
     """
     Description
     -----------
     Build the path to a precomputed embedding-landscape ``.npz`` under the
     spectrograms base directory, by convention -- QLVM at
-    ``<dir>/qlvm/arrays_{coarse,fine}.npz`` and VAE at
-    ``<dir>/vae/vae_density_{coarse,fine}.npz``. This is a pure path builder (run
-    through ``configure_path``); whether the file exists is the caller's concern
-    (the sequence figure falls back to a bare panel, the torus video requires it).
+    ``<dir>/<QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME>/arrays_{coarse,fine}.npz``
+    (``<dir>/qlvm_v3/...``: the production v3 regular cell's clustering, exported
+    by ``export-qlvm-reference-arrays``; the old in-house model's ``<dir>/qlvm/``
+    arrays are not read) and VAE at ``<dir>/vae/vae_density_{coarse,fine}.npz``.
+    This is a pure path builder (run through ``configure_path``); whether the file
+    exists is the caller's concern (the sequence figure falls back to a bare
+    panel, the torus video requires it).
 
     Parameters
     ----------
     spectrograms_dir (str)
-        Base directory where the ``qlvm`` / ``vae`` subdirectories branch off.
+        Base directory where the ``qlvm_v3`` / ``vae`` subdirectories branch off.
     embedding (str)
         ``"qlvm"`` or ``"vae"``.
     clustering (str)
@@ -1297,7 +1321,7 @@ def resolve_embedding_arrays_path(spectrograms_dir: str, embedding: str, cluster
     tag = "fine" if clustering == "fine" else "coarse"
     if embedding == "vae":
         return str(base / "vae" / f"vae_density_{tag}.npz")
-    return str(base / "qlvm" / f"arrays_{tag}.npz")
+    return str(base / QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME / f"arrays_{tag}.npz")
 
 
 def resolve_consolidated_h5_path(spectrograms_dir: str) -> str:
@@ -1307,7 +1331,7 @@ def resolve_consolidated_h5_path(spectrograms_dir: str) -> str:
     Resolve the consolidated spectrogram/mask/latent ``.h5`` store: the most
     recently modified ``spectrograms_*.h5`` directly under the base directory. The
     name pattern is deliberate -- it selects the consolidated store and skips other
-    ``.h5`` siblings (e.g. ``qlvm_clusters_*.h5``). Raises ``FileNotFoundError`` with
+    ``.h5`` siblings (e.g. the legacy ``qlvm_clusters_*.h5``). Raises ``FileNotFoundError`` with
     a clear message if the directory is missing or holds no matching store.
 
     Parameters
@@ -1338,10 +1362,14 @@ def resolve_pooled_embeddings_cache(spectrograms_dir: str) -> str:
     -----------
     Build the path to the cohort pooled-embeddings parquet cache under the
     spectrograms base directory, by convention:
-    ``<dir>/embeddings/pooled_embeddings.parquet``. This is a pure path builder
-    (run through ``configure_path``); whether the file exists is the caller's
-    concern -- the embedding figures pass it as ``embeddings_cache_path`` so that
-    ``build_pooled_embeddings_df`` loads it when present (one combined table that
+    ``<dir>/embeddings/<POOLED_EMBEDDINGS_CACHE_NAME>``
+    (``<dir>/embeddings/pooled_embeddings_qlvmv3.parquet``). The name is
+    versioned by the QLVM model, so the cache pooled from the v3 summaries sits
+    beside (and never overwrites) the old model's ``pooled_embeddings.parquet``.
+    This is a pure path builder (run through ``configure_path``); whether the file
+    exists is the caller's concern -- the embedding figures pass it as
+    ``embeddings_cache_path`` so that ``build_pooled_embeddings_df`` loads it when
+    present and its summaries fingerprint matches (one combined table that
     carries both the VAE and QLVM coordinates and the coarse + fine labels), and
     otherwise pools the cohort and writes it there.
 
@@ -1357,4 +1385,4 @@ def resolve_pooled_embeddings_cache(spectrograms_dir: str) -> str:
     """
 
     base = pathlib.Path(configure_path(spectrograms_dir))
-    return str(base / "embeddings" / "pooled_embeddings.parquet")
+    return str(base / "embeddings" / POOLED_EMBEDDINGS_CACHE_NAME)

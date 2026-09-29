@@ -1991,7 +1991,7 @@ def export_model_cell_arrays(
 
 @click.command(name="export-qlvm-reference-arrays")
 @click.option('--model-cell-directory', 'model_cell_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='A QLVM model package cell, e.g. .../qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked.')
-@click.option('--output-directory', 'output_directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write arrays_fine.npz and arrays_coarse.npz into (created if missing), e.g. <spectrograms_dir>/qlvm.')
+@click.option('--output-directory', 'output_directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write arrays_fine.npz and arrays_coarse.npz into (created if missing), e.g. <spectrograms_dir>/qlvm_v3 (the folder the QLVM visualizations read) for the production regular cell.')
 def export_qlvm_reference_arrays_cli(model_cell_directory, output_directory) -> None:
     """
     Description
