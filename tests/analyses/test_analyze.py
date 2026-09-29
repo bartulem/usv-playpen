@@ -3404,6 +3404,35 @@ def test_anchor_bin_validity_grid_post_and_prior():
     assert grid.dtype == bool
 
 
+def test_anchor_bin_validity_grid_cuts_post_onset_bins_at_the_next_onset():
+    """Post-onset bins stay valid only while they end before the next USV's onset
+    (any USV after the anchor's onset); pre-onset bins are untouched by that rule,
+    and a last call keeps its post-onset bins up to the recording end."""
+    starts = np.array([1.0, 1.25, 3.0])
+    stops = np.array([1.1, 1.3, 3.1])
+    edges = np.arange(-0.5, 0.5 + 1e-9, 0.1)
+    rel_bin_lo, rel_bin_hi = edges[:-1], edges[1:]
+    grid = _anchor_bin_validity_grid(
+        np.array([0, 2]), starts, stops, duration_seconds=10.0,
+        rel_bin_lo=rel_bin_lo, rel_bin_hi=rel_bin_hi,
+        require_clean_post=False, require_clean_prior=False,
+    )
+    post = rel_bin_hi > 1e-9
+    # anchor 0 (onset 1.0 s): the next onset is 1.25 s, so post-onset bins ending at
+    # 1.1 and 1.2 s are valid and those ending at 1.3 / 1.4 / 1.5 s are not
+    np.testing.assert_array_equal(grid[0, post], [True, True, False, False, False])
+    assert grid[0, ~post].all()
+    # anchor 2 (the last call): nothing follows it, so every post-onset bin is valid
+    assert grid[1].all()
+    # another USV starting at the anchor's very onset leaves no clean post-onset bin
+    same = _anchor_bin_validity_grid(
+        np.array([0]), np.array([1.0, 1.0]), np.array([1.1, 1.2]), duration_seconds=10.0,
+        rel_bin_lo=rel_bin_lo, rel_bin_hi=rel_bin_hi,
+        require_clean_post=False, require_clean_prior=False,
+    )
+    assert not same[0, post].any() and same[0, ~post].all()
+
+
 def test_consecutive_interval_pairs_stay_within_one_animal_of_one_session():
     """Neighbouring intervals pair only when they share the session AND the animal: the switch
     from female A to female B, and from one session to the next, never forms a pair."""

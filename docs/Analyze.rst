@@ -166,7 +166,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **n_spatial_bins** : number of spatial bins (2D behavioral feature)
 * **spatial_scale_cm** : maximum distance from center of arena to one edge (in cm)
 * **shuffle_seconds_range** : ``[min, max]`` of the uniform circular shift (in s) used to build the null distribution
-* **peth_window_seconds** : ``[start, stop]`` of the PETH window relative to each call's onset (in s); default ``[-2, 0.5]``. Bins before onset honour the two cleanliness rules below; bins after onset are limited only by the recording bounds, so they include the call itself and any call that follows it
+* **peth_window_seconds** : ``[start, stop]`` of the PETH window relative to each call's onset (in s); default ``[-2, 0.5]``. Bins before onset honour the two cleanliness rules below; a bin after onset is kept only while it ends before the next USV's onset (any emitter, squeaks included), so the post-onset PETH covers the call itself and the silence after it, never a following call
 * **peth_bin_seconds** : PETH bin width (in s)
 * **bout_quiet_seconds** : inter-bout silence required to define a new bout (in s)
 * **vocal_require_clean_post_anchor** : if ``true``, the time after the USV onset must be free of contaminating USVs to keep the anchor

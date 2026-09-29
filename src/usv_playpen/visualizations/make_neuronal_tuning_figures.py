@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import json
 import math
 import pathlib
 import pickle
@@ -40,7 +41,7 @@ from scipy.stats import gaussian_kde, spearmanr
 from tqdm import tqdm
 
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..analyses.compute_neuronal_tuning_curves import CONTINUOUS_PROPERTIES
+from ..analyses.compute_neuronal_tuning_curves import CONTINUOUS_PROPERTIES, behavioral_feature_base
 from ..analyses.decode_experiment_label import extract_information
 from ..os_utils import (
     QLVM_MAPS,
@@ -81,6 +82,11 @@ PROPERTY_ROW_ORDER = (
     ("mean_amplitude", "max_amplitude"),
     ("spectral_entropy", "mask_number"),
 )
+
+# Behavioral base features computed and saved in the tuning pickle but not drawn
+# on the behavioral pages (matched on the base name, so derivatives go too).
+# TTI-TTI (tail-to-tail distance) is left off the social page.
+PLOT_EXCLUDED_BEHAVIORAL_FEATURES: tuple[str, ...] = ("TTI-TTI",)
 
 # Page-2 section (c) layout: each row is one QLVM map (os_utils.QLVM_MAPS: the
 # regular model, then the four conditional ones), and each row holds the
@@ -133,7 +139,8 @@ VMI_REGION_TO_GROUP: dict[str, str] = {
 # the triage pickle (`usv_property_self_<property>_excit`). Tolerance
 # is the full-width window (so ±tol/2 around the cluster centre)
 # applied to per-session `peak_bin_value` values during the
-# consistency check; it's set to two upstream bin widths so the
+# consistency check; it's set to two upstream bin widths (amplitudes: 2/36 of
+# their [0, 1] per-call normalized range) so the
 # rule mirrors PETH's "±2 bins" convention. `unit_scale` and
 # `unit_label` are display-only conversions for the x-axis (e.g. Hz
 # → kHz).
@@ -142,8 +149,8 @@ USV_PROPERTY_META: dict[str, dict] = {
     "mean_freq_hz":      {"tol": 5000.0, "unit_scale": 1e-3, "unit_label": "kHz", "display_name": "USV mean freq"},
     "peak_freq_hz":      {"tol": 5000.0, "unit_scale": 1e-3, "unit_label": "kHz", "display_name": "USV peak freq"},
     "freq_bandwidth_hz": {"tol": 5000.0, "unit_scale": 1e-3, "unit_label": "kHz", "display_name": "USV freq bandwidth"},
-    "mean_amplitude":    {"tol": 0.25, "unit_scale": 1.0,  "unit_label": "a.u.","display_name": "USV mean amplitude"},
-    "max_amplitude":     {"tol": 0.80, "unit_scale": 1.0,  "unit_label": "a.u.","display_name": "USV max amplitude"},
+    "mean_amplitude":    {"tol": 0.056, "unit_scale": 1.0, "unit_label": "a.u.","display_name": "USV mean amplitude"},
+    "max_amplitude":     {"tol": 0.056, "unit_scale": 1.0, "unit_label": "a.u.","display_name": "USV max amplitude"},
     "spectral_entropy":  {"tol": 0.30, "unit_scale": 1.0,  "unit_label": "",    "display_name": "spectral entropy"},
     "mask_number":       {"tol": 2.0,  "unit_scale": 1.0,  "unit_label": "",    "display_name": "mask number"},
 }
@@ -3424,7 +3431,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             tol_s: float = 0.100,
             k_min: int = 2,
             require_majority: bool = True,
-            n_bins: int = 40,
+            bin_seconds: float = 0.05,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -3432,14 +3439,20 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Render the per-region distribution of consistent PETH
-        anticipatory response timing for the requested `direction`
-        (excit or suppress). Layout is a 2×7 grid with one
-        column per brain-area group:
+        response timing for the requested `direction` (excit or
+        suppress), before and after USV onset. Layout is a 2×7 grid with
+        one column per brain-area group:
 
           * Top row — histogram of each region's consistent units'
-            median `peak_t` across [−2, 0] s.
-          * Bottom row — scatter of median `peak_t` (x) against
-            median `peak_z` (y) per consistent unit.
+            median `peak_t` (signed, 0 = USV onset) across the PETH window.
+          * Bottom row — scatter of median `peak_t` (x, the same signed
+            axis) against median `peak_z` (y) per consistent unit.
+
+        The x-axis spans the `peth_window_seconds` of
+        `analyses_settings.json` -> `calculate_neuronal_tuning_curves`
+        (by default [-2, +0.5] s), widened to any unit whose peak lies
+        outside it (a pickle computed with another window), so pre- and
+        post-onset peaks are both shown.
 
         Consistency filter is the one agreed during the PETH design
         session: per-unit `peak_t` values across significant excit
@@ -3472,9 +3485,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Whether to also require the in-tolerance subset to
             account for at least half of the unit's sig sessions
             (default True).
-        n_bins (int)
-            Number of histogram bins between -2 and 0 s. Default 40
-            (matches the per-session PETH bin width).
+        bin_seconds (float)
+            Histogram bin width in s. Default 0.05 (the per-session PETH
+            bin width).
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -3509,18 +3522,22 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             left=0.045, right=0.99,
             top=0.94, bottom=0.13,
         )
-        # Histograms keep a linear x-axis (signed peak_t, USV-onset on
-        # the right). Only the scatter row uses a log axis on
-        # |peak_t| to expand the dense near-onset region — the long
-        # pre-onset tail collapses into few units that are easier to
-        # read on a log scale.
-        LINEAR_XLIM = (-2.0, 0.05)
-        linear_bins = np.linspace(-2.0, 0.0, n_bins + 1)
-        LOG_XLIM_LOW_S = 0.020   # rightmost edge on |peak_t|
-        LOG_XLIM_HIGH_S = 2.10   # leftmost edge on |peak_t|
-        log_ticks = [0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0]
-        log_tick_labels = ["25 ms", "50 ms", "100 ms", "250 ms",
-                            "500 ms", "1 s", "2 s"]
+        # Both rows share one linear, signed time axis (0 = USV onset) over the
+        # PETH window the tuning is computed with, widened to any unit peaking
+        # outside it, so pre- and post-onset peaks both show.
+        with (pathlib.Path(__file__).parent.parent / "_parameter_settings" / "analyses_settings.json").open() as _asf:
+            window_lo, window_hi = (
+                float(edge) for edge in json.load(_asf)["calculate_neuronal_tuning_curves"]["peth_window_seconds"]
+            )
+        all_peaks = [u["median_peak_t"] for region in VMI_REGION_ORDER for u in per_group[region]]
+        if all_peaks:
+            window_lo = min(window_lo, float(np.floor(min(all_peaks) / bin_seconds) * bin_seconds))
+            window_hi = max(window_hi, float(np.ceil(max(all_peaks) / bin_seconds) * bin_seconds))
+        n_hist_bins = max(1, round((window_hi - window_lo) / bin_seconds))
+        linear_bins = np.linspace(window_lo, window_hi, n_hist_bins + 1)
+        time_pad = 0.02 * (window_hi - window_lo)
+        LINEAR_XLIM = (window_lo - time_pad, window_hi + time_pad)
+        time_ticks = np.arange(np.ceil(window_lo / 0.5) * 0.5, window_hi + 1e-9, 0.5)
         peak_z_lo = float("inf")
         peak_z_hi = float("-inf")
         for region in VMI_REGION_ORDER:
@@ -3550,30 +3567,29 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 )
             ax_hist.axvline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
             ax_hist.set_xlim(*LINEAR_XLIM)
-            ax_hist.set_xticks([-2.0, -1.5, -1.0, -0.5, 0.0])
-            ax_hist.set_xlabel("peak_t (s, pre-USV)", fontsize=9)
+            ax_hist.set_xticks(time_ticks)
+            ax_hist.set_xlabel("peak_t (s, relative to USV onset)", fontsize=9)
             ax_hist.set_title(f"{region}  (N={n_units})", fontsize=10)
             ax_hist.tick_params(labelsize=8)
             if col == 0:
                 ax_hist.set_ylabel("unit count", fontsize=9)
 
-            # Bottom row — scatter of |median peak_t| × median peak_z.
+            # Bottom row — scatter of signed median peak_t × median peak_z.
             ax_sc = fig.add_subplot(gs[1, col])
             if n_units:
-                abs_pks = np.array([abs(u["median_peak_t"]) for u in units])
+                pks_signed = np.array([u["median_peak_t"] for u in units])
                 pzs = np.array([u["median_peak_z"] for u in units])
                 ax_sc.scatter(
-                    abs_pks, pzs,
+                    pks_signed, pzs,
                     s=18, c=region_color, alpha=0.90,
                     edgecolors=COLOR_BLACK, linewidths=0.4,
                     rasterized=True,
                 )
-            ax_sc.set_xscale("log")
-            ax_sc.set_xlim(LOG_XLIM_HIGH_S, LOG_XLIM_LOW_S)
-            ax_sc.set_xticks(log_ticks)
-            ax_sc.set_xticklabels(log_tick_labels, fontsize=7, rotation=35, ha="right")
+            ax_sc.axvline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
+            ax_sc.set_xlim(*LINEAR_XLIM)
+            ax_sc.set_xticks(time_ticks)
             ax_sc.set_ylim(peak_z_lo, peak_z_hi)
-            ax_sc.set_xlabel("time before USV onset (log)", fontsize=9)
+            ax_sc.set_xlabel("peak_t (s, relative to USV onset)", fontsize=9)
             ax_sc.tick_params(labelsize=8)
             if col == 0:
                 ax_sc.set_ylabel("median peak_z", fontsize=9)
@@ -3586,7 +3602,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             f"±{int(1000*tol_s/2)} ms"
             f"{' AND >50% majority' if require_majority else ''}  ·  "
             f"per-unit anchors = medians across all sig {direction} sessions  ·  "
-            "histogram x = signed peak_t (linear); scatter x = |peak_t| (log, USV on the right)",
+            "x = signed median peak_t (0 = USV onset; negative before, positive after)",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
         )
 
@@ -5730,7 +5746,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         For each behavioral temporal offset key (`beh_offset=*s`) in the
         per-cluster pkl, render one page per plot-feature group
-        (`individual.<mouse_id>` and `social`). Each page is a small
+        (`individual.<mouse_id>` and `social`); features listed in
+        `PLOT_EXCLUDED_BEHAVIORAL_FEATURES` (e.g. TTI-TTI, derivatives
+        included) stay in the pkl but are not drawn. Each page is a small
         gridspec of (line + occupancy) pairs for 1D features plus
         per-animal 2D spatial ratemap pairs. Smoothing, occupancy
         thresholding, and colorbar placement are handled exactly as the
@@ -5786,6 +5804,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         plot_features: dict[str, list[str]] = {}
         for feature_key in cluster_data[beh_offset_keys[0]]:
+            if behavioral_feature_base(feature_key) in PLOT_EXCLUDED_BEHAVIORAL_FEATURES:
+                continue
             mouse_id = feature_key.split(".")[0]
             if (
                 f"individual.{mouse_id}" not in plot_features

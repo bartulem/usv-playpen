@@ -1307,8 +1307,12 @@ class FeatureZoo:
 
     # Vocal-tuning bin ranges. Values rounded to give clean bin widths
     # at the default 36-bin resolution (50 ms for duration, 2.5 kHz for
-    # frequency-related properties, 0.125/0.4/0.15 for the amplitude/
-    # entropy axes). `mask_number` uses a 12-bin integer-centered grid
+    # frequency-related properties, 0.15 for entropy). The two amplitude
+    # properties are read off per-call min-max normalized [0, 1]
+    # spectrograms (generate_spectrograms `normalize`), so their range is
+    # [0, 1] (1/36 bins); the older [0, 4.5] / [0, 14.4] ranges predate that
+    # normalization and put every call into one or two bins.
+    # `mask_number` uses a 12-bin integer-centered grid
     # ([0.5, 12.5] with 12 bins puts each integer 1..12 at a bin centre).
     # Ranges cover the observed extrema in a 304-session courtship pool
     # (noise segments excluded) with at most a few bins of
@@ -1321,8 +1325,8 @@ class FeatureZoo:
         "mean_freq_hz": [30000.0, 120000.0],
         "peak_freq_hz": [30000.0, 120000.0],
         "freq_bandwidth_hz": [0.0, 90000.0],
-        "mean_amplitude": [0.0, 4.5],
-        "max_amplitude": [0.0, 14.4],
+        "mean_amplitude": [0.0, 1.0],
+        "max_amplitude": [0.0, 1.0],
         "spectral_entropy": [0.0, 5.4],
         "mask_number": [0.5, 12.5],
     }

@@ -522,10 +522,14 @@ def _anchor_bin_validity_grid(
       (iii) if `require_clean_prior`: no other USV intersects
            [anchor + Δt_min, anchor + Δt_lo].
 
-    Clauses (ii) and (iii) only constrain pre-onset bins: a post-onset bin
-    (Δt_lo >= 0) always lies after every USV that started before the anchor,
-    so it is limited by (i) alone and includes the anchor call and any call
-    that follows it.
+      (iv) always, for a post-onset bin: the bin ends no later than the
+           onset of the next USV (any emitter, squeaks included) after the
+           anchor's onset, so the post-onset PETH covers the anchor call and
+           the silence after it, never a following call.
+
+    Clauses (ii) and (iii) only constrain pre-onset bins (a post-onset bin
+    lies after every USV that started before the anchor); clause (iv) only
+    post-onset ones.
 
     Parameters
     ----------
@@ -562,6 +566,18 @@ def _anchor_bin_validity_grid(
 
     in_recording = (bin_lo_abs >= 0.0) & (bin_hi_abs <= duration_seconds)
     validity &= in_recording
+
+    # (iv) post-onset bins stop at the next USV's onset. `starts` is sorted, so the
+    # first start strictly after the anchor's is at searchsorted(..., "right"); another
+    # USV starting at the very same time as the anchor makes the next onset the
+    # anchor's own onset (no clean post-onset bin at all).
+    if n_anchors and n_bins and (rel_bin_hi > 1e-9).any():
+        next_idx = np.searchsorted(starts, anchor_starts, side="right")
+        next_onset = np.where(next_idx < starts.size, starts[np.minimum(next_idx, starts.size - 1)], np.inf)
+        n_same_start = next_idx - np.searchsorted(starts, anchor_starts, side="left")
+        next_onset = np.where(n_same_start > 1, anchor_starts, next_onset)
+        post_onset_bins = rel_bin_hi[None, :] > 1e-9   # tolerance: the 0 s edge is a float sum
+        validity &= ~post_onset_bins | (bin_hi_abs <= next_onset[:, None])
 
     if not (require_clean_post or require_clean_prior):
         return validity
