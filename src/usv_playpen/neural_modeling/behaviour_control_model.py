@@ -455,7 +455,7 @@ def load_control_model(settings: dict) -> dict:
 
     A control silently out of step with its settings would change every added score without changing a
     single reported configuration value, which is the failure mode this check exists for. The features
-    are checked too, since those are what "beyond behaviour" means.
+    are checked too, since those are the behaviour the neuron is measured AGAINST.
 
     Parameters
     ----------

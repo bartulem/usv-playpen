@@ -8,7 +8,8 @@ disagrees with its settings.
 
 Order matters. ``select`` writes the feature set, ``fit`` writes the model; the settings'
 ``reduced_model_features`` must be updated to the selected list DELIBERATELY in between, because that
-list is what "beyond behaviour" means and it should never change as a side effect of a re-run.
+list is the behaviour the neuron is measured against, and it should never change as a side
+effect of a re-run.
 
 Usage:
     python -m usv_playpen.neural_modeling.main_behaviour_control_dispatcher --stage select

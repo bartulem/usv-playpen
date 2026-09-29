@@ -28,7 +28,7 @@ The reduced model is P1's SELECTED five features, not all nineteen. The selectio
 other fourteen add no position information, and replacing a measurement with an assumption is the
 wrong direction. Its `final_model_features` is read from P1's own result file and asserted against
 the frozen list in settings, so a re-run of P1 fails loudly here instead of silently redefining what
-"beyond behaviour" means after the counts are banked.
+the neuron is measured against, after the counts are banked.
 
 It is scored under MACRO von Mises -- the objective the control was SELECTED under. Micro would leave
 the control mildly suboptimal for the test (its first-selected feature, `self.neck_elevation`, HURTS
@@ -169,7 +169,8 @@ def reduced_model_features(settings: dict, require_selection_file: bool = True) 
     The behaviour control's feature set: READ from the cohort selection's result file and ASSERTED
     against the frozen list in settings.
 
-    Reading alone would let a re-run of the selection silently redefine what "beyond behaviour" means
+    Reading alone would let a re-run of the selection silently redefine the behaviour the neuron is
+    measured against
     after transformation counts are banked. Freezing alone would let the control drift out of step with
     the selection it is meant to be. Doing both catches the drift instead of absorbing it, and is the
     same "check rather than assume" the emitter and dyad resolutions use.
