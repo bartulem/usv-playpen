@@ -1480,9 +1480,11 @@ The *Compute USV features* and *Infer QLVM latents* steps add columns to *usv_su
 * **mean_freq_hz** : energy-weighted mean frequency of the USV (Hz)
 * **peak_freq_hz** : frequency of peak energy (Hz)
 * **freq_bandwidth_hz** : spectral bandwidth between the low/high cumulative-energy edges (Hz)
-* **mean_amplitude** : mean spectrogram amplitude over the USV (a.u.)
-* **max_amplitude** : maximum spectrogram amplitude over the USV (a.u.)
+* **mean_amplitude** : mean spectrogram amplitude over the USV (a.u., on the call's own min-max normalized [0, 1] spectrogram, so relative to the call's peak)
+* **max_amplitude** : maximum spectrogram amplitude over the USV (a.u., same normalized scale; close to 1 whenever the mask covers the call's peak)
+* **loudness_db** : the call's ABSOLUTE loudness (dB): the image-level level of ``compute_usv_loudness`` — per eligible microphone, the mean over the call's SAM mask of ``10 log10`` of the absolute band power re-read from the session's ``hpss_filtered`` audio, combined across microphones with the spectrogram generator's variance weights. It is the value the QLVM loudness-conditional model is trained and decoded on (``infer-qlvm-latents`` reads it from here), and it reproduces the model package's corpus values. It needs the session's ``hpss_filtered`` audio and SAM masks; a call without a mask gets null
 * **spectral_entropy** : spectral entropy of the USV (nats)
+* **mask_number** : number of SAM mask instances of the USV
 
 .. parsed-literal::
 

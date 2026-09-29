@@ -744,35 +744,32 @@ def test_infer_and_merge_phase11_bandwidth_needs_the_summary_column(tmp_path, mo
     assert summary_path.read_bytes() == before
 
 
-def test_infer_and_merge_phase11_loudness_measures_the_masked_calls(tmp_path, mocker):
-    """A loudness cell measures each call's image-level dB over its SAM mask region
-    from the audio, maps it through db_range and snaps it to the decode grid; a
-    call with no measurable loudness gets null columns."""
+def test_infer_and_merge_phase11_loudness_reads_the_summary_loudness(tmp_path, mocker):
+    """A loudness cell is decoded at each call's loudness_db (the absolute level
+    generate-usv-acoustic-features measured from the audio over the SAM mask), mapped
+    through db_range and snapped to the decode grid; a call without a loudness_db
+    gets null columns, and a summary without the column raises."""
     rng = np.random.default_rng(23)
     condition = {"name": "loudness", "db_range": [28.83, 95.85], "decode": "grid"}
-    root, session_id, cfg, (low_rows, high_rows) = _phase11_session(
-        tmp_path, rng, condition, _phase11_bins("loudness", 0.0, 1.0, 0.0025)
+    root, session_id, cfg, _masks = _phase11_session(
+        tmp_path, rng, condition, _phase11_bins("loudness", 0.0, 1.0, 0.0025),
+        summary_columns={"loudness_db": pls.Series([62.34, 50.0, None])},
     )
-    measured = {}
 
-    def _loudness(**kwargs):
-        measured.update(kwargs)
-        return np.array([62.34, np.nan], dtype=np.float32)
+    condition_values, messages = _run_capturing_c(root, cfg, mocker)
 
-    mocker.patch("usv_playpen.processing.qlvm_latents.session_image_level_db", side_effect=_loudness)
-    spec_params = {"offset": 0.0}
-    condition_values, messages = _run_capturing_c(root, cfg, mocker, {"generate_spectrograms": spec_params})
-
-    np.testing.assert_array_equal(measured["starts"], [0.1, 0.5])
-    np.testing.assert_array_equal(measured["regions"], np.stack([low_rows, high_rows]))
-    assert measured["spec_params"] is spec_params
-    own = np.clip((np.float64(np.float32(62.34)) - 28.83) / (95.85 - 28.83), 0.0, 1.0)
+    own = np.clip((62.34 - 28.83) / (95.85 - 28.83), 0.0, 1.0)
     grid = 0.0025 * np.arange(401)
     np.testing.assert_array_equal(condition_values, np.array([grid[np.argmin(np.abs(grid - own))]], dtype=np.float32))
     assert any("1 USVs without a loudness value" in message for message in messages)
     df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
     assert df["qlvm1"][0] is not None
     assert df["qlvm1"][2] is None
+
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    pls.read_csv(summary_path).drop("loudness_db").write_csv(summary_path)
+    with pytest.raises(ValueError, match="no loudness_db column"):
+        _run_capturing_c(root, cfg, mocker)
 
 
 def test_export_model_cell_arrays_writes_the_reference_layout(tmp_path):

@@ -87,7 +87,6 @@ from ..processing.build_qlvm_training_set import (
     stretch_specs,
 )
 from ..time_utils import is_gui_context, smart_wait
-from .compute_usv_loudness import session_image_level_db
 from .qlvm_model import (
     decoder_head,
     embed_data,
@@ -1276,9 +1275,10 @@ class QLVMLatentInference:
         conditional package decoder is decoded at :func:`frozen_condition_values`
         of each call's own value (:func:`compute_condition_values`); a bandwidth
         condition reads it from the summary's ``freq_bandwidth_hz`` (missing
-        column raises), a loudness condition measures it from the session audio
-        (:func:`compute_usv_loudness.session_image_level_db`), and calls with no
-        value get nulls. The summary is rewritten atomically.
+        column raises), a loudness condition from the summary's ``loudness_db``
+        (the absolute loudness ``generate-usv-acoustic-features`` measured from the
+        session audio with :func:`compute_usv_loudness.session_image_level_db`;
+        missing column raises), and calls with no value get nulls. The summary is rewritten atomically.
 
         Each prefix ``P`` gets the float columns ``P1`` / ``P2`` plus the cluster
         labels of its ``model_cell_label_levels`` (by default ``qlvm_category`` and
@@ -1618,15 +1618,16 @@ class QLVMLatentInference:
                 raise ValueError(error_message)
             raw_values = usv_df["freq_bandwidth_hz"].cast(pls.Float64).fill_null(np.nan).to_numpy()[usv_indices]
         elif condition is not None and condition['name'] == 'loudness':
-            self.message_output(f"Measuring the image-level loudness of {len(usv_indices)} USVs from the audio.")
-            raw_values = session_image_level_db(
-                root_directory=str(root),
-                starts=usv_df["start"].to_numpy()[usv_indices],
-                stops=usv_df["stop"].to_numpy()[usv_indices],
-                regions=masks > 0.5,
-                spec_params=self.input_parameter_dict['generate_spectrograms'],
-                message_output=self.message_output,
-            )
+            # The absolute loudness generate-usv-acoustic-features measured from the audio
+            # over the same SAM mask union (compute_usv_loudness.session_image_level_db),
+            # read instead of re-measured; a call without it gets null columns.
+            if "loudness_db" not in usv_df.columns:
+                error_message = (
+                    f"{usv_summary_loc.name} has no loudness_db column, which this loudness-conditioned decoder "
+                    f"is decoded at. Run generate-usv-acoustic-features on the session first."
+                )
+                raise ValueError(error_message)
+            raw_values = usv_df["loudness_db"].cast(pls.Float64).fill_null(np.nan).to_numpy()[usv_indices]
         if raw_values is not None:
             has_value = np.isfinite(raw_values)
             self.message_output(

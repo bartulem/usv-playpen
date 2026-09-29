@@ -8,8 +8,19 @@ by :mod:`generate_spectrograms` (native-resolution specs; NOT the curated
 training ``.npz``), computes interpretable spectral/amplitude descriptors for
 each USV, and writes them back into the matching rows of the USV summary CSV
 (``mean_freq_hz``, ``peak_freq_hz``, ``freq_bandwidth_hz``, ``mean_amplitude``,
-``max_amplitude``, ``spectral_entropy``) — exactly the columns the downstream
-visualizations/tuning code already consumes.
+``max_amplitude``, ``spectral_entropy``, ``mask_number``) — exactly the columns
+the downstream visualizations/tuning code already consumes — plus
+``loudness_db``, the call's ABSOLUTE loudness.
+
+The two amplitude columns are relative: they are read off each call's stored
+spectrogram, which is min-max normalized to [0, 1] per call, so they say how the
+call's energy is spread, not how loud it was. ``loudness_db`` is the absolute
+level: the image-level dB of :mod:`compute_usv_loudness`
+(:func:`compute_usv_loudness.session_image_level_db`), re-read from the
+session's ``audio/hpss_filtered`` audio over the call's SAM mask region -- the
+value the QLVM loudness-conditional model is trained and decoded on. It needs a
+SAM mask: calls without one (and every call of a session without a mask
+group) get a null ``loudness_db``.
 
 This is kept separate from spectrogram generation so feature definitions can be
 revised and re-run cheaply, without regenerating the (slow) spectrograms.
@@ -42,6 +53,8 @@ from click.core import ParameterSource
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import first_match_or_raise, order_usv_summary_columns
 from ..time_utils import is_gui_context, smart_wait
+from .build_qlvm_training_set import build_session_masks
+from .compute_usv_loudness import session_image_level_db
 
 # Numerical floor that keeps divisions and logs finite on empty/degenerate regions.
 _EPS = 1e-8
@@ -59,6 +72,7 @@ FEATURE_COLUMNS = (
     "max_amplitude",
     "spectral_entropy",
     "mask_number",
+    "loudness_db",
 )
 
 
@@ -318,7 +332,9 @@ class USVAcousticFeatureExtractor:
             Session root directory (contains the ``audio`` tree).
         input_parameter_dict (dict)
             Processing settings; the ``compute_usv_acoustic_features`` block
-            supplies the bandwidth energy-band edges.
+            supplies the bandwidth energy-band edges and the
+            ``generate_spectrograms`` block the spectrogram parameters the
+            loudness is measured with.
         message_output (Callable)
             Logging callback; defaults to ``print``.
 
@@ -337,7 +353,9 @@ class USVAcousticFeatureExtractor:
         Description
         -----------
         Reads the per-session spectrogram H5 and the USV summary CSV, computes
-        the acoustic features, and writes them into the matching summary rows
+        the acoustic features, measures each masked call's absolute loudness
+        (``loudness_db``) from the session's HPSS-filtered audio, and writes
+        them into the matching summary rows
         (joined on ``_usv_row``, the positional index of each USV row in the
         summary CSV, which is 1:1 with the spectrogram rows). USVs absent from
         the H5 (e.g. skipped during generation) get null features. Any
@@ -380,6 +398,13 @@ class USVAcousticFeatureExtractor:
             if has_masks:
                 segmentations = h5_file[mask_group_key]["segmentations"][:]
                 mask_spec_index = h5_file[mask_group_key]["spectrogram_index"][:]
+            # The loudness regions are the calls' SAM mask unions exactly as the QLVM
+            # inference builds them (build_session_masks), so loudness_db equals the
+            # value the loudness-conditional model is decoded at.
+            valid_rows = np.flatnonzero(durations > 0).astype(np.uint32)
+            loudness_masks, loudness_mask_counts = build_session_masks(
+                h5_file, root.name, valid_rows, specs.shape[1], specs.shape[2]
+            )
         # spectrogram rows are 1:1 with usv_summary.csv; keep only the real
         # (duration > 0) USVs and remember their row positions for the merge.
         usv_indices = np.flatnonzero(durations > 0).astype(np.uint32)
@@ -424,10 +449,8 @@ class USVAcousticFeatureExtractor:
         # for every USV when the session has no mask group at all).
         features["mask_number"] = mask_counts
 
-        features_df = pls.DataFrame(
-            {"_usv_row": usv_indices, **{name: features[name].astype(np.float64) for name in FEATURE_COLUMNS}}
-        )
-
+        # Absolute loudness over each call's SAM mask, measured from the audio; calls
+        # without a mask (none in a session without a mask group) stay NaN -> null.
         usv_summary_loc = first_match_or_raise(
             root=root / "audio",
             pattern="*_usv_summary.csv",
@@ -435,6 +458,30 @@ class USVAcousticFeatureExtractor:
             label="USV summary CSV",
         )
         usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
+        loudness = np.full(len(usv_indices), np.nan, dtype=np.float64)
+        masked = loudness_mask_counts > 0
+        if masked.any():
+            loudness[masked] = session_image_level_db(
+                root_directory=str(root),
+                starts=usv_df["start"].to_numpy()[usv_indices[masked]],
+                stops=usv_df["stop"].to_numpy()[usv_indices[masked]],
+                regions=loudness_masks[masked] > 0.5,
+                spec_params=self.input_parameter_dict['generate_spectrograms'],
+                message_output=self.message_output,
+            )
+        features["loudness_db"] = loudness
+        self.message_output(
+            f"Measured the absolute loudness of {int(np.count_nonzero(np.isfinite(loudness)))}/{len(usv_indices)} "
+            f"USVs ({int(np.count_nonzero(~masked))} without a SAM mask get a null loudness_db)."
+        )
+
+        features_df = pls.DataFrame(
+            {"_usv_row": usv_indices, **{name: features[name].astype(np.float64) for name in FEATURE_COLUMNS}}
+        ).with_columns(
+            # A call without a SAM mask has no loudness: an empty cell (null), not "NaN".
+            pls.col("loudness_db").fill_nan(None)
+        )
+
         usv_df = usv_df.drop([c for c in FEATURE_COLUMNS if c in usv_df.columns])
         usv_df = usv_df.with_row_index(name="_usv_row")
         merged = order_usv_summary_columns(usv_df.join(features_df, on="_usv_row", how="left").drop("_usv_row"))
