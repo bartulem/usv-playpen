@@ -70,9 +70,9 @@ from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_
 from ..modeling.manifold_metric import pairwise_distance
 from ..modeling.modeling_torus_geodesics import resolve_geodesic_decoder_source
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..processing.qlvm_latents import load_decoder_params
+from ..processing.qlvm_latents import load_decoder_params, load_model_cell
 from ..processing.qlvm_model import decode_lattice_atlas
-from ..os_utils import configure_path
+from ..os_utils import configure_path, resolve_embedding_arrays_path
 from .plot_style import apply_plot_style
 
 
@@ -4049,6 +4049,117 @@ def _extract_manifold_final_bivariate_weights(selection_results_path,
     return mean_weights, features, n_time_bins, selection_metadata, is_magnitude
 
 
+def _resolve_atlas_decoder_and_arrays(
+        decoder_model_cell_directory: str | None,
+        decoder_weights_npz_path: str | None,
+        supercategory_arrays_npz_path: str | None,
+) -> tuple[dict, str, str]:
+    """
+    Description
+    -----------
+    Resolves what ``plot_manifold_filter_atlas`` decodes its vocal-space atlas
+    with and which supercategory label grid it draws over it.
+
+    * **Decoder.** An explicit ``decoder_model_cell_directory`` (a QLVM model
+      package cell) or ``decoder_weights_npz_path`` (a legacy in-house decoder
+      ``.npz``) wins; passing both raises ValueError. With neither, the source is
+      read from ``modeling_settings.json`` ->
+      ``vocal_features.usv_manifold_geodesic_metrics`` by
+      ``resolve_geodesic_decoder_source`` (the shipped setting names the v3
+      regular cell, the model of the ``qlvm1`` / ``qlvm2`` summary columns); no
+      configured decoder raises ValueError. A cell is loaded by
+      ``processing.qlvm_latents.load_model_cell`` and must be unconditional
+      (``c_dim`` 0): a conditional decoder needs one condition value per call, so
+      its decode is not a function of the torus position alone.
+    * **Supercategory arrays.** An explicit ``supercategory_arrays_npz_path``
+      wins. Otherwise a cell decoder takes the v3 coarse reference arrays by
+      convention, ``os_utils.resolve_embedding_arrays_path(<spectrograms_dir>,
+      "qlvm", "coarse")`` with ``spectrograms_dir`` from
+      ``visualizations_settings.json`` -> ``shared_resources`` (i.e.
+      ``<spectrograms_dir>/qlvm_v3/arrays_coarse.npz``), and a legacy ``.npz``
+      decoder takes the ``arrays_coarse.npz`` beside its weights (the old
+      layout). When the arrays record a ``model_id`` (every
+      ``export-qlvm-reference-arrays`` export does) and the decoder is a cell,
+      the two must name the same cell, otherwise ValueError: boundaries from one
+      model over an atlas decoded by another would mislabel every region.
+
+    Parameters
+    ----------
+    decoder_model_cell_directory (str | None)
+        QLVM model package cell, or None.
+    decoder_weights_npz_path (str | None)
+        Legacy converted decoder ``.npz``, or None.
+    supercategory_arrays_npz_path (str | None)
+        Coarse reference arrays ``.npz`` (``ws_labels_periodic``), or None for
+        the default described above.
+
+    Returns
+    -------
+    decoder_params (dict)
+        Decoder weights for ``processing.qlvm_model.decode_lattice_atlas``.
+    supercategory_arrays_npz_path (str)
+        The OS-resolved coarse arrays path.
+    decoder_model_id (str)
+        ``<package>/<phase>/<cell>`` of a cell decoder, or the resolved ``.npz``
+        path of a legacy decoder (for messages and tests).
+    """
+
+    if decoder_model_cell_directory is not None and decoder_weights_npz_path is not None:
+        raise ValueError(
+            "plot_manifold_filter_atlas: decoder_model_cell_directory and decoder_weights_npz_path are "
+            "both set; the atlas is decoded by one decoder, so pass one of them."
+        )
+    if decoder_model_cell_directory is not None:
+        decoder_source = ('model_cell', decoder_model_cell_directory)
+    elif decoder_weights_npz_path is not None:
+        decoder_source = ('npz', decoder_weights_npz_path)
+    else:
+        with (_PKG_ROOT / "_parameter_settings" / "modeling_settings.json").open() as _msf:
+            _ms = json.load(_msf)
+        decoder_source = resolve_geodesic_decoder_source(
+            _ms['vocal_features']['usv_manifold_geodesic_metrics'])
+        if decoder_source is None:
+            raise ValueError(
+                "plot_manifold_filter_atlas: modeling_settings.json names no QLVM decoder "
+                "(usv_manifold_geodesic_metrics.decoder_model_cell_directory and "
+                "decoder_weights_npz_path are both empty); pass decoder_model_cell_directory."
+            )
+
+    if decoder_source[0] == 'model_cell':
+        model = load_model_cell(decoder_source[1])
+        if model['contract']['c_dim'] != 0:
+            raise ValueError(
+                f"plot_manifold_filter_atlas: {model['model_id']} is a conditional cell "
+                f"(c_dim {model['contract']['c_dim']}); the atlas needs an unconditional decoder, "
+                f"e.g. the phase 6 regular cell."
+            )
+        decoder_params = model['params']
+        decoder_model_id = model['model_id']
+        if supercategory_arrays_npz_path is None:
+            with (_PKG_ROOT / "_parameter_settings" / "visualizations_settings.json").open() as _vsf:
+                _vs = json.load(_vsf)
+            supercategory_arrays_npz_path = resolve_embedding_arrays_path(
+                _vs['shared_resources']['spectrograms_dir'], "qlvm", "coarse")
+        supercategory_arrays_npz_path = configure_path(str(supercategory_arrays_npz_path))
+        with np.load(supercategory_arrays_npz_path) as _arrays:
+            arrays_model_id = str(_arrays['model_id']) if 'model_id' in _arrays.files else None
+        if arrays_model_id is not None and arrays_model_id != decoder_model_id:
+            raise ValueError(
+                f"plot_manifold_filter_atlas: the supercategory arrays {supercategory_arrays_npz_path} "
+                f"hold the clustering of {arrays_model_id}, but the atlas decoder is {decoder_model_id}; "
+                f"export that cell's arrays (export-qlvm-reference-arrays) or pass matching paths."
+            )
+    else:
+        decoder_weights_npz_path = configure_path(str(decoder_source[1]))
+        decoder_params = load_decoder_params(decoder_weights_npz_path)
+        decoder_model_id = decoder_weights_npz_path
+        if supercategory_arrays_npz_path is None:
+            supercategory_arrays_npz_path = str(
+                pathlib.Path(decoder_weights_npz_path).parent / "arrays_coarse.npz")
+        supercategory_arrays_npz_path = configure_path(str(supercategory_arrays_npz_path))
+    return decoder_params, supercategory_arrays_npz_path, decoder_model_id
+
+
 def plot_manifold_filter_atlas(
         selection_results_path: str,
         history_window_sec: float = None,
@@ -4056,6 +4167,7 @@ def plot_manifold_filter_atlas(
         display_bins: int = 25,
         smooth_sigma: float = 3.0,
         atlas_grid_n: int = 10,
+        decoder_model_cell_directory: str = None,
         decoder_weights_npz_path: str = None,
         supercategory_arrays_npz_path: str = None,
         save_plot: bool = False,
@@ -4071,11 +4183,14 @@ def plot_manifold_filter_atlas(
     ------
     * **Top-left -- vocal-space atlas.** A tiled ``atlas_grid_n`` x
       ``atlas_grid_n`` grid of torus positions is decoded through the frozen
-      QLVM decoder (``decode_lattice_atlas``) into canonical USV spectrograms,
+      QLVM decoder (``decode_lattice_atlas``; by default the v3 regular cell's
+      decoder, the torus the ``qlvm1`` / ``qlvm2`` coordinates live on) into
+      canonical USV spectrograms,
       each drawn as a small ``figures.sequential_cmap`` (inferno) image on a black
       background at its torus location and **normalised to its own peak** so the
       contour shape reads at every position regardless of absolute intensity.
-      The 7 supercategory regions are overlaid as thin white boundaries. This is
+      The supercategory regions (the 9 coarse clusters of the v3 regular cell)
+      are overlaid as thin white boundaries. This is
       the "what vocalization lives where" key for the two field panels.
     * **Bottom-left -- filter magnitude.** One ``|W(t)|`` line per selected
       feature (the L2 norm across the 4 torus output coordinates), averaged into
@@ -4120,21 +4235,38 @@ def plot_manifold_filter_atlas(
     atlas_grid_n : int, default 10
         Tiling density of the vocal-space atlas (``atlas_grid_n ** 2`` decoded
         USVs across the torus).
+    decoder_model_cell_directory : str, optional
+        QLVM model package cell whose decoder draws the atlas (its
+        ``checkpoint.tar`` + training contract, read by
+        ``processing.qlvm_latents.load_model_cell``; only unconditional cells,
+        ``c_dim`` 0, since a conditional decoder is not a function of the torus
+        position alone). ``None`` (default, with ``decoder_weights_npz_path`` also
+        ``None``) reads the decoder source from ``modeling_settings.json`` ->
+        ``vocal_features.usv_manifold_geodesic_metrics`` via
+        ``resolve_geodesic_decoder_source`` -- the shipped
+        ``decoder_model_cell_directory`` is the v3 regular cell
+        ``phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor``, the
+        model the ``qlvm1`` / ``qlvm2`` summary columns come from. Routed through
+        ``configure_path``. Cannot be combined with ``decoder_weights_npz_path``.
     decoder_weights_npz_path : str, optional
-        Path to the frozen QLVM decoder ``.npz``. ``None`` (default) reads it from
-        ``modeling_settings.json`` -> ``vocal_features.usv_manifold_geodesic_metrics
-        .decoder_weights_npz_path``. Routed through ``configure_path``. When those
-        settings name a model package cell (``decoder_model_cell_directory``, the
-        shipped v3 decoder) instead, the default raises ValueError: the atlas
-        overlays the supercategory watershed of a reference ``arrays_coarse.npz``
-        beside a legacy decoder ``.npz`` and does not read a package cell's
-        label grids (``export-qlvm-reference-arrays`` writes a cell's
-        ``arrays_coarse.npz``), so both paths must then be passed explicitly.
+        Legacy option: a converted in-house decoder ``.npz`` (the old model's
+        ``qmc_decoder_weights.npz``) to draw the atlas with instead of a package
+        cell; also taken when the settings name an ``.npz`` rather than a cell.
+        Routed through ``configure_path``. With it, ``supercategory_arrays_npz_path``
+        defaults to the ``arrays_coarse.npz`` co-located with the weights (the old
+        layout), since the v3 arrays sit on a different torus.
     supercategory_arrays_npz_path : str, optional
-        Path to the ``.npz`` holding the coarse supercategory watershed
-        (``ws_labels_periodic``, 200 x 200, indexed ``[dim2, dim1]``). ``None``
-        (default) derives ``arrays_coarse.npz`` co-located with the decoder
-        weights. Routed through ``configure_path``.
+        Path to the ``.npz`` holding the coarse supercategory label grid
+        (``ws_labels_periodic``, indexed ``[dim2, dim1]``). ``None`` (default) with
+        a model cell decoder resolves the v3 coarse reference arrays by convention,
+        ``os_utils.resolve_embedding_arrays_path(<visualizations_settings.json
+        shared_resources.spectrograms_dir>, "qlvm", "coarse")`` ->
+        ``<spectrograms_dir>/qlvm_v3/arrays_coarse.npz`` (written by
+        ``export-qlvm-reference-arrays``), and raises ValueError when those arrays
+        record (``model_id``) a different cell than the decoder, so the boundaries
+        always partition the torus the atlas is decoded on. With a legacy decoder
+        ``.npz`` it defaults to the ``arrays_coarse.npz`` beside the weights.
+        Routed through ``configure_path``.
     save_plot : bool, default False
         If True, writes the figure (format / timestamp per the shared figure
         settings).
@@ -4179,29 +4311,16 @@ def plot_manifold_filter_atlas(
         history_window_sec = (float(_im['filter_history_seconds'])
                               if 'filter_history_seconds' in _im else 4.0)
 
-    # Resolve the QLVM artifact paths (settings-driven; the supercategory arrays
-    # are co-located with the decoder weights in the QLVM output directory).
-    if decoder_weights_npz_path is None:
-        with (_PKG_ROOT / "_parameter_settings" / "modeling_settings.json").open() as _msf:
-            _ms = json.load(_msf)
-        _decoder_source = resolve_geodesic_decoder_source(
-            _ms['vocal_features']['usv_manifold_geodesic_metrics'])
-        if _decoder_source is None or _decoder_source[0] != 'npz':
-            raise ValueError(
-                "plot_manifold_filter_atlas: modeling_settings.json names no decoder .npz "
-                "(usv_manifold_geodesic_metrics.decoder_weights_npz_path is empty"
-                + (f"; the decoder is the model package cell {_decoder_source[1]}" if _decoder_source else "")
-                + "). The atlas draws the supercategory watershed that sits beside a legacy "
-                "decoder .npz and does not read a package cell's label grids (export-qlvm-reference-arrays "
-                "writes a cell's arrays_coarse.npz), so pass decoder_weights_npz_path and "
-                "supercategory_arrays_npz_path explicitly."
-            )
-        decoder_weights_npz_path = _decoder_source[1]
-    decoder_weights_npz_path = configure_path(str(decoder_weights_npz_path))
-    if supercategory_arrays_npz_path is None:
-        supercategory_arrays_npz_path = str(
-            pathlib.Path(decoder_weights_npz_path).parent / "arrays_coarse.npz")
-    supercategory_arrays_npz_path = configure_path(str(supercategory_arrays_npz_path))
+    # Resolve the QLVM decoder and the supercategory arrays: the decoder source
+    # (a model package cell, or a legacy .npz) from the arguments or, when neither
+    # is given, from modeling_settings.json; the arrays from the argument, else the
+    # v3 coarse reference arrays by os_utils convention (cell decoder) or the
+    # arrays_coarse.npz beside the weights (legacy .npz decoder).
+    decoder_params, supercategory_arrays_npz_path, _ = _resolve_atlas_decoder_and_arrays(
+        decoder_model_cell_directory=decoder_model_cell_directory,
+        decoder_weights_npz_path=decoder_weights_npz_path,
+        supercategory_arrays_npz_path=supercategory_arrays_npz_path,
+    )
 
     # Feature colours: self / partner by cohort, dyadic social; features sharing a
     # category are separated by OPACITY only (mirrors the trajectory plotter).
@@ -4232,11 +4351,12 @@ def plot_manifold_filter_atlas(
         _n = _counts[_c]
         alphas.append(1.0 if _n == 1 else 1.0 - 0.55 * (_k / (_n - 1)))
 
-    # Supercategory partition (coarse watershed, 7 regions) on the torus. The grid
+    # Supercategory partition (coarse label grid; 9 regions for the v3 regular
+    # cell) on the torus. The grid
     # is indexed [dim2, dim1], so contour(X=dim1, Y=dim2, lab) is already oriented
     # to match the field panels' (dim1 = x, dim2 = y) convention.
-    _arrays = np.load(supercategory_arrays_npz_path)
-    lab = _arrays['ws_labels_periodic']
+    with np.load(supercategory_arrays_npz_path) as _arrays:
+        lab = _arrays['ws_labels_periodic']
     n_super = int(lab.max())
     g_lab = lab.shape[0]
     axg = (np.arange(g_lab) + 0.5) / g_lab
@@ -4264,8 +4384,7 @@ def plot_manifold_filter_atlas(
     vmax = float(np.ceil(_raw_peak / 0.1) * 0.1) if _raw_peak > 0.0 else 0.1
 
     # Vocal-space atlas: decode a tiled grid of torus positions into canonical
-    # USV spectrograms through the frozen QLVM decoder.
-    decoder_params = load_decoder_params(decoder_weights_npz_path)
+    # USV spectrograms through the frozen QLVM decoder resolved above.
     _tile_c = (np.arange(int(atlas_grid_n)) + 0.5) / int(atlas_grid_n)
     _tile_gx, _tile_gy = np.meshgrid(_tile_c, _tile_c, indexing='ij')
     _lattice = np.column_stack([_tile_gx.ravel(), _tile_gy.ravel()]).astype(np.float32)
