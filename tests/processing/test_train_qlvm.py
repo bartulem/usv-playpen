@@ -139,7 +139,7 @@ def test_train_writes_checkpoint_and_bridge_weights(tmp_path, mocker):
     assert weights_path.is_file()
 
     # The training contract sits beside the weights and records the decoder and the
-    # dataset's preprocessing, which infer-qlvm-latents checks its settings against.
+    # dataset's preprocessing, the fields a model package cell's contract records.
     contract = json.loads((output_dir / "qmc_decoder_weights.json").read_text())
     assert contract["decoder_head"] == "legacy"
     assert contract["c_dim"] == 0

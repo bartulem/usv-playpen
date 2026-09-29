@@ -1,39 +1,23 @@
 """
 @author: bartulem
-Embed a session's USV spectrograms into the trained QLVM toroidal latent space
-and merge the latent coordinates + watershed categories into its
+Embed a session's USV spectrograms into the tori of trained QLVM model package
+cells and merge the torus coordinates + cluster labels into its
 ``*_usv_summary.csv``.
 
-This is the in-house, JAX (torch-free) inference driver. It loads the frozen
-decoder weights (a ``.npz`` converted once from the training checkpoint's
-``state_dict``), rebuilds the fixed lattice, embeds the session's spectrograms
-via :func:`qlvm_model.embed_data`, and assigns each USV a cluster by **spatial
-lookup into two fixed reference watershed grids** — a FINE grid and a COARSE grid
-(the torus-periodic ``ws_labels_periodic`` field of a fine and a coarse reference
-``arrays.npz``) — NOT a per-session re-watershed, so clusters are comparable
-across every session embedded into the same torus.
-
-Columns written into ``usv_summary.csv`` (the ones the visualizations/tuning
-code already consume): ``qlvm1``, ``qlvm2`` (torus coordinates),
-``qlvm_category`` (FINE cluster label, e.g. 12 classes) and ``qlvm_supercategory``
-(COARSE cluster label, e.g. 7 classes). The reference grids label every pixel
-from 1, so there is no background / noise label 0; USVs that are not embedded
-get nulls. ``qlvm_model`` names the model the other four came from (the model
-package cell ``<package>/<phase>/<cell>``, or the decoder weights path), because
-labels of different models share the column names but not their meaning.
-
-Fidelity: the session spectrograms are preprocessed with the SAME resize /
-time-stretch used to build the training set (:func:`stretch_specs`), so they are
-in-distribution for the decoder.
-
-Model packages: with ``model_cell_directory`` set, one cell of a QLVM model
-package (``qlvm_models_latest/v2``) replaces the weights / reference-arrays /
-lattice settings (:func:`load_model_cell`): its ``checkpoint.tar`` is read without
-torch, its ``training_contract.json`` fixes the head (legacy or ReLU), the input
-normalization (min-max, and the loudness floor of floor-trained cells) and the
-duration window, its Fibonacci embedding lattice is rebuilt, and its
-fine and coarse ``label_grid.npy`` (``inference/clusters_<level>/`` in v3,
-``cluster/<level>/`` in v2 / v2.1) supply the categories.
+This is the in-house, JAX (torch-free) inference driver. Every model it embeds
+with is one cell of a QLVM model package (``qlvm_models_latest/v3``, and the
+``v2`` / ``v2.1`` layout), listed in the ``model_cells`` setting (column prefix ->
+package cell; by default the production mapping ``QLVM_PRODUCTION_MODEL_CELLS``,
+filled in by :func:`os_utils.derive_spectrogram_model_paths`). A cell brings
+everything inference needs (:func:`load_model_cell`): its ``checkpoint.tar`` is
+read without torch, its ``training_contract.json`` fixes the head (legacy or
+ReLU), the input normalization (min-max, and the loudness floor of floor-trained
+cells) and the duration window, its Fibonacci embedding lattice is rebuilt, and
+its fine and coarse ``label_grid.npy`` (``inference/clusters_<level>/`` in v3,
+``cluster/<level>/`` in v2 / v2.1) supply the cluster labels. Each call is
+labelled by **spatial lookup into those fixed, torus-periodic grids** -- NOT a
+per-session re-watershed -- so clusters are comparable across every session
+embedded into the same torus.
 Conditional cells take one conditioning value per call: phase 10 cells
 (``qlvm_models_latest/v2``, duration or mean frequency) decode it at the frozen
 corpus bin mean, phase 11 cells (``qlvm_models_latest/v3``, duration, mean
@@ -41,18 +25,25 @@ frequency, bandwidth or loudness) at the call's own value clamped to the trainin
 range or snapped to the cell's decode grid, as the contract's ``condition.decode``
 says (:func:`frozen_condition_values`).
 
-Several models in one run: with ``model_cells`` (column prefix -> package cell)
-the session is placed on the torus of every listed cell and each prefix ``P``
+The session is placed on the torus of every listed cell and each prefix ``P``
 gets the float columns ``P1`` / ``P2`` and integer cluster labels read off the
 cell's ``label_grid.npy`` at the pixel of those coordinates
 (:func:`label_grid_lookup`, labels ``1..k`` with 1 the largest cluster, nulls where
-the call was not placed; no ``qlvm_model``). Which levels a prefix writes is the
+the call was not placed; the grids label every pixel from 1, so there is no
+background / noise label 0). Which levels a prefix writes is the
 ``model_cell_label_levels`` setting (prefix -> levels among ``"fine"`` and
 ``"coarse"``); its default ``{}`` writes both levels for every prefix:
 ``qlvm_category`` (fine) and ``qlvm_supercategory`` (coarse) for the regular
 model's prefix ``"qlvm"``, ``P_category`` and ``P_supercategory`` for every other
 prefix, e.g. ``qlvm_dur_category`` / ``qlvm_dur_supercategory``
-(:func:`model_cell_label_columns`).
+(:func:`model_cell_label_columns`). No model-provenance column is written; the
+legacy ``qlvm_model`` column that summaries embedded by the retired single-model
+run still carry is dropped.
+
+Fidelity: the session spectrograms are preprocessed with the SAME resize /
+time-stretch used to build the training set (:func:`stretch_specs`), so they are
+in-distribution for the decoder.
+
 Per model, a corpus session whose spectrogram H5 is verifiably the one the
 package was built from (``SESSION_H5_BASELINE.tsv`` SHA-256, row count, and the
 package's per-row durations and mask counts) takes the package's own coordinates
@@ -101,13 +92,8 @@ from .qlvm_model import (
     decoder_head,
     embed_data,
     gen_fib_basis,
-    gen_korobov_basis,
-    roberts_sequence,
     torus_basis_reverse,
 )
-
-# QLVM columns written into the USV summary CSV (consumed downstream).
-QLVM_COLUMNS = ("qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_model")
 
 # Cluster-label levels a model package cell holds (inference/clusters_<level>/ in v3),
 # and the column-name suffix each gets in a model_cells run: <prefix>_category for the
@@ -362,68 +348,35 @@ def read_torch_checkpoint(checkpoint_path: str | pathlib.Path) -> object:
             return _TorchCheckpointUnpickler(pickle_file, archive, record_prefix).load()
 
 
-def load_decoder_params(weights_npz_path: str) -> dict[str, jnp.ndarray]:
+def load_decoder_params(checkpoint_path: str) -> dict[str, jnp.ndarray]:
     """
     Description
     -----------
-    Loads the frozen decoder weights into the key form
-    :func:`qlvm_model.decoder_forward` expects, from either the converted
-    ``.npz`` (one array per ``state_dict`` entry, as ``train-qlvm`` writes it) or,
-    for any other suffix, a torch zip checkpoint read without torch
+    Loads the frozen decoder weights of a model package cell's torch zip
+    checkpoint (``checkpoint.tar``) into the key form
+    :func:`qlvm_model.decoder_forward` expects, read without torch
     (:func:`read_torch_checkpoint`; its ``"model"`` entry when present). A leading
     ``decoder.`` prefix (present when the full QMCLVM ``state_dict`` is dumped) is
-    stripped.
+    stripped. The converted ``.npz`` weights the retired single-model route read
+    are no longer accepted.
 
     Parameters
     ----------
-    weights_npz_path (str)
-        Path to the ``.npz`` of decoder weights or to a torch checkpoint.
+    checkpoint_path (str)
+        Path to the torch checkpoint.
 
     Returns
     -------
     params (dict[str, jnp.ndarray])
         Decoder weights keyed by ``"<layer_idx>.weight"`` / ``"<layer_idx>.bias"``.
     """
-    weights_path = pathlib.Path(configure_path(weights_npz_path))
-    if weights_path.suffix == ".npz":
-        # Context manager closes the zip-backed NpzFile handle; every array is copied
-        # out inside the block, so closing on exit is safe.
-        with np.load(weights_path) as raw:
-            state = {key: raw[key] for key in raw.files}
-    else:
-        checkpoint = read_torch_checkpoint(weights_path)
-        state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
+    checkpoint = read_torch_checkpoint(pathlib.Path(configure_path(checkpoint_path)))
+    state = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
     params: dict[str, jnp.ndarray] = {}
     for key, value in state.items():
         clean = key[len("decoder."):] if key.startswith("decoder.") else key
         params[clean] = jnp.asarray(value)
     return params
-
-
-def load_training_contract(weights_npz_path: str) -> dict | None:
-    """
-    Description
-    -----------
-    Reads the training contract ``train-qlvm`` writes beside the decoder weights
-    (same stem, ``.json``; e.g. ``qmc_decoder_weights.json``). Weights trained
-    before the contract existed have none, which is reported as ``None`` rather
-    than raised so they keep embedding.
-
-    Parameters
-    ----------
-    weights_npz_path (str)
-        Path to the decoder weights ``.npz``.
-
-    Returns
-    -------
-    contract (dict | None)
-        The parsed contract, or ``None`` when no ``.json`` sits beside the weights.
-    """
-    contract_path = pathlib.Path(configure_path(weights_npz_path)).with_suffix(".json")
-    if not contract_path.is_file():
-        return None
-    with contract_path.open() as contract_file:
-        return json.load(contract_file)
 
 
 def load_model_cell(model_cell_directory: str) -> dict:
@@ -637,14 +590,14 @@ def _minmax_per_spectrogram(spectrograms: np.ndarray, epsilon: np.float32) -> np
     return (spectrograms - low) / ((high - low) + epsilon)
 
 
-def normalize_model_inputs(spectrograms: np.ndarray, contract: dict | None) -> np.ndarray:
+def normalize_model_inputs(spectrograms: np.ndarray, contract: dict) -> np.ndarray:
     """
     Description
     -----------
     Applies the input normalization a decoder was trained with to resized
     spectrograms, as its training contract records it. ``input_normalization``
-    ``"none"`` (``train-qlvm`` decoders, and weights without a contract) leaves the
-    stored values as they are. ``"minmax"`` (QLVM model packages) rescales each
+    ``"none"`` (the contract ``train-qlvm`` writes) leaves the stored values as
+    they are. ``"minmax"`` (QLVM model packages) rescales each
     spectrogram to ``(x - min) / (max - min + normalization_epsilon)`` in float32,
     and a non-null ``floor`` then applies ``clip((x - floor) / (1 - floor), 0, 1)``
     followed by a second min-max -- the order the package's ``model_input`` uses.
@@ -655,8 +608,8 @@ def normalize_model_inputs(spectrograms: np.ndarray, contract: dict | None) -> n
     ----------
     spectrograms (np.ndarray)
         Resized spectrograms, shape ``(N, F, T)``.
-    contract (dict | None)
-        The training contract, or ``None`` for weights without one.
+    contract (dict)
+        The training contract (a model package cell's ``training_contract.json``).
 
     Returns
     -------
@@ -664,7 +617,7 @@ def normalize_model_inputs(spectrograms: np.ndarray, contract: dict | None) -> n
         ``(N, F, T)`` float32 decoder inputs.
     """
     inputs = np.asarray(spectrograms, dtype=np.float32)
-    if contract is None or contract["input_normalization"] == "none":
+    if contract["input_normalization"] == "none":
         return inputs
     epsilon = np.float32(contract["normalization_epsilon"])
     inputs = _minmax_per_spectrogram(inputs, epsilon)
@@ -680,9 +633,8 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
     Description
     -----------
     Checks the ``infer_qlvm_latents`` settings and the loaded weights against the
-    decoder's training contract (``train-qlvm``'s, see
-    :func:`load_training_contract`, or a model package cell's, see
-    :func:`load_model_cell`) and returns the duration window to embed. Every
+    decoder's training contract (a model package cell's ``training_contract.json``,
+    see :func:`load_model_cell`) and returns the duration window to embed. Every
     disagreement is collected and raised together: ``masking_type``,
     ``target_shape``, ``time_stretch`` and ``latent_dim`` must equal the
     contract's; a ``length_threshold`` set in the settings must equal the training
@@ -745,35 +697,6 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
     return float(contract["length_threshold"])
 
 
-def build_lattice(cfg: dict) -> jnp.ndarray:
-    """
-    Description
-    -----------
-    Rebuilds the fixed QLVM lattice from the training configuration so inference
-    uses the exact grid the model was trained on.
-
-    Parameters
-    ----------
-    cfg (dict)
-        The ``infer_qlvm_latents`` settings block (``lattice_type``,
-        ``latent_dim``, ``n_points``, ``korobov_a``, ``fib_m``).
-
-    Returns
-    -------
-    lattice (jnp.ndarray)
-        Lattice points, shape ``(n_points, latent_dim)``.
-    """
-    lattice_type = cfg["lattice_type"]
-    if lattice_type == "korobov":
-        return gen_korobov_basis(cfg["korobov_a"], cfg["latent_dim"], cfg["n_points"])
-    if lattice_type == "roberts":
-        return roberts_sequence(cfg["n_points"], cfg["latent_dim"])
-    if lattice_type == "fibonacci":
-        return gen_fib_basis(cfg["fib_m"])
-    msg = f"build_lattice: unknown lattice_type {lattice_type!r} (expected korobov|roberts|fibonacci)."
-    raise ValueError(msg)
-
-
 def label_grid_lookup(coords: np.ndarray, grid: np.ndarray) -> np.ndarray:
     """
     Description
@@ -808,43 +731,6 @@ def label_grid_lookup(coords: np.ndarray, grid: np.ndarray) -> np.ndarray:
     pixel_x = np.floor(coords[:, 0] * resolution).astype(np.int64) % resolution
     pixel_y = np.floor(coords[:, 1] * resolution).astype(np.int64) % resolution
     return grid[pixel_y, pixel_x]
-
-
-def labels_for_coords(
-    coords: np.ndarray,
-    fine_grid: np.ndarray,
-    coarse_grid: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Description
-    -----------
-    Looks up each torus coordinate's cluster label in the FINE and COARSE
-    reference watershed grids with :func:`label_grid_lookup`
-    (``label = grid[floor(y * res) mod res, floor(x * res) mod res]``, per each
-    grid's own resolution). Each grid is the torus-periodic ``ws_labels_periodic``
-    field of its reference ``arrays.npz``, or a model package cell's
-    ``label_grid.npy`` (periodic = correct for the native-torus QLVM
-    coordinates, which wrap at the seam). The fine grid yields the per-USV
-    ``qlvm_category`` (e.g. 15 clusters in the v3 regular model); the coarse grid
-    yields the broader ``qlvm_supercategory`` (e.g. 9 clusters).
-
-    Parameters
-    ----------
-    coords (np.ndarray)
-        Torus coordinates in ``[0, 1)``, shape ``(N, 2)`` ordered ``(x, y)``.
-    fine_grid (np.ndarray)
-        Fine-granularity periodic watershed label grid, shape ``(res, res)``.
-    coarse_grid (np.ndarray)
-        Coarse-granularity periodic watershed label grid, shape ``(res, res)``.
-
-    Returns
-    -------
-    category (np.ndarray)
-        Fine cluster labels, shape ``(N,)``.
-    supercategory (np.ndarray)
-        Coarse cluster labels, shape ``(N,)``.
-    """
-    return label_grid_lookup(coords, fine_grid), label_grid_lookup(coords, coarse_grid)
 
 
 def validate_model_cells(model_cells: Iterable[tuple[str, str]]) -> dict[str, str]:
@@ -1328,8 +1214,9 @@ class QLVMLatentInference:
     """
     Description
     -----------
-    Embeds one session's spectrograms into the trained QLVM torus and merges the
-    coordinates + watershed categories into its ``*_usv_summary.csv``.
+    Embeds one session's spectrograms into the torus of every QLVM model package
+    cell of the ``model_cells`` setting and merges the coordinates + cluster
+    labels into its ``*_usv_summary.csv``.
     """
 
     def __init__(
@@ -1349,7 +1236,8 @@ class QLVMLatentInference:
             Session root directory (contains the ``audio`` tree).
         input_parameter_dict (dict)
             Processing settings; the ``infer_qlvm_latents`` block supplies the
-            weight/reference paths and lattice configuration.
+            model package cells (``model_cells``), their label levels and the
+            preprocessing settings checked against each cell's training contract.
         message_output (Callable)
             Logging callback; defaults to ``print``.
 
@@ -1366,19 +1254,21 @@ class QLVMLatentInference:
         """
         Description
         -----------
-        Loads the decoder weights, lattice and reference watershed grids; reads
-        the session spectrogram H5, preprocesses identically to training, embeds
-        into the torus, assigns categories by reference lookup, and merges
-        ``qlvm_*`` columns into the matching USV summary rows (joined on the
-        positional USV row index, since the spectrogram rows are 1:1 with the
+        Places the session on the torus of every QLVM model package cell of the
+        ``model_cells`` setting (column prefix -> model package cell; filled with
+        the production mapping by :func:`os_utils.derive_spectrogram_model_paths`
+        when the settings name no model and carry a ``spectrograms_root``). Per
+        cell: loads its decoder weights, training contract, embedding lattice and
+        label grids (:func:`load_model_cell`); checks the settings against the
+        contract (:func:`enforce_training_contract`), whose ``length_threshold``
+        applies; reads the session spectrogram H5, preprocesses identically to
+        training, embeds into the torus (or takes the package's own coordinates,
+        see :meth:`_merge_model_cells`), labels by grid lookup, and merges the
+        columns into the matching USV summary rows (joined on the positional USV
+        row index, since the spectrogram rows are 1:1 with the
         ``usv_summary.csv`` rows; USVs with non-positive duration, or with a
         duration at or above the training set's ``length_threshold``, are skipped
-        and get nulls; any pre-existing ``qlvm_*`` columns are replaced). When the
-        weights carry a training contract (:func:`load_training_contract`), the
-        settings are checked against it first (:func:`enforce_training_contract`)
-        and its ``length_threshold`` applies; otherwise the settings'
-        ``length_threshold`` does (``null`` embeds every positive duration). When
-        the contract's training set kept only calls with a SAM mask
+        and get nulls). When the contract's training set kept only calls with a SAM mask
         (``require_mask``) or the decoder conditions on mean frequency or
         loudness, USVs without a mask instance are skipped and get nulls too.
         When the decoder needs SAM masks at all (those cases, or ``masking_type``
@@ -1390,23 +1280,23 @@ class QLVMLatentInference:
         (:func:`compute_usv_loudness.session_image_level_db`), and calls with no
         value get nulls. The summary is rewritten atomically.
 
-        With a non-empty ``model_cells`` setting (column prefix -> model package
-        cell) the session is instead placed on the torus of every listed cell, and
-        each prefix ``P`` gets the float columns ``P1`` / ``P2`` plus the cluster
+        Each prefix ``P`` gets the float columns ``P1`` / ``P2`` plus the cluster
         labels of its ``model_cell_label_levels`` (by default ``qlvm_category`` and
         ``qlvm_supercategory`` for ``"qlvm"``, ``P_category`` and
-        ``P_supercategory`` for every other prefix); no model column is written, and a stale ``qlvm_model`` and the
-        earlier coordinate and label columns of the listed prefixes are removed
-        first (see :meth:`_merge_model_cells`). ``model_cells`` and
-        ``model_cell_directory`` cannot both be set.
+        ``P_supercategory`` for every other prefix); no model column is written, and
+        the legacy ``qlvm_model`` column (written by the retired single-model run)
+        and the earlier coordinate and label columns of the listed prefixes are
+        removed first (see :meth:`_merge_model_cells`). An empty ``model_cells``
+        raises ValueError before anything is read: model package cells are the
+        only models this module embeds with.
 
         Parameters
         ----------
 
         Returns
         -------
-        Updated ``*_usv_summary.csv`` with the ``qlvm_*`` columns (or the
-        ``P1`` / ``P2`` and label columns of every ``model_cells`` prefix).
+        Updated ``*_usv_summary.csv`` with the ``P1`` / ``P2`` and label columns of
+        every ``model_cells`` prefix.
         """
         self.message_output(
             f"QLVM latent inference started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
@@ -1415,10 +1305,16 @@ class QLVMLatentInference:
 
         derive_spectrogram_model_paths(self.input_parameter_dict)
         cfg = self.input_parameter_dict['infer_qlvm_latents']
-        if cfg['model_cells']:
-            self._merge_model_cells(cfg)
-        else:
-            self._merge_single_model(cfg)
+        if not cfg['model_cells']:
+            error_message = (
+                "infer_qlvm_latents: model_cells is empty, so there is no model to embed with. List the QLVM "
+                "model package cells to embed with (column prefix -> cell directory, e.g. via --model-cell "
+                "PREFIX CELL), or set spectrograms_root so the production cells (os_utils."
+                "QLVM_PRODUCTION_MODEL_CELLS) are filled in. The single-model route (model_cell_directory / "
+                "weights_npz_path) is retired."
+            )
+            raise ValueError(error_message)
+        self._merge_model_cells(cfg)
 
         self.message_output(
             f"QLVM latent inference ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
@@ -1464,101 +1360,11 @@ class QLVMLatentInference:
         usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
         return root, h5_loc, usv_summary_loc, usv_df
 
-    def _merge_single_model(self, cfg: dict) -> None:
-        """
-        Description
-        -----------
-        The single-model run of :meth:`infer_and_merge`: embeds the session with
-        the model package cell of ``model_cell_directory``, or with the decoder
-        weights of ``weights_npz_path`` and the lattice and reference-array
-        settings, and merges ``qlvm1``, ``qlvm2``, ``qlvm_category``,
-        ``qlvm_supercategory`` and ``qlvm_model`` into the summary.
-
-        Parameters
-        ----------
-        cfg (dict)
-            The ``infer_qlvm_latents`` settings block.
-
-        Returns
-        -------
-        None
-        """
-        if cfg['model_cell_directory']:
-            # A QLVM model package cell brings its own weights, contract, embedding
-            # lattice and label grids; the settings' paths and lattice keys are unused.
-            model = load_model_cell(cfg['model_cell_directory'])
-            self.message_output(
-                f"Embedding with model package cell {model['model_id']} ({decoder_head(model['params'])} head, "
-                f"{model['lattice'].shape[0]}-point Fibonacci lattice)."
-            )
-        else:
-            params = load_decoder_params(cfg['weights_npz_path'])
-            lattice = build_lattice(cfg)
-            contract = load_training_contract(cfg['weights_npz_path'])
-            # Fine grid -> qlvm_category; coarse grid -> qlvm_supercategory. Both are
-            # the torus-periodic watershed (ws_labels_periodic) of their reference file.
-            # Context managers close each zip-backed NpzFile handle; the grid array is
-            # fully materialized on access inside the block, so closing on exit is safe.
-            with np.load(configure_path(cfg['reference_arrays_fine_npz_path'])) as fine_ref:
-                fine_grid = fine_ref['ws_labels_periodic']
-            with np.load(configure_path(cfg['reference_arrays_coarse_npz_path'])) as coarse_ref:
-                coarse_grid = coarse_ref['ws_labels_periodic']
-            model = {
-                "params": params,
-                "contract": contract,
-                "lattice": lattice,
-                "fine_grid": fine_grid,
-                "coarse_grid": coarse_grid,
-                "condition_bins": None,
-                "model_id": cfg['weights_npz_path'],
-            }
-
-        # The decoder only knows calls shaped like its training set: check the
-        # preprocessing settings against its contract and embed only calls inside the
-        # set's duration window. Weights with no contract fall back to the settings.
-        if model['contract'] is None:
-            length_threshold = cfg['length_threshold']
-            self.message_output(
-                "No training contract beside the decoder weights; the infer_qlvm_latents settings are used as given "
-                f"(length_threshold={length_threshold})."
-            )
-        else:
-            length_threshold = enforce_training_contract(model['contract'], cfg, model['params'])
-
-        root, h5_loc, usv_summary_loc, usv_df = self._locate_session_files()
-        usv_indices, coords = self._embed_session(
-            model, cfg, length_threshold, root, h5_loc, usv_df, usv_summary_loc, "qlvm_*"
-        )
-        category, supercategory = labels_for_coords(coords, model['fine_grid'], model['coarse_grid'])
-
-        qlvm_df = pls.DataFrame({
-            "_usv_row": usv_indices,
-            "qlvm1": coords[:, 0].astype(np.float64),
-            "qlvm2": coords[:, 1].astype(np.float64),
-            "qlvm_category": category.astype(np.int64),
-            "qlvm_supercategory": supercategory.astype(np.int64),
-            # Which model's torus and clusters these are: labels from different models
-            # share column names but not meanings, so an analysis can check this first.
-            "qlvm_model": [model['model_id']] * len(usv_indices),
-        }, schema_overrides={"qlvm_model": pls.String})
-
-        usv_df = usv_df.drop([c for c in QLVM_COLUMNS if c in usv_df.columns])
-        usv_df = usv_df.with_row_index(name="_usv_row")
-        merged = order_usv_summary_columns(usv_df.join(qlvm_df, on="_usv_row", how="left").drop("_usv_row"))
-        # usv_summary.csv holds every other per-USV column too: publish atomically so
-        # a failed write leaves the previous file intact instead of a truncated one.
-        with atomic_output_path(usv_summary_loc) as tmp_summary_path:
-            merged.write_csv(file=str(tmp_summary_path))
-
-        self.message_output(
-            f"Merged QLVM latents/categories for {len(usv_indices)} USVs into {usv_summary_loc.name}."
-        )
-
     def _merge_model_cells(self, cfg: dict) -> None:
         """
         Description
         -----------
-        The multi-model run of :meth:`infer_and_merge`: places the session on the
+        The run of :meth:`infer_and_merge`: places the session on the
         torus of every cell of ``model_cells`` and merges, per prefix ``P``, the
         float columns ``P1`` / ``P2`` and the integer cluster-label columns of the
         prefix's label levels into the summary (nulls where a call was not placed).
@@ -1581,13 +1387,13 @@ class QLVMLatentInference:
         session in that baseline with an unchanged spectrogram H5 (SHA-256, hashed
         once per session), a summary as long as the H5, and the package's
         durations and mask counts equal to the H5's on every one of its rows. Any
-        other case embeds the session with the cell (:meth:`_embed_session`),
-        exactly as the single-model run does. Both routes label by the same grid
-        lookup.
+        other case embeds the session with the cell (:meth:`_embed_session`).
+        Both routes label by the same grid lookup.
 
-        No ``qlvm_model`` column is written; a stale one, and every earlier
-        ``P1`` / ``P2`` and label column of the listed prefixes (both levels,
-        whichever this run writes), are dropped before the merge. The summary is
+        No model-provenance column is written; the legacy ``qlvm_model`` column
+        (which summaries embedded by the retired single-model run still carry)
+        and every earlier ``P1`` / ``P2`` and label column of the listed prefixes
+        (both levels, whichever this run writes) are dropped before the merge. The summary is
         rewritten atomically.
 
         Parameters
@@ -1599,13 +1405,6 @@ class QLVMLatentInference:
         -------
         None
         """
-        if cfg['model_cell_directory']:
-            error_message = (
-                "infer_qlvm_latents: model_cells and model_cell_directory are both set. model_cells embeds the "
-                "session with every listed cell and writes <prefix>1/<prefix>2 and label columns; model_cell_directory "
-                "embeds it with one cell and writes the qlvm_* columns. Set one of them and leave the other empty."
-            )
-            raise ValueError(error_message)
         if not isinstance(cfg['model_cells'], dict):
             error_message = (
                 f"infer_qlvm_latents.model_cells must be an object of column prefix -> model cell directory, "
@@ -1676,8 +1475,9 @@ class QLVMLatentInference:
                 frame_columns[column] = label_grid_lookup(placed_coords, model[f"{level}_grid"]).astype(np.int64)
             coordinate_frames.append(pls.DataFrame(frame_columns))
 
-        # Provenance of these models is kept outside the summary, so a qlvm_model left
-        # by a single-model run goes, together with this run's own earlier coordinate
+        # Provenance of these models is kept outside the summary, so the legacy
+        # qlvm_model column (written by the retired single-model run; older summaries
+        # may still carry it) goes, together with this run's own earlier coordinate
         # and label columns (both levels, whichever this run writes) of every listed prefix.
         stale = ["qlvm_model"]
         stale += [f"{prefix}{axis}" for prefix in models for axis in (1, 2)]
@@ -1721,7 +1521,7 @@ class QLVMLatentInference:
         Parameters
         ----------
         model (dict)
-            ``params``, ``contract`` (dict or None), ``lattice`` and
+            ``params``, ``contract`` (dict), ``lattice`` and
             ``condition_bins`` (dict or None), as :func:`load_model_cell` returns them.
         cfg (dict)
             The ``infer_qlvm_latents`` settings block.
@@ -1738,7 +1538,7 @@ class QLVMLatentInference:
             Path of the summary, named in errors.
         null_columns (str)
             How the log names the columns a skipped call leaves null (e.g.
-            ``"qlvm_*"`` or ``"qlvm_dur1/qlvm_dur2"``).
+            ``"qlvm_dur1/qlvm_dur2"``).
 
         Returns
         -------
@@ -1774,15 +1574,14 @@ class QLVMLatentInference:
             # A mean-frequency or loudness condition is always computed on the masked
             # call, even for a decoder fed unmasked (floored) spectrograms, so it needs
             # the masks too.
-            condition = contract['condition'] if contract is not None and contract['c_dim'] else None
+            condition = contract['condition'] if contract['c_dim'] else None
             masked_call_condition = condition is not None and condition['name'] in ('mean_freq', 'loudness')
-            require_mask = contract is not None and contract['require_mask']
+            require_mask = contract['require_mask']
             # build_session_masks gives a call without mask instances an all-ones mask.
             # A set built with require_mask left such calls out, and their mean frequency
             # or loudness would span the whole call, so those decoders give them null
-            # columns. Sets without require_mask (the shipped model, train-qlvm on a
-            # main-built set) trained on them under that all-ones mask, so they are
-            # embedded as before.
+            # columns. Sets without require_mask (e.g. train-qlvm on a main-built set)
+            # trained on them under that all-ones mask, so they are embedded as before.
             drop_maskless = require_mask or masked_call_condition
             masks = None
             if cfg['masking_type'] == 'sam' or drop_maskless:
@@ -2017,22 +1816,14 @@ def export_qlvm_reference_arrays_cli(model_cell_directory, output_directory) -> 
 
 @click.command(name="infer-qlvm-latents")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--model-cell-directory', 'model_cell_directory', type=str, default=None, required=False, help='A QLVM model package cell (e.g. .../qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked); when set, its checkpoint, training_contract.json, embedding lattice and label grids replace the weights, reference-arrays and lattice settings.')
-@click.option('--model-cell', 'model_cells', type=(str, str), multiple=True, default=None, required=False, help='A column prefix and a QLVM model package cell (e.g. --model-cell qlvm_dur .../qlvm_models_latest/v3/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor); repeat once per model. When given, these pairs replace the model_cells setting: the session is placed on the torus of every listed cell and <prefix>1/<prefix>2 plus the cluster-label columns of each prefix (see --model-cell-labels) are written. Cannot be combined with a model cell directory.')
+@click.option('--model-cell', 'model_cells', type=(str, str), multiple=True, default=None, required=False, help='A column prefix and a QLVM model package cell (e.g. --model-cell qlvm_dur .../qlvm_models_latest/v3/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor); repeat once per model. When given, these pairs replace the model_cells setting: the session is placed on the torus of every listed cell and <prefix>1/<prefix>2 plus the cluster-label columns of each prefix (see --model-cell-labels) are written. Without it, the model_cells setting is used (by default the production cells).')
 @click.option('--model-cell-labels', 'model_cell_label_levels', type=(str, str), multiple=True, default=None, required=False, help='A model_cells column prefix and the comma-separated cluster-label levels it writes, among fine and coarse (e.g. --model-cell-labels qlvm_dur fine,coarse writes qlvm_dur_category and qlvm_dur_supercategory; an empty string writes none); repeat once per prefix. When given, these pairs replace the model_cell_label_levels setting; prefixes not listed keep the default (fine and coarse: qlvm_category, qlvm_supercategory for qlvm; P_category, P_supercategory for every other prefix P).')
 @click.option('--prefer-package-values/--no-prefer-package-values', 'prefer_package_values', default=None, required=False, help='With model cells: take a corpus session\'s coordinates from the package\'s own embedding when its spectrogram H5 is unchanged since the package (SHA-256, row count, durations and mask counts verified), else infer them; --no-prefer-package-values infers every session.')
-@click.option('--weights-npz-path', 'weights_npz_path', type=str, default=None, required=False, help='Path to the converted decoder weights .npz.')
-@click.option('--reference-arrays-fine-npz-path', 'reference_arrays_fine_npz_path', type=str, default=None, required=False, help='Path to the FINE reference arrays.npz (ws_labels_periodic -> qlvm_category).')
-@click.option('--reference-arrays-coarse-npz-path', 'reference_arrays_coarse_npz_path', type=str, default=None, required=False, help='Path to the COARSE reference arrays.npz (ws_labels_periodic -> qlvm_supercategory).')
-@click.option('--lattice-type', 'lattice_type', type=click.Choice(['korobov', 'roberts', 'fibonacci']), default=None, required=False, help='Quasi-random lattice generator used to rebuild the fixed QLVM (quasi-Monte Carlo latent variable model) lattice at inference.')
-@click.option('--latent-dim', 'latent_dim', type=int, default=None, required=False, help='Dimensionality of the toroidal latent space.')
-@click.option('--n-points', 'n_points', type=int, default=None, required=False, help='Number of lattice points used at inference.')
-@click.option('--korobov-a', 'korobov_a', type=int, default=None, required=False, help='Korobov generating integer (used when lattice-type=korobov).')
-@click.option('--fib-m', 'fib_m', type=int, default=None, required=False, help='Fibonacci lattice order m (used when lattice-type=fibonacci).')
+@click.option('--latent-dim', 'latent_dim', type=int, default=None, required=False, help='Dimensionality of the toroidal latent space; must equal every model cell\'s training contract.')
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.')
-@click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Apply SAM mask regions before embedding ("sam", matching training) or embed raw spectrograms ("none"). With "sam", a session without a mask group raises.')
+@click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Embed raw spectrograms ("none", the default; the production phase 6 and 11 cells) or apply SAM mask regions before embedding ("sam", phase 9 cells); must match every cell\'s training contract. With "sam", a session without a mask group raises.')
 @click.option('--target-shape', 'target_shape', nargs=2, type=int, default=None, required=False, help='Output spectrogram (freq, time) shape as two ints, matching the training preprocessing, e.g. --target-shape 128 128.')
-@click.option('--length-threshold', 'length_threshold', type=float, default=None, required=False, help='Embed only USVs with duration below this (time bins); must equal the training contract when the weights carry one. Unset in the settings (null) with no contract, every positive duration is embedded.')
+@click.option('--length-threshold', 'length_threshold', type=float, default=None, required=False, help='Embed only USVs with duration below this (time bins); when set, must equal every model cell\'s training contract. Unset in the settings (null), each cell\'s contract sets it.')
 @click.option('--lattice-batch-size', 'lattice_batch_size', type=int, default=None, required=False, help='Lattice points decoded and scored per block; lower it to cut memory on large lattices.')
 @click.option('--data-batch-size', 'data_batch_size', type=int, default=None, required=False, help='Spectrograms whose lattice posteriors are computed together; memory grows with this times the lattice size.')
 @click.pass_context
@@ -2040,10 +1831,11 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
     -----------
-    A command-line tool to embed a session's USV spectrograms into the QLVM
-    torus and merge the latents/categories into its USV summary CSV (or, with
-    ``--model-cell`` pairs, the torus coordinates and cluster labels of every
-    listed model; ``--model-cell-labels`` pairs choose each prefix's label levels).
+    A command-line tool to embed a session's USV spectrograms into the torus of
+    every QLVM model package cell of the ``model_cells`` setting (or of the
+    ``--model-cell`` pairs, which replace it) and merge the torus coordinates and
+    cluster labels of every listed model into its USV summary CSV;
+    ``--model-cell-labels`` pairs choose each prefix's label levels.
 
     Parameters
     ----------

@@ -610,8 +610,8 @@ class TestContinuousModelRunner:
         to every per-fold metric bundle across all three strategies, mirroring the
         acoustic-manifold selection stage so the screen reports the same torus
         metrics it will later be selected on. The reference map is built once and
-        cached on the runner. With no decoder ``.npz`` supplied (empty
-        ``decoder_weights_npz_path``), the density-ratio geodesic is still computed
+        cached on the runner. With no decoder cell supplied (empty
+        ``decoder_model_cell_directory``), the density-ratio geodesic is still computed
         from the embedded ``Y`` (finite), while the decoder-Jacobian pullback
         column degrades to ``NaN`` -- the documented graceful fallback. The two
         columns carry one entry per fold, in lockstep with every other metric.
@@ -628,7 +628,7 @@ class TestContinuousModelRunner:
             'grid_n_per_dim': 12,
             'graph_k': 6,
             'density_exponent': 1.0,
-            'decoder_weights_npz_path': '',
+            'decoder_model_cell_directory': '',
         }
         pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
         pipeline.extract_and_save_continuous_data()

@@ -1567,8 +1567,8 @@ class ContinuousModelRunner:
                 and manifold_metric == 'torus' and Y is not None):
             _geo_cfg = _vf_settings['usv_manifold_geodesic_metrics']
             if _geo_cfg['compute']:
-                # Resolved outside the soft-failure block: an ambiguous decoder
-                # configuration (cell AND npz) is a settings error, not a NaN column.
+                # Resolved outside the soft-failure block: a settings block without
+                # decoder_model_cell_directory is a settings error, not a NaN column.
                 _geo_decoder_source = resolve_geodesic_decoder_source(_geo_cfg)
                 try:
                     _geo_decode_fn = None

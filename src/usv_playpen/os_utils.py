@@ -481,30 +481,32 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     The QLVM embedding is NOT derived from ``spectrograms_root`` any more: the
     old in-house model under ``<root>/qlvm`` (``qmc_decoder_weights.npz`` and
     its ``arrays_{fine,coarse}.npz`` watershed grids) would re-embed sessions on
-    a different torus and write its own ``qlvm_category`` / ``qlvm_supercategory``.
-    Instead, when ``infer_qlvm_latents`` names no model at all
-    (``model_cells``, ``model_cell_directory`` and ``weights_npz_path`` all
-    empty), ``infer_qlvm_latents.model_cells`` is filled with the production
+    a different torus and write its own ``qlvm_category`` / ``qlvm_supercategory``,
+    and ``infer-qlvm-latents`` no longer reads such a decoder at all (model
+    package cells are its only models). Instead, when ``infer_qlvm_latents``
+    names no model (``model_cells`` empty), ``infer_qlvm_latents.model_cells``
+    is filled with the production
     mapping ``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``
     (prefixes ``qlvm``, ``qlvm_dur``, ``qlvm_mf``, ``qlvm_bw``, ``qlvm_loud``),
     and ``infer_qlvm_latents.masking_type`` is set to the cells' trained
     ``QLVM_PRODUCTION_MASKING_TYPE`` (``"none"``). The masking type is part of
     the derived model, not a separate choice: ``infer-qlvm-latents`` checks it
-    against each cell's training contract and refuses to embed on a mismatch,
-    so keeping the shipped ``"sam"`` would only make the derived run fail. Any
-    explicitly configured model (either kind) is left entirely alone,
+    against each cell's training contract and refuses to embed on a mismatch
+    (the shipped default is already ``"none"``; this keeps a derived run correct
+    when a user's settings still say ``"sam"``). An
+    explicitly configured ``model_cells`` is left entirely alone,
     ``masking_type`` included. ``infer_qlvm_latents.model_cell_label_levels`` is
     never touched: its shipped ``{}`` already gives the production label columns
-    (``qlvm_category`` and ``qlvm_supercategory`` for ``qlvm``, ``P_category`` for
-    every other prefix ``P``).
+    (``qlvm_category`` and ``qlvm_supercategory`` for ``qlvm``, ``P_category`` and
+    ``P_supercategory`` for every other prefix ``P``).
 
     Parameters
     ----------
     settings (dict)
         The full processing-settings dictionary. When ``spectrograms_root`` is
         absent or empty the dictionary is returned unchanged (legacy settings
-        files that set the granular ``generate_masks`` / ``infer_qlvm_latents``
-        paths directly keep working); otherwise the ``generate_masks``,
+        files that set the granular ``generate_masks`` paths and
+        ``infer_qlvm_latents.model_cells`` directly keep working); otherwise the ``generate_masks``,
         ``infer_qlvm_latents``, ``detect_usv_squeaks`` and ``detect_usv_noise``
         blocks must exist.
 
@@ -532,7 +534,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         if not settings[block][key]:
             settings[block][key] = derived_path
     qlvm_cfg = settings['infer_qlvm_latents']
-    if not qlvm_cfg['model_cells'] and not qlvm_cfg['model_cell_directory'] and not qlvm_cfg['weights_npz_path']:
+    if not qlvm_cfg['model_cells']:
         qlvm_cfg['model_cells'] = {
             prefix: f'{QLVM_MODEL_PACKAGE_ROOT}/{cell}' for prefix, cell in QLVM_PRODUCTION_MODEL_CELLS.items()
         }
@@ -1080,9 +1082,9 @@ def wait_for_subprocesses(
 # model's qlvm1/qlvm2 with its fine and coarse labels qlvm_category /
 # qlvm_supercategory, then the duration, mean-frequency, bandwidth and loudness
 # conditional models, each with its fine and coarse labels P_category /
-# P_supercategory). The single-model column qlvm_model is not listed: production
-# summaries do not carry it (a legacy run that writes it still keeps it, after the
-# canonical columns).
+# P_supercategory). The legacy column qlvm_model (written by the retired
+# single-model run) is not listed: production summaries do not carry it, and
+# infer_qlvm_latents drops it from older summaries it rewrites.
 # Steps that re-append their own columns reorder to this before writing, so a
 # column's position no longer depends on which step ran last.
 USV_SUMMARY_COLUMN_ORDER = (

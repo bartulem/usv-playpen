@@ -2,11 +2,11 @@
 @author: bartulem
 Tests for processing/qlvm_latents — the QLVM inference driver.
 
-Covers the helper pieces (weight loading + ``decoder.`` prefix stripping,
-lattice rebuild, fine/coarse reference label lookup) and an end-to-end run that
-synthesizes a decoder-weights ``.npz``, FINE + COARSE reference ``arrays.npz``
-(periodic ws grids), a session spectrogram H5 and a ``usv_summary.csv``, then
-checks the ``qlvm_*`` columns are merged into the right rows.
+Covers the helper pieces (weight loading + ``decoder.`` prefix stripping, the
+label-grid pixel rule, training-contract checks, input normalization, condition
+values) and end-to-end runs that synthesize QLVM model package cells, a session
+spectrogram H5 and a ``usv_summary.csv``, then check the ``model_cells`` columns
+are merged into the right rows.
 """
 
 from __future__ import annotations
@@ -25,35 +25,6 @@ import pytest
 
 from usv_playpen.processing import qlvm_latents as ql
 from usv_playpen.processing.build_qlvm_training_set import file_sha256
-
-
-def test_load_decoder_params_strips_prefix(tmp_path):
-    """Weights are loaded and a leading ``decoder.`` prefix is stripped."""
-    p = tmp_path / "w.npz"
-    np.savez(p, **{"decoder.0.weight": np.ones((4, 4)), "decoder.0.bias": np.zeros(4)})
-    params = ql.load_decoder_params(str(p))
-    assert set(params) == {"0.weight", "0.bias"}
-
-
-def test_build_lattice_korobov_and_roberts():
-    """build_lattice dispatches on lattice_type with the right point count."""
-    kor = ql.build_lattice({"lattice_type": "korobov", "latent_dim": 2, "n_points": 21, "korobov_a": 3})
-    assert kor.shape == (21, 2)
-    rob = ql.build_lattice({"lattice_type": "roberts", "latent_dim": 2, "n_points": 30})
-    assert rob.shape == (30, 2)
-
-
-def test_labels_for_coords_lookup_convention():
-    """Coordinate (x, y) maps to grid[int(y*res), int(x*res)] in each grid (per its
-    own resolution): category from the fine grid, supercategory from the coarse grid."""
-    fine = np.arange(16).reshape(4, 4).astype(np.int16)      # res = 4 -> qlvm_category
-    coarse = np.arange(4).reshape(2, 2).astype(np.int16)     # res = 2 -> qlvm_supercategory
-    coords = np.array([[0.0, 0.0], [0.9, 0.1], [0.1, 0.9]])
-    cat, supercat = ql.labels_for_coords(coords, fine, coarse)
-    # fine (res=4): (px,py) = (0,0),(3,0),(0,3)
-    assert cat.tolist() == [fine[0, 0], fine[0, 3], fine[3, 0]]
-    # coarse (res=2): (px,py) = (0,0),(1,0),(0,1)
-    assert supercat.tolist() == [coarse[0, 0], coarse[0, 1], coarse[1, 0]]
 
 
 def test_label_grid_lookup_is_the_package_pixel_rule_at_the_edges():
@@ -86,108 +57,6 @@ def test_label_grid_lookup_is_the_package_pixel_rule_at_the_edges():
     assert by_value[below_one] == grid[0, 199]
     assert by_value[1.0] == grid[0, 0]
     assert by_value[-1e-9] == grid[0, 199]
-    # labels_for_coords applies the same rule to its two grids.
-    fine, coarse = ql.labels_for_coords(coords, grid, grid.T.copy())
-    np.testing.assert_array_equal(fine, labels)
-    np.testing.assert_array_equal(coarse, grid.T[expected_py, expected_px])
-
-
-def _decoder_weights_npz(path, rng, latent_dim=2):
-    np.savez(
-        path,
-        **{
-            "decoder.0.weight": rng.standard_normal((2048, 2 * latent_dim)) * 0.05,
-            "decoder.0.bias": rng.standard_normal(2048) * 0.05,
-            "decoder.1.weight": rng.standard_normal((64 * 8 * 8, 2048)) * 0.01,
-            "decoder.1.bias": rng.standard_normal(64 * 8 * 8) * 0.05,
-            "decoder.3.weight": rng.standard_normal((64, 32, 3, 3)) * 0.05,
-            "decoder.3.bias": rng.standard_normal(32) * 0.05,
-            "decoder.5.weight": rng.standard_normal((32, 16, 3, 3)) * 0.05,
-            "decoder.5.bias": rng.standard_normal(16) * 0.05,
-            "decoder.7.weight": rng.standard_normal((16, 8, 3, 3)) * 0.05,
-            "decoder.7.bias": rng.standard_normal(8) * 0.05,
-            "decoder.9.weight": rng.standard_normal((8, 1, 3, 3)) * 0.05,
-            "decoder.9.bias": rng.standard_normal(1) * 0.05,
-        },
-    )
-
-
-def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
-    """End-to-end: embed a session's specs and merge qlvm_* columns into the
-    summary, joined on the per-USV index; missing USVs are null."""
-    rng = np.random.default_rng(0)
-    session_id = "20230119_155302"
-    root = tmp_path / session_id
-    (root / "audio" / "spectrograms").mkdir(parents=True)
-
-    # weights + FINE/COARSE reference grids (the code reads ws_labels_periodic
-    # from each); fine has more clusters than coarse.
-    weights = tmp_path / "qmc_decoder_weights.npz"
-    _decoder_weights_npz(weights, rng)
-    fine_arrays = tmp_path / "arrays_fine.npz"
-    coarse_arrays = tmp_path / "arrays_coarse.npz"
-    res = 8
-    np.savez(fine_arrays, ws_labels_periodic=(rng.integers(0, 12, size=(res, res))).astype(np.int16))
-    np.savez(coarse_arrays, ws_labels_periodic=(rng.integers(0, 7, size=(res, res))).astype(np.int16))
-
-    # consolidated layout, rows 1:1 with the 3-USV summary: rows 0 and 2 are
-    # real (duration > 0), row 1 is an all-zero placeholder (duration 0).
-    n_f = n_t = 128
-    specs = np.zeros((3, n_f, n_t), dtype=np.float32)
-    specs[0] = rng.random((n_f, n_t)).astype(np.float32)
-    specs[2] = rng.random((n_f, n_t)).astype(np.float32)
-    with h5py.File(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5", "w") as f:
-        f.create_dataset("frequency_bins", data=np.linspace(30000.0, 120000.0, n_f))
-        session_group = f.create_group(f"spectrogram/{session_id}")
-        session_group.create_dataset("spectrograms", data=specs)
-        session_group.create_dataset("durations", data=np.array([128, 0, 128], dtype=np.int64))
-    _write_session_masks(root, session_id, {0: np.ones((n_f, n_t), dtype=bool), 2: np.ones((n_f, n_t), dtype=bool)})
-
-    pls.DataFrame({
-        "usv_id": [f"{i:04d}" for i in range(3)],
-        "start": [0.1, 0.3, 0.5],
-        "stop": [0.15, 0.35, 0.55],
-    }).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")
-
-    cfg = {
-        "model_cell_directory": "",
-        "model_cells": {},
-        "model_cell_label_levels": {},
-        "prefer_package_values": True,
-        "weights_npz_path": str(weights),
-        "reference_arrays_fine_npz_path": str(fine_arrays),
-        "reference_arrays_coarse_npz_path": str(coarse_arrays),
-        "lattice_type": "korobov",
-        "latent_dim": 2,
-        "n_points": 16,
-        "korobov_a": 3,
-        "fib_m": 16,
-        "time_stretch": False,
-        "masking_type": "sam",
-        "target_shape": [128, 128],
-        "length_threshold": None,
-        "lattice_batch_size": 4096,
-        "data_batch_size": 8192,
-    }
-    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
-    ql.QLVMLatentInference(
-        root_directory=str(root),
-        input_parameter_dict={"infer_qlvm_latents": cfg},
-        message_output=lambda *_a, **_kw: None,
-    ).infer_and_merge()
-
-    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
-    assert set(ql.QLVM_COLUMNS).issubset(df.columns)
-    assert df.height == 3
-    # rows 0 and 2 embedded; row 1 (no spec) is null.
-    assert df["qlvm1"][0] is not None
-    assert df["qlvm1"][1] is None
-    assert df["qlvm1"][2] is not None
-    # coordinates live on the torus [0, 1).
-    assert 0.0 <= df["qlvm1"][0] < 1.0
-    # every embedded row names the model its latents and labels came from.
-    assert df["qlvm_model"][0] == str(weights)
-    assert df["qlvm_model"][1] is None
 
 
 def _write_session_masks(root, session_id, masks_by_row):
@@ -201,21 +70,16 @@ def _write_session_masks(root, session_id, masks_by_row):
         group.create_dataset("spectrogram_index", data=np.array(rows, dtype=np.int64))
 
 
-def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid, with_masks=True):
-    """Synthesize a session (weights + fine/coarse reference grids + spectrogram
-    H5 + usv_summary) for an end-to-end QLVMLatentInference run and return
-    (root, session_id, cfg). Rows 0 and 2 are real, row 1 is a placeholder; with
-    ``with_masks``, rows 0 and 2 each get one all-ones SAM mask."""
+def _make_inference_session(tmp_path, rng, *, with_masks=True):
+    """Synthesize a session (spectrogram H5 + usv_summary) for an end-to-end
+    QLVMLatentInference run and return (root, session_id, cfg), with ``cfg`` an
+    ``infer_qlvm_latents`` block whose ``model_cells`` is still empty (a test lists
+    the cells it embeds with, see :func:`_make_model_cell`). Rows 0 and 2 are real
+    64-bin calls (inside the synthetic cells' duration window of 100), row 1 is a
+    placeholder; with ``with_masks``, rows 0 and 2 each get one all-ones SAM mask."""
     session_id = "20230119_155302"
     root = tmp_path / session_id
     (root / "audio" / "spectrograms").mkdir(parents=True)
-
-    weights = tmp_path / "qmc_decoder_weights.npz"
-    _decoder_weights_npz(weights, rng)
-    fine_arrays = tmp_path / "arrays_fine.npz"
-    coarse_arrays = tmp_path / "arrays_coarse.npz"
-    np.savez(fine_arrays, ws_labels_periodic=fine_grid)
-    np.savez(coarse_arrays, ws_labels_periodic=coarse_grid)
 
     n_f = n_t = 128
     specs = np.zeros((3, n_f, n_t), dtype=np.float32)
@@ -225,7 +89,7 @@ def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid, with_masks
         f.create_dataset("frequency_bins", data=np.linspace(30000.0, 120000.0, n_f))
         session_group = f.create_group(f"spectrogram/{session_id}")
         session_group.create_dataset("spectrograms", data=specs)
-        session_group.create_dataset("durations", data=np.array([128, 0, 128], dtype=np.int64))
+        session_group.create_dataset("durations", data=np.array([64, 0, 64], dtype=np.int64))
     if with_masks:
         _write_session_masks(root, session_id, {0: np.ones((n_f, n_t), dtype=bool), 2: np.ones((n_f, n_t), dtype=bool)})
 
@@ -236,20 +100,12 @@ def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid, with_masks
     }).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")
 
     cfg = {
-        "model_cell_directory": "",
         "model_cells": {},
         "model_cell_label_levels": {},
         "prefer_package_values": True,
-        "weights_npz_path": str(weights),
-        "reference_arrays_fine_npz_path": str(fine_arrays),
-        "reference_arrays_coarse_npz_path": str(coarse_arrays),
-        "lattice_type": "korobov",
         "latent_dim": 2,
-        "n_points": 16,
-        "korobov_a": 3,
-        "fib_m": 16,
         "time_stretch": False,
-        "masking_type": "sam",
+        "masking_type": "none",
         "target_shape": [128, 128],
         "length_threshold": None,
         "lattice_batch_size": 4096,
@@ -258,47 +114,22 @@ def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid, with_masks
     return root, session_id, cfg
 
 
-def test_infer_and_merge_category_vs_supercategory_semantics(tmp_path, mocker):
-    """Regression guard for the fine/coarse mapping: qlvm_category must be read
-    from the FINE reference grid and qlvm_supercategory from the COARSE one. Using
-    grids with DISJOINT value ranges (fine 100..115, coarse 0..6) means a swapped
-    file/assignment would land values in the wrong column and fail this test."""
-    rng = np.random.default_rng(1)
-    res = 8
-    fine_grid = rng.integers(100, 116, size=(res, res)).astype(np.int16)   # 100..115
-    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)     # 0..6
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
-
-    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
-    ql.QLVMLatentInference(
-        root_directory=str(root),
-        input_parameter_dict={"infer_qlvm_latents": cfg},
-        message_output=lambda *_a, **_kw: None,
-    ).infer_and_merge()
-
-    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
-    cats = df["qlvm_category"].drop_nulls().to_list()
-    supercats = df["qlvm_supercategory"].drop_nulls().to_list()
-    assert cats, "expected at least one embedded USV"
-    # FINE labels land in qlvm_category (100..115), COARSE in qlvm_supercategory (0..6).
-    assert all(100 <= c <= 115 for c in cats)
-    assert all(0 <= s <= 6 for s in supercats)
-
-
 def test_infer_and_merge_masking_type_applies_or_skips_sam_mask(tmp_path, mocker):
     """The decoder is trained on SAM-masked (background-zeroed) spectrograms, so
     ``masking_type='sam'`` must zero every pixel outside the call's SAM mask region
     before embedding, while ``masking_type='none'`` must embed the raw spectrogram.
     This pins the train/inference masking parity: embedding raw specs into a
     masked-trained decoder is out-of-distribution and yields unreliable latents.
-    The spectrogram fed to ``embed_data`` is captured under both settings."""
+    The spectrogram fed to ``embed_data`` is captured under both settings, each with
+    a model cell trained with that masking (the settings must match the contract)."""
     rng = np.random.default_rng(3)
-    res = 8
-    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
-    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
-    root, session_id, cfg = _make_inference_session(
-        tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid, with_masks=False
-    )
+    grid = np.ones((8, 8), dtype=np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, with_masks=False)
+    cells = {
+        masking_type: str(_make_model_cell(tmp_path, rng, masking_type=masking_type, floor=None, fine_grid=grid,
+                                           coarse_grid=grid, cell_name=f"cell_{masking_type}"))
+        for masking_type in ("sam", "none")
+    }
 
     # Add a SAM mask group covering only the top half (rows 0:64) of each real USV
     # (spectrogram rows 0 and 2); build_session_masks unions per spectrogram_index.
@@ -320,6 +151,7 @@ def test_infer_and_merge_masking_type_applies_or_skips_sam_mask(tmp_path, mocker
 
     def _run(masking_type):
         cfg["masking_type"] = masking_type
+        cfg["model_cells"] = {"qlvm": cells[masking_type]}
         ql.QLVMLatentInference(
             root_directory=str(root),
             input_parameter_dict={"infer_qlvm_latents": cfg},
@@ -342,11 +174,11 @@ def test_infer_and_merge_honors_target_shape(tmp_path, mocker):
     pins train/inference preprocessing parity, since the decoder can only accept
     the fixed shape it was trained on."""
     rng = np.random.default_rng(4)
-    res = 8
-    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
-    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
-
+    grid = np.ones((8, 8), dtype=np.int16)
+    root, _session_id, cfg = _make_inference_session(tmp_path, rng)
+    cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=None, fine_grid=grid, coarse_grid=grid,
+                            contract_overrides={"target_shape": [96, 112]})
+    cfg["model_cells"] = {"qlvm": str(cell)}
     cfg["target_shape"] = [96, 112]
 
     captured = {}
@@ -372,10 +204,10 @@ def test_infer_and_merge_idempotent_preserves_other_columns(tmp_path, mocker):
     survive, the row count is unchanged, and the qlvm columns are refreshed (not
     duplicated or left stale)."""
     rng = np.random.default_rng(2)
-    res = 8
-    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
-    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
+    grid = rng.integers(1, 8, size=(8, 8)).astype(np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng)
+    cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid)
+    cfg["model_cells"] = {"qlvm": str(cell)}
 
     # Add an unrelated column the merge must leave intact.
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
@@ -395,16 +227,18 @@ def test_infer_and_merge_idempotent_preserves_other_columns(tmp_path, mocker):
     assert df.height == 3
     # the unrelated column is untouched, and each qlvm column appears exactly once.
     assert df["quality"].to_list() == [0.11, 0.22, 0.33]
-    for column in ql.QLVM_COLUMNS:
+    for column in ("qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory"):
         assert df.columns.count(column) == 1
+    assert "qlvm_model" not in df.columns
     # the embedded rows still carry latents after the re-run.
     assert df["qlvm1"][0] is not None
     assert df["qlvm1"][1] is None
 
 
 def _matching_contract(cfg, **overrides):
-    """A training contract that agrees with ``cfg`` (as train-qlvm would write it for
-    the synthetic session), with ``overrides`` applied."""
+    """A training contract that agrees with ``cfg`` (the fields a model package cell's
+    contract records, for an unconditional legacy-head decoder), with ``overrides``
+    applied."""
     contract = {
         "decoder_head": "legacy",
         "latent_dim": cfg["latent_dim"],
@@ -417,12 +251,8 @@ def _matching_contract(cfg, **overrides):
         "time_stretch": cfg["time_stretch"],
         "length_threshold": 128.0,
         "require_mask": False,
-        "lattice_type": cfg["lattice_type"],
-        "korobov_a": cfg["korobov_a"],
-        "train_n_points": cfg["n_points"],
-        "test_n_points": cfg["n_points"],
-        "fib_m": cfg["fib_m"],
-        "dataset_directory": "/synthetic",
+        "embedding_lattice_type": "fibonacci",
+        "embedding_fib_m": 8,
     }
     contract.update(overrides)
     return contract
@@ -439,7 +269,7 @@ def _set_session_durations(root, session_id, durations):
 def _contract_cfg():
     """The contract-relevant slice of an infer_qlvm_latents block."""
     return {"latent_dim": 2, "masking_type": "sam", "target_shape": [128, 128], "time_stretch": False,
-            "length_threshold": None, "lattice_type": "korobov", "korobov_a": 3, "n_points": 16, "fib_m": 16}
+            "length_threshold": None}
 
 
 def test_enforce_training_contract_returns_the_training_window():
@@ -466,86 +296,14 @@ def test_enforce_training_contract_names_every_mismatch():
     assert "time_stretch" not in message
 
 
-def test_infer_and_merge_nulls_calls_outside_the_training_window(tmp_path, mocker):
-    """A call at or above the training set's duration bound was never trained on:
-    with a contract beside the weights it gets null qlvm_* columns, shorter calls embed."""
-    rng = np.random.default_rng(7)
-    res = 8
-    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
-    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
-    _set_session_durations(root, session_id, [128, 0, 64])
-    contract_path = tmp_path / "qmc_decoder_weights.json"
-    contract_path.write_text(json.dumps(_matching_contract(cfg, length_threshold=100.0)))
-
-    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
-    ql.QLVMLatentInference(
-        root_directory=str(root),
-        input_parameter_dict={"infer_qlvm_latents": cfg},
-        message_output=lambda *_a, **_kw: None,
-    ).infer_and_merge()
-
-    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
-    assert df["qlvm1"][0] is None      # 128 >= 100: outside the window
-    assert df["qlvm1"][1] is None      # duration 0: no call
-    assert df["qlvm1"][2] is not None  # 64 < 100: embedded
-
-
-def test_infer_and_merge_without_contract_applies_settings_threshold(tmp_path, mocker):
-    """Weights trained before contracts existed still run; the settings'
-    length_threshold then sets the window."""
-    rng = np.random.default_rng(8)
-    res = 8
-    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
-    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
-    _set_session_durations(root, session_id, [128, 0, 64])
-    cfg["length_threshold"] = 100.0
-
-    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
-    messages = []
-    ql.QLVMLatentInference(
-        root_directory=str(root),
-        input_parameter_dict={"infer_qlvm_latents": cfg},
-        message_output=messages.append,
-    ).infer_and_merge()
-
-    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
-    assert df["qlvm1"][0] is None
-    assert df["qlvm1"][2] is not None
-    assert any("No training contract" in message for message in messages)
-
-
-def test_infer_and_merge_refuses_settings_that_break_the_contract(tmp_path, mocker):
-    """Embedding with preprocessing the decoder was not trained on must stop before
-    anything is written."""
-    rng = np.random.default_rng(9)
-    res = 8
-    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
-    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
-    (tmp_path / "qmc_decoder_weights.json").write_text(json.dumps(_matching_contract(cfg, masking_type="none")))
-    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
-    before = summary_path.read_bytes()
-
-    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
-    with pytest.raises(ValueError, match="masking_type"):
-        ql.QLVMLatentInference(
-            root_directory=str(root),
-            input_parameter_dict={"infer_qlvm_latents": cfg},
-            message_output=lambda *_a, **_kw: None,
-        ).infer_and_merge()
-    assert summary_path.read_bytes() == before
-
-
 def test_infer_and_merge_failed_write_keeps_previous_summary(tmp_path, mocker):
     """usv_summary.csv carries every other per-USV column, so a write that fails
     part-way must leave the previous file whole and no temporary file behind."""
     rng = np.random.default_rng(10)
-    res = 8
-    fine_grid = rng.integers(0, 12, size=(res, res)).astype(np.int16)
-    coarse_grid = rng.integers(0, 7, size=(res, res)).astype(np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=fine_grid, coarse_grid=coarse_grid)
+    grid = np.ones((8, 8), dtype=np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng)
+    cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid)
+    cfg["model_cells"] = {"qlvm": str(cell)}
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
     before = summary_path.read_bytes()
 
@@ -615,10 +373,9 @@ def test_read_torch_checkpoint_refuses_foreign_globals(tmp_path):
 
 def test_normalize_model_inputs_follows_the_contract():
     """Package decoders were fed min-maxed (and, for floor cells, floored then
-    re-min-maxed) spectrograms; train-qlvm decoders the stored values."""
+    re-min-maxed) spectrograms; an input_normalization of "none" the stored values."""
     rng = np.random.default_rng(12)
     specs = rng.uniform(0.1, 3.0, size=(2, 16, 16)).astype(np.float32)
-    assert np.array_equal(ql.normalize_model_inputs(specs, None), specs)
     assert np.array_equal(ql.normalize_model_inputs(specs, {"input_normalization": "none", "floor": None}), specs)
 
     contract = {"input_normalization": "minmax", "normalization_epsilon": 1e-8, "floor": None}
@@ -640,7 +397,7 @@ def test_normalize_model_inputs_follows_the_contract():
 
 def _make_model_cell(
     tmp_path, rng, *, masking_type, floor, fine_grid, coarse_grid, fib_m=8, condition=None, bins=None, require_mask=True,
-    cell_name="cell_test",
+    cell_name="cell_test", contract_overrides=None,
 ):
     """Synthesize a QLVM model package cell (checkpoint.tar, training_contract.json,
     cluster/{fine,coarse}/label_grid.npy) with a ReLU-head decoder; with a
@@ -648,7 +405,8 @@ def _make_model_cell(
     ``condition_bins.npz`` (``bins`` = (edges, bin_mean) for phase 10, or a dict of
     the phase 11 keys, see :func:`_phase11_bins`). ``require_mask`` True, as in every
     v2 and v3 cell, says its corpus kept only calls with a SAM mask. The cell is
-    ``<tmp_path>/pkg/phase_test/<cell_name>``, so several cells share one package."""
+    ``<tmp_path>/pkg/phase_test/<cell_name>``, so several cells share one package.
+    ``contract_overrides`` replaces training-contract entries (e.g. ``target_shape``)."""
     torch = pytest.importorskip("torch")
     cell = tmp_path / "pkg" / "phase_test" / cell_name
     (cell / "cluster" / "fine").mkdir(parents=True)
@@ -676,6 +434,8 @@ def _make_model_cell(
     }
     if condition is not None:
         contract["condition_bins"] = "condition_bins.npz"
+    if contract_overrides is not None:
+        contract.update(contract_overrides)
     (cell / "training_contract.json").write_text(json.dumps(contract))
     np.save(cell / "cluster" / "fine" / "label_grid.npy", fine_grid)
     np.save(cell / "cluster" / "coarse" / "label_grid.npy", coarse_grid)
@@ -697,22 +457,18 @@ def _phase11_bins(name, c_min, c_max, step):
 
 
 def test_infer_and_merge_with_a_model_package_cell(tmp_path, mocker):
-    """With model_cell_directory set, the cell's ReLU checkpoint, contract, Fibonacci
-    lattice and label grids are used: calls outside its duration window are null,
-    inputs are min-maxed and floored, and labels come from label_grid.npy."""
+    """A model_cells cell's ReLU checkpoint, contract, Fibonacci lattice and label grids
+    are used: calls outside its duration window are null, inputs are min-maxed and
+    floored, labels come from label_grid.npy (fine -> qlvm_category, coarse ->
+    qlvm_supercategory), and no qlvm_model column is written."""
     rng = np.random.default_rng(13)
     res = 8
     fine_grid = rng.integers(101, 117, size=(res, res)).astype(np.int16)
     coarse_grid = rng.integers(201, 208, size=(res, res)).astype(np.int16)
-    root, session_id, cfg = _make_inference_session(
-        tmp_path, rng,
-        fine_grid=np.zeros((res, res), dtype=np.int16), coarse_grid=np.zeros((res, res), dtype=np.int16),
-    )
+    root, session_id, cfg = _make_inference_session(tmp_path, rng)
     _set_session_durations(root, session_id, [128, 0, 64])  # row 0 is outside the cell's window (100)
     cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=fine_grid, coarse_grid=coarse_grid)
-    cfg["model_cell_directory"] = str(cell)
-    cfg["masking_type"] = "none"
-    cfg["weights_npz_path"] = str(tmp_path / "does_not_exist.npz")  # unused in package mode
+    cfg["model_cells"] = {"qlvm": str(cell)}
 
     captured = {}
     real_embed = ql.embed_data
@@ -741,7 +497,7 @@ def test_infer_and_merge_with_a_model_package_cell(tmp_path, mocker):
     assert df["qlvm1"][2] is not None
     assert 101 <= df["qlvm_category"][2] <= 116
     assert 201 <= df["qlvm_supercategory"][2] <= 207
-    assert df["qlvm_model"][2] == "pkg/phase_test/cell_test"
+    assert "qlvm_model" not in df.columns
 
 
 def test_compute_condition_values_follow_the_contract_definitions():
@@ -777,7 +533,7 @@ def test_infer_and_merge_conditional_cell_decodes_at_frozen_mean_freq(tmp_path, 
     rng = np.random.default_rng(16)
     res = 8
     grid = rng.integers(1, 5, size=(res, res)).astype(np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid, with_masks=False)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, with_masks=False)
     _set_session_durations(root, session_id, [64, 0, 64])
     n_f = n_t = 128
     low_rows, high_rows = np.zeros((n_f, n_t), dtype=bool), np.zeros((n_f, n_t), dtype=bool)
@@ -788,8 +544,7 @@ def test_infer_and_merge_conditional_cell_decodes_at_frozen_mean_freq(tmp_path, 
     edges, bin_mean = np.array([0.0, 0.5, 1.0]), np.array([0.2, 0.8], dtype=np.float32)
     cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid,
                             condition=condition, bins=(edges, bin_mean))
-    cfg["model_cell_directory"] = str(cell)
-    cfg["masking_type"] = "none"
+    cfg["model_cells"] = {"qlvm": str(cell)}
 
     captured = {}
     real_embed = ql.embed_data
@@ -891,8 +646,7 @@ def _phase11_session(tmp_path, rng, condition, bins, summary_columns=None):
     high frequency rows, a phase 11 cell for ``condition`` and settings pointing at
     it; ``summary_columns`` are added to usv_summary.csv."""
     grid = rng.integers(1, 5, size=(8, 8)).astype(np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid, with_masks=False)
-    _set_session_durations(root, session_id, [64, 0, 64])
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, with_masks=False)
     low_rows, high_rows = np.zeros((128, 128), dtype=bool), np.zeros((128, 128), dtype=bool)
     low_rows[:32, :] = True
     high_rows[96:, :] = True
@@ -902,8 +656,7 @@ def _phase11_session(tmp_path, rng, condition, bins, summary_columns=None):
         pls.read_csv(summary_path).with_columns(**summary_columns).write_csv(summary_path)
     cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid,
                             condition=condition, bins=bins)
-    cfg["model_cell_directory"] = str(cell)
-    cfg["masking_type"] = "none"
+    cfg["model_cells"] = {"qlvm": str(cell)}
     return root, session_id, cfg, (low_rows, high_rows)
 
 
@@ -1059,7 +812,7 @@ def test_export_model_cell_arrays_writes_the_reference_layout(tmp_path):
             k = int(grid.max())
             np.testing.assert_allclose(arrays["centers"], [[0.1 * label, 0.05 * label] for label in range(1, k + 1)], rtol=1e-6)
             np.testing.assert_allclose(arrays["latent_coords"], coords, atol=1e-5)
-            np.testing.assert_array_equal(ql.labels_for_coords(arrays["latent_coords"], grid, grid)[0], arrays["sample_ws_periodic"])
+            np.testing.assert_array_equal(ql.label_grid_lookup(arrays["latent_coords"], grid), arrays["sample_ws_periodic"])
             assert arrays["heatmap"].shape == (res, res)
             assert arrays["heatmap"].sum() == pytest.approx(aggregated.sum(), rel=1e-5)
             assert str(arrays["model_id"]) == "pkg/phase_x/cell_x"
@@ -1067,14 +820,17 @@ def test_export_model_cell_arrays_writes_the_reference_layout(tmp_path):
 
 def test_infer_and_merge_model_cell_refuses_wrong_masking(tmp_path, mocker):
     """A masked package decoder must not be fed unmasked spectrograms: the settings'
-    masking_type is checked against the cell's contract before anything runs."""
+    masking_type is checked against the cell's contract before anything runs, and the
+    summary is left as it was."""
     rng = np.random.default_rng(14)
     res = 8
     grid = np.ones((res, res), dtype=np.int16)
-    root, _session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng)
     cell = _make_model_cell(tmp_path, rng, masking_type="sam", floor=None, fine_grid=grid, coarse_grid=grid)
-    cfg["model_cell_directory"] = str(cell)
+    cfg["model_cells"] = {"qlvm": str(cell)}
     cfg["masking_type"] = "none"
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    before = summary_path.read_bytes()
 
     mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
     with pytest.raises(ValueError, match="masking_type: settings 'none', trained 'sam'"):
@@ -1083,25 +839,24 @@ def test_infer_and_merge_model_cell_refuses_wrong_masking(tmp_path, mocker):
             input_parameter_dict={"infer_qlvm_latents": cfg},
             message_output=lambda *_a, **_kw: None,
         ).infer_and_merge()
+    assert summary_path.read_bytes() == before
 
 
 def _use_decoder(tmp_path, rng, cfg, decoder, grid):
-    """Point ``cfg`` at one kind of decoder for the SAM-mask rule: ``"sam"`` (a
-    train-qlvm contract with masking_type sam), ``"require_mask"`` (an unmasked
-    train-qlvm contract whose set kept only calls with a mask), ``"mean_freq"`` (an
-    unmasked package cell conditioned on mean frequency, require_mask false) or
-    ``"unmasked"`` (an unmasked train-qlvm contract whose set kept every call)."""
+    """Point ``cfg`` at one kind of model cell for the SAM-mask rule: ``"sam"`` (a
+    cell trained with masking_type sam on every call), ``"require_mask"`` (an
+    unmasked cell whose set kept only calls with a mask), ``"mean_freq"`` (an
+    unmasked cell conditioned on mean frequency, require_mask false) or
+    ``"unmasked"`` (an unmasked cell whose set kept every call)."""
+    condition, bins = None, None
     if decoder == "mean_freq":
         condition = {"name": "mean_freq", "spectrogram": "masked", "epsilon": 1e-8}
         bins = (np.array([0.0, 0.5, 1.0]), np.array([0.2, 0.8], dtype=np.float32))
-        cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid,
-                                condition=condition, bins=bins, require_mask=False)
-        cfg["model_cell_directory"] = str(cell)
-        cfg["masking_type"] = "none"
-        return
     cfg["masking_type"] = "sam" if decoder == "sam" else "none"
-    contract = _matching_contract(cfg, require_mask=decoder == "require_mask")
-    (tmp_path / "qmc_decoder_weights.json").write_text(json.dumps(contract))
+    cell = _make_model_cell(tmp_path, rng, masking_type=cfg["masking_type"], floor=None, fine_grid=grid,
+                            coarse_grid=grid, condition=condition, bins=bins,
+                            require_mask=decoder == "require_mask")
+    cfg["model_cells"] = {"qlvm": str(cell)}
 
 
 def _fake_embed_counting(captured):
@@ -1123,12 +878,11 @@ def test_infer_and_merge_nulls_calls_without_a_sam_mask(tmp_path, mocker, decode
     """build_session_masks gives a call without mask instances an all-ones mask. A
     require_mask training set left such calls out, and a mean-frequency cell would
     compute c over the whole call, so those decoders give them null qlvm_* columns.
-    A sam decoder whose set kept them under that all-ones mask (the shipped model,
-    train-qlvm on a main-built set) still embeds them, as does an unmasked decoder."""
+    A sam decoder whose set kept them under that all-ones mask still embeds them, as
+    does an unmasked decoder."""
     rng = np.random.default_rng(17)
     grid = np.ones((8, 8), dtype=np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid, with_masks=False)
-    _set_session_durations(root, session_id, [64, 0, 64])
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, with_masks=False)
     _write_session_masks(root, session_id, {0: np.ones((128, 128), dtype=bool)})  # row 2: no mask instance
     _use_decoder(tmp_path, rng, cfg, decoder, grid)
 
@@ -1156,8 +910,7 @@ def test_infer_and_merge_refuses_a_session_without_masks(tmp_path, mocker, decod
     mask, so a decoder that needs masks stops before anything is written."""
     rng = np.random.default_rng(18)
     grid = np.ones((8, 8), dtype=np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid, with_masks=False)
-    _set_session_durations(root, session_id, [64, 0, 64])
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, with_masks=False)
     _use_decoder(tmp_path, rng, cfg, decoder, grid)
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
     before = summary_path.read_bytes()
@@ -1177,8 +930,7 @@ def test_infer_and_merge_unmasked_decoder_needs_no_masks(tmp_path, mocker):
     mask/<session> group."""
     rng = np.random.default_rng(19)
     grid = np.ones((8, 8), dtype=np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid, with_masks=False)
-    _set_session_durations(root, session_id, [64, 0, 64])
+    root, _session_id, cfg = _make_inference_session(tmp_path, rng, with_masks=False)
     _use_decoder(tmp_path, rng, cfg, "unmasked", grid)
 
     captured = {}
@@ -1199,11 +951,7 @@ def _model_cells_session(tmp_path, rng, prefixes=("qlvm", "qlvm_x")):
     package, ``<tmp_path>/pkg``) and settings listing them in ``model_cells``. Every
     cell gets its own label grids (:func:`_model_cell_grids`), so a label read from the
     wrong cell or level shows."""
-    grid = np.ones((8, 8), dtype=np.int16)
-    root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid)
-    _set_session_durations(root, session_id, [64, 0, 64])
-    cfg["masking_type"] = "none"
-    cfg["model_cells"] = {}
+    root, session_id, cfg = _make_inference_session(tmp_path, rng)
     for index, prefix in enumerate(prefixes):
         fine_grid, coarse_grid = _model_cell_grids(index)
         cfg["model_cells"][prefix] = str(_make_model_cell(
@@ -1477,22 +1225,25 @@ def test_model_cells_prefer_package_values_false_always_infers(tmp_path, mocker)
                for message in messages)
 
 
-def test_model_cells_and_model_cell_directory_are_exclusive(tmp_path, mocker):
-    """model_cells writes <prefix>1/<prefix>2 of several cells, model_cell_directory the
-    qlvm_* columns of one: setting both stops the run before anything is written."""
+def test_infer_and_merge_refuses_empty_model_cells(tmp_path, mocker):
+    """Model package cells are the only models infer_and_merge embeds with: an empty
+    model_cells (no spectrograms_root to derive the production cells from) stops the
+    run with a message naming the setting, before any cell is loaded or the summary
+    is touched."""
     rng = np.random.default_rng(34)
-    root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm",))
-    cfg["model_cell_directory"] = cfg["model_cells"]["qlvm"]
+    root, session_id, cfg = _make_inference_session(tmp_path, rng)
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
     before = summary_path.read_bytes()
+    loads = mocker.patch("usv_playpen.processing.qlvm_latents.load_model_cell", side_effect=ql.load_model_cell)
 
     mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
-    with pytest.raises(ValueError, match="model_cells and model_cell_directory are both set"):
+    with pytest.raises(ValueError, match="infer_qlvm_latents: model_cells is empty"):
         ql.QLVMLatentInference(
             root_directory=str(root),
             input_parameter_dict={"infer_qlvm_latents": cfg},
             message_output=lambda *_a, **_kw: None,
         ).infer_and_merge()
+    assert loads.call_count == 0
     assert summary_path.read_bytes() == before
 
 

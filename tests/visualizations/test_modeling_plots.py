@@ -1468,54 +1468,47 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
     return str(out)
 
 
-def _write_fake_qlvm_artifacts(tmp_path, rng):
+def _fake_decoder_params(rng):
     """
-    Write minimal stand-in QLVM artifacts for ``plot_manifold_filter_atlas`` so
-    the atlas renders without the real ``/mnt`` reference files: a decoder
-    ``.npz`` whose arrays match the frozen QLVM decoder architecture (two Linear
-    layers 4 -> 2048 -> 4096, reshaped to (64, 8, 8), then four ConvTranspose2d
-    blocks 64 -> 32 -> 16 -> 8 -> 1) so ``decode_lattice_atlas`` runs, and an
-    ``arrays_coarse.npz`` carrying a 200 x 200 ``ws_labels_periodic`` watershed
-    with 7 supercategory regions for the boundary overlay.
+    Build stand-in QLVM decoder weights for ``plot_manifold_filter_atlas`` so the
+    atlas renders without the real ``/mnt`` package: arrays matching the frozen
+    QLVM decoder architecture (two Linear layers 4 -> 2048 -> 4096, reshaped to
+    (64, 8, 8), then four ConvTranspose2d blocks 64 -> 32 -> 16 -> 8 -> 1; the
+    legacy-head layout) so ``decode_lattice_atlas`` runs, keyed as
+    ``processing.qlvm_latents.load_decoder_params`` returns them (no
+    ``decoder.`` prefix).
 
     Returns
     -------
-    (str, str)
-        ``(decoder_weights_npz_path, supercategory_arrays_npz_path)``.
+    dict
+        ``"<layer_idx>.weight"`` / ``"<layer_idx>.bias"`` -> float32 array.
     """
 
-    dec = {
-        'decoder.0.weight': rng.standard_normal((2048, 4)).astype(np.float32),
-        'decoder.0.bias': rng.standard_normal((2048,)).astype(np.float32),
-        'decoder.1.weight': rng.standard_normal((4096, 2048)).astype(np.float32),
-        'decoder.1.bias': rng.standard_normal((4096,)).astype(np.float32),
-        'decoder.3.weight': rng.standard_normal((64, 32, 3, 3)).astype(np.float32),
-        'decoder.3.bias': rng.standard_normal((32,)).astype(np.float32),
-        'decoder.5.weight': rng.standard_normal((32, 16, 3, 3)).astype(np.float32),
-        'decoder.5.bias': rng.standard_normal((16,)).astype(np.float32),
-        'decoder.7.weight': rng.standard_normal((16, 8, 3, 3)).astype(np.float32),
-        'decoder.7.bias': rng.standard_normal((8,)).astype(np.float32),
-        'decoder.9.weight': rng.standard_normal((8, 1, 3, 3)).astype(np.float32),
-        'decoder.9.bias': rng.standard_normal((1,)).astype(np.float32),
+    return {
+        '0.weight': rng.standard_normal((2048, 4)).astype(np.float32),
+        '0.bias': rng.standard_normal((2048,)).astype(np.float32),
+        '1.weight': rng.standard_normal((4096, 2048)).astype(np.float32),
+        '1.bias': rng.standard_normal((4096,)).astype(np.float32),
+        '3.weight': rng.standard_normal((64, 32, 3, 3)).astype(np.float32),
+        '3.bias': rng.standard_normal((32,)).astype(np.float32),
+        '5.weight': rng.standard_normal((32, 16, 3, 3)).astype(np.float32),
+        '5.bias': rng.standard_normal((16,)).astype(np.float32),
+        '7.weight': rng.standard_normal((16, 8, 3, 3)).astype(np.float32),
+        '7.bias': rng.standard_normal((8,)).astype(np.float32),
+        '9.weight': rng.standard_normal((8, 1, 3, 3)).astype(np.float32),
+        '9.bias': rng.standard_normal((1,)).astype(np.float32),
     }
-    dec_path = tmp_path / "qmc_decoder_weights.npz"
-    np.savez(dec_path, **dec)
-
-    labels = rng.integers(1, 8, size=(200, 200)).astype(np.int16)
-    arr_path = tmp_path / "arrays_coarse.npz"
-    np.savez(arr_path, ws_labels_periodic=labels)
-    return str(dec_path), str(arr_path)
 
 
 _FAKE_CELL_MODEL_ID = "v3/phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor"
 
 
-def _fake_model_cell_loader(tmp_path, rng, c_dim: int = 0, loaded: list | None = None):
+def _fake_model_cell_loader(rng, c_dim: int = 0, loaded: list | None = None):
     """
     Build a stand-in for ``processing.qlvm_latents.load_model_cell`` so the atlas's
     model-cell route runs without the real ``/mnt`` package: it returns the stand-in
-    decoder weights of ``_write_fake_qlvm_artifacts`` read by ``load_decoder_params``
-    (legacy-head layout, which ``decode_lattice_atlas`` runs), a contract with the given ``c_dim``, and the v3
+    decoder weights of ``_fake_decoder_params`` (legacy-head layout, which
+    ``decode_lattice_atlas`` runs), a contract with the given ``c_dim``, and the v3
     regular cell's ``model_id``. Every directory it is called with is appended to
     ``loaded``.
 
@@ -1525,8 +1518,7 @@ def _fake_model_cell_loader(tmp_path, rng, c_dim: int = 0, loaded: list | None =
         ``model_cell_directory -> model dict``.
     """
 
-    dec_path, _ = _write_fake_qlvm_artifacts(tmp_path, rng)
-    params = modeling_plots.load_decoder_params(dec_path)
+    params = _fake_decoder_params(rng)
 
     def _load(model_cell_directory):
         if loaded is not None:
@@ -1561,18 +1553,19 @@ class TestPlotManifoldFilterAtlas:
     torus-only atlas (decoded vocal-space map + |W(t)| magnitude + per-feature
     affinity filmstrips)."""
 
-    def test_writes_filter_atlas(self, tmp_path):
-        """A torus (4-D sin/cos) final step, with stand-in QLVM decoder and
-        supercategory arrays, emits exactly one ``*_filter_atlas_*`` figure."""
+    def test_writes_filter_atlas(self, tmp_path, monkeypatch):
+        """A torus (4-D sin/cos) final step, with a stand-in QLVM model cell decoder
+        and supercategory arrays, emits exactly one ``*_filter_atlas_*`` figure."""
 
         rng = np.random.default_rng(71)
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
         pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4)
-        dec_path, arr_path = _write_fake_qlvm_artifacts(tmp_path, rng)
+        arr_path = _write_v3_coarse_arrays(tmp_path / "arrays_coarse.npz", rng)
         out_dir = tmp_path / "atlas_out"
         out_dir.mkdir()
         plot_manifold_filter_atlas(
             selection_results_path=pkl,
-            decoder_weights_npz_path=dec_path,
+            decoder_model_cell_directory="/cell",
             supercategory_arrays_npz_path=arr_path,
             n_time_slices=4,
             atlas_grid_n=2,
@@ -1590,7 +1583,7 @@ class TestPlotManifoldFilterAtlas:
 
         rng = np.random.default_rng(75)
         loaded: list = []
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(tmp_path, rng, loaded=loaded))
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng, loaded=loaded))
         resolved_calls: list = []
         v3_arrays = _write_v3_coarse_arrays(tmp_path / "spectrograms" / "qlvm_v3" / "arrays_coarse.npz", rng)
 
@@ -1617,7 +1610,7 @@ class TestPlotManifoldFilterAtlas:
         (never the old qlvm/ folder)."""
 
         rng = np.random.default_rng(76)
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(tmp_path, rng))
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
         real_resolve = modeling_plots.resolve_embedding_arrays_path
         resolved: list = []
         stand_in = _write_v3_coarse_arrays(tmp_path / "arrays_coarse.npz", rng)
@@ -1627,7 +1620,7 @@ class TestPlotManifoldFilterAtlas:
             return stand_in
 
         monkeypatch.setattr(modeling_plots, "resolve_embedding_arrays_path", _resolve)
-        _, arrays_path, model_id = _resolve_atlas_decoder_and_arrays("/cell", None, None)
+        _, arrays_path, model_id = _resolve_atlas_decoder_and_arrays("/cell", None)
         assert arrays_path == stand_in
         assert model_id == _FAKE_CELL_MODEL_ID
         assert resolved[0].replace("\\", "/").endswith("/qlvm_v3/qlvm/arrays_coarse.npz")
@@ -1637,36 +1630,22 @@ class TestPlotManifoldFilterAtlas:
         refused, so boundaries always partition the decoded torus."""
 
         rng = np.random.default_rng(77)
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(tmp_path, rng))
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
         other = _write_v3_coarse_arrays(tmp_path / "other" / "arrays_coarse.npz", rng,
                                         model_id="v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked")
         with pytest.raises(ValueError, match="hold the clustering of v2/phase9"):
             _resolve_atlas_decoder_and_arrays(
-                decoder_model_cell_directory="/cell", decoder_weights_npz_path=None,
+                decoder_model_cell_directory="/cell",
                 supercategory_arrays_npz_path=other,
             )
 
-    def test_conditional_cell_and_two_decoders_raise(self, tmp_path, monkeypatch):
-        """A conditional cell (c_dim > 0) cannot decode a torus-only atlas, and a
-        cell plus a legacy .npz is ambiguous; both raise."""
+    def test_conditional_cell_raises(self, monkeypatch):
+        """A conditional cell (c_dim > 0) cannot decode a torus-only atlas."""
 
         rng = np.random.default_rng(78)
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(tmp_path, rng, c_dim=1))
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng, c_dim=1))
         with pytest.raises(ValueError, match="conditional cell"):
-            _resolve_atlas_decoder_and_arrays("/cell", None, None)
-        with pytest.raises(ValueError, match="both set"):
-            _resolve_atlas_decoder_and_arrays("/cell", "/w.npz", None)
-
-    def test_legacy_npz_keeps_colocated_arrays(self, tmp_path):
-        """The explicit legacy .npz decoder keeps the old layout: the coarse arrays
-        default to the arrays_coarse.npz beside the weights."""
-
-        rng = np.random.default_rng(79)
-        dec_path, arr_path = _write_fake_qlvm_artifacts(tmp_path, rng)
-        params, arrays_path, model_id = _resolve_atlas_decoder_and_arrays(None, dec_path, None)
-        assert arrays_path == arr_path
-        assert model_id == dec_path
-        assert "0.bias" in params
+            _resolve_atlas_decoder_and_arrays("/cell", None)
 
     def test_euclidean_2d_block_is_rejected(self, tmp_path):
         """The atlas is torus-only: a euclidean 2-D weight block prints why and

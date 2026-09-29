@@ -92,7 +92,6 @@
       "grid_n_per_dim": 40,
       "graph_k": 8,
       "density_exponent": 1.0,
-      "decoder_weights_npz_path": "",
       "decoder_model_cell_directory": "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3/phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor"
     }
   },

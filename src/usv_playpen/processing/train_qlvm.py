@@ -1,7 +1,7 @@
 """
 @author: bartulem
 Train the QLVM (QMC latent-variable model) decoder on a curated USV-spectrogram
-training set and export the weights the JAX inference path consumes.
+training set and export its decoder weights.
 
 This is the usv-playpen-native orchestrator around the vendored torch QLVM
 training kernels in ``processing/qlvm_training/`` (ported from the external
@@ -14,19 +14,19 @@ artifacts into the output directory:
 * ``qmc_train_qlvm.tar`` -- the full torch checkpoint (model + optimizer +
   per-batch loss trajectory), for resuming / diagnostics; and
 * ``qmc_decoder_weights.npz`` -- the decoder ``state_dict`` as one array per
-  layer (keys ``"0.weight"``/``"0.bias"``/.../``"9.weight"``), which is EXACTLY
-  what the torch-free JAX inference path (``processing/qlvm_model.py`` via
-  ``processing/qlvm_latents.py``'s ``weights_npz_path``) loads. Training and
-  inference therefore meet only at this ``.npz`` boundary -- the decoder
+  layer (keys ``"0.weight"``/``"0.bias"``/.../``"9.weight"``); the decoder
   architecture here (:func:`build_qmc_decoder`) is the one
-  ``qlvm_model.decoder_forward`` reconstructs; and
+  ``qlvm_model.decoder_forward`` reconstructs. The in-repo inference
+  (``infer-qlvm-latents``, ``processing/qlvm_latents.py``) no longer reads this
+  ``.npz``: production embeds with QLVM model package cells, and this trainer is
+  kept until its port of the current trainer lands; and
 * ``qmc_decoder_weights.json`` -- the training contract beside the weights: the
   decoder head and widths, the input preprocessing the decoder saw (masking,
   normalization, ``target_shape``, ``time_stretch``), the duration window of
   the training set and whether it kept only calls with a SAM mask
-  (``require_mask``), read from the set's ``metadata.npz``.
-  ``infer-qlvm-latents`` checks its settings against it and embeds only calls
-  inside the same duration window.
+  (``require_mask``), read from the set's ``metadata.npz``. It records the same
+  fields a model package cell's ``training_contract.json`` does, which
+  ``infer-qlvm-latents`` checks its settings against.
 
 The model has no learned encoder: the torus is a fixed lattice and only the
 decoder is trained. Each batch applies a fresh random torus shift to the whole
@@ -50,7 +50,8 @@ from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import atomic_output_path
 from ..time_utils import is_gui_context, smart_wait
 
-# Output artifact names (the .npz is the train -> JAX-inference bridge file).
+# Output artifact names (the .npz holds the decoder weights in the key form
+# qlvm_model.decoder_forward takes; infer-qlvm-latents no longer reads it).
 _CHECKPOINT_NAME = "qmc_train_qlvm.tar"
 _DECODER_WEIGHTS_NAME = "qmc_decoder_weights.npz"
 
@@ -105,17 +106,15 @@ def build_lattice(lattice_type: str, latent_dim: int, korobov_a: int, n_points: 
     -----------
     Builds the fixed quasi-random latent lattice (``base_sequence``) the decoder
     is trained over, selecting the generator by ``lattice_type``. Mirrors the
-    external trainer's ``build_lattice_pair`` (and the lattice
-    ``processing/qlvm_model.py`` rebuilds at inference, so the same settings keep
-    train and inference on the same torus).
+    external trainer's ``build_lattice_pair``.
 
     Parameters
     ----------
     lattice_type (str)
         ``"korobov"`` (Korobov lattice), ``"roberts"`` (Roberts low-discrepancy
         sequence), or ``"fibonacci"`` (Fibonacci lattice, 2D only). The token
-        ``"fibonacci"`` matches the JAX inference path (``qlvm_latents.py``) so
-        train and inference name the same generator identically.
+        ``"fibonacci"`` names the same generator the JAX port
+        (``qlvm_model.gen_fib_basis``) builds.
     latent_dim (int)
         Torus latent dimensionality.
     korobov_a (int)
@@ -161,8 +160,9 @@ class QLVMTrainer:
     Description
     -----------
     Trains the QLVM decoder on a ``build_qlvm_training_set`` ``.npz`` set and
-    writes the torch checkpoint plus the decoder-weights ``.npz`` that the
-    JAX inference path consumes.
+    writes the torch checkpoint plus the decoder-weights ``.npz`` (in the key
+    form ``qlvm_model.decoder_forward`` takes; ``infer-qlvm-latents`` no longer
+    reads it, see the module docstring).
     """
 
     def __init__(
@@ -248,8 +248,9 @@ class QLVMTrainer:
 
         The full ``(N, 1, F, T)`` spectrogram stack is trained as-is; the lattice
         is given a fresh random torus shift every batch (the QMC trick). After
-        training the decoder ``state_dict`` is dumped one array per layer so the
-        torch-free JAX inference path can reload it without torch, and the
+        training the decoder ``state_dict`` is dumped one array per layer (a
+        torch-free ``.npz``; the in-repo inference no longer reads it, see the
+        module docstring), and the
         training contract (``qmc_decoder_weights.json``) is written beside it
         from the settings and the set's ``metadata.npz``.
 
@@ -488,7 +489,8 @@ def train_qlvm_cli(ctx, dataset_directory, output_directory, **kwargs) -> None:
     Description
     -----------
     A command-line tool to train the QLVM decoder on a curated ``.npz`` training
-    set and export the decoder weights for the JAX inference path.
+    set and export the decoder weights (not read by ``infer-qlvm-latents``,
+    which embeds with QLVM model package cells).
 
     Parameters
     ----------

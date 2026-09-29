@@ -25,7 +25,6 @@ from usv_playpen.modeling.modeling_torus_geodesics import (
     flat_torus_distance_matrix,
     geodesic_mae_columns,
     make_qlvm_decode_fn_from_model_cell,
-    make_qlvm_decode_fn_from_npz,
     make_qlvm_decode_fn_from_source,
     resolve_geodesic_decoder_source,
     per_event_geodesic_error,
@@ -279,33 +278,27 @@ class TestModelCellDecoder:
             make_qlvm_decode_fn_from_model_cell(str(cell))
 
     def test_source_resolution(self):
-        """The settings block resolves to the cell, the legacy npz, or nothing; both set
-        is refused, and a block written before the cell key existed reads as npz-only."""
+        """The settings block resolves to its model package cell, or to nothing when
+        decoder_model_cell_directory is empty; the retired npz source is gone, so the
+        legacy decoder_weights_npz_path key a user's older settings may still carry
+        is ignored."""
 
+        assert resolve_geodesic_decoder_source({'decoder_model_cell_directory': '/c'}) == ('model_cell', '/c')
+        assert resolve_geodesic_decoder_source({'decoder_model_cell_directory': ''}) is None
         assert resolve_geodesic_decoder_source(
-            {'decoder_weights_npz_path': '', 'decoder_model_cell_directory': '/c'}) == ('model_cell', '/c')
-        assert resolve_geodesic_decoder_source(
-            {'decoder_weights_npz_path': '/w.npz', 'decoder_model_cell_directory': ''}) == ('npz', '/w.npz')
-        assert resolve_geodesic_decoder_source({'decoder_weights_npz_path': '/w.npz'}) == ('npz', '/w.npz')
-        assert resolve_geodesic_decoder_source(
-            {'decoder_weights_npz_path': '', 'decoder_model_cell_directory': ''}) is None
-        with pytest.raises(ValueError, match="both set"):
-            resolve_geodesic_decoder_source(
-                {'decoder_weights_npz_path': '/w.npz', 'decoder_model_cell_directory': '/c'})
+            {'decoder_weights_npz_path': '/w.npz', 'decoder_model_cell_directory': ''}) is None
 
-    def test_source_builders_agree(self, tmp_path):
-        """Building from a source dispatches to the cell and npz builders, which give
-        the same decoder for the same weights."""
+    def test_source_builder_uses_the_cell(self, tmp_path):
+        """Building from a model-cell source gives the cell's decoder; any other
+        source kind (including the retired 'npz') is refused."""
 
         rng = np.random.default_rng(33)
         grid = np.ones((8, 8), dtype=np.int64)
         cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid)
-        npz_path = tmp_path / "weights.npz"
-        np.savez(npz_path, **{key: np.asarray(value) for key, value in load_model_cell(str(cell))['params'].items()})
         z = jnp.asarray([0.3, 0.7])
-        from_cell = np.asarray(make_qlvm_decode_fn_from_source(('model_cell', str(cell)))(z))
-        from_npz = np.asarray(make_qlvm_decode_fn_from_source(('npz', str(npz_path)))(z))
-        np.testing.assert_allclose(from_cell, from_npz, atol=1e-7)
-        np.testing.assert_allclose(from_npz, np.asarray(make_qlvm_decode_fn_from_npz(str(npz_path))(z)), atol=1e-7)
-        with pytest.raises(ValueError, match="unknown decoder source"):
-            make_qlvm_decode_fn_from_source(('zip', 'x'))
+        from_source = np.asarray(make_qlvm_decode_fn_from_source(('model_cell', str(cell)))(z))
+        from_cell = np.asarray(make_qlvm_decode_fn_from_model_cell(str(cell))(z))
+        np.testing.assert_allclose(from_source, from_cell, atol=1e-7)
+        for kind in ('npz', 'zip'):
+            with pytest.raises(ValueError, match="unknown decoder source"):
+                make_qlvm_decode_fn_from_source((kind, 'x'))

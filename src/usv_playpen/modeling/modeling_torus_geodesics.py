@@ -54,7 +54,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 from scipy.stats import gaussian_kde
 
-from ..processing.qlvm_latents import load_decoder_params, load_model_cell
+from ..processing.qlvm_latents import load_model_cell
 from ..processing.qlvm_model import decoder_forward, torus_basis_forward
 from .manifold_metric import _geodesic_distance_matrix, signed_diff
 
@@ -375,7 +375,8 @@ def make_qlvm_decode_fn(params: dict):
     ----------
     params : dict
         Decoder weights as returned by
-        ``processing.qlvm_latents.load_decoder_params``.
+        ``processing.qlvm_latents.load_decoder_params`` (the ``params`` entry of
+        ``processing.qlvm_latents.load_model_cell``).
 
     Returns
     -------
@@ -389,30 +390,6 @@ def make_qlvm_decode_fn(params: dict):
         return rec.reshape(-1)                            # (16384,)
 
     return decode_fn
-
-
-def make_qlvm_decode_fn_from_npz(weights_npz_path: str):
-    """
-    Load the frozen QLVM decoder weights and return its decode function.
-
-    Convenience wrapper around :func:`make_qlvm_decode_fn` that reads the
-    ``.npz`` weights (via ``processing.qlvm_latents.load_decoder_params``, which
-    routes the path through ``configure_path``), so callers only need the weights
-    path to obtain a differentiable ``z -> spectrogram`` decoder for the pullback
-    geometry.
-
-    Parameters
-    ----------
-    weights_npz_path : str
-        Path to the converted decoder-weights ``.npz``.
-
-    Returns
-    -------
-    callable
-        ``z (2,) -> g(z) (16384,)`` differentiable decode function.
-    """
-
-    return make_qlvm_decode_fn(load_decoder_params(weights_npz_path))
 
 
 def make_qlvm_decode_fn_from_model_cell(model_cell_directory: str):
@@ -463,14 +440,12 @@ def resolve_geodesic_decoder_source(geodesic_settings: dict) -> tuple[str, str] 
     Description
     -----------
     Reads which decoder the pullback geodesic metric uses from the
-    ``vocal_features.usv_manifold_geodesic_metrics`` block: a QLVM model package
-    cell (``decoder_model_cell_directory``, the current form) or a converted
-    decoder ``.npz`` (``decoder_weights_npz_path``, kept for the legacy in-house
-    model). Setting both is ambiguous and raises; setting neither means no
-    pullback metric (``pullback_geodesic_mae`` is NaN). A block written before
-    ``decoder_model_cell_directory`` existed is read as npz-only. This is
-    validated before any geometry is built, so the configuration error is not
-    swallowed by the geometry's soft-failure handling.
+    ``vocal_features.usv_manifold_geodesic_metrics`` block: the QLVM model
+    package cell ``decoder_model_cell_directory`` (the only decoder source; the
+    legacy in-house decoder ``.npz`` is retired). An empty directory means no
+    pullback metric (``pullback_geodesic_mae`` is NaN). This is read before any
+    geometry is built, so a configuration error is not swallowed by the
+    geometry's soft-failure handling.
 
     Parameters
     ----------
@@ -480,25 +455,12 @@ def resolve_geodesic_decoder_source(geodesic_settings: dict) -> tuple[str, str] 
     Returns
     -------
     source (tuple[str, str] | None)
-        ``('model_cell', <directory>)``, ``('npz', <path>)``, or None when no
-        decoder is configured.
+        ``('model_cell', <directory>)``, or None when no decoder is configured.
     """
 
-    npz_path = geodesic_settings['decoder_weights_npz_path'] if 'decoder_weights_npz_path' in geodesic_settings else ''
-    cell_directory = (geodesic_settings['decoder_model_cell_directory']
-                      if 'decoder_model_cell_directory' in geodesic_settings else '')
-    if npz_path and cell_directory:
-        error_message = (
-            "vocal_features.usv_manifold_geodesic_metrics: decoder_model_cell_directory and "
-            "decoder_weights_npz_path are both set. The pullback metric uses one decoder: set "
-            "decoder_model_cell_directory (a QLVM model package cell) or, for the legacy in-house "
-            "model, decoder_weights_npz_path, and leave the other empty."
-        )
-        raise ValueError(error_message)
+    cell_directory = geodesic_settings['decoder_model_cell_directory']
     if cell_directory:
         return 'model_cell', cell_directory
-    if npz_path:
-        return 'npz', npz_path
     return None
 
 
@@ -512,7 +474,7 @@ def make_qlvm_decode_fn_from_source(source: tuple[str, str]):
     Parameters
     ----------
     source (tuple[str, str])
-        ``('model_cell', <directory>)`` or ``('npz', <path>)``.
+        ``('model_cell', <directory>)``.
 
     Returns
     -------
@@ -523,8 +485,6 @@ def make_qlvm_decode_fn_from_source(source: tuple[str, str]):
     kind, location = source
     if kind == 'model_cell':
         return make_qlvm_decode_fn_from_model_cell(location)
-    if kind == 'npz':
-        return make_qlvm_decode_fn_from_npz(location)
     error_message = f"make_qlvm_decode_fn_from_source: unknown decoder source kind {kind!r}."
     raise ValueError(error_message)
 
