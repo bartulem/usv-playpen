@@ -45,7 +45,14 @@ from ..analyses.compute_neuronal_tuning_curves import (
     CATEGORICAL_FEATURES,
 )
 from ..analyses.decode_experiment_label import extract_information
-from ..os_utils import drop_noise_usvs, first_match_or_raise
+from ..os_utils import (
+    QLVM_MODEL_PACKAGE_ROOT,
+    QLVM_PRODUCTION_MODEL_CELLS,
+    cell_cluster_directory,
+    configure_path,
+    drop_noise_usvs,
+    first_match_or_raise,
+)
 from .plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
@@ -147,9 +154,12 @@ USV_PROPERTY_ORDER: tuple[str, ...] = tuple(USV_PROPERTY_META.keys())
 
 # Categorical USV-tuning segmentations (the four `cat_feat` axes
 # stored in the triage pickle's `usv_category_self_<segmentation>`
-# modality keys). `n_classes` is the upstream class count for that
-# segmentation, used to bound the per-region bar charts even when
-# no units happen to land in some categories.
+# modality keys). `USV_CATEGORY_N_CLASSES` is the upstream class count of
+# each VAE segmentation, used to bound the per-region bar charts even when
+# no units happen to land in some categories; the QLVM class counts are
+# not fixed here but read from the label grids of the production regular
+# model (`QLVM_PACKAGE_SEGMENTATIONS`; 15 fine and 9 coarse clusters in the
+# v3 package), see `_category_class_count`.
 USV_CATEGORY_SEGMENTATIONS: tuple[str, ...] = (
     "vae_supercategory",
     "vae_category",
@@ -159,9 +169,87 @@ USV_CATEGORY_SEGMENTATIONS: tuple[str, ...] = (
 USV_CATEGORY_N_CLASSES: dict[str, int] = {
     "vae_supercategory": 5,
     "vae_category":      10,
-    "qlvm_supercategory": 7,
-    "qlvm_category":     12,
 }
+
+# QLVM categorical features -> the cluster level of the production regular
+# model (os_utils.QLVM_PRODUCTION_MODEL_CELLS['qlvm'] under
+# os_utils.QLVM_MODEL_PACKAGE_ROOT) whose label_grid.npy labels them: the
+# columns infer-qlvm-latents writes (qlvm_category = fine, qlvm_supercategory =
+# coarse) are read off exactly these grids, so the section-(c) watersheds and
+# the class counts match the labels units are tuned to.
+QLVM_PACKAGE_SEGMENTATIONS: dict[str, str] = {
+    "qlvm_category": "fine",
+    "qlvm_supercategory": "coarse",
+}
+
+
+def qlvm_regular_cell_directory() -> pathlib.Path:
+    """
+    Description
+    -----------
+    The QLVM model package cell of the production regular model -- the phase 6
+    cell ``os_utils.QLVM_PRODUCTION_MODEL_CELLS['qlvm']`` under
+    ``os_utils.QLVM_MODEL_PACKAGE_ROOT`` -- translated to this host's mount by
+    ``configure_path``.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    cell (pathlib.Path)
+        The cell directory (not checked for existence).
+    """
+
+    return pathlib.Path(configure_path(f"{QLVM_MODEL_PACKAGE_ROOT}/{QLVM_PRODUCTION_MODEL_CELLS['qlvm']}"))
+
+
+def load_qlvm_package_segmentation(cell_directory: pathlib.Path) -> dict[str, dict]:
+    """
+    Description
+    -----------
+    Builds the section-(c) segmentation blocks of the QLVM categorical features
+    from a model package cell's ``label_grid.npy`` of each level
+    (``QLVM_PACKAGE_SEGMENTATIONS``; the cell's ``inference/clusters_<level>/``
+    in v3, ``cluster/<level>/`` in v2 / v2.1, see
+    ``os_utils.cell_cluster_directory``). Each grid is ``(res, res)``, indexed
+    ``[y, x]`` over the unit torus, so the block's ``xx`` / ``yy`` are the pixel
+    centres ``(i + 0.5) / res`` and its ``bounds`` are ``(0, 1, 0, 1)``: drawn with
+    ``origin="lower"``, pixel ``[y, x]`` lands at torus position ``(x, y)``, the
+    pixel ``infer-qlvm-latents`` reads a call's label from.
+
+    Parameters
+    ----------
+    cell_directory (pathlib.Path)
+        The package cell (e.g. :func:`qlvm_regular_cell_directory`).
+
+    Returns
+    -------
+    segmentation (dict[str, dict])
+        ``cat_feat -> {label_grid, xx, yy, bounds, unique_labels}`` for
+        ``qlvm_category`` and ``qlvm_supercategory``, the layout of the bundled
+        segmentation file's blocks.
+
+    Raises
+    ------
+    FileNotFoundError
+        The cell, a cluster folder or a ``label_grid.npy`` is missing.
+    """
+
+    segmentation = {}
+    for cat_feat, level in QLVM_PACKAGE_SEGMENTATIONS.items():
+        label_grid = np.load(cell_cluster_directory(cell_directory, level) / "label_grid.npy", allow_pickle=False)
+        resolution = label_grid.shape[0]
+        centres = (np.arange(resolution) + 0.5) / resolution
+        xx, yy = np.meshgrid(centres, centres)
+        segmentation[cat_feat] = {
+            "label_grid": label_grid.astype(np.int32),
+            "xx": xx,
+            "yy": yy,
+            "bounds": np.array([0.0, 1.0, 0.0, 1.0]),
+            "unique_labels": np.unique(label_grid).astype(np.int64).tolist(),
+        }
+    return segmentation
 
 # Behavioral tuning-summary bucket definitions.
 #
@@ -250,22 +338,34 @@ VOCAL_STRIP_LOG_RATIO_THRESHOLD = 10.0
 VOCAL_STRIP_SYMLOG_LINTHRESH = 0.5
 
 
-def _category_class_count(segmentation: str, per_group: dict[str, list[dict]]) -> int:
+def _category_class_count(
+    segmentation: str,
+    per_group: dict[str, list[dict]],
+    segmentation_grids: dict[str, dict],
+) -> int:
     """
     Description
     -----------
-    Number of category classes to lay out for a segmentation: the upstream count
-    in `USV_CATEGORY_N_CLASSES`, raised to the largest `best_cat` any unit holds.
-    The upstream counts describe the reference QLVM / VAE segmentations; a QLVM
-    model package cell can have more clusters (up to 18 fine, 9 coarse), and a
-    fixed bound would silently drop every unit tuned to a higher category.
+    Number of category classes to lay out for a segmentation, raised to the
+    largest `best_cat` any unit holds (a fixed bound would silently drop every
+    unit tuned to a higher category). The base count of a VAE segmentation is
+    its upstream count in `USV_CATEGORY_N_CLASSES`; a QLVM segmentation takes
+    the largest label of its label grid in `segmentation_grids` (the production
+    regular model's grids, :func:`load_qlvm_package_segmentation`: 15 fine and
+    9 coarse clusters in the v3 package, labelled 1..k), so its count follows
+    the model the labels come from instead of a hard-coded one. When neither is
+    known (e.g. the package is unreachable), the data alone set the count.
 
     Parameters
     ----------
     segmentation (str)
-        Categorical feature, a key of `USV_CATEGORY_N_CLASSES`.
+        Categorical feature, e.g. ``"qlvm_supercategory"``.
     per_group (dict[str, list[dict]])
         Units per region, each with an integer `best_cat`.
+    segmentation_grids (dict[str, dict])
+        Segmentation blocks by categorical feature (as
+        `NeuronalTuningFigureMaker._load_segmentation` returns them), each with
+        `unique_labels`.
 
     Returns
     -------
@@ -274,7 +374,13 @@ def _category_class_count(segmentation: str, per_group: dict[str, list[dict]]) -
     """
 
     observed = [int(unit["best_cat"]) for units in per_group.values() for unit in units]
-    return max([USV_CATEGORY_N_CLASSES[segmentation], *observed])
+    if segmentation in USV_CATEGORY_N_CLASSES:
+        base = USV_CATEGORY_N_CLASSES[segmentation]
+    elif segmentation in segmentation_grids and segmentation_grids[segmentation]["unique_labels"]:
+        base = int(max(segmentation_grids[segmentation]["unique_labels"]))
+    else:
+        base = 0
+    return max([base, *observed])
 
 
 def _parse_behavioral_modality_key(modality_key: str) -> tuple[str, str, str] | None:
@@ -417,7 +523,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Initialize the per-cluster figure maker. Loads `FeatureZoo`
         feature definitions (vocal boundaries / vocal labels / display
         units), validates and stashes the keyword arguments as attributes,
-        records GUI-vs-CLI context, pins the path of the bundled
+        records GUI-vs-CLI context, pins the path of the bundled (VAE)
         latent-embedding segmentation file used by section (c), and primes
         a lazy segmentation cache.
 
@@ -496,10 +602,20 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Lazy-load the bundled latent-embedding segmentation file
-        (`_config/usv_latent_embedding_segmentation.npz`) used to render the
-        section-(c) categorical watersheds. Returns an empty dict if
-        the file is absent. Cached on first call.
+        Lazy-load the segmentations used to render the section-(c)
+        categorical watersheds and to size the per-category population
+        figures. The VAE blocks come from the bundled latent-embedding
+        segmentation file (`_config/usv_latent_embedding_segmentation.npz`;
+        none when the file is absent). The QLVM blocks (`qlvm_category`,
+        `qlvm_supercategory`) come from the fine and coarse `label_grid.npy`
+        of the production regular model's package cell
+        (:func:`qlvm_regular_cell_directory`,
+        :func:`load_qlvm_package_segmentation`) -- the grids
+        `infer-qlvm-latents` labels calls with -- never from the bundled
+        file, whose QLVM grids belong to an older model. When the package is
+        unreachable, a message names the cell and the error, and the QLVM
+        panels draw the "segmentation unavailable" placeholder. Cached on
+        first call.
 
         Parameters
         ----------
@@ -515,24 +631,33 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         if self._segmentation_cache is not None:
             return self._segmentation_cache
-        if not self._segmentation_path.exists():
-            self._segmentation_cache = {}
-            return self._segmentation_cache
         out: dict[str, dict] = {}
-        # np.load on a .npz returns a lazy NpzFile that keeps the underlying
-        # zip handle open; use a context manager so it is closed once every
-        # array has been copied out into the cache dict.
-        with np.load(self._segmentation_path, allow_pickle=True) as data:
-            for cat_feat in CATEGORICAL_FEATURES:
-                if f"{cat_feat}__label_grid" not in data.files:
-                    continue
-                out[cat_feat] = {
-                    "label_grid": data[f"{cat_feat}__label_grid"],
-                    "xx": data[f"{cat_feat}__xx"],
-                    "yy": data[f"{cat_feat}__yy"],
-                    "bounds": data[f"{cat_feat}__bounds"],
-                    "unique_labels": data[f"{cat_feat}__unique_labels"].tolist(),
-                }
+        if self._segmentation_path.exists():
+            # np.load on a .npz returns a lazy NpzFile that keeps the underlying
+            # zip handle open; use a context manager so it is closed once every
+            # array has been copied out into the cache dict.
+            with np.load(self._segmentation_path, allow_pickle=True) as data:
+                for cat_feat in CATEGORICAL_FEATURES:
+                    if cat_feat in QLVM_PACKAGE_SEGMENTATIONS or f"{cat_feat}__label_grid" not in data.files:
+                        continue
+                    out[cat_feat] = {
+                        "label_grid": data[f"{cat_feat}__label_grid"],
+                        "xx": data[f"{cat_feat}__xx"],
+                        "yy": data[f"{cat_feat}__yy"],
+                        "bounds": data[f"{cat_feat}__bounds"],
+                        "unique_labels": data[f"{cat_feat}__unique_labels"].tolist(),
+                    }
+        cell_directory = qlvm_regular_cell_directory()
+        try:
+            out.update(load_qlvm_package_segmentation(cell_directory))
+        except (FileNotFoundError, OSError, ValueError) as error:
+            message_output = self.message_output if hasattr(self, "message_output") else print
+            message_output(
+                f"QLVM segmentation unavailable: the label grids of the production regular model could not be "
+                f"read from {cell_directory} ({error}). The qlvm_category / qlvm_supercategory watersheds are "
+                f"drawn as placeholders and their class counts follow the units' labels only; the bundled "
+                f"segmentation's QLVM grids belong to an older model and are not used."
+            )
         self._segmentation_cache = out
         return out
 
@@ -4153,7 +4278,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         region_colors = self._resolve_region_colors()
         density_cmap = self.visualizations_parameter_dict["figures"]["sequential_cmap"]
 
-        n_classes = _category_class_count(segmentation, per_group)
+        n_classes = _category_class_count(segmentation, per_group, self._load_segmentation())
         class_ids = np.arange(1, n_classes + 1)
 
         fig = plt.figure(figsize=(14.0, 6.4), dpi=self._figure_dpi)
@@ -4297,7 +4422,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             require_majority=require_majority,
         )
         region_colors = self._resolve_region_colors()
-        n_classes = _category_class_count(segmentation, per_group)
+        n_classes = _category_class_count(segmentation, per_group, self._load_segmentation())
 
         # Marker-size mapping: linear in median peak_signed_z, clipped
         # to a plotting-friendly range so very strong outliers don't
@@ -6803,7 +6928,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Render a watershed-style imshow of per-category values over the
-        bundled latent-embedding segmentation grid. Pixels with no cluster-side
+        feature's segmentation grid (bundled VAE or QLVM package). Pixels with no cluster-side
         category get a hatched fill; per-category 1-NN boundaries are
         contour-drawn in `COLOR_BLACK`. When `annotate_categories=True`,
         each region's category ID is overlaid at its centroid (or a

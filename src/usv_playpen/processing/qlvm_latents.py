@@ -83,6 +83,7 @@ from ..os_utils import (
     QLVM_PRODUCTION_MODEL_CELLS,
     USV_SUMMARY_COLUMN_ORDER,
     atomic_output_path,
+    cell_cluster_directory,
     configure_path,
     derive_spectrogram_model_paths,
     first_match_or_raise,
@@ -164,38 +165,6 @@ def cell_file(cell: pathlib.Path, name: str) -> pathlib.Path:
         if candidate.is_file():
             return candidate
     error_message = f"{cell}: no {name} in {', '.join(str(candidate.parent) for candidate in candidates)}."
-    raise FileNotFoundError(error_message)
-
-
-def cell_cluster_directory(cell: pathlib.Path, level: str) -> pathlib.Path:
-    """
-    Description
-    -----------
-    Locates one cluster level of a QLVM model package cell in either package layout:
-    ``inference/clusters_<level>/`` (v3) or ``cluster/<level>/`` (v2 / v2.1).
-
-    Parameters
-    ----------
-    cell (pathlib.Path)
-        The package cell directory.
-    level (str)
-        ``"fine"`` or ``"coarse"``.
-
-    Returns
-    -------
-    directory (pathlib.Path)
-        The first existing candidate.
-
-    Raises
-    ------
-    FileNotFoundError
-        Neither exists.
-    """
-    candidates = (cell / "inference" / f"clusters_{level}", cell / "cluster" / level)
-    for candidate in candidates:
-        if candidate.is_dir():
-            return candidate
-    error_message = f"{cell}: no {level} cluster folder ({' or '.join(str(candidate) for candidate in candidates)})."
     raise FileNotFoundError(error_message)
 
 

@@ -393,6 +393,41 @@ QLVM_PRODUCTION_MODEL_CELLS = {
 QLVM_PRODUCTION_MASKING_TYPE = "none"
 
 
+def cell_cluster_directory(cell: pathlib.Path, level: str) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Locates one cluster level of a QLVM model package cell in either package layout:
+    ``inference/clusters_<level>/`` (v3) or ``cluster/<level>/`` (v2 / v2.1). Kept
+    here, free of the JAX stack ``processing.qlvm_latents`` imports, so light
+    readers of a cell's ``label_grid.npy`` (e.g. the neuronal tuning figures) can
+    find it too.
+
+    Parameters
+    ----------
+    cell (pathlib.Path)
+        The package cell directory.
+    level (str)
+        ``"fine"`` or ``"coarse"``.
+
+    Returns
+    -------
+    directory (pathlib.Path)
+        The first existing candidate.
+
+    Raises
+    ------
+    FileNotFoundError
+        Neither exists.
+    """
+    candidates = (cell / "inference" / f"clusters_{level}", cell / "cluster" / level)
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    error_message = f"{cell}: no {level} cluster folder ({' or '.join(str(candidate) for candidate in candidates)})."
+    raise FileNotFoundError(error_message)
+
+
 def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     """
     Description

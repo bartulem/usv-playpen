@@ -49,12 +49,15 @@ from usv_playpen.analyses.compute_neuronal_tuning_curves import (
     CONTINUOUS_PROPERTIES,
     NeuronalTuning,
 )
+from usv_playpen.visualizations import make_neuronal_tuning_figures as tuning_figures
 from usv_playpen.visualizations.make_neuronal_tuning_figures import (
     DISPLAY_FACTOR,
     NeuronalTuningFigureMaker,
     USV_CATEGORY_SEGMENTATIONS,
     USV_PROPERTY_ORDER,
     _category_class_count,
+    load_qlvm_package_segmentation,
+    qlvm_regular_cell_directory,
 )
 
 
@@ -2740,9 +2743,86 @@ def test_render_behavioral_pages_returns_early_without_beh_offset():
 
 
 def test_category_class_count_grows_with_the_labels_units_hold():
-    """A QLVM model package cell has up to 18 fine clusters: units tuned to a
-    category above the reference count must widen the axis, not drop out."""
-    per_group = {"PAG": [{"best_cat": 3}, {"best_cat": 15}], "VMH": []}
-    assert _category_class_count("qlvm_category", per_group) == 15
-    assert _category_class_count("qlvm_supercategory", {"PAG": [{"best_cat": 2}]}) == 7
-    assert _category_class_count("vae_category", {}) == 10
+    """The QLVM class counts come from the label grids (here v3-like: 15 fine, 9
+    coarse), the VAE ones from their upstream counts; units tuned to a category above
+    the base count widen the axis instead of dropping out, and with no grid (package
+    unreachable) the units alone set the count."""
+    grids = {
+        "qlvm_category": {"unique_labels": list(range(1, 16))},
+        "qlvm_supercategory": {"unique_labels": list(range(1, 10))},
+    }
+    per_group = {"PAG": [{"best_cat": 3}, {"best_cat": 12}], "VMH": []}
+    assert _category_class_count("qlvm_category", per_group, grids) == 15
+    assert _category_class_count("qlvm_category", {"PAG": [{"best_cat": 17}]}, grids) == 17
+    assert _category_class_count("qlvm_supercategory", {"PAG": [{"best_cat": 2}]}, grids) == 9
+    assert _category_class_count("qlvm_supercategory", {"PAG": [{"best_cat": 4}]}, {}) == 4
+    assert _category_class_count("vae_category", {}, grids) == 10
+
+
+def _fake_qlvm_cell(tmp_path, fine, coarse):
+    """A v3-layout package cell holding only the two cluster levels' label_grid.npy."""
+    cell = tmp_path / "v3" / "phase6_USVs_unmasked_floor" / "natural_5strata_N29000_unmasked_floor"
+    for level, grid in (("fine", fine), ("coarse", coarse)):
+        (cell / "inference" / f"clusters_{level}").mkdir(parents=True)
+        np.save(cell / "inference" / f"clusters_{level}" / "label_grid.npy", grid)
+    return cell
+
+
+def test_qlvm_segmentation_comes_from_the_regular_package_cell(tmp_path, monkeypatch):
+    """The QLVM watersheds and class counts are the production regular cell's fine
+    (qlvm_category) and coarse (qlvm_supercategory) label grids, located from the
+    os_utils package root, on the unit torus with pixel [y, x] at (x, y); the VAE
+    blocks still come from the bundled file, whose old QLVM grids are not used."""
+    fine = (np.arange(16).reshape(4, 4) % 15 + 1).astype(np.int16)
+    coarse = np.array([[1, 2, 3, 4], [5, 6, 7, 8], [9, 9, 1, 2], [3, 4, 5, 6]], dtype=np.int16)
+    _fake_qlvm_cell(tmp_path, fine, coarse)
+    monkeypatch.setattr(tuning_figures, "QLVM_MODEL_PACKAGE_ROOT", str(tmp_path / "v3"))
+    maker = _make_figure_maker()
+
+    segmentation = maker._load_segmentation()
+
+    np.testing.assert_array_equal(segmentation["qlvm_category"]["label_grid"], fine)
+    np.testing.assert_array_equal(segmentation["qlvm_supercategory"]["label_grid"], coarse)
+    assert segmentation["qlvm_category"]["unique_labels"] == list(range(1, 16))
+    assert segmentation["qlvm_supercategory"]["unique_labels"] == list(range(1, 10))
+    np.testing.assert_array_equal(segmentation["qlvm_category"]["bounds"], [0.0, 1.0, 0.0, 1.0])
+    # Pixel [row=y, col=x] is centred at ((x + 0.5) / res, (y + 0.5) / res).
+    assert segmentation["qlvm_category"]["xx"][1, 3] == 3.5 / 4
+    assert segmentation["qlvm_category"]["yy"][1, 3] == 1.5 / 4
+    assert {"vae_category", "vae_supercategory"} <= set(segmentation)
+    assert _category_class_count("qlvm_category", {}, segmentation) == 15
+    assert _category_class_count("qlvm_supercategory", {}, segmentation) == 9
+
+
+def test_qlvm_segmentation_unreachable_says_so_and_draws_placeholders(tmp_path, monkeypatch):
+    """With the package unreachable, a clear message names the cell, the QLVM blocks
+    are left out (placeholder panels) rather than replaced by the bundled old grids,
+    and the VAE blocks are unaffected."""
+    monkeypatch.setattr(tuning_figures, "QLVM_MODEL_PACKAGE_ROOT", str(tmp_path / "missing"))
+    messages = []
+    maker = NeuronalTuningFigureMaker(
+        root_directory="/tmp",
+        visualizations_parameter_dict=_make_visualizations_parameters(),
+        message_output=messages.append,
+    )
+
+    segmentation = maker._load_segmentation()
+
+    assert "qlvm_category" not in segmentation and "qlvm_supercategory" not in segmentation
+    assert {"vae_category", "vae_supercategory"} <= set(segmentation)
+    assert len(messages) == 1
+    assert "QLVM segmentation unavailable" in messages[0] and str(tmp_path / "missing") in messages[0]
+
+
+@pytest.mark.skipif(
+    not qlvm_regular_cell_directory().is_dir(),
+    reason="the production QLVM model package is not mounted on this host",
+)
+def test_production_qlvm_class_counts_are_15_fine_and_9_coarse():
+    """On the production v3 regular cell (read-only), the fine grid holds 15 clusters
+    and the coarse grid 9, labelled 1..k, which sets the tuning-figure class counts."""
+    segmentation = load_qlvm_package_segmentation(qlvm_regular_cell_directory())
+    assert segmentation["qlvm_category"]["unique_labels"] == list(range(1, 16))
+    assert segmentation["qlvm_supercategory"]["unique_labels"] == list(range(1, 10))
+    assert _category_class_count("qlvm_category", {}, segmentation) == 15
+    assert _category_class_count("qlvm_supercategory", {}, segmentation) == 9
