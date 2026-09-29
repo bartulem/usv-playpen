@@ -18,7 +18,7 @@ import polars as pls
 import pytest
 
 from usv_playpen import os_utils
-from usv_playpen.processing.qlvm_latents import validate_model_cells
+from usv_playpen.processing.qlvm_latents import model_cell_label_columns, validate_model_cells
 
 
 @pytest.fixture
@@ -533,15 +533,17 @@ def test_order_usv_summary_columns_puts_known_columns_in_canonical_order():
 
 def test_usv_summary_column_order_places_squeaks_between_emitter_and_features():
     """The agreed layout: DAS event -> emitter -> squeak block -> acoustic features -> QLVM,
-    where the QLVM block is the production torus coordinates (phase 6 regular model, then the
-    duration / mean-frequency / bandwidth / loudness conditional models) and the retired
-    single-model columns (qlvm_category / qlvm_supercategory / qlvm_model) are not listed."""
+    where the QLVM block is the production torus coordinates and labels (phase 6 regular
+    model with its fine and coarse labels, then the duration / mean-frequency / bandwidth /
+    loudness conditional models, each with its fine label) and the retired single-model
+    column qlvm_model is not listed."""
     order = list(os_utils.USV_SUMMARY_COLUMN_ORDER)
-    assert order[-10:] == [
-        "qlvm1", "qlvm2", "qlvm_dur1", "qlvm_dur2", "qlvm_mf1", "qlvm_mf2",
-        "qlvm_bw1", "qlvm_bw2", "qlvm_loud1", "qlvm_loud2",
+    assert order[-16:] == [
+        "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
+        "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category", "qlvm_mf1", "qlvm_mf2", "qlvm_mf_category",
+        "qlvm_bw1", "qlvm_bw2", "qlvm_bw_category", "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category",
     ]
-    assert not {"qlvm_category", "qlvm_supercategory", "qlvm_model"} & set(order)
+    assert "qlvm_model" not in order
     assert order[order.index("squeak"):order.index("squeak") + 4] == ["squeak", "squeak_probability", "squeak_start", "squeak_end"]
     assert order.index("emitter") + 1 == order.index("noise")
     assert order[order.index("noise"):order.index("noise") + 2] == ["noise", "noise_probability"]
@@ -646,8 +648,9 @@ def test_derive_spectrogram_model_paths_keeps_configured_qlvm_models(configured)
 
 
 def test_derived_qlvm_model_cells_pass_model_cell_validation():
-    """The derived production prefixes write exactly the canonical coordinate columns, so the
-    model_cells validator (which forbids overwriting other summary columns) accepts them."""
+    """The derived production prefixes, with the shipped (empty) label-level setting, write
+    exactly the canonical coordinate and label columns, so the model_cells validator and the
+    label-level resolver (which forbid overwriting other summary columns) accept them."""
     settings = {
         "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
         "generate_masks": {"sam2_model_dir": "", "sam2_model_path": "", "yolo_weights": ""},
@@ -659,6 +662,7 @@ def test_derived_qlvm_model_cells_pass_model_cell_validation():
     os_utils.derive_spectrogram_model_paths(settings)
     validated = validate_model_cells(settings["infer_qlvm_latents"]["model_cells"].items())
     written = {f"{prefix}{axis}" for prefix in validated for axis in (1, 2)}
+    written |= {column for columns in model_cell_label_columns(validated, {}).values() for column in columns.values()}
     assert written == {c for c in os_utils.USV_SUMMARY_COLUMN_ORDER if c.startswith("qlvm")}
 
 

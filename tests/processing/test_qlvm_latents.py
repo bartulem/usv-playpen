@@ -56,6 +56,42 @@ def test_labels_for_coords_lookup_convention():
     assert supercat.tolist() == [coarse[0, 0], coarse[0, 1], coarse[1, 0]]
 
 
+def test_label_grid_lookup_is_the_package_pixel_rule_at_the_edges():
+    """label_grid_lookup is the model packages' rule px = floor(x * res) mod res,
+    py = floor(y * res) mod res, label = grid[py, px] -- checked against that formula
+    written out independently on the edge values: 0.0, coordinates exactly on pixel
+    boundaries (which belong to the pixel they open), values just below a boundary and
+    just below 1.0 (the last pixel), exactly 1.0 (wraps to pixel 0, as on the torus) and
+    a tiny negative value (wraps to the last pixel)."""
+    resolution = 200
+    grid = (np.arange(resolution * resolution).reshape(resolution, resolution) + 1).astype(np.int32)
+    below_one = np.nextafter(1.0, 0.0)
+    edges = np.array([
+        0.0, 1 / resolution, 2 / resolution, 0.5, 191 / resolution, np.nextafter(191 / resolution, 0.0),
+        199 / resolution, 0.999999, below_one, 1.0, -1e-9,
+    ])
+    xs, ys = np.meshgrid(edges, edges[::-1])
+    coords = np.column_stack([xs.ravel(), ys.ravel()])
+
+    labels = ql.label_grid_lookup(coords, grid)
+
+    expected_px = np.floor(coords[:, 0] * resolution).astype(np.int64) % resolution
+    expected_py = np.floor(coords[:, 1] * resolution).astype(np.int64) % resolution
+    np.testing.assert_array_equal(labels, grid[expected_py, expected_px])
+    by_value = {value: ql.label_grid_lookup(np.array([[value, 0.0]]), grid)[0] for value in edges}
+    assert by_value[0.0] == grid[0, 0]
+    assert by_value[1 / resolution] == grid[0, 1]
+    assert by_value[191 / resolution] == grid[0, 191]
+    assert by_value[np.nextafter(191 / resolution, 0.0)] == grid[0, 190]
+    assert by_value[below_one] == grid[0, 199]
+    assert by_value[1.0] == grid[0, 0]
+    assert by_value[-1e-9] == grid[0, 199]
+    # labels_for_coords applies the same rule to its two grids.
+    fine, coarse = ql.labels_for_coords(coords, grid, grid.T.copy())
+    np.testing.assert_array_equal(fine, labels)
+    np.testing.assert_array_equal(coarse, grid.T[expected_py, expected_px])
+
+
 def _decoder_weights_npz(path, rng, latent_dim=2):
     np.savez(
         path,
@@ -116,6 +152,7 @@ def test_infer_and_merge_writes_qlvm_columns(tmp_path, mocker):
     cfg = {
         "model_cell_directory": "",
         "model_cells": {},
+        "model_cell_label_levels": {},
         "prefer_package_values": True,
         "weights_npz_path": str(weights),
         "reference_arrays_fine_npz_path": str(fine_arrays),
@@ -201,6 +238,7 @@ def _make_inference_session(tmp_path, rng, *, fine_grid, coarse_grid, with_masks
     cfg = {
         "model_cell_directory": "",
         "model_cells": {},
+        "model_cell_label_levels": {},
         "prefer_package_values": True,
         "weights_npz_path": str(weights),
         "reference_arrays_fine_npz_path": str(fine_arrays),
@@ -1158,17 +1196,46 @@ def test_infer_and_merge_unmasked_decoder_needs_no_masks(tmp_path, mocker):
 def _model_cells_session(tmp_path, rng, prefixes=("qlvm", "qlvm_x")):
     """A session whose rows 0 and 2 are real 64-bin calls with a SAM mask (row 1 a
     placeholder), one unmasked floor-trained package cell per prefix (all in one
-    package, ``<tmp_path>/pkg``) and settings listing them in ``model_cells``."""
+    package, ``<tmp_path>/pkg``) and settings listing them in ``model_cells``. Every
+    cell gets its own label grids (:func:`_model_cell_grids`), so a label read from the
+    wrong cell or level shows."""
     grid = np.ones((8, 8), dtype=np.int16)
     root, session_id, cfg = _make_inference_session(tmp_path, rng, fine_grid=grid, coarse_grid=grid)
     _set_session_durations(root, session_id, [64, 0, 64])
     cfg["masking_type"] = "none"
-    cfg["model_cells"] = {
-        prefix: str(_make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid,
-                                     cell_name=f"cell_{prefix}"))
-        for prefix in prefixes
-    }
+    cfg["model_cells"] = {}
+    for index, prefix in enumerate(prefixes):
+        fine_grid, coarse_grid = _model_cell_grids(index)
+        cfg["model_cells"][prefix] = str(_make_model_cell(
+            tmp_path, rng, masking_type="none", floor=0.2, fine_grid=fine_grid, coarse_grid=coarse_grid,
+            cell_name=f"cell_{prefix}",
+        ))
     return root, session_id, cfg
+
+
+def _model_cell_grids(index):
+    """Distinct (8, 8) fine and coarse label grids of the ``index``-th cell of
+    :func:`_model_cells_session`: every fine pixel its own label (1..64, offset by
+    ``1000 * index``), every coarse row its own label (101..108, same offset)."""
+    fine = (np.arange(64).reshape(8, 8) + 1 + 1000 * index).astype(np.int16)
+    coarse = (np.repeat(np.arange(8)[:, None], 8, axis=1) + 101 + 1000 * index).astype(np.int16)
+    return fine, coarse
+
+
+def _assert_labels_follow_coordinates(df, prefix, index, levels):
+    """Every label column of ``prefix`` in ``levels`` equals label_grid_lookup of the
+    prefix's written coordinates in the ``index``-th cell's grid of that level, as Int64,
+    and is null exactly where the coordinates are."""
+    grids = dict(zip(("fine", "coarse"), _model_cell_grids(index), strict=True))
+    placed = df[f"{prefix}1"].is_not_null().to_numpy()
+    coords = df.select(f"{prefix}1", f"{prefix}2").to_numpy()[placed]
+    for level in levels:
+        column = ql.model_cell_label_column(prefix, level)
+        assert df[column].dtype == pls.Int64
+        np.testing.assert_array_equal(df[column].is_not_null().to_numpy(), placed)
+        np.testing.assert_array_equal(
+            df[column].to_numpy()[placed], ql.label_grid_lookup(coords, grids[level]).astype(np.int64)
+        )
 
 
 def _write_fake_package(tmp_path, root, session_id, cfg, rng, *, baseline_session=None, sha256=None,
@@ -1223,10 +1290,14 @@ def _run_model_cells(root, cfg, mocker):
     return embedded, messages
 
 
-def test_model_cells_write_only_prefixed_coordinates(tmp_path, mocker):
-    """With model_cells, every listed cell places the session and each prefix gets
-    exactly <prefix>1/<prefix>2; no category or model column is written, stale ones
-    and earlier coordinates of the listed prefixes are replaced, other columns stay."""
+def test_model_cells_write_prefixed_coordinates_and_labels(tmp_path, mocker):
+    """With model_cells and the shipped (empty) model_cell_label_levels, every listed cell
+    places the session and each prefix gets exactly its coordinates <prefix>1/<prefix>2
+    plus its default labels -- qlvm_category (fine) and qlvm_supercategory (coarse) for
+    'qlvm', qlvm_x_category (fine) only for 'qlvm_x' -- each the cell's grid of that level
+    at the pixel of the written coordinates, null where the call was not placed. No model
+    column is written; stale label, model and coordinate columns of the listed prefixes
+    (including a label level this run does not write) are removed; other columns stay."""
     rng = np.random.default_rng(30)
     root, session_id, cfg = _model_cells_session(tmp_path, rng)
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
@@ -1236,6 +1307,7 @@ def test_model_cells_write_only_prefixed_coordinates(tmp_path, mocker):
         qlvm_supercategory=pls.Series([1, None, 2]),
         qlvm_model=pls.Series(["old", None, "old"]),
         qlvm_x1=pls.Series([9.0, 9.0, 9.0]),
+        qlvm_x_supercategory=pls.Series([5, 5, 5]),
     ).write_csv(summary_path)
 
     mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
@@ -1247,13 +1319,20 @@ def test_model_cells_write_only_prefixed_coordinates(tmp_path, mocker):
     ).infer_and_merge()
 
     df = pls.read_csv(summary_path)
-    assert df.columns == ["usv_id", "start", "stop", "qlvm1", "qlvm2", "quality", "qlvm_x1", "qlvm_x2"]
+    assert df.columns == [
+        "usv_id", "start", "stop", "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
+        "quality", "qlvm_x1", "qlvm_x2", "qlvm_x_category",
+    ]
     for column in ("qlvm1", "qlvm2", "qlvm_x1", "qlvm_x2"):
         assert df[column].dtype == pls.Float64
         assert df[column][1] is None
         assert 0.0 <= df[column][0] < 1.0
         assert 0.0 <= df[column][2] < 1.0
+    _assert_labels_follow_coordinates(df, "qlvm", 0, ("fine", "coarse"))
+    _assert_labels_follow_coordinates(df, "qlvm_x", 1, ("fine",))
     assert df["quality"].to_list() == [0.11, 0.22, 0.33]
+    assert any("qlvm1/qlvm2/qlvm_category/qlvm_supercategory, qlvm_x1/qlvm_x2/qlvm_x_category" in message
+               for message in messages)
     # No package baseline above these cells: both are inferred, and the log says why.
     assert sum("inference (no SESSION_H5_BASELINE.tsv in or above the cell" in message for message in messages) == 2
     assert any("qlvm_x1/qlvm_x2: 2 of 3 USVs placed" in message for message in messages)
@@ -1338,6 +1417,10 @@ def test_model_cells_take_package_values_when_the_session_is_verified(tmp_path, 
         assert df[f"{prefix}1"][1] is None
         np.testing.assert_array_equal(df[f"{prefix}1"].to_numpy()[[0, 2]], coords[:, 0])
         np.testing.assert_array_equal(df[f"{prefix}2"].to_numpy()[[0, 2]], coords[:, 1])
+    # The package route labels by the same grid lookup, on the package's coordinates.
+    _assert_labels_follow_coordinates(df, "qlvm", 0, ("fine", "coarse"))
+    _assert_labels_follow_coordinates(df, "qlvm_x", 1, ("fine",))
+    assert "qlvm_x_supercategory" not in df.columns
 
 
 @pytest.mark.parametrize(
@@ -1455,3 +1538,95 @@ def test_model_cells_refuse_invalid_prefixes_before_writing(tmp_path, mocker):
             message_output=lambda *_a, **_kw: None,
         ).infer_and_merge()
     assert summary_path.read_bytes() == before
+
+
+def test_model_cell_label_column_names_follow_the_rule():
+    """Prefix 'qlvm' keeps qlvm_category (fine) / qlvm_supercategory (coarse); every other
+    prefix P gets P_category / P_supercategory. The defaults are both levels for 'qlvm',
+    the fine level for every other prefix."""
+    assert ql.model_cell_label_column("qlvm", "fine") == "qlvm_category"
+    assert ql.model_cell_label_column("qlvm", "coarse") == "qlvm_supercategory"
+    assert ql.model_cell_label_column("qlvm_dur", "fine") == "qlvm_dur_category"
+    assert ql.model_cell_label_column("qlvm_loud", "coarse") == "qlvm_loud_supercategory"
+    assert ql.model_cell_label_columns({"qlvm": "/a", "qlvm_mf": "/b"}, {}) == {
+        "qlvm": {"fine": "qlvm_category", "coarse": "qlvm_supercategory"},
+        "qlvm_mf": {"fine": "qlvm_mf_category"},
+    }
+    # Levels come out in the fine, coarse order whatever order the setting lists them in.
+    assert list(ql.model_cell_label_columns({"qlvm_bw": "/a"}, {"qlvm_bw": ["coarse", "fine"]})["qlvm_bw"]) == [
+        "fine", "coarse",
+    ]
+
+
+def test_model_cells_write_the_configured_label_levels(tmp_path, mocker):
+    """model_cell_label_levels overrides the default per prefix: 'qlvm' fine only drops
+    qlvm_supercategory (a stale one is removed, not kept), 'qlvm_x' both levels adds
+    qlvm_x_supercategory, and an empty list writes coordinates only. Each label is the
+    grid lookup of the written coordinates."""
+    rng = np.random.default_rng(36)
+    root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm", "qlvm_x", "qlvm_y"))
+    cfg["model_cell_label_levels"] = {"qlvm": ["fine"], "qlvm_x": ["fine", "coarse"], "qlvm_y": []}
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    pls.read_csv(summary_path).with_columns(
+        qlvm_supercategory=pls.Series([1, None, 2]),
+        qlvm_y_category=pls.Series([7, 7, 7]),
+    ).write_csv(summary_path)
+
+    _run_model_cells(root, cfg, mocker)
+
+    df = pls.read_csv(summary_path)
+    assert df.columns == [
+        "usv_id", "start", "stop", "qlvm1", "qlvm2", "qlvm_category",
+        "qlvm_x1", "qlvm_x2", "qlvm_x_category", "qlvm_x_supercategory", "qlvm_y1", "qlvm_y2",
+    ]
+    _assert_labels_follow_coordinates(df, "qlvm", 0, ("fine",))
+    _assert_labels_follow_coordinates(df, "qlvm_x", 1, ("fine", "coarse"))
+    # The stand-in embedding places every call at the torus center: pixel (4, 4) of the 8 x 8 grids.
+    assert df["qlvm_x_category"].to_list() == [_model_cell_grids(1)[0][4, 4], None, _model_cell_grids(1)[0][4, 4]]
+
+
+@pytest.mark.parametrize(
+    ("label_levels", "match"),
+    [
+        ([], "must be an object of column prefix -> list of label levels"),
+        ({"qlvm": ["medium"]}, r"prefix 'qlvm': invalid level\(s\) \['medium'\]"),
+        ({"qlvm": "fine"}, "prefix 'qlvm': levels must be a list, got str"),
+        ({"qlvm": ["fine", "fine"]}, r"prefix 'qlvm': level\(s\) listed more than once: \['fine'\]"),
+        ({"qlvm_z": ["fine"]}, r"prefixes not in model_cells: \['qlvm_z'\]"),
+    ],
+)
+def test_model_cells_refuse_invalid_label_levels_before_writing(tmp_path, mocker, label_levels, match):
+    """An invalid model_cell_label_levels -- not an object, an unknown level, a level that is
+    not in a list, a repeated level, or a prefix model_cells does not list -- stops the run
+    before any cell is loaded or the summary is touched."""
+    rng = np.random.default_rng(37)
+    root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm",))
+    cfg["model_cell_label_levels"] = label_levels
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    before = summary_path.read_bytes()
+    loads = mocker.patch("usv_playpen.processing.qlvm_latents.load_model_cell", side_effect=ql.load_model_cell)
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    with pytest.raises(ValueError, match=match):
+        ql.QLVMLatentInference(
+            root_directory=str(root),
+            input_parameter_dict={"infer_qlvm_latents": cfg},
+            message_output=lambda *_a, **_kw: None,
+        ).infer_and_merge()
+    assert loads.call_count == 0
+    assert summary_path.read_bytes() == before
+
+
+def test_model_cell_label_columns_refuse_to_overwrite_summary_columns(mocker):
+    """A label column may not be another summary column; the production label columns
+    (qlvm_category, qlvm_supercategory, qlvm_dur_category, ...) are in the canonical column
+    order and are allowed, and so are the production prefixes' coordinates."""
+    mocker.patch.object(ql, "USV_SUMMARY_COLUMN_ORDER", (*ql.USV_SUMMARY_COLUMN_ORDER, "peak_category"))
+    with pytest.raises(ValueError, match=r"prefix 'peak': label column\(s\) \['peak_category'\] would overwrite"):
+        ql.model_cell_label_columns({"peak": "/cell"}, {})
+    production = {prefix: "/cell" for prefix in ql.QLVM_PRODUCTION_MODEL_CELLS}
+    assert ql.validate_model_cells(production.items()) == production
+    both = {prefix: ["fine", "coarse"] for prefix in production}
+    assert ql.model_cell_label_columns(production, both)["qlvm_loud"] == {
+        "fine": "qlvm_loud_category", "coarse": "qlvm_loud_supercategory",
+    }

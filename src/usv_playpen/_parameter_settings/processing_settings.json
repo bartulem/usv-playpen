@@ -344,6 +344,7 @@
   "infer_qlvm_latents": {
     "model_cell_directory": "",
     "model_cells": {},
+    "model_cell_label_levels": {},
     "prefer_package_values": true,
     "weights_npz_path": "",
     "reference_arrays_fine_npz_path": "",

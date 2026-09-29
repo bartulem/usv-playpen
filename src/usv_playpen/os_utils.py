@@ -421,7 +421,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     The QLVM embedding is NOT derived from ``spectrograms_root`` any more: the
     old in-house model under ``<root>/qlvm`` (``qmc_decoder_weights.npz`` and
     its ``arrays_{fine,coarse}.npz`` watershed grids) would re-embed sessions on
-    a different torus and write ``qlvm_category`` / ``qlvm_supercategory`` back.
+    a different torus and write its own ``qlvm_category`` / ``qlvm_supercategory``.
     Instead, when ``infer_qlvm_latents`` names no model at all
     (``model_cells``, ``model_cell_directory`` and ``weights_npz_path`` all
     empty), ``infer_qlvm_latents.model_cells`` is filled with the production
@@ -433,7 +433,10 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     against each cell's training contract and refuses to embed on a mismatch,
     so keeping the shipped ``"sam"`` would only make the derived run fail. Any
     explicitly configured model (either kind) is left entirely alone,
-    ``masking_type`` included.
+    ``masking_type`` included. ``infer_qlvm_latents.model_cell_label_levels`` is
+    never touched: its shipped ``{}`` already gives the production label columns
+    (``qlvm_category`` and ``qlvm_supercategory`` for ``qlvm``, ``P_category`` for
+    every other prefix ``P``).
 
     Parameters
     ----------
@@ -1012,12 +1015,14 @@ def wait_for_subprocesses(
 # Canonical column order of a session's ``*_usv_summary.csv``: the DAS event
 # (written by das_summarize), the call-level labels (emitter from vocal assignment,
 # squeak from detect_usv_squeaks), the acoustic descriptors
-# (compute_usv_acoustic_features) and the QLVM torus coordinates of the production
-# models (infer_qlvm_latents with model_cells: the phase 6 regular model's qlvm1/qlvm2,
-# then the duration, mean-frequency, bandwidth and loudness conditional models). The
-# single-model columns qlvm_category / qlvm_supercategory / qlvm_model are not listed:
-# production summaries no longer carry them (a legacy run that writes them still
-# keeps them, after the canonical columns).
+# (compute_usv_acoustic_features) and the QLVM torus coordinates and cluster labels of
+# the production models (infer_qlvm_latents with model_cells: the phase 6 regular
+# model's qlvm1/qlvm2 with its fine and coarse labels qlvm_category /
+# qlvm_supercategory, then the duration, mean-frequency, bandwidth and loudness
+# conditional models, each with its fine label P_category). The single-model column
+# qlvm_model is not listed: production summaries do not carry it (a legacy run that
+# writes it still keeps it, after the canonical columns). Non-default label levels
+# (model_cell_label_levels, e.g. qlvm_dur_supercategory) also land after them.
 # Steps that re-append their own columns reorder to this before writing, so a
 # column's position no longer depends on which step ran last.
 USV_SUMMARY_COLUMN_ORDER = (
@@ -1027,8 +1032,11 @@ USV_SUMMARY_COLUMN_ORDER = (
     "squeak", "squeak_probability", "squeak_start", "squeak_end",
     "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "spectral_entropy",
     "mask_number",
-    "qlvm1", "qlvm2", "qlvm_dur1", "qlvm_dur2", "qlvm_mf1", "qlvm_mf2", "qlvm_bw1", "qlvm_bw2",
-    "qlvm_loud1", "qlvm_loud2",
+    "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
+    "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category",
+    "qlvm_mf1", "qlvm_mf2", "qlvm_mf_category",
+    "qlvm_bw1", "qlvm_bw2", "qlvm_bw_category",
+    "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category",
 )
 
 
