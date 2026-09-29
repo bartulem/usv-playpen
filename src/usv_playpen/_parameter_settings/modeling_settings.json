@@ -76,10 +76,10 @@
   },
 
   "vocal_features": {
-    "usv_predictor_type": "categories_rate",
+    "usv_predictor_type": "pooled_rate",
     "usv_predictor_partner_only": true,
     "usv_predictor_smoothing_sd": 1,
-    "usv_category_column_name": "qlvm_supercategory",
+    "usv_category_column_name": null,
     "exclude_noise_usvs": true,
     "usv_manifold_column_names": ["qlvm1", "qlvm2"],
     "usv_manifold_metric": "torus",
@@ -92,7 +92,8 @@
       "grid_n_per_dim": 40,
       "graph_k": 8,
       "density_exponent": 1.0,
-      "decoder_weights_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz"
+      "decoder_weights_npz_path": "",
+      "decoder_model_cell_directory": "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3/phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor"
     }
   },
 
@@ -158,7 +159,7 @@
         "masking_length_frames": 60,
         "use_hybrid_flatten": false,
         "saliency": {
-          "enable": true,
+          "enable": false,
           "segmentation": "supercategory",
           "alpha": 0.5,
           "radius_mode": "adaptive",

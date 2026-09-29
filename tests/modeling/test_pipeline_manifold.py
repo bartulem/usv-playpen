@@ -54,6 +54,7 @@ from pathlib import Path
 
 import matplotlib
 import numpy as np
+import polars as pls
 import pytest
 
 matplotlib.use('Agg')
@@ -369,6 +370,49 @@ class TestContinuousInputExtraction:
         assert spec['manifold_metric'] == 'torus'
         assert spec['usv_category_column_name'] == 'qlvm_supercategory'
         assert list(spec['usv_manifold_column_names']) == ['qlvm1', 'qlvm2']
+
+    def test_extraction_without_labels_drops_unplaced_calls(self, tmp_path, capsys):
+        """
+        With the shipped label-free setting (``usv_category_column_name`` null)
+        on summaries that carry torus coordinates only -- no ``qlvm_category`` /
+        ``qlvm_supercategory`` -- and some calls the embedding could not place
+        (null ``qlvm1`` / ``qlvm2``), extraction still runs: the unplaced calls
+        are dropped before the inverse-density KDE (counts printed), no
+        supercategory packet is written, the tag names the embedding
+        (``manifold_qlvm``).
+        """
+
+        settings, save_dir = _build_manifold_settings(tmp_path, usv_category_column_name=None)
+        n_nulled = 0
+        for summary_path in sorted((tmp_path / 'sessions').glob('*/audio/**/*_usv_summary.csv')):
+            table = pls.read_csv(summary_path)
+            table = table.drop([c for c in ('qlvm_category', 'qlvm_supercategory') if c in table.columns])
+            row_index = np.arange(table.height)
+            unplaced = (row_index % 4) == 0
+            n_nulled += int(unplaced.sum())
+            table = table.with_columns(
+                pls.when(pls.Series(unplaced)).then(None).otherwise(pls.col('qlvm1')).alias('qlvm1'),
+            )
+            table.write_csv(summary_path)
+        assert n_nulled > 0
+
+        pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
+        pipeline.extract_and_save_continuous_data()
+        printed = capsys.readouterr().out
+        assert 'calls with null/NaN coordinates in total' in printed
+
+        pkls = list(save_dir.glob('modeling_manifold_qlvm_*.pkl'))
+        assert len(pkls) == 1, f"expected exactly one manifold_qlvm pickle, got {pkls}"
+        with pkls[0].open('rb') as fh:
+            artifact = pickle.load(fh)
+        md = artifact['_input_metadata']
+        assert md['analysis_tag'] == 'manifold_qlvm'
+        assert md['analysis_specific']['usv_category_column_name'] is None
+        feature_keys = [k for k in artifact if not k.startswith('_')]
+        for feat in feature_keys:
+            for entry in artifact[feat].values():
+                assert np.isfinite(entry['Y']).all() and np.isfinite(entry['w']).all()
+                assert 'supercategory' not in entry and 'category' not in entry
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_extraction_torus_metric(self, tmp_path):

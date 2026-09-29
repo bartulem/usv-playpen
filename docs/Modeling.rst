@@ -198,10 +198,10 @@ cross-validation and held-out-test settings live in their own
 .. code-block:: json
 
     "vocal_features": {
-        "usv_predictor_type": "categories_rate",
+        "usv_predictor_type": "pooled_rate",
         "usv_predictor_partner_only": true,
         "usv_predictor_smoothing_sd": 1,
-        "usv_category_column_name": "qlvm_supercategory",
+        "usv_category_column_name": null,
         "exclude_noise_usvs": true,
         "usv_manifold_column_names": ["qlvm1", "qlvm2"],
         "usv_manifold_metric": "torus",
@@ -213,21 +213,22 @@ cross-validation and held-out-test settings live in their own
             "grid_n_per_dim": 40,
             "graph_k": 8,
             "density_exponent": 1.0,
-            "decoder_weights_npz_path": "/mnt/falkner/Bartul/spectrograms/qlvm/qmc_decoder_weights.npz"
+            "decoder_weights_npz_path": "",
+            "decoder_model_cell_directory": "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3/phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor"
         }
     }
 
-* **usv_predictor_type** — which vocal-syntax predictor traces to build: ``'pooled_binary'`` (one pooled per-frame USV-event indicator), ``'pooled_rate'`` (one pooled USV-rate trace), ``'categories_rate'`` (one per-category USV-rate trace per ``usv_category_column_name`` category), or ``'all_rate'`` (the pooled rate plus the per-category rates). A falsy value builds no vocal predictors.
+* **usv_predictor_type** — which vocal-syntax predictor traces to build: ``'pooled_binary'`` (one pooled per-frame USV-event indicator), ``'pooled_rate'`` (one pooled USV-rate trace; the shipped default), ``'categories_rate'`` (one per-category USV-rate trace per ``usv_category_column_name`` category), or ``'all_rate'`` (the pooled rate plus the per-category rates). A falsy value builds no vocal predictors. ``'categories_rate'`` and ``'all_rate'`` need a QLVM label column, which is not available until the labels are decided: with ``usv_category_column_name`` ``null``, or naming a column a session's summary lacks, they raise a ``ValueError`` naming the setting (before any session is loaded, for the ``null`` case) instead of silently building no category traces. The pooled modes never read a label column.
 * **usv_predictor_partner_only** — if ``true``, ingest only the *partner's* USV signals as predictors (not the target mouse's own vocal history).
 * **usv_predictor_smoothing_sd** — Gaussian σ (frames) applied to the USV-rate predictor traces.
-* **usv_category_column_name** — the USV-catalog column defining categories (``'vae_supercategory'`` / ``'qlvm_supercategory'`` / ``'vae_category'`` / ``'qlvm_category'``).
+* **usv_category_column_name** — the USV-catalog column defining categories (e.g. ``'vae_supercategory'`` / ``'vae_category'``, or a QLVM label column once one exists). Shipped as ``null``: the ``usv_summary.csv`` files carry the QLVM torus coordinates only (``qlvm1`` / ``qlvm2`` of the v3 phase 6 regular model and the ``qlvm_dur`` / ``qlvm_mf`` / ``qlvm_bw`` / ``qlvm_loud`` conditional pairs) and no ``qlvm_category`` / ``qlvm_supercategory`` until a labelling is decided. Every label-dependent path fails clearly on ``null`` — the multinomial and binomial category pipelines, ``onset_target_category`` in ``'individual'`` mode, and the ``'categories_rate'`` / ``'all_rate'`` predictors raise ``QLVM category labels are not available; set vocal_features.usv_category_column_name to an existing label column`` before loading anything — while the continuous manifold pipeline runs without it (no category / supercategory packets; its analysis tag then names the embedding, e.g. ``manifold_qlvm``). A column that is set must exist in every summary.
 * **exclude_noise_usvs** — whether to drop the USV segments ``detect-usv-noise`` flagged as holding no vocalization. A session whose summary lacks the ``noise`` column raises rather than contributing unfiltered detections.
-* **usv_manifold_column_names** — the two catalog columns giving the 2-D manifold position (the ``ContinuousModelingPipeline`` target).
+* **usv_manifold_column_names** — the two catalog columns giving the 2-D manifold position (the ``ContinuousModelingPipeline`` target). Calls the embedding could not place have null coordinates; they are dropped at extraction (with the count printed per session and in total), so the inverse-density KDE, the regressions and the GLM-HMM never see a NaN position.
 * **usv_manifold_metric** — ``'euclidean'`` (plane) or ``'torus'`` (wrap-aware) distance on the manifold.
 * **usv_manifold_period** — the wrap period for the ``'torus'`` metric.
-* **usv_manifold_min_region_events** — the minimum number of labelled events an acoustic region (supercategory) must contain to enter the **macro** (region-balanced) von Mises average and the region-weighted MAE; sparser regions are dropped from those balanced statistics so a single under-sampled corner cannot dominate them (default ``20``). Ignored on euclidean and when no region labels are present.
+* **usv_manifold_min_region_events** — the minimum number of labelled events an acoustic region (supercategory) must contain to enter the **macro** (region-balanced) von Mises average and the region-weighted MAE; sparser regions are dropped from those balanced statistics so a single under-sampled corner cannot dominate them (default ``20``). Ignored on euclidean and when no region labels are present. Without region labels (the current state, see ``usv_category_column_name``) the torus ``'macro'`` score falls back to the pooled score and the equal-region fit reweighting to uniform weights; the univariate and selection runs print a ``WARNING`` saying so, rather than substituting silently.
 * **usv_manifold_selection_score** — on the ``'torus'`` metric, which von Mises log-score the forward selection ranks on: ``'macro'`` (default) uses the region-balanced ``vm_logscore``, ``'micro'`` uses the event-weighted ``vm_logscore_pooled`` twin. Both are always logged per candidate, so this only changes which column drives the greedy ranking and the acceptance gate — the candidate pool, the region-reweighted fit, and every other reported metric are identical — making a macro-vs-micro selection comparison a one-key flip. Ignored on euclidean (which always ranks on ``dcor_xy``); an absent key resolves to ``'macro'``.
-* **usv_manifold_geodesic_metrics** — the analysis-only *reference-map* geometry for the two torus **geodesic** prediction-error columns (``density_geodesic_mae``, ``pullback_geodesic_mae``), reported per fold alongside the flat-torus MAE on the ``'torus'`` metric (both ``NaN`` on euclidean). ``compute`` toggles the whole block; ``grid_n_per_dim`` sets the resolution of the regular torus grid the all-pairs geodesic distance matrices are precomputed on once (``40`` → a 40×40 node lattice, so per-event errors are cheap snap-to-grid look-ups); ``graph_k`` is the number of wrap-aware nearest neighbours per node in the k-NN graph the shortest paths run over; ``density_exponent`` is the inverse-aggregate-posterior-density exponent ``α`` weighting the density-ratio geodesic (``0`` recovers the flat graph metric, larger values push paths harder through dense regions); ``decoder_weights_npz_path`` is the frozen QLVM ConvTranspose decoder ``.npz`` whose Jacobian defines the pullback metric ``G = JᵀJ`` (an empty or unreadable path degrades ``pullback_geodesic_mae`` to ``NaN`` and the run proceeds).
+* **usv_manifold_geodesic_metrics** — the analysis-only *reference-map* geometry for the two torus **geodesic** prediction-error columns (``density_geodesic_mae``, ``pullback_geodesic_mae``), reported per fold alongside the flat-torus MAE on the ``'torus'`` metric (both ``NaN`` on euclidean). ``compute`` toggles the whole block; ``grid_n_per_dim`` sets the resolution of the regular torus grid the all-pairs geodesic distance matrices are precomputed on once (``40`` → a 40×40 node lattice, so per-event errors are cheap snap-to-grid look-ups); ``graph_k`` is the number of wrap-aware nearest neighbours per node in the k-NN graph the shortest paths run over; ``density_exponent`` is the inverse-aggregate-posterior-density exponent ``α`` weighting the density-ratio geodesic (``0`` recovers the flat graph metric, larger values push paths harder through dense regions); ``decoder_model_cell_directory`` is the QLVM model package cell whose frozen decoder's Jacobian defines the pullback metric ``G = JᵀJ`` — shipped as the v3 phase 6 regular cell, the model the ``qlvm1`` / ``qlvm2`` coordinates come from, read without torch from its ``checkpoint.tar`` (it must be an unconditional cell); ``decoder_weights_npz_path`` is the legacy alternative, a converted decoder ``.npz`` of the old in-house model, now empty. Set one of the two: both set raises a ``ValueError`` before anything is computed, neither set (or an unreadable decoder) degrades ``pullback_geodesic_mae`` to ``NaN`` and the run proceeds.
 
 **diagnostics** — the predictor-collinearity and predictor-timescale audits (rendered in :ref:`Predictor diagnostics <modeling-diagnostics>`).
 
@@ -257,7 +258,7 @@ cross-validation and held-out-test settings live in their own
 
 **hyperparameters** — per-engine model tuning, grouped into four sub-blocks:
 
-* **deep_learning.cnn_continuous** — the 1-D ResNet for the continuous manifold target (architecture, optimiser, spatial-CV, saliency), consumed by ``NeuralContinuousCNNRunner``. The ``block_channels`` list sets the per-block channel widths (and therefore the network depth); ``warmup_fraction`` is the fraction of total steps spent warming the learning rate up before the cosine decay.
+* **deep_learning.cnn_continuous** — the 1-D ResNet for the continuous manifold target (architecture, optimiser, spatial-CV, saliency), consumed by ``NeuralContinuousCNNRunner``. The ``block_channels`` list sets the per-block channel widths (and therefore the network depth); ``warmup_fraction`` is the fraction of total steps spent warming the learning rate up before the cosine decay. ``saliency.enable`` is shipped ``false``: both ``saliency.segmentation`` values (``'supercategory'``, ``'category'``) group calls by per-USV cluster labels, and QLVM labels are not available, so an enabled saliency phase would stop the run in its pre-flight check (a ``RuntimeError`` saying the labels are unavailable). Re-enable it once the modeling pickle carries labels.
 * **linear_models.manifold_regression** / **linear_models.multinomial_logistic** — the JAX smooth bivariate regression (continuous manifold position) and multinomial-logistic (vocal categories) models. The multinomial estimator additionally exposes a ``grad_clip_norm`` hyperparameter (global-norm gradient clip, default ``1.0``) that bounds each optimiser step.
 * **classical.pygam** / **classical.logistic_regression** / **classical.ridge_regression** — the ``'pygam'`` / ``'sklearn'`` engine models (GAM splines; logistic-CV for binary targets; and, for the bout-parameter regression, an L2-penalized Gamma GLM whose penalty grid / CV come from the ``ridge_regression`` block — matching the pyGAM engine's Gamma likelihood so fit and Gamma-deviance score agree).
 * **basis_functions.raised_cosine** / **bspline** / **laplacian_pyramid** — parameters for each ``model_basis_function`` choice.
@@ -519,7 +520,7 @@ provenance, for example:
         "predictor_idx": 1, "predictor_mouse_sex": "female",
         "target_idx": 0, "target_mouse_sex": "male",
         "feature_zoo_full": ["speed", "..."], "feature_zoo_kept": ["speed", "..."],
-        "usv_predictor_type": "categories_rate", "usv_predictor_partner_only": true,
+        "usv_predictor_type": "pooled_rate", "usv_predictor_partner_only": true,
         "filter_history_seconds": 4, "filter_history_frames": 600,
         "ibi_thresholds": {"male": 0.42, "female": 0.55},
         "analysis_specific": { "...": "..." },
@@ -585,10 +586,13 @@ pipeline:
      (rather than a clustered bout onset) becomes a positive event;
    - ``onset_target_category = <int>`` — the category index to keep (e.g.
      ``6`` for BBVs). The *column* this index refers to is the existing
-     ``vocal_features.usv_category_column_name``, so any of
-     ``vae_supercategory`` / ``qlvm_supercategory`` / ``vae_category`` /
-     ``qlvm_category`` can be targeted. Leave it ``null`` (default) to pool all
-     categories exactly as before.
+     ``vocal_features.usv_category_column_name``, so any existing label column
+     (e.g. ``vae_supercategory`` / ``vae_category``) can be targeted. Leave it
+     ``null`` (default) to pool all categories exactly as before. QLVM labels are
+     not available until a labelling is decided, so with the shipped ``null``
+     ``usv_category_column_name`` a set ``onset_target_category`` raises a
+     ``ValueError`` before any session is loaded (it no longer falls back to all
+     calls with a warning).
 
    Only the *positive* onsets are filtered, by target type and by category alike:
    the behavioral / vocal predictors and the silent-epoch (No-USV) negative
@@ -968,7 +972,11 @@ increase in the feature just before onset drives the predicted vocalization towa
 that region, blue = away), on a shared diverging scale. The QLVM decoder and
 supercategory-boundary ``.npz`` paths default from ``modeling_settings.json``
 (``usv_manifold_geodesic_metrics.decoder_weights_npz_path``, with
-``arrays_coarse.npz`` taken from the same directory); colours come from
+``arrays_coarse.npz`` taken from the same directory); with the shipped settings,
+which name a model package cell and no ``.npz``, the default raises a
+``ValueError`` (the package cells come with no agreed supercategory watershed
+while QLVM labels are undecided), so pass ``decoder_weights_npz_path`` and
+``supercategory_arrays_npz_path`` explicitly; colours come from
 ``visualizations_settings.json`` (``sequential_cmap`` / ``diverging_cmap``), and the temporal
 filter's smoothness is governed by the per-observation ``lambda_smooth`` prior (see
 the note above).

@@ -1653,3 +1653,24 @@ class TestMultinomialExtractionEdgeCases:
             tok in k for k in feature_keys
             for tok in ('usv_rate', 'usv_cat_', 'usv_event')
         ), f"expected at least one vocal-signal feature key, got {feature_keys}"
+
+
+@pytest.mark.parametrize('usv_predictor_type', [None, 'categories_rate'])
+def test_multinomial_extraction_without_labels_fails_before_loading(tmp_path, mocker, usv_predictor_type):
+    """
+    With no category label column (the shipped ``usv_category_column_name``
+    null, QLVM labels unavailable) the multinomial category extraction stops with the labels-unavailable
+    error before any session list or behavioral file is read.
+    """
+
+    settings = build_modeling_settings(
+        session_list_file=tmp_path / 'session_list.txt',
+        save_directory=tmp_path,
+        usv_predictor_type=usv_predictor_type,
+        usv_category_column_name=None,
+    )
+    prepare = mocker.patch('usv_playpen.modeling.modeling_vocal_categories_multinomial.prepare_modeling_sessions')
+    with pytest.raises(ValueError, match='QLVM category labels are not available') as excinfo:
+        MultinomialModelingPipeline(modeling_settings_dict=settings).extract_and_save_multinomial_input_data()
+    assert 'vocal_features.usv_category_column_name' in str(excinfo.value)
+    prepare.assert_not_called()

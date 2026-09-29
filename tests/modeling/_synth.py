@@ -477,6 +477,7 @@ def build_modeling_settings(
         dyadic_features: list[str] | None = None,
         engagement_features: list[str] | None = None,
         usv_predictor_type=None,
+        usv_category_column_name: str | None = 'qlvm_supercategory',
         split_strategy: str = 'mixed',
         split_num: int = 2,
         test_proportion: float = 0.3,
@@ -500,6 +501,12 @@ def build_modeling_settings(
         set; derivatives off.
       - ``vocal_features.usv_predictor_type`` -> ``None`` by default so no
         vocal predictor columns are generated (keeps the design matrix tiny).
+      - ``vocal_features.usv_category_column_name`` -> ``'qlvm_supercategory'``
+        by default, the label column the synthetic summaries carry, so the
+        categorical pipelines (multinomial, binomial, single-category onsets,
+        per-category predictors) keep their coverage; the shipped JSON has
+        ``null`` (QLVM labels are unavailable), and passing ``None`` exercises
+        that label-free setting.
       - ``hyperparameters.classical.logistic_regression``: a single tiny ``cs``
         value, ``cv=2``, low ``max_iter`` so ``LogisticRegressionCV`` is fast.
       - ``hyperparameters.classical.pygam``: few splines and few iterations so
@@ -532,6 +539,10 @@ def build_modeling_settings(
         Engagement bucket; defaults to ``[]``.
     usv_predictor_type (str or None)
         Vocal predictor mode; ``None`` disables vocal predictor columns.
+    usv_category_column_name (str or None)
+        Category label column the pipelines read; ``'qlvm_supercategory'``
+        (default) matches the synthetic summaries, ``None`` is the shipped
+        label-free setting.
     split_strategy (str)
         ``'mixed'`` or ``'session'`` (the two strategies model selection
         supports).
@@ -601,6 +612,7 @@ def build_modeling_settings(
     kin['smooth_abs_features'] = {}
 
     settings['vocal_features']['usv_predictor_type'] = usv_predictor_type
+    settings['vocal_features']['usv_category_column_name'] = usv_category_column_name
 
     settings['diagnostics']['collinearity_audit'] = False
     settings['diagnostics']['timescale_audit'] = False

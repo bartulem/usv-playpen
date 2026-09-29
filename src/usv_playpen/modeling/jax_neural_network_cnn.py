@@ -1410,12 +1410,17 @@ class NeuralContinuousCNNRunner:
             if preflight_labels is None:
                 raise RuntimeError(
                     f"saliency.enable=true and saliency.segmentation="
-                    f"'{preflight_seg}', but the modeling pickle does not carry "
-                    f"per-USV {preflight_seg} labels. Re-extract the data with "
-                    f"the updated pipeline (extract_and_save_continuous_data) "
-                    f"before training, or set saliency.enable=false. Failing "
-                    f"now (before Phase 1) to avoid burning training time on a "
-                    f"run that will die in Phase 3."
+                    f"'{preflight_seg}', but the modeling pickle carries no "
+                    f"per-USV {preflight_seg} labels: QLVM category labels are "
+                    f"not available (the usv_summary.csv files hold torus "
+                    f"coordinates only until a labelling is decided). Every "
+                    f"saliency segmentation is label-based, so set "
+                    f"hyperparameters.deep_learning.cnn_continuous.saliency.enable "
+                    f"to false, or re-extract the modeling pickle "
+                    f"(extract_and_save_continuous_data) from summaries that carry "
+                    f"a <prefix>_{preflight_seg} label column. Failing now "
+                    f"(before Phase 1) to avoid burning training time on a run "
+                    f"that would die in Phase 3."
                 )
             preflight_centres = derive_cluster_centers_empirically(
                 np.asarray(Y),
@@ -2068,10 +2073,12 @@ class NeuralContinuousCNNRunner:
 
             if labels_all is None:
                 raise RuntimeError(
-                    f"saliency.segmentation='{segmentation}' but the modeling pickle does "
-                    f"not carry per-USV {segmentation} labels. Re-extract the data with "
-                    f"the updated pipeline (extract_and_save_continuous_data) before "
-                    f"training, or set saliency.enable=false."
+                    f"saliency.segmentation='{segmentation}' but the modeling pickle carries "
+                    f"no per-USV {segmentation} labels: QLVM category labels are not "
+                    f"available. Every saliency segmentation is label-based, so set "
+                    f"hyperparameters.deep_learning.cnn_continuous.saliency.enable to false, "
+                    f"or re-extract the modeling pickle (extract_and_save_continuous_data) "
+                    f"from summaries that carry a <prefix>_{segmentation} label column."
                 )
 
             labels_all_np = np.asarray(labels_all)

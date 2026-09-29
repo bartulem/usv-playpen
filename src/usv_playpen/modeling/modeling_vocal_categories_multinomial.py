@@ -33,6 +33,7 @@ from tqdm import tqdm
 from typing import Any
 
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
+from .load_input_files import require_labels_for_vocal_predictors, require_usv_category_column
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -716,6 +717,13 @@ class MultinomialModelingPipeline(FeatureZoo):
         - 'X': Predictor matrix of shape (n_samples, history_frames).
         - 'y': Target vector of shape (n_samples,) containing integer class labels.
         """
+
+        # The multinomial target IS the category label: without a label column the
+        # run stops here, before any session is loaded.
+        require_usv_category_column(self.modeling_settings['vocal_features']['usv_category_column_name'],
+                                    "The multinomial USV category model")
+        # Label-dependent vocal predictors fail here, before any session is loaded.
+        require_labels_for_vocal_predictors(self.modeling_settings['vocal_features'])
 
         txt_sessions = prepare_modeling_sessions(self.modeling_settings)
 

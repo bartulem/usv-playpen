@@ -27,6 +27,7 @@ from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
 from tqdm import tqdm
 
 from .load_input_files import load_behavioral_feature_data, find_onset_epochs
+from .load_input_files import require_labels_for_vocal_predictors, require_usv_category_column
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -211,6 +212,16 @@ class VocalOnsetModelingPipeline(FeatureZoo):
                                       'session_id2': {...}, ...},
              'another_feature': {...}, ...}`
         """
+
+        # Label-dependent vocal predictors fail here, before any session is loaded.
+        require_labels_for_vocal_predictors(self.modeling_settings['vocal_features'])
+        # A single-category onset target ('individual' mode) needs a label column too.
+        if (self.modeling_settings['model_params']['onset_target_category'] is not None
+                and self.modeling_settings['model_params']['model_target_vocal_type'] == 'individual'):
+            require_usv_category_column(
+                self.modeling_settings['vocal_features']['usv_category_column_name'],
+                f"model_params.onset_target_category {self.modeling_settings['model_params']['onset_target_category']}",
+            )
 
         txt_modeling_sessions = prepare_modeling_sessions(self.modeling_settings)
 

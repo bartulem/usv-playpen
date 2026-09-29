@@ -37,6 +37,7 @@ from .modeling_utils import (
     format_selection_step,
     held_out_session_ids_from_metadata,
     development_heldout_masks,
+    manifold_tag_segment,
 )
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_multinomial import (
@@ -55,6 +56,7 @@ from .manifold_metric import (
     macro_von_mises_logscore,
     _fit_von_mises_kappa,
     inverse_region_frequency_weights,
+    warn_if_no_region_labels,
 )
 from .modeling_usv_manifold_position import (
     get_stratified_spatial_splits_stable,
@@ -66,7 +68,8 @@ from .manifold_torus_regression import resolve_manifold_regressor_cls
 from .modeling_torus_geodesics import (
     build_torus_geodesic_context,
     geodesic_mae_columns,
-    make_qlvm_decode_fn_from_npz,
+    make_qlvm_decode_fn_from_source,
+    resolve_geodesic_decoder_source,
 )
 from .modeling_metadata import (
     build_selection_metadata, inject_metadata, RESERVED_METADATA_KEYS,
@@ -5130,6 +5133,8 @@ def continuous_vocal_manifold_model_selection(
     # (The screen above used the pooled -- label-free -- von Mises score, so it did
     # not need this and could abort before the input pickle was loaded.)
     event_to_region = region_global
+    warn_if_no_region_labels(region_global, metric=_selection_manifold_metric,
+                             context="continuous manifold model selection")
 
     n_splits = settings['model_validation']['n_cv_folds']
     test_prop = settings['model_validation']['cv_validation_proportion']
@@ -5328,7 +5333,14 @@ def continuous_vocal_manifold_model_selection(
     # from (e.g. `vae_supercategory`, `qlvm_category`) so the per-step
     # prefix (and downstream consolidation) carries the choice forward
     # in the filename.
+    # Without a label column (null setting) the segment names the embedding
+    # instead, exactly as the extraction pipeline's tag does. The manifold column
+    # names are read only then: a pickle with a label column needs no other key.
     _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
+    if not _column_name_cats:
+        _column_name_cats = manifold_tag_segment(
+            _column_name_cats, _input_md['analysis_specific']['usv_manifold_column_names'],
+        )
     prefix = f"model_selection_continuous_manifold_{_column_name_cats}_{target_condition}_{split_strategy}_step_"
 
     _run_md = build_selection_metadata(
@@ -5499,12 +5511,14 @@ def continuous_vocal_manifold_model_selection(
             and manifold_metric == 'torus' and y_global is not None):
         _geo_cfg = _vf_settings['usv_manifold_geodesic_metrics']
         if _geo_cfg['compute']:
+            # Resolved outside the soft-failure block: an ambiguous decoder
+            # configuration (cell AND npz) is a settings error, not a NaN column.
+            _geo_decoder_source = resolve_geodesic_decoder_source(_geo_cfg)
             try:
                 _geo_decode_fn = None
-                _geo_weights_path = _geo_cfg['decoder_weights_npz_path']
-                if _geo_weights_path:
+                if _geo_decoder_source is not None:
                     try:
-                        _geo_decode_fn = make_qlvm_decode_fn_from_npz(_geo_weights_path)
+                        _geo_decode_fn = make_qlvm_decode_fn_from_source(_geo_decoder_source)
                     except Exception as _decode_err:
                         print(f"    [geodesic] decoder unavailable ({_decode_err}); "
                               f"pullback_geodesic_mae -> NaN")

@@ -419,6 +419,9 @@ class TestRunCnnTrainingFull:
             n_per_session=N_PER_SESSION,
         )
         settings = _build_cnn_settings(save_dir, input_pkl)
+        # The shipped default leaves saliency off (no QLVM labels yet); this labelled
+        # fixture turns it on to exercise Phase 3.
+        settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['enable'] = True
         runner = NeuralContinuousCNNRunner(modeling_settings=settings)
         data_blocks = runner.load_multivariate_data_blocks(pkl_path=str(input_pkl))
         runner.run_cnn_training(data_blocks=data_blocks)
@@ -500,6 +503,15 @@ class TestRunCnnTrainingFull:
         assert len(deep['cross_validation']) == 2
         assert set(deep['feature_importance']['means'].keys()) == set(FEATURE_NAMES)
 
+    def test_shipped_default_disables_saliency(self):
+        """Every saliency segmentation is label-based and QLVM labels are not
+        available, so the shipped settings leave saliency off and the default
+        configuration runs on an unlabelled modeling pickle."""
+
+        with open(_SETTINGS_JSON, 'r') as fh:
+            shipped = json.load(fh)
+        assert shipped['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['enable'] is False
+
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_run_cnn_training_restrict_to_fold(self, tmp_path):
         """
@@ -575,6 +587,7 @@ class TestRunCnnTrainingConfigVariants:
         hp['weight_decay_exclude_output_head'] = False
         hp['grid_size'] = 3
         hp['samples_per_cell'] = 8
+        hp['saliency']['enable'] = True
         hp['saliency']['segmentation'] = 'category'
 
         runner = NeuralContinuousCNNRunner(modeling_settings=settings)
@@ -668,15 +681,19 @@ class TestSaliencyPreflightGuards:
             n_per_session=N_PER_SESSION,
         )
         settings = _build_cnn_settings(save_dir, input_pkl)
+        settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['enable'] = True
         settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['segmentation'] = 'bogus'
         runner = NeuralContinuousCNNRunner(modeling_settings=settings)
         data_blocks = runner.load_multivariate_data_blocks(pkl_path=str(input_pkl))
         with pytest.raises(ValueError, match="saliency.segmentation"):
             runner.run_cnn_training(data_blocks=data_blocks)
 
-    def test_preflight_missing_labels(self, tmp_path):
-        """``saliency.enable=True`` on a legacy pickle that does not carry the
-        requested per-USV labels raises ``RuntimeError`` before Phase 1."""
+    @pytest.mark.parametrize('segmentation', ['supercategory', 'category'])
+    def test_preflight_missing_labels(self, tmp_path, segmentation):
+        """``saliency.enable=True`` on a pickle that does not carry the requested
+        per-USV labels (a legacy pickle, or any pickle while QLVM labels are
+        unavailable) raises ``RuntimeError`` before Phase 1, saying the labels are
+        unavailable and how to proceed; no artifact is written."""
 
         save_dir = tmp_path / 'out'
         input_pkl = _build_cnn_input_pickle(
@@ -688,10 +705,18 @@ class TestSaliencyPreflightGuards:
             with_labels=False,
         )
         settings = _build_cnn_settings(save_dir, input_pkl)
+        saliency = settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']
+        saliency['enable'] = True
+        saliency['segmentation'] = segmentation
         runner = NeuralContinuousCNNRunner(modeling_settings=settings)
         data_blocks = runner.load_multivariate_data_blocks(pkl_path=str(input_pkl))
-        with pytest.raises(RuntimeError, match="does not carry"):
+        with pytest.raises(RuntimeError, match="QLVM category labels are not available") as excinfo:
             runner.run_cnn_training(data_blocks=data_blocks)
+        message = str(excinfo.value)
+        assert f"per-USV {segmentation} labels" in message
+        assert 'saliency.enable' in message and 'to false' in message
+        assert 'before Phase 1' in message
+        assert not list(save_dir.glob('cnn_manifold_integrated_predictions_*.pkl'))
 
     def test_preflight_single_cluster_centre(self, tmp_path):
         """When only one non-noise cluster centre can be resolved (every
@@ -720,6 +745,7 @@ class TestSaliencyPreflightGuards:
             pickle.dump(artifact, fh)
 
         settings = _build_cnn_settings(save_dir, save_path)
+        settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['enable'] = True
         runner = NeuralContinuousCNNRunner(modeling_settings=settings)
         data_blocks = runner.load_multivariate_data_blocks(pkl_path=str(save_path))
         with pytest.raises(RuntimeError, match="cluster centre"):

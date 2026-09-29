@@ -30,7 +30,12 @@ from usv_playpen.modeling.load_input_files import (
     find_variable_length_bouts,
     load_behavioral_feature_data,
     load_pickle_modeling_data,
+    require_labels_for_vocal_predictors,
+    require_usv_category_column,
 )
+
+# The message every label-dependent path raises while QLVM labels are unavailable.
+_LABELS_UNAVAILABLE = 'QLVM category labels are not available'
 
 
 # Shared synthetic-session helpers for the on-disk ``find_*`` loaders.
@@ -630,9 +635,11 @@ class TestFindBoutEpochs:
         # The pooled 3-syllable cluster still forms exactly one bout onset.
         assert out_cat['sess_B']['male']['positive_events'].size == 1
 
-    def test_target_category_missing_column_falls_back(self, tmp_path, capsys):
+    def test_target_category_missing_column_raises(self, tmp_path):
         """If the requested category column is absent from the summary, the
-        filter is skipped (with a warning) and all USVs are pooled."""
+        single-category onset target cannot be applied: the loader raises the
+        labels-unavailable error naming the setting (it used to fall back to all
+        calls with only a printed warning)."""
 
         rows = {
             'emitter': ['male', 'male'],
@@ -641,14 +648,68 @@ class TestFindBoutEpochs:
             'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
-        out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
-                               usv_bout_time=0.5, min_usv_per_bout=2,
-                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
-                               category_column='vae_supercategory', target_category=6,
-                               **kwargs)
-        # Column absent -> no filtering -> both onsets remain.
-        np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0, 3.0])
-        assert "absent" in capsys.readouterr().out
+        with pytest.raises(ValueError, match=_LABELS_UNAVAILABLE) as excinfo:
+            find_onset_epochs(prediction_mode='individual', filter_history=1.0,
+                              usv_bout_time=0.5, min_usv_per_bout=2,
+                              proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
+                              category_column='vae_supercategory', target_category=6,
+                              **kwargs)
+        assert 'onset_target_category 6' in str(excinfo.value)
+        assert "'vae_supercategory'" in str(excinfo.value)
+
+    def test_target_category_null_column_raises(self, tmp_path):
+        """A null category column (the shipped setting) with a single-category
+        onset target raises before any summary is read."""
+
+        kwargs = self._build(tmp_path, {'emitter': ['male'], 'start': [2.0], 'stop': [2.05]})
+        with pytest.raises(ValueError, match=_LABELS_UNAVAILABLE):
+            find_onset_epochs(prediction_mode='individual', filter_history=1.0,
+                              usv_bout_time=0.5, min_usv_per_bout=2,
+                              proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
+                              category_column=None, target_category=6,
+                              **kwargs)
+
+    @pytest.mark.parametrize('vocal_output_type', ['categories_rate', 'all_rate'])
+    @pytest.mark.parametrize('category_column', [None, 'qlvm_supercategory'])
+    def test_category_predictors_without_labels_raise(self, tmp_path, vocal_output_type, category_column):
+        """Per-category predictor traces with no label column (null setting, or a
+        column the summary lacks) raise the labels-unavailable error naming
+        ``usv_predictor_type`` instead of silently building no category trace."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [2.0, 3.0],
+            'stop': [2.05, 3.05],
+            'qlvm1': [0.1, 0.2],
+            'qlvm2': [0.3, 0.4],
+        }
+        kwargs = self._build(tmp_path, rows)
+        with pytest.raises(ValueError, match=_LABELS_UNAVAILABLE) as excinfo:
+            find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
+                              usv_bout_time=0.5, min_usv_per_bout=2,
+                              proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
+                              vocal_output_type=vocal_output_type,
+                              category_column=category_column, **kwargs)
+        assert f"usv_predictor_type '{vocal_output_type}'" in str(excinfo.value)
+
+    @pytest.mark.parametrize('vocal_output_type', ['pooled_rate', 'pooled_binary'])
+    def test_pooled_predictors_need_no_category_column(self, tmp_path, vocal_output_type):
+        """The pooled predictor modes run with a null category column."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [2.0, 3.0],
+            'stop': [2.05, 3.05],
+        }
+        kwargs = self._build(tmp_path, rows)
+        out = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
+                                usv_bout_time=0.5, min_usv_per_bout=2,
+                                proportion_smoothing_sd=2.0, mixture_model_params=_mixture_model_params(),
+                                vocal_output_type=vocal_output_type,
+                                category_column=None, **kwargs)
+        signals = out['sess_B']['male']['continuous_vocal_signals']
+        expected = 'usv_event' if vocal_output_type == 'pooled_binary' else 'usv_rate'
+        assert set(signals) == {expected}
 
     def test_missing_summary_csv_skips_session(self, tmp_path, capsys):
         """A session ROOT with no ``audio/*_usv_summary.csv`` is skipped with a
@@ -878,15 +939,108 @@ class TestFindUsvCategories:
         assert 'usv_cat_1' in male['continuous_vocal_signals']
 
     def test_missing_category_column_raises(self, tmp_path):
-        """A CSV lacking ``category_column`` raises ``ValueError``."""
+        """A CSV lacking ``category_column`` raises the labels-unavailable
+        ``ValueError`` naming the column and the file."""
 
         rows = {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
             'usv_supercategory': [1],
         }
-        with pytest.raises(ValueError, match='missing'):
+        with pytest.raises(ValueError, match=_LABELS_UNAVAILABLE) as excinfo:
             find_usv_categories(target_category=1, filter_history=1.0,
                                 **self._kwargs(tmp_path, rows))
+        assert "'usv_category'" in str(excinfo.value)
+        assert 'sess_D_usv_summary.csv' in str(excinfo.value)
+
+    @pytest.mark.parametrize('target_category', [None, 3])
+    def test_categorical_paths_raise_on_null_column(self, tmp_path, target_category):
+        """The multinomial (no target) and binomial (target) category paths need
+        labels: a null category column raises before any session is read."""
+
+        rows = {'emitter': ['male'], 'start': [2.0], 'stop': [2.05]}
+        with pytest.raises(ValueError, match=_LABELS_UNAVAILABLE):
+            find_usv_categories(target_category=target_category, filter_history=1.0,
+                                category_column=None, **self._kwargs(tmp_path, rows))
+
+    def test_manifold_path_without_category_column(self, tmp_path):
+        """On the continuous manifold path a null category column is allowed: the
+        manifold targets are returned, with no category / supercategory packets
+        and no category events."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [2.0, 3.0],
+            'stop': [2.05, 3.05],
+            'qlvm1': [0.1, 0.2],
+            'qlvm2': [0.3, 0.4],
+        }
+        out = find_usv_categories(target_category=None, filter_history=1.0,
+                                  vocal_output_type='pooled_rate', proportion_smoothing_sd=2.0,
+                                  category_column=None, manifold_column_names=['qlvm1', 'qlvm2'],
+                                  **self._kwargs(tmp_path, rows))
+        male = out['sess_D']['male']
+        np.testing.assert_allclose(male['continuous_onsets'], [2.0, 3.0])
+        np.testing.assert_allclose(male['continuous_targets'], [[0.1, 0.3], [0.2, 0.4]])
+        assert 'continuous_supercategory' not in male
+        assert 'continuous_category' not in male
+        assert male['events_by_category'] == {}
+        assert male['category_streams'] == {}
+        assert set(male['continuous_vocal_signals']) == {'usv_rate'}
+
+    def test_manifold_path_category_predictors_still_need_labels(self, tmp_path):
+        """Even on the manifold path, per-category predictor traces need a label
+        column."""
+
+        rows = {'emitter': ['male'], 'start': [2.0], 'stop': [2.05], 'qlvm1': [0.1], 'qlvm2': [0.3]}
+        with pytest.raises(ValueError, match="usv_predictor_type 'categories_rate'"):
+            find_usv_categories(target_category=None, filter_history=1.0,
+                                vocal_output_type='categories_rate', category_column=None,
+                                manifold_column_names=['qlvm1', 'qlvm2'],
+                                **self._kwargs(tmp_path, rows))
+
+    def test_manifold_path_drops_unplaced_calls(self, tmp_path, capsys):
+        """Calls with null / NaN manifold coordinates (not placed by the
+        embedding) are dropped from onsets, targets and label arrays, and the
+        per-session and total counts are printed, so no NaN reaches the
+        inverse-density KDE."""
+
+        rows = {
+            'emitter': ['male', 'male', 'male', 'male'],
+            'start': [2.0, 3.0, 4.0, 5.0],
+            'stop': [2.05, 3.05, 4.05, 5.05],
+            'qlvm1': [0.1, None, 0.3, 0.4],
+            'qlvm2': [0.5, 0.6, None, 0.8],
+            'qlvm_supercategory': [1, 2, 3, 4],
+        }
+        out = find_usv_categories(target_category=None, filter_history=1.0,
+                                  category_column=None, manifold_column_names=['qlvm1', 'qlvm2'],
+                                  **self._kwargs(tmp_path, rows))
+        male = out['sess_D']['male']
+        np.testing.assert_allclose(male['continuous_onsets'], [2.0, 5.0])
+        np.testing.assert_allclose(male['continuous_targets'], [[0.1, 0.5], [0.4, 0.8]])
+        assert np.isfinite(male['continuous_targets']).all()
+        np.testing.assert_allclose(male['continuous_supercategory'], [1, 4])
+        printed = capsys.readouterr().out
+        assert 'sess_D (male): dropped 2 of 4 calls with null/NaN manifold coordinates' in printed
+        assert 'dropped 2 calls with null/NaN coordinates in total' in printed
+
+    def test_manifold_path_all_null_column(self, tmp_path):
+        """A manifold column that is null for every call (read by CSV inference
+        as text) leaves no placed call rather than crashing."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [2.0, 3.0],
+            'stop': [2.05, 3.05],
+            'qlvm1': [None, None],
+            'qlvm2': [None, None],
+        }
+        out = find_usv_categories(target_category=None, filter_history=1.0,
+                                  category_column=None, manifold_column_names=['qlvm1', 'qlvm2'],
+                                  **self._kwargs(tmp_path, rows))
+        male = out['sess_D']['male']
+        assert male['continuous_onsets'].size == 0
+        assert male['continuous_targets'].shape == (0, 2)
 
     def test_filter_history_removes_early_usvs(self, tmp_path):
         """USVs starting at/under ``filter_history`` are discarded, leaving a
@@ -1209,6 +1363,37 @@ class TestFindVariableLengthBouts:
         assert not any(k.startswith('usv_cat_') for k in signals)
 
 
+    @pytest.mark.parametrize('category_column', [None, 'qlvm_supercategory'])
+    def test_category_predictors_without_labels_raise(self, tmp_path, category_column):
+        """Bout loading with 'categories_rate' and no label column (null, or
+        absent from the summary) raises the labels-unavailable error."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [2.0, 2.1],
+            'stop': [2.05, 2.15],
+        }
+        with pytest.raises(ValueError, match=_LABELS_UNAVAILABLE):
+            find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
+                                       mixture_model_params=_mixture_model_params(),
+                                       vocal_output_type='categories_rate', category_column=category_column,
+                                       **self._kwargs(tmp_path, rows))
+
+    def test_pooled_rate_needs_no_category_column(self, tmp_path):
+        """Bout loading with 'pooled_rate' runs with a null category column."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [2.0, 2.1],
+            'stop': [2.05, 2.15],
+        }
+        out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
+                                         mixture_model_params=_mixture_model_params(),
+                                         vocal_output_type='pooled_rate', category_column=None,
+                                         **self._kwargs(tmp_path, rows))
+        assert set(out['sess_E']['male']['continuous_vocal_signals']) == {'usv_rate'}
+
+
 class TestBoutOffsetEpochs:
     """``'bout_offset'`` mode: the END of a bout against an interior call.
 
@@ -1317,3 +1502,42 @@ class TestBoutOffsetEpochs:
                                 time_since_bout_onset_tolerance=0.1, max_negatives_per_bout=3, **kwargs)
         assert out['sess_O']['female']['positive_events'].size == 0
         assert out['sess_O']['female']['negative_events'].size == 0
+
+
+class TestCategoryLabelRequirement:
+    """The settings-level label checks the pipelines run before loading anything."""
+
+    @pytest.mark.parametrize('category_column', [None, ''])
+    def test_null_column_raises_naming_the_setting(self, category_column):
+        """A null / empty column raises the labels-unavailable error naming the
+        setting and the purpose."""
+
+        with pytest.raises(ValueError, match=_LABELS_UNAVAILABLE) as excinfo:
+            require_usv_category_column(category_column, 'The multinomial USV category model')
+        assert 'vocal_features.usv_category_column_name' in str(excinfo.value)
+        assert 'The multinomial USV category model' in str(excinfo.value)
+
+    def test_column_absent_from_summary_raises(self):
+        """A set column missing from one summary's columns raises, naming the file."""
+
+        with pytest.raises(ValueError, match='absent from s.csv'):
+            require_usv_category_column('qlvm_supercategory', 'x', summary_columns=['qlvm1'], source='s.csv')
+
+    def test_present_column_passes(self):
+        """A set column present in the summary passes silently."""
+
+        require_usv_category_column('vae_supercategory', 'x', summary_columns=['vae_supercategory'], source='s.csv')
+
+    @pytest.mark.parametrize('predictor_type, raises', [
+        ('categories_rate', True), ('all_rate', True),
+        ('pooled_rate', False), ('pooled_binary', False), (None, False),
+    ])
+    def test_vocal_predictor_settings_check(self, predictor_type, raises):
+        """Only the per-category predictor modes need a label column."""
+
+        voc = {'usv_predictor_type': predictor_type, 'usv_category_column_name': None}
+        if raises:
+            with pytest.raises(ValueError, match=_LABELS_UNAVAILABLE):
+                require_labels_for_vocal_predictors(voc)
+        else:
+            require_labels_for_vocal_predictors(voc)

@@ -92,6 +92,7 @@ the single audit-orchestration entry point:
 
 from datetime import datetime
 from pathlib import Path
+import re
 import numpy as np
 import polars as pls
 from scipy.stats import pearsonr, spearmanr
@@ -169,6 +170,37 @@ def prepare_modeling_sessions(modeling_settings: dict) -> list:
         raise RuntimeError(f"Error reading session paths: {e}")
 
     return txt_modeling_sessions
+
+
+def manifold_tag_segment(category_column: str | None, manifold_column_names: list) -> str:
+    """
+    Description
+    -----------
+    Names the source of a continuous-manifold run in its analysis tag and in the
+    model-selection step-file prefix. With a category label column configured
+    the segment is that column (e.g. ``'qlvm_supercategory'``), as before; with
+    none (``usv_category_column_name`` null, the state while QLVM labels are
+    undecided) it is the embedding the coordinates come from, the first manifold
+    column without its trailing digits (``['qlvm1', 'qlvm2']`` -> ``'qlvm'``), so
+    the tag never reads ``manifold_None``. The extraction pipeline and the
+    selector both call this, so the two always agree on the name.
+
+    Parameters
+    ----------
+    category_column (str | None)
+        The configured ``vocal_features.usv_category_column_name``.
+    manifold_column_names (list)
+        The configured ``vocal_features.usv_manifold_column_names``.
+
+    Returns
+    -------
+    segment (str)
+        The column name, or the manifold prefix when no column is configured.
+    """
+
+    if category_column:
+        return category_column
+    return re.sub(r'\d+$', '', manifold_column_names[0])
 
 
 def seeded_session_holdout(session_ids: list,

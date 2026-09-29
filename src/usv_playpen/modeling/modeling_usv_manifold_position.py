@@ -58,6 +58,7 @@ from typing import Any, List, Tuple
 from tqdm import tqdm
 
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
+from .load_input_files import require_labels_for_vocal_predictors
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -76,6 +77,7 @@ from .modeling_utils import (
     zscore_features_across_sessions,
     run_predictor_audits,
     format_split_line,
+    manifold_tag_segment,
 )
 from .manifold_torus_regression import resolve_manifold_regressor_cls
 from .manifold_metric import (
@@ -85,11 +87,13 @@ from .manifold_metric import (
     resolve_manifold_metric,
     manifold_prediction_metrics,
     inverse_region_frequency_weights,
+    warn_if_no_region_labels,
 )
 from .modeling_torus_geodesics import (
     build_torus_geodesic_context,
     geodesic_mae_columns,
-    make_qlvm_decode_fn_from_npz,
+    make_qlvm_decode_fn_from_source,
+    resolve_geodesic_decoder_source,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import resolve_modeling_setting
@@ -853,6 +857,9 @@ class ContinuousModelingPipeline(FeatureZoo):
             - 'w': Inverse-density sample weights of shape (n_samples,).
         """
 
+        # Label-dependent vocal predictors fail here, before any session is loaded.
+        require_labels_for_vocal_predictors(self.modeling_settings['vocal_features'])
+
         txt_sessions = prepare_modeling_sessions(self.modeling_settings)
 
         print("Loading behavioral feature data...")
@@ -1058,7 +1065,9 @@ class ContinuousModelingPipeline(FeatureZoo):
         # downstream filename — modeling input pickle, univariate pkls,
         # model-selection step pkls, consolidated artifact — makes the
         # source clustering explicit.
-        analysis_tag = f"manifold_{column_name_cats}"
+        # Without a label column the tag names the embedding instead (e.g.
+        # `manifold_qlvm`), see `manifold_tag_segment`.
+        analysis_tag = f"manifold_{manifold_tag_segment(column_name_cats, manifold_cols)}"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
@@ -1558,12 +1567,14 @@ class ContinuousModelRunner:
                 and manifold_metric == 'torus' and Y is not None):
             _geo_cfg = _vf_settings['usv_manifold_geodesic_metrics']
             if _geo_cfg['compute']:
+                # Resolved outside the soft-failure block: an ambiguous decoder
+                # configuration (cell AND npz) is a settings error, not a NaN column.
+                _geo_decoder_source = resolve_geodesic_decoder_source(_geo_cfg)
                 try:
                     _geo_decode_fn = None
-                    _geo_weights_path = _geo_cfg['decoder_weights_npz_path']
-                    if _geo_weights_path:
+                    if _geo_decoder_source is not None:
                         try:
-                            _geo_decode_fn = make_qlvm_decode_fn_from_npz(_geo_weights_path)
+                            _geo_decode_fn = make_qlvm_decode_fn_from_source(_geo_decoder_source)
                         except Exception as _decode_err:
                             print(f"    [geodesic] decoder unavailable ({_decode_err}); "
                                   f"pullback_geodesic_mae -> NaN")
@@ -1781,6 +1792,7 @@ class ContinuousModelRunner:
         # settings flip produces consistent torus / euclidean behaviour
         # end-to-end.
         manifold_metric, manifold_period = resolve_manifold_metric(self.modeling_settings)
+        warn_if_no_region_labels(region, metric=manifold_metric, context=f"manifold univariate '{feat_name}'")
         # Geometry selects the estimator: torus runs use the convex closed-form
         # sin-cos embedding ridge (wound-aware); euclidean runs keep the
         # unchanged coordinate model, so they stay byte-identical.

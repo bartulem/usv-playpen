@@ -47,6 +47,7 @@ from tqdm import tqdm
 
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .load_input_files import load_behavioral_feature_data, find_variable_length_bouts
+from .load_input_files import require_labels_for_vocal_predictors
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -149,6 +150,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
 
         target_variable = self.modeling_settings['model_params']['model_target_variable']
         print(f"--- Extracting Data for Regression Target: {target_variable} ---")
+
+        # Label-dependent vocal predictors fail here, before any session is loaded.
+        require_labels_for_vocal_predictors(self.modeling_settings['vocal_features'])
 
         txt_modeling_sessions = prepare_modeling_sessions(self.modeling_settings)
 

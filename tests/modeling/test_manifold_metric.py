@@ -38,7 +38,9 @@ from usv_playpen.modeling.manifold_metric import (
     _fit_von_mises_kappa,
     macro_von_mises_logscore,
     inverse_region_frequency_weights,
+    warn_if_no_region_labels,
 )
+from usv_playpen.modeling import manifold_metric
 
 
 # Validation
@@ -751,3 +753,43 @@ class TestInverseRegionFrequencyWeights:
         reweighting)."""
         factors = inverse_region_frequency_weights(np.full(6, np.nan))
         np.testing.assert_array_equal(factors, np.ones(6))
+
+
+
+class TestRegionLabelFallbackIsLoud:
+    """Without region (supercategory) labels the torus macro score and the
+    equal-region reweighting fall back; the fallback is printed, never silent."""
+
+    def test_warns_on_torus_without_labels(self, capsys):
+        """All-NaN (or empty) region labels on the torus print a warning naming the
+        macro -> pooled and reweighting -> uniform fallbacks, and return True."""
+
+        assert warn_if_no_region_labels(np.full(5, np.nan), metric='torus', context='unit test') is True
+        printed = capsys.readouterr().out
+        assert 'WARNING [unit test]' in printed
+        assert "'macro' von Mises score (vm_logscore) fell back to the pooled" in printed
+        assert 'uniform weights' in printed
+        assert warn_if_no_region_labels(np.array([]), metric='torus', context='empty') is True
+
+    def test_silent_with_labels_or_on_euclidean(self, capsys):
+        """Any labelled event, or a euclidean run (which uses neither), prints nothing."""
+
+        assert warn_if_no_region_labels(np.array([np.nan, 2.0]), metric='torus', context='x') is False
+        assert warn_if_no_region_labels(np.full(3, np.nan), metric='euclidean', context='x') is False
+        assert capsys.readouterr().out == ''
+
+    def test_macro_score_announces_pooled_fallback_once(self, capsys, monkeypatch):
+        """The per-call macro score prints its fallback once per process, and the
+        value still equals the pooled score."""
+
+        monkeypatch.setattr(manifold_metric, '_POOLED_FALLBACK_ANNOUNCED', [])
+        rng = np.random.default_rng(3)
+        y_true = rng.random((40, 2))
+        y_pred = (y_true + 0.05 * rng.standard_normal((40, 2))) % 1.0
+        no_labels = np.full(40, np.nan)
+        first = macro_von_mises_logscore(y_pred, y_true, no_labels, metric='torus', period=1.0)
+        second = macro_von_mises_logscore(y_pred, y_true, no_labels, metric='torus', period=1.0)
+        pooled = macro_von_mises_logscore(y_pred, y_true, None, metric='torus', period=1.0)
+        assert first == pytest.approx(pooled) and second == pytest.approx(pooled)
+        printed = capsys.readouterr().out
+        assert printed.count('macro score fell back to the pooled von Mises score') == 1

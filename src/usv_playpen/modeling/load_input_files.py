@@ -71,6 +71,98 @@ def load_behavioral_feature_data(behavior_file_paths: list = None,
 
     return beh_feature_data_dict, camera_fr_dict, mouse_track_names_dict
 
+
+# Vocal-predictor modes that build one trace per USV category and therefore need a
+# per-call label column; 'pooled_rate' / 'pooled_binary' never read one.
+CATEGORY_PREDICTOR_TYPES = ('categories_rate', 'all_rate')
+
+
+def require_usv_category_column(category_column: str | None,
+                                purpose: str,
+                                summary_columns: list | None = None,
+                                source: str | None = None) -> None:
+    """
+    Description
+    -----------
+    Fails clearly when a category-dependent analysis has no USV category label
+    column to read. The usv_summary.csv files carry torus coordinates only
+    (``qlvm1``/``qlvm2`` and the conditional ``qlvm_<condition>1/2`` pairs); the
+    QLVM cluster labels (``qlvm_category`` / ``qlvm_supercategory``) are not
+    written until a labelling is decided, so the shipped
+    ``vocal_features.usv_category_column_name`` is ``null``. Every path that
+    needs labels (per-category vocal predictors, the multinomial and binomial
+    category models, the single-category onset target) calls this first, so the
+    run stops with a message naming the setting instead of crashing obscurely
+    on a missing column or silently building nothing.
+
+    Called with ``summary_columns`` = None it checks only the setting (the early,
+    before-anything-is-loaded check); with the columns of one summary it also
+    checks that the configured column exists in that file.
+
+    Parameters
+    ----------
+    category_column (str | None)
+        The configured ``vocal_features.usv_category_column_name``.
+    purpose (str)
+        What needs the labels (named in the error), e.g.
+        ``"usv_predictor_type 'categories_rate'"``.
+    summary_columns (list | None)
+        Columns of one usv_summary.csv; None skips the per-file check.
+    source (str | None)
+        The summary the columns came from (named in the error).
+
+    Returns
+    -------
+    None
+    """
+
+    if category_column is None or category_column == '':
+        error_message = (
+            f"QLVM category labels are not available; set vocal_features.usv_category_column_name to an "
+            f"existing label column. {purpose} needs a per-USV category label, and the setting is "
+            f"{category_column!r} (the usv_summary.csv files carry torus coordinates only until a "
+            f"labelling is decided). Use a label-free alternative (e.g. usv_predictor_type 'pooled_rate') "
+            f"or point the setting at a label column that exists."
+        )
+        raise ValueError(error_message)
+    if summary_columns is not None and category_column not in summary_columns:
+        error_message = (
+            f"QLVM category labels are not available; set vocal_features.usv_category_column_name to an "
+            f"existing label column. {purpose} needs the column '{category_column}', which is absent from "
+            f"{source}."
+        )
+        raise ValueError(error_message)
+
+
+def require_labels_for_vocal_predictors(voc_settings: dict) -> None:
+    """
+    Description
+    -----------
+    The early, settings-only form of the vocal-predictor label check: a pipeline
+    calls it before loading any session, so a ``usv_predictor_type`` of
+    ``'categories_rate'`` / ``'all_rate'`` with no category label column
+    (``usv_category_column_name`` null) stops at once instead of after the
+    behavioral features of every session were read. The per-summary check (the
+    column exists in each file) runs later, inside the loaders.
+
+    Parameters
+    ----------
+    voc_settings (dict)
+        The ``vocal_features`` block of the modeling settings; must contain
+        ``usv_predictor_type`` and ``usv_category_column_name``.
+
+    Returns
+    -------
+    None
+    """
+
+    if voc_settings['usv_predictor_type'] in CATEGORY_PREDICTOR_TYPES:
+        require_usv_category_column(
+            voc_settings['usv_category_column_name'],
+            f"vocal_features.usv_predictor_type '{voc_settings['usv_predictor_type']}'",
+        )
+
+
 def _get_clean_tiled_epochs(usv_starts_all: np.ndarray,
                             usv_stops_all: np.ndarray,
                             filter_history: float,
@@ -505,6 +597,11 @@ def find_onset_epochs(root_directories: list = None,
         'vae_supercategory', 'qlvm_supercategory', 'vae_category',
         'qlvm_category'). Used both for the per-category continuous predictor
         signals and, when `target_category` is set, for the onset-target filter.
+        May be None (the shipped setting while QLVM labels are undecided) when
+        neither of those needs it; a `vocal_output_type` of 'categories_rate' /
+        'all_rate', or a `target_category` in 'individual' mode, with a None
+        column or one absent from a session's summary raises ValueError
+        (see `require_usv_category_column`) before any trace is built.
     target_category : int, optional
         If set (and `prediction_mode == 'individual'`), restricts the POSITIVE
         onset events to USVs whose `category_column` value equals this category
@@ -585,6 +682,18 @@ def find_onset_epochs(root_directories: list = None,
             "ultrasonic-call intervals."
         )
 
+    # Labels are needed only by the per-category predictor traces and by the
+    # single-category onset target ('individual' mode); either one without a label
+    # column stops here, before any session is read, instead of silently building
+    # no category traces or falling back to all calls.
+    category_purposes = []
+    if vocal_output_type in CATEGORY_PREDICTOR_TYPES:
+        category_purposes.append(f"vocal_features.usv_predictor_type '{vocal_output_type}'")
+    if target_category is not None and prediction_mode == 'individual':
+        category_purposes.append(f"model_params.onset_target_category {target_category}")
+    for category_purpose in category_purposes:
+        require_usv_category_column(category_column, category_purpose)
+
     # mixture-model parameters (modeling inter-USV interval distributions)
     male_mixture_model_params = mixture_model_params['male']
     female_mixture_model_params = mixture_model_params['female']
@@ -602,7 +711,9 @@ def find_onset_epochs(root_directories: list = None,
 
         usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
 
-        has_category = category_column in usv_summary_data.columns
+        for category_purpose in category_purposes:
+            require_usv_category_column(category_column, category_purpose,
+                                        summary_columns=usv_summary_data.columns, source=str(csv_path))
         if exclude_noise_usvs:
             usv_summary_data = drop_noise_usvs(usv_summary_data, Path(csv_path).name)[0]
         if target_type != 'all' and 'squeak' not in usv_summary_data.columns:
@@ -666,13 +777,8 @@ def find_onset_epochs(root_directories: list = None,
             else:
                 typed_source_df = mouse_usvs_df
             if target_category is not None and prediction_mode == 'individual':
-                if has_category:
-                    positive_source_df = typed_source_df.filter(pls.col(category_column) == target_category)
-                else:
-                    print(f"Warning: category column '{category_column}' absent for {session_id}; "
-                          f"cannot restrict onsets to category {target_category}. Using all "
-                          f"{target_type} calls.")
-                    positive_source_df = typed_source_df
+                # The column's presence was checked above, when the summary was read.
+                positive_source_df = typed_source_df.filter(pls.col(category_column) == target_category)
             else:
                 positive_source_df = typed_source_df
 
@@ -726,7 +832,7 @@ def find_onset_epochs(root_directories: list = None,
                         usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_rate'] = usv_frame_rate
 
                 # B. Per-category logic
-                if vocal_output_type in ['categories_rate', 'all_rate'] and has_category and mouse_usvs_df.height > 0:
+                if vocal_output_type in CATEGORY_PREDICTOR_TYPES and mouse_usvs_df.height > 0:
                     unique_cats = mouse_usvs_df[category_column].unique().to_list()
                     for cat_id in unique_cats:
                         try:
@@ -896,8 +1002,16 @@ def find_usv_categories(root_directories: list = None,
     target_category : int, optional
         The integer ID of the USV category to predict (Positive Class).
         If None, the function runs in Multinomial mode and populates 'events_by_category' with all categories.
-    category_column : str, default 'usv_category'
-        The name of the column in the CSV containing the category labels.
+    category_column : str | None, default 'usv_category'
+        The name of the column in the CSV containing the category labels. It is
+        required (a None / empty value, or a column absent from a session's
+        summary, raises ValueError via `require_usv_category_column`) on the
+        categorical paths: no `manifold_column_names` (the multinomial / binomial
+        category models), a `target_category`, or a `vocal_output_type` of
+        'categories_rate' / 'all_rate'. On the continuous manifold path it is
+        optional: None returns the manifold targets with empty
+        'events_by_category' / 'category_streams'; a column that is set must
+        still exist in every summary.
     filter_history : float, optional
         Minimum time (seconds) from the start of the session. Discards USVs before this.
     vocal_output_type : str, optional, default=None
@@ -916,7 +1030,10 @@ def find_usv_categories(root_directories: list = None,
         coordinates on the continuous acoustic manifold. If any of the configured
         columns is missing from the CSV for a given session/mouse, no continuous
         targets are written for that mouse. When None or empty, continuous target
-        extraction is skipped entirely.
+        extraction is skipped entirely. Calls whose coordinates are null / NaN in
+        any configured column (calls the embedding could not place) are dropped
+        from 'continuous_onsets', 'continuous_targets' and the label arrays, with
+        the number dropped printed per session-mouse pair and in total.
 
     Returns
     -------
@@ -939,7 +1056,26 @@ def find_usv_categories(root_directories: list = None,
                 '<manifold_prefix>_category' column exists in the source CSV.
     """
 
+    # Per-call labels are needed by the categorical paths only: the multinomial /
+    # binomial category models (no manifold columns), a `target_category`, and the
+    # per-category predictor traces. The continuous manifold path reads the torus
+    # coordinates alone, so there a null `category_column` simply means "no
+    # category packets". A categorical path without labels stops here, before any
+    # session is read.
+    category_purposes = []
+    if not manifold_column_names:
+        category_purposes.append("The USV category models (multinomial / binomial)")
+    if target_category is not None:
+        category_purposes.append(f"The binomial target category {target_category}")
+    if vocal_output_type in CATEGORY_PREDICTOR_TYPES:
+        category_purposes.append(f"vocal_features.usv_predictor_type '{vocal_output_type}'")
+    for category_purpose in category_purposes:
+        require_usv_category_column(category_column, category_purpose)
+    use_categories = category_column is not None and category_column != ''
+
     usv_data_dict = {}
+    n_unplaced_total = 0
+    n_unplaced_sessions = 0
 
     for one_root_directory in root_directories:
         sess_root = Path(one_root_directory)
@@ -954,8 +1090,11 @@ def find_usv_categories(root_directories: list = None,
 
         usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
 
-        if category_column not in usv_summary_data.columns:
-            raise ValueError(f"Column '{category_column}' missing in {csv_path}.")
+        # A configured column must exist (an explicit setting that names a missing
+        # column is a configuration error on every path, the manifold one included).
+        if use_categories:
+            require_usv_category_column(category_column, "vocal_features.usv_category_column_name",
+                                        summary_columns=usv_summary_data.columns, source=str(csv_path))
 
         # Strict membership check + direct lookup (no `.get()`
         # default). A session listed in the input directory but not
@@ -1008,8 +1147,8 @@ def find_usv_categories(root_directories: list = None,
                 usv_data_dict[session_id][mouse_name]['target_events'] = np.sort(target_usvs['start'].to_numpy())
                 usv_data_dict[session_id][mouse_name]['other_events'] = np.sort(other_usvs['start'].to_numpy())
 
-            # Get data for all categories separately
-            unique_cats = mouse_usvs[category_column].unique().to_list()
+            # Get data for all categories separately (none without a label column)
+            unique_cats = mouse_usvs[category_column].unique().to_list() if use_categories else []
 
             for cat_id in unique_cats:
                 try:
@@ -1038,7 +1177,7 @@ def find_usv_categories(root_directories: list = None,
                         )
 
                 # Per-category density
-                if vocal_output_type in ['categories_rate', 'all_rate']:
+                if vocal_output_type in CATEGORY_PREDICTOR_TYPES:
                     for cat_id in unique_cats:
                         try:
                             cat_int = int(cat_id)
@@ -1062,10 +1201,26 @@ def find_usv_categories(root_directories: list = None,
             # Extract continuous targets (user-configured acoustic manifold coordinates)
             if manifold_column_names:
                 if all(col in mouse_usvs.columns for col in manifold_column_names):
-                    usv_data_dict[session_id][mouse_name]['continuous_onsets'] = mouse_usvs['start'].to_numpy()
-
-                    manifold_arrays = [mouse_usvs[col].to_numpy() for col in manifold_column_names]
-                    usv_data_dict[session_id][mouse_name]['continuous_targets'] = np.column_stack(manifold_arrays)
+                    # A call the embedding could not place (outside the model's
+                    # duration window, no SAM mask, no condition value) has null
+                    # coordinates; it has no manifold target, so it is dropped here,
+                    # together with its onset and labels, before anything downstream
+                    # (the inverse-density KDE, the regressions, the GLM-HMM) sees a NaN.
+                    # A column CSV inference read as text (all-null) casts to NaN too.
+                    manifold_arrays = [
+                        mouse_usvs[col].cast(pls.Float64, strict=False).fill_null(np.nan).to_numpy()
+                        for col in manifold_column_names
+                    ]
+                    manifold_targets = np.column_stack(manifold_arrays)
+                    placed = np.isfinite(manifold_targets).all(axis=1)
+                    n_unplaced = int(np.count_nonzero(~placed))
+                    if n_unplaced > 0:
+                        print(f"  {session_id} ({mouse_name}): dropped {n_unplaced} of {placed.size} calls with "
+                              f"null/NaN manifold coordinates ({', '.join(manifold_column_names)}).")
+                        n_unplaced_total += n_unplaced
+                        n_unplaced_sessions += 1
+                    usv_data_dict[session_id][mouse_name]['continuous_onsets'] = mouse_usvs['start'].to_numpy()[placed]
+                    usv_data_dict[session_id][mouse_name]['continuous_targets'] = manifold_targets[placed]
 
                     # Per-USV supercategory and category labels. Used by
                     # downstream region-conditioned analyses (CNN saliency,
@@ -1081,12 +1236,16 @@ def find_usv_categories(root_directories: list = None,
                     cat_col = f"{manifold_prefix}_category"
                     if super_col in mouse_usvs.columns:
                         usv_data_dict[session_id][mouse_name]['continuous_supercategory'] = (
-                            mouse_usvs[super_col].to_numpy()
+                            mouse_usvs[super_col].to_numpy()[placed]
                         )
                     if cat_col in mouse_usvs.columns:
                         usv_data_dict[session_id][mouse_name]['continuous_category'] = (
-                            mouse_usvs[cat_col].to_numpy()
+                            mouse_usvs[cat_col].to_numpy()[placed]
                         )
+
+    if manifold_column_names:
+        print(f"Manifold targets: dropped {n_unplaced_total} calls with null/NaN coordinates in total "
+              f"({n_unplaced_sessions} session-mouse pairs affected).")
 
     return usv_data_dict
 
@@ -1222,11 +1381,13 @@ def find_variable_length_bouts(root_directories: list = None,
     exclude_noise_usvs : bool, optional
         Whether to drop the segments ``detect_usv_noise`` flagged as holding no
         vocalization (default True). A summary without the ``noise`` column raises.
-    category_column : str, default 'usv_category'
+    category_column : str | None, default 'usv_category'
         Name of the per-USV experimental-category column in the summary .csv,
         used for the per-category continuous predictor signals ('usv_cat_X')
         when `vocal_output_type` requests them. May vary independently between
-        runs.
+        runs. Only read by 'categories_rate' / 'all_rate', which raise ValueError
+        (via `require_usv_category_column`) when it is None or absent from a
+        session's summary; the pooled modes accept None.
 
     Returns
     -------
@@ -1237,6 +1398,13 @@ def find_variable_length_bouts(root_directories: list = None,
             'bout_durations': np.array of bout durations (seconds).
             'continuous_vocal_signals': dict containing generated arrays (e.g., 'usv_rate').
     """
+
+    # Per-category traces need a label column; without one they stop here, before
+    # any session is read, instead of silently building no category predictors.
+    category_traces = vocal_output_type in CATEGORY_PREDICTOR_TYPES
+    category_purpose = f"vocal_features.usv_predictor_type '{vocal_output_type}'"
+    if category_traces:
+        require_usv_category_column(category_column, category_purpose)
 
     # mixture-model parameters (for modeling inter-USV interval distributions)
     male_mixture_model_params = mixture_model_params['male']
@@ -1257,7 +1425,9 @@ def find_variable_length_bouts(root_directories: list = None,
         usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
 
         has_mask = 'mask_number' in usv_summary_data.columns
-        has_category = category_column in usv_summary_data.columns
+        if category_traces:
+            require_usv_category_column(category_column, category_purpose,
+                                        summary_columns=usv_summary_data.columns, source=str(csv_path))
         if not has_mask:
             print(f"Warning: 'mask_number' missing in {session_id}. "
                   f"Complexity defaults to the per-bout syllable count (mask = 1 per USV).")
@@ -1336,7 +1506,7 @@ def find_variable_length_bouts(root_directories: list = None,
                         )
 
                 # B. Per-category logic
-                if vocal_output_type in ['categories_rate', 'all_rate'] and has_category and mouse_usvs.height > 0:
+                if category_traces and mouse_usvs.height > 0:
                     unique_cats = mouse_usvs[category_column].unique().to_list()
                     for cat_id in unique_cats:
                         try:

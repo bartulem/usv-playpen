@@ -75,6 +75,7 @@ from .load_input_files import (
     _calculate_ibi_threshold,
     find_variable_length_bouts,
     load_behavioral_feature_data,
+    require_labels_for_vocal_predictors,
 )
 from .modeling_metadata import (
     build_input_metadata,
@@ -722,6 +723,9 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
         for feature in response_features:
             print(f"      {feature:18s} fold={self._response_fold_label(feature):11s} "
                   f"likelihood={likelihoods[feature]}")
+
+        # Label-dependent vocal predictors fail here, before any session is loaded.
+        require_labels_for_vocal_predictors(self.modeling_settings['vocal_features'])
 
         txt_modeling_sessions = prepare_modeling_sessions(self.modeling_settings)
 
@@ -1380,6 +1384,9 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
 
         print(f"--- Extracting baseline-matched divergence, "
               f"{len(response_features)} feature(s) ---")
+        # Label-dependent vocal predictors fail here, before any session is loaded.
+        require_labels_for_vocal_predictors(self.modeling_settings['vocal_features'])
+
         txt_modeling_sessions = prepare_modeling_sessions(self.modeling_settings)
         session_roots = {Path(p).name: Path(p) for p in txt_modeling_sessions}
 

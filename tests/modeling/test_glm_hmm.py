@@ -39,6 +39,7 @@ with warnings.catch_warnings():
     )
     from usv_playpen.modeling.modeling_glm_hmm import (
         run_glm_hmm_state_selection,
+        _build_session_sequences,
         _read_selected_features,
     )
     from usv_playpen.modeling.manifold_metric import (
@@ -788,3 +789,29 @@ def test_glm_hmm_pipeline_runs_input_driven_manifold(tmp_path):
     assert np.allclose(transition.sum(axis=1), 1.0, atol=1e-5)
     assert set(results['state_paths']) == {'s0', 's1', 's2', 's3', 's4'}
     assert list(out_dir.glob('glm_hmm_states_manifold_torus_*.pkl'))
+
+
+def test_session_sequences_drop_nan_manifold_positions(capsys):
+    """A manifold target row with a NaN position (a pickle built before unplaced
+    calls were dropped at extraction) is removed together with its design row,
+    with the count printed, so the emission never fits on a NaN."""
+    rng = np.random.default_rng(0)
+    y = rng.random((6, 2))
+    y[1, 0] = np.nan
+    y[4, 1] = np.nan
+    raw = {'self.speed': {'s0': {'X': rng.random((6, 5)), 'Y': y}}}
+    (sess, x_seq, y_seq), = _build_session_sequences(raw, ['self.speed'], ['s0'], 'Y', False, 3)
+    assert sess == 's0'
+    assert x_seq.shape == (4, 3) and y_seq.shape == (4, 2)
+    assert np.isfinite(y_seq).all()
+    np.testing.assert_array_equal(x_seq, raw['self.speed']['s0']['X'][[0, 2, 3, 5]][:, -3:])
+    assert 'dropped 2 events with NaN manifold positions' in capsys.readouterr().out
+
+
+def test_session_sequences_missing_label_target_raises():
+    """The multinomial emission's label target is absent from a label-free pickle:
+    a clear error says QLVM labels are unavailable instead of a KeyError."""
+    rng = np.random.default_rng(1)
+    raw = {'self.speed': {'s0': {'X': rng.random((4, 5)), 'Y': rng.random((4, 2))}}}
+    with pytest.raises(ValueError, match="QLVM category labels"):
+        _build_session_sequences(raw, ['self.speed'], ['s0'], 'supercategory', True, 3)

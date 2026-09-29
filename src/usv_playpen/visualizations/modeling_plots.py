@@ -68,6 +68,7 @@ from scipy.ndimage import gaussian_filter1d
 
 from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.manifold_metric import pairwise_distance
+from ..modeling.modeling_torus_geodesics import resolve_geodesic_decoder_source
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..processing.qlvm_latents import load_decoder_params
 from ..processing.qlvm_model import decode_lattice_atlas
@@ -4122,7 +4123,12 @@ def plot_manifold_filter_atlas(
     decoder_weights_npz_path : str, optional
         Path to the frozen QLVM decoder ``.npz``. ``None`` (default) reads it from
         ``modeling_settings.json`` -> ``vocal_features.usv_manifold_geodesic_metrics
-        .decoder_weights_npz_path``. Routed through ``configure_path``.
+        .decoder_weights_npz_path``. Routed through ``configure_path``. When those
+        settings name a model package cell (``decoder_model_cell_directory``, the
+        shipped v3 decoder) instead, the default raises ValueError: the atlas
+        overlays a supercategory watershed, and the package cells come with no
+        agreed supercategory labels (QLVM labels are unavailable), so both paths
+        must then be passed explicitly.
     supercategory_arrays_npz_path : str, optional
         Path to the ``.npz`` holding the coarse supercategory watershed
         (``ws_labels_periodic``, 200 x 200, indexed ``[dim2, dim1]``). ``None``
@@ -4177,8 +4183,18 @@ def plot_manifold_filter_atlas(
     if decoder_weights_npz_path is None:
         with (_PKG_ROOT / "_parameter_settings" / "modeling_settings.json").open() as _msf:
             _ms = json.load(_msf)
-        decoder_weights_npz_path = (
-            _ms['vocal_features']['usv_manifold_geodesic_metrics']['decoder_weights_npz_path'])
+        _decoder_source = resolve_geodesic_decoder_source(
+            _ms['vocal_features']['usv_manifold_geodesic_metrics'])
+        if _decoder_source is None or _decoder_source[0] != 'npz':
+            raise ValueError(
+                "plot_manifold_filter_atlas: modeling_settings.json names no decoder .npz "
+                "(usv_manifold_geodesic_metrics.decoder_weights_npz_path is empty"
+                + (f"; the decoder is the model package cell {_decoder_source[1]}" if _decoder_source else "")
+                + "). The atlas draws the supercategory watershed that sits beside a legacy "
+                "decoder .npz, and QLVM category labels are not available for the package cells, "
+                "so pass decoder_weights_npz_path and supercategory_arrays_npz_path explicitly."
+            )
+        decoder_weights_npz_path = _decoder_source[1]
     decoder_weights_npz_path = configure_path(str(decoder_weights_npz_path))
     if supercategory_arrays_npz_path is None:
         supercategory_arrays_npz_path = str(
