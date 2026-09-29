@@ -32,7 +32,8 @@ lattice settings (:func:`load_model_cell`): its ``checkpoint.tar`` is read witho
 torch, its ``training_contract.json`` fixes the head (legacy or ReLU), the input
 normalization (min-max, and the loudness floor of floor-trained cells) and the
 duration window, its Fibonacci embedding lattice is rebuilt, and its
-``cluster/fine`` and ``cluster/coarse`` ``label_grid.npy`` supply the categories.
+fine and coarse ``label_grid.npy`` (``inference/clusters_<level>/`` in v3,
+``cluster/<level>/`` in v2 / v2.1) supply the categories.
 Conditional cells take one conditioning value per call: phase 10 cells
 (``qlvm_models_latest/v2``, duration or mean frequency) decode it at the frozen
 corpus bin mean, phase 11 cells (``qlvm_models_latest/v3``, duration, mean
@@ -104,6 +105,103 @@ CONDITION_NAMES = ("duration", "mean_freq", "bandwidth", "loudness")
 # The file that marks a QLVM model package's root: the SHA-256 and row counts of the
 # spectrogram H5 of every session its corpus was built from.
 PACKAGE_BASELINE_NAME = "SESSION_H5_BASELINE.tsv"
+
+# Where a package keeps its files. v3 (restructured 2026-09-28) puts the baseline in
+# ``<package>/corpus/`` and, inside a cell, the contract and bins in ``config/``, the
+# per-call tables in ``inference/`` and each cluster level in ``inference/clusters_<level>/``;
+# v2 / v2.1 keep all of these at the package or cell top level and the clusters in
+# ``cluster/<level>/``. Both layouts are read; the v3 location is tried first.
+PACKAGE_BASELINE_SUBDIRECTORIES = ("corpus", "")
+CELL_FILE_SUBDIRECTORIES = ("config", "inference", "")
+
+
+def cell_file(cell: pathlib.Path, name: str) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Locates one file of a QLVM model package cell in either package layout: in the
+    cell's ``config/`` or ``inference/`` subfolder (v3) or at the cell's top level
+    (v2 / v2.1), in that order.
+
+    Parameters
+    ----------
+    cell (pathlib.Path)
+        The package cell directory.
+    name (str)
+        The file name, e.g. ``"training_contract.json"`` or ``"posterior_cache.npz"``.
+
+    Returns
+    -------
+    path (pathlib.Path)
+        The first existing candidate.
+
+    Raises
+    ------
+    FileNotFoundError
+        No candidate exists.
+    """
+    candidates = [cell / subdirectory / name if subdirectory else cell / name for subdirectory in CELL_FILE_SUBDIRECTORIES]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    error_message = f"{cell}: no {name} in {', '.join(str(candidate.parent) for candidate in candidates)}."
+    raise FileNotFoundError(error_message)
+
+
+def cell_cluster_directory(cell: pathlib.Path, level: str) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Locates one cluster level of a QLVM model package cell in either package layout:
+    ``inference/clusters_<level>/`` (v3) or ``cluster/<level>/`` (v2 / v2.1).
+
+    Parameters
+    ----------
+    cell (pathlib.Path)
+        The package cell directory.
+    level (str)
+        ``"fine"`` or ``"coarse"``.
+
+    Returns
+    -------
+    directory (pathlib.Path)
+        The first existing candidate.
+
+    Raises
+    ------
+    FileNotFoundError
+        Neither exists.
+    """
+    candidates = (cell / "inference" / f"clusters_{level}", cell / "cluster" / level)
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    error_message = f"{cell}: no {level} cluster folder ({' or '.join(str(candidate) for candidate in candidates)})."
+    raise FileNotFoundError(error_message)
+
+
+def package_baseline_path(package_root: pathlib.Path) -> pathlib.Path | None:
+    """
+    Description
+    -----------
+    Locates a QLVM model package's ``SESSION_H5_BASELINE.tsv`` in either layout:
+    ``corpus/`` (v3) or the package root (v2 / v2.1).
+
+    Parameters
+    ----------
+    package_root (pathlib.Path)
+        A candidate package root.
+
+    Returns
+    -------
+    path (pathlib.Path | None)
+        The baseline file, or ``None`` when the directory holds none.
+    """
+    for subdirectory in PACKAGE_BASELINE_SUBDIRECTORIES:
+        candidate = package_root / subdirectory / PACKAGE_BASELINE_NAME if subdirectory else package_root / PACKAGE_BASELINE_NAME
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 class _TorchCheckpointUnpickler(pickle.Unpickler):
@@ -365,7 +463,7 @@ def load_model_cell(model_cell_directory: str) -> dict:
         components).
     """
     cell = pathlib.Path(configure_path(model_cell_directory))
-    with (cell / "training_contract.json").open() as contract_file:
+    with cell_file(cell, "training_contract.json").open() as contract_file:
         contract = json.load(contract_file)
     if contract["embedding_lattice_type"] != "fibonacci":
         error_message = (
@@ -378,7 +476,7 @@ def load_model_cell(model_cell_directory: str) -> dict:
         # Conditional cells: the frozen table new calls are decoded from. Phase 10
         # holds the corpus quantile bins of c and each bin's mean c; phase 11 holds
         # its training range and decode grid instead (see frozen_condition_values).
-        with np.load(cell / contract["condition_bins"], allow_pickle=False) as bins:
+        with np.load(cell_file(cell, pathlib.Path(contract["condition_bins"]).name), allow_pickle=False) as bins:
             condition_bins = {key: bins[key] for key in bins.files}
         # Phase 10 contracts carry no decode rule; phase 11 contracts name one.
         condition = contract["condition"]
@@ -395,8 +493,8 @@ def load_model_cell(model_cell_directory: str) -> dict:
         "params": load_decoder_params(str(cell / "checkpoint.tar")),
         "contract": contract,
         "lattice": gen_fib_basis(contract["embedding_fib_m"]),
-        "fine_grid": np.load(cell / "cluster" / "fine" / "label_grid.npy", allow_pickle=False),
-        "coarse_grid": np.load(cell / "cluster" / "coarse" / "label_grid.npy", allow_pickle=False),
+        "fine_grid": np.load(cell_cluster_directory(cell, "fine") / "label_grid.npy", allow_pickle=False),
+        "coarse_grid": np.load(cell_cluster_directory(cell, "coarse") / "label_grid.npy", allow_pickle=False),
         "condition_bins": condition_bins,
         "model_id": "/".join(cell.parts[-3:]),
     }
@@ -791,7 +889,8 @@ def find_package_root(model_cell_directory: str) -> pathlib.Path | None:
     Finds the root of the QLVM model package a cell belongs to: the nearest of
     the cell directory and its parents that holds ``SESSION_H5_BASELINE.tsv``
     (the per-session SHA-256 baseline of the spectrogram H5s the package's corpus
-    was built from; ``<package>/<phase>/<cell>`` has it two levels up).
+    was built from; ``<package>/<phase>/<cell>`` has it two levels up, in
+    ``corpus/`` for v3 and at the top level for v2 / v2.1).
 
     Parameters
     ----------
@@ -806,7 +905,7 @@ def find_package_root(model_cell_directory: str) -> pathlib.Path | None:
     """
     cell = pathlib.Path(configure_path(model_cell_directory)).resolve()
     for directory in (cell, *cell.parents):
-        if (directory / PACKAGE_BASELINE_NAME).is_file():
+        if package_baseline_path(directory) is not None:
             return directory
     return None
 
@@ -815,7 +914,8 @@ def load_package_baseline(package_root: pathlib.Path) -> dict[str, str]:
     """
     Description
     -----------
-    Reads a QLVM model package's ``SESSION_H5_BASELINE.tsv`` (tab-separated,
+    Reads a QLVM model package's ``SESSION_H5_BASELINE.tsv`` (in ``corpus/`` for v3,
+    at the package root for v2 / v2.1; tab-separated,
     columns ``session``, ``h5_rows``, ``corpus_rows``, ``bytes``, ``sha256``,
     ``path``): the SHA-256 of each corpus session's spectrogram H5 at the time the
     package's per-call rows were checked against it.
@@ -830,7 +930,10 @@ def load_package_baseline(package_root: pathlib.Path) -> dict[str, str]:
     baseline (dict[str, str])
         Session id -> lowercase hexadecimal SHA-256 of its spectrogram H5.
     """
-    baseline_path = package_root / PACKAGE_BASELINE_NAME
+    baseline_path = package_baseline_path(package_root)
+    if baseline_path is None:
+        error_message = f"{package_root}: no {PACKAGE_BASELINE_NAME} in it or in its corpus/ folder."
+        raise FileNotFoundError(error_message)
     table = pls.read_csv(baseline_path, separator="\t", infer_schema_length=0)
     missing = [column for column in ("session", "sha256") if column not in table.columns]
     if missing:
@@ -867,11 +970,11 @@ def load_package_session_rows(model_cell_directory: str, session_id: str) -> dic
         when the cell holds no call of the session.
     """
     cell = pathlib.Path(configure_path(model_cell_directory))
-    with np.load(cell / "recon_mse_breakdown.npz", allow_pickle=False) as breakdown:
+    with np.load(cell_file(cell, "recon_mse_breakdown.npz"), allow_pickle=False) as breakdown:
         spec_id = breakdown["spec_id"].astype(str)
         durations = breakdown["durations"]
         mask_counts = breakdown["mask_counts"]
-    with np.load(cell / "posterior_cache.npz", allow_pickle=False) as cache:
+    with np.load(cell_file(cell, "posterior_cache.npz"), allow_pickle=False) as cache:
         torus_weighted = cache["torus_weighted"]
     if torus_weighted.shape[0] != spec_id.shape[0]:
         error_message = (
@@ -1605,9 +1708,9 @@ def export_model_cell_arrays(
     cell = pathlib.Path(configure_path(model_cell_directory))
     output_dir = pathlib.Path(configure_path(output_directory))
     output_dir.mkdir(parents=True, exist_ok=True)
-    with (cell / "training_contract.json").open() as contract_file:
+    with cell_file(cell, "training_contract.json").open() as contract_file:
         contract = json.load(contract_file)
-    with np.load(cell / "posterior_cache.npz", allow_pickle=False) as cache:
+    with np.load(cell_file(cell, "posterior_cache.npz"), allow_pickle=False) as cache:
         torus_weighted = cache["torus_weighted"]
         aggregated = cache["aggregated"]
     latent_coords = np.asarray(torus_basis_reverse(jnp.asarray(torus_weighted)), dtype=np.float32)
@@ -1621,15 +1724,16 @@ def export_model_cell_arrays(
     model_id = "/".join(cell.parts[-3:])
     written = []
     for level in ("fine", "coarse"):
-        label_grid = np.load(cell / "cluster" / level / "label_grid.npy", allow_pickle=False)
+        cluster_directory = cell_cluster_directory(cell, level)
+        label_grid = np.load(cluster_directory / "label_grid.npy", allow_pickle=False)
         resolution = label_grid.shape[0]
         pixel_x = np.clip((lattice[:, 0] * resolution).astype(int), 0, resolution - 1)
         pixel_y = np.clip((lattice[:, 1] * resolution).astype(int), 0, resolution - 1)
         heatmap = np.bincount(
             pixel_y * resolution + pixel_x, weights=aggregated, minlength=resolution * resolution
         ).reshape(resolution, resolution)
-        clusters = pls.read_csv(cell / "cluster" / level / "clusters.csv").sort("label")
-        labels = pls.read_csv(cell / "cluster" / level / "cluster_labels.csv")["label"].to_numpy()
+        clusters = pls.read_csv(cluster_directory / "clusters.csv").sort("label")
+        labels = pls.read_csv(cluster_directory / "cluster_labels.csv")["label"].to_numpy()
         if labels.shape[0] != latent_coords.shape[0]:
             error_message = (
                 f"{cell}: cluster/{level}/cluster_labels.csv has {labels.shape[0]} rows but posterior_cache.npz "

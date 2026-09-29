@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import shutil
 import pickle
 import zipfile
 
@@ -1258,13 +1259,73 @@ def test_model_cells_write_only_prefixed_coordinates(tmp_path, mocker):
     assert any("qlvm_x1/qlvm_x2: 2 of 3 USVs placed" in message for message in messages)
 
 
-def test_model_cells_take_package_values_when_the_session_is_verified(tmp_path, mocker):
+def _to_v3_layout(package_root):
+    """Rearrange a fake package from the v2 / v2.1 layout (every file at the cell's or
+    package's top level, clusters in ``cluster/<level>/``) into the v3 layout of
+    2026-09-28: ``config/`` for the contract and bins, ``inference/`` for the per-call
+    tables, ``inference/clusters_<level>/`` for the clusters, and the package's
+    ``SESSION_H5_BASELINE.tsv`` in ``corpus/``."""
+    for cell in sorted(package_root.glob("phase_*/*")):
+        (cell / "config").mkdir()
+        (cell / "inference").mkdir()
+        for name, subdirectory in (("training_contract.json", "config"), ("condition_bins.npz", "config"),
+                                   ("posterior_cache.npz", "inference"), ("recon_mse_breakdown.npz", "inference")):
+            if (cell / name).is_file():
+                shutil.move(cell / name, cell / subdirectory / name)
+        for level in ("fine", "coarse"):
+            shutil.move(cell / "cluster" / level, cell / "inference" / f"clusters_{level}")
+        (cell / "cluster").rmdir()
+    if (package_root / "SESSION_H5_BASELINE.tsv").is_file():
+        (package_root / "corpus").mkdir()
+        shutil.move(package_root / "SESSION_H5_BASELINE.tsv", package_root / "corpus" / "SESSION_H5_BASELINE.tsv")
+
+
+def test_load_model_cell_reads_the_v3_layout(tmp_path):
+    """A v3 cell (contract and bins in config/, clusters in inference/clusters_<level>/)
+    loads to the same model as the same cell in the v2 layout: the same contract,
+    decoder parameters, label grids and phase 11 bins."""
+    rng = np.random.default_rng(41)
+    condition = {"name": "bandwidth", "source": "usv_summary freq_bandwidth_hz", "decode": "exact"}
+    fine = rng.integers(1, 5, size=(8, 8)).astype(np.int16)
+    coarse = rng.integers(1, 3, size=(8, 8)).astype(np.int16)
+    cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=fine, coarse_grid=coarse,
+                            condition=condition, bins=_phase11_bins("bandwidth", 0.05, 0.95, 0.01))
+    before = ql.load_model_cell(str(cell))
+    _to_v3_layout(tmp_path / "pkg")
+    assert not (cell / "training_contract.json").exists() and (cell / "config" / "training_contract.json").is_file()
+
+    after = ql.load_model_cell(str(cell))
+
+    assert after["contract"] == before["contract"]
+    np.testing.assert_array_equal(after["fine_grid"], fine)
+    np.testing.assert_array_equal(after["coarse_grid"], coarse)
+    for key in before["condition_bins"]:
+        np.testing.assert_array_equal(after["condition_bins"][key], before["condition_bins"][key])
+    for key in before["params"]:
+        for left, right in zip(np.atleast_1d(before["params"][key]), np.atleast_1d(after["params"][key]), strict=True):
+            np.testing.assert_array_equal(np.asarray(left), np.asarray(right))
+
+
+def test_cell_file_names_what_it_looked_for(tmp_path):
+    """A file in neither layout raises FileNotFoundError naming every folder searched."""
+    (tmp_path / "cell").mkdir()
+    with pytest.raises(FileNotFoundError, match="no posterior_cache.npz in"):
+        ql.cell_file(tmp_path / "cell", "posterior_cache.npz")
+    with pytest.raises(FileNotFoundError, match="no fine cluster folder"):
+        ql.cell_cluster_directory(tmp_path / "cell", "fine")
+
+
+@pytest.mark.parametrize("layout", ["v2", "v3"])
+def test_model_cells_take_package_values_when_the_session_is_verified(tmp_path, mocker, layout):
     """A corpus session whose H5 is unchanged (baseline SHA-256, row count, durations
     and mask counts) takes each cell's own corpus coordinates, joined on spec_id; the
-    decoder is never run and the H5 is hashed once for all cells."""
+    decoder is never run and the H5 is hashed once for all cells. Both package layouts
+    are read: v2 / v2.1 (flat) and v3 (config/, inference/, corpus/)."""
     rng = np.random.default_rng(31)
     root, session_id, cfg = _model_cells_session(tmp_path, rng)
     expected = _write_fake_package(tmp_path, root, session_id, cfg, rng)
+    if layout == "v3":
+        _to_v3_layout(tmp_path / "pkg")
     hashes = mocker.patch("usv_playpen.processing.qlvm_latents.file_sha256", side_effect=file_sha256)
 
     embedded, messages = _run_model_cells(root, cfg, mocker)
