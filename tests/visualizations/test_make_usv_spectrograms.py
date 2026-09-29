@@ -28,6 +28,7 @@ failure.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 
@@ -1261,6 +1262,87 @@ def test_build_pooled_embeddings_df_rebuild_on_schema_miss(tmp_path):
     )
     assert pooled.height == 3
     assert any("missing columns" in m for m in logs)
+
+
+def test_build_pooled_embeddings_df_rebuilds_when_a_summary_changes(tmp_path):
+    """A cache built from older summaries is detected as stale by the summaries
+    fingerprint (path + size + mtime) and rebuilt, so re-embedded coordinates are
+    never served from an old cache; the old cache file is overwritten, not deleted
+    beforehand."""
+    sess = tmp_path / "20230104_000000"
+    _write_embedding_session(sess, "20230104_000000")
+    txt = _write_sessions_txt(tmp_path, [sess])
+    cache = tmp_path / "cache.parquet"
+    first = build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache),
+                                       message_output=lambda *_: None)
+    assert first["qlvm1"].to_list() == [1.2, 1.3, 1.4]
+
+    # Re-embed: same session, new coordinates (and a later modification time).
+    summary_path = next((sess / "audio").glob("*_usv_summary.csv"))
+    table = pls.read_csv(summary_path).with_columns((pls.col("qlvm1") * 0.0 + 0.25).alias("qlvm1"))
+    table.write_csv(summary_path)
+    stat = summary_path.stat()
+    os.utime(summary_path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 10_000_000_000))
+
+    logs: list[str] = []
+    second = build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache),
+                                        message_output=logs.append)
+    assert any("is stale" in m and "other or older usv_summary.csv" in m for m in logs)
+    assert not any("from cache" in m for m in logs)
+    assert second["qlvm1"].to_list() == [0.25, 0.25, 0.25]
+
+    # The rebuilt cache now matches and is served.
+    logs.clear()
+    third = build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache),
+                                       message_output=logs.append)
+    assert any("from cache" in m for m in logs)
+    assert third["qlvm1"].to_list() == [0.25, 0.25, 0.25]
+
+
+def test_build_pooled_embeddings_df_rebuilds_a_cache_without_fingerprint(tmp_path):
+    """A cache that has every required column but no summaries fingerprint (written
+    before fingerprints existed, e.g. the shared pooled_embeddings.parquet) is
+    treated as stale rather than trusted."""
+    sess = tmp_path / "20230105_000000"
+    _write_embedding_session(sess, "20230105_000000")
+    txt = _write_sessions_txt(tmp_path, [sess])
+    cache = tmp_path / "legacy.parquet"
+    fresh = build_pooled_embeddings_df(sessions_txt_path=str(txt), message_output=lambda *_: None)
+    fresh.with_columns(pls.lit(9.0).alias("qlvm1")).write_parquet(cache)  # no metadata
+    logs: list[str] = []
+    pooled = build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache),
+                                        message_output=logs.append)
+    assert any("no summaries fingerprint" in m for m in logs)
+    assert pooled["qlvm1"].to_list() == [1.2, 1.3, 1.4]
+
+
+def test_build_pooled_embeddings_df_without_qlvm_labels(tmp_path):
+    """Summaries without qlvm_category / qlvm_supercategory (the production state
+    while QLVM labels are undecided) pool fine: the label columns are optional, not
+    null-filled, and the written cache passes its own check on the next call."""
+    sess = tmp_path / "20230106_000000"
+    _write_tracking_h5(sess / "video", ("M", "F"))
+    _write_usv_summary_csv(
+        sess / "audio",
+        {
+            "vae1": [0.1, 0.2], "vae2": [0.5, 0.6],
+            "qlvm1": [0.11, 0.12], "qlvm2": [0.15, 0.16],
+            "vae_category": [1, 2], "vae_supercategory": [0, 1],
+            "noise": [False, False], "emitter": ["M", "F"], "duration": [0.05, 0.06],
+            "mean_freq_hz": [40_000, 60_000], "peak_freq_hz": [45_000, 65_000],
+            "freq_bandwidth_hz": [5_000, 6_000], "mean_amplitude": [0.1, 0.2],
+            "max_amplitude": [0.5, 0.6], "spectral_entropy": [1.0, 1.1],
+        },
+    )
+    txt = _write_sessions_txt(tmp_path, [sess])
+    cache = tmp_path / "nolabels.parquet"
+    pooled = build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache),
+                                        message_output=lambda *_: None)
+    assert pooled.height == 2
+    assert "qlvm_category" not in pooled.columns and "qlvm_supercategory" not in pooled.columns
+    logs: list[str] = []
+    build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache), message_output=logs.append)
+    assert any("from cache" in m for m in logs)
 
 
 def test_build_pooled_embeddings_df_no_sessions(tmp_path):

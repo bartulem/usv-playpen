@@ -1486,8 +1486,8 @@ The *Compute USV features* and *Infer QLVM latents* steps add columns to *usv_su
 Switching sessions to a QLVM model package cell also changes what these readers see:
 
 * the QLVM visualizations read ``<spectrograms_dir>/qlvm/arrays_{fine,coarse}.npz``; write the cell's with ``export-qlvm-reference-arrays`` under a separate ``spectrograms_dir``
-* the torus geodesic metrics decode with ``vocal_features.usv_manifold_geodesic_metrics.decoder_weights_npz_path`` (``modeling_settings.json``); point it at the cell's ``checkpoint.tar``, which loads without torch
-* the pooled-embedding parquet caches and the consolidated store's ``qlvm_dim`` keep the columns as they were when built; rebuild them after re-embedding
+* the torus geodesic metrics decode with ``vocal_features.usv_manifold_geodesic_metrics.decoder_model_cell_directory`` (``modeling_settings.json``; shipped as the v3 phase 6 regular cell the production ``qlvm1`` / ``qlvm2`` come from, read without torch); ``decoder_weights_npz_path`` remains for a legacy decoder ``.npz``, and setting both stops the run
+* the pooled-embedding parquet caches record a fingerprint of the summaries they were built from (each summary's path, size and modification time) and rebuild themselves when a summary changes; the consolidated store's ``qlvm_dim`` keeps the columns as they were when built, so rebuild it after re-embedding
 * the tuning figures' bundled ``_config/usv_latent_embedding_segmentation.npz`` holds the reference segmentation, so its region maps do not match a cell's clusters (the per-category bars follow the categories units hold)
 * category ids chosen by meaning (e.g. the coactivity notebook's ``GROUP_A_IDS = [1]`` / ``GROUP_B_IDS = [7]``) have to be re-chosen: a cell numbers its clusters by size
 
@@ -1505,7 +1505,7 @@ Switching sessions to a QLVM model package cell also changes what these readers 
 
 These columns are comparable across every session embedded into the same QLVM model, and are consumed by the categorical USV-tuning analysis in :ref:`Analyze <Analyze>` (*Compute neuronal tuning curves*). When a mask is present for a call, the acoustic features are computed over the true SAM mask region; otherwise they fall back to the signal time-window.
 
-The */usv-playpen/_parameter_settings/processing_settings.json* file contains the settings for these steps, partially modifiable in the GUI but fully modifiable manually. The six SAM2 / YOLO / QLVM model paths all derive from a single ``spectrograms_root`` (GUI: *Spectrogram models directory*): set that one directory and the paths below are filled as ``<root>/sam/...`` and ``<root>/qlvm/...``. Set any individual path explicitly (in the JSON or via a CLI flag) to override its derived default; ``generate_masks.sam2_model_cfg`` is a config name, not a path, so it is never derived.
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains the settings for these steps, partially modifiable in the GUI but fully modifiable manually. The SAM2 / YOLO / squeak / noise model paths all derive from a single ``spectrograms_root`` (GUI: *Spectrogram models directory*): set that one directory and the paths below are filled as ``<root>/sam/...``, ``<root>/squeak/...`` and ``<root>/noise/...``. Set any individual path explicitly (in the JSON or via a CLI flag) to override its derived default; ``generate_masks.sam2_model_cfg`` is a config name, not a path, so it is never derived. The QLVM model is no longer derived from ``<root>/qlvm`` (the old in-house decoder and its watershed arrays, which would re-embed sessions on another torus and write ``qlvm_category`` / ``qlvm_supercategory`` back): when ``infer_qlvm_latents`` names no model (``model_cells``, ``model_cell_directory`` and ``weights_npz_path`` all empty), ``model_cells`` is filled with the production mapping of the v3 package ``/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3`` (``qlvm``, ``qlvm_dur``, ``qlvm_mf``, ``qlvm_bw``, ``qlvm_loud``; see *Several QLVM models in one run*) and ``masking_type`` is set to ``"none"``, the preprocessing those cells were trained with (the contract check would refuse the shipped ``"sam"``). The package root and the mapping are the constants ``QLVM_MODEL_PACKAGE_ROOT`` / ``QLVM_PRODUCTION_MODEL_CELLS`` in ``os_utils``, not settings, because the GUI and CLI re-key every experimenter name in the processing settings (a ``Dexter`` path would be rewritten to the active experimenter's directory). An explicitly configured model of either kind is left untouched, ``masking_type`` included.
 
 .. code-block:: json
 
@@ -1663,7 +1663,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "data_batch_size": 8192
       }
 
-*Several QLVM models in one run* (``model_cells``). The production setting places every session on the regular (phase 6) torus and the four phase 11 conditional tori of ``qlvm_models_latest/v3``, all of the ``natural_5strata_N29000_unmasked_floor`` design, with ``masking_type`` ``"none"`` (the shipped default stays ``{}``; the paths are set per run or by a backfill):
+*Several QLVM models in one run* (``model_cells``). The production setting places every session on the regular (phase 6) torus and the four phase 11 conditional tori of ``qlvm_models_latest/v3``, all of the ``natural_5strata_N29000_unmasked_floor`` design, with ``masking_type`` ``"none"`` (the shipped setting stays ``{}``; with ``spectrograms_root`` set and no other QLVM model configured, ``derive_spectrogram_model_paths`` fills in exactly this mapping and ``masking_type`` ``"none"``; otherwise the paths are set per run or by a backfill):
 
 .. code-block:: json
 

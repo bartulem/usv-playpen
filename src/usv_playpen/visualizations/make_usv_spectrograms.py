@@ -27,6 +27,7 @@ parameters live in the ``make_usv_spectrograms`` block of
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -2276,6 +2277,15 @@ EMBEDDING_LABEL_COLS = (
     "qlvm_supercategory",
 )
 EMBEDDING_ALL_COLS = EMBEDDING_COORD_COLS + EMBEDDING_LABEL_COLS
+# Label columns carried when a summary has them but never required or null-filled:
+# the production summaries hold QLVM torus coordinates only (no QLVM cluster labels
+# until a labelling is decided), so requiring them would make a fresh cache fail its
+# own check, and null-filling them would present an all-null label as if it existed.
+EMBEDDING_OPTIONAL_LABEL_COLS = ("qlvm_category", "qlvm_supercategory")
+
+# Parquet key-value metadata key holding the fingerprint of the summaries a pooled
+# embeddings cache was built from (see `_pooled_summaries_fingerprint`).
+POOLED_CACHE_FINGERPRINT_KEY = "usv_playpen_summaries_fingerprint"
 
 # Per-USV acoustic features (written by compute_usv_acoustic_features into
 # usv_summary.csv) -- pulled into the pooled embeddings DataFrame as continuous
@@ -2294,6 +2304,61 @@ EMBEDDING_FEATURE_COLS = (
 # explorer. The cache file is invalidated automatically when these columns are
 # missing -- see schema-check logic in ``build_pooled_embeddings_df``.
 EMBEDDING_EXTRA_COLS = ("emitter", "duration") + EMBEDDING_FEATURE_COLS
+
+
+def _pooled_summaries_fingerprint(
+    session_roots: list[str],
+    exclude_noise_usvs: bool,
+) -> tuple[str, dict]:
+    """
+    Description
+    -----------
+    Locates every session's ``*_usv_summary.csv`` and fingerprints the set: a
+    SHA-256 over each session root with its summary's path, size in bytes and
+    modification time in nanoseconds (or the note that it could not be found),
+    plus the ``exclude_noise_usvs`` flag the pooled table is filtered with. A
+    pooled embeddings cache stores this fingerprint in its parquet metadata, so a
+    cache built from other or older summaries (e.g. before the QLVM columns were
+    re-embedded with another model) no longer matches and is rebuilt instead of
+    being served. Only file metadata is read, never the CSV contents, so the check
+    costs one directory listing and one ``stat`` per session.
+
+    Parameters
+    ----------
+    session_roots (list[str])
+        Session root directories (already through ``configure_path``).
+    exclude_noise_usvs (bool)
+        Whether the pooled table drops noise segments (part of what the cache
+        holds, so part of the fingerprint).
+
+    Returns
+    -------
+    fingerprint (str)
+        Hex SHA-256 of the summary set.
+    located (dict)
+        ``session_root -> pathlib.Path`` of its summary, or the exception raised
+        while locating / stat-ing it (the loader skips those sessions).
+    """
+
+    digest = hashlib.sha256()
+    digest.update(f"exclude_noise_usvs={bool(exclude_noise_usvs)}\n".encode())
+    located: dict = {}
+    for session_root in session_roots:
+        try:
+            csv_path = first_match_or_raise(
+                root=pathlib.Path(session_root) / "audio",
+                pattern="*_usv_summary.csv",
+                recursive=False,
+                label="USV summary CSV",
+            )
+            csv_stat = csv_path.stat()
+        except (FileNotFoundError, OSError) as exc:
+            located[session_root] = exc
+            digest.update(f"{session_root}\tmissing\n".encode())
+            continue
+        located[session_root] = csv_path
+        digest.update(f"{session_root}\t{csv_path}\t{csv_stat.st_size}\t{csv_stat.st_mtime_ns}\n".encode())
+    return digest.hexdigest(), located
 
 
 def build_pooled_embeddings_df(
@@ -2324,7 +2389,18 @@ def build_pooled_embeddings_df(
     When ``cache_path`` is supplied the function writes the pooled
     DataFrame to parquet so subsequent launches load in seconds
     instead of re-reading 100s of CSVs. Set ``rebuild_cache=True`` to
-    force a fresh rebuild.
+    force a fresh rebuild. A cache is served only when it has every
+    required column AND its parquet metadata carries the fingerprint of
+    the current summaries (``_pooled_summaries_fingerprint``: each
+    summary's path, size and modification time, plus
+    ``exclude_noise_usvs``); a cache written from other or older
+    summaries, or before fingerprints existed, is reported stale and
+    rebuilt (then overwritten). Nothing is deleted.
+
+    ``qlvm_category`` / ``qlvm_supercategory`` are optional: kept when
+    the summaries carry them, never required and never null-filled
+    (the production summaries hold QLVM coordinates only while QLVM
+    labels are undecided).
 
     Parameters
     ----------
@@ -2356,7 +2432,8 @@ def build_pooled_embeddings_df(
             vae1, vae2 (Float64)
             vae_category, vae_supercategory (Int64)
             qlvm1, qlvm2 (Float64)
-            qlvm_category, qlvm_supercategory (Int64)
+            qlvm_category, qlvm_supercategory (Int64; only when some
+                summary carries them)
             emitter (Utf8)
             sex (Utf8)
             duration (Float64)
@@ -2376,23 +2453,9 @@ def build_pooled_embeddings_df(
     required_extra_cols = {"emitter", "sex", "duration"} | set(EMBEDDING_FEATURE_COLS)
     required_cols = (
         {"session_id", "row_index"}
-        | set(EMBEDDING_ALL_COLS)
+        | (set(EMBEDDING_ALL_COLS) - set(EMBEDDING_OPTIONAL_LABEL_COLS))
         | required_extra_cols
     )
-
-    cache_p: pathlib.Path | None = None
-    if cache_path is not None:
-        cache_p = pathlib.Path(configure_path(cache_path))
-        if cache_p.exists() and not rebuild_cache:
-            cached = pls.read_parquet(str(cache_p))
-            missing = required_cols - set(cached.columns)
-            if not missing:
-                message_output(f"Loading pooled embeddings DF from cache: {cache_p}")
-                return cached
-            message_output(
-                f"Cache at {cache_p} is missing columns {sorted(missing)}; "
-                f"rebuilding."
-            )
 
     sessions_txt_path = configure_path(sessions_txt_path)
     with open(sessions_txt_path, "r") as txt_file:
@@ -2401,6 +2464,33 @@ def build_pooled_embeddings_df(
             for stripped in (line.strip() for line in txt_file)
             if stripped and not stripped.startswith("#")
         ]
+
+    # Fingerprint the summaries the table would be built from; a cache from any
+    # other set (older summaries, other sessions, other noise filter) is stale.
+    summaries_fingerprint, located_summaries = _pooled_summaries_fingerprint(session_roots, exclude_noise_usvs)
+
+    cache_p: pathlib.Path | None = None
+    if cache_path is not None:
+        cache_p = pathlib.Path(configure_path(cache_path))
+        if cache_p.exists() and not rebuild_cache:
+            cached_metadata = pls.read_parquet_metadata(str(cache_p))
+            cached_fingerprint = (cached_metadata[POOLED_CACHE_FINGERPRINT_KEY]
+                                  if POOLED_CACHE_FINGERPRINT_KEY in cached_metadata else None)
+            cached = pls.read_parquet(str(cache_p))
+            missing = required_cols - set(cached.columns)
+            if missing:
+                message_output(
+                    f"Cache at {cache_p} is missing columns {sorted(missing)}; "
+                    f"rebuilding."
+                )
+            elif cached_fingerprint != summaries_fingerprint:
+                reason = ("carries no summaries fingerprint (written before fingerprints existed)"
+                          if cached_fingerprint is None else
+                          "was built from other or older usv_summary.csv files")
+                message_output(f"Cache at {cache_p} is stale: it {reason}; rebuilding.")
+            else:
+                message_output(f"Loading pooled embeddings DF from cache: {cache_p}")
+                return cached
 
     select_cols = list(
         set(EMBEDDING_ALL_COLS) | set(EMBEDDING_EXTRA_COLS) | {NOISE_COLUMN}
@@ -2413,15 +2503,9 @@ def build_pooled_embeddings_df(
         # especially over a network mount, and are otherwise silent).
         if session_idx == 1 or session_idx % 25 == 0 or session_idx == total_sessions:
             message_output(f"[pool] reading session {session_idx}/{total_sessions} ...")
-        try:
-            csv_path = first_match_or_raise(
-                root=pathlib.Path(session_root) / "audio",
-                pattern="*_usv_summary.csv",
-                recursive=False,
-                label="USV summary CSV",
-            )
-        except (FileNotFoundError, OSError) as exc:
-            message_output(f"[skip] {session_root}: {exc}")
+        csv_path = located_summaries[session_root]
+        if isinstance(csv_path, Exception):
+            message_output(f"[skip] {session_root}: {csv_path}")
             continue
         try:
             df = pls.read_csv(str(csv_path), columns=select_cols)
@@ -2511,7 +2595,8 @@ def build_pooled_embeddings_df(
         for c in EMBEDDING_COORD_COLS:
             empty_schema[c] = pls.Float64
         for c in EMBEDDING_LABEL_COLS:
-            empty_schema[c] = pls.Int64
+            if c not in EMBEDDING_OPTIONAL_LABEL_COLS:
+                empty_schema[c] = pls.Int64
         return pls.DataFrame(schema=empty_schema)
 
     pooled = pls.concat(frames, how="diagonal")
@@ -2530,7 +2615,7 @@ def build_pooled_embeddings_df(
     # fail its own check and rebuild on every load. Filling the family with typed
     # nulls keeps the cache valid and the schema stable.
     fill_dtypes.update({c: pls.Float64 for c in EMBEDDING_COORD_COLS})
-    fill_dtypes.update({c: pls.Int64 for c in EMBEDDING_LABEL_COLS})
+    fill_dtypes.update({c: pls.Int64 for c in EMBEDDING_LABEL_COLS if c not in EMBEDDING_OPTIONAL_LABEL_COLS})
     missing_fills = [
         pls.lit(None, dtype=dtype).alias(c)
         for c, dtype in fill_dtypes.items()
@@ -2541,7 +2626,7 @@ def build_pooled_embeddings_df(
 
     if cache_p is not None:
         cache_p.parent.mkdir(parents=True, exist_ok=True)
-        pooled.write_parquet(str(cache_p))
+        pooled.write_parquet(str(cache_p), metadata={POOLED_CACHE_FINGERPRINT_KEY: summaries_fingerprint})
         message_output(
             f"Cached pooled embeddings DF to {cache_p} "
             f"({pooled.height:,} rows, {pooled.select('session_id').unique().height} sessions)"
