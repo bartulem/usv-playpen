@@ -1300,7 +1300,7 @@ class USVSpectrogramPlotter:
 
         # # # # LEFT: precomputed cohort embedding landscape (density + category
         # boundaries), resolved by convention from the shared spectrograms dir --
-        # QLVM -> <dir>/qlvm/arrays_{coarse,fine}.npz, VAE ->
+        # QLVM -> <dir>/qlvm_v3/arrays_{coarse,fine}.npz (the v3 regular cell), VAE ->
         # <dir>/vae/vae_density_{coarse,fine}.npz; boundary_clustering picks
         # coarse/fine. If the npz is not present (e.g. the VAE density was never
         # precomputed) fall back to bare axes, but still strip ticks so the panel
@@ -3218,7 +3218,7 @@ def plot_embedding_with_category_thumbnails(
     category_colors: dict | None = None,
     sampling_method: str = "random",
     cluster_centers_xy: dict | None = None,
-    cluster_centers_h5_path: str | None = None,
+    cluster_centers_npz_path: str | None = None,
     cluster_centers_json_path: str | None = None,
     draw_spiral_overlay: bool = False,
     spiral_show_only_for: int | None = None,
@@ -3308,6 +3308,30 @@ def plot_embedding_with_category_thumbnails(
     category_colors (dict | None)
         Optional mapping ``{category_int: hex_color}``. If ``None``,
         uses ``tab10`` / ``tab20`` automatically.
+    sampling_method (str)
+        How each category's ``n_samples_per_category`` USVs are picked:
+        ``"random"``, ``"spiral"`` (a spiral walk out from the category's
+        centre, see ``cluster_centers_*`` below) or any method
+        ``_pick_category_samples`` accepts.
+    cluster_centers_xy (dict | None)
+        Explicit ``{label: (x, y)}`` cluster centres in the map's
+        coordinates; highest priority of the centre sources.
+    cluster_centers_npz_path (str | None)
+        Reference arrays ``.npz`` whose ``centers`` array (``(K, 2)``,
+        ``(peak_x, peak_y)``, row ``i`` = label ``i + 1``) gives the
+        cluster centres; second priority. For the QLVM map this is the
+        v3 regular cell's ``<spectrograms_dir>/qlvm_v3/arrays_fine.npz``
+        (``category_col_suffix="category"``, 15 centres) or
+        ``arrays_coarse.npz`` (``"supercategory"``, 9 centres), resolved
+        by ``os_utils.resolve_embedding_arrays_path`` and written by
+        ``export-qlvm-reference-arrays``; the caller must pass the level
+        that matches ``category_col_suffix``. Every category label in the
+        pooled table must lie in ``1..K``, otherwise ValueError: the
+        centres and the labels come from different clusterings (e.g. the
+        old model's 12 / 7 arrays against the v3 15 / 9 labels).
+    cluster_centers_json_path (str | None)
+        A QLVM provenance JSON whose ``cluster_centers`` list (row ``i``
+        = label ``i + 1``) gives the centres; lowest priority.
     annotate_picks_on_scatter (bool)
         If ``True``, overlay the integer pick index (1..N) on each
         sampled point in the main scatter so the row of spectrograms
@@ -3318,7 +3342,7 @@ def plot_embedding_with_category_thumbnails(
         If ``True``, draw the integer cluster ID at the (resolved)
         center of each category on the main scatter. Centers are
         taken from ``cluster_centers_xy`` /
-        ``cluster_centers_h5_path`` / ``cluster_centers_json_path``
+        ``cluster_centers_npz_path`` / ``cluster_centers_json_path``
         when supplied (same priority chain as the spiral overlay);
         otherwise the per-category mean of the displayed scatter
         points is used as a fallback so the label still lands inside
@@ -3457,11 +3481,11 @@ def plot_embedding_with_category_thumbnails(
     # Resolve explicit cluster centers (used by the spiral sampler).
     # Priority order:
     #   1. ``cluster_centers_xy`` dict (caller-supplied, highest).
-    #   2. ``cluster_centers_h5_path`` -> a small h5 produced by
-    #      ``build_qlvm_clusters_h5.py`` with ``/coarse`` and ``/fine``
-    #      groups, each carrying ``cluster_centers (N, 2)``. The
-    #      group is picked from ``category_col_suffix``
-    #      (``supercategory`` -> ``/coarse``; ``category`` -> ``/fine``).
+    #   2. ``cluster_centers_npz_path`` -> a reference arrays ``.npz``
+    #      (``export-qlvm-reference-arrays``) whose ``centers (K, 2)``
+    #      are the cluster peaks of the level the caller picked to match
+    #      ``category_col_suffix`` (fine -> ``category``, coarse ->
+    #      ``supercategory``).
     #   3. ``cluster_centers_json_path`` -> a single QLVM provenance
     #      JSON's ``cluster_centers`` list.
     # Center index ``i`` always maps to label ``i + 1`` (verified
@@ -3471,17 +3495,18 @@ def plot_embedding_with_category_thumbnails(
         cluster_centers_resolved = {
             int(k): (float(v[0]), float(v[1])) for k, v in cluster_centers_xy.items()
         }
-    elif cluster_centers_h5_path is not None:
-        cc_h5_group = "coarse" if category_col_suffix == "supercategory" else "fine"
-        with h5py.File(configure_path(cluster_centers_h5_path), "r") as _cc_h5:
-            if cc_h5_group not in _cc_h5:
-                msg = (
-                    f"Group '/{cc_h5_group}' not found in "
-                    f"{cluster_centers_h5_path!r}; expected for "
-                    f"category_col_suffix={category_col_suffix!r}."
-                )
-                raise KeyError(msg)
-            centers_arr = _cc_h5[f"{cc_h5_group}/cluster_centers"][:]
+    elif cluster_centers_npz_path is not None:
+        with np.load(configure_path(cluster_centers_npz_path)) as _cc_npz:
+            centers_arr = _cc_npz["centers"]
+        foreign_labels = sorted(int(c) for c in categories if not 1 <= int(c) <= centers_arr.shape[0])
+        if foreign_labels:
+            msg = (
+                f"{cat_col} labels {foreign_labels} fall outside the {centers_arr.shape[0]} cluster "
+                f"centres of {cluster_centers_npz_path!r}: the centres and the labels come from "
+                f"different clusterings (or the arrays level does not match "
+                f"category_col_suffix={category_col_suffix!r})."
+            )
+            raise ValueError(msg)
         for i, c in enumerate(centers_arr):
             cluster_centers_resolved[i + 1] = (float(c[0]), float(c[1]))
     elif cluster_centers_json_path is not None:
@@ -3689,7 +3714,7 @@ def plot_embedding_with_category_thumbnails(
     # Overlay the integer cluster ID at the centre of each category
     # so the scatter doubles as a legend. Centres come from the
     # already-resolved ``cluster_centers_resolved`` map (caller-
-    # supplied xy / h5 / json, in that priority); when none was
+    # supplied xy / reference-arrays npz / json, in that priority); when none was
     # provided we fall back to the per-category mean of the points
     # actually plotted on the scatter so the label still lands
     # inside its cluster.
@@ -4102,21 +4127,29 @@ def render_embedding_thumbnails_for_cohort(
         combined_sessions_txt = combined_file.name
 
     # Cluster-center provenance for the QLVM cluster-ID labels / spiral centers:
-    # the newest qlvm_clusters_*.h5 under the spectrograms dir (it carries the
-    # /coarse + /fine cluster_centers). Only meaningful for the QLVM map; the VAE
-    # umap has no equivalent, so leave it unset there (centers fall back to the
-    # data-derived medoids/centroids).
-    cluster_centers_h5_path = None
+    # the `centers` (cluster peaks) of the v3 regular cell's reference arrays,
+    # <spectrograms_dir>/qlvm_v3/arrays_{fine,coarse}.npz, at the level matching the
+    # colored label (category -> fine, 15 centres; supercategory -> coarse, 9). The
+    # same peaks sit in the consolidated store's qlvm_models/qlvm/clusters_<level>;
+    # the arrays are the one source, shared with the sequence map and the torus
+    # video. Only meaningful for the QLVM map; the VAE umap has no equivalent, so
+    # leave it unset there (centers fall back to the data-derived medoids/centroids).
+    cluster_centers_npz_path = None
     if cfg["map_type"] == "qlvm":
-        spec_base = pathlib.Path(
-            configure_path(visualizations_parameter_dict["shared_resources"]["spectrograms_dir"])
+        centers_level = "fine" if cfg["category_col_suffix"] == "category" else "coarse"
+        centers_candidate = resolve_embedding_arrays_path(
+            visualizations_parameter_dict["shared_resources"]["spectrograms_dir"], "qlvm", centers_level
         )
-        cc_matches = sorted(spec_base.glob("qlvm_clusters_*.h5"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if cc_matches:
-            cluster_centers_h5_path = str(cc_matches[0])
+        if pathlib.Path(centers_candidate).is_file():
+            cluster_centers_npz_path = centers_candidate
+        else:
+            log(
+                f"[embedding-thumbnails] no QLVM reference arrays at {centers_candidate} "
+                f"(export-qlvm-reference-arrays writes them); cluster centres fall back to the data."
+            )
 
     # Pooled-embeddings cache resolved by convention from the spectrograms dir
-    # (<dir>/embeddings/pooled_embeddings.parquet, precomputed once on a fast mount);
+    # (<dir>/embeddings/pooled_embeddings_qlvmv3.parquet, precomputed once on a fast mount);
     # build_pooled_embeddings_df loads it when present instead of re-reading the
     # cohort's CSVs, and otherwise pools + writes it there.
     cache_path = resolve_pooled_embeddings_cache(
@@ -4142,7 +4175,7 @@ def render_embedding_thumbnails_for_cohort(
             mask_excluded_categories=tuple(cfg["mask_excluded_categories"]),
             category_colors=cfg["category_colors"],
             sampling_method=cfg["sampling_method"],
-            cluster_centers_h5_path=cluster_centers_h5_path,
+            cluster_centers_npz_path=cluster_centers_npz_path,
             draw_spiral_overlay=cfg["draw_spiral_overlay"],
             spiral_show_only_for=cfg["spiral_show_only_for"],
             spiral_color=cfg["spiral_color"],

@@ -1663,6 +1663,54 @@ def test_plot_umap_thumbnails_json_provenance_centers(tmp_path):
     assert isinstance(fig, plt.Figure)
 
 
+@pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+def test_plot_umap_thumbnails_reference_arrays_centers(tmp_path):
+    """The QLVM cluster-ID labels sit at the reference arrays' ``centers`` (row i =
+    label i + 1, the v3 export layout) and the labels drawn are the pooled table's
+    qlvm_supercategory values."""
+    pooled = _make_pooled_df("sessE", n_per_cat=5)
+    h5_path = tmp_path / "store.h5"
+    _write_consolidated_h5(h5_path, "sessE", n_usvs=10, n_freq=16, n_time=18)
+    arrays = tmp_path / "qlvm_v3" / "arrays_coarse.npz"
+    arrays.parent.mkdir()
+    np.savez(arrays, centers=np.array([[0.25, 0.75], [0.6, 0.1]], dtype=np.float32))
+    fig = plot_embedding_with_category_thumbnails(
+        sessions_txt_path="unused",
+        consolidated_h5_path=str(h5_path),
+        map_type="qlvm",
+        category_col_suffix="supercategory",
+        n_samples_per_category=3,
+        sampling_method="spiral",
+        cluster_centers_npz_path=str(arrays),
+        annotate_cluster_ids=True,
+        pooled_df=pooled,
+        message_output=lambda *_: None,
+    )
+    placed = {
+        (text.get_text(), tuple(round(float(v), 4) for v in text.get_position()))
+        for axis in fig.axes for text in axis.texts if text.get_text() in ("1", "2")
+    }
+    assert {("1", (0.25, 0.75)), ("2", (0.6, 0.1))} <= placed
+
+
+def test_plot_umap_thumbnails_reference_arrays_label_mismatch_raises(tmp_path):
+    """Labels outside ``1..K`` of the arrays' K centres mean the centres and the
+    labels come from different clusterings (e.g. old arrays against v3 labels): raise."""
+    arrays = tmp_path / "arrays_coarse.npz"
+    np.savez(arrays, centers=np.array([[0.25, 0.75]], dtype=np.float32))
+    with pytest.raises(ValueError, match="different clusterings"):
+        plot_embedding_with_category_thumbnails(
+            sessions_txt_path="unused",
+            consolidated_h5_path="unused",
+            map_type="qlvm",
+            category_col_suffix="supercategory",
+            cluster_centers_npz_path=str(arrays),
+            pooled_df=_make_pooled_df(),
+            message_output=lambda *_: None,
+        )
+
+
 def test_plot_umap_thumbnails_bad_map_type(tmp_path):
     """An invalid map_type raises ValueError before any rendering."""
     with pytest.raises(ValueError, match="map_type must be"):
@@ -1776,7 +1824,7 @@ def _write_spectrograms_dir(
 ) -> str:
     """Lay out a ``shared_resources.spectrograms_dir`` the way the readers resolve
     it: the consolidated store ``<base>/spectrograms_<key>.h5`` plus, optionally,
-    ``<base>/qlvm/arrays_{coarse,fine}.npz`` and ``<base>/vae/vae_density_{coarse,
+    ``<base>/qlvm_v3/arrays_{coarse,fine}.npz`` and ``<base>/vae/vae_density_{coarse,
     fine}.npz``. Returns ``str(base)``."""
     base = pathlib.Path(base)
     base.mkdir(parents=True, exist_ok=True)
@@ -1785,9 +1833,9 @@ def _write_spectrograms_dir(
         n_usvs=n_usvs, n_freq=n_freq, n_time=n_time, with_mask=with_mask,
     )
     if with_qlvm:
-        (base / "qlvm").mkdir(exist_ok=True)
-        _write_arrays_npz(base / "qlvm" / "arrays_coarse.npz")
-        _write_arrays_npz(base / "qlvm" / "arrays_fine.npz")
+        (base / "qlvm_v3").mkdir(exist_ok=True)
+        _write_arrays_npz(base / "qlvm_v3" / "arrays_coarse.npz")
+        _write_arrays_npz(base / "qlvm_v3" / "arrays_fine.npz")
     if with_vae:
         (base / "vae").mkdir(exist_ok=True)
         _write_vae_density_npz(base / "vae" / "vae_density_coarse.npz", extent=vae_extent)
@@ -2107,14 +2155,64 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert captured["unstretched_specs"] is True
     assert captured["annotate_cluster_ids"] is True
     assert captured["knn_boundary_resolution"] == 200
-    # VAE map -> no QLVM cluster-centers h5
-    assert captured["cluster_centers_h5_path"] is None
+    # VAE map -> no QLVM cluster-centre arrays
+    assert captured["cluster_centers_npz_path"] is None
     # the pooled-embeddings cache is resolved by convention under spectrograms_dir
     assert captured["embeddings_cache_path"] == str(
-        pathlib.Path(spec_dir) / "embeddings" / "pooled_embeddings.parquet"
+        pathlib.Path(spec_dir) / "embeddings" / "pooled_embeddings_qlvmv3.parquet"
     )
     # in a GUI context the saved figure is opened at the end
     assert opened == [captured["output_path"]]
     # timestamp_in_name -> the filename ends with a _YYYYMMDD_HHMMSS stamp
     out_name = pathlib.Path(captured["output_path"]).name
     assert re.fullmatch(r"embedding_thumbnails_vae_category_\d{8}_\d{6}\.png", out_name)
+
+
+
+@pytest.mark.parametrize("suffix, level", [("category", "fine"), ("supercategory", "coarse")])
+def test_render_embedding_thumbnails_qlvm_centres_from_v3_arrays(tmp_path, monkeypatch, suffix, level):
+    """For the QLVM map the cluster centres come from the v3 reference arrays at
+    <spectrograms_dir>/qlvm_v3/arrays_<level>.npz, the level matching the colored
+    label (category -> fine, supercategory -> coarse); a legacy qlvm_clusters_*.h5
+    beside the store is ignored."""
+    input_dir = tmp_path / "input_files"
+    input_dir.mkdir()
+    (input_dir / "a_sessions_list.txt").write_text("/root/sessA\n")
+    spec_dir = _write_spectrograms_dir(tmp_path / "spectrograms", "sessZ", n_usvs=2, with_qlvm=True)
+    (pathlib.Path(spec_dir) / "qlvm_clusters_20260506.h5").write_bytes(b"legacy")
+    captured = {}
+
+    def _stub(**kwargs):
+        captured.update(kwargs)
+        return plt.figure()
+
+    monkeypatch.setattr(
+        "usv_playpen.visualizations.make_usv_spectrograms.plot_embedding_with_category_thumbnails",
+        _stub,
+    )
+    monkeypatch.setattr("usv_playpen.visualizations.make_usv_spectrograms.is_gui_context", lambda: False)
+    viz = {
+        "figures": {"save_directory": str(tmp_path / "figs"), "fig_format": "png", "dpi": 100, "seed": 1, "timestamp_in_name": False},
+        "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir)},
+        "embedding_thumbnails": {
+            "map_type": "qlvm", "category_col_suffix": suffix,
+            "n_samples_per_category": 2, "tile_orientation": "vertical",
+            "apply_mask": False, "mask_excluded_categories": [], "category_colors": None,
+            "sampling_method": "spiral",
+            "draw_cluster_boundaries": True, "knn_boundary_neighbors": 9,
+            "knn_boundary_resolution": 50, "knn_boundary_density_min_count": 0.05,
+            "knn_boundary_density_smoothing_sigma": 3.0,
+            "draw_spiral_overlay": False, "spiral_show_only_for": None,
+            "spiral_color": "#000000", "spiral_linewidth": 1.0,
+            "spiral_radius_scale": 0.1, "spiral_radius_abs": 0.1,
+            "spiral_n_turns": 3, "spiral_random_phase": True,
+            "annotate_picks_on_scatter": False, "pick_number_fontsize": 9,
+            "annotate_cluster_ids": True, "cluster_id_fontsize": 20,
+            "thumbnail_hspace": 0.03, "thumbnail_wspace": 0.04, "unstretched_specs": True,
+            "scatter_max_points": 1000, "fig_size": [10, 8],
+        },
+    }
+    render_embedding_thumbnails_for_cohort(viz, message_output=lambda *_a, **_kw: None)
+    assert captured["cluster_centers_npz_path"] == str(pathlib.Path(spec_dir) / "qlvm_v3" / f"arrays_{level}.npz")
+    assert captured["category_col_suffix"] == suffix
+    assert "cluster_centers_h5_path" not in captured
