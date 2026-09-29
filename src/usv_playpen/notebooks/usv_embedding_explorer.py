@@ -32,7 +32,12 @@ Architecture
   session id / emitter sex) OR a continuous metric through the colormap
   (density, duration, frequencies, amplitudes, spectral entropy), with an
   ``alt.selection_interval`` brush. Optional category-boundary contours overlay
-  the scatter. The spec inlines session_id / row_index / x / y / color per
+  the scatter: on the QLVM torus they are the v3 regular cell's own label grid
+  (15 fine / 9 coarse clusters, the ``ws_labels_periodic`` of
+  ``<spectrograms_dir>/qlvm_v3/arrays_{fine,coarse}.npz`` resolved by
+  ``os_utils.resolve_embedding_arrays_path``, the same partition that wrote the
+  ``qlvm_category`` / ``qlvm_supercategory`` summary columns); on the VAE umap
+  (or when those arrays are missing) a k-NN boundary estimated from the labels. The spec inlines session_id / row_index / x / y / color per
   point (~200 bytes each), so the max_points ceiling is bounded by marimo's
   ``output_max_bytes`` (raised to 200 MB in pyproject.toml).
 - Brushing samples spectrograms from the selection along an Archimedean spiral
@@ -72,7 +77,11 @@ def _imports():
 
     alt.data_transformers.disable_max_rows()
 
-    from usv_playpen.os_utils import resolve_consolidated_h5_path, resolve_experimenter_path
+    from usv_playpen.os_utils import (
+        resolve_consolidated_h5_path,
+        resolve_embedding_arrays_path,
+        resolve_experimenter_path,
+    )
     from usv_playpen.visualizations.make_usv_spectrograms import (
         _knn_boundary_grid as knn_boundary_grid,
         build_pooled_embeddings_df,
@@ -94,12 +103,19 @@ def _imports():
         pls,
         plt,
         resolve_consolidated_h5_path,
+        resolve_embedding_arrays_path,
         resolve_experimenter_path,
     )
 
 
 @app.cell
-def _settings(Path, json, resolve_consolidated_h5_path, resolve_experimenter_path):
+def _settings(
+    Path,
+    json,
+    resolve_consolidated_h5_path,
+    resolve_embedding_arrays_path,
+    resolve_experimenter_path,
+):
     # Cell 2 = ALL settings/config (imports are all in cell 1). Reads
     # visualizations_settings.json once and exposes everything downstream cells
     # need: the colormap, sex colors, the consolidated store path, the available
@@ -142,6 +158,22 @@ def _settings(Path, json, resolve_consolidated_h5_path, resolve_experimenter_pat
         )
     except (KeyError, FileNotFoundError, RuntimeError):
         _input_dir, consolidated_h5_path = None, None
+
+    # QLVM reference arrays of the v3 regular cell under `spectrograms_dir`
+    # (<dir>/qlvm_v3/arrays_{fine,coarse}.npz, os_utils convention), keyed by the
+    # Boundaries dropdown value: "category" -> fine (15 clusters), "supercategory"
+    # -> coarse (9). Their `ws_labels_periodic` grids are the exact partition the
+    # qlvm_category / qlvm_supercategory columns were read from, so the QLVM map
+    # draws them instead of a k-NN estimate. Missing arrays -> {} (k-NN fallback).
+    try:
+        _spec_dir = resolve_experimenter_path(_viz["shared_resources"]["spectrograms_dir"])
+        qlvm_arrays_paths = {
+            _choice: resolve_embedding_arrays_path(_spec_dir, "qlvm", _level)
+            for _choice, _level in (("category", "fine"), ("supercategory", "coarse"))
+            if Path(resolve_embedding_arrays_path(_spec_dir, "qlvm", _level)).is_file()
+        }
+    except KeyError:
+        qlvm_arrays_paths = {}
     if _input_dir is not None and Path(_input_dir).is_dir():
         available_lists = {
             p.name: str(p)
@@ -179,6 +211,7 @@ def _settings(Path, json, resolve_consolidated_h5_path, resolve_experimenter_pat
         consolidated_h5_path,
         global_cmap,
         list_to_sessions,
+        qlvm_arrays_paths,
         sex_colors,
     )
 
@@ -471,6 +504,7 @@ def _scatter_chart(
     pd,
     plt,
     pooled_df,
+    qlvm_arrays_paths,
     sessions_select,
     sex_colors,
 ):
@@ -587,9 +621,13 @@ def _scatter_chart(
 
         # Color setup: categorical -> fixed palette, emitter -> settings sex
         # colors, density / acoustic feature -> project colormap (quantitative).
+        # 20 distinct colours so the 15 QLVM fine categories (and the 9 coarse
+        # ones) each get their own colour instead of cycling.
         PALETTE = (
             "#4C78A8", "#F58518", "#E45756", "#72B7B2", "#54A24B", "#EECA3B",
             "#B279A2", "#FF9DA6", "#9D755D", "#BAB0AC", "#1F77B4", "#FF7F0E",
+            "#17BECF", "#BCBD22", "#8C564B", "#E377C2", "#2CA02C", "#9467BD",
+            "#D62728", "#393B79",
         )
         color_field = None
         cat_domain, cat_range = None, None
@@ -664,7 +702,7 @@ def _scatter_chart(
             else:
                 # Hide the legend when there are too many categories (e.g. many
                 # sessions) -- a list of hundreds of ids is unreadable and the
-                # 12-color palette cycles anyway. Points stay colored.
+                # 20-color palette cycles anyway. Points stay colored.
                 _cat_legend = (
                     None if len(cat_domain) > 24 else alt.Legend(
                         title=None, orient="left", direction="vertical",
@@ -690,10 +728,19 @@ def _scatter_chart(
         )
         scatter = scatter.add_params(brush)
 
-        # Boundary overlay: KNN-predicted category grid (density-masked) ->
-        # contour lines at half-integer class transitions -> one line per seg.
+        # Boundary overlay: on the QLVM torus the v3 regular cell's label grid
+        # (ws_labels_periodic of the reference arrays, indexed [y, x] over the unit
+        # square), else a KNN-predicted category grid (density-masked); either way
+        # one 0.5 contour per category -> one line per seg.
         layers = [scatter]
-        if boundary_col is not None and chart_pd.shape[0] >= 5:
+        grid_labels = None
+        if map_prefix == "qlvm" and boundary_choice in qlvm_arrays_paths:
+            with np.load(qlvm_arrays_paths[boundary_choice]) as _arrays:
+                _grid = _arrays["ws_labels_periodic"].astype(float)
+            _axis = (np.arange(_grid.shape[0]) + 0.5) / _grid.shape[0]
+            grid_xx, grid_yy = np.meshgrid(_axis, _axis)
+            grid_labels = np.where(_grid > 0, _grid, np.nan)
+        elif boundary_col is not None and chart_pd.shape[0] >= 5:
             bx_pts = chart_pd[x_col].to_numpy()
             by_pts = chart_pd[y_col].to_numpy()
             labels = chart_pd[boundary_col].to_numpy()
@@ -713,55 +760,55 @@ def _scatter_chart(
                 n_neighbors=25, grid_resolution=grid_res,
                 density_smoothing_sigma=3.5, density_min_count=0.04,
             )
-            if not np.all(np.isnan(grid_labels)):
-                # Outline EACH category's region as the 0.5 contour of its own
-                # binary mask, rather than contouring the integer label grid at
-                # half-integer levels. The latter bunches several lines together
-                # wherever non-consecutive category numbers sit adjacent (every
-                # in-between level crosses there), making the boundary look
-                # thicker in spots. Per-category 0.5 contours put each shared
-                # border at exactly one position, so the line is uniform width.
-                present_labels = [v for v in np.unique(grid_labels) if not np.isnan(v)]
-                tmp_fig, tmp_ax = plt.subplots()
-                seg_rows = []
-                seg_id = 0
-                for _lab in present_labels:
-                    _mask = np.where(
-                        np.isnan(grid_labels), 0.0, (grid_labels == _lab).astype(float)
-                    )
-                    _cs = tmp_ax.contour(grid_xx, grid_yy, _mask, levels=[0.5])
-                    for level_segs in _cs.allsegs:
-                        for seg in level_segs:
-                            for order, (sx, sy) in enumerate(seg):
-                                seg_rows.append(
-                                    {"bx": float(sx), "by": float(sy),
-                                     "seg": seg_id, "order": order}
-                                )
-                            seg_id += 1
-                plt.close(tmp_fig)
-                if seg_rows:
-                        boundary_df = pd.DataFrame(seg_rows)
-
-                        # Haloed contour: a thick BLACK outline under a bright
-                        # core. Over the warm colormap (inferno; used when
-                        # coloring by density / a continuous feature) a CYAN core
-                        # pops; over the categorical palette a white core reads
-                        # cleanly.
-                        def _bline(_color, _width):
-                            return (
-                                alt.Chart(boundary_df)
-                                .mark_line(color=_color, strokeWidth=_width, opacity=1.0)
-                                .encode(
-                                    x=alt.X("bx:Q", scale=x_scale, axis=None),
-                                    y=alt.Y("by:Q", scale=y_scale, axis=None),
-                                    detail="seg:N",
-                                    order="order:Q",
-                                )
+        if grid_labels is not None and not np.all(np.isnan(grid_labels)):
+            # Outline EACH category's region as the 0.5 contour of its own
+            # binary mask, rather than contouring the integer label grid at
+            # half-integer levels. The latter bunches several lines together
+            # wherever non-consecutive category numbers sit adjacent (every
+            # in-between level crosses there), making the boundary look
+            # thicker in spots. Per-category 0.5 contours put each shared
+            # border at exactly one position, so the line is uniform width.
+            present_labels = [v for v in np.unique(grid_labels) if not np.isnan(v)]
+            tmp_fig, tmp_ax = plt.subplots()
+            seg_rows = []
+            seg_id = 0
+            for _lab in present_labels:
+                _mask = np.where(
+                    np.isnan(grid_labels), 0.0, (grid_labels == _lab).astype(float)
+                )
+                _cs = tmp_ax.contour(grid_xx, grid_yy, _mask, levels=[0.5])
+                for level_segs in _cs.allsegs:
+                    for seg in level_segs:
+                        for order, (sx, sy) in enumerate(seg):
+                            seg_rows.append(
+                                {"bx": float(sx), "by": float(sy),
+                                 "seg": seg_id, "order": order}
                             )
+                        seg_id += 1
+            plt.close(tmp_fig)
+            if seg_rows:
+                boundary_df = pd.DataFrame(seg_rows)
 
-                        _core = "#00E5E5" if color_kind in ("density", "continuous") else "#FFFFFF"
-                        layers.append(_bline("#000000", 5.0))   # black outline
-                        layers.append(_bline(_core, 2.4))       # bright core
+                # Haloed contour: a thick BLACK outline under a bright
+                # core. Over the warm colormap (inferno; used when
+                # coloring by density / a continuous feature) a CYAN core
+                # pops; over the categorical palette a white core reads
+                # cleanly.
+                def _bline(_color, _width):
+                    return (
+                        alt.Chart(boundary_df)
+                        .mark_line(color=_color, strokeWidth=_width, opacity=1.0)
+                        .encode(
+                            x=alt.X("bx:Q", scale=x_scale, axis=None),
+                            y=alt.Y("by:Q", scale=y_scale, axis=None),
+                            detail="seg:N",
+                            order="order:Q",
+                        )
+                    )
+
+                _core = "#00E5E5" if color_kind in ("density", "continuous") else "#FFFFFF"
+                layers.append(_bline("#000000", 5.0))   # black outline
+                layers.append(_bline(_core, 2.4))       # bright core
 
         chart = (alt.layer(*layers) if len(layers) > 1 else scatter).properties(
             width=CHART_DATA_WIDTH_PX,
