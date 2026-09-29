@@ -2082,6 +2082,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     input_dir.mkdir()
     (input_dir / "a_sessions_list.txt").write_text("/root/sessA\n/root/sessB\n# skip\n")
     (input_dir / "b_sessions_list.txt").write_text("/root/sessB\n/root/sessC\n")  # sessB duplicate
+    (input_dir / "ephys_playback_sessions_list.txt").write_text("/root/sessP\n")  # playback -> dropped
     spec_dir = _write_spectrograms_dir(tmp_path / "spectrograms", "sessZ", n_usvs=2)
 
     captured = {}
@@ -2135,7 +2136,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert isinstance(fig, plt.Figure)
     # store resolved to the consolidated spectrograms_*.h5 under spec_dir
     assert pathlib.Path(captured["consolidated_h5_path"]).name.startswith("spectrograms_")
-    # combined session list = deduped roots in first-seen order ('# skip' dropped)
+    # combined session list = deduped roots in first-seen order ('# skip' and the playback list dropped)
     assert captured["pooled_roots"] == ["/root/sessA", "/root/sessB", "/root/sessC"]
     # the throwaway combined list is unlinked after the render
     assert not pathlib.Path(captured["sessions_txt_path"]).exists()

@@ -4055,7 +4055,8 @@ def render_embedding_thumbnails_for_cohort(
     -----------
     Cohort-level driver for the embedding + per-category spectrogram thumbnails
     figure. Pools every ``*sessions_list.txt`` under
-    ``shared_resources['input_files_directory']`` into one combined session list,
+    ``shared_resources['input_files_directory']`` (except playback lists, which the
+    embedding explorer also drops) into one combined session list,
     resolves the consolidated store as the newest ``spectrograms_*.h5`` under
     ``shared_resources['spectrograms_dir']``, and renders
     ``plot_embedding_with_category_thumbnails`` with the knobs from the
@@ -4105,8 +4106,11 @@ def render_embedding_thumbnails_for_cohort(
     )
 
     # Pool every cohort session list into one deduplicated combined list (same
-    # cohort definition as the embedding explorer / VAE-density precompute).
-    list_files = sorted(input_files_dir.glob("*sessions_list.txt"))
+    # cohort definition as the embedding explorer / VAE-density precompute). Playback
+    # lists are dropped, as the explorer drops them: playback sessions carry no
+    # emitter / embedding structure (and no noise column, so pooling them with
+    # exclude_noise_usvs fails).
+    list_files = sorted(p for p in input_files_dir.glob("*sessions_list.txt") if "playback" not in p.name.lower())
     if not list_files:
         raise FileNotFoundError(
             f"embedding thumbnails: no '*sessions_list.txt' under '{input_files_dir}'."
