@@ -1404,7 +1404,7 @@ Once the curated *usv_summary.csv* exists (see *Curate DAS outputs* above), an i
 
    <br>
 
-The *Generate spectrograms* step computes a variance-weighted, multi-channel spectrogram of every USV (channels listed in the session metadata's ``excluded_channels`` are dropped from the average); *Generate masks* runs a YOLO box detector and prompts SAM2 to segment each call; *Compute USV features* derives per-USV spectral and amplitude features; and *Infer QLVM latents* embeds each spectrogram into the trained QLVM torus and assigns it a vocal category. The mask and latent steps run on the GPU and rely on two pre-trained models (see *Train spectrogram-pipeline models* below). The spectrogram and mask arrays are written to a new *spectrograms* subdirectory, while the acoustic features and QLVM latents are merged into *usv_summary.csv*. After a cohort of sessions has been processed, ``consolidate-spectrogram-store`` merges the per-session H5 files into one multi-session store under ``spectrograms_root`` (shared ``frequency_bins``, per-session ``spectrogram/<session>`` and ``mask/<session>`` groups, and a per-session ``qlvm_dim`` latent dataset injected from each summary's ``qlvm1``/``qlvm2``); the newest ``spectrograms_*.h5`` is picked up automatically by every consumer.
+The *Generate spectrograms* step computes a variance-weighted, multi-channel spectrogram of every USV (channels listed in the session metadata's ``excluded_channels`` are dropped from the average); *Generate masks* runs a YOLO box detector and prompts SAM2 to segment each call; *Compute USV features* derives per-USV spectral and amplitude features; and *Infer QLVM latents* embeds each spectrogram into the trained QLVM torus and assigns it a vocal category. The mask and latent steps run on the GPU and rely on two pre-trained models (see *Train spectrogram-pipeline models* below). The spectrogram and mask arrays are written to a new *spectrograms* subdirectory, while the acoustic features and QLVM latents are merged into *usv_summary.csv*. After a cohort of sessions has been processed, ``consolidate-spectrogram-store`` merges the per-session H5 files and the QLVM columns of their summaries into one multi-session store under ``spectrograms_root`` (layout below); the newest ``spectrograms_*.h5`` is picked up automatically by every consumer.
 
 The acoustic-feature and QLVM columns:
 
@@ -1448,6 +1448,32 @@ The *20250430_145017_spectrograms.h5* file holds the spectrograms (created by *G
     └── mask/20250430_145017/spectrogram_index (M,)          # Generate masks
 
 The spectrogram rows are 1:1 with *usv_summary.csv*; each mask row carries a *spectrogram_index* pointing back to the spectrogram (and USV) it segments. Re-running a step overwrites only the group it owns and leaves the rest of the file intact.
+
+**The consolidated store.** ``consolidate-spectrogram-store`` writes ``spectrograms_qlvmv3_<S>sessions_<N>vocalizations_<UTC timestamp>.h5`` to ``spectrograms_root``. It is meant for the corpus of the QLVM model package v3 (``QLVM_MODEL_PACKAGE_ROOT``): ``--package-corpus`` takes exactly the 402 sessions its ``corpus/SESSION_H5_BASELINE.tsv`` lists (each session root is the third parent of the listed H5 path under ``/mnt/falkner``), ``--root-directories`` any subset of them. Every session is checked before anything is written, and all problems are reported together: its spectrogram H5 must hash (SHA-256) to the baseline's (a rebuilt H5 renumbers the rows the package embedded), its summary must have one row per H5 row and carry every production QLVM column (``qlvm1`` … ``qlvm_loud_category``), all sessions must share one ``frequency_bins`` axis, and the embedded calls must be exactly those the package's rules admit (status 0 exactly where ``qlvm1`` / ``qlvm2`` are non-null, each model's labels exactly where its coordinates are). Sessions are copied one at a time and the file is published atomically.
+
+.. code-block:: text
+
+    spectrograms_qlvmv3_402sessions_<N>vocalizations_<ts>.h5
+    ├── frequency_bins (F,)                              # shared by every session
+    ├── spectrogram/<session>/spectrograms (N, F, T)     # copied from the session H5
+    ├── spectrogram/<session>/durations (N,)             # copied from the session H5
+    ├── spectrogram/<session>/qlvm_dim (N, 2) float64    # regular model's qlvm1/qlvm2 (NaN = not embedded); kept for older readers
+    ├── mask/<session>/segmentations (M, F, T) bool      # copied from the session H5
+    ├── mask/<session>/spectrogram_index (M,)            # copied from the session H5
+    ├── qlvm/<session>/<prefix> (N, 2) float64           # qlvm, qlvm_dur, qlvm_mf, qlvm_bw, qlvm_loud coordinates; NaN = not embedded
+    ├── qlvm/<session>/<label column> (N,) int16         # qlvm_category, qlvm_supercategory, qlvm_dur_category, qlvm_mf_category,
+    │                                                    # qlvm_bw_category, qlvm_loud_category; 0 = no label
+    ├── qlvm/<session>/status (N,) int8                  # 0 embedded, 1 too long, 2 no SAM mask, 3 both
+    ├── qlvm_models/<prefix>/                            # attrs: package root / name / version, cell, design, phase,
+    │   │                                                #        condition, MANIFEST.sha256 SHA-256, training_contract (JSON)
+    │   ├── clusters_fine, boundaries_fine               # the cell's clusters.csv / boundaries.csv (compound tables)
+    │   ├── label_grid_fine (200, 200) int16
+    │   └── clusters_coarse, boundaries_coarse,          # regular model only (the level its labels are written for)
+    │       label_grid_coarse, fine_to_coarse
+    └── sessions                                         # session_id, session_type, spectrogram_h5_sha256,
+                                                         # usv_summary_sha256, n_rows, n_embedded
+
+The status of a call is computed from the H5: bit 0 is set when its duration is at or above the regular cell contract's ``length_threshold`` (128 time bins), bit 1 when it has no SAM mask instance (the bincount of ``mask/<session>/spectrogram_index`` is 0). ``session_type`` comes from the regular cell's ``inference/recon_mse_breakdown.npz`` (``session_types``), the source the package names for it. The tables are compound datasets with a ``schema_json`` attr (read them back with ``usv_interval_archive._h5_to_polars``). A non-default label level (e.g. ``qlvm_dur_supercategory``) is stored, with its tables, when every session's summary carries it. The root attrs record ``created_by``, ``created_date`` (UTC), ``git_commit``, ``n_sessions``, ``n_vocalizations``, ``package_root``, ``package_manifest_sha256`` and ``generate_spectrograms_settings`` -- the ``generate_spectrograms`` processing settings in force at consolidation, as JSON; the settings each session's spectrograms were generated with were not recorded per session, as ``generate_spectrograms_settings_note`` says. Older ``spectrograms_sam2masks_*`` stores are still resolved; the newest ``spectrograms_*.h5`` of either name wins.
 
 The *Compute USV features* and *Infer QLVM latents* steps add columns to *usv_summary.csv* in place. *Compute USV features* adds:
 

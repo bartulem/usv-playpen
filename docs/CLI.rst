@@ -653,18 +653,20 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --high-energy-frac    Upper edge of the bandwidth energy band.
 
 ``consolidate-spectrogram-store``
-``consolidate-spectrogram-store`` merges per-session spectrogram/mask H5 files into one multi-session store under ``spectrograms_root`` (shared ``frequency_bins`` axis, per-session ``spectrogram/<session>`` and ``mask/<session>`` groups, and a per-session ``qlvm_dim`` latent dataset injected from each summary's ``qlvm1``/``qlvm2`` columns). The store is written atomically as ``spectrograms_sam2masks_<S>sessions_<N>vocalizations_<timestamp>.h5``; consumers resolve the newest such file automatically.
+``consolidate-spectrogram-store`` merges per-session spectrogram/mask H5 files and the QLVM v3 columns of their USV summaries into one multi-session store under ``spectrograms_root``: the shared ``frequency_bins`` axis, per-session ``spectrogram/<session>`` and ``mask/<session>`` groups (plus ``spectrogram/<session>/qlvm_dim``, the regular model's ``qlvm1``/``qlvm2``), per-session ``qlvm/<session>/`` coordinates of all five production models (NaN = not embedded), int16 labels (0 = no label) and an int8 ``status`` (0 embedded, 1 too long, 2 no SAM mask, 3 both), a ``qlvm_models/<prefix>/`` group of provenance attrs and cluster tables / label grids per model, and a ``sessions`` table (session type, H5 and summary SHA-256, row and embedded counts). ``--package-corpus`` takes exactly the package's corpus sessions (its ``corpus/SESSION_H5_BASELINE.tsv``); every session's H5 must match the baseline's SHA-256 and its summary must carry the QLVM columns, or nothing is written. The store is written atomically as ``spectrograms_qlvmv3_<S>sessions_<N>vocalizations_<timestamp>.h5``; consumers resolve the newest ``spectrograms_*.h5`` (this or an older ``spectrograms_sam2masks_*`` store) automatically. The full layout is in *Process* (*The consolidated store*).
 
 .. code-block:: text
 
-    usage: consolidate-spectrogram-store [-h] --root-directories TEXT
-                                         [--spectrograms-root PATH]
+    usage: consolidate-spectrogram-store [-h] (--root-directories TEXT | --package-corpus)
+                                         [--package-root PATH] [--spectrograms-root PATH]
 
-    required arguments:
+    required arguments (exactly one):
       --root-directories    Comma-separated string of session root directory paths, in store order.
+      --package-corpus      Consolidate exactly the QLVM model package's corpus sessions, in the order of its SESSION_H5_BASELINE.tsv.
 
     optional arguments:
       -h, --help            Show this help message and exit.
+      --package-root        QLVM model package root whose models' columns and tables the store carries; defaults to the production v3 package.
       --spectrograms-root   Output directory the consolidated store is written to.
 
 ``build-qlvm-training-set``
