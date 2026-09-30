@@ -20,6 +20,7 @@ import pytest
 from click.testing import CliRunner
 
 from usv_playpen.processing.qlvm_latents import infer_qlvm_latents_cli
+from usv_playpen.processing.build_qlvm_squeak_training_set import build_qlvm_squeak_training_set_cli
 from usv_playpen.processing.build_qlvm_training_set import build_qlvm_training_set_cli
 from usv_playpen.processing.compute_usv_acoustic_features import (
     compute_usv_acoustic_features_cli,
@@ -83,6 +84,25 @@ def test_build_qlvm_training_set_cli_routes_and_splits_paths(runner, mocker, tmp
     mock_cls.assert_called_once()
     assert mock_cls.call_args.kwargs["root_directories"] == ["/a/sess1", "/b/sess2"]
     mock_cls.return_value.build.assert_called_once()
+
+
+def test_build_qlvm_training_set_cli_decodes_structured_options(runner, mocker, tmp_path):
+    """--session-type-targets (JSON), --mask-count-bin-edges (comma-separated) and
+    --floor none reach the settings override decoded, as a dict, a list and None."""
+    mocker.patch("usv_playpen.processing.build_qlvm_training_set.QLVMTrainingSetBuilder")
+    seen = {}
+
+    def _capture(ctx, provided_params, **_kwargs):
+        seen.update({key: ctx.params[key] for key in provided_params})
+        return {"build_qlvm_training_set": {}}
+
+    mocker.patch("usv_playpen.processing.build_qlvm_training_set.modify_settings_json_for_cli", side_effect=_capture)
+    result = runner.invoke(build_qlvm_training_set_cli, [
+        "--root-directories", "/a/sess1", "--output-directory", str(tmp_path / "out"),
+        "--session-type-targets", '{"MF": 10, "MM": null}', "--mask-count-bin-edges", "1,2,3", "--floor", "none",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen == {"session_type_targets": {"MF": 10, "MM": None}, "mask_count_bin_edges": [1, 2, 3], "floor": None}
 
 
 def test_infer_qlvm_latents_cli_routes(runner, mocker, tmp_path):
@@ -217,6 +237,7 @@ _PIPELINE_CLIS = [
     (generate_masks_cli, "usv_playpen.processing.generate_masks", "MaskGenerator", "generate_masks", ["--root-directory", "{d}"]),
     (compute_usv_acoustic_features_cli, "usv_playpen.processing.compute_usv_acoustic_features", "USVAcousticFeatureExtractor", "compute_usv_acoustic_features", ["--root-directory", "{d}"]),
     (build_qlvm_training_set_cli, "usv_playpen.processing.build_qlvm_training_set", "QLVMTrainingSetBuilder", "build_qlvm_training_set", ["--root-directories", "/a,/b", "--output-directory", "{o}"]),
+    (build_qlvm_squeak_training_set_cli, "usv_playpen.processing.build_qlvm_squeak_training_set", "QLVMSqueakTrainingSetBuilder", "build_qlvm_squeak_training_set", ["--root-directories", "/a,/b", "--output-directory", "{o}"]),
     (train_qlvm_cli, "usv_playpen.processing.train_qlvm", "QLVMTrainer", "train_qlvm", ["--dataset-directory", "{d}", "--output-directory", "{o}"]),
     (infer_qlvm_latents_cli, "usv_playpen.processing.qlvm_latents", "QLVMLatentInference", "infer_qlvm_latents", ["--root-directory", "{d}"]),
     (export_yolo_dataset_cli, "usv_playpen.processing.export_yolo_dataset", "YOLODatasetExporter", "export_yolo_dataset", ["--root-directories", "/a,/b", "--output-directory", "{o}"]),

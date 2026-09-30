@@ -722,18 +722,70 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --spectrograms-root   Output directory the consolidated store is written to.
 
 ``build-qlvm-training-set``
-``build-qlvm-training-set`` aggregates a list of session root directories into a single curated ``.npz`` training set (``train_data.npz`` + ``val_data.npz``, or ``full_data.npz``) for the QLVM. With ``--masking-type sam`` (default), each kept spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group (background zeroed; a call with no detected mask keeps an all-ones mask); ``--masking-type none`` keeps raw spectrograms. Every session's spectrogram H5 is fingerprinted as it is read: its SHA-256, row count and the number of its rows that entered the set go into ``metadata.npz`` and into two sidecars, ``SESSION_H5.sha256`` (checkable with ``sha256sum -c``) and ``SESSION_H5.tsv``. ``spec_id`` is a row number in that H5, so a consumer should compare the hash before joining on it: a rebuilt H5 renumbers its rows.
+``build-qlvm-training-set`` builds a QLVM training set of USV spectrograms (``train_data.npz`` + ``val_data.npz``, plus ``full_data.npz`` with ``--full-dataset``, and ``metadata.npz``) from a list of session root directories, drawn the way the v3 model packages' sets were (the port of Dexter's ``build_masked_usvs.py`` / ``build_unmasked_usvs_floor.py``). Each session's type (``MF``, ``FF``, ``MM``, ``lone_male``, ...) is read from the subjects' sexes in its metadata YAML; ``--session-type-targets`` gives each type's row budget (``null``: take the type whole; unlisted types are left out). A row is eligible when its duration is below ``--length-threshold``, it has a SAM mask instance (``--require-mask``) and the USV summary does not flag it as a squeak (``--exclude-squeaks``) or noise (``--exclude-noise``). A type's budget is split into per-session quotas by capped-even water-filling and drawn per session, either uniformly over the eligible rows (``--draw-mode natural``) or equally across the mask-count strata of ``--mask-count-bin-edges`` (``uniform``, quotas allocated against each session's exactly-uniform headroom). Whole sessions are held out for validation per type. The drawn spectrograms (and their binarized SAM mask unions) are resized to ``--target-shape``, and then masked (``--apply-mask``, the phase 9 sets) or kept unmasked, optionally with a loudness floor baked in (``--floor``, the phase 6 sets). The defaults rebuild the production phase 6 set (``natural_5strata_N29000_unmasked_floor``). Every session's spectrogram H5 is fingerprinted as it is read: its SHA-256, row count and the number of its rows that entered the set go into ``metadata.npz`` and into two sidecars, ``SESSION_H5.sha256`` (checkable with ``sha256sum -c``) and ``SESSION_H5.tsv``. ``spec_id`` is a row number in that H5, so a consumer should compare the hash before joining on it: a rebuilt H5 renumbers its rows.
 
 .. code-block:: text
 
     usage: build-qlvm-training-set [-h] --root-directories TEXT,TEXT,... --output-directory PATH
+                            [--session-type-targets JSON]
+                            [--draw-mode {natural,uniform}]
+                            [--mask-count-bin-edges INT,INT,...]
                             [--length-threshold FLOAT]
-                            [--dataset-size-constraint INTEGER]
-                            [--validation-split FLOAT] [--random-state INTEGER]
-                            [--target-shape INTEGER INTEGER]
-                            [--full-dataset | --no-full-dataset]
-                            [--time-stretch | --no-time-stretch]
+                            [--require-mask | --no-require-mask]
+                            [--exclude-squeaks | --no-exclude-squeaks]
+                            [--exclude-noise | --no-exclude-noise]
                             [--masking-type {sam,none}]
+                            [--apply-mask | --no-apply-mask]
+                            [--floor FLOAT|none]
+                            [--validation-split FLOAT] [--random-state INTEGER]
+                            [--full-dataset | --no-full-dataset]
+                            [--target-shape INTEGER INTEGER]
+                            [--time-stretch | --no-time-stretch]
+
+    required arguments:
+      --root-directories              Comma-separated string of session root directory paths (the order sessions are drawn in).
+      --output-directory              Directory to write the .npz training set.
+
+    optional arguments:
+      -h, --help                      Show this help message and exit.
+      --session-type-targets          JSON object of session type -> rows (null takes the type whole), e.g. '{"MF": 29000, "FF": 29000, "MM": null, "lone_male": null}'; sessions of unlisted types are left out.
+      --draw-mode                     Within-session draw: uniform over rows ("natural") or equal across mask-count strata ("uniform").
+      --mask-count-bin-edges          Comma-separated inclusive lower bounds of the mask-count strata above 0, the last open-ended, e.g. 1,2,3,4,5 (strata 0/1/2/3/4/5+).
+      --length-threshold              Drop spectrograms with duration >= threshold (time bins).
+      --require-mask / --no-require-mask
+                                      Leave out calls without a SAM mask instance.
+      --exclude-squeaks / --no-exclude-squeaks
+                                      Leave out rows the USV summary flags as squeaks (detect-usv-squeaks).
+      --exclude-noise / --no-exclude-noise
+                                      Leave out rows the USV summary flags as noise (detect-usv-noise).
+      --masking-type                  Read SAM masks from the mask/<session> groups ("sam") or none ("none").
+      --apply-mask / --no-apply-mask  Multiply the binarized SAM mask into the stored spectrograms (masked set) or keep them unmasked.
+      --floor                         Loudness floor baked into unmasked spectrograms after a per-spectrogram min-max (e.g. 0.2), or "none".
+      --validation-split              Fraction of each session type's rows held out (as whole sessions) for validation.
+      --random-state                  Seed of the quota tie-breaks, the draw and the session split.
+      --full-dataset / --no-full-dataset
+                                      Take every eligible row (no draw) and also write full_data.npz.
+      --target-shape                  Output spectrogram (freq, time) shape as two ints, e.g. --target-shape 128 128.
+      --time-stretch / --no-time-stretch
+                                      Time-warp the signal window instead of center-resizing.
+
+``build-qlvm-squeak-training-set``
+``build-qlvm-squeak-training-set`` builds a QLVM training set of squeak crops (the port of Dexter's ``build_bbv_dataset.py``, which built the phase 3 squeak cells' sets) from a list of session root directories. The candidates are the rows ``detect-usv-squeaks`` flagged as squeaks (optionally not noise), with their ``squeak_start`` / ``squeak_end`` extents; each is cropped to its extent plus ``--context-frames`` either side, crops narrower than ``--min-trimmed-frames`` (or wider than 128 frames) are dropped, and the crop width sets its duration stratum (``--duration-bin-edges``). ``--per-session-bin-cap`` keeps at most that many squeaks of one session in one stratum (0: no cap), and ``--n-total`` squeaks are then drawn uniformly (``--draw-mode natural``) or equally across strata (``uniform``); ``--full-dataset`` takes every squeak instead. The sonic spectrograms are rebuilt from the session audio exactly as ``detect-usv-squeaks`` builds them, each crop is min-max normalized (``--crop-normalization per_crop``) and centred in a 128 x 128 frame. ``--crop-window full_length`` (default) crops from the whole segment, the rule ``infer-qlvm-squeak-latents`` embeds with; ``first_128_frames`` cuts every segment to its first 128 frames and drops squeaks still going at frame 127 (the phase 3 sets). Sessions are taken in sorted order. The defaults are those of the production ``natural_session_N11000`` cell's set, except the crop window and the channel exclusion.
+
+.. code-block:: text
+
+    usage: build-qlvm-squeak-training-set [-h] --root-directories TEXT,TEXT,... --output-directory PATH
+                            [--draw-mode {natural,uniform}] [--n-total INTEGER]
+                            [--per-session-bin-cap INTEGER]
+                            [--duration-bin-edges INT,INT,...]
+                            [--context-frames INTEGER] [--min-trimmed-frames INTEGER]
+                            [--crop-window {full_length,first_128_frames}]
+                            [--crop-normalization {per_crop,absolute}]
+                            [--exclude-noise | --no-exclude-noise]
+                            [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
+                            [--validation-split FLOAT] [--random-state INTEGER]
+                            [--full-dataset | --no-full-dataset]
+                            [--target-shape INTEGER INTEGER]
 
     required arguments:
       --root-directories              Comma-separated string of session root directory paths.
@@ -741,16 +793,23 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 
     optional arguments:
       -h, --help                      Show this help message and exit.
-      --length-threshold              Drop spectrograms with duration >= threshold (time bins).
-      --dataset-size-constraint       Optional cap on the total number of kept spectrograms (absolute count if > 1, proportion if in (0, 1]); omit for no cap (null = all data).
-      --validation-split              Fraction held out for validation.
-      --random-state                  RNG (random number generator) seed for reproducible subsampling and the train/val split.
-      --target-shape                  Output spectrogram (freq, time) shape as two ints, e.g. --target-shape 128 128.
+      --draw-mode                     Draw uniformly over squeaks ("natural") or equally across duration strata ("uniform").
+      --n-total                       Squeaks to draw.
+      --per-session-bin-cap           Most squeaks any one session may give any one duration stratum before the draw (0: no cap, the "lumped" sets).
+      --duration-bin-edges            Comma-separated crop-width edges (frames) of the duration strata, e.g. 26,40,62.
+      --context-frames                Frames added either side of the squeak extent.
+      --min-trimmed-frames            Narrowest crop (frames) kept.
+      --crop-window                   Crop from the full-length segment ("full_length") or from its first 128 frames, dropping right-censored squeaks ("first_128_frames", the phase 3 sets).
+      --crop-normalization            Min-max each crop ("per_crop") or apply the fixed dB transform ("absolute").
+      --exclude-noise / --no-exclude-noise
+                                      Leave out squeak rows the USV summary flags as noise.
+      --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
+                                      Drop channels the session metadata marks as excluded from the spectrogram average.
+      --validation-split              Fraction of each session type's squeaks held out (as whole sessions) for validation.
+      --random-state                  Seed of the cap, the draw and the session split.
       --full-dataset / --no-full-dataset
-                                      Write a single full_data.npz (no train/val split).
-      --time-stretch / --no-time-stretch
-                                      Time-warp the signal window instead of center-resizing.
-      --masking-type                  Apply SAM mask regions from the mask/<session> groups ("sam") or keep raw spectrograms ("none").
+                                      Take every squeak that passes the gates (no cap, no draw) and also write full_data.npz.
+      --target-shape                  Output spectrogram (freq, time) shape as two ints, e.g. --target-shape 128 128.
 
 ``train-qlvm``
 ``train-qlvm`` trains a QLVM decoder on a prebuilt ``.npz`` training set (``build-qlvm-training-set`` output or a QLVM model package's training set: ``train_data.npz`` or ``full_data.npz``, optionally ``val_data.npz``, and ``metadata.npz``) with the recipe the shipped v3 models were trained with (JAX; per-spectrogram min-max, masks applied when the set applies them, a Fibonacci training lattice with one random torus shift per batch, the QMC log-evidence loss, Adam at a constant learning rate, the last epoch's weights kept) and writes a model package cell: ``checkpoint.tar`` (torch zip, readable by ``infer-qlvm-latents`` without torch), ``config/training_contract.json``, ``config/run_config.json`` and ``metrics/val_diagnostics.npz``. The defaults are the phase 6 / 9 recipe; phase 3 (BBVs) is ``--decoder-head legacy --n-epochs 2500 --val-freq 80 --val-samples-per-mask-count 1600``. The run refuses a set without ``metadata.npz``, and a ``train_data.npz`` or ``val_data.npz`` older than a ``full_data.npz`` in the same directory. GPU recommended (about 3.3 s per epoch on 49,411 calls on an RTX 4080 SUPER, plus about 25 s per validation); on a shared GPU set ``XLA_PYTHON_CLIENT_PREALLOCATE=false``.

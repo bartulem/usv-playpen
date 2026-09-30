@@ -320,14 +320,42 @@
     "data_batch_size": 512
   },
   "build_qlvm_training_set": {
-    "length_threshold": 50.0,
-    "dataset_size_constraint": null,
+    "session_type_targets": {
+      "MF": 29000,
+      "FF": 29000,
+      "MM": null,
+      "lone_male": null
+    },
+    "draw_mode": "natural",
+    "mask_count_bin_edges": [1, 2, 3, 4, 5],
+    "length_threshold": 128.0,
+    "require_mask": true,
+    "exclude_squeaks": true,
+    "exclude_noise": false,
+    "masking_type": "sam",
+    "apply_mask": false,
+    "floor": 0.2,
     "validation_split": 0.2,
     "random_state": 42,
     "full_dataset": false,
     "target_shape": [128, 128],
-    "time_stretch": false,
-    "masking_type": "sam"
+    "time_stretch": false
+  },
+  "build_qlvm_squeak_training_set": {
+    "draw_mode": "natural",
+    "n_total": 11000,
+    "per_session_bin_cap": 48,
+    "duration_bin_edges": [26, 40, 62],
+    "context_frames": 2,
+    "min_trimmed_frames": 8,
+    "crop_window": "full_length",
+    "crop_normalization": "per_crop",
+    "exclude_noise": false,
+    "exclude_metadata_audio_channels": true,
+    "validation_split": 0.2,
+    "random_state": 42,
+    "full_dataset": false,
+    "target_shape": [128, 128]
   },
   "train_qlvm": {
     "n_epochs": 300,

@@ -143,6 +143,7 @@ train-noise-model = "usv_playpen.processing.detect_usv_noise:train_noise_model_c
 detect-usv-squeaks = "usv_playpen.processing.detect_usv_squeaks:detect_usv_squeaks_cli"
 infer-qlvm-squeak-latents = "usv_playpen.processing.detect_usv_squeaks:infer_qlvm_squeak_latents_cli"
 build-qlvm-training-set = "usv_playpen.processing.build_qlvm_training_set:build_qlvm_training_set_cli"
+build-qlvm-squeak-training-set = "usv_playpen.processing.build_qlvm_squeak_training_set:build_qlvm_squeak_training_set_cli"
 consolidate-spectrogram-store = "usv_playpen.processing.consolidate_spectrogram_store:consolidate_spectrogram_store_cli"
 build-naturalistic-usv-repository = "usv_playpen.analyses.build_naturalistic_usv_repository:build_naturalistic_usv_repository_cli"
 train-qlvm = "usv_playpen.processing.train_qlvm:train_qlvm_cli"
