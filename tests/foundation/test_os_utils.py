@@ -573,6 +573,7 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
             "sam2_model_path": "", "yolo_weights": "",
         },
         "infer_qlvm_latents": {"model_cells": {}, "masking_type": "sam"},
+        "infer_qlvm_squeak_latents": {"model_cell_directory": ""},
         "detect_usv_squeaks": {"squeak_model_path": ""},
         "detect_usv_noise": {"noise_model_path": ""},
     }
@@ -597,6 +598,10 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     }
     assert list(settings["infer_qlvm_latents"]["model_cells"]) == ["qlvm", "qlvm_dur", "qlvm_mf", "qlvm_bw", "qlvm_loud"]
     assert settings["infer_qlvm_latents"]["masking_type"] == "none"
+    # the production squeak QLVM cell (phase 3 BBV, natural_session)
+    assert settings["infer_qlvm_squeak_latents"]["model_cell_directory"] == (
+        "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm/natural_session_N11000_nomask"
+    )
     assert settings["detect_usv_squeaks"]["squeak_model_path"] == f"{root}/squeak/mil_absdb_final.pt"
     assert settings["detect_usv_noise"]["noise_model_path"] == f"{root}/noise/noise_timemil_ens5_n4680_20260926.pt"
 
@@ -609,6 +614,7 @@ def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
             "sam2_model_path": "/custom/elsewhere/checkpoint.pt", "yolo_weights": "",
         },
         "infer_qlvm_latents": {"model_cells": {"qlvm_x": "/custom/cell"}, "masking_type": "sam"},
+        "infer_qlvm_squeak_latents": {"model_cell_directory": "/custom/squeak_cell"},
         "detect_usv_squeaks": {"squeak_model_path": "/custom/squeak.pt"},
         "detect_usv_noise": {"noise_model_path": ""},
     }
@@ -622,6 +628,7 @@ def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
     # explicit model cells are left entirely alone, their masking type included
     assert settings["infer_qlvm_latents"]["model_cells"] == {"qlvm_x": "/custom/cell"}
     assert settings["infer_qlvm_latents"]["masking_type"] == "sam"
+    assert settings["infer_qlvm_squeak_latents"]["model_cell_directory"] == "/custom/squeak_cell"
 
 
 @pytest.mark.parametrize("configured", [
@@ -635,6 +642,7 @@ def test_derive_spectrogram_model_paths_keeps_configured_qlvm_models(configured)
         "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
         "generate_masks": {"sam2_model_dir": "", "sam2_model_path": "", "yolo_weights": ""},
         "infer_qlvm_latents": {"model_cells": dict(configured), "masking_type": "sam"},
+        "infer_qlvm_squeak_latents": {"model_cell_directory": ""},
         "detect_usv_squeaks": {"squeak_model_path": ""},
         "detect_usv_noise": {"noise_model_path": ""},
     }
@@ -653,6 +661,7 @@ def test_derived_qlvm_model_cells_pass_model_cell_validation():
         "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
         "generate_masks": {"sam2_model_dir": "", "sam2_model_path": "", "yolo_weights": ""},
         "infer_qlvm_latents": {"model_cells": {}, "masking_type": "sam"},
+        "infer_qlvm_squeak_latents": {"model_cell_directory": ""},
         "detect_usv_squeaks": {"squeak_model_path": ""},
         "detect_usv_noise": {"noise_model_path": ""},
     }

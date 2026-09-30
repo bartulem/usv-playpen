@@ -42,8 +42,9 @@ Columns written into ``usv_summary.csv`` (any pre-existing ones are replaced):
 Squeak QLVM embedding (``infer-qlvm-squeak-latents``, :class:`USVSqueakQLVMEmbedder`):
 a second step places every squeak row that is not noise on the torus of one of
 Dexter's phase 3 broadband-vocalization QLVM cells
-(``qlvm_models_latest/phase3_BBVs_qlvm/<cell>``, chosen by the
-``infer_qlvm_squeak_latents.model_cell_directory`` setting) and writes the two
+(``qlvm_models_latest/phase3_BBVs_qlvm/<cell>``: the
+``infer_qlvm_squeak_latents.model_cell_directory`` setting, filled with the
+production ``natural_session_N11000_nomask`` cell when empty) and writes the two
 float columns ``qlvm_squeak1`` / ``qlvm_squeak2`` (torus coordinates in
 ``[0, 1)``, null on every other row). Its input is the same sonic spectrogram,
 cropped to the squeak's own extent the way Dexter's ``build_bbv_dataset.py``
@@ -1077,8 +1078,9 @@ class USVSqueakQLVMEmbedder:
         Description
         -----------
         Loads the cell of ``infer_qlvm_squeak_latents.model_cell_directory``
-        (:func:`load_squeak_qlvm_cell`; an empty setting raises, since no
-        production squeak cell is chosen), builds the decoder inputs of the
+        (:func:`load_squeak_qlvm_cell`; an empty setting is filled with the
+        production cell by ``os_utils.derive_spectrogram_model_paths`` and raises
+        only when there is no ``spectrograms_root`` to derive it from), builds the decoder inputs of the
         session's squeaks that are not noise (:func:`squeak_qlvm_inputs`),
         embeds them as the posterior mean over the cell's lattice
         (:func:`qlvm_model.embed_data`) and writes ``qlvm_squeak1`` /
@@ -1100,11 +1102,13 @@ class USVSqueakQLVMEmbedder:
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
+        derive_spectrogram_model_paths(self.input_parameter_dict)
         cfg = self.input_parameter_dict['infer_qlvm_squeak_latents']
         if not cfg['model_cell_directory']:
             error_message = (
-                "infer_qlvm_squeak_latents.model_cell_directory is empty: no production squeak QLVM cell is chosen. "
-                "Name one of the qlvm_models_latest/phase3_BBVs_qlvm cells (e.g. via --model-cell-directory)."
+                "infer_qlvm_squeak_latents.model_cell_directory is empty and spectrograms_root is not set, so the "
+                "production squeak QLVM cell is not filled in. Set spectrograms_root or name a "
+                "qlvm_models_latest/phase3_BBVs_qlvm cell (e.g. via --model-cell-directory)."
             )
             raise ValueError(error_message)
         model = load_squeak_qlvm_cell(cfg['model_cell_directory'])
@@ -1205,7 +1209,7 @@ def detect_usv_squeaks_cli(ctx, root_directory, **kwargs) -> None:
 
 @click.command(name="infer-qlvm-squeak-latents")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--model-cell-directory', 'model_cell_directory', type=str, default=None, required=False, help='A squeak (BBV) QLVM cell, e.g. /mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm/natural_lumped_N11000_nomask; required while the setting is empty (no production cell is chosen).')
+@click.option('--model-cell-directory', 'model_cell_directory', type=str, default=None, required=False, help='A squeak (BBV) QLVM cell; filled with the production phase3_BBVs_qlvm/natural_session_N11000_nomask cell when empty and spectrograms_root is set.')
 @click.option('--exclude-metadata-audio-channels/--no-exclude-metadata-audio-channels', 'exclude_metadata_audio_channels', default=None, required=False, help='Drop channels the session metadata marks as excluded from the spectrogram average (keep it equal to the detect-usv-squeaks run).')
 @click.option('--lattice-batch-size', 'lattice_batch_size', type=int, default=None, required=False, help='Lattice points decoded and scored per block; lower it to cut memory.')
 @click.option('--data-batch-size', 'data_batch_size', type=int, default=None, required=False, help='Squeaks whose lattice posteriors are computed together; memory grows with this times the lattice size.')

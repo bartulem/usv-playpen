@@ -388,6 +388,13 @@ QLVM_PRODUCTION_MODEL_CELLS = {
     "qlvm_loud": "phase11_cond_loudness_floor/natural_5strata_N29000_unmasked_floor",
 }
 
+# The production squeak (broadband vocalization) embedding: the phase 3 BBV package
+# and its natural_session cell (natural draw over the duration bins, per-session bin
+# cap; user-chosen 2026-09-30), written by infer-qlvm-squeak-latents as
+# qlvm_squeak1/qlvm_squeak2. A constant for the same reason as the package root above.
+QLVM_SQUEAK_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm"
+QLVM_SQUEAK_PRODUCTION_CELL = "natural_session_N11000_nomask"
+
 # The spectrogram preprocessing every production cell was trained with (their
 # training_contract.json `masking_type`): raw, unmasked spectrograms.
 QLVM_PRODUCTION_MASKING_TYPE = "none"
@@ -498,7 +505,11 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     ``masking_type`` included. ``infer_qlvm_latents.model_cell_label_levels`` is
     never touched: its shipped ``{}`` already gives the production label columns
     (``qlvm_category`` and ``qlvm_supercategory`` for ``qlvm``, ``P_category`` and
-    ``P_supercategory`` for every other prefix ``P``).
+    ``P_supercategory`` for every other prefix ``P``). Likewise an empty
+    ``infer_qlvm_squeak_latents.model_cell_directory`` is filled with the
+    production squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under
+    ``QLVM_SQUEAK_PACKAGE_ROOT`` (the phase 3 BBV ``natural_session`` cell); an
+    explicitly configured squeak cell is left alone.
 
     Parameters
     ----------
@@ -507,8 +518,8 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         absent or empty the dictionary is returned unchanged (legacy settings
         files that set the granular ``generate_masks`` paths and
         ``infer_qlvm_latents.model_cells`` directly keep working); otherwise the ``generate_masks``,
-        ``infer_qlvm_latents``, ``detect_usv_squeaks`` and ``detect_usv_noise``
-        blocks must exist.
+        ``infer_qlvm_latents``, ``infer_qlvm_squeak_latents``, ``detect_usv_squeaks``
+        and ``detect_usv_noise`` blocks must exist.
 
     Returns
     -------
@@ -539,6 +550,9 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
             prefix: f'{QLVM_MODEL_PACKAGE_ROOT}/{cell}' for prefix, cell in QLVM_PRODUCTION_MODEL_CELLS.items()
         }
         qlvm_cfg['masking_type'] = QLVM_PRODUCTION_MASKING_TYPE
+    squeak_qlvm_cfg = settings['infer_qlvm_squeak_latents']
+    if not squeak_qlvm_cfg['model_cell_directory']:
+        squeak_qlvm_cfg['model_cell_directory'] = f'{QLVM_SQUEAK_PACKAGE_ROOT}/{QLVM_SQUEAK_PRODUCTION_CELL}'
     return settings
 
 

@@ -512,7 +512,8 @@ def test_embed_and_merge_writes_the_two_squeak_torus_columns(tmp_path, mocker):
 
 
 def test_embed_and_merge_refuses_an_empty_model_cell(tmp_path, mocker):
-    """No production squeak cell is chosen, so an empty model_cell_directory stops the run before anything is read."""
+    """With no spectrograms_root to derive the production squeak cell from, an empty
+    model_cell_directory stops the run before anything is read."""
     mocker.patch("usv_playpen.processing.detect_usv_squeaks.smart_wait")
     embedder = squeaks.USVSqueakQLVMEmbedder(
         root_directory=str(tmp_path),
@@ -522,7 +523,7 @@ def test_embed_and_merge_refuses_an_empty_model_cell(tmp_path, mocker):
         }},
         message_output=lambda *_a, **_kw: None,
     )
-    with pytest.raises(ValueError, match="no production squeak QLVM cell"):
+    with pytest.raises(ValueError, match="production squeak QLVM cell is not filled in"):
         embedder.embed_and_merge()
 
 
