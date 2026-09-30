@@ -1122,6 +1122,11 @@ def test_load_model_cell_reads_the_v3_layout(tmp_path):
     after = ql.load_model_cell(str(cell))
 
     assert after["contract"] == before["contract"]
+    # the embedding lattice is the torch float32 one the package corpus was embedded on
+    np.testing.assert_array_equal(
+        np.asarray(after["lattice"]),
+        np.asarray(ql.gen_fib_basis_float32(after["contract"]["embedding_fib_m"])),
+    )
     np.testing.assert_array_equal(after["fine_grid"], fine)
     np.testing.assert_array_equal(after["coarse_grid"], coarse)
     for key in before["condition_bins"]:

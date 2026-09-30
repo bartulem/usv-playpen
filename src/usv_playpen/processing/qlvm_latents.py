@@ -90,7 +90,7 @@ from ..time_utils import is_gui_context, smart_wait
 from .qlvm_model import (
     decoder_head,
     embed_data,
-    gen_fib_basis,
+    gen_fib_basis_float32,
     torus_basis_reverse,
 )
 
@@ -433,7 +433,10 @@ def load_model_cell(model_cell_directory: str) -> dict:
     return {
         "params": load_decoder_params(str(cell / "checkpoint.tar")),
         "contract": contract,
-        "lattice": gen_fib_basis(contract["embedding_fib_m"]),
+        # The torch float32 lattice the package's corpus embedding was computed on (the
+        # exact lattice, cast to float32 by JAX, lands up to ~1e-3 off it and moves 8% of
+        # calls by more than 1e-3; measured on 9,390 calls of 6 corpus sessions).
+        "lattice": gen_fib_basis_float32(contract["embedding_fib_m"]),
         "fine_grid": np.load(cell_cluster_directory(cell, "fine") / "label_grid.npy", allow_pickle=False),
         "coarse_grid": np.load(cell_cluster_directory(cell, "coarse") / "label_grid.npy", allow_pickle=False),
         "condition_bins": condition_bins,
@@ -1744,7 +1747,8 @@ def export_model_cell_arrays(
         torus_weighted = cache["torus_weighted"]
         aggregated = cache["aggregated"]
     latent_coords = np.asarray(torus_basis_reverse(jnp.asarray(torus_weighted)), dtype=np.float32)
-    lattice = np.asarray(gen_fib_basis(contract["embedding_fib_m"])) % 1.0
+    # The lattice posterior_cache's aggregated mass was computed on (torch float32).
+    lattice = np.asarray(gen_fib_basis_float32(contract["embedding_fib_m"])) % 1.0
     if lattice.shape[0] != aggregated.shape[0]:
         error_message = (
             f"{cell}: posterior_cache.npz aggregates {aggregated.shape[0]} lattice points but the contract's "
