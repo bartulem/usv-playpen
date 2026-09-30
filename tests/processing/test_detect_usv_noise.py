@@ -10,6 +10,7 @@ columns and leave the summary in the canonical column order with the noise block
 
 from __future__ import annotations
 
+import json
 import pathlib
 
 import numpy as np
@@ -250,3 +251,163 @@ def test_detect_usv_noise_cli_routes(mocker, tmp_path):
     assert result.exit_code == 0, result.output
     mock_cls.assert_called_once()
     mock_cls.return_value.detect_and_merge.assert_called_once()
+
+
+def _write_training_files(tmp_path: pathlib.Path, root: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    """
+    Description
+    -----------
+    Writes a four-row labels CSV over the synthetic session (two noise, two vocalization labels, one
+    segment labelled twice with opposite labels) and a calibration JSON with the decision block the
+    detector reads.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temporary directory.
+    root (pathlib.Path)
+        Synthetic session root.
+
+    Returns
+    -------
+    labels_path (pathlib.Path)
+        The labels CSV.
+    calibration_path (pathlib.Path)
+        The calibration JSON.
+    """
+
+    labels_path = tmp_path / "labels.csv"
+    pls.DataFrame({
+        "sample_id": ["a", "b", "c", "a"],
+        "session_dir": [str(root)] * 4,
+        "start": [0.10, 0.30, 0.55, 0.10],
+        "stop": [0.15, 0.40, 0.60, 0.15],
+        "chs_count": [4.0, 2.0, 1.0, 4.0],
+        "noise": [1, 0, 1, 0],
+    }).write_csv(labels_path)
+    calibration_path = tmp_path / "calibration.json"
+    calibration_path.write_text(json.dumps({"calibration": CALIBRATION, "decision": DECISION, "calibration_source": "synthetic"}))
+    return labels_path, calibration_path
+
+
+def _training_settings(calibration_path: pathlib.Path) -> dict:
+    """A one-epoch, two-seed train_noise_model block for the CPU smoke tests."""
+    return {
+        "train_noise_model": {
+            "calibration_path": str(calibration_path), "exclude_metadata_audio_channels": True, "n_workers": 2,
+            "seeds": [3, 4], "epochs": 1, "batch_size": 2, "learning_rate": 1e-3, "weight_decay": 1e-4,
+            "label_smoothing": 0.05,
+        }
+    }
+
+
+def test_training_inputs_are_the_inputs_the_detector_scores(tmp_path, mocker):
+    """The trainer must build exactly the input detect-usv-noise scores (same window, crop and transform),
+    otherwise a retrained bundle would be trained on one input and run on another."""
+    root = _build_session(tmp_path)
+    summary = pls.read_csv(root / "audio" / f"{SESSION_ID}_usv_summary.csv", schema_overrides={"usv_id": pls.String})
+    captured = mocker.patch("usv_playpen.processing.detect_usv_noise.ensemble_noise_probability", return_value=np.zeros(3))
+    noise.score_noise_rows(
+        session_root=root, usv_summary=summary, bundle=_forced_bundle(0.0), device=torch.device("cpu"),
+        threshold=0.5, exclude_metadata_audio_channels=True, batch_size=8, message_output=lambda *_a, **_kw: None,
+    )
+    scored_inputs = captured.call_args.args[1]
+    labels = summary.select("start", "stop", "chs_count").with_columns(
+        pls.Series("sample_id", ["s0", "s1", "s2"]), pls.lit(str(root)).alias("session_dir"), pls.lit(0).alias("noise"),
+    )
+    inputs, raw_scalars, kept = noise.build_noise_training_inputs(labels, True, 2, lambda *_a, **_kw: None)
+    assert kept.tolist() == [0, 1, 2]
+    for built, scored in zip(inputs, scored_inputs, strict=True):
+        assert np.array_equal(built, scored)
+    assert raw_scalars[0] == pytest.approx([np.log(4.0), np.log(0.05)])
+
+
+def test_read_noise_labels_rejects_unsure_answers_and_reports_repeats(tmp_path):
+    """Unsure answers (2) must be resolved before training; a repeated segment is trained on as given and reported."""
+    root = _build_session(tmp_path)
+    labels_path, _calibration_path = _write_training_files(tmp_path, root)
+    messages: list[str] = []
+    labels = noise.read_noise_labels(str(labels_path), messages.append)
+    assert labels.height == 4
+    assert any("1 row(s) repeat" in message and "1 segment(s) with conflicting labels" in message for message in messages)
+    pls.read_csv(labels_path).with_columns(pls.lit(2).alias("noise")).write_csv(tmp_path / "unsure.csv")
+    with pytest.raises(ValueError, match="noise must be 0"):
+        noise.read_noise_labels(str(tmp_path / "unsure.csv"), messages.append)
+    pls.read_csv(labels_path).drop("chs_count").write_csv(tmp_path / "short.csv")
+    with pytest.raises(ValueError, match="chs_count"):
+        noise.read_noise_labels(str(tmp_path / "short.csv"), messages.append)
+
+
+def test_read_noise_calibration_requires_what_the_detector_reads(tmp_path):
+    """A bundle whose decision block lacks a key the detector prints or thresholds on would fail at scoring time."""
+    path = tmp_path / "calibration.json"
+    path.write_text(json.dumps({"calibration": CALIBRATION, "decision": {"exclude_at_or_above": 0.14}}))
+    with pytest.raises(ValueError, match="noise_at_or_above"):
+        noise.read_noise_calibration(str(path))
+    path.write_text(json.dumps({"calibration": CALIBRATION, "decision": {**DECISION, "exclude_at_or_above": 0.9}}))
+    with pytest.raises(ValueError, match="exclude_at_or_above <= noise_at_or_above"):
+        noise.read_noise_calibration(str(path))
+    path.write_text(json.dumps({"calibration": CALIBRATION, "decision": DECISION}))
+    assert noise.read_noise_calibration(str(path))["decision"] == DECISION
+
+
+def test_augment_noise_batch_spares_the_indicator_and_the_padding():
+    """Augmentation touches the spectrogram channels of the valid frames only, and a seed reproduces it."""
+    rng = np.random.default_rng(2)
+    chunk = [rng.uniform(-0.5, 0.5, size=(3, 128, 20)).astype(np.float32), rng.uniform(-0.5, 0.5, size=(3, 128, 9)).astype(np.float32)]
+    for item in chunk:
+        item[-1] = 1.0
+    x, valid = noise.pad_noise_batch(chunk)
+    x_tensor, valid_tensor = torch.from_numpy(x), torch.from_numpy(valid)
+    first = noise.augment_noise_batch(x_tensor, valid_tensor, torch.Generator().manual_seed(7))
+    second = noise.augment_noise_batch(x_tensor, valid_tensor, torch.Generator().manual_seed(7))
+    assert torch.equal(first, second)
+    assert torch.equal(first[:, -1], x_tensor[:, -1])
+    assert torch.all(first[1, :-1, :, 9:] == -1.0)
+    assert not torch.equal(first[:, :-1], x_tensor[:, :-1])
+
+
+def test_train_noise_model_writes_a_bundle_the_detector_loads(tmp_path, mocker):
+    """
+    A CPU smoke run: one epoch per seed on four labels. The bundle carries one state_dict per seed, the
+    scalar standardization of the training set, the input contract, the calibration and decision from the
+    JSON, and loads through load_noise_model; an existing bundle path is refused, never overwritten.
+    """
+    root = _build_session(tmp_path)
+    labels_path, calibration_path = _write_training_files(tmp_path, root)
+    mocker.patch("usv_playpen.processing.detect_usv_noise.torch.cuda.is_available", return_value=False)
+    bundle_path = tmp_path / "out" / "noise_bundle.pt"
+    trainer = noise.USVNoiseModelTrainer(
+        labels_csv_path=str(labels_path), bundle_path=str(bundle_path),
+        input_parameter_dict=_training_settings(calibration_path), message_output=lambda *_a, **_kw: None,
+    )
+    assert trainer.train() == bundle_path
+    checkpoint = torch.load(bundle_path, map_location="cpu", weights_only=True)
+    assert len(checkpoint["state_dicts"]) == 2
+    assert checkpoint["recipe"]["seeds"] == [3, 4]
+    assert checkpoint["n_labels"] == 4
+    assert checkpoint["n_noise"] == 2
+    assert checkpoint["decision"] == DECISION
+    assert checkpoint["calibration_source"] == "synthetic"
+    assert checkpoint["context_frames"] == noise.NOISE_CONTEXT_FRAMES
+    raw = np.array([[np.log(4.0), np.log(0.05)], [np.log(2.0), np.log(0.10)], [np.log(1.0), np.log(0.05)], [np.log(4.0), np.log(0.05)]], dtype=np.float32)
+    assert checkpoint["scalar_mean"] == pytest.approx(raw.mean(0).tolist(), abs=1e-6)
+    loaded = noise.load_noise_model(str(bundle_path), torch.device("cpu"))
+    assert len(loaded["models"]) == 2
+    with pytest.raises(FileExistsError):
+        trainer.train()
+
+
+def test_train_noise_model_cli_routes(mocker, tmp_path):
+    """train-noise-model resolves settings (repeated --seed into a list) and calls USVNoiseModelTrainer.train once."""
+    labels_path = tmp_path / "labels.csv"
+    labels_path.write_text("sample_id\n")
+    mock_cls = mocker.patch("usv_playpen.processing.detect_usv_noise.USVNoiseModelTrainer")
+    settings = mocker.patch("usv_playpen.processing.detect_usv_noise.modify_settings_json_for_cli", return_value={"train_noise_model": {}})
+    result = CliRunner().invoke(noise.train_noise_model_cli, [
+        "--labels-csv", str(labels_path), "--bundle-path", str(tmp_path / "b.pt"), "--seed", "1", "--seed", "2",
+    ])
+    assert result.exit_code == 0, result.output
+    assert settings.call_args.kwargs["block"] == "train_noise_model"
+    assert "seeds" in settings.call_args.kwargs["provided_params"]
+    mock_cls.return_value.train.assert_called_once()

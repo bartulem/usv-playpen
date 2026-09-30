@@ -475,6 +475,36 @@ Process
                             Drop channels the session metadata marks as excluded from the spectrogram average.
       --batch-size          Segments per forward pass at the typical call length; a batch is budgeted at batch-size x 128 frame slots, so one long call never inflates it.
 
+``train-noise-model``
+``train-noise-model`` trains the ``detect-usv-noise`` ensemble (one model per seed) on a labels CSV and writes a bundle that ``detect-usv-noise`` loads unchanged. The CSV holds one row per training example: ``sample_id``, ``session_dir``, ``start``, ``stop``, ``chs_count`` and ``noise`` (``1`` = no vocalization at all, ``0`` = a vocalization; drop unsure answers first). Every input is rebuilt from the session's unfiltered ``audio/hpss`` wavs by the same function ``detect-usv-noise`` scores with, and the models are trained with the production recipe (40 epochs, batch 32, Adam at 0.001 with a cosine schedule, label smoothing 0.05, spectrogram augmentation). The calibration table and the decision block the detector reads are not measured here: they come from the ``--calibration-path`` JSON and are written into the bundle as given. An existing bundle path is refused. GPU recommended (see *Noise model* in :doc:`Process`).
+
+.. code-block:: text
+
+    usage: train-noise-model [-h] --labels-csv FILE --bundle-path FILE
+                            [--calibration-path TEXT]
+                            [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
+                            [--n-workers INTEGER] [--seed INTEGER ...]
+                            [--epochs INTEGER] [--batch-size INTEGER]
+                            [--learning-rate FLOAT] [--weight-decay FLOAT]
+                            [--label-smoothing FLOAT]
+
+    required arguments:
+      --labels-csv          Labels CSV: sample_id, session_dir, start, stop, chs_count, noise (1 = no vocalization, 0 = vocalization).
+      --bundle-path         Output bundle (.pt); must not exist yet.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --calibration-path    JSON with the calibration table and the decision block the bundle carries.
+      --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
+                            Drop channels the session metadata marks as excluded from the spectrogram average (keep it as detect-usv-noise runs).
+      --n-workers           Sessions whose audio is read concurrently (threads) while the training inputs are built.
+      --seed                Seed of one ensemble member; repeat once per member (replaces the seeds setting).
+      --epochs              Training epochs per member.
+      --batch-size          Segments per training batch.
+      --learning-rate       Adam learning rate (cosine-annealed over the run).
+      --weight-decay        Adam weight decay.
+      --label-smoothing     Label smoothing towards 0.5.
+
 ``detect-usv-squeaks``
 ``detect-usv-squeaks`` scores every USV segment of a session for a squeak (a broadband harmonic stack) and merges four columns into ``usv_summary.csv``: ``squeak`` (true / false), and, on squeak rows only, ``squeak_probability``, ``squeak_start`` and ``squeak_end`` (session seconds). The call and probability come from the first 128 STFT frames of each segment (the model's training window); onset and offset come from a full-length pass. The input spectrogram is rebuilt from the unfiltered ``audio/hpss`` wavs (3-30 kHz, absolute dB); run it after ``das-summarize``, which rewrites the summary without these columns. GPU recommended.
 

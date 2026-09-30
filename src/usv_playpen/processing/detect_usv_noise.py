@@ -40,13 +40,23 @@ model sees the segment only. Values are mapped by the fixed affine ``(clip(x, -1
 Run it after ``das_summarize`` (re-summarizing rewrites the CSV with its base columns only) and, by
 convention, before ``detect_usv_squeaks``, so the summary reads ``emitter``, the two noise columns, then
 the squeak block.
+
+The module also trains the ensemble (``train-noise-model``, :class:`USVNoiseModelTrainer`): from a labels
+CSV it builds every labelled segment's input with the same function scoring uses
+(:func:`window_segment_input`), trains one :class:`NoiseTimeMIL` per seed with the production recipe
+(40 epochs, batch 32, Adam 1e-3 / weight decay 1e-4 under a cosine schedule, label smoothing 0.05,
+gain / frequency-roll / SpecAugment augmentation) and writes a bundle this step loads unchanged, carrying
+the calibration table and decision block of a supplied JSON. Training lives here rather than in its own
+module so the network, the input construction and the padding exist once, shared by both directions.
 """
 
 from __future__ import annotations
 
+import json
 import math
 import pathlib
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import click
@@ -89,6 +99,40 @@ HOP_SAMPLES = NOISE_SPEC_BASE["hop_length"]
 # Frame count a `batch_size` of segments is budgeted at (the median call is ~16 frames; this is the
 # model's own window), so a batch's padded size stays bounded however long the calls are.
 TYPICAL_SEGMENT_FRAMES = 128
+
+# Input transform and window every trained bundle records: dB clip range, the affine map onto [-1, 1], the
+# frame cap and the context hops read either side of a segment. ``train-noise-model`` builds its inputs
+# with these and writes them into the bundle; ``detect-usv-noise`` reads them back from the bundle.
+NOISE_DB_FLOOR = -100.0
+NOISE_DB_CEIL = 50.0
+NOISE_DB_CENTER = -25.0
+NOISE_DB_HALF = 75.0
+NOISE_MAX_FRAMES = 512
+NOISE_CONTEXT_FRAMES = 49
+NOISE_INPUT_CONTRACT = {
+    "bands_hz": NOISE_BANDS_HZ,
+    "db_floor": NOISE_DB_FLOOR,
+    "db_ceil": NOISE_DB_CEIL,
+    "db_center": NOISE_DB_CENTER,
+    "db_half": NOISE_DB_HALF,
+    "max_frames": NOISE_MAX_FRAMES,
+    "context_frames": NOISE_CONTEXT_FRAMES,
+}
+NOISE_SCALAR_NAMES = ("log_chs_count", "log_duration_s")
+
+# Training augmentation of the production recipe, applied to the spectrogram channels of every training
+# batch (never to the segment indicator or the padding): a per-segment gain jitter of up to +-5 dB, a
+# frequency roll of up to +-2 rows, and with probability 0.5 each a time mask (up to 15% of the frames)
+# and a frequency mask (1-10 rows) filled with the padding floor.
+NOISE_AUG_GAIN_DB = 5.0
+NOISE_AUG_FREQ_ROLL = 2
+NOISE_AUG_TIME_MASK_FRACTION = 0.15
+NOISE_AUG_FREQ_MASK_ROWS = 10
+
+# Columns a training labels CSV must hold (one row per labelled segment; ``noise`` 1 = no vocalization).
+NOISE_LABEL_COLUMNS = ("sample_id", "session_dir", "start", "stop", "chs_count", "noise")
+# Keys the detector reads from a bundle's ``decision`` block, so a trained bundle must carry them.
+NOISE_DECISION_KEYS = ("exclude_at_or_above", "noise_at_or_above", "held_out_precision", "held_out_recall", "real_calls_excluded_per_10000")
 
 
 def _conv_block(in_channels: int, out_channels: int, pool: tuple[int, int] | None) -> nn.Sequential:
@@ -361,6 +405,164 @@ def segment_input(
     return np.concatenate([normalized, indicator], axis=0).astype(np.float32), n_used
 
 
+def window_segment_input(
+    handles: list[sf.SoundFile],
+    n_file: int,
+    start: float,
+    stop: float,
+    bundle: dict,
+) -> tuple[np.ndarray, int] | tuple[None, int]:
+    """
+    Description
+    -----------
+    Reads one segment's audio window from the open per-channel wavs and builds its model input. The
+    window starts exactly ``context_frames`` hops before the segment's first sample (fewer at the start of
+    a recording) and ends ``context_frames`` hops after its last sample (or at the end of the file), so
+    with the centred STFT the segment occupies frames ``first_frame .. first_frame + n_frames - 1`` of the
+    window's spectrogram, ``n_frames`` being ``1 + (ceil(stop * fs) - floor(start * fs)) // hop`` (the
+    stored-duration convention). Scoring (``detect-usv-noise``) and training (``train-noise-model``) both
+    build their inputs here, so a trained bundle sees exactly the input it is later scored on.
+
+    Parameters
+    ----------
+    handles (list[sf.SoundFile])
+        Open per-channel wavs (one per averaged channel, all of one length).
+    n_file (int)
+        Frame count (samples) of the wavs.
+    start (float)
+        Segment start (s).
+    stop (float)
+        Segment stop (s).
+    bundle (dict)
+        Loaded model bundle, or ``NOISE_INPUT_CONTRACT`` when training (``bands_hz``, the dB constants,
+        ``max_frames`` and ``context_frames`` are read).
+
+    Returns
+    -------
+    x (np.ndarray | None)
+        ``(C, 128, T)`` float32 input, or None when the window is too short for one STFT window.
+    n_frames_used (int)
+        Frames kept (after the cap), 0 when unscorable.
+    """
+
+    context = bundle["context_frames"]
+    first_sample = math.floor(start * NOISE_SAMPLING_RATE)
+    last_sample = math.ceil(stop * NOISE_SAMPLING_RATE)
+    first_frame = min(context, first_sample // HOP_SAMPLES)
+    read_start = first_sample - first_frame * HOP_SAMPLES
+    read_stop = min(n_file, last_sample + context * HOP_SAMPLES)
+    channels = []
+    for handle in handles:
+        handle.seek(read_start)
+        channels.append(handle.read(frames=read_stop - read_start, dtype="float64", always_2d=False))
+    window = np.stack(channels, axis=1)
+    return segment_input(window, first_frame, 1 + (last_sample - first_sample) // HOP_SAMPLES, bundle)
+
+
+def noise_scalars(chs_count: float, start: float, stop: float) -> np.ndarray:
+    """
+    Description
+    -----------
+    Builds one segment's raw scalar inputs, in ``NOISE_SCALAR_NAMES`` order: the log of the number of
+    channels DAS detected the segment on, and the log of its duration in seconds. They are standardized
+    with the bundle's ``scalar_mean`` / ``scalar_std`` before entering the model.
+
+    Parameters
+    ----------
+    chs_count (float)
+        The summary's ``chs_count`` (at least 1).
+    start (float)
+        Segment start (s).
+    stop (float)
+        Segment stop (s).
+
+    Returns
+    -------
+    scalars (np.ndarray)
+        ``(2,)`` float32 ``[log(chs_count), log(stop - start)]``.
+    """
+
+    return np.array([np.log(chs_count), np.log(stop - start)], dtype=np.float32)
+
+
+def pad_noise_batch(chunk: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Pads a batch of segment inputs to its longest segment: spectrogram channels are padded with -1 (the
+    normalized floor), the segment-indicator channel with 0, and a frame-validity mask marks the real
+    frames. Scoring and training pad identically.
+
+    Parameters
+    ----------
+    chunk (list[np.ndarray])
+        Per-segment ``(C, 128, T)`` inputs.
+
+    Returns
+    -------
+    x (np.ndarray)
+        ``(B, C, 128, T_max)`` float32 batch.
+    valid (np.ndarray)
+        ``(B, T_max)`` boolean frame validity.
+    """
+
+    width = max(item.shape[2] for item in chunk)
+    x = np.full((len(chunk), chunk[0].shape[0], chunk[0].shape[1], width), -1.0, dtype=np.float32)
+    x[:, -1] = 0.0
+    valid = np.zeros((len(chunk), width), dtype=bool)
+    for position, item in enumerate(chunk):
+        x[position, :, :, :item.shape[2]] = item
+        valid[position, :item.shape[2]] = True
+    return x, valid
+
+
+def ensemble_noise_probability(
+    models: list[NoiseTimeMIL],
+    inputs: list[np.ndarray],
+    standardized_scalars: np.ndarray,
+    batch_size: int,
+    device: torch.device,
+) -> np.ndarray:
+    """
+    Description
+    -----------
+    Scores segment inputs with every model of an ensemble and returns the mean of their probabilities.
+    Segments are grouped into frame-budgeted batches (see :func:`frame_budget_batches`) and the model
+    pools over every valid frame, which is the segment itself.
+
+    Parameters
+    ----------
+    models (list[NoiseTimeMIL])
+        Ensemble members, in eval mode on ``device``.
+    inputs (list[np.ndarray])
+        Per-segment ``(C, 128, T)`` inputs.
+    standardized_scalars (np.ndarray)
+        ``(N, n_scalars)`` float32 scalars, already standardized with the bundle's mean and std.
+    batch_size (int)
+        Segments per forward pass at the typical call length.
+    device (torch.device)
+        Scoring device.
+
+    Returns
+    -------
+    probability (np.ndarray)
+        ``(N,)`` ensemble-mean noise probability.
+    """
+
+    runs = []
+    for model in models:
+        out = []
+        with torch.no_grad():
+            for start_index, stop_index in frame_budget_batches(inputs, batch_size):
+                x, valid = pad_noise_batch(inputs[start_index:stop_index])
+                x_tensor = torch.from_numpy(x).to(device)
+                valid_tensor = torch.from_numpy(valid).to(device)
+                scalar_tensor = torch.tensor(np.asarray(standardized_scalars[start_index:stop_index], dtype=np.float32), device=device)
+                out.append(torch.sigmoid(model(x_tensor, valid_tensor, valid_tensor, scalar_tensor)).cpu().numpy())
+        runs.append(np.concatenate(out))
+    return np.mean(runs, axis=0)
+
+
 def frame_budget_batches(inputs: list[np.ndarray], batch_size: int) -> list[tuple[int, int]]:
     """
     Description
@@ -445,7 +647,6 @@ def score_noise_rows(
     wav_paths = squeak_wav_channels(session_root, exclude_metadata_audio_channels, message_output)
     handles = [sf.SoundFile(str(path), mode="r") for path in wav_paths]
     n_file = handles[0].frames
-    context = bundle["context_frames"]
     inputs: list[np.ndarray] = []
     scalars: list[np.ndarray] = []
     scored_rows: list[int] = []
@@ -453,21 +654,11 @@ def score_noise_rows(
         for row_index in range(usv_summary.height):
             start = float(usv_summary["start"][row_index])
             stop = float(usv_summary["stop"][row_index])
-            first_sample = math.floor(start * NOISE_SAMPLING_RATE)
-            last_sample = math.ceil(stop * NOISE_SAMPLING_RATE)
-            first_frame = min(context, first_sample // HOP_SAMPLES)
-            read_start = first_sample - first_frame * HOP_SAMPLES
-            read_stop = min(n_file, last_sample + context * HOP_SAMPLES)
-            channels = []
-            for handle in handles:
-                handle.seek(read_start)
-                channels.append(handle.read(frames=read_stop - read_start, dtype="float64", always_2d=False))
-            window = np.stack(channels, axis=1)
-            x, _n_used = segment_input(window, first_frame, 1 + (last_sample - first_sample) // HOP_SAMPLES, bundle)
+            x, _n_used = window_segment_input(handles, n_file, start, stop, bundle)
             if x is None:
                 continue
             inputs.append(x)
-            scalars.append(np.array([np.log(float(usv_summary["chs_count"][row_index])), np.log(stop - start)], dtype=np.float32))
+            scalars.append(noise_scalars(float(usv_summary["chs_count"][row_index]), start, stop))
             scored_rows.append(row_index)
     finally:
         for handle in handles:
@@ -475,26 +666,8 @@ def score_noise_rows(
 
     probability = np.full(usv_summary.height, np.nan, dtype=np.float64)
     if scored_rows:
-        standardized = [(scalar - bundle["scalar_mean"]) / bundle["scalar_std"] for scalar in scalars]
-        runs = []
-        for model in bundle["models"]:
-            out = []
-            with torch.no_grad():
-                for start_index, stop_index in frame_budget_batches(inputs, batch_size):
-                    chunk = inputs[start_index:stop_index]
-                    width = max(item.shape[2] for item in chunk)
-                    x = np.full((len(chunk), chunk[0].shape[0], 128, width), -1.0, dtype=np.float32)
-                    x[:, -1] = 0.0
-                    valid = np.zeros((len(chunk), width), dtype=bool)
-                    for position, item in enumerate(chunk):
-                        x[position, :, :, :item.shape[2]] = item
-                        valid[position, :item.shape[2]] = True
-                    x_tensor = torch.from_numpy(x).to(device)
-                    valid_tensor = torch.from_numpy(valid).to(device)
-                    scalar_tensor = torch.tensor(np.stack(standardized[start_index:stop_index]), device=device)
-                    out.append(torch.sigmoid(model(x_tensor, valid_tensor, valid_tensor, scalar_tensor)).cpu().numpy())
-            runs.append(np.concatenate(out))
-        probability[np.asarray(scored_rows)] = np.mean(runs, axis=0)
+        standardized = (np.stack(scalars) - bundle["scalar_mean"]) / bundle["scalar_std"]
+        probability[np.asarray(scored_rows)] = ensemble_noise_probability(bundle["models"], inputs, standardized, batch_size, device)
     unscorable = usv_summary.height - len(scored_rows)
     if unscorable:
         message_output(f"{unscorable} USV(s) are too short for one STFT window and get an empty noise probability.")
@@ -502,6 +675,347 @@ def score_noise_rows(
         "noise": np.nan_to_num(probability, nan=0.0) >= threshold,
         "noise_probability": probability,
     }, schema={"noise": pls.Boolean, "noise_probability": pls.Float64})
+
+
+def read_noise_labels(labels_csv_path: str, message_output: Callable) -> pls.DataFrame:
+    """
+    Description
+    -----------
+    Reads and checks a training labels CSV: one row per training example with ``sample_id`` (the
+    segment's name), ``session_dir`` (session root), ``start`` / ``stop`` (s, as in the session's USV
+    summary), ``chs_count`` (the summary's channel count) and ``noise`` (1 = the segment holds no
+    vocalization at all, neither a USV nor a squeak; 0 = it holds one). The segment is defined by these
+    columns rather than by a summary row, so a later re-summarization cannot silently change what a label
+    refers to. Unsure answers must be dropped (or resolved) before training; any ``noise`` other than 0
+    or 1 stops the run. A ``sample_id`` may repeat (a segment labelled in two rounds is then trained on
+    twice, as the production ensemble was: 43 of its 4,680 rows repeat a segment, two of them with the
+    opposite label); repeats and conflicting repeats are counted and reported, not removed.
+
+    Parameters
+    ----------
+    labels_csv_path (str)
+        Path to the labels CSV.
+    message_output (Callable)
+        Logging callback.
+
+    Returns
+    -------
+    labels (pls.DataFrame)
+        The six columns, typed (``noise`` as Int64), in file order; row order is training order.
+    """
+
+    path = pathlib.Path(configure_path(labels_csv_path))
+    if not path.is_file():
+        error_message = f"Noise training labels not found: {path}."
+        raise FileNotFoundError(error_message)
+    labels = pls.read_csv(str(path), schema_overrides={"sample_id": pls.String, "session_dir": pls.String}, infer_schema_length=None)
+    missing = [column for column in NOISE_LABEL_COLUMNS if column not in labels.columns]
+    if missing:
+        error_message = f"{path} lacks the column(s) {missing}; a labels CSV holds {list(NOISE_LABEL_COLUMNS)}."
+        raise ValueError(error_message)
+    labels = labels.select(
+        pls.col("sample_id"), pls.col("session_dir"),
+        pls.col("start").cast(pls.Float64), pls.col("stop").cast(pls.Float64),
+        pls.col("chs_count").cast(pls.Float64), pls.col("noise").cast(pls.Int64),
+    )
+    if labels.height == 0:
+        error_message = f"{path} holds no labelled segments."
+        raise ValueError(error_message)
+    if labels.null_count().sum_horizontal()[0] > 0:
+        error_message = f"{path} has empty cells in {list(NOISE_LABEL_COLUMNS)}; drop unsure or incomplete rows first."
+        raise ValueError(error_message)
+    if labels["sample_id"].n_unique() != labels.height:
+        conflicting = labels.group_by("sample_id").agg(pls.col("noise").n_unique().alias("n_labels")).filter(pls.col("n_labels") > 1).height
+        message_output(
+            f"{labels.height - labels['sample_id'].n_unique()} row(s) repeat an earlier sample_id ({conflicting} segment(s) with "
+            f"conflicting labels); every row is trained on as given."
+        )
+    if not labels["noise"].is_in([0, 1]).all():
+        error_message = f"{path}: noise must be 0 (vocalization) or 1 (noise); drop unsure answers (e.g. 2) first."
+        raise ValueError(error_message)
+    if labels.filter(pls.col("noise") == 1).height == 0 or labels.filter(pls.col("noise") == 0).height == 0:
+        error_message = f"{path} needs both noise (1) and vocalization (0) labels."
+        raise ValueError(error_message)
+    if not ((labels["stop"] > labels["start"]).all() and (labels["start"] >= 0).all() and (labels["chs_count"] >= 1).all()):
+        error_message = f"{path}: every row needs 0 <= start < stop and chs_count >= 1."
+        raise ValueError(error_message)
+    return labels
+
+
+def read_noise_calibration(calibration_path: str) -> dict:
+    """
+    Description
+    -----------
+    Reads the calibration a trained bundle carries and checks it holds what ``detect-usv-noise`` reads.
+    The JSON holds ``calibration`` (a list of rows, each with at least ``threshold``, ``precision`` and
+    ``recall``: the cross-fitted precision / recall of this training procedure at every threshold) and
+    ``decision`` (the exclusion cut-offs ``exclude_at_or_above`` <= ``noise_at_or_above`` plus their
+    held-out ``held_out_precision``, ``held_out_recall`` and ``real_calls_excluded_per_10000``, and any
+    further provenance keys). ``calibration_source`` and ``calibration_population`` are copied into the
+    bundle when present. Training does not measure these: they come from the session-grouped cross-fit
+    and the cut-off selection on consensus-labelled segments, so they describe the bundle only when it
+    is trained with the same labels and recipe they were measured for.
+
+    Parameters
+    ----------
+    calibration_path (str)
+        Path to the calibration JSON.
+
+    Returns
+    -------
+    calibration (dict)
+        ``calibration``, ``decision`` and, when present, ``calibration_source`` / ``calibration_population``.
+    """
+
+    path = pathlib.Path(configure_path(calibration_path))
+    if not path.is_file():
+        error_message = (
+            f"Noise calibration JSON not found: {path}. Set processing_settings['train_noise_model']['calibration_path'] "
+            f"to a JSON holding the 'calibration' table and the 'decision' block the bundle will carry."
+        )
+        raise FileNotFoundError(error_message)
+    content = json.loads(path.read_text(encoding="utf-8"))
+    for key in ("calibration", "decision"):
+        if key not in content:
+            error_message = f"{path} lacks '{key}'; the detector reads both the calibration table and the decision block."
+            raise ValueError(error_message)
+    if not content["calibration"] or any(key not in row for row in content["calibration"] for key in ("threshold", "precision", "recall")):
+        error_message = f"{path}: 'calibration' must be a non-empty list of rows with threshold, precision and recall."
+        raise ValueError(error_message)
+    missing = [key for key in NOISE_DECISION_KEYS if key not in content["decision"]]
+    if missing:
+        error_message = f"{path}: the 'decision' block lacks {missing}, which detect-usv-noise reads."
+        raise ValueError(error_message)
+    decision = content["decision"]
+    if not 0.0 < decision["exclude_at_or_above"] <= decision["noise_at_or_above"] <= 1.0:
+        error_message = f"{path}: the decision needs 0 < exclude_at_or_above <= noise_at_or_above <= 1."
+        raise ValueError(error_message)
+    calibration = {"calibration": content["calibration"], "decision": decision}
+    for key in ("calibration_source", "calibration_population"):
+        if key in content:
+            calibration[key] = content[key]
+    return calibration
+
+
+def session_noise_training_inputs(
+    session_dir: str,
+    segments: list[tuple[int, float, float, float]],
+    exclude_metadata_audio_channels: bool,
+) -> dict[int, tuple[np.ndarray, np.ndarray]]:
+    """
+    Description
+    -----------
+    Builds the model inputs and raw scalars of one session's labelled segments, opening the session's
+    per-channel wavs once. Run in a worker thread by :func:`build_noise_training_inputs`.
+
+    Parameters
+    ----------
+    session_dir (str)
+        Session root directory.
+    segments (list[tuple[int, float, float, float]])
+        ``(label row, start, stop, chs_count)`` of every labelled segment of the session.
+    exclude_metadata_audio_channels (bool)
+        Drop channels the session metadata marks as excluded from the average.
+
+    Returns
+    -------
+    built (dict[int, tuple[np.ndarray, np.ndarray]])
+        Label row -> ``(input, raw scalars)``; segments too short for one STFT window are absent.
+    """
+
+    wav_paths = squeak_wav_channels(pathlib.Path(configure_path(session_dir)), exclude_metadata_audio_channels, lambda *_args, **_kwargs: None)
+    handles = [sf.SoundFile(str(path), mode="r") for path in wav_paths]
+    built = {}
+    try:
+        for row, start, stop, chs_count in segments:
+            x, _n_used = window_segment_input(handles, handles[0].frames, start, stop, NOISE_INPUT_CONTRACT)
+            if x is not None:
+                built[row] = (x, noise_scalars(chs_count, start, stop))
+    finally:
+        for handle in handles:
+            handle.close()
+    return built
+
+
+def build_noise_training_inputs(
+    labels: pls.DataFrame,
+    exclude_metadata_audio_channels: bool,
+    n_workers: int,
+    message_output: Callable,
+) -> tuple[list[np.ndarray], np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Builds the model input of every labelled segment exactly as ``detect-usv-noise`` builds it at
+    inference (:func:`window_segment_input` with ``NOISE_INPUT_CONTRACT``, over the same per-channel
+    ``audio/hpss`` wavs and channel exclusion), plus its raw scalars. Sessions are processed in
+    ``n_workers`` threads, each session's wavs opened once: the work is dominated by the latency of
+    reading short windows from 24 wavs on a network share (measured ~44 ms per read, ~14 s per session
+    serially), which threads overlap. Results are collected by label row, so the output order does not
+    depend on the thread schedule. Segments too short for one STFT window are left out and reported.
+
+    Parameters
+    ----------
+    labels (pls.DataFrame)
+        Checked labels (:func:`read_noise_labels`).
+    exclude_metadata_audio_channels (bool)
+        Drop channels the session metadata marks as excluded from the average (as the detector does).
+    n_workers (int)
+        Sessions read concurrently (threads).
+    message_output (Callable)
+        Logging callback.
+
+    Returns
+    -------
+    inputs (list[np.ndarray])
+        Per kept segment, the ``(3, 128, T)`` float32 input, in label order.
+    raw_scalars (np.ndarray)
+        ``(N_kept, 2)`` float32 unstandardized scalars.
+    kept_rows (np.ndarray)
+        Indices into ``labels`` of the kept segments.
+    """
+
+    segments_by_session: dict[str, list[tuple[int, float, float, float]]] = {}
+    for row, (session_dir, start, stop, chs_count) in enumerate(labels.select("session_dir", "start", "stop", "chs_count").iter_rows()):
+        segments_by_session.setdefault(session_dir, []).append((row, float(start), float(stop), float(chs_count)))
+    built: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    with ThreadPoolExecutor(max_workers=max(1, n_workers)) as pool:
+        futures = [pool.submit(session_noise_training_inputs, session_dir, segments, exclude_metadata_audio_channels)
+                   for session_dir, segments in segments_by_session.items()]
+        for session_number, future in enumerate(as_completed(futures), start=1):
+            built.update(future.result())
+            if session_number % 50 == 0 or session_number == len(futures):
+                message_output(f"Built noise training inputs for {session_number}/{len(futures)} session(s), {len(built)} segment(s).")
+    inputs_by_row = {row: item[0] for row, item in built.items()}
+    scalars_by_row = {row: item[1] for row, item in built.items()}
+    kept_rows = np.array(sorted(inputs_by_row), dtype=np.int64)
+    if kept_rows.size < labels.height:
+        dropped = sorted(set(range(labels.height)) - set(kept_rows.tolist()))
+        message_output(f"{len(dropped)} labelled segment(s) are too short for one STFT window and are left out: {[labels['sample_id'][row] for row in dropped]}.")
+    return [inputs_by_row[row] for row in kept_rows], np.stack([scalars_by_row[row] for row in kept_rows]), kept_rows
+
+
+def augment_noise_batch(x: torch.Tensor, valid: torch.Tensor, generator: torch.Generator) -> torch.Tensor:
+    """
+    Description
+    -----------
+    Augments one training batch with the production recipe, on the spectrogram channels only (the last,
+    segment-indicator channel is passed through): a per-segment gain jitter of up to
+    ``NOISE_AUG_GAIN_DB`` (clamped to [-1, 1], valid frames only), a frequency roll of up to
+    ``NOISE_AUG_FREQ_ROLL`` rows, and with probability 0.5 each a time mask of up to
+    ``NOISE_AUG_TIME_MASK_FRACTION`` of the segment's frames (segments longer than four frames) and a
+    frequency mask of 1 to ``NOISE_AUG_FREQ_MASK_ROWS`` rows over the valid frames, both filled with the
+    padding floor (-1). Every random draw comes from ``generator`` (on the CPU), in a fixed order, so a
+    seed reproduces the draws.
+
+    Parameters
+    ----------
+    x (torch.Tensor)
+        ``(B, C, 128, T)`` normalized batch; the last channel is the segment indicator.
+    valid (torch.Tensor)
+        ``(B, T)`` boolean frame validity.
+    generator (torch.Generator)
+        Seeded CPU generator.
+
+    Returns
+    -------
+    x (torch.Tensor)
+        The augmented batch (a new tensor).
+    """
+
+    spectra = x[:, :-1].clone()
+    batch, _channels, rows, _width = spectra.shape
+    gain = ((torch.rand(batch, generator=generator) * 2 - 1) * NOISE_AUG_GAIN_DB / NOISE_DB_HALF).to(x.device)
+    spectra = torch.where(valid[:, None, None, :], (spectra + gain[:, None, None, None]).clamp(-1.0, 1.0), spectra)
+    for i in range(batch):
+        shift = int(torch.randint(-NOISE_AUG_FREQ_ROLL, NOISE_AUG_FREQ_ROLL + 1, (1,), generator=generator))
+        if shift:
+            spectra[i] = torch.roll(spectra[i], shifts=shift, dims=1)
+        n_frames = int(valid[i].sum())
+        if float(torch.rand(1, generator=generator)) < 0.5 and n_frames > 4:
+            length = max(1, int(n_frames * NOISE_AUG_TIME_MASK_FRACTION * float(torch.rand(1, generator=generator))))
+            start = int(torch.randint(0, n_frames - length + 1, (1,), generator=generator))
+            spectra[i, :, :, start:start + length] = -1.0
+        if float(torch.rand(1, generator=generator)) < 0.5:
+            length = int(torch.randint(1, NOISE_AUG_FREQ_MASK_ROWS + 1, (1,), generator=generator))
+            start = int(torch.randint(0, rows - length + 1, (1,), generator=generator))
+            spectra[i, :, start:start + length, :n_frames] = -1.0
+    return torch.cat([spectra, x[:, -1:]], dim=1)
+
+
+def train_noise_seed(
+    inputs: list[np.ndarray],
+    standardized_scalars: np.ndarray,
+    y: np.ndarray,
+    seed: int,
+    recipe: dict,
+    device: torch.device,
+    message_output: Callable,
+) -> NoiseTimeMIL:
+    """
+    Description
+    -----------
+    Trains one ensemble member with the production recipe: the network is initialized after
+    ``torch.manual_seed(seed)``; every epoch visits the segments in a ``numpy.random.default_rng(seed)``
+    permutation in padded batches of ``recipe['batch_size']``, augmented by :func:`augment_noise_batch`
+    (a CPU generator seeded with ``seed``); targets are label-smoothed towards 0.5 by
+    ``recipe['label_smoothing']``; the loss is binary cross-entropy on the segment logit (pooled over the
+    segment's frames), minimized by Adam (``learning_rate``, ``weight_decay``) under a cosine learning-rate
+    schedule over all ``recipe['epochs']`` epochs, stepped once per batch.
+
+    Parameters
+    ----------
+    inputs (list[np.ndarray])
+        Per-segment ``(3, 128, T)`` inputs.
+    standardized_scalars (np.ndarray)
+        ``(N, 2)`` float32 scalars standardized over the training set.
+    y (np.ndarray)
+        ``(N,)`` float32 labels (1 = noise).
+    seed (int)
+        Seed of this member.
+    recipe (dict)
+        ``epochs``, ``batch_size``, ``learning_rate``, ``weight_decay`` and ``label_smoothing``.
+    device (torch.device)
+        Training device.
+    message_output (Callable)
+        Logging callback.
+
+    Returns
+    -------
+    model (NoiseTimeMIL)
+        The trained model, in eval mode on ``device``.
+    """
+
+    torch.manual_seed(seed)
+    model = NoiseTimeMIL(in_channels=inputs[0].shape[0], n_scalars=standardized_scalars.shape[1]).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=recipe['learning_rate'], weight_decay=recipe['weight_decay'])
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=recipe['epochs'] * math.ceil(len(inputs) / recipe['batch_size']))
+    loss_fn = nn.BCEWithLogitsLoss()
+    rng = np.random.default_rng(seed)
+    generator = torch.Generator().manual_seed(seed)
+    smoothing = recipe['label_smoothing']
+    for epoch in range(recipe['epochs']):
+        model.train()
+        order = rng.permutation(len(inputs))
+        losses = []
+        for start in range(0, len(order), recipe['batch_size']):
+            chunk = order[start:start + recipe['batch_size']]
+            x, valid = pad_noise_batch([inputs[i] for i in chunk])
+            x_tensor = torch.from_numpy(x).to(device)
+            valid_tensor = torch.from_numpy(valid).to(device)
+            scalar_tensor = torch.tensor(standardized_scalars[chunk], device=device)
+            target = torch.tensor(y[chunk], dtype=torch.float32, device=device) * (1 - smoothing) + 0.5 * smoothing
+            x_tensor = augment_noise_batch(x_tensor, valid_tensor, generator)
+            optimizer.zero_grad()
+            loss = loss_fn(model(x_tensor, valid_tensor, valid_tensor, scalar_tensor), target)
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            losses.append(float(loss.detach()))
+        if epoch == 0 or (epoch + 1) % 10 == 0 or epoch + 1 == recipe['epochs']:
+            message_output(f"  seed {seed}: epoch {epoch + 1}/{recipe['epochs']}, mean training loss {np.mean(losses):.4f}.")
+    model.eval()
+    return model
 
 
 class USVNoiseDetector:
@@ -608,6 +1122,143 @@ class USVNoiseDetector:
         )
 
 
+class USVNoiseModelTrainer:
+    """
+    Description
+    -----------
+    Trains the noise-model ensemble on a labels CSV and writes a bundle ``detect-usv-noise`` loads
+    unchanged.
+    """
+
+    def __init__(
+        self,
+        labels_csv_path: str | None = None,
+        bundle_path: str | None = None,
+        input_parameter_dict: dict | None = None,
+        message_output: Callable | None = None,
+    ) -> None:
+        """
+        Description
+        -----------
+        Initializes the USVNoiseModelTrainer.
+
+        Parameters
+        ----------
+        labels_csv_path (str)
+            Labels CSV (see :func:`read_noise_labels`).
+        bundle_path (str)
+            Output bundle (``.pt``); must not exist yet.
+        input_parameter_dict (dict)
+            Processing settings; the ``train_noise_model`` block supplies the calibration JSON, the
+            channel-exclusion switch, the seeds and the recipe.
+        message_output (Callable)
+            Logging callback; defaults to ``print``.
+
+        Returns
+        -------
+        None
+        """
+
+        self.labels_csv_path = labels_csv_path
+        self.bundle_path = bundle_path
+        self.input_parameter_dict = input_parameter_dict if input_parameter_dict is not None else {}
+        self.message_output = message_output if message_output is not None else print
+
+    def train(self) -> pathlib.Path:
+        """
+        Description
+        -----------
+        Reads and checks the labels and the calibration JSON (before any work, so a bad file fails
+        fast), builds every labelled segment's input with the detector's own extraction, standardizes
+        the scalars over the training set, trains one model per seed with the production recipe (cuDNN
+        in deterministic mode for the run; a GPU is still not bit-reproducible, so a retrained ensemble
+        matches an earlier one in its decisions, not in its weights), writes the bundle with the input
+        contract, the calibration, the decision and the provenance, and loads it back through
+        :func:`load_noise_model` to prove ``detect-usv-noise`` accepts it.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        bundle_path (pathlib.Path)
+            The written bundle.
+        """
+
+        start_time = datetime.now()
+        self.message_output(f"Noise model training started at: {start_time.hour:02d}:{start_time.minute:02d}:{start_time.second:02d}.")
+        cfg = self.input_parameter_dict['train_noise_model']
+        bundle_path = pathlib.Path(configure_path(self.bundle_path))
+        if bundle_path.exists():
+            error_message = f"{bundle_path} already exists; choose a new bundle path (a trained bundle is never overwritten)."
+            raise FileExistsError(error_message)
+        if not cfg['seeds'] or len(set(cfg['seeds'])) != len(cfg['seeds']):
+            error_message = f"train_noise_model['seeds'] must list distinct seeds, one per ensemble member; got {cfg['seeds']}."
+            raise ValueError(error_message)
+        labels = read_noise_labels(self.labels_csv_path, self.message_output)
+        calibration = read_noise_calibration(cfg['calibration_path'])
+        self.message_output(
+            f"{labels.height} labelled segment(s) ({int(labels['noise'].sum())} noise) from {labels['session_dir'].n_unique()} session(s)."
+        )
+
+        inputs, raw_scalars, kept_rows = build_noise_training_inputs(labels, cfg['exclude_metadata_audio_channels'], cfg['n_workers'], self.message_output)
+        y = labels["noise"].to_numpy()[kept_rows].astype(np.float32)
+        scalar_mean = raw_scalars.mean(0)
+        scalar_std = raw_scalars.std(0) + 1e-6
+        standardized = (raw_scalars - scalar_mean) / scalar_std
+        recipe = {
+            "epochs": cfg['epochs'], "batch_size": cfg['batch_size'], "learning_rate": cfg['learning_rate'],
+            "weight_decay": cfg['weight_decay'], "label_smoothing": cfg['label_smoothing'],
+        }
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.message_output(f"Training {len(cfg['seeds'])} model(s) on {len(inputs)} segment(s) ({int(y.sum())} noise) on {device}.")
+        deterministic, benchmark = torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        state_dicts = []
+        try:
+            for seed in cfg['seeds']:
+                model = train_noise_seed(inputs, standardized, y, int(seed), recipe, device, self.message_output)
+                state_dicts.append({key: value.detach().cpu() for key, value in model.state_dict().items()})
+        finally:
+            torch.backends.cudnn.deterministic, torch.backends.cudnn.benchmark = deterministic, benchmark
+
+        bundle = {
+            "model": "noise_timemil_ensemble",
+            "state_dicts": state_dicts,
+            "in_channels": int(inputs[0].shape[0]), "n_scalars": int(raw_scalars.shape[1]),
+            "scalar_names": list(NOISE_SCALAR_NAMES),
+            "scalar_mean": scalar_mean.tolist(), "scalar_std": scalar_std.tolist(),
+            "db_floor": NOISE_DB_FLOOR, "db_ceil": NOISE_DB_CEIL, "db_center": NOISE_DB_CENTER, "db_half": NOISE_DB_HALF,
+            "max_frames": NOISE_MAX_FRAMES, "bands_hz": [list(band) for band in NOISE_BANDS_HZ],
+            "context_frames": NOISE_CONTEXT_FRAMES,
+            "input": "two-band absolute-dB spectrogram of the segment, variance-weighted average over the "
+                     "non-excluded channels of a window that extends context_frames hops either side, cropped "
+                     "back to the segment's own frames",
+            **calibration,
+            "n_labels": len(inputs), "n_noise": int(y.sum()),
+            "labels_csv": str(pathlib.Path(configure_path(self.labels_csv_path)).resolve()),
+            "recipe": {
+                **recipe, "seeds": [int(seed) for seed in cfg['seeds']],
+                "augmentation": {
+                    "gain_db": NOISE_AUG_GAIN_DB, "freq_roll_rows": NOISE_AUG_FREQ_ROLL,
+                    "time_mask_fraction": NOISE_AUG_TIME_MASK_FRACTION, "freq_mask_rows": NOISE_AUG_FREQ_MASK_ROWS,
+                },
+                "exclude_metadata_audio_channels": bool(cfg['exclude_metadata_audio_channels']),
+            },
+            "built_by": "usv_playpen train-noise-model",
+            "created": datetime.now().isoformat(timespec="seconds"),
+        }
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(bundle, bundle_path)
+        load_noise_model(str(bundle_path), torch.device("cpu"))
+
+        elapsed_minutes = (datetime.now() - start_time).total_seconds() / 60
+        self.message_output(f"Wrote {bundle_path} ({bundle_path.stat().st_size / 1e6:.1f} MB) in {elapsed_minutes:.1f} min; detect-usv-noise loads it.")
+        return bundle_path
+
+
 @click.command(name="detect-usv-noise")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--noise-model-path', 'noise_model_path', type=str, default=None, required=False, help='Path to the noise model bundle (.pt); derived from spectrograms_root when empty.')
@@ -643,3 +1294,49 @@ def detect_usv_noise_cli(ctx, root_directory, **kwargs) -> None:
         input_parameter_dict=processing_settings_dict,
         message_output=print,
     ).detect_and_merge()
+
+
+@click.command(name="train-noise-model")
+@click.option('--labels-csv', 'labels_csv_path', type=click.Path(exists=True, file_okay=True, dir_okay=False), required=True, help='Labels CSV: sample_id, session_dir, start, stop, chs_count, noise (1 = no vocalization, 0 = vocalization).')
+@click.option('--bundle-path', 'bundle_path', type=click.Path(file_okay=True, dir_okay=False), required=True, help='Output bundle (.pt); must not exist yet.')
+@click.option('--calibration-path', 'calibration_path', type=str, default=None, required=False, help='JSON with the calibration table and the decision block the bundle carries.')
+@click.option('--exclude-metadata-audio-channels/--no-exclude-metadata-audio-channels', 'exclude_metadata_audio_channels', default=None, required=False, help='Drop channels the session metadata marks as excluded from the spectrogram average (keep it as detect-usv-noise runs).')
+@click.option('--n-workers', 'n_workers', type=int, default=None, required=False, help='Sessions whose audio is read concurrently (threads) while the training inputs are built.')
+@click.option('--seed', 'seeds', type=int, multiple=True, default=None, required=False, help='Seed of one ensemble member; repeat once per member (replaces the seeds setting).')
+@click.option('--epochs', 'epochs', type=int, default=None, required=False, help='Training epochs per member.')
+@click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Segments per training batch.')
+@click.option('--learning-rate', 'learning_rate', type=float, default=None, required=False, help='Adam learning rate (cosine-annealed over the run).')
+@click.option('--weight-decay', 'weight_decay', type=float, default=None, required=False, help='Adam weight decay.')
+@click.option('--label-smoothing', 'label_smoothing', type=float, default=None, required=False, help='Label smoothing towards 0.5.')
+@click.pass_context
+def train_noise_model_cli(ctx, labels_csv_path, bundle_path, **kwargs) -> None:
+    """
+    Description
+    -----------
+    A command-line tool to train the noise-model ensemble on a labels CSV and write a bundle
+    detect-usv-noise loads unchanged.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
+
+    processing_settings_dict = modify_settings_json_for_cli(
+        ctx=ctx,
+        provided_params=provided_params,
+        parameters_lists=['seeds'],
+        settings_dict='processing_settings',
+        block='train_noise_model',
+    )
+
+    USVNoiseModelTrainer(
+        labels_csv_path=labels_csv_path,
+        bundle_path=bundle_path,
+        input_parameter_dict=processing_settings_dict,
+        message_output=print,
+    ).train()

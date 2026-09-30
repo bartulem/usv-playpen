@@ -296,6 +296,17 @@
     "exclude_metadata_audio_channels": true,
     "batch_size": 64
   },
+  "train_noise_model": {
+    "calibration_path": "",
+    "exclude_metadata_audio_channels": true,
+    "n_workers": 16,
+    "seeds": [20269914, 20269915, 20269916, 20269917, 20269918],
+    "epochs": 40,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "label_smoothing": 0.05
+  },
   "detect_usv_squeaks": {
     "squeak_model_path": "",
     "squeak_threshold": 0.385,

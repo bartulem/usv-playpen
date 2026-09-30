@@ -139,6 +139,7 @@ generate-usv-spectrograms = "usv_playpen.processing.generate_spectrograms:genera
 generate-usv-masks = "usv_playpen.processing.generate_masks:generate_masks_cli"
 generate-usv-acoustic-features = "usv_playpen.processing.compute_usv_acoustic_features:compute_usv_acoustic_features_cli"
 detect-usv-noise = "usv_playpen.processing.detect_usv_noise:detect_usv_noise_cli"
+train-noise-model = "usv_playpen.processing.detect_usv_noise:train_noise_model_cli"
 detect-usv-squeaks = "usv_playpen.processing.detect_usv_squeaks:detect_usv_squeaks_cli"
 infer-qlvm-squeak-latents = "usv_playpen.processing.detect_usv_squeaks:infer_qlvm_squeak_latents_cli"
 build-qlvm-training-set = "usv_playpen.processing.build_qlvm_training_set:build_qlvm_training_set_cli"

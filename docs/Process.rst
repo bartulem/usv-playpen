@@ -1668,6 +1668,32 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "batch_size": 64
       }
 
+*Train noise model* (``train_noise_model``, command line only; see *Noise model* below):
+
+* **calibration_path** : JSON holding the ``calibration`` table (rows of ``threshold``, ``precision``, ``recall``, ...) and the ``decision`` block (``exclude_at_or_above``, ``noise_at_or_above``, ``held_out_precision``, ``held_out_recall``, ``real_calls_excluded_per_10000`` and any provenance) the bundle carries; ``calibration_source`` and ``calibration_population`` are copied too when present. Training does not measure these, so they must describe this labels set and recipe
+* **exclude_metadata_audio_channels** : drop channels the session metadata marks as excluded from the spectrogram average; keep it as *Detect noise* runs
+* **n_workers** : sessions whose audio is read concurrently (threads) while the inputs are built; reading short windows from 24 wavs on the lab share is latency-bound (~14 s per session serially)
+* **seeds** : one seed per ensemble member (the production ensemble's five)
+* **epochs** : training epochs per member
+* **batch_size** : segments per training batch
+* **learning_rate** : Adam learning rate, cosine-annealed to zero over the run
+* **weight_decay** : Adam weight decay
+* **label_smoothing** : targets are smoothed towards 0.5 by this amount
+
+.. code-block:: json
+
+    "train_noise_model": {
+        "calibration_path": "",
+        "exclude_metadata_audio_channels": true,
+        "n_workers": 16,
+        "seeds": [20269914, 20269915, 20269916, 20269917, 20269918],
+        "epochs": 40,
+        "batch_size": 32,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "label_smoothing": 0.05
+      }
+
 *Infer QLVM latents* (``infer_qlvm_latents``):
 
 * **model_cells** : column prefix → model package cell, e.g. ``{"qlvm_dur": ".../v3/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor"}`` (default ``{}``: filled with the production mapping when ``spectrograms_root`` is set, see above; left empty, the run stops). One run places the session on the torus of **every** listed cell and writes, per prefix ``P``, the two float columns ``P1`` / ``P2`` (torus coordinates in ``[0, 1)``; nulls for calls a cell does not place) and the integer cluster-label columns of the prefix's ``model_cell_label_levels`` (by default both levels: ``qlvm_category`` and ``qlvm_supercategory`` for ``qlvm``, ``P_category`` and ``P_supercategory`` for every other prefix); no model column is written. The legacy ``qlvm_model`` column and the earlier ``P1`` / ``P2`` and label columns (both levels) of the listed prefixes are removed first (a ``qlvm1`` / ``qlvm2`` pair and its labels are kept unless ``qlvm`` is a listed prefix). A prefix must be a Python identifier (letters, digits, underscores, not starting with a digit), may appear once, and ``P1`` / ``P2`` may not be another column of the USV summary (the production coordinate and label columns are allowed). Each cell brings everything model-specific: the decoder from its ``checkpoint.tar`` (read without torch; the legacy or ReLU head is read from the weights), the input normalization and duration window from its ``training_contract.json``, the lattice from the contract's Fibonacci ``embedding_fib_m`` (``24``, 46,368 points), and the categories from its fine and coarse ``label_grid.npy`` (``inference/clusters_<level>/`` in v3, ``cluster/<level>/`` in v2 / v2.1). Each cell is loaded once per run and checked against ``masking_type``, ``target_shape``, ``time_stretch``, ``latent_dim`` and ``length_threshold``, so all listed cells must share them (``masking_type`` ``"sam"`` for phase 9 cells, ``"none"`` for phase 6, 10 and 11 cells). Package cells were trained on min-maxed spectrograms (phase 6 and 10 cells also with a 0.2 loudness floor), which is applied automatically. Conditional cells decode each USV at a value derived from its own conditioning value — the normalized duration; the mean frequency of its SAM-masked spectrogram, which needs the session's masks even though the input is unmasked; and, in phase 11 (``qlvm_models_latest/v3``), ``clip(freq_bandwidth_hz / 90000, 0, 1)`` from the summary (run *Generate USV acoustic features* first) or the loudness mapped through the contract's ``db_range`` (the masked, variance-weighted image-level dB, measured from the session's ``hpss_filtered`` audio with the spectrogram generator's own slice and STFT; about 40–90 ms per USV on one core). USVs without a value get null columns. Phase 10 cells (duration, mean frequency) decode at the frozen corpus bin mean of ``condition_bins.npz`` (the lattice is decoded once per distinct bin mean, up to 32 per session). Phase 11 cells (duration, mean frequency, bandwidth, loudness) follow the contract's ``condition.decode``: ``"exact"`` (duration, bandwidth) is the value clamped to the cell's training range ``[train_c_min, train_c_max]``, ``"grid"`` (mean frequency, loudness) the nearest point of the cell's ``decode_grid`` (0.0025 apart); the log counts the USVs outside the range each rule applies (the training range for ``"exact"``, the ends of the decode grid for ``"grid"``). This is how the package embedded every corpus call, and the lattice is decoded once per distinct value (about 100–250 per ~900-USV session). See *Several QLVM models in one run* below for the production mapping and how each model's coordinates are obtained
@@ -1752,6 +1778,18 @@ Mask detector
 The YOLO box detector that localizes each call in its spectrogram so SAM2 can segment it; ``generate-usv-masks`` reloads its weights. ``export-yolo-dataset`` renders the cohort's spectrograms to an Ultralytics dataset (``images/`` + ``labels/`` + ``data.yaml``); ``train-masks`` fine-tunes YOLO → the run directory + ``best.pt``. Cluster submitter: ``train_masks_global.sh``.
 
 Box labels are set by ``--label-source`` (or ``export_yolo_dataset.label_source``): ``cc`` (default — pseudo-labels from the connected-component detector; zero manual work, no GPU; the recommended start), ``manual`` (hand-verified ``{spec_id}.txt`` YOLO files in ``--manual-labels-directory``), or ``merge`` (``cc`` pseudo-labels overridden by manual files where present). ``manual`` / ``merge`` require ``--manual-labels-directory``; ``cc`` ignores it. The submitter exposes a ``LABEL_SOURCE`` knob and ``MANUAL_LABELS_DIRECTORY``. Both ``generate-usv-masks`` and ``train-masks`` need the ``sam2`` and ``ultralytics`` packages (usv-playpen core dependencies).
+
+Noise model
+^^^^^^^^^^^
+
+The ensemble *Detect noise* scores with. ``train-noise-model`` trains it on a labels CSV and writes a bundle ``detect-usv-noise`` loads unchanged (set it as ``noise_model_path``). Drawing the segments to label, the labelling itself, the cross-fitted calibration and the choice of the decision cut-offs are not part of it: they are done once per labelling round and come in as the labels CSV and the ``calibration_path`` JSON.
+
+* **Labels** -- one row per training example: ``sample_id``, ``session_dir``, ``start`` and ``stop`` (s, as in the session's *usv_summary.csv*), ``chs_count`` (the summary's channel count) and ``noise`` (``1``: the segment holds no vocalization at all, neither a USV nor a squeak; ``0``: it holds one). Unsure answers must be dropped or resolved first. The segment is defined by these columns, not by a summary row, so re-curating a session later cannot change what a label points at. A segment may appear twice (it is then trained on twice, as the production ensemble was); repeats and conflicting repeats are reported.
+* **Inputs** -- built by the same function *Detect noise* scores with (same wavs, channel exclusion, ~100 ms context window, crop, dB transform), so a model is trained on exactly the input it will be run on. The scalars (log channel count, log duration) are standardized over the training set, and their mean and standard deviation go into the bundle.
+* **Recipe** -- the production one: per seed, the network is initialized from ``torch.manual_seed(seed)`` and trained for 40 epochs in batches of 32 (a seeded permutation each epoch), with Adam (learning rate 0.001, weight decay 0.0001) under a cosine schedule stepped per batch, binary cross-entropy on targets smoothed by 0.05, and augmentation of the spectrogram channels (gain jitter of up to ±5 dB, a frequency roll of up to ±2 rows, and with probability 0.5 each a time mask of up to 15% of the frames and a frequency mask of 1-10 rows). cuDNN runs in deterministic mode, but GPU training is still not bit-reproducible, so a retrained ensemble matches an earlier one in its decisions, not its weights.
+* **Bundle** -- the five ``state_dicts``, the input contract (bands, dB constants, frame cap, context), the scalar standardization, the calibration table and decision block from the JSON, and the provenance (labels CSV, recipe with every seed, build date). An existing bundle path is refused, never overwritten, and the written bundle is loaded back through the detector's loader before the run ends.
+
+Retraining the production bundle from its 4,680 labels and five seeds (one RTX 4080, 23 min including the input build) reproduced it in its decisions. Every input matched the cached training inputs of the original run bit for bit, as did the scalar standardization, and on the CPU the training loop gives weights identical to the original code's. On the 1,118 consensus-labelled segments the cut-offs were chosen on (all of them training labels of both ensembles), weighted to the cohort, the confident decisions reach precision 0.988 / recall 0.993 (production 0.988 / 0.993) with 0.74% of segments uncertain (production 0.75%), and 99.85% of three-way decisions agree (99.91% of ``noise`` values). No segment moved between confident vocalization and confident noise. Unweighted, 94.8% of decisions agree (58 of 1,118, all between a confident decision and the uncertain band), because the set was drawn heavily from the uncertain score range (22% of it is uncertain).
 
 A/V synchronization
 -------------------
