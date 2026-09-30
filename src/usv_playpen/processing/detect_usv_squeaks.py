@@ -38,6 +38,16 @@ Columns written into ``usv_summary.csv`` (any pre-existing ones are replaced):
   ``start + t * 0.002048`` s. Every squeak row has a start and an end: the
   segment logit is an attention-weighted average of frame logits, so the
   segment cannot reach the threshold unless some frame does.
+* ``squeak_frame_runs`` -- integer in every row (0 on unscorable rows): the
+  number of runs of at least 3 consecutive frames whose per-frame probability
+  reaches the threshold, counted over the frames of the SAME 128-frame window
+  the segment call is made on (the first ``min(n_frames, 128)`` frames, padding
+  excluded), not over the full-length pass. This is the ``n_bouts_min3`` column
+  of the reference squeak index, whose strict squeak rule (``squeak`` true OR
+  ``squeak_frame_runs >= 1``) left broadband calls out of the reference USV
+  training sets; the window matches the reference so that rule can be
+  evaluated from the summary (``build-qlvm-training-set
+  --strict-squeak-exclusion``).
 
 Squeak QLVM embedding (``infer-qlvm-squeak-latents``, :class:`USVSqueakQLVMEmbedder`):
 a second step places every squeak row that is not noise on the torus of one of
@@ -105,6 +115,13 @@ from .qlvm_model import decoder_head, embed_data, gen_fib_basis_float32
 
 # Columns written into the USV summary CSV.
 SQUEAK_COLUMNS = ("squeak", "squeak_probability", "squeak_start", "squeak_end")
+
+# Column holding the number of above-threshold frame runs of at least
+# SQUEAK_FRAME_RUN_MIN_FRAMES frames in the 128-frame model window (the reference
+# squeak index's n_bouts_min3); kept out of SQUEAK_COLUMNS so the steps that
+# require the four squeak columns do not require it on older summaries.
+SQUEAK_FRAME_RUNS_COLUMN = "squeak_frame_runs"
+SQUEAK_FRAME_RUN_MIN_FRAMES = 3
 
 # Input contract of the trained squeak model; changing any of these makes the
 # checkpoint's output meaningless, so they are constants rather than settings.
@@ -364,6 +381,47 @@ def squeak_extent_seconds(
     )
 
 
+def squeak_frame_run_count(
+    frame_probability: np.ndarray,
+    threshold: float,
+    min_run_frames: int = SQUEAK_FRAME_RUN_MIN_FRAMES,
+) -> int:
+    """
+    Description
+    -----------
+    Counts the maximal runs of consecutive frames whose per-frame squeak
+    probability reaches the threshold (``p >= threshold``) and that span at
+    least ``min_run_frames`` frames. With the default of 3 frames and the
+    frames of the 128-frame model window this is the ``n_bouts_min3`` of the
+    reference squeak index (its ``bout_stats``: runs of the boolean frame
+    presence ``(p_frame >= 0.385) & valid`` over the first ``n_valid_frames``
+    frames, a run counted when its length is ``>= 3``).
+
+    Parameters
+    ----------
+    frame_probability (np.ndarray)
+        Per-frame probabilities over the frames to count, shape ``(n,)``
+        (padding must already be excluded).
+    threshold (float)
+        Frame decision threshold.
+    min_run_frames (int)
+        Shortest run that is counted, in frames.
+
+    Returns
+    -------
+    n_runs (int)
+        Number of above-threshold runs of at least ``min_run_frames`` frames
+        (0 for an empty input).
+    """
+
+    above = np.asarray(frame_probability) >= threshold
+    if not above.any():
+        return 0
+    edges = np.diff(np.concatenate(([0], above.astype(np.int8), [0])))
+    run_lengths = np.flatnonzero(edges == -1) - np.flatnonzero(edges == 1)
+    return int(np.count_nonzero(run_lengths >= min_run_frames))
+
+
 def squeak_wav_channels(
     session_root: pathlib.Path,
     exclude_metadata_audio_channels: bool,
@@ -505,9 +563,13 @@ def score_squeak_rows(
     the fixed 128-frame window in batches (segment probability, the reference
     method), and takes squeak onset / offset from a full-length pass (the
     128-frame window's own frames when the segment fits inside it, a separate
-    forward over all frames when it does not). Rows whose segment is too short
-    for a single STFT frame on any channel are returned with no probability and
-    ``squeak`` False.
+    forward over all frames when it does not). The number of above-threshold
+    frame runs of at least ``SQUEAK_FRAME_RUN_MIN_FRAMES`` frames
+    (:func:`squeak_frame_run_count`) is counted on every scorable row over the
+    valid frames of the 128-frame window, the frames the reference squeak index
+    counted its ``n_bouts_min3`` on. Rows whose segment is too short for a
+    single STFT frame on any channel are returned with no probability,
+    ``squeak`` False and no frame runs.
 
     cuDNN is put in deterministic mode for the duration of the call and restored
     afterwards, and autocast is disabled locally, so a mixed-precision context
@@ -540,7 +602,8 @@ def score_squeak_rows(
     scores (pls.DataFrame)
         One row per requested index: ``row_index``, ``n_frames`` (native STFT
         frames, 0 when unscorable), ``raw_probability`` (the segment probability
-        for every scorable row), and the four ``SQUEAK_COLUMNS``.
+        for every scorable row), the four ``SQUEAK_COLUMNS`` and
+        ``SQUEAK_FRAME_RUNS_COLUMN`` (int64 in every row, 0 when unscorable).
     """
 
     starts = usv_summary["start"].to_numpy()
@@ -555,6 +618,7 @@ def score_squeak_rows(
     n_rows = len(row_indices)
     raw_probability = np.full(n_rows, np.nan)
     full_pass_frames: list[np.ndarray | None] = [None] * n_rows
+    frame_runs = np.zeros(n_rows, dtype=np.int64)
     scorable = [position for position in range(n_rows) if spectrograms[position] is not None]
 
     previous_deterministic = torch.backends.cudnn.deterministic
@@ -574,6 +638,9 @@ def score_squeak_rows(
                 for offset, position in enumerate(batch_positions):
                     raw_probability[position] = float(segment_probability[offset])
                     n_frames = spectrograms[position].shape[1]
+                    frame_runs[position] = squeak_frame_run_count(
+                        frame_probability[offset, :min(n_frames, MODEL_WINDOW_FRAMES)], threshold
+                    )
                     if n_frames <= MODEL_WINDOW_FRAMES:
                         full_pass_frames[position] = frame_probability[offset, :n_frames]
 
@@ -611,6 +678,7 @@ def score_squeak_rows(
             "squeak_probability": squeak_probability,
             "squeak_start": squeak_start,
             "squeak_end": squeak_end,
+            SQUEAK_FRAME_RUNS_COLUMN: frame_runs,
         },
         schema={
             "row_index": pls.Int64,
@@ -620,6 +688,7 @@ def score_squeak_rows(
             "squeak_probability": pls.Float64,
             "squeak_start": pls.Float64,
             "squeak_end": pls.Float64,
+            SQUEAK_FRAME_RUNS_COLUMN: pls.Int64,
         },
     )
 
@@ -629,7 +698,7 @@ class USVSqueakDetector:
     Description
     -----------
     Scores every USV segment of one session for a squeak and merges the four
-    squeak columns into its ``*_usv_summary.csv``.
+    squeak columns and ``squeak_frame_runs`` into its ``*_usv_summary.csv``.
     """
 
     def __init__(
@@ -669,8 +738,8 @@ class USVSqueakDetector:
         -----------
         Loads the squeak model, scores every row of the session's USV summary
         (see :func:`score_squeak_rows`), and writes ``squeak``,
-        ``squeak_probability``, ``squeak_start`` and ``squeak_end`` into the
-        summary, replacing any existing squeak columns. Run it after
+        ``squeak_probability``, ``squeak_start``, ``squeak_end`` and
+        ``squeak_frame_runs`` into the summary, replacing any existing ones. Run it after
         ``das_summarize``: re-summarizing rewrites the CSV with its base columns
         only and would remove these.
 
@@ -679,7 +748,8 @@ class USVSqueakDetector:
 
         Returns
         -------
-        Updated ``*_usv_summary.csv`` with the four squeak columns.
+        Updated ``*_usv_summary.csv`` with the four squeak columns and
+        ``squeak_frame_runs``.
         """
 
         self.message_output(
@@ -700,7 +770,7 @@ class USVSqueakDetector:
             label="USV summary CSV",
         )
         usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
-        usv_df = usv_df.drop([column for column in SQUEAK_COLUMNS if column in usv_df.columns])
+        usv_df = usv_df.drop([column for column in (*SQUEAK_COLUMNS, SQUEAK_FRAME_RUNS_COLUMN) if column in usv_df.columns])
 
         scores = score_squeak_rows(
             session_root=root,
@@ -713,7 +783,7 @@ class USVSqueakDetector:
             batch_size=cfg['batch_size'],
             message_output=self.message_output,
         )
-        merged = order_usv_summary_columns(pls.concat([usv_df, scores.select(SQUEAK_COLUMNS)], how="horizontal"))
+        merged = order_usv_summary_columns(pls.concat([usv_df, scores.select(*SQUEAK_COLUMNS, SQUEAK_FRAME_RUNS_COLUMN)], how="horizontal"))
         merged.write_csv(file=str(usv_summary_loc))
 
         self.message_output(

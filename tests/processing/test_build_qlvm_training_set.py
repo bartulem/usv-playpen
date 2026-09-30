@@ -52,6 +52,7 @@ _CFG = {
     "length_threshold": 128.0,
     "require_mask": True,
     "exclude_squeaks": True,
+    "strict_squeak_exclusion": False,
     "exclude_noise": False,
     "masking_type": "sam",
     "apply_mask": False,
@@ -351,6 +352,43 @@ def test_build_row_exclusions_override_the_summary(tmp_path, cohort):
     assert bool(np.load(out_dir / "metadata.npz")["row_exclusions_override"])
 
 
+def _add_frame_runs(root, runs):
+    """
+    Add a ``squeak_frame_runs`` column (the per-row run counts ``runs``) to the
+    session's ``*_usv_summary.csv``, as detect-usv-squeaks writes it.
+    """
+    summary = root / "audio" / f"{root.name}_usv_summary.csv"
+    pls.read_csv(summary).with_columns(pls.Series("squeak_frame_runs", runs, dtype=pls.Int64)).write_csv(summary)
+
+
+def test_build_strict_squeak_exclusion_adds_frame_run_rows(tmp_path, cohort):
+    """
+    strict_squeak_exclusion leaves out rows with squeak_frame_runs >= 1 on top of
+    the squeak rows (the reference squeak index's strict rule); by default those
+    rows stay in, and a null run count counts as 0.
+    """
+    for root in cohort:
+        _add_frame_runs(root, [0] * 8)
+    _add_frame_runs(cohort[0], [0, 0, 1, 2, 0, None, 0, 0])
+    default_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True}, "default")
+    strict_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True, "strict_squeak_exclusion": True}, "strict")
+    default_ids = np.load(default_dir / "full_data.npz")["spec_id"].tolist()
+    strict_ids = np.load(strict_dir / "full_data.npz")["spec_id"].tolist()
+    assert "20230101_100000_3" in default_ids
+    assert "20230101_100000_3" not in strict_ids
+    assert "20230101_100000_5" in strict_ids
+    assert not any(i in strict_ids for i in ("20230101_100000_1", "20230101_100000_2"))
+    assert sorted(set(default_ids) - set(strict_ids)) == ["20230101_100000_3"]
+    assert bool(np.load(strict_dir / "metadata.npz")["strict_squeak_exclusion"])
+    assert not bool(np.load(default_dir / "metadata.npz")["strict_squeak_exclusion"])
+
+
+def test_build_strict_squeak_exclusion_needs_the_frame_run_column(tmp_path, cohort):
+    """A summary without squeak_frame_runs (scored before the column existed) stops a strict build."""
+    with pytest.raises(ValueError, match="squeak_frame_runs"):
+        _build(tmp_path, cohort, {**_CFG, "strict_squeak_exclusion": True})
+
+
 def test_build_full_dataset_writes_every_eligible_row(tmp_path, cohort):
     """full_dataset takes every eligible row of the listed types, writes the split
     pair and then full_data.npz, whose rows are the union of the pair's."""
@@ -367,6 +405,7 @@ def test_build_full_dataset_writes_every_eligible_row(tmp_path, cohort):
     ({"masking_type": "none"}, "masking_type 'none'"),
     ({"apply_mask": True}, "loudness floor"),
     ({"mask_count_bin_edges": [2, 1]}, "mask_count_bin_edges"),
+    ({"exclude_squeaks": False, "strict_squeak_exclusion": True}, "strict_squeak_exclusion"),
 ])
 def test_build_rejects_inconsistent_settings(tmp_path, cohort, override, message):
     """Inconsistent settings stop the build before anything is read."""

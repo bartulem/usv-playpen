@@ -17,7 +17,10 @@ sessions and writes the same spectrograms (see ``docs/Process.rst``). The steps:
    taken), its type is read from the ``Subjects[].sex`` entries of its metadata
    YAML (:func:`session_type_from_metadata`: ``MF``, ``FF``, ``MM``,
    ``lone_male``, ...), and the rows its ``*_usv_summary.csv`` flags as squeaks
-   (``exclude_squeaks``) or noise (``exclude_noise``) are marked. A row is
+   (``exclude_squeaks``; with ``strict_squeak_exclusion`` also every row with
+   at least one run of 3 above-threshold classifier frames, ``squeak_frame_runs
+   >= 1``, the reference squeak index's strict rule) or noise
+   (``exclude_noise``) are marked. A row is
    eligible when ``0 < duration < length_threshold``, it is not marked, and, with
    ``require_mask``, it has at least one SAM mask instance
    (:func:`eligible_rows`).
@@ -685,6 +688,7 @@ def usv_summary_exclusions(
     n_rows: int,
     exclude_squeaks: bool,
     exclude_noise: bool,
+    strict_squeak_exclusion: bool = False,
 ) -> np.ndarray:
     """
     Description
@@ -693,6 +697,12 @@ def usv_summary_exclusions(
     set: squeaks (``squeak`` true, written by ``detect-usv-squeaks``) when
     ``exclude_squeaks``, and noise (``noise`` true, written by
     ``detect-usv-noise``) when ``exclude_noise``; a null value counts as false.
+    With ``strict_squeak_exclusion`` (which needs ``exclude_squeaks``) a row is
+    also a squeak when ``squeak_frame_runs >= 1`` (at least one run of 3
+    consecutive above-threshold frames in the classifier's 128-frame window, also
+    written by ``detect-usv-squeaks``; a null counts as 0): the strict rule of the
+    reference squeak index (segment probability >= 0.385 OR ``n_bouts_min3 >=
+    1``), by which the reference USV training sets left broadband calls out.
     The summary rows are 1:1 with the spectrogram H5 rows, which is checked.
 
     Parameters
@@ -705,6 +715,9 @@ def usv_summary_exclusions(
         Leave out squeak rows.
     exclude_noise (bool)
         Leave out noise rows.
+    strict_squeak_exclusion (bool)
+        Also leave out rows with ``squeak_frame_runs >= 1`` (the reference squeak
+        index's strict rule); only meaningful with ``exclude_squeaks``.
 
     Returns
     -------
@@ -714,8 +727,15 @@ def usv_summary_exclusions(
     Raises
     ------
     ValueError
-        The summary's row count differs from the H5's, or a needed column is missing.
+        The summary's row count differs from the H5's, a needed column is missing
+        (``squeak_frame_runs`` under ``strict_squeak_exclusion``: a summary
+        written before ``detect-usv-squeaks`` recorded it), or
+        ``strict_squeak_exclusion`` is requested without ``exclude_squeaks``.
     """
+
+    if strict_squeak_exclusion and not exclude_squeaks:
+        error_message = "strict_squeak_exclusion widens the squeak exclusion, so it needs exclude_squeaks."
+        raise ValueError(error_message)
 
     excluded = np.zeros(n_rows, dtype=bool)
     if not exclude_squeaks and not exclude_noise:
@@ -740,6 +760,14 @@ def usv_summary_exclusions(
             error_message = f"{usv_summary_path} has no '{column}' column; run {producer} on the session first."
             raise ValueError(error_message)
         excluded |= usv_summary[column].cast(pls.Boolean).fill_null(False).to_numpy()
+    if strict_squeak_exclusion:
+        if "squeak_frame_runs" not in usv_summary.columns:
+            error_message = (
+                f"{usv_summary_path} has no 'squeak_frame_runs' column, which strict_squeak_exclusion needs; "
+                f"re-run detect-usv-squeaks on the session (summaries scored before the column existed lack it)."
+            )
+            raise ValueError(error_message)
+        excluded |= usv_summary["squeak_frame_runs"].cast(pls.Int64).fill_null(0).to_numpy() >= 1
     return excluded
 
 
@@ -1065,8 +1093,8 @@ class QLVMTrainingSetBuilder:
             Logging callback; defaults to ``print``.
         row_exclusions (dict[str, np.ndarray] | None)
             Python-API only: per session id, a boolean ``(n_rows,)`` array of rows to
-            leave out that REPLACES the ``exclude_squeaks`` / ``exclude_noise``
-            flags of the USV summary for that session (e.g. an external squeak
+            leave out that REPLACES the ``exclude_squeaks`` / ``exclude_noise`` /
+            ``strict_squeak_exclusion`` flags of the USV summary for that session (e.g. an external squeak
             index, to rebuild a set whose exclusions came from elsewhere). None (the
             default) uses the summary flags for every session.
 
@@ -1117,6 +1145,7 @@ class QLVMTrainingSetBuilder:
         require_mask = cfg['require_mask']
         exclude_squeaks = cfg['exclude_squeaks']
         exclude_noise = cfg['exclude_noise']
+        strict_squeak_exclusion = cfg['strict_squeak_exclusion']
         masking_type = cfg['masking_type']
         apply_mask = cfg['apply_mask']
         floor = None if cfg['floor'] is None else float(cfg['floor'])
@@ -1146,6 +1175,8 @@ class QLVMTrainingSetBuilder:
             problems.append(f"mask_count_bin_edges must be strictly increasing integers >= 1, got {bin_edges}")
         if not session_type_targets:
             problems.append("session_type_targets is empty; list at least one session type")
+        if strict_squeak_exclusion and not exclude_squeaks:
+            problems.append("strict_squeak_exclusion widens the squeak exclusion, so it needs exclude_squeaks")
         if problems:
             error_message = "build_qlvm_training_set settings are inconsistent:\n  " + "\n  ".join(problems)
             raise ValueError(error_message)
@@ -1185,7 +1216,7 @@ class QLVMTrainingSetBuilder:
                     error_message = f"row_exclusions[{session_id!r}] has shape {excluded.shape}, the H5 has {durations.size} rows."
                     raise ValueError(error_message)
             else:
-                excluded = usv_summary_exclusions(root_directory, durations.size, exclude_squeaks, exclude_noise)
+                excluded = usv_summary_exclusions(root_directory, durations.size, exclude_squeaks, exclude_noise, strict_squeak_exclusion)
             rows = eligible_rows(durations, mask_counts, excluded, length_threshold, require_mask)
             without_exclusion = eligible_rows(durations, mask_counts, np.zeros_like(excluded), length_threshold, require_mask)
             excluded_by_type[session_type] = excluded_by_type.get(session_type, 0) + int(without_exclusion.size - rows.size)
@@ -1350,6 +1381,7 @@ class QLVMTrainingSetBuilder:
             split_sessions=json.dumps({"train": train_sessions, "validation": val_sessions}),
             exclude_squeaks=exclude_squeaks,
             exclude_noise=exclude_noise,
+            strict_squeak_exclusion=strict_squeak_exclusion,
             row_exclusions_override=self.row_exclusions is not None,
             excluded_by_type=json.dumps(excluded_by_type),
             n_train=written["train_data.npz"],
@@ -1371,6 +1403,7 @@ class QLVMTrainingSetBuilder:
 @click.option('--length-threshold', 'length_threshold', type=float, default=None, required=False, help='Drop spectrograms with duration >= threshold (time bins).')
 @click.option('--require-mask/--no-require-mask', 'require_mask', default=None, required=False, help='Leave out calls without a SAM mask instance.')
 @click.option('--exclude-squeaks/--no-exclude-squeaks', 'exclude_squeaks', default=None, required=False, help='Leave out rows the USV summary flags as squeaks (detect-usv-squeaks).')
+@click.option('--strict-squeak-exclusion/--no-strict-squeak-exclusion', 'strict_squeak_exclusion', default=None, required=False, help='With --exclude-squeaks, also leave out rows with squeak_frame_runs >= 1 (the reference squeak index\'s strict rule); needs a summary scored by a detect-usv-squeaks that writes squeak_frame_runs.')
 @click.option('--exclude-noise/--no-exclude-noise', 'exclude_noise', default=None, required=False, help='Leave out rows the USV summary flags as noise (detect-usv-noise).')
 @click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Read SAM masks from the mask/<session> groups ("sam") or none ("none").')
 @click.option('--apply-mask/--no-apply-mask', 'apply_mask', default=None, required=False, help='Multiply the binarized SAM mask into the stored spectrograms (masked set) or keep them unmasked.')

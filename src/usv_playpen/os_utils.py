@@ -1091,7 +1091,7 @@ def wait_for_subprocesses(
 
 # Canonical column order of a session's ``*_usv_summary.csv``: the DAS event
 # (written by das_summarize), the call-level labels (emitter from vocal assignment,
-# squeak from detect_usv_squeaks), the acoustic descriptors
+# the squeak columns and squeak_frame_runs from detect_usv_squeaks), the acoustic descriptors
 # (compute_usv_acoustic_features, including the absolute loudness_db) and the QLVM torus coordinates and cluster labels of
 # the production models (infer_qlvm_latents with model_cells: the phase 6 regular
 # model's qlvm1/qlvm2 with its fine and coarse labels qlvm_category /
@@ -1109,7 +1109,7 @@ USV_SUMMARY_COLUMN_ORDER = (
     "usv_id", "start", "stop", "duration", "peak_amp_ch", "mean_amp_ch", "chs_count", "chs_detected",
     "emitter",
     "noise", "noise_probability",
-    "squeak", "squeak_probability", "squeak_start", "squeak_end",
+    "squeak", "squeak_probability", "squeak_start", "squeak_end", "squeak_frame_runs",
     "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "loudness_db",
     "spectral_entropy", "mask_number",
     "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",

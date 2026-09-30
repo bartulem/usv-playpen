@@ -555,11 +555,13 @@ def test_usv_summary_column_order_places_squeaks_between_emitter_and_features():
         "qlvm_squeak1", "qlvm_squeak2",
     ]
     assert "qlvm_model" not in order
-    assert order[order.index("squeak"):order.index("squeak") + 4] == ["squeak", "squeak_probability", "squeak_start", "squeak_end"]
+    assert order[order.index("squeak"):order.index("squeak") + 5] == [
+        "squeak", "squeak_probability", "squeak_start", "squeak_end", "squeak_frame_runs",
+    ]
     assert order.index("emitter") + 1 == order.index("noise")
     assert order[order.index("noise"):order.index("noise") + 2] == ["noise", "noise_probability"]
     assert order.index("noise_probability") + 1 == order.index("squeak")
-    assert order.index("squeak_end") + 1 == order.index("mean_freq_hz")
+    assert order.index("squeak_frame_runs") + 1 == order.index("mean_freq_hz")
     assert order.index("mask_number") < order.index("qlvm1")
 
 

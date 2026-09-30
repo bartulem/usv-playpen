@@ -9,7 +9,10 @@ synthetic session (per-channel PCM_16 wavs under ``audio/hpss`` plus a small
 logit, so every valid frame and every scorable segment has a known probability:
 that pins the squeak call, the probability, the full-length onset/offset of a
 segment longer than the model window, the unscorable too-short row and the
-metadata channel exclusion without needing the real checkpoint.
+metadata channel exclusion without needing the real checkpoint. The frame-run
+count (``squeak_frame_runs``, the reference squeak index's ``n_bouts_min3``) is
+pinned with a stub model whose frame logits are set per frame index, which shows
+that runs are counted on the 128-frame window only and need 3 frames.
 
 The squeak QLVM embedding is tested on the same kind of synthetic session: the
 crop frames and their context, the per-crop and model-input normalization and
@@ -61,6 +64,61 @@ def _forced_model(frame_logit: float) -> squeaks.TimeMIL:
         model.frame.bias.fill_(frame_logit)
     model.eval()
     return model
+
+
+class _FramePatternModel(torch.nn.Module):
+    """
+    Description
+    -----------
+    Stand-in for TimeMIL whose frame logit is +5 at the frame indices given and
+    -5 elsewhere, whatever the input, and whose segment logit is always +5, so
+    every scorable segment is a squeak and its per-frame pattern is known.
+    """
+
+    def __init__(self, above_frames: list[int]) -> None:
+        """
+        Description
+        -----------
+        Stores the frame indices whose logit is +5.
+
+        Parameters
+        ----------
+        above_frames (list[int])
+            Frame indices (from the start of the input) that reach the threshold.
+
+        Returns
+        -------
+        None
+        """
+
+        super().__init__()
+        self.above_frames = above_frames
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:  # noqa: ARG002
+        """
+        Description
+        -----------
+        Returns the fixed segment logit and the per-frame logit pattern.
+
+        Parameters
+        ----------
+        x (torch.Tensor)
+            Input batch, shape ``(B, 1, 128, T)``.
+        mask (torch.Tensor)
+            Validity mask, shape ``(B, T)`` (unused).
+
+        Returns
+        -------
+        segment_logit (torch.Tensor)
+            ``(B,)`` all +5.
+        frame_logit (torch.Tensor)
+            ``(B, T)``: +5 at ``above_frames`` (those below ``T``), -5 elsewhere.
+        """
+
+        n_batch, n_time = x.shape[0], x.shape[-1]
+        frame_logit = torch.full((n_batch, n_time), -5.0)
+        frame_logit[:, [frame for frame in self.above_frames if frame < n_time]] = 5.0
+        return torch.full((n_batch,), 5.0), frame_logit
 
 
 def _build_session(tmp_path: pathlib.Path, excluded_channels: list[str] | None = None) -> pathlib.Path:
@@ -145,6 +203,19 @@ def test_squeak_extent_seconds_uses_frame_centres_on_the_session_clock():
     assert squeaks.squeak_extent_seconds(np.array([0.1, 0.2]), 12.0, 0.385) == (None, None)
 
 
+def test_squeak_frame_run_count_counts_runs_of_at_least_three_frames():
+    """Maximal runs of p >= threshold are counted when they span >= 3 frames (the
+    reference n_bouts_min3); a threshold hit is inclusive and shorter runs are ignored."""
+    threshold = 0.385
+    probability = np.array([0.9, 0.9, 0.1, 0.385, 0.5, 0.6, 0.1, 0.9, 0.9, 0.9, 0.9, 0.2, 0.9])
+    assert squeaks.squeak_frame_run_count(probability, threshold) == 2
+    assert squeaks.squeak_frame_run_count(probability, threshold, min_run_frames=1) == 4
+    assert squeaks.squeak_frame_run_count(probability, threshold, min_run_frames=4) == 1
+    assert squeaks.squeak_frame_run_count(np.full(128, 0.9), threshold) == 1
+    assert squeaks.squeak_frame_run_count(np.array([0.9, 0.9]), threshold) == 0
+    assert squeaks.squeak_frame_run_count(np.empty(0), threshold) == 0
+
+
 def test_timemil_is_fully_convolutional_along_time():
     """The network accepts the 128-frame window and any longer segment, returning one logit per frame."""
     model = squeaks.TimeMIL().eval()
@@ -213,6 +284,36 @@ def test_score_squeak_rows_calls_times_and_unscorable_rows(tmp_path):
     assert scores["squeak_start"][2] is None
     assert scores["squeak_end"][2] is None
 
+    assert scores[squeaks.SQUEAK_FRAME_RUNS_COLUMN].dtype == pls.Int64
+    assert scores[squeaks.SQUEAK_FRAME_RUNS_COLUMN].to_list() == [1, 1, 0]
+
+
+def test_score_squeak_rows_counts_frame_runs_on_the_model_window_only(tmp_path):
+    """
+    The frame runs are counted over the 128-frame window the segment call is made
+    on, as the reference squeak index did: on the 400 ms segment the 12-frame run
+    at frames 130-141 lies past the window, so it sets the full-length offset but
+    is not counted, while the 2-frame run at frames 0-1 is too short and the
+    3-frame run at frames 60-62 counts. The 50 ms segment (about 25 frames)
+    holds only the two short-run frames and the 60-62 run lies past its end.
+    """
+    root = _build_session(tmp_path)
+    summary = pls.read_csv(root / "audio" / f"{SESSION_ID}_usv_summary.csv", schema_overrides={"usv_id": pls.String})
+    scores = squeaks.score_squeak_rows(
+        session_root=root,
+        usv_summary=summary,
+        row_indices=np.array([0, 1]),
+        model=_FramePatternModel([0, 1, 60, 61, 62, *range(130, 142)]),
+        device=torch.device("cpu"),
+        threshold=0.385,
+        exclude_metadata_audio_channels=True,
+        batch_size=256,
+        message_output=lambda *_a, **_kw: None,
+    )
+    assert scores["squeak"].to_list() == [True, True]
+    assert scores[squeaks.SQUEAK_FRAME_RUNS_COLUMN].to_list() == [0, 1]
+    assert scores["squeak_end"][1] == pytest.approx(0.30 + 141 * squeaks.FRAME_DT_S)
+
 
 def test_score_squeak_rows_below_threshold_leaves_squeak_columns_empty(tmp_path):
     """With every frame forced to p = sigmoid(-5) nothing is a squeak, but the raw probability is still returned."""
@@ -233,6 +334,7 @@ def test_score_squeak_rows_below_threshold_leaves_squeak_columns_empty(tmp_path)
     assert scores["squeak_probability"].null_count() == 2
     assert scores["squeak_start"].null_count() == 2
     assert scores["raw_probability"][0] == pytest.approx(float(torch.sigmoid(torch.tensor(-5.0))), abs=1e-6)
+    assert scores[squeaks.SQUEAK_FRAME_RUNS_COLUMN].to_list() == [0, 0]
 
 
 def test_squeak_wav_channels_honours_metadata_exclusion(tmp_path):
@@ -246,15 +348,16 @@ def test_squeak_wav_channels_honours_metadata_exclusion(tmp_path):
 
 def test_detect_and_merge_writes_the_four_columns(tmp_path, mocker):
     """
-    The merge replaces any existing squeak columns, keeps every other column and
-    the usv_id zero-padding, places the squeak block between emitter and the
-    acoustic features (the canonical summary order), writes True / False in every
-    row and leaves the probability and timing empty on non-squeak rows.
+    The merge replaces any existing squeak columns (squeak_frame_runs included),
+    keeps every other column and the usv_id zero-padding, places the squeak block
+    and squeak_frame_runs between emitter and the acoustic features (the
+    canonical summary order), writes True / False and an integer run count in
+    every row and leaves the probability and timing empty on non-squeak rows.
     """
     root = _build_session(tmp_path)
     summary_path = root / "audio" / f"{SESSION_ID}_usv_summary.csv"
     stale = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String}).with_columns(
-        pls.lit(True).alias("squeak"), pls.lit(40000.0).alias("mean_freq_hz")
+        pls.lit(True).alias("squeak"), pls.lit(40000.0).alias("mean_freq_hz"), pls.lit(9).alias("squeak_frame_runs")
     )
     stale.write_csv(summary_path)
 
@@ -276,7 +379,10 @@ def test_detect_and_merge_writes_the_four_columns(tmp_path, mocker):
     detector.detect_and_merge()
 
     written = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
-    assert written.columns == ["usv_id", "start", "stop", "duration", "emitter", *squeaks.SQUEAK_COLUMNS, "mean_freq_hz"]
+    assert written.columns == [
+        "usv_id", "start", "stop", "duration", "emitter", *squeaks.SQUEAK_COLUMNS, squeaks.SQUEAK_FRAME_RUNS_COLUMN, "mean_freq_hz",
+    ]
+    assert written[squeaks.SQUEAK_FRAME_RUNS_COLUMN].to_list() == [1, 1, 0]
     assert written["mean_freq_hz"].to_list() == [40000.0, 40000.0, 40000.0]
     assert written["usv_id"].to_list() == ["0000", "0001", "0002"]
     assert written["squeak"].to_list() == [True, True, False]

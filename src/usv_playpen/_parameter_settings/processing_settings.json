@@ -331,6 +331,7 @@
     "length_threshold": 128.0,
     "require_mask": true,
     "exclude_squeaks": true,
+    "strict_squeak_exclusion": false,
     "exclude_noise": true,
     "masking_type": "sam",
     "apply_mask": false,
