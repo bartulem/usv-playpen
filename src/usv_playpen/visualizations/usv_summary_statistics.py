@@ -3161,7 +3161,7 @@ def plot_session_squeak_time_heatmap(
     Plots, one row per session, where in the recording the session's squeaks sit.
 
     A squeak is a broadband vocalization (3-8 kHz fundamental) that the squeak classifier
-    (``detect_usv_squeaks``, Dexter's BBV classifier) flags in a segment of the USV summary. Each
+    (``detect_usv_squeaks``, the v3 BBV classifier) flags in a segment of the USV summary. Each
     session's summary is read from ``<session>/audio/*_usv_summary.csv``; when
     ``exclude_noise_usvs`` is set, the segments the noise classifier flagged are dropped first,
     so the rate is squeaks among vocal segments.
@@ -3200,8 +3200,8 @@ def plot_session_squeak_time_heatmap(
     condition, and ``stats_dict`` reports how many sessions fell below the segment minimum and
     how many drawn sessions have no squeak.
 
-    Adapted from Dexter's standalone ``plot_session_time_heatmap.py`` (BBV corpus figures); it
-    reads the repo's own per-session summaries instead of his corpus index.
+    Adapted from the reference standalone ``plot_session_time_heatmap.py`` (BBV corpus figures); it
+    reads the repo's own per-session summaries instead of the reference corpus index.
 
     Parameters
     ----------

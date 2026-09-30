@@ -5,8 +5,8 @@ Build a QLVM training set (``.npz``) of squeaks (broadband vocalizations) from a
 list of session root directories, drawn the way the training sets of the phase 3
 squeak QLVM cells (``qlvm_models_latest/phase3_BBVs_qlvm``) were drawn.
 
-This is the in-house port of Dexter's ``build_bbv_dataset.py`` (MMMmB
-repository). It lives in its own module, not in :mod:`build_qlvm_training_set`,
+This is the in-house port of the reference builder ``build_bbv_dataset.py``
+(MMMmB repository). It lives in its own module, not in :mod:`build_qlvm_training_set`,
 because it reads its spectrograms through :mod:`detect_usv_squeaks` (which itself
 imports ``stretch_specs`` from :mod:`build_qlvm_training_set`, so importing it back
 there would be circular) and because it shares none of the USV builder's inputs:
@@ -25,12 +25,13 @@ the resize (:func:`build_qlvm_training_set.stretch_specs`). The steps:
 2. **Crop gates** (:func:`squeak_crop_gates`). With ``crop_window``
    ``"full_length"`` (the default, and the rule ``infer-qlvm-squeak-latents``
    embeds with) the crop may lie anywhere in the segment; with
-   ``"first_128_frames"`` (Dexter's rule, forced by his 128-frame spectrogram
-   store) the segment is cut to its first 128 frames and a squeak still going at
-   frame 127 of a longer segment (right-censored) is dropped. The extent is then
-   widened by ``context_frames`` either side (clipped to the segment), and crops
-   narrower than ``min_trimmed_frames`` or wider than the 128-frame frame are
-   dropped. The crop width sets the duration stratum (``duration_bin_edges``,
+   ``"first_128_frames"`` (the reference rule, forced by the reference
+   builder's 128-frame spectrogram store) the segment is cut to its first 128
+   frames and a squeak still going at frame 127 of a longer segment
+   (right-censored) is dropped. The extent is then widened by
+   ``context_frames`` either side (clipped to the segment), and crops narrower
+   than ``min_trimmed_frames`` or wider than the 128-frame frame are dropped.
+   The crop width sets the duration stratum (``duration_bin_edges``,
    ``np.digitize``).
 3. **Draw** (one generator, ``np.random.default_rng(random_state)``). A
    ``per_session_bin_cap`` above 0 first keeps at most that many rows of any one
@@ -41,7 +42,7 @@ the resize (:func:`build_qlvm_training_set.stretch_specs`). The steps:
    the gates instead and also writes ``full_data.npz``.
 4. **Spectrograms.** The drawn rows' sonic spectrograms are rebuilt from the
    session audio (:func:`detect_usv_squeaks.squeak_segment_spectrograms`, the
-   front end that reproduces Dexter's ``_sonic_wav_`` store), each crop is
+   front end that reproduces the reference ``_sonic_wav_`` store), each crop is
    normalized (``crop_normalization``: ``"per_crop"``,
    ``(x - min) / (max - min + 1e-6)``, or ``"absolute"``,
    ``(clip(x_dB, -100, 50) + 25) / 75``), written from column 0 of a 128-frame
@@ -57,7 +58,7 @@ the resize (:func:`build_qlvm_training_set.stretch_specs`). The steps:
 Reproducing the phase 3 sets needs ``crop_window`` ``"first_128_frames"`` and
 ``exclude_metadata_audio_channels`` false (the setting the bit-identical rebuild
 of ``bbv-natural_dur-26-40-62_session_N11000_seed42`` was verified with), and
-the squeak extents of his 128-frame pass for segments longer than 128 frames,
+the squeak extents of the reference 128-frame pass for segments longer than 128 frames,
 which the summary does not keep (``detect-usv-squeaks`` writes the extent of a
 full-length pass); :meth:`QLVMSqueakTrainingSetBuilder.build_from_candidates`
 accepts such externally supplied candidates. See ``docs/Process.rst``.

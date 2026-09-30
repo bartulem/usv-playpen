@@ -5,9 +5,9 @@ root directories, drawn the way the training sets of the QLVM model packages
 (``qlvm_models_latest/v3``) were drawn.
 
 This is the in-house port of the builders of those sets
-(``build_masked_usvs.py`` and ``build_unmasked_usvs_floor.py`` in Dexter's MMMmB
+(``build_masked_usvs.py`` and ``build_unmasked_usvs_floor.py`` in the MMMmB
 repository, together with the session-typing, quota and stratification helpers
-they imported from his local usv-playpen fork). Given the same sessions, inputs
+they imported from a local usv-playpen fork). Given the same sessions, inputs
 and seed it selects the same rows, splits them into the same train and validation
 sessions and writes the same spectrograms (see ``docs/Process.rst``). The steps:
 

@@ -5,7 +5,7 @@ merge the result into its ``*_usv_summary.csv``.
 
 A squeak is a broadband harmonic stack (fundamental around 3-8 kHz) that the
 ultrasonic DAS segmenter picks up as part of a USV segment. This step scores
-every segment with Dexter's v3 time-resolved multiple-instance classifier
+every segment with the v3 time-resolved multiple-instance classifier
 (``TimeMIL``, 250,118 parameters, decision threshold 0.385), ported here from
 ``/mnt/falkner/Dexter/vocal_beh/models/bbv_classifier/code/bbv_infer.py`` with
 the same architecture, input transform and frame mask, but without that file's
@@ -18,7 +18,7 @@ high-passed above 30 kHz and carries no squeak energy), read through soundfile
 as float64 (int16 / 32768), with a Blackman-Harris STFT (nperseg 2048, hop 512,
 centred), 3-30 kHz, 128 linear frequency bins, absolute dB (``ref=1.0``, no
 ``top_db`` clamp) and a variance-weighted average across channels. This front
-end reproduces Dexter's ``_sonic_wav_`` spectrogram store bit-exactly
+end reproduces the reference ``_sonic_wav_`` spectrogram store bit-exactly
 (0.000 dB, verified 2026-09-14). The model sees a fixed 128-frame window
 (262 ms): a shorter segment is padded at -100 dB and the padding masked out; a
 longer one is truncated to its first 128 frames.
@@ -26,7 +26,7 @@ longer one is truncated to its first 128 frames.
 Columns written into ``usv_summary.csv`` (any pre-existing ones are replaced):
 
 * ``squeak`` -- True / False in every row (``p >= squeak_threshold`` on the
-  first 128 frames, Dexter's segment-level method);
+  first 128 frames, the reference segment-level method);
 * ``squeak_probability`` -- that probability, on squeak rows only (empty
   otherwise);
 * ``squeak_start`` / ``squeak_end`` -- session-clock seconds (the same clock as
@@ -41,17 +41,18 @@ Columns written into ``usv_summary.csv`` (any pre-existing ones are replaced):
 
 Squeak QLVM embedding (``infer-qlvm-squeak-latents``, :class:`USVSqueakQLVMEmbedder`):
 a second step places every squeak row that is not noise on the torus of one of
-Dexter's phase 3 broadband-vocalization QLVM cells
+the phase 3 broadband-vocalization QLVM cells
 (``qlvm_models_latest/phase3_BBVs_qlvm/<cell>``: the
 ``infer_qlvm_squeak_latents.model_cell_directory`` setting, filled with the
 production ``natural_session_N11000_nomask`` cell when empty) and writes the two
 float columns ``qlvm_squeak1`` / ``qlvm_squeak2`` (torus coordinates in
 ``[0, 1)``, null on every other row). Its input is the same sonic spectrogram,
-cropped to the squeak's own extent the way Dexter's ``build_bbv_dataset.py``
-built the cells' training sets: frames ``squeak_start`` .. ``squeak_end`` plus
-two frames of context either side (clipped to the segment), min-max normalized
-per crop, zero-padded to 128 frames, centred by ``stretch_specs`` and min-max
-normalized once more as the decoder's data loader did (:func:`squeak_qlvm_inputs`).
+cropped to the squeak's own extent the way the reference builder
+``build_bbv_dataset.py`` built the cells' training sets: frames
+``squeak_start`` .. ``squeak_end`` plus two frames of context either side
+(clipped to the segment), min-max normalized per crop, zero-padded to 128
+frames, centred by ``stretch_specs`` and min-max normalized once more as the
+decoder's data loader did (:func:`squeak_qlvm_inputs`).
 Crops narrower than 8 frames (the training set's minimum) or wider than 128
 frames (the decoder's frame; the training set never compressed a crop in time)
 get nulls. Unlike the training set, the crop is taken from the FULL-LENGTH
@@ -132,7 +133,7 @@ CHECKPOINT_MASK_RULE = "arange(128) < min(n_frames,128)"
 # Columns the squeak QLVM embedding writes into the USV summary CSV.
 SQUEAK_QLVM_COLUMNS = ("qlvm_squeak1", "qlvm_squeak2")
 
-# Input contract of Dexter's phase 3 squeak (BBV) QLVM cells, fixed by the way
+# Input contract of the phase 3 squeak (BBV) QLVM cells, fixed by the way
 # scripts/dataset_construct/build_bbv_dataset.py built their training sets (the
 # cells record them only in their model cards), therefore constants, not settings:
 # two context frames either side of the squeak extent, crops of at least 8 frames,
@@ -150,7 +151,7 @@ class TimeMIL(nn.Module):
     """
     Description
     -----------
-    Time-resolved multiple-instance squeak classifier (Dexter's ``TimeMIL``,
+    Time-resolved multiple-instance squeak classifier (the reference ``TimeMIL``,
     verbatim architecture). Four Conv2d-BatchNorm-ReLU blocks pool only along
     frequency, so every time column keeps its own representation; a 1x1 frame
     head emits a per-frame logit and a 1x1 attention head weights the frames.
@@ -428,7 +429,7 @@ def squeak_segment_spectrograms(
     model's input contract (``SQUEAK_SPEC_PARAMS``: Blackman-Harris STFT,
     nperseg 2048, hop 512, centred, 3-30 kHz, 128 linear frequency bins,
     ``ref=1.0``, no ``top_db`` clamp, variance-weighted channel average; the
-    front end that reproduces Dexter's ``_sonic_wav_`` store bit-exactly). The
+    front end that reproduces the reference ``_sonic_wav_`` store bit-exactly). The
     audio of a row spans ``round(start * 250000)`` to ``round(stop * 250000)``
     samples on every channel. Frame ``t`` of a spectrogram is centred at
     ``start + t * FRAME_DT_S`` s. Both the squeak classifier
@@ -501,7 +502,7 @@ def score_squeak_rows(
     -----------
     Scores the requested USV summary rows of one session. For each row it
     rebuilds the full-length absolute-dB spectrogram from the HPSS wavs, scores
-    the fixed 128-frame window in batches (segment probability, Dexter's
+    the fixed 128-frame window in batches (segment probability, the reference
     method), and takes squeak onset / offset from a full-length pass (the
     128-frame window's own frames when the segment fits inside it, a separate
     forward over all frames when it does not). Rows whose segment is too short
@@ -737,7 +738,7 @@ def squeak_crop_frames(
     (``round((t - start) / FRAME_DT_S)``, the inverse of
     :func:`squeak_extent_seconds`), widened by ``SQUEAK_QLVM_CONTEXT_FRAMES``
     either side and clipped to the segment's frames ``0 .. n_frames - 1``. This
-    is the rule of Dexter's ``build_bbv_dataset.py``, except that the segment
+    is the rule of the reference builder ``build_bbv_dataset.py``, except that the segment
     there was clipped to its first 128 frames (``n_valid_frames``) because the
     store it cropped from held no more.
 
@@ -777,7 +778,7 @@ def squeak_crop_inputs(
     Description
     -----------
     Turns squeak crops into squeak QLVM decoder inputs, step for step as
-    Dexter's ``build_bbv_dataset.py`` (``--normalization per-crop``) and the
+    the reference builder ``build_bbv_dataset.py`` (``--normalization per-crop``) and the
     decoder's data loader did: each crop ``spectrogram[:, first:last + 1]``
     (float32) is min-max normalized on its own,
     ``(x - min) / (max - min + 1e-6)``, written into a 128-frame zero frame from
@@ -959,7 +960,7 @@ def load_squeak_qlvm_cell(model_cell_directory: str) -> dict:
     """
     Description
     -----------
-    Loads one of Dexter's phase 3 squeak (BBV) QLVM cells
+    Loads one of the phase 3 squeak (BBV) QLVM cells
     (``qlvm_models_latest/phase3_BBVs_qlvm/<cell>``). These cells keep the OLD
     package layout: every file at the cell root, no ``config/`` or
     ``inference/`` folder and no ``training_contract.json``. What inference

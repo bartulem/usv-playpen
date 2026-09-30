@@ -118,7 +118,7 @@ def gen_fib_basis_float32(m: int) -> jnp.ndarray:
     ``fib(m-1)`` before any ``mod 1``, so that float32 rounding moves every
     point by up to ~2.3e-3 of the torus (m = 24) away from the exact float64
     lattice of :func:`gen_fib_basis`. A decoder whose corpus embedding was
-    computed with the torch lattice (Dexter's ``analyze_all_sessions``, e.g. the
+    computed with the torch lattice (the reference ``analyze_all_sessions``, e.g. the
     phase 3 squeak cells) reproduces that embedding only on this lattice: the
     decoder then sees the float32 ``lattice % 1`` and the posterior mean
     averages the float32 torus basis of the UNWRAPPED float32 lattice, as the

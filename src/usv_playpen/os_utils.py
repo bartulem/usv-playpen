@@ -369,11 +369,12 @@ def rebase_experimenter_in_paths(obj: object = None,
     return obj
 
 
-# The QLVM model package the production usv_summary.csv columns come from (Dexter's
+# The QLVM model package the production usv_summary.csv columns come from (the
 # v3 package; read-only). A module constant rather than a processing_settings.json
 # key: the GUI and the CLI re-key every experimenter name in those settings to the
 # active experimenter (`rebase_experimenter_in_paths`), which would rewrite this
-# "Dexter" path to the user's own directory, where no package exists.
+# path under another experimenter's directory to the active one's, where no
+# package exists.
 QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3"
 
 # The production embedding: column prefix -> cell of the package above. The
@@ -390,7 +391,7 @@ QLVM_PRODUCTION_MODEL_CELLS = {
 
 # The production squeak (broadband vocalization) embedding: the phase 3 BBV package
 # and its natural_session cell (natural draw over the duration bins, per-session bin
-# cap; user-chosen 2026-09-30), written by infer-qlvm-squeak-latents as
+# cap; the production choice since 2026-09-30), written by infer-qlvm-squeak-latents as
 # qlvm_squeak1/qlvm_squeak2. A constant for the same reason as the package root above.
 QLVM_SQUEAK_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm"
 QLVM_SQUEAK_PRODUCTION_CELL = "natural_session_N11000_nomask"
