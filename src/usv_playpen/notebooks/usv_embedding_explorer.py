@@ -29,7 +29,10 @@ Architecture
   pooled (and cached to a per-selection parquet) by ``build_pooled_embeddings_df``.
 - An altair scatter of the chosen QLVM map's torus (the regular model or one of
   the four conditional ones, ``os_utils.QLVM_MAPS``; the Map dropdown starts at
-  ``shared_resources.qlvm_map``), colored by a categorical label (category /
+  ``shared_resources.qlvm_map``; or the "Squeaks" map, ``qlvm_squeak1`` /
+  ``qlvm_squeak2`` from ``infer-qlvm-squeak-latents``, which holds squeak rows
+  only and has no categories, so category colouring and boundaries are refused
+  there), colored by a categorical label (category /
   supercategory / session type / session id / emitter sex) OR a continuous metric
   through the colormap (density, duration, frequencies, amplitudes, spectral
   entropy), with an ``alt.selection_interval`` brush. Optional category-boundary
@@ -275,13 +278,15 @@ def _widgets(available_lists, default_qlvm_map, mo):
         ],
         align="center", justify="start", gap=0.6,
     )
-    # {display label -> QLVM map (os_utils.QLVM_MAPS)}; .value returns the map.
+    # {display label -> QLVM map (os_utils.QLVM_MAPS, plus the squeak map, whose
+    # qlvm_squeak1/qlvm_squeak2 exist on squeak rows only)}; .value returns the map.
     _map_labels = {
         "QLVM": "qlvm",
         "QLVM | duration": "qlvm_dur",
         "QLVM | mean freq": "qlvm_mf",
         "QLVM | bandwidth": "qlvm_bw",
         "QLVM | loudness": "qlvm_loud",
+        "Squeaks": "qlvm_squeak",
     }
     map_dropdown = mo.ui.dropdown(
         options=_map_labels,
@@ -552,6 +557,16 @@ def _scatter_chart(
         map_prefix = map_dropdown.value
         # A QLVM map P places calls at P1/P2 on the unit torus.
         x_col, y_col = f"{map_prefix}1", f"{map_prefix}2"
+        # The squeak map ships positions only (no fine / coarse clustering), so
+        # category colouring and boundaries have nothing to draw there.
+        mo.stop(
+            map_prefix == "qlvm_squeak"
+            and (color_dropdown.value in ("category", "supercategory") or boundary_dropdown.value != "none"),
+            mo.md(
+                "**The squeak map has no categories.** Pick another *Color by* "
+                "(e.g. density or an acoustic feature) and set *Boundaries* to none."
+            ),
+        )
 
         # Color source: category/supercategory/session_type categorical; emitter
         # colors the derived sex column; density is computed below from the 2D

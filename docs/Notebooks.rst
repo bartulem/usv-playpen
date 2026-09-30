@@ -2611,6 +2611,11 @@ summaries:
 * **QLVM | duration**, **| mean freq**, **| bandwidth**, **| loudness** (``qlvm_dur``,
   ``qlvm_mf``, ``qlvm_bw``, ``qlvm_loud``) — the phase 11 conditional models, whose maps
   are what is left once that acoustic variable is removed.
+* **Squeaks** (``qlvm_squeak``) — the squeak (broadband vocalization) map: the phase 3 BBV
+  model's coordinates ``qlvm_squeak1`` / ``qlvm_squeak2``, written by
+  ``infer-qlvm-squeak-latents`` on squeak rows only (``squeak`` true, ``noise`` not true), so
+  every other row is left off this map. It has positions only — no fine / coarse clusters —
+  so **Color by** category / supercategory and **Boundaries** are refused on it.
 
 **Controls** (stacked above the plot):
 
@@ -2619,7 +2624,7 @@ summaries:
   ``~/.usv_playpen_cache`` — only when **Load** is clicked.
 * **Sessions** — narrows the loaded pool to individual sessions. Empty (the default) shows
   every session; pick one or more to isolate them.
-* **Map** — one of the five QLVM maps; it starts on ``shared_resources.qlvm_map`` (the map
+* **Map** — one of the five QLVM maps or the squeak map; it starts on ``shared_resources.qlvm_map`` (the map
   the other QLVM figures draw).
 * **Color by** — a categorical label (fine / coarse category, session type, session id, or
   emitter sex) or a continuous metric (point density, or a per-USV acoustic feature), the

@@ -2255,9 +2255,14 @@ def plot_session_usv_timeline(
 
 
 # Embedding columns expected in each session's USV summary CSV: the torus
-# coordinates of every QLVM map (os_utils.QLVM_MAPS; map P at P1/P2) and each
-# map's fine (P_category) and coarse (P_supercategory) integer labels.
-EMBEDDING_COORD_COLS = tuple(f"{qlvm_map}{axis}" for qlvm_map in QLVM_MAPS for axis in (1, 2))
+# coordinates of every QLVM map (os_utils.QLVM_MAPS; map P at P1/P2), the squeak
+# map's coordinates (qlvm_squeak1/qlvm_squeak2, written by infer-qlvm-squeak-latents
+# on squeak rows only; the squeak map has no category labels) and each USV map's
+# fine (P_category) and coarse (P_supercategory) integer labels.
+SQUEAK_EMBEDDING_COORD_COLS = ("qlvm_squeak1", "qlvm_squeak2")
+EMBEDDING_COORD_COLS = (
+    tuple(f"{qlvm_map}{axis}" for qlvm_map in QLVM_MAPS for axis in (1, 2)) + SQUEAK_EMBEDDING_COORD_COLS
+)
 EMBEDDING_LABEL_COLS = tuple(
     f"{qlvm_map}_{suffix}" for qlvm_map in QLVM_MAPS for suffix in ("category", "supercategory")
 )
@@ -2368,7 +2373,8 @@ def build_pooled_embeddings_df(
     DataFrame is the master table consumed by the marimo embedding
     explorer notebook: it carries the torus coordinate columns of every
     QLVM map (``EMBEDDING_COORD_COLS``: ``qlvm1/2``, ``qlvm_dur1/2``,
-    ``qlvm_mf1/2``, ``qlvm_bw1/2``, ``qlvm_loud1/2``), their fine / coarse
+    ``qlvm_mf1/2``, ``qlvm_bw1/2``, ``qlvm_loud1/2``, plus the squeak map's
+    ``qlvm_squeak1/2``), the USV maps' fine / coarse
     label columns (``EMBEDDING_LABEL_COLS``, e.g. ``qlvm_category``,
     ``qlvm_dur_supercategory``), and — critically — a ``(session_id,
     row_index)`` pair per row that keys directly back into the
@@ -2422,6 +2428,8 @@ def build_pooled_embeddings_df(
             session_id (Utf8)
             row_index (UInt32)
             <map>1, <map>2 (Float64) for every map in QLVM_MAPS
+            qlvm_squeak1, qlvm_squeak2 (Float64; null off squeak rows and
+                where a summary has no squeak embedding)
             <map>_category, <map>_supercategory (Int64; only when some
                 summary carries them)
             emitter (Utf8)

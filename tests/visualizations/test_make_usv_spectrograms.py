@@ -1113,6 +1113,8 @@ def _write_embedding_session(root: pathlib.Path, session_id: str):
             "qlvm_dur_category": [1, 2, 1, 2],
             "noise": [True, False, False, False],
             "squeak": [False, True, False, False],
+            "qlvm_squeak1": [None, 0.25, None, None],
+            "qlvm_squeak2": [None, 0.75, None, None],
             "qlvm_category": [1, 1, 2, 2],
             "qlvm_supercategory": [1, 1, 2, 2],
             "emitter": ["M", "F", "M", "ghost"],
@@ -1150,6 +1152,9 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     assert pooled["qlvm_bw1"].null_count() == pooled.height
     # the squeak flag is carried (the thumbnails' default filter reads it)
     assert pooled["squeak"].to_list() == [True, False, False]
+    # the squeak map's coordinates are carried, null off the squeak rows
+    assert pooled["qlvm_squeak1"].to_list() == [0.25, None, None]
+    assert pooled["qlvm_squeak2"].to_list() == [0.75, None, None]
     assert "sex" in pooled.columns
     assert "emitter" in pooled.columns  # raw animal id retained for the explorer tooltip
     assert set(pooled["sex"].to_list()) <= {"male", "female", "unassigned"}
