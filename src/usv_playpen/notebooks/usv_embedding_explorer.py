@@ -51,6 +51,15 @@ Architecture
   fixed window so each call's width reflects its true duration, embedded inline
   as a base64 PNG. The brushed rows are recovered with
   ``chart_widget.apply_selection`` (``.value`` fails on the layered chart).
+- On the Squeaks map the tiles come instead from the squeak spectrogram store
+  (the newest ``<spectrograms_dir>/squeak_spectrograms_*.h5``, written by
+  ``build-squeak-spectrogram-store``, resolved by
+  ``os_utils.resolve_squeak_spectrogram_store_path``): 2-125 kHz on a log
+  frequency axis, so the 3-8 kHz harmonic stack of a squeak shows with its
+  ultrasonic part; each tile spans the top 60 dB below its own peak, padded to
+  the store's fixed window like the USV tiles, with no SAM mask. When that
+  store has not been built the grid falls back to the ultrasonic thumbnails
+  with a one-line note above it.
 
 The shipped ``/mnt/falkner/Bartul/...`` paths are re-keyed to the experimenter in
 use and OS-resolved via ``os_utils.resolve_experimenter_path`` (set the
@@ -87,7 +96,9 @@ def _imports():
         resolve_consolidated_h5_path,
         resolve_embedding_arrays_path,
         resolve_experimenter_path,
+        resolve_squeak_spectrogram_store_path,
     )
+    from usv_playpen.processing.build_squeak_spectrogram_store import squeak_store_thumbnail
     from usv_playpen.visualizations.make_usv_spectrograms import (
         _knn_boundary_grid as knn_boundary_grid,
         build_pooled_embeddings_df,
@@ -112,6 +123,8 @@ def _imports():
         resolve_consolidated_h5_path,
         resolve_embedding_arrays_path,
         resolve_experimenter_path,
+        resolve_squeak_spectrogram_store_path,
+        squeak_store_thumbnail,
     )
 
 
@@ -123,6 +136,7 @@ def _settings(
     resolve_consolidated_h5_path,
     resolve_embedding_arrays_path,
     resolve_experimenter_path,
+    resolve_squeak_spectrogram_store_path,
 ):
     # Cell 2 = ALL settings/config (imports are all in cell 1). Reads
     # visualizations_settings.json once and exposes everything downstream cells
@@ -166,6 +180,20 @@ def _settings(
         )
     except (KeyError, FileNotFoundError, RuntimeError):
         _input_dir, consolidated_h5_path = None, None
+
+    # The squeak spectrogram store (newest squeak_spectrograms_*.h5 under
+    # `spectrograms_dir`, from build-squeak-spectrogram-store): 2-125 kHz,
+    # log-frequency spectrograms the Squeaks map shows instead of the 30-125 kHz
+    # ultrasonic ones. None when it has not been built (the grid then falls back
+    # to the consolidated store with a note). Each squeak tile is scaled over the
+    # top SQUEAK_DYNAMIC_RANGE_DB dB below its own peak.
+    try:
+        squeak_store_path = resolve_squeak_spectrogram_store_path(
+            resolve_experimenter_path(_viz["shared_resources"]["spectrograms_dir"])
+        )
+    except (KeyError, FileNotFoundError, RuntimeError):
+        squeak_store_path = None
+    SQUEAK_DYNAMIC_RANGE_DB = 60.0
 
     # The Map dropdown's starting map: the shared `shared_resources.qlvm_map` the
     # other QLVM figures draw (regular map when the setting is absent or unknown).
@@ -226,6 +254,7 @@ def _settings(
     return (
         CHART_DATA_WIDTH_PX,
         CHART_HEIGHT_PX,
+        SQUEAK_DYNAMIC_RANGE_DB,
         available_lists,
         consolidated_h5_path,
         default_qlvm_map,
@@ -233,6 +262,7 @@ def _settings(
         list_to_sessions,
         qlvm_arrays_paths,
         sex_colors,
+        squeak_store_path,
     )
 
 
@@ -889,6 +919,7 @@ def _tooltip_style(mo):
 def _explorer(
     BytesIO,
     CHART_HEIGHT_PX,
+    SQUEAK_DYNAMIC_RANGE_DB,
     apply_mask_checkbox,
     available_lists,
     base64,
@@ -900,6 +931,7 @@ def _explorer(
     get_loaded_lists,
     global_cmap,
     h5py,
+    map_dropdown,
     mo,
     n_samples_slider,
     np,
@@ -907,6 +939,8 @@ def _explorer(
     plt,
     session_row,
     sessions_row,
+    squeak_store_path,
+    squeak_store_thumbnail,
 ):
     def _():
         # The control panel is rendered at the TOP of THIS cell's output, with
@@ -994,46 +1028,81 @@ def _explorer(
             # several samples come from the same session.
             mask_index_cache: dict = {}
             h5_open_error = None
+            # The Squeaks map reads its tiles from the squeak spectrogram store
+            # (2-125 kHz, log-frequency rows, so the imshow below draws a log
+            # frequency axis); every other map, and the Squeaks map when that
+            # store has not been built, reads the consolidated 30-125 kHz store.
+            # The missing-store case is a one-line note above the grid, not
+            # mo.stop, which would also hide the controls drawn by this cell.
+            squeak_map = map_dropdown.value == "qlvm_squeak"
+            squeak_tiles = squeak_map and squeak_store_path is not None
+            tile_store_path = squeak_store_path if squeak_tiles else consolidated_h5_path
+            squeak_note = (
+                mo.md(
+                    "_No squeak spectrogram store (`build-squeak-spectrogram-store`) under "
+                    "`spectrograms_dir`: showing the 30-125 kHz ultrasonic spectrograms._"
+                )
+                if squeak_map and not squeak_tiles else None
+            )
             try:
-                with h5py.File(consolidated_h5_path, "r") as h5:
-                    for _, row in picks.iterrows():
-                        sess = str(row["session_id"])
-                        idx = int(row["row_index"])
-                        spec_group_key = f"spectrogram/{sess}"
-                        if spec_group_key not in h5:
-                            continue
-                        grp = h5[spec_group_key]
-                        spec = grp["spectrograms"][idx, :, :].astype(np.float32)
-                        time_window = spec.shape[1]
-                        dur = int(grp["durations"][idx])
-                        dur = max(1, min(dur, spec.shape[1]))
+                with h5py.File(tile_store_path, "r") as h5:
+                    if squeak_tiles:
+                        # Squeak store: one fixed window for every call, absolute dB
+                        # quantized to uint8 over the stored [db_floor, db_ceil];
+                        # each tile is scaled over the top SQUEAK_DYNAMIC_RANGE_DB
+                        # below its own peak. No SAM masks exist for these rows.
+                        time_window = int(h5.attrs["window_frames"])
+                        _db_floor = float(h5.attrs["db_floor"])
+                        _db_ceil = float(h5.attrs["db_ceil"])
+                        for _, row in picks.iterrows():
+                            sess = str(row["session_id"])
+                            idx = int(row["row_index"])
+                            if f"spectrogram/{sess}" not in h5:
+                                continue
+                            squeak_tile = squeak_store_thumbnail(
+                                h5[f"spectrogram/{sess}"], idx, _db_floor, _db_ceil, SQUEAK_DYNAMIC_RANGE_DB
+                            )
+                            if squeak_tile is not None:
+                                tiles.append((sess, idx, squeak_tile))
+                    else:
+                        for _, row in picks.iterrows():
+                            sess = str(row["session_id"])
+                            idx = int(row["row_index"])
+                            spec_group_key = f"spectrogram/{sess}"
+                            if spec_group_key not in h5:
+                                continue
+                            grp = h5[spec_group_key]
+                            spec = grp["spectrograms"][idx, :, :].astype(np.float32)
+                            time_window = spec.shape[1]
+                            dur = int(grp["durations"][idx])
+                            dur = max(1, min(dur, spec.shape[1]))
 
-                        if apply_mask:
-                            mask_group_key = f"mask/{sess}"
-                            if mask_group_key in h5:
-                                mask_grp = h5[mask_group_key]
-                                if sess not in mask_index_cache:
-                                    mask_index_cache[sess] = mask_grp["spectrogram_index"][:]
-                                spec_indices = mask_index_cache[sess]
-                                matching = np.where(spec_indices == idx)[0]
-                                if matching.size > 0:
-                                    masks_for_spec = mask_grp["segmentations"][
-                                        matching, :, :dur
-                                    ]
-                                    combined_mask = np.any(masks_for_spec, axis=0)
-                                    spec_to_show = spec[:, :dur] * combined_mask.astype(np.float32)
+                            if apply_mask:
+                                mask_group_key = f"mask/{sess}"
+                                if mask_group_key in h5:
+                                    mask_grp = h5[mask_group_key]
+                                    if sess not in mask_index_cache:
+                                        mask_index_cache[sess] = mask_grp["spectrogram_index"][:]
+                                    spec_indices = mask_index_cache[sess]
+                                    matching = np.where(spec_indices == idx)[0]
+                                    if matching.size > 0:
+                                        masks_for_spec = mask_grp["segmentations"][
+                                            matching, :, :dur
+                                        ]
+                                        combined_mask = np.any(masks_for_spec, axis=0)
+                                        spec_to_show = spec[:, :dur] * combined_mask.astype(np.float32)
+                                    else:
+                                        spec_to_show = spec[:, :dur]
                                 else:
                                     spec_to_show = spec[:, :dur]
                             else:
                                 spec_to_show = spec[:, :dur]
-                        else:
-                            spec_to_show = spec[:, :dur]
-                        tiles.append((sess, idx, spec_to_show))
+                            tiles.append((sess, idx, spec_to_show))
             except (OSError, FileNotFoundError) as exc:
                 tiles = []
                 h5_open_error = mo.md(
-                    f"**Could not open the consolidated store** "
-                    f"`{consolidated_h5_path}`:\n\n```\n{exc}\n```"
+                    f"**Could not open the {'squeak spectrogram' if squeak_tiles else 'consolidated'} store** "
+                    f"`{tile_store_path}`:\n\n```\n{exc}\n```"
                 )
 
             if h5_open_error is not None:
@@ -1106,6 +1175,8 @@ def _explorer(
                     f'style="display:block;height:{CHART_HEIGHT_PX}px;width:auto;'
                     'margin:0;padding:0;" />'
                 )
+            if squeak_note is not None:
+                spectrograms_out = mo.vstack([squeak_note, spectrograms_out], align="start", gap=0.2)
         plot_row = mo.hstack(
             [chart_widget, spectrograms_out],
             justify="start", gap=1, align="start",

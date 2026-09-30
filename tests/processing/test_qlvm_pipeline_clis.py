@@ -21,6 +21,7 @@ from click.testing import CliRunner
 
 from usv_playpen.processing.qlvm_latents import infer_qlvm_latents_cli
 from usv_playpen.processing.build_qlvm_squeak_training_set import build_qlvm_squeak_training_set_cli
+from usv_playpen.processing.build_squeak_spectrogram_store import build_squeak_spectrogram_store_cli
 from usv_playpen.processing.build_qlvm_training_set import build_qlvm_training_set_cli
 from usv_playpen.processing.compute_usv_acoustic_features import (
     compute_usv_acoustic_features_cli,
@@ -238,6 +239,7 @@ _PIPELINE_CLIS = [
     (compute_usv_acoustic_features_cli, "usv_playpen.processing.compute_usv_acoustic_features", "USVAcousticFeatureExtractor", "compute_usv_acoustic_features", ["--root-directory", "{d}"]),
     (build_qlvm_training_set_cli, "usv_playpen.processing.build_qlvm_training_set", "QLVMTrainingSetBuilder", "build_qlvm_training_set", ["--root-directories", "/a,/b", "--output-directory", "{o}"]),
     (build_qlvm_squeak_training_set_cli, "usv_playpen.processing.build_qlvm_squeak_training_set", "QLVMSqueakTrainingSetBuilder", "build_qlvm_squeak_training_set", ["--root-directories", "/a,/b", "--output-directory", "{o}"]),
+    (build_squeak_spectrogram_store_cli, "usv_playpen.processing.build_squeak_spectrogram_store", "SqueakSpectrogramStoreBuilder", "build_squeak_spectrogram_store", ["--root-directories", "/a,/b"]),
     (train_qlvm_cli, "usv_playpen.processing.train_qlvm", "QLVMTrainer", "train_qlvm", ["--dataset-directory", "{d}", "--output-directory", "{o}"]),
     (infer_qlvm_latents_cli, "usv_playpen.processing.qlvm_latents", "QLVMLatentInference", "infer_qlvm_latents", ["--root-directory", "{d}"]),
     (export_yolo_dataset_cli, "usv_playpen.processing.export_yolo_dataset", "YOLODatasetExporter", "export_yolo_dataset", ["--root-directories", "/a,/b", "--output-directory", "{o}"]),

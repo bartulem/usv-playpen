@@ -721,6 +721,37 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --package-root        QLVM model package root whose models' columns and tables the store carries; defaults to the production v3 package.
       --spectrograms-root   Output directory the consolidated store is written to.
 
+``build-squeak-spectrogram-store``
+``build-squeak-spectrogram-store`` writes the squeak spectrogram store the embedding explorer's *Squeaks* map reads: for every squeak row that is not noise (``squeak`` true, ``noise`` not true) of every given session, a 2-125 kHz spectrogram on log-spaced frequency bins, rebuilt from the unfiltered ``audio/hpss`` wavs with the squeak classifier's STFT (Blackman-Harris, ``nperseg`` 2048, hop 512, centred; metadata-excluded channels dropped, variance-weighted channel average, absolute dB), placed in a fixed window of ``--window-frames`` frames (a longer segment keeps the window centred on its squeak) and quantized to uint8 over ``[--db-floor, --db-ceil]``. Sessions come from ``--root-directories`` and/or ``--session-lists`` and are processed in ``--n-workers`` parallel processes; a failing session is reported and left out. The store is written atomically to ``spectrograms_root`` as ``squeak_spectrograms_<F>logbins_<S>sessions_<N>squeaks_<timestamp>.h5``; the explorer resolves the newest one automatically. The full layout is in *Process* (*The squeak spectrogram store*).
+
+.. code-block:: text
+
+    usage: build-squeak-spectrogram-store [-h] [--root-directories TEXT,TEXT,...] [--session-lists TEXT,TEXT,...]
+                                          [--spectrograms-root PATH]
+                                          [--min-freq FLOAT] [--max-freq FLOAT]
+                                          [--n-frequency-bins INT] [--window-frames INT]
+                                          [--db-floor FLOAT] [--db-ceil FLOAT]
+                                          [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
+                                          [--n-workers INT]
+
+    required arguments (at least one):
+      --root-directories    Comma-separated string of session root directory paths.
+      --session-lists       Comma-separated string of session-list .txt files (one session root per line).
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --spectrograms-root   Output directory the store is written to (the spectrograms_root setting when not given).
+      --min-freq            Lower edge (Hz) of the lowest log-frequency bin.
+      --max-freq            Upper edge (Hz) of the highest log-frequency bin (at most 125000, the Nyquist frequency).
+      --n-frequency-bins    Number of log-spaced frequency bins.
+      --window-frames       Width (2.048 ms frames) of the fixed window every call is stored in.
+      --db-floor            Absolute dB mapped to uint8 code 0 (values below are clipped).
+      --db-ceil             Absolute dB mapped to uint8 code 255 (values above are clipped).
+      --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
+                            Drop channels the session metadata marks as excluded from the spectrogram average
+                            (keep it equal to the detect-usv-squeaks run).
+      --n-workers           Sessions processed in parallel worker processes (1: in this process).
+
 ``build-qlvm-training-set``
 ``build-qlvm-training-set`` builds a QLVM training set of USV spectrograms (``train_data.npz`` + ``val_data.npz``, plus ``full_data.npz`` with ``--full-dataset``, and ``metadata.npz``) from a list of session root directories, drawn the way the v3 model packages' sets were (the port of the reference builders ``build_masked_usvs.py`` / ``build_unmasked_usvs_floor.py``, MMMmB). Each session's type (``MF``, ``FF``, ``MM``, ``lone_male``, ...) is read from the subjects' sexes in its metadata YAML; ``--session-type-targets`` gives each type's row budget (``null``: take the type whole; unlisted types are left out). A row is eligible when its duration is below ``--length-threshold``, it has a SAM mask instance (``--require-mask``) and the USV summary does not flag it as a squeak (``--exclude-squeaks``; with ``--strict-squeak-exclusion`` also not when its ``squeak_frame_runs`` is 1 or more, the strict rule by which the reference sets left broadband calls out; off by default, and a summary without that column stops the build) or noise (``--exclude-noise``). A type's budget is split into per-session quotas by capped-even water-filling and drawn per session, either uniformly over the eligible rows (``--draw-mode natural``) or equally across the mask-count strata of ``--mask-count-bin-edges`` (``uniform``, quotas allocated against each session's exactly-uniform headroom). Whole sessions are held out for validation per type. The drawn spectrograms (and their binarized SAM mask unions) are resized to ``--target-shape``, and then masked (``--apply-mask``, the phase 9 sets) or kept unmasked, optionally with a loudness floor baked in (``--floor``, the phase 6 sets). The defaults rebuild the production phase 6 set (``natural_5strata_N29000_unmasked_floor``). Every session's spectrogram H5 is fingerprinted as it is read: its SHA-256, row count and the number of its rows that entered the set go into ``metadata.npz`` and into two sidecars, ``SESSION_H5.sha256`` (checkable with ``sha256sum -c``) and ``SESSION_H5.tsv``. ``spec_id`` is a row number in that H5, so a consumer should compare the hash before joining on it: a rebuilt H5 renumbers its rows.
 

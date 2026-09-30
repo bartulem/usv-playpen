@@ -1314,6 +1314,7 @@ def newest_match_or_raise(
 #                                             centres of one map (QLVM_MAPS;
 #                                             QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME)
 #   <dir>/spectrograms_*.h5                   consolidated spectrogram/mask/latent store
+#   <dir>/squeak_spectrograms_*.h5            2-125 kHz log-frequency squeak spectrogram store
 #   <dir>/embeddings/pooled_embeddings_qlvmv3.parquet  pooled cohort embeddings cache
 #                                             (POOLED_EMBEDDINGS_CACHE_NAME)
 def resolve_embedding_arrays_path(spectrograms_dir: str, qlvm_map: str, clustering: str) -> str:
@@ -1386,6 +1387,40 @@ def resolve_consolidated_h5_path(spectrograms_dir: str) -> str:
             "spectrograms_*.h5",
             key=lambda p: p.stat().st_mtime,
             label="consolidated spectrogram .h5",
+        )
+    )
+
+
+def resolve_squeak_spectrogram_store_path(spectrograms_dir: str) -> str:
+    """
+    Description
+    -----------
+    Resolve the squeak spectrogram store written by
+    ``build-squeak-spectrogram-store`` (2-125 kHz, log-frequency spectrograms of
+    the squeaks the squeak QLVM map holds): the most recently modified
+    ``squeak_spectrograms_*.h5`` directly under the base directory. The pattern
+    and the consolidated store's ``spectrograms_*.h5`` never match each other's
+    files. Raises ``FileNotFoundError`` with a clear message if the directory is
+    missing or holds no matching store.
+
+    Parameters
+    ----------
+    spectrograms_dir (str)
+        Base spectrograms directory (run through ``configure_path``).
+
+    Returns
+    -------
+    path (str)
+        The OS-resolved path to the newest ``squeak_spectrograms_*.h5``.
+    """
+
+    base = pathlib.Path(configure_path(spectrograms_dir))
+    return str(
+        newest_match_or_raise(
+            base,
+            "squeak_spectrograms_*.h5",
+            key=lambda p: p.stat().st_mtime,
+            label="squeak spectrogram store .h5",
         )
     )
 

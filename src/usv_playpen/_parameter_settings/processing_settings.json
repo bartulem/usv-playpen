@@ -319,6 +319,16 @@
     "lattice_batch_size": 2048,
     "data_batch_size": 512
   },
+  "build_squeak_spectrogram_store": {
+    "min_freq": 2000.0,
+    "max_freq": 125000.0,
+    "n_frequency_bins": 128,
+    "window_frames": 256,
+    "db_floor": -100.0,
+    "db_ceil": 60.0,
+    "exclude_metadata_audio_channels": true,
+    "n_workers": 6
+  },
   "build_qlvm_training_set": {
     "session_type_targets": {
       "MF": 29000,

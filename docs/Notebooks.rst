@@ -2616,6 +2616,14 @@ summaries:
   ``infer-qlvm-squeak-latents`` on squeak rows only (``squeak`` true, ``noise`` not true), so
   every other row is left off this map. It has positions only — no fine / coarse clusters —
   so on it a **Color by** category / supercategory falls back to density and **Boundaries** are skipped (the chart title says so); the controls stay available.
+  Its example spectrograms come from the squeak spectrogram store (the newest
+  ``<spectrograms_dir>/squeak_spectrograms_*.h5``, built once by
+  ``build-squeak-spectrogram-store``; see :doc:`Process`): 2-125 kHz on a log frequency
+  axis, so the 3-8 kHz harmonic stack shows together with the ultrasonic part, each tile
+  scaled over the top 60 dB below its own peak and padded to the store's fixed 524 ms
+  window (**Apply mask** does not apply; there are no SAM masks for squeaks). Without that
+  store the grid falls back to the 30-125 kHz ultrasonic spectrograms, with a one-line note
+  above it.
 
 The USV maps never show a segment ``detect-usv-squeaks`` flagged as a squeak (the model package also placed squeaks on its USV tori), and the squeak map shows only squeaks, so the two never overlap.
 
@@ -2647,9 +2655,9 @@ The USV maps never show a segment ``detect-usv-squeaks`` flagged as a squeak (th
 **Hover tooltip.** Hovering a point shows its ``session id``, ``emitter`` (the animal id, or
 ``unassigned``), ``mean amplitude``, ``mean frequency`` (kHz), and ``spectral entropy``.
 
-**Paths.** The session-list directory and the consolidated spectrogram / SAM2 store come from
-the ``shared_resources`` block of ``visualizations_settings.json`` (``input_files_directory`` /
-``spectrograms_dir``); the shipped ``Bartul`` paths are re-keyed to the experimenter in use and
+**Paths.** The session-list directory, the consolidated spectrogram / SAM2 store and the
+squeak spectrogram store come from the ``shared_resources`` block of
+``visualizations_settings.json`` (``input_files_directory`` / ``spectrograms_dir``); the shipped ``Bartul`` paths are re-keyed to the experimenter in use and
 resolved per host by ``resolve_experimenter_path``.
 
 Launch it from the repo root in either of two modes:
