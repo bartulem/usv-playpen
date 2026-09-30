@@ -39,6 +39,28 @@ Columns written into ``usv_summary.csv`` (any pre-existing ones are replaced):
   segment logit is an attention-weighted average of frame logits, so the
   segment cannot reach the threshold unless some frame does.
 
+Squeak QLVM embedding (``infer-qlvm-squeak-latents``, :class:`USVSqueakQLVMEmbedder`):
+a second step places every squeak row that is not noise on the torus of one of
+Dexter's phase 3 broadband-vocalization QLVM cells
+(``qlvm_models_latest/phase3_BBVs_qlvm/<cell>``, chosen by the
+``infer_qlvm_squeak_latents.model_cell_directory`` setting) and writes the two
+float columns ``qlvm_squeak1`` / ``qlvm_squeak2`` (torus coordinates in
+``[0, 1)``, null on every other row). Its input is the same sonic spectrogram,
+cropped to the squeak's own extent the way Dexter's ``build_bbv_dataset.py``
+built the cells' training sets: frames ``squeak_start`` .. ``squeak_end`` plus
+two frames of context either side (clipped to the segment), min-max normalized
+per crop, zero-padded to 128 frames, centred by ``stretch_specs`` and min-max
+normalized once more as the decoder's data loader did (:func:`squeak_qlvm_inputs`).
+Crops narrower than 8 frames (the training set's minimum) or wider than 128
+frames (the decoder's frame; the training set never compressed a crop in time)
+get nulls. Unlike the training set, the crop is taken from the FULL-LENGTH
+spectrogram with the full-length ``squeak_start`` / ``squeak_end`` this step
+writes, so a squeak that runs past frame 127 of a longer segment is embedded
+with its measured extent (the training set, built from a 128-frame store,
+dropped such right-censored squeaks instead). The embedding is the posterior
+mean over the cell's Fibonacci lattice (``lattice_m`` of its ``manifest.json``)
+built in float32 as the torch driver built it (:func:`qlvm_model.gen_fib_basis_float32`).
+
 Note on training sessions: the deployed checkpoint was fitted on labelled
 segments from 15 sessions (20230124_172125, 20250211_165612, 20250403_205653,
 20250418_184440, 20250424_175844, 20250506_155030, 20250923_203320,
@@ -50,11 +72,13 @@ cohort squeak-rate claim.
 
 from __future__ import annotations
 
+import json
 import pathlib
 from collections.abc import Callable
 from datetime import datetime
 
 import click
+import jax.numpy as jnp
 import numpy as np
 import polars as pls
 import soundfile as sf
@@ -64,6 +88,7 @@ from torch import nn
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
+    atomic_output_path,
     configure_path,
     derive_spectrogram_model_paths,
     first_match_or_raise,
@@ -71,7 +96,10 @@ from ..os_utils import (
 )
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import read_excluded_audio_channels
+from .build_qlvm_training_set import stretch_specs
 from .generate_spectrograms import compute_usv_spectrogram
+from .qlvm_latents import cell_file, load_decoder_params, normalize_model_inputs
+from .qlvm_model import decoder_head, embed_data, gen_fib_basis_float32
 
 # Columns written into the USV summary CSV.
 SQUEAK_COLUMNS = ("squeak", "squeak_probability", "squeak_start", "squeak_end")
@@ -99,6 +127,22 @@ DB_HALF = 75.0
 FRAME_DT_S = SQUEAK_SPEC_PARAMS["hop_length"] / SQUEAK_SAMPLING_RATE
 CHECKPOINT_NORM_KIND = "fixed_affine_absolute_db"
 CHECKPOINT_MASK_RULE = "arange(128) < min(n_frames,128)"
+
+# Columns the squeak QLVM embedding writes into the USV summary CSV.
+SQUEAK_QLVM_COLUMNS = ("qlvm_squeak1", "qlvm_squeak2")
+
+# Input contract of Dexter's phase 3 squeak (BBV) QLVM cells, fixed by the way
+# scripts/dataset_construct/build_bbv_dataset.py built their training sets (the
+# cells record them only in their model cards), therefore constants, not settings:
+# two context frames either side of the squeak extent, crops of at least 8 frames,
+# per-crop min-max with epsilon 1e-6, a 128 x 128 frame the crop is centred in
+# without time stretching, and the data loader's second per-spectrogram min-max
+# with epsilon 1e-8 (qmc_deep_gen data/mouse_data.py).
+SQUEAK_QLVM_CONTEXT_FRAMES = 2
+SQUEAK_QLVM_MIN_CROP_FRAMES = 8
+SQUEAK_QLVM_CROP_EPSILON = 1e-6
+SQUEAK_QLVM_TARGET_SHAPE = (128, 128)
+SQUEAK_QLVM_INPUT_CONTRACT = {"input_normalization": "minmax", "normalization_epsilon": 1e-8, "floor": None}
 
 
 class TimeMIL(nn.Module):
@@ -368,6 +412,78 @@ def squeak_wav_channels(
     return wav_paths
 
 
+def squeak_segment_spectrograms(
+    session_root: pathlib.Path,
+    usv_summary: pls.DataFrame,
+    row_indices: np.ndarray,
+    exclude_metadata_audio_channels: bool,
+    message_output: Callable,
+) -> list[np.ndarray | None]:
+    """
+    Description
+    -----------
+    Rebuilds the full-length, absolute-dB sonic spectrogram of each requested
+    USV summary row from the session's unfiltered HPSS wavs, with the squeak
+    model's input contract (``SQUEAK_SPEC_PARAMS``: Blackman-Harris STFT,
+    nperseg 2048, hop 512, centred, 3-30 kHz, 128 linear frequency bins,
+    ``ref=1.0``, no ``top_db`` clamp, variance-weighted channel average; the
+    front end that reproduces Dexter's ``_sonic_wav_`` store bit-exactly). The
+    audio of a row spans ``round(start * 250000)`` to ``round(stop * 250000)``
+    samples on every channel. Frame ``t`` of a spectrogram is centred at
+    ``start + t * FRAME_DT_S`` s. Both the squeak classifier
+    (:func:`score_squeak_rows`) and the squeak QLVM embedding
+    (:func:`squeak_qlvm_inputs`) read their spectrograms here.
+
+    Parameters
+    ----------
+    session_root (pathlib.Path)
+        Session root directory.
+    usv_summary (pls.DataFrame)
+        The session's USV summary (must hold ``start`` and ``stop`` in seconds).
+    row_indices (np.ndarray)
+        0-based summary row indices to rebuild.
+    exclude_metadata_audio_channels (bool)
+        Whether to drop metadata-excluded channels from the average.
+    message_output (Callable)
+        Logging callback.
+
+    Returns
+    -------
+    spectrograms (list[np.ndarray | None])
+        One entry per requested row, in order: the float32 ``(128, n_frames)``
+        absolute-dB spectrogram, or None when the segment is too short for a
+        single STFT frame on any channel.
+    """
+
+    wav_paths = squeak_wav_channels(session_root, exclude_metadata_audio_channels, message_output)
+    starts = usv_summary["start"].to_numpy()
+    stops = usv_summary["stop"].to_numpy()
+
+    spectrograms: list[np.ndarray | None] = []
+    handles = [sf.SoundFile(str(wav_path), mode="r") for wav_path in wav_paths]
+    try:
+        for row_index in row_indices:
+            first_sample = round(float(starts[row_index]) * SQUEAK_SAMPLING_RATE)
+            last_sample = round(float(stops[row_index]) * SQUEAK_SAMPLING_RATE)
+            channel_audio = []
+            for handle in handles:
+                handle.seek(first_sample)
+                channel_audio.append(handle.read(frames=max(0, last_sample - first_sample), dtype="float64", always_2d=False))
+            spectrogram, n_frames = compute_usv_spectrogram(
+                audio_segment_channels=np.stack(channel_audio, axis=1),
+                sampling_rate=SQUEAK_SAMPLING_RATE,
+                spec_params=SQUEAK_SPEC_PARAMS,
+                normalize=False,
+                db_ref=SQUEAK_DB_REF,
+                top_db=None,
+            )
+            spectrograms.append(None if spectrogram is None or n_frames == 0 else spectrogram.astype(np.float32))
+    finally:
+        for handle in handles:
+            handle.close()
+    return spectrograms
+
+
 def score_squeak_rows(
     session_root: pathlib.Path,
     usv_summary: pls.DataFrame,
@@ -425,32 +541,14 @@ def score_squeak_rows(
         for every scorable row), and the four ``SQUEAK_COLUMNS``.
     """
 
-    wav_paths = squeak_wav_channels(session_root, exclude_metadata_audio_channels, message_output)
     starts = usv_summary["start"].to_numpy()
-    stops = usv_summary["stop"].to_numpy()
-
-    spectrograms: list[np.ndarray | None] = []
-    handles = [sf.SoundFile(str(wav_path), mode="r") for wav_path in wav_paths]
-    try:
-        for row_index in row_indices:
-            first_sample = round(float(starts[row_index]) * SQUEAK_SAMPLING_RATE)
-            last_sample = round(float(stops[row_index]) * SQUEAK_SAMPLING_RATE)
-            channel_audio = []
-            for handle in handles:
-                handle.seek(first_sample)
-                channel_audio.append(handle.read(frames=max(0, last_sample - first_sample), dtype="float64", always_2d=False))
-            spectrogram, n_frames = compute_usv_spectrogram(
-                audio_segment_channels=np.stack(channel_audio, axis=1),
-                sampling_rate=SQUEAK_SAMPLING_RATE,
-                spec_params=SQUEAK_SPEC_PARAMS,
-                normalize=False,
-                db_ref=SQUEAK_DB_REF,
-                top_db=None,
-            )
-            spectrograms.append(None if spectrogram is None or n_frames == 0 else spectrogram.astype(np.float32))
-    finally:
-        for handle in handles:
-            handle.close()
+    spectrograms = squeak_segment_spectrograms(
+        session_root=session_root,
+        usv_summary=usv_summary,
+        row_indices=row_indices,
+        exclude_metadata_audio_channels=exclude_metadata_audio_channels,
+        message_output=message_output,
+    )
 
     n_rows = len(row_indices)
     raw_probability = np.full(n_rows, np.nan)
@@ -624,6 +722,449 @@ class USVSqueakDetector:
         )
 
 
+def squeak_crop_frames(
+    segment_start_s: np.ndarray,
+    squeak_start_s: np.ndarray,
+    squeak_end_s: np.ndarray,
+    n_frames: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    The first and last spectrogram frame of each squeak's QLVM crop: the frames
+    whose centres are ``squeak_start`` and ``squeak_end``
+    (``round((t - start) / FRAME_DT_S)``, the inverse of
+    :func:`squeak_extent_seconds`), widened by ``SQUEAK_QLVM_CONTEXT_FRAMES``
+    either side and clipped to the segment's frames ``0 .. n_frames - 1``. This
+    is the rule of Dexter's ``build_bbv_dataset.py``, except that the segment
+    there was clipped to its first 128 frames (``n_valid_frames``) because the
+    store it cropped from held no more.
+
+    Parameters
+    ----------
+    segment_start_s (np.ndarray)
+        ``(N,)`` segment ``start`` in session seconds.
+    squeak_start_s (np.ndarray)
+        ``(N,)`` ``squeak_start`` in session seconds.
+    squeak_end_s (np.ndarray)
+        ``(N,)`` ``squeak_end`` in session seconds.
+    n_frames (np.ndarray)
+        ``(N,)`` number of frames of each segment's full-length spectrogram.
+
+    Returns
+    -------
+    first (np.ndarray)
+        ``(N,)`` int64 first frame of each crop.
+    last (np.ndarray)
+        ``(N,)`` int64 last frame of each crop (inclusive).
+    """
+
+    segment_start_s = np.asarray(segment_start_s, dtype=np.float64)
+    first = np.round((np.asarray(squeak_start_s, dtype=np.float64) - segment_start_s) / FRAME_DT_S).astype(np.int64)
+    last = np.round((np.asarray(squeak_end_s, dtype=np.float64) - segment_start_s) / FRAME_DT_S).astype(np.int64)
+    first = np.maximum(first - SQUEAK_QLVM_CONTEXT_FRAMES, 0)
+    last = np.minimum(last + SQUEAK_QLVM_CONTEXT_FRAMES, np.asarray(n_frames, dtype=np.int64) - 1)
+    return first, last
+
+
+def squeak_crop_inputs(
+    spectrograms_db: list[np.ndarray],
+    first: np.ndarray,
+    last: np.ndarray,
+) -> np.ndarray:
+    """
+    Description
+    -----------
+    Turns squeak crops into squeak QLVM decoder inputs, step for step as
+    Dexter's ``build_bbv_dataset.py`` (``--normalization per-crop``) and the
+    decoder's data loader did: each crop ``spectrogram[:, first:last + 1]``
+    (float32) is min-max normalized on its own,
+    ``(x - min) / (max - min + 1e-6)``, written into a 128-frame zero frame from
+    column 0, centred with ``stretch_specs(..., time_stretch=False)`` (the
+    128 x 128 input is not resized, only the crop's columns are moved to the
+    middle), and min-max normalized once more with epsilon 1e-8
+    (:func:`qlvm_latents.normalize_model_inputs`).
+
+    Parameters
+    ----------
+    spectrograms_db (list[np.ndarray])
+        ``N`` full-length absolute-dB spectrograms, each ``(128, n_frames)``.
+    first (np.ndarray)
+        ``(N,)`` first crop frame of each (:func:`squeak_crop_frames`).
+    last (np.ndarray)
+        ``(N,)`` last crop frame of each, inclusive.
+
+    Returns
+    -------
+    inputs (np.ndarray)
+        ``(N, 128, 128)`` float32 decoder inputs in ``[0, 1]``.
+
+    Raises
+    ------
+    ValueError
+        A crop is empty or wider than the 128-frame decoder frame.
+    """
+
+    n_freq, n_time = SQUEAK_QLVM_TARGET_SHAPE
+    specs = np.zeros((len(spectrograms_db), n_freq, n_time), dtype=np.float32)
+    widths = np.empty(len(spectrograms_db), dtype=np.int64)
+    for position, spectrogram_db in enumerate(spectrograms_db):
+        crop = spectrogram_db[:, int(first[position]):int(last[position]) + 1].astype(np.float32)
+        width = crop.shape[1]
+        if not 1 <= width <= n_time or crop.shape[0] != n_freq:
+            error_message = (
+                f"squeak_crop_inputs: crop {position} is {crop.shape[0]} x {width}; the decoder frame is "
+                f"{n_freq} x {n_time} and a crop must span 1 to {n_time} frames."
+            )
+            raise ValueError(error_message)
+        low, high = float(crop.min()), float(crop.max())
+        specs[position, :, :width] = (crop - low) / (high - low + SQUEAK_QLVM_CROP_EPSILON)
+        widths[position] = width
+    resized = stretch_specs(specs, widths, SQUEAK_QLVM_TARGET_SHAPE, False)
+    return normalize_model_inputs(resized, SQUEAK_QLVM_INPUT_CONTRACT)
+
+
+def squeak_qlvm_rows(usv_summary: pls.DataFrame) -> np.ndarray:
+    """
+    Description
+    -----------
+    The USV summary rows the squeak QLVM embedding considers: ``squeak`` true
+    and not noise. A null ``noise`` (a segment the noise model could not score)
+    counts as not noise, the single definition of noise the analyses share
+    (:func:`os_utils.drop_noise_usvs`); a null ``squeak`` counts as not a squeak.
+
+    Parameters
+    ----------
+    usv_summary (pls.DataFrame)
+        The session's USV summary; must hold ``squeak`` and ``noise``.
+
+    Returns
+    -------
+    rows (np.ndarray)
+        Ascending int64 row indices.
+
+    Raises
+    ------
+    ValueError
+        The summary lacks ``noise`` or any squeak column.
+    """
+
+    missing = [column for column in ("noise", *SQUEAK_COLUMNS) if column not in usv_summary.columns]
+    if missing:
+        error_message = (
+            f"The USV summary has no {missing} column(s); run detect-usv-noise and detect-usv-squeaks "
+            f"on the session before embedding its squeaks."
+        )
+        raise ValueError(error_message)
+    squeak = usv_summary["squeak"].cast(pls.Boolean).fill_null(False).to_numpy()
+    noise = usv_summary["noise"].cast(pls.Boolean).fill_null(False).to_numpy()
+    return np.flatnonzero(squeak & ~noise).astype(np.int64)
+
+
+def squeak_qlvm_inputs(
+    session_root: pathlib.Path,
+    usv_summary: pls.DataFrame,
+    exclude_metadata_audio_channels: bool,
+    message_output: Callable,
+) -> dict:
+    """
+    Description
+    -----------
+    Builds the squeak QLVM decoder inputs of one session: selects the squeak
+    rows that are not noise (:func:`squeak_qlvm_rows`), rebuilds their
+    full-length sonic spectrograms (:func:`squeak_segment_spectrograms`), crops
+    each to its squeak extent plus context (:func:`squeak_crop_frames`), leaves
+    out crops narrower than ``SQUEAK_QLVM_MIN_CROP_FRAMES`` (the training set's
+    minimum) or wider than the 128-frame decoder frame (never trained on:
+    the decoder frame has no room for them and the training crops were never
+    compressed in time), and normalizes the rest (:func:`squeak_crop_inputs`).
+
+    Parameters
+    ----------
+    session_root (pathlib.Path)
+        Session root directory.
+    usv_summary (pls.DataFrame)
+        The session's USV summary (``start``, ``stop``, ``noise`` and the four
+        squeak columns).
+    exclude_metadata_audio_channels (bool)
+        Whether to drop metadata-excluded channels from the spectrogram average.
+    message_output (Callable)
+        Logging callback.
+
+    Returns
+    -------
+    squeak_inputs (dict)
+        ``row_index`` (``(M,)`` int64 summary rows embedded), ``first`` /
+        ``last`` (``(M,)`` int64 crop frames), ``inputs`` (``(M, 128, 128)``
+        float32 decoder inputs), ``n_candidates`` (squeak rows that are not
+        noise) and ``excluded`` (reason -> number of candidate rows left out:
+        ``"no spectrogram"``, ``"no squeak extent"``, ``"crop < 8 frames"``,
+        ``"crop > 128 frames"``).
+    """
+
+    candidates = squeak_qlvm_rows(usv_summary)
+    empty = {
+        "row_index": np.empty(0, dtype=np.int64),
+        "first": np.empty(0, dtype=np.int64),
+        "last": np.empty(0, dtype=np.int64),
+        "inputs": np.empty((0, *SQUEAK_QLVM_TARGET_SHAPE), dtype=np.float32),
+        "n_candidates": int(candidates.size),
+    }
+    excluded = {"no spectrogram": 0, "no squeak extent": 0, "crop < 8 frames": 0, "crop > 128 frames": 0}
+    if candidates.size == 0:
+        return {**empty, "excluded": excluded}
+
+    spectrograms = squeak_segment_spectrograms(
+        session_root=session_root,
+        usv_summary=usv_summary,
+        row_indices=candidates,
+        exclude_metadata_audio_channels=exclude_metadata_audio_channels,
+        message_output=message_output,
+    )
+    has_spectrogram = np.array([spectrogram is not None for spectrogram in spectrograms], dtype=bool)
+    squeak_start = usv_summary["squeak_start"].cast(pls.Float64).fill_null(np.nan).to_numpy()[candidates]
+    squeak_end = usv_summary["squeak_end"].cast(pls.Float64).fill_null(np.nan).to_numpy()[candidates]
+    has_extent = np.isfinite(squeak_start) & np.isfinite(squeak_end)
+    excluded["no spectrogram"] = int(np.count_nonzero(~has_spectrogram))
+    excluded["no squeak extent"] = int(np.count_nonzero(has_spectrogram & ~has_extent))
+
+    usable = np.flatnonzero(has_spectrogram & has_extent)
+    n_frames = np.array([spectrograms[position].shape[1] for position in usable], dtype=np.int64)
+    first, last = squeak_crop_frames(
+        segment_start_s=usv_summary["start"].to_numpy()[candidates[usable]],
+        squeak_start_s=squeak_start[usable],
+        squeak_end_s=squeak_end[usable],
+        n_frames=n_frames,
+    )
+    width = last - first + 1
+    too_narrow = width < SQUEAK_QLVM_MIN_CROP_FRAMES
+    too_wide = width > SQUEAK_QLVM_TARGET_SHAPE[1]
+    excluded["crop < 8 frames"] = int(np.count_nonzero(too_narrow))
+    excluded["crop > 128 frames"] = int(np.count_nonzero(too_wide))
+    keep = ~too_narrow & ~too_wide
+    if not np.any(keep):
+        return {**empty, "excluded": excluded}
+    return {
+        "row_index": candidates[usable[keep]],
+        "first": first[keep],
+        "last": last[keep],
+        "inputs": squeak_crop_inputs([spectrograms[position] for position in usable[keep]], first[keep], last[keep]),
+        "n_candidates": int(candidates.size),
+        "excluded": excluded,
+    }
+
+
+def load_squeak_qlvm_cell(model_cell_directory: str) -> dict:
+    """
+    Description
+    -----------
+    Loads one of Dexter's phase 3 squeak (BBV) QLVM cells
+    (``qlvm_models_latest/phase3_BBVs_qlvm/<cell>``). These cells keep the OLD
+    package layout: every file at the cell root, no ``config/`` or
+    ``inference/`` folder and no ``training_contract.json``. What inference
+    needs is read from the files they do ship instead, and checked:
+
+    * ``checkpoint.tar`` -- the decoder weights, read without torch
+      (:func:`qlvm_latents.load_decoder_params`); they must be an unconditional
+      2-D decoder (first layer input width 4) of a known head;
+    * ``run_config.json`` -- ``latent_dim`` must be 2, ``mask_tag``
+      ``"nomask"`` and the training ``dataset`` a BBV set (name starting
+      ``"bbv-"``);
+    * ``manifest.json`` (the corpus embedding's record) -- its ``dataset`` must
+      be unmasked (``masking_type`` ``"none"``, ``apply_mask`` false),
+      ``target_shape`` ``[128, 128]`` and ``time_stretch`` false, and
+      ``analysis.lattice_m`` gives the Fibonacci lattice the corpus was embedded
+      on, rebuilt in float32 as the torch driver built it
+      (:func:`qlvm_model.gen_fib_basis_float32`).
+
+    Parameters
+    ----------
+    model_cell_directory (str)
+        Path to the cell, e.g.
+        ``/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm/natural_lumped_N11000_nomask``.
+
+    Returns
+    -------
+    model (dict)
+        ``params`` (decoder weights), ``lattice`` (``(fib(lattice_m), 2)``
+        float32), ``lattice_m`` (int), ``head`` (``"legacy"`` or ``"relu"``) and
+        ``model_id`` (``<phase>/<cell>``, the last two path components).
+
+    Raises
+    ------
+    ValueError
+        Any check fails; every failure is reported together.
+    """
+
+    cell = pathlib.Path(configure_path(model_cell_directory))
+    with cell_file(cell, "run_config.json").open() as run_config_file:
+        run_config = json.load(run_config_file)
+    with cell_file(cell, "manifest.json").open() as manifest_file:
+        manifest = json.load(manifest_file)
+    params = load_decoder_params(str(cell / "checkpoint.tar"))
+    dataset = manifest["dataset"]
+    problems = []
+    if run_config["latent_dim"] != 2:
+        problems.append(f"run_config.json latent_dim is {run_config['latent_dim']!r}, expected 2")
+    if run_config["mask_tag"] != "nomask":
+        problems.append(f"run_config.json mask_tag is {run_config['mask_tag']!r}, expected 'nomask'")
+    if not str(run_config["dataset"]).startswith("bbv-"):
+        problems.append(f"run_config.json dataset {run_config['dataset']!r} is not a BBV (squeak) training set")
+    if dataset["masking_type"] != "none" or dataset["apply_mask"]:
+        problems.append(f"manifest.json dataset masking_type {dataset['masking_type']!r} / apply_mask {dataset['apply_mask']!r}, expected 'none' / false")
+    if [int(value) for value in dataset["target_shape"]] != list(SQUEAK_QLVM_TARGET_SHAPE):
+        problems.append(f"manifest.json dataset target_shape {dataset['target_shape']!r}, expected {list(SQUEAK_QLVM_TARGET_SHAPE)}")
+    if dataset["time_stretch"]:
+        problems.append("manifest.json dataset time_stretch is true, expected false")
+    if int(params["0.weight"].shape[1]) != 4:
+        problems.append(f"the decoder's first layer takes {int(params['0.weight'].shape[1])} inputs, expected 4 (an unconditional 2-D torus)")
+    if problems:
+        error_message = f"{cell} is not a squeak QLVM cell this step can embed with:\n  " + "\n  ".join(problems)
+        raise ValueError(error_message)
+    lattice_m = int(manifest["analysis"]["lattice_m"])
+    return {
+        "params": params,
+        "lattice": gen_fib_basis_float32(lattice_m),
+        "lattice_m": lattice_m,
+        "head": decoder_head(params),
+        "model_id": "/".join(cell.parts[-2:]),
+    }
+
+
+class USVSqueakQLVMEmbedder:
+    """
+    Description
+    -----------
+    Places every squeak of one session that is not noise on the torus of a
+    squeak (BBV) QLVM cell and merges ``qlvm_squeak1`` / ``qlvm_squeak2`` into
+    its ``*_usv_summary.csv``.
+    """
+
+    def __init__(
+        self,
+        root_directory: str | None = None,
+        input_parameter_dict: dict | None = None,
+        message_output: Callable | None = None,
+    ) -> None:
+        """
+        Description
+        -----------
+        Initializes the USVSqueakQLVMEmbedder.
+
+        Parameters
+        ----------
+        root_directory (str)
+            Session root directory (contains the ``audio`` tree).
+        input_parameter_dict (dict)
+            Processing settings; the ``infer_qlvm_squeak_latents`` block
+            supplies the model cell, the channel-exclusion switch and the batch
+            sizes.
+        message_output (Callable)
+            Logging callback; defaults to ``print``.
+
+        Returns
+        -------
+        None
+        """
+
+        self.root_directory = root_directory
+        self.input_parameter_dict = input_parameter_dict if input_parameter_dict is not None else {}
+        self.message_output = message_output if message_output is not None else print
+        self.app_context_bool = is_gui_context()
+
+    def embed_and_merge(self) -> None:
+        """
+        Description
+        -----------
+        Loads the cell of ``infer_qlvm_squeak_latents.model_cell_directory``
+        (:func:`load_squeak_qlvm_cell`; an empty setting raises, since no
+        production squeak cell is chosen), builds the decoder inputs of the
+        session's squeaks that are not noise (:func:`squeak_qlvm_inputs`),
+        embeds them as the posterior mean over the cell's lattice
+        (:func:`qlvm_model.embed_data`) and writes ``qlvm_squeak1`` /
+        ``qlvm_squeak2`` (torus coordinates in ``[0, 1)``) on those rows and
+        nulls on every other row, replacing any earlier squeak coordinates. Run
+        it after ``detect-usv-noise`` and ``detect-usv-squeaks``. The summary is
+        rewritten atomically.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        Updated ``*_usv_summary.csv`` with the two squeak torus columns.
+        """
+
+        self.message_output(
+            f"Squeak QLVM embedding started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
+        )
+        smart_wait(app_context_bool=self.app_context_bool, seconds=1)
+
+        cfg = self.input_parameter_dict['infer_qlvm_squeak_latents']
+        if not cfg['model_cell_directory']:
+            error_message = (
+                "infer_qlvm_squeak_latents.model_cell_directory is empty: no production squeak QLVM cell is chosen. "
+                "Name one of the qlvm_models_latest/phase3_BBVs_qlvm cells (e.g. via --model-cell-directory)."
+            )
+            raise ValueError(error_message)
+        model = load_squeak_qlvm_cell(cfg['model_cell_directory'])
+        self.message_output(
+            f"{'/'.join(SQUEAK_QLVM_COLUMNS)}: squeak QLVM cell {model['model_id']} ({model['head']} head, "
+            f"{model['lattice'].shape[0]}-point float32 Fibonacci lattice, m = {model['lattice_m']})."
+        )
+
+        root = pathlib.Path(self.root_directory)
+        usv_summary_loc = first_match_or_raise(
+            root=root / "audio",
+            pattern="*_usv_summary.csv",
+            recursive=True,
+            label="USV summary CSV",
+        )
+        usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
+        usv_df = usv_df.drop([column for column in SQUEAK_QLVM_COLUMNS if column in usv_df.columns])
+
+        squeak_inputs = squeak_qlvm_inputs(
+            session_root=root,
+            usv_summary=usv_df,
+            exclude_metadata_audio_channels=cfg['exclude_metadata_audio_channels'],
+            message_output=self.message_output,
+        )
+        left_out = ", ".join(f"{count} {reason}" for reason, count in squeak_inputs['excluded'].items() if count)
+        null_note = f"; null {'/'.join(SQUEAK_QLVM_COLUMNS)} for {left_out}" if left_out else ""
+        self.message_output(
+            f"{squeak_inputs['n_candidates']} squeaks that are not noise, {squeak_inputs['row_index'].size} embedded{null_note}."
+        )
+
+        coords = np.empty((0, 2), dtype=np.float64)
+        if squeak_inputs['row_index'].size:
+            coords = np.asarray(embed_data(
+                model['lattice'],
+                jnp.asarray(squeak_inputs['inputs'][:, None, :, :]),
+                model['params'],
+                cfg['lattice_batch_size'],
+                cfg['data_batch_size'],
+            ), dtype=np.float64).reshape(-1, 2)
+        coordinate_frame = pls.DataFrame(
+            {
+                "_usv_row": squeak_inputs['row_index'].astype(np.uint32),
+                SQUEAK_QLVM_COLUMNS[0]: coords[:, 0],
+                SQUEAK_QLVM_COLUMNS[1]: coords[:, 1],
+            },
+            schema={"_usv_row": pls.UInt32, SQUEAK_QLVM_COLUMNS[0]: pls.Float64, SQUEAK_QLVM_COLUMNS[1]: pls.Float64},
+        )
+        merged = usv_df.with_row_index(name="_usv_row").join(coordinate_frame, on="_usv_row", how="left")
+        merged = order_usv_summary_columns(merged.drop("_usv_row"))
+        with atomic_output_path(usv_summary_loc) as tmp_summary_path:
+            merged.write_csv(file=str(tmp_summary_path))
+
+        self.message_output(
+            f"Merged the squeak torus coordinates of {squeak_inputs['row_index'].size} squeaks into {usv_summary_loc.name}."
+        )
+        self.message_output(
+            f"Squeak QLVM embedding ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
+        )
+
+
 @click.command(name="detect-usv-squeaks")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--squeak-model-path', 'squeak_model_path', type=str, default=None, required=False, help='Path to the squeak classifier checkpoint (.pt); derived from spectrograms_root when empty.')
@@ -660,3 +1201,42 @@ def detect_usv_squeaks_cli(ctx, root_directory, **kwargs) -> None:
         input_parameter_dict=processing_settings_dict,
         message_output=print,
     ).detect_and_merge()
+
+
+@click.command(name="infer-qlvm-squeak-latents")
+@click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
+@click.option('--model-cell-directory', 'model_cell_directory', type=str, default=None, required=False, help='A squeak (BBV) QLVM cell, e.g. /mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm/natural_lumped_N11000_nomask; required while the setting is empty (no production cell is chosen).')
+@click.option('--exclude-metadata-audio-channels/--no-exclude-metadata-audio-channels', 'exclude_metadata_audio_channels', default=None, required=False, help='Drop channels the session metadata marks as excluded from the spectrogram average (keep it equal to the detect-usv-squeaks run).')
+@click.option('--lattice-batch-size', 'lattice_batch_size', type=int, default=None, required=False, help='Lattice points decoded and scored per block; lower it to cut memory.')
+@click.option('--data-batch-size', 'data_batch_size', type=int, default=None, required=False, help='Squeaks whose lattice posteriors are computed together; memory grows with this times the lattice size.')
+@click.pass_context
+def infer_qlvm_squeak_latents_cli(ctx, root_directory, **kwargs) -> None:
+    """
+    Description
+    -----------
+    A command-line tool to place a session's squeaks that are not noise on the
+    torus of a squeak (BBV) QLVM cell and merge ``qlvm_squeak1`` /
+    ``qlvm_squeak2`` into its USV summary CSV.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
+
+    processing_settings_dict = modify_settings_json_for_cli(
+        ctx=ctx,
+        provided_params=provided_params,
+        settings_dict='processing_settings',
+        block='infer_qlvm_squeak_latents',
+    )
+
+    USVSqueakQLVMEmbedder(
+        root_directory=root_directory,
+        input_parameter_dict=processing_settings_dict,
+        message_output=print,
+    ).embed_and_merge()

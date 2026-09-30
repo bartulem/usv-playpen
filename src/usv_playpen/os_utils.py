@@ -1082,9 +1082,12 @@ def wait_for_subprocesses(
 # model's qlvm1/qlvm2 with its fine and coarse labels qlvm_category /
 # qlvm_supercategory, then the duration, mean-frequency, bandwidth and loudness
 # conditional models, each with its fine and coarse labels P_category /
-# P_supercategory). The legacy column qlvm_model (written by the retired
-# single-model run) is not listed: production summaries do not carry it, and
-# infer_qlvm_latents drops it from older summaries it rewrites.
+# P_supercategory), and last the squeak torus coordinates qlvm_squeak1/qlvm_squeak2
+# (infer_qlvm_squeak_latents; kept with the other torus coordinates rather than with
+# the squeak columns, and reserved, so no model_cells prefix can write them). The
+# legacy column qlvm_model (written by the retired single-model run) is not listed:
+# production summaries do not carry it, and infer_qlvm_latents drops it from older
+# summaries it rewrites.
 # Steps that re-append their own columns reorder to this before writing, so a
 # column's position no longer depends on which step ran last.
 USV_SUMMARY_COLUMN_ORDER = (
@@ -1099,6 +1102,7 @@ USV_SUMMARY_COLUMN_ORDER = (
     "qlvm_mf1", "qlvm_mf2", "qlvm_mf_category", "qlvm_mf_supercategory",
     "qlvm_bw1", "qlvm_bw2", "qlvm_bw_category", "qlvm_bw_supercategory",
     "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category", "qlvm_loud_supercategory",
+    "qlvm_squeak1", "qlvm_squeak2",
 )
 
 

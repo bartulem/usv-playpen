@@ -10,12 +10,19 @@ logit, so every valid frame and every scorable segment has a known probability:
 that pins the squeak call, the probability, the full-length onset/offset of a
 segment longer than the model window, the unscorable too-short row and the
 metadata channel exclusion without needing the real checkpoint.
+
+The squeak QLVM embedding is tested on the same kind of synthetic session: the
+crop frames and their context, the per-crop and model-input normalization and
+centring, the row selection (squeaks that are not noise) and exclusions, the
+old-layout cell loader and its checks, and the merge of ``qlvm_squeak1`` /
+``qlvm_squeak2`` with the decoder mocked.
 """
 
 from __future__ import annotations
 
 import pathlib
 
+import jax.numpy as jnp
 import numpy as np
 import polars as pls
 import pytest
@@ -289,3 +296,248 @@ def test_detect_usv_squeaks_cli_routes(mocker, tmp_path):
     assert result.exit_code == 0, result.output
     mock_cls.assert_called_once()
     mock_cls.return_value.detect_and_merge.assert_called_once()
+
+
+def _build_squeak_embedding_session(tmp_path: pathlib.Path) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Creates a synthetic session for the squeak QLVM embedding: the HPSS wavs of
+    :func:`_build_session` and a summary whose rows cover every selection and
+    crop case, with squeak extents placed on exact frame centres:
+
+    * row 0 -- a squeak, not noise, frames 2 .. 20 of a 50 ms segment
+      (crop 0 .. 22, embedded);
+    * row 1 -- a squeak that is noise (not a candidate);
+    * row 2 -- a squeak with a null noise value (counts as not noise), frames
+      150 .. 190 of a 400 ms segment, i.e. past the 128-frame window (crop
+      148 .. 192, embedded);
+    * row 3 -- a squeak, frames 10 .. 180 of the 400 ms segment (crop of 175
+      frames, too wide);
+    * row 4 -- a squeak at frame 5 only of a 30 ms segment (crop of 5 frames,
+      too narrow);
+    * row 5 -- a squeak on a 4 ms segment (no spectrogram);
+    * row 6 -- not a squeak.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest temporary directory.
+
+    Returns
+    -------
+    root (pathlib.Path)
+        Session root directory.
+    """
+
+    root = _build_session(tmp_path)
+    dt = squeaks.FRAME_DT_S
+    pls.DataFrame(
+        {
+            "usv_id": ["0000", "0001", "0002", "0003", "0004", "0005", "0006"],
+            "start": [0.10, 0.20, 0.30, 0.30, 0.75, 0.80, 0.85],
+            "stop": [0.15, 0.25, 0.70, 0.70, 0.78, 0.804, 0.90],
+            "noise": [False, True, None, False, False, False, False],
+            "squeak": [True, True, True, True, True, True, False],
+            "squeak_probability": [0.9, 0.9, 0.9, 0.9, 0.9, 0.9, None],
+            "squeak_start": [0.10 + 2 * dt, 0.20, 0.30 + 150 * dt, 0.30 + 10 * dt, 0.75 + 5 * dt, 0.80, None],
+            "squeak_end": [0.10 + 20 * dt, 0.21, 0.30 + 190 * dt, 0.30 + 180 * dt, 0.75 + 5 * dt, 0.80, None],
+            "mean_freq_hz": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+        },
+        schema={
+            "usv_id": pls.String, "start": pls.Float64, "stop": pls.Float64, "noise": pls.Boolean,
+            "squeak": pls.Boolean, "squeak_probability": pls.Float64, "squeak_start": pls.Float64,
+            "squeak_end": pls.Float64, "mean_freq_hz": pls.Float64,
+        },
+    ).write_csv(root / "audio" / f"{SESSION_ID}_usv_summary.csv")
+    return root
+
+
+def test_squeak_crop_frames_adds_context_and_clips_to_the_segment():
+    """Frame centres invert squeak_extent_seconds; two context frames are added and clipped to 0 .. n_frames - 1."""
+    dt = squeaks.FRAME_DT_S
+    start = np.array([10.0, 10.0, 10.0])
+    first, last = squeaks.squeak_crop_frames(
+        segment_start_s=start,
+        squeak_start_s=start + np.array([1, 5, 40]) * dt,
+        squeak_end_s=start + np.array([30, 60, 199]) * dt,
+        n_frames=np.array([100, 61, 200]),
+    )
+    assert first.tolist() == [0, 3, 38]
+    assert last.tolist() == [32, 60, 199]
+    assert first.dtype == np.int64
+    assert last.dtype == np.int64
+
+
+def test_squeak_crop_inputs_normalizes_per_crop_and_centres_the_crop():
+    """
+    The crop is min-max normalized on its own (the dB values outside it play no
+    part), centred in the 128-frame frame with (128 - width) // 2 zero columns on
+    the left, and min-max normalized again; a crop wider than 128 frames raises.
+    """
+    rng = np.random.default_rng(3)
+    spectrogram = rng.uniform(-90.0, 10.0, size=(128, 60)).astype(np.float32)
+    spectrogram[:, :5] = 500.0
+    inputs = squeaks.squeak_crop_inputs([spectrogram], np.array([10]), np.array([29]))
+    assert inputs.shape == (1, 128, 128)
+    assert inputs.dtype == np.float32
+    crop = spectrogram[:, 10:30]
+    low, high = float(crop.min()), float(crop.max())
+    once = (crop - low) / (high - low + 1e-6)
+    expected = (once - once.min()) / (once.max() - once.min() + np.float32(1e-8))
+    left = (128 - 20) // 2
+    assert np.allclose(inputs[0, :, left:left + 20], expected, atol=1e-6)
+    assert not inputs[0, :, :left].any()
+    assert not inputs[0, :, left + 20:].any()
+    with pytest.raises(ValueError, match="1 to 128 frames"):
+        squeaks.squeak_crop_inputs([np.zeros((128, 200), dtype=np.float32)], np.array([0]), np.array([150]))
+
+
+def test_squeak_qlvm_rows_selects_squeaks_that_are_not_noise():
+    """Squeak rows with noise false or null are selected; a summary without noise or squeak columns raises."""
+    summary = pls.DataFrame(
+        {"noise": [False, True, None, False], "squeak": [True, True, True, None]},
+        schema={"noise": pls.Boolean, "squeak": pls.Boolean},
+    ).with_columns(
+        pls.lit(None, dtype=pls.Float64).alias(column) for column in ("squeak_probability", "squeak_start", "squeak_end")
+    )
+    assert squeaks.squeak_qlvm_rows(summary).tolist() == [0, 2]
+    with pytest.raises(ValueError, match="detect-usv-noise"):
+        squeaks.squeak_qlvm_rows(summary.drop("noise"))
+
+
+def test_squeak_qlvm_inputs_crops_and_excludes(tmp_path):
+    """Two squeaks are embedded (one past frame 127 of its segment); the other candidates are counted by reason."""
+    root = _build_squeak_embedding_session(tmp_path)
+    summary = pls.read_csv(root / "audio" / f"{SESSION_ID}_usv_summary.csv", schema_overrides={"usv_id": pls.String})
+    built = squeaks.squeak_qlvm_inputs(root, summary, True, lambda *_a, **_kw: None)
+    assert built["row_index"].tolist() == [0, 2]
+    assert built["first"].tolist() == [0, 148]
+    assert built["last"].tolist() == [22, 192]
+    assert built["inputs"].shape == (2, 128, 128)
+    assert built["n_candidates"] == 5
+    assert built["excluded"] == {"no spectrogram": 1, "no squeak extent": 0, "crop < 8 frames": 1, "crop > 128 frames": 1}
+    spectrograms = squeaks.squeak_segment_spectrograms(root, summary, np.array([0]), True, lambda *_a, **_kw: None)
+    assert np.array_equal(built["inputs"][:1], squeaks.squeak_crop_inputs(spectrograms, np.array([0]), np.array([22])))
+
+
+def _write_squeak_cell(cell: pathlib.Path, mask_tag: str = "nomask", masking_type: str = "none") -> None:
+    """
+    Description
+    -----------
+    Writes a minimal phase 3 squeak cell in the old package layout (every file at
+    the cell root): a torch zip checkpoint holding a tiny unconditional
+    legacy-head decoder prefix, ``run_config.json`` and ``manifest.json``.
+
+    Parameters
+    ----------
+    cell (pathlib.Path)
+        Cell directory to create.
+    mask_tag (str)
+        ``run_config.json`` ``mask_tag``.
+    masking_type (str)
+        ``manifest.json`` ``dataset.masking_type``.
+
+    Returns
+    -------
+    None
+    """
+
+    cell.mkdir(parents=True)
+    torch.save(
+        {"model": {"decoder.0.weight": torch.zeros(8, 4), "decoder.1.weight": torch.zeros(2, 8)}},
+        cell / "checkpoint.tar",
+    )
+    (cell / "run_config.json").write_text(
+        '{"phase": "phase3_BBVs_masked", "mask_tag": "' + mask_tag + '", "dataset": "bbv-natural_dur-26-40-62_lumped_N11000_seed42", "latent_dim": 2, "seed": 42}'
+    )
+    (cell / "manifest.json").write_text(
+        '{"dataset": {"masking_type": "' + masking_type + '", "apply_mask": false, "target_shape": [128, 128], '
+        '"time_stretch": false}, "analysis": {"lattice_m": 8}}'
+    )
+
+
+def test_load_squeak_qlvm_cell_reads_the_old_layout_and_checks_it(tmp_path):
+    """The old-layout cell loads with its float32 lattice; a masked cell is refused with every problem listed."""
+    _write_squeak_cell(tmp_path / "phase3_BBVs_qlvm" / "natural_lumped_N11000_nomask")
+    model = squeaks.load_squeak_qlvm_cell(str(tmp_path / "phase3_BBVs_qlvm" / "natural_lumped_N11000_nomask"))
+    assert model["model_id"] == "phase3_BBVs_qlvm/natural_lumped_N11000_nomask"
+    assert model["lattice_m"] == 8
+    assert model["head"] == "legacy"
+    assert np.array_equal(np.asarray(model["lattice"]), np.asarray(squeaks.gen_fib_basis_float32(8)))
+    _write_squeak_cell(tmp_path / "bad", mask_tag="masked", masking_type="sam")
+    with pytest.raises(ValueError, match="mask_tag") as error:
+        squeaks.load_squeak_qlvm_cell(str(tmp_path / "bad"))
+    assert "masking_type" in str(error.value)
+
+
+def test_embed_and_merge_writes_the_two_squeak_torus_columns(tmp_path, mocker):
+    """
+    The embedded squeaks get their coordinates, every other row nulls, stale
+    squeak coordinates are replaced, the other columns are kept and the two
+    columns follow the canonical order (after every other known column).
+    """
+    root = _build_squeak_embedding_session(tmp_path)
+    summary_path = root / "audio" / f"{SESSION_ID}_usv_summary.csv"
+    pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String}).with_columns(
+        pls.lit(0.5).alias("qlvm_squeak1"), pls.lit(0.5).alias("qlvm_squeak2")
+    ).write_csv(summary_path)
+    mocker.patch("usv_playpen.processing.detect_usv_squeaks.smart_wait")
+    mocker.patch(
+        "usv_playpen.processing.detect_usv_squeaks.load_squeak_qlvm_cell",
+        return_value={"params": {}, "lattice": np.zeros((21, 2)), "lattice_m": 8, "head": "legacy", "model_id": "p/c"},
+    )
+    embed = mocker.patch(
+        "usv_playpen.processing.detect_usv_squeaks.embed_data",
+        return_value=jnp.asarray(np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32)),
+    )
+    squeaks.USVSqueakQLVMEmbedder(
+        root_directory=str(root),
+        input_parameter_dict={"infer_qlvm_squeak_latents": {
+            "model_cell_directory": "cell", "exclude_metadata_audio_channels": True,
+            "lattice_batch_size": 7, "data_batch_size": 3,
+        }},
+        message_output=lambda *_a, **_kw: None,
+    ).embed_and_merge()
+
+    assert embed.call_args.args[1].shape == (2, 1, 128, 128)
+    assert embed.call_args.args[3:] == (7, 3)
+    written = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+    assert written.columns[-2:] == list(squeaks.SQUEAK_QLVM_COLUMNS)
+    assert written["mean_freq_hz"].to_list() == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+    assert written["qlvm_squeak1"].null_count() == 5
+    assert written["qlvm_squeak1"].is_null().to_list() == [False, True, False, True, True, True, True]
+    assert written["qlvm_squeak1"][0] == pytest.approx(0.1, abs=1e-6)
+    assert written["qlvm_squeak2"][2] == pytest.approx(0.4, abs=1e-6)
+
+
+def test_embed_and_merge_refuses_an_empty_model_cell(tmp_path, mocker):
+    """No production squeak cell is chosen, so an empty model_cell_directory stops the run before anything is read."""
+    mocker.patch("usv_playpen.processing.detect_usv_squeaks.smart_wait")
+    embedder = squeaks.USVSqueakQLVMEmbedder(
+        root_directory=str(tmp_path),
+        input_parameter_dict={"infer_qlvm_squeak_latents": {
+            "model_cell_directory": "", "exclude_metadata_audio_channels": True,
+            "lattice_batch_size": 4096, "data_batch_size": 1024,
+        }},
+        message_output=lambda *_a, **_kw: None,
+    )
+    with pytest.raises(ValueError, match="no production squeak QLVM cell"):
+        embedder.embed_and_merge()
+
+
+def test_infer_qlvm_squeak_latents_cli_routes(mocker, tmp_path):
+    """infer-qlvm-squeak-latents resolves its settings block and calls USVSqueakQLVMEmbedder.embed_and_merge once."""
+    mock_cls = mocker.patch("usv_playpen.processing.detect_usv_squeaks.USVSqueakQLVMEmbedder")
+    modify = mocker.patch(
+        "usv_playpen.processing.detect_usv_squeaks.modify_settings_json_for_cli",
+        return_value={"infer_qlvm_squeak_latents": {}},
+    )
+    result = CliRunner().invoke(
+        squeaks.infer_qlvm_squeak_latents_cli,
+        ["--root-directory", str(tmp_path), "--model-cell-directory", "some/cell"],
+    )
+    assert result.exit_code == 0, result.output
+    assert modify.call_args.kwargs["block"] == "infer_qlvm_squeak_latents"
+    assert modify.call_args.kwargs["provided_params"] == ["model_cell_directory"]
+    mock_cls.return_value.embed_and_merge.assert_called_once()

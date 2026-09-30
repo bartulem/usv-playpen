@@ -302,6 +302,12 @@
     "exclude_metadata_audio_channels": true,
     "batch_size": 256
   },
+  "infer_qlvm_squeak_latents": {
+    "model_cell_directory": "",
+    "exclude_metadata_audio_channels": true,
+    "lattice_batch_size": 2048,
+    "data_batch_size": 512
+  },
   "build_qlvm_training_set": {
     "length_threshold": 50.0,
     "dataset_size_constraint": null,

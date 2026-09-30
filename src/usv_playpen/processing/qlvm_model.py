@@ -102,6 +102,39 @@ def gen_fib_basis(m: int) -> jnp.ndarray:
     return jnp.asarray(np.arange(0, n)[:, None] * z[None, :] / n)
 
 
+def gen_fib_basis_float32(m: int) -> jnp.ndarray:
+    """
+    Description
+    -----------
+    2D Fibonacci lattice computed in float32 exactly as ``qmc_deep_gen``'s torch
+    ``models/sampling.py:gen_fib_basis`` computes it:
+    ``arange(n)[:, None] * float32([1, fib(m-1)])[None, :] / n``, where the
+    integer ``arange`` is promoted to float32 and both the product and the
+    division are rounded to float32. The second coordinate grows to about
+    ``fib(m-1)`` before any ``mod 1``, so that float32 rounding moves every
+    point by up to ~2.3e-3 of the torus (m = 24) away from the exact float64
+    lattice of :func:`gen_fib_basis`. A decoder whose corpus embedding was
+    computed with the torch lattice (Dexter's ``analyze_all_sessions``, e.g. the
+    phase 3 squeak cells) reproduces that embedding only on this lattice: the
+    decoder then sees the float32 ``lattice % 1`` and the posterior mean
+    averages the float32 torus basis of the UNWRAPPED float32 lattice, as the
+    driver's ``get_posterior_summaries`` does.
+
+    Parameters
+    ----------
+    m (int)
+        Fibonacci index (``m >= 3``).
+
+    Returns
+    -------
+    lattice (jnp.ndarray)
+        A ``(fib(m), 2)`` float32 lattice (not yet reduced mod 1).
+    """
+    n = _fibonacci(m)
+    z = np.array([1.0, _fibonacci(m - 1)], dtype=np.float32)
+    return jnp.asarray((np.arange(0, n).astype(np.float32)[:, None] * z[None, :]) / np.float32(n))
+
+
 def roberts_sequence(num_points: int, num_dims: int, root_iters: int = 10_000) -> jnp.ndarray:
     """
     Description

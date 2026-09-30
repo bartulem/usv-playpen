@@ -75,6 +75,29 @@ def test_fib_and_roberts_shapes():
     assert rob[0].tolist() == [0.0, 0.0]
 
 
+def test_gen_fib_basis_float32_rounds_like_the_torch_lattice():
+    """
+    The float32 Fibonacci lattice promotes the index to float32 and rounds the
+    product and the quotient to float32, as qmc_deep_gen's torch gen_fib_basis
+    does: at m = 24 the last point's product 46367 * 28657 = 1,328,739,119 is
+    rounded to the float32 grid (spacing 128) before the division, and the whole
+    lattice sits within ~2.5e-3 of the exact float64 lattice but not on it.
+    """
+    lattice = np.asarray(qm.gen_fib_basis_float32(24))
+    assert lattice.dtype == np.float32
+    assert lattice.shape == (46368, 2)
+    product = np.float32(46367) * np.float32(28657)
+    assert float(product) != 46367 * 28657
+    assert lattice[-1, 1] == product / np.float32(46368)
+    assert lattice[-1, 0] == np.float32(46367) / np.float32(46368)
+    exact = np.arange(46368)[:, None] * np.array([1.0, 28657.0])[None, :] / 46368
+    offset = np.abs(lattice.astype(np.float64) - exact)
+    assert offset.max() < 2.5e-3
+    assert offset.max() > 1e-4
+    small = np.asarray(qm.gen_fib_basis_float32(8))
+    assert np.array_equal(small, np.asarray(qm.gen_fib_basis(8), dtype=np.float64).astype(np.float32))
+
+
 def test_torus_basis_roundtrip():
     """reverse(forward(z)) recovers z in [0, 1)."""
     z = jnp.asarray(np.array([[0.1, 0.25], [0.9, 0.5], [0.0, 0.75]]))

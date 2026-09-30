@@ -496,6 +496,28 @@ Process
                             Drop channels the session metadata marks as excluded from the spectrogram average.
       --batch-size          Number of 128-frame windows scored per forward pass.
 
+``infer-qlvm-squeak-latents``
+``infer-qlvm-squeak-latents`` places every squeak of a session that is not noise (``squeak`` true and ``noise`` not true) on the torus of one of Dexter's phase 3 broadband-vocalization QLVM cells (``qlvm_models_latest/phase3_BBVs_qlvm/<cell>``) and merges two float columns into ``usv_summary.csv``: ``qlvm_squeak1`` / ``qlvm_squeak2``, the torus coordinates in ``[0, 1)`` (null on every other row; no cluster labels). Each squeak's input is the ``detect-usv-squeaks`` spectrogram cropped to ``squeak_start`` .. ``squeak_end`` plus two frames either side, min-max normalized per crop and centred in a 128-frame frame, exactly as the cells' training sets were built; crops narrower than 8 or wider than 128 frames get nulls. The cell is the ``infer_qlvm_squeak_latents.model_cell_directory`` setting, empty in the shipped settings because no production cell is chosen yet, so ``--model-cell-directory`` is required until one is. Run it after ``detect-usv-noise`` and ``detect-usv-squeaks``. A GPU speeds it up but is not required.
+
+.. code-block:: text
+
+    usage: infer-qlvm-squeak-latents [-h] --root-directory PATH
+                            [--model-cell-directory TEXT]
+                            [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
+                            [--lattice-batch-size INTEGER] [--data-batch-size INTEGER]
+
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --model-cell-directory
+                            A squeak (BBV) QLVM cell, e.g. /mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm/natural_lumped_N11000_nomask; required while the setting is empty (no production cell is chosen).
+      --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
+                            Drop channels the session metadata marks as excluded from the spectrogram average (keep it equal to the detect-usv-squeaks run).
+      --lattice-batch-size  Lattice points decoded and scored per block; lower it to cut memory.
+      --data-batch-size     Squeaks whose lattice posteriors are computed together; memory grows with this times the lattice size.
+
 ``prepare-vcl-assign``
 ``prepare-vcl-assign`` is the command-line interface for preparing data for vocalization assignment using the Vocalocator sound-source localizer.
 
