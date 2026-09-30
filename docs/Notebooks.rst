@@ -2615,7 +2615,7 @@ summaries:
   model's coordinates ``qlvm_squeak1`` / ``qlvm_squeak2``, written by
   ``infer-qlvm-squeak-latents`` on squeak rows only (``squeak`` true, ``noise`` not true), so
   every other row is left off this map. It has positions only — no fine / coarse clusters —
-  so **Color by** category / supercategory and **Boundaries** are refused on it.
+  so on it a **Color by** category / supercategory falls back to density and **Boundaries** are skipped (the chart title says so); the controls stay available.
 
 **Controls** (stacked above the plot):
 

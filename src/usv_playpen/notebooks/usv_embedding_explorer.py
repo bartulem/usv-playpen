@@ -31,8 +31,8 @@ Architecture
   the four conditional ones, ``os_utils.QLVM_MAPS``; the Map dropdown starts at
   ``shared_resources.qlvm_map``; or the "Squeaks" map, ``qlvm_squeak1`` /
   ``qlvm_squeak2`` from ``infer-qlvm-squeak-latents``, which holds squeak rows
-  only and has no categories, so category colouring and boundaries are refused
-  there), colored by a categorical label (category /
+  only and has no categories, so there a category colouring falls back to
+  density and boundaries are skipped, with a note in the chart title), colored by a categorical label (category /
   supercategory / session type / session id / emitter sex) OR a continuous metric
   through the colormap (density, duration, frequencies, amplitudes, spectral
   entropy), with an ``alt.selection_interval`` brush. Optional category-boundary
@@ -558,20 +558,21 @@ def _scatter_chart(
         # A QLVM map P places calls at P1/P2 on the unit torus.
         x_col, y_col = f"{map_prefix}1", f"{map_prefix}2"
         # The squeak map ships positions only (no fine / coarse clustering), so
-        # category colouring and boundaries have nothing to draw there.
-        mo.stop(
-            map_prefix == "qlvm_squeak"
-            and (color_dropdown.value in ("category", "supercategory") or boundary_dropdown.value != "none"),
-            mo.md(
-                "**The squeak map has no categories.** Pick another *Color by* "
-                "(e.g. density or an acoustic feature) and set *Boundaries* to none."
-            ),
+        # category colouring falls back to density and boundaries are skipped
+        # there. A fallback rather than mo.stop: stopping this cell would also
+        # hide the controls (_explorer draws them from this cell's outputs), so
+        # the dropdowns could not be changed back.
+        squeak_map = map_prefix == "qlvm_squeak"
+        squeak_fallback = squeak_map and (
+            color_dropdown.value in ("category", "supercategory") or boundary_dropdown.value != "none"
         )
 
         # Color source: category/supercategory/session_type categorical; emitter
         # colors the derived sex column; density is computed below from the 2D
         # positions; the rest are continuous acoustic-feature columns.
         color_metric = color_dropdown.value
+        if squeak_map and color_metric in ("category", "supercategory"):
+            color_metric = "density"
         if color_metric in ("category", "supercategory"):
             color_col, color_kind = f"{map_prefix}_{color_metric}", "categorical"
         elif color_metric == "session_type":
@@ -588,7 +589,7 @@ def _scatter_chart(
             color_col, color_kind = color_metric, "continuous"
 
         # Boundaries use the map-specific categorical label column (overlay).
-        boundary_choice = boundary_dropdown.value
+        boundary_choice = "none" if squeak_map else boundary_dropdown.value
         boundary_col = (
             None if boundary_choice == "none" else f"{map_prefix}_{boundary_choice}"
         )
@@ -842,6 +843,10 @@ def _scatter_chart(
             height=CHART_HEIGHT_PX,
             background="#FFFFFF",
             padding=0,
+            # Say why the squeak map ignored a category colouring / boundaries
+            # (no title otherwise, so the other maps keep their layout).
+            **({"title": "Squeaks have no categories: coloured by density, no boundaries"}
+               if squeak_fallback else {}),
         ).configure_legend(
             labelFontSize=15, symbolSize=450, rowPadding=10,
             gradientThickness=30, gradientLength=CHART_HEIGHT_PX,
