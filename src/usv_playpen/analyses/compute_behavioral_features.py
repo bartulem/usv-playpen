@@ -1311,7 +1311,10 @@ class FeatureZoo:
     # properties are read off per-call min-max normalized [0, 1]
     # spectrograms (generate_spectrograms `normalize`), so their range is
     # [0, 1] (1/36 bins); the older [0, 4.5] / [0, 14.4] ranges predate that
-    # normalization and put every call into one or two bins.
+    # normalization and put every call into one or two bins. `loudness_db`
+    # (the absolute image-level dB) bins over [24, 96] dB (2 dB bins),
+    # covering the 0.1-99.9 percentiles (31.7-95.6 dB) of the noise-free
+    # calls of the 641 backfilled sessions.
     # `mask_number` uses a 12-bin integer-centered grid
     # ([0.5, 12.5] with 12 bins puts each integer 1..12 at a bin centre).
     # Ranges cover the observed extrema in a 304-session courtship pool
@@ -1327,6 +1330,7 @@ class FeatureZoo:
         "freq_bandwidth_hz": [0.0, 90000.0],
         "mean_amplitude": [0.0, 1.0],
         "max_amplitude": [0.0, 1.0],
+        "loudness_db": [24.0, 96.0],
         "spectral_entropy": [0.0, 5.4],
         "mask_number": [0.5, 12.5],
     }
@@ -1341,6 +1345,7 @@ class FeatureZoo:
         "freq_bandwidth_hz": "narrow -- (kHz) -- wide",
         "mean_amplitude": "soft -- (a.u.) -- loud",
         "max_amplitude": "soft -- (a.u.) -- loud",
+        "loudness_db": "quiet -- (dB) -- loud",
         "spectral_entropy": "tonal -- (a.u.) -- noisy",
         "mask_number": "few -- (count) -- many",
     }

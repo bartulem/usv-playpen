@@ -3,7 +3,7 @@
 Makes per-cluster neuronal tuning figures: a single multi-page output
 combining the behavioral feature tuning grid (one page per temporal
 offset) and the vocal pages (Page 1: bout raster + pooled `usv_peth`
-on top, `usv_property_tuning` 4x4 grid below; Page 2:
+on top, `usv_property_tuning` 5x4 grid below; Page 2:
 `usv_category_tuning` watersheds, one row per QLVM map). Output
 format is configurable via `figures.fig_format` in
 visualizations_settings.json (`png` default project-wide; this module
@@ -71,16 +71,19 @@ DISPLAY_FACTOR = {
     "freq_bandwidth_hz": 1.0 / 1000.0,
     "mean_amplitude": 1.0,
     "max_amplitude": 1.0,
+    "loudness_db": 1.0,
     "spectral_entropy": 1.0,
     "mask_number": 1.0,
 }
 
-# Section-(b) feature ordering: 2 features per row × 4 rows
+# Section-(b) feature ordering: up to 2 features per row × 5 rows (the last
+# row holds one feature).
 PROPERTY_ROW_ORDER = (
     ("duration", "mean_freq_hz"),
     ("peak_freq_hz", "freq_bandwidth_hz"),
     ("mean_amplitude", "max_amplitude"),
-    ("spectral_entropy", "mask_number"),
+    ("loudness_db", "spectral_entropy"),
+    ("mask_number",),
 )
 
 # Behavioral base features computed and saved in the tuning pickle but not drawn
@@ -151,6 +154,7 @@ USV_PROPERTY_META: dict[str, dict] = {
     "freq_bandwidth_hz": {"tol": 5000.0, "unit_scale": 1e-3, "unit_label": "kHz", "display_name": "USV freq bandwidth"},
     "mean_amplitude":    {"tol": 0.056, "unit_scale": 1.0, "unit_label": "a.u.","display_name": "USV mean amplitude"},
     "max_amplitude":     {"tol": 0.056, "unit_scale": 1.0, "unit_label": "a.u.","display_name": "USV max amplitude"},
+    "loudness_db":       {"tol": 4.0,  "unit_scale": 1.0,  "unit_label": "dB",  "display_name": "USV loudness"},
     "spectral_entropy":  {"tol": 0.30, "unit_scale": 1.0,  "unit_label": "",    "display_name": "spectral entropy"},
     "mask_number":       {"tol": 2.0,  "unit_scale": 1.0,  "unit_label": "",    "display_name": "mask number"},
 }
@@ -327,11 +331,11 @@ BEHAVIORAL_TIER_LABELS: dict[str, str] = {
 
 
 # Page sizes are fixed by the layout invariants of each page (Page 1 has
-# the section-(a) raster + usv_peth on top of the 4×4 usv_property_tuning grid; Page 2 has
+# the section-(a) raster + usv_peth on top of the 5×4 usv_property_tuning grid; Page 2 has
 # section (c), one 6-col row per QLVM map). They scale with
 # the page dimensions, not with anything user-tunable, so are constants
 # rather than settings.
-VOCAL_PAGE1_FIGSIZE_INCHES = (16, 22)
+VOCAL_PAGE1_FIGSIZE_INCHES = (16, 25.5)
 VOCAL_PAGE2_FIGSIZE_INCHES = (16, 15)
 
 # Section-(c) per-category strip plot scaling: switch to symlog when
@@ -494,7 +498,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
     + vocal payload) and emits one multi-page output per cluster: the
     behavioral feature pages (one per temporal offset, per plot-feature
     group) followed by the vocal pages (Page 1: bout raster + pooled
-    `usv_peth` on top, `usv_property_tuning` 4x4 grid below; Page 2:
+    `usv_peth` on top, `usv_property_tuning` 5x4 grid below; Page 2:
     `usv_category_tuning` watersheds, one row per QLVM map). Pkls
     with neither behavioral nor vocal payload are skipped silently.
     Output filename is `{cluster_id}_neuronal_tuning.{fig_format}` (or,
@@ -6157,7 +6161,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Render Page 1 of the vocal output for one emitter side: the
         bout raster + pooled `usv_peth` (section a) on top of the
-        4×4 `usv_property_tuning` grid (section b), then commit the
+        5×4 `usv_property_tuning` grid (section b), then commit the
         page via `save_fig`.
 
         Parameters
@@ -6182,7 +6186,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         fig = plt.figure(figsize=VOCAL_PAGE1_FIGSIZE_INCHES, tight_layout=False)
         outer = gridspec.GridSpec(
-            nrows=2, ncols=1, height_ratios=[5, 14], hspace=0.30,
+            nrows=2, ncols=1, height_ratios=[5, 17.5], hspace=0.30,
             left=0.06, right=0.97, top=0.96, bottom=0.04,
         )
 
@@ -6198,9 +6202,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             usv_summary_df=usv_summary_df,
         )
 
-        # section (b) — 4x4 grid of square usv_property_tuning cells
+        # section (b) — one row per PROPERTY_ROW_ORDER entry × 4 cols of square
+        # usv_property_tuning cells
         gs_b = gridspec.GridSpecFromSubplotSpec(
-            4, 4, subplot_spec=outer[1, 0], wspace=0.40, hspace=0.45
+            len(PROPERTY_ROW_ORDER), 4, subplot_spec=outer[1, 0], wspace=0.40, hspace=0.45
         )
         self._draw_section_b(
             fig=fig,
@@ -6470,7 +6475,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Draw section (b) of vocal Page 1: a 4×4 grid of
+        Draw section (b) of vocal Page 1: a 5×4 grid of
         (line + occupancy) cell pairs, one row per pair of continuous
         USV properties (per `PROPERTY_ROW_ORDER`). Dispatches to
         `_draw_property_pair` for each cell pair.
@@ -6480,7 +6485,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         fig (matplotlib.figure.Figure)
             Parent figure (used to add subplots).
         gs (matplotlib.gridspec.GridSpecFromSubplotSpec)
-            4×4 gridspec slot for section (b).
+            5×4 gridspec slot for section (b).
         emitter (str)
             Emitter ID keying into `usv_property_tuning`.
         cluster_data (dict)

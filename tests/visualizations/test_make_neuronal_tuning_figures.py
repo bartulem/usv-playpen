@@ -1248,8 +1248,9 @@ def _vocal_modalities(archetype):
         "mean_freq_hz":      (60000.0, 61000.0),
         "peak_freq_hz":      (62000.0, 63000.0),
         "freq_bandwidth_hz": (15000.0, 16000.0),
-        "mean_amplitude":    (1.0, 1.1),
-        "max_amplitude":     (2.0, 2.3),
+        "mean_amplitude":    (0.50, 0.52),   # per-call normalized [0, 1] scale
+        "max_amplitude":     (0.93, 0.96),
+        "loudness_db":       (60.0, 62.0),   # absolute dB
         "spectral_entropy":  (2.0, 2.1),
         "mask_number":       (3.0, 4.0),
     }

@@ -22,8 +22,9 @@ noise segments are always dropped, squeaks per `exclude_squeaks_self` /
                           (default [-2, +0.5] s window, 50 ms bins)
   `usv_property_tuning`   within-USV firing rate vs each continuous
                           acoustic property (duration, mean / peak
-                          frequency, bandwidth, amplitude, spectral
-                          entropy, mask number)
+                          frequency, bandwidth, mean / max amplitude,
+                          absolute loudness_db, spectral entropy, mask
+                          number)
   `usv_category_tuning`   per-category within-USV firing rate for every
                           QLVM map (`<map>_category` and
                           `<map>_supercategory`; squeaks never enter)
@@ -65,6 +66,7 @@ CONTINUOUS_PROPERTIES = (
     "freq_bandwidth_hz",
     "mean_amplitude",
     "max_amplitude",
+    "loudness_db",
     "spectral_entropy",
     "mask_number",
 )
