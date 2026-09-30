@@ -378,7 +378,13 @@
     "learning_rate": 0.001,
     "val_freq": 10,
     "val_samples_per_mask_count": 100,
-    "seed": 42
+    "seed": 42,
+    "conditional": null,
+    "condition_n_bins": 32,
+    "condition_bin_scheme": "quantile_capped",
+    "condition_scale_loss_by_batch": true,
+    "condition_decode_grid_step": 0.0025,
+    "condition_table": null
   },
   "export_yolo_dataset": {
     "label_source": "cc",

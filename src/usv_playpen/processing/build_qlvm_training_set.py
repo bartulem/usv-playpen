@@ -58,8 +58,13 @@ Each split ``.npz`` is row-aligned on dim 0 = N samples and holds
 SAM region; all zero under ``masking_type`` ``"none"``), ``masks_len`` (N,) int64
 (SAM instance count), ``durations`` (N,) int64 (native time bins), ``spec_id``
 (N,) str (``{session}_{row}``), ``session_id`` (N,) str, ``session_type`` (N,)
-str, ``mask_count`` (N,) int64 and the scalar ``apply_mask`` that tells
-``train-qlvm`` whether to multiply the masks in. ``metadata.npz`` records every
+str, ``mask_count`` (N,) int64, the scalar ``apply_mask`` that tells
+``train-qlvm`` whether to multiply the masks in, and ``mean_freq_hz``,
+``freq_bandwidth_hz`` and ``loudness_db`` (N,) float64, copied row for row from
+the session's USV summary (NaN where it has no value;
+:func:`usv_summary_condition_values`) -- the raw values a conditional
+``train-qlvm`` run conditions on, captured with the rows they belong to so a later
+rewrite of the summary cannot shift them. ``metadata.npz`` records every
 setting, the per-type report (available / target / drawn / per-stratum counts),
 the session types and the train/validation session lists.
 
@@ -105,6 +110,12 @@ from ..yaml_utils import load_session_metadata
 # Epsilon of the per-spectrogram min-max that precedes the loudness floor; the
 # same one the QLVM data loader and train-qlvm use (qmc_deep_gen data/mouse_data.py).
 FLOOR_MINMAX_EPSILON = 1e-8
+
+# The USV summary columns copied into every split, row for row: the raw per-call
+# values a conditional train-qlvm run conditions on (mean frequency and bandwidth
+# of the SAM-masked call, written by generate-usv-acoustic-features, and the
+# absolute loudness it measures with compute_usv_loudness.session_image_level_db).
+SUMMARY_CONDITION_COLUMNS = ("mean_freq_hz", "freq_bandwidth_hz", "loudness_db")
 
 
 def file_sha256(path: str | pathlib.Path, chunk_bytes: int = 8 * 1024 * 1024) -> str:
@@ -771,6 +782,56 @@ def usv_summary_exclusions(
     return excluded
 
 
+def usv_summary_condition_values(root_directory: str, n_rows: int) -> dict[str, np.ndarray]:
+    """
+    Description
+    -----------
+    The raw per-call values a conditional QLVM conditions on, read from the
+    session's ``*_usv_summary.csv`` (rows 1:1 with the spectrogram H5 rows, which
+    is checked): ``mean_freq_hz`` and ``freq_bandwidth_hz`` (the energy-weighted
+    mean frequency and the bandwidth of the call's SAM-masked region) and
+    ``loudness_db`` (the absolute image-level loudness over the same mask region,
+    :func:`compute_usv_loudness.session_image_level_db`), all three written by
+    ``generate-usv-acoustic-features``. A column the summary lacks, a null or NaN
+    value, and every row of a session without a summary are NaN: the values are
+    only needed by a conditional ``train-qlvm`` run, which refuses a training row
+    without one.
+
+    Parameters
+    ----------
+    root_directory (str)
+        Session root directory.
+    n_rows (int)
+        Row count of the session's spectrogram H5.
+
+    Returns
+    -------
+    values (dict[str, np.ndarray])
+        ``SUMMARY_CONDITION_COLUMNS`` name -> ``(n_rows,)`` float64.
+
+    Raises
+    ------
+    ValueError
+        The summary's row count differs from the H5's.
+    """
+
+    values = {column: np.full(n_rows, np.nan) for column in SUMMARY_CONDITION_COLUMNS}
+    summary_paths = sorted((pathlib.Path(root_directory) / "audio").rglob("*_usv_summary.csv"))
+    if not summary_paths:
+        return values
+    usv_summary = pls.read_csv(source=str(summary_paths[0]), schema_overrides={"usv_id": pls.String})
+    if usv_summary.height != n_rows:
+        error_message = (
+            f"{summary_paths[0]} has {usv_summary.height} rows but the session's spectrogram H5 has {n_rows}; "
+            f"the summary values cannot be joined to the spectrograms by row."
+        )
+        raise ValueError(error_message)
+    for column in SUMMARY_CONDITION_COLUMNS:
+        if column in usv_summary.columns:
+            values[column] = usv_summary[column].cast(pls.Float64).fill_null(np.nan).to_numpy()
+    return values
+
+
 def _apply_time_stretching(spec: np.ndarray, duration: int, target_shape: tuple[int, int]) -> np.ndarray:
     """
     Description
@@ -1118,7 +1179,8 @@ class QLVMTrainingSetBuilder:
         summary exclusions (fingerprinting its spectrogram H5), draws the rows
         (:func:`compute_selected_rows_by_type`, or every eligible row under
         ``full_dataset``), reads and resizes the drawn spectrograms and masks
-        session by session, splits whole sessions into train and validation
+        session by session (with the drawn rows' raw conditioning values from the
+        USV summary, :func:`usv_summary_condition_values`), splits whole sessions into train and validation
         (:func:`split_sessions_by_type`), masks them or bakes in the floor, and
         writes ``train_data.npz``, ``val_data.npz`` (then ``full_data.npz`` under
         ``full_dataset``), ``metadata.npz``, ``SESSION_H5.sha256`` and
@@ -1270,10 +1332,14 @@ class QLVMTrainingSetBuilder:
         # transform is per row, so resizing here equals resizing the stacked set).
         specs_list, masks_list, masks_len_list, durations_list = [], [], [], []
         spec_id_list, session_list, type_list, count_list = [], [], [], []
+        condition_lists: dict[str, list[np.ndarray]] = {column: [] for column in SUMMARY_CONDITION_COLUMNS}
         for session_id, session in sessions.items():
             idx = selected[session_id]
             if idx.size == 0:
                 continue
+            summary_values = usv_summary_condition_values(session['root'], session['durations'].size)
+            for column in SUMMARY_CONDITION_COLUMNS:
+                condition_lists[column].append(summary_values[column][idx])
             with h5py.File(session['h5_path'], "r") as h5_file:
                 session_group = h5_file[f"spectrogram/{session_id}"]
                 native_specs = session_group["spectrograms"][idx]
@@ -1303,6 +1369,7 @@ class QLVMTrainingSetBuilder:
         all_sessions = np.concatenate(session_list)
         all_types = np.concatenate(type_list)
         all_counts = np.concatenate(count_list)
+        all_condition_values = {column: np.concatenate(condition_lists[column]) for column in SUMMARY_CONDITION_COLUMNS}
         if apply_mask:
             all_specs = (all_specs * all_masks).astype(np.float32)
         elif floor is not None:
@@ -1331,6 +1398,7 @@ class QLVMTrainingSetBuilder:
                 session_type=all_types[split_rows],
                 mask_count=all_counts[split_rows].astype(np.int64),
                 apply_mask=np.array(bool(apply_mask)),
+                **{column: all_condition_values[column][split_rows] for column in SUMMARY_CONDITION_COLUMNS},
             )
             written[filename] = int(split_rows.size)
             self.message_output(f"  Wrote {written[filename]:,} samples -> {output_dir / filename}.")

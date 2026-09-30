@@ -195,6 +195,29 @@ def test_train_qlvm_cli_routes(runner, mocker, tmp_path):
     mock_cls.return_value.train.assert_called_once()
 
 
+def test_train_qlvm_cli_none_is_the_null_setting(runner, mocker, tmp_path):
+    """train-qlvm's --conditional none and --condition-table none reach the settings
+    as null (an unconditional run, no table); a named condition passes through."""
+    mocker.patch("usv_playpen.processing.train_qlvm.QLVMTrainer")
+    modify = mocker.patch(
+        "usv_playpen.processing.train_qlvm.modify_settings_json_for_cli",
+        return_value={"train_qlvm": {}},
+    )
+    base = ["--dataset-directory", str(tmp_path), "--output-directory", str(tmp_path / "out")]
+    result = runner.invoke(train_qlvm_cli, [*base, "--conditional", "none", "--condition-table", "None"])
+    assert result.exit_code == 0, result.output
+    ctx = modify.call_args.kwargs["ctx"]
+    assert ctx.params["conditional"] is None
+    assert ctx.params["condition_table"] is None
+    assert {"conditional", "condition_table"} <= set(modify.call_args.kwargs["provided_params"])
+
+    result = runner.invoke(train_qlvm_cli, [*base, "--conditional", "loudness", "--no-condition-scale-loss-by-batch"])
+    assert result.exit_code == 0, result.output
+    ctx = modify.call_args.kwargs["ctx"]
+    assert ctx.params["conditional"] == "loudness"
+    assert ctx.params["condition_scale_loss_by_batch"] is False
+
+
 def test_export_yolo_dataset_cli_routes_and_splits_paths(runner, mocker, tmp_path):
     """export-yolo-dataset splits the comma-separated root directories and calls
     the exporter once with the parsed list."""

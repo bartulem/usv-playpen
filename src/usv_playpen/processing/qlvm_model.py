@@ -243,7 +243,7 @@ def binary_lp(samples: jnp.ndarray, data: jnp.ndarray) -> jnp.ndarray:
     return t1 + t2
 
 
-def binary_evidence(samples: jnp.ndarray, data: jnp.ndarray) -> jnp.ndarray:
+def binary_evidence(samples: jnp.ndarray, data: jnp.ndarray, row_weights: jnp.ndarray | None = None) -> jnp.ndarray:
     """
     Description
     -----------
@@ -259,21 +259,33 @@ def binary_evidence(samples: jnp.ndarray, data: jnp.ndarray) -> jnp.ndarray:
     lattice is an equal-weight quadrature of the uniform prior on the torus, so
     the ``- log K`` turns the sum into a mean over it.
 
+    With ``row_weights`` the mean is a weighted one,
+    ``-sum_b w_b log p(x_b) / sum_b w_b``. :mod:`train_qlvm` uses 0/1 weights to
+    pad a short batch to the full batch size (one compiled shape for every batch
+    of a conditional run): padding rows carry weight 0 and change neither the loss
+    nor its gradient, so the result is the plain mean over the real rows.
+
     Parameters
     ----------
     samples (jnp.ndarray)
         Decoded reconstructions of the ``K`` lattice points, shape ``(K, C, H, W)``.
     data (jnp.ndarray)
         Data spectrograms, shape ``(B, C, H, W)``, values in ``[0, 1]``.
+    row_weights (jnp.ndarray | None)
+        ``(B,)`` non-negative weight of each data spectrogram, at least one of
+        them positive; None (the default) weights every spectrogram equally.
 
     Returns
     -------
     loss (jnp.ndarray)
-        Scalar negative mean log evidence (nats per spectrogram); lower is better.
+        Scalar negative (weighted) mean log evidence (nats per spectrogram); lower
+        is better.
     """
     log_likelihood = binary_lp(samples, data)                                   # (B, K)
     log_evidence = jax.scipy.special.logsumexp(log_likelihood, axis=1) - jnp.log(samples.shape[0])
-    return -jnp.mean(log_evidence)
+    if row_weights is None:
+        return -jnp.mean(log_evidence)
+    return -jnp.sum(row_weights * log_evidence) / jnp.sum(row_weights)
 
 
 # Decoder forward (torch ConvTranspose2d / Linear, in JAX)
@@ -520,15 +532,23 @@ def init_decoder_params(key: jax.Array, latent_dim: int, c_dim: int, head: str) 
     return {name: params[name] for name in shapes}
 
 
-def decode_shifted_lattice(lattice: jnp.ndarray, shift: jnp.ndarray, params: dict[str, jnp.ndarray]) -> jnp.ndarray:
+def decode_shifted_lattice(
+    lattice: jnp.ndarray,
+    shift: jnp.ndarray,
+    params: dict[str, jnp.ndarray],
+    condition: jnp.ndarray | None = None,
+) -> jnp.ndarray:
     """
     Description
     -----------
     The QMCLVM forward pass (``QMCLVM.forward`` with ``random=True``,
     ``mod=True``): shifts the whole lattice by one torus offset, wraps it back
     into ``[0, 1)``, maps it through the torus basis and decodes every point. A
-    conditional decoder would take its conditioning vector appended to the basis
-    here, once for the whole lattice; this unconditional pass appends nothing.
+    conditional decoder takes its conditioning vector appended to the basis of
+    every lattice point, once for the whole lattice
+    (``torch.cat([basis, c.repeat(K, 1)], -1)`` in ``QMCLVM.forward``), so every
+    point of one pass is decoded at the same ``condition``; without one nothing is
+    appended.
 
     Parameters
     ----------
@@ -537,14 +557,21 @@ def decode_shifted_lattice(lattice: jnp.ndarray, shift: jnp.ndarray, params: dic
     shift (jnp.ndarray)
         Torus offset, shape ``(1, latent_dim)``, drawn ``U[0, 1)`` per batch.
     params (dict[str, jnp.ndarray])
-        Decoder weights.
+        Decoder weights; the first Linear layer's input width is
+        ``2 * latent_dim + c_dim``.
+    condition (jnp.ndarray | None)
+        ``(1, c_dim)`` conditioning vector of a conditional decoder; None (the
+        default) for an unconditional one.
 
     Returns
     -------
     samples (jnp.ndarray)
         Decoded reconstructions, shape ``(K, 1, 128, 128)``.
     """
-    return decoder_forward(torus_basis_forward((lattice + shift) % 1), params)
+    basis = torus_basis_forward((lattice + shift) % 1)
+    if condition is not None:
+        basis = jnp.concatenate([basis, jnp.broadcast_to(condition, (basis.shape[0], condition.shape[-1])).astype(basis.dtype)], axis=-1)
+    return decoder_forward(basis, params)
 
 
 # Posterior + embedding (port of QMCLVM.posterior_probability / embed_data)

@@ -361,6 +361,41 @@ def _add_frame_runs(root, runs):
     pls.read_csv(summary).with_columns(pls.Series("squeak_frame_runs", runs, dtype=pls.Int64)).write_csv(summary)
 
 
+def test_build_copies_the_summary_condition_columns_row_for_row(tmp_path, cohort):
+    """Every split carries mean_freq_hz, freq_bandwidth_hz and loudness_db of the
+    session's USV summary, row for row with its spectrograms (the raw values a
+    conditional train-qlvm run conditions on); a summary without them, or with a
+    null, gives NaN."""
+    values = {}
+    for n_session, root in enumerate(cohort[:-1]):
+        summary = root / "audio" / f"{root.name}_usv_summary.csv"
+        frame = pls.read_csv(summary)
+        if n_session == 0:
+            continue
+        rng = np.random.default_rng(n_session)
+        columns = {
+            "mean_freq_hz": rng.uniform(40000.0, 100000.0, frame.height),
+            "freq_bandwidth_hz": rng.uniform(1000.0, 30000.0, frame.height),
+            "loudness_db": rng.uniform(30.0, 90.0, frame.height),
+        }
+        loudness = [None if row == 3 else value for row, value in enumerate(columns["loudness_db"].tolist())]
+        frame.with_columns(
+            pls.Series("mean_freq_hz", columns["mean_freq_hz"]),
+            pls.Series("freq_bandwidth_hz", columns["freq_bandwidth_hz"]),
+            pls.Series("loudness_db", loudness, dtype=pls.Float64),
+        ).write_csv(summary)
+        columns["loudness_db"][3] = np.nan
+        values[root.name] = columns
+    out_dir = _build(tmp_path, cohort, _CFG)
+    for split_name in ("train_data.npz", "val_data.npz"):
+        with np.load(out_dir / split_name) as split:
+            for n_row, spec_id in enumerate(split["spec_id"].tolist()):
+                session_id, row = spec_id.rsplit("_", 1)
+                for column in ("mean_freq_hz", "freq_bandwidth_hz", "loudness_db"):
+                    expected = values[session_id][column][int(row)] if session_id in values else np.nan
+                    np.testing.assert_array_equal(split[column][n_row], expected)
+
+
 def test_build_strict_squeak_exclusion_adds_frame_run_rows(tmp_path, cohort):
     """
     strict_squeak_exclusion leaves out rows with squeak_frame_runs >= 1 on top of
