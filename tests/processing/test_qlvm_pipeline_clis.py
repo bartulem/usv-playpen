@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import warnings
 
 import click
 import pytest
@@ -25,9 +26,13 @@ from usv_playpen.processing.compute_usv_acoustic_features import (
 )
 from usv_playpen.processing.generate_masks import generate_masks_cli
 from usv_playpen.processing.generate_spectrograms import generate_spectrograms_cli
-from usv_playpen.processing.train_qlvm import train_qlvm_cli
 from usv_playpen.processing.export_yolo_dataset import export_yolo_dataset_cli
 from usv_playpen.processing.train_masks import train_masks_cli
+
+# train_qlvm pulls optax -> a one-time JAX DeprecationWarning at import.
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    from usv_playpen.processing.train_qlvm import train_qlvm_cli
 
 
 @pytest.fixture

@@ -23,7 +23,7 @@ USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen"
 SESSION_ROOT_DIRECTORIES="/mnt/cup/labs/falkner/Bartul/Data/20230124_094726,/mnt/cup/labs/falkner/Bartul/Data/20230126_142000"
 # Where build-qlvm-training-set writes the .npz training set (train-qlvm reads it back).
 DATASET_DIRECTORY="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/spectrograms/qlvm/training_set"
-# Where train-qlvm writes the checkpoint + decoder weights.
+# Where train-qlvm writes the model package cell (checkpoint.tar, config/, metrics/).
 MODEL_OUTPUT_DIRECTORY="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/spectrograms/qlvm"
 
 # -------------------------------------------------- #
@@ -38,7 +38,7 @@ echo "#!/bin/bash" > "$JOB_SCRIPT"
 echo "#SBATCH --job-name=train-qlvm" >> "$JOB_SCRIPT"
 echo "#SBATCH --output=$WORK_DIR/logs/train-qlvm-%j.out" >> "$JOB_SCRIPT"
 echo "#SBATCH --error=$WORK_DIR/logs/train-qlvm-%j.err" >> "$JOB_SCRIPT"
-echo "#SBATCH --gpus=1" >> "$JOB_SCRIPT"
+echo "#SBATCH --gres=gpu:1" >> "$JOB_SCRIPT"
 echo "#SBATCH --cpus-per-task=$CPUS_PER_TASK" >> "$JOB_SCRIPT"
 echo "#SBATCH --mem=$TOTAL_MEMORY" >> "$JOB_SCRIPT"
 echo "#SBATCH --time=$TIME_RESTRICTION" >> "$JOB_SCRIPT"

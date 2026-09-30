@@ -723,37 +723,34 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --masking-type                  Apply SAM mask regions from the mask/<session> groups ("sam") or keep raw spectrograms ("none").
 
 ``train-qlvm``
-``train-qlvm`` trains the QLVM decoder on a ``build-qlvm-training-set`` ``.npz`` set (fixed quasi-random torus lattice + ConvTranspose decoder, Bernoulli evidence objective) and writes ``qmc_train_qlvm.tar`` (full checkpoint) plus ``qmc_decoder_weights.npz`` (the decoder ``state_dict``, one array per layer). ``infer-qlvm-latents`` no longer reads this ``.npz``: production embeds with QLVM model package cells, and this trainer is kept until its port of the current trainer lands. Beside it goes ``qmc_decoder_weights.json``, the training contract: the decoder head and widths, the set's masking, ``target_shape``, ``time_stretch``, ``length_threshold`` and ``require_mask`` (read from its ``metadata.npz``, which must exist; ``require_mask`` is ``false`` when the set does not record it), ``"condition": null``, and the lattice settings. The run refuses a ``train_data.npz`` or ``val_data.npz`` older than a ``full_data.npz`` in the same directory (a split left over from an earlier build). GPU recommended.
+``train-qlvm`` trains a QLVM decoder on a prebuilt ``.npz`` training set (``build-qlvm-training-set`` output or a QLVM model package's training set: ``train_data.npz`` or ``full_data.npz``, optionally ``val_data.npz``, and ``metadata.npz``) with the recipe the shipped v3 models were trained with (JAX; per-spectrogram min-max, masks applied when the set applies them, a Fibonacci training lattice with one random torus shift per batch, the QMC log-evidence loss, Adam at a constant learning rate, the last epoch's weights kept) and writes a model package cell: ``checkpoint.tar`` (torch zip, readable by ``infer-qlvm-latents`` without torch), ``config/training_contract.json``, ``config/run_config.json`` and ``metrics/val_diagnostics.npz``. The defaults are the phase 6 / 9 recipe; phase 3 (BBVs) is ``--decoder-head legacy --n-epochs 2500 --val-freq 80 --val-samples-per-mask-count 1600``. The run refuses a set without ``metadata.npz``, and a ``train_data.npz`` or ``val_data.npz`` older than a ``full_data.npz`` in the same directory. GPU recommended (about 3.3 s per epoch on 49,411 calls on an RTX 4080 SUPER, plus about 25 s per validation); on a shared GPU set ``XLA_PYTHON_CLIENT_PREALLOCATE=false``.
 
 .. code-block:: text
 
     usage: train-qlvm [-h] --dataset-directory PATH --output-directory PATH
-                            [--n-epochs INTEGER] [--latent-dim INTEGER]
-                            [--lattice-type {korobov,roberts,fibonacci}]
-                            [--korobov-a INTEGER] [--train-n-points INTEGER]
-                            [--test-n-points INTEGER] [--fib-m INTEGER]
-                            [--batch-size INTEGER] [--learning-rate FLOAT]
-                            [--val-freq INTEGER] [--seed INTEGER]
-                            [--num-workers INTEGER]
+                            [--n-epochs INTEGER] [--decoder-head {relu,legacy}]
+                            [--training-fib-m INTEGER] [--validation-fib-m INTEGER]
+                            [--embedding-fib-m INTEGER] [--batch-size INTEGER]
+                            [--learning-rate FLOAT] [--val-freq INTEGER]
+                            [--val-samples-per-mask-count INTEGER] [--seed INTEGER]
 
     required arguments:
-      --dataset-directory   Directory holding the .npz training set (build-qlvm-training-set output).
-      --output-directory    Directory to write the checkpoint + decoder-weights .npz.
+      --dataset-directory   Directory holding the .npz training set (train_data.npz or full_data.npz, val_data.npz, metadata.npz).
+      --output-directory    Directory the model package cell (checkpoint.tar, config/, metrics/) is written to.
 
     optional arguments:
       -h, --help            Show this help message and exit.
       --n-epochs            Number of training epochs.
-      --latent-dim          Torus latent dimensionality.
-      --lattice-type        Quasi-random lattice generator.
-      --korobov-a           Korobov generating integer.
-      --train-n-points      Number of quasi-random lattice points used during training (korobov/roberts).
-      --test-n-points       Number of quasi-random lattice points used at evaluation/validation (korobov/roberts).
-      --fib-m               Fibonacci lattice order (used only when lattice-type=fibonacci; 2D only).
+      --decoder-head        Decoder head: relu (ReLU between the two Linear layers) or legacy (none).
+      --training-fib-m      Fibonacci index of the training lattice (fib(m) points).
+      --validation-fib-m    Fibonacci index of the validation lattice (fib(m) points).
+      --embedding-fib-m     Fibonacci index of the embedding lattice recorded in the training contract.
       --batch-size          Training batch size.
-      --learning-rate       Adam learning rate.
-      --val-freq            Run validation-evidence evaluation every N epochs (must be >= 1).
-      --seed                Global RNG seed (torch + numpy) for reproducible shuffling / per-batch torus shifts.
-      --num-workers         DataLoader worker processes (0 = load in the main process).
+      --learning-rate       Constant Adam learning rate.
+      --val-freq            Compute the validation loss every N epochs (and after the last).
+      --val-samples-per-mask-count
+                            Validation subset: at most this many spectrograms per masks_len value.
+      --seed                Seed of the initialization, shuffling, lattice shifts and validation subset.
 
 ``infer-qlvm-latents``
 ``infer-qlvm-latents`` embeds a session's spectrograms into the torus of every QLVM model package cell of the ``model_cells`` setting (column prefix → cell; one ``--model-cell PREFIX CELL`` per model replaces it) and merges, per model, the ``PREFIX1`` / ``PREFIX2`` float torus coordinates and integer cluster labels read off the cell's ``label_grid.npy`` at the pixel of those coordinates (``1 … k``, 1 the largest cluster; null where the call has no coordinates) into ``usv_summary.csv``: by default both levels: ``qlvm_category`` (fine) and ``qlvm_supercategory`` (coarse) for prefix ``qlvm``, ``PREFIX_category`` and ``PREFIX_supercategory`` for every other prefix. ``--model-cell-labels PREFIX LEVELS`` (the ``model_cell_label_levels`` setting; repeat once per prefix) sets a prefix's comma-separated levels among ``fine`` and ``coarse`` (``fine`` → ``PREFIX_category``, ``coarse`` → ``PREFIX_supercategory``, with the ``qlvm`` names for prefix ``qlvm``; an empty string writes no label). No model column is written; the legacy ``qlvm_model`` column (written by the retired single-model run) and the earlier coordinate and label columns of the listed prefixes are removed. A prefix must be an identifier given once. The production mapping is ``qlvm`` (phase 6), ``qlvm_dur``, ``qlvm_mf``, ``qlvm_bw`` and ``qlvm_loud`` (the phase 11 duration, mean-frequency, bandwidth and loudness cells), all ``qlvm_models_latest/v3/<phase>/natural_5strata_N29000_unmasked_floor`` with ``masking_type`` ``none`` (the shipped default); when ``model_cells`` is empty and ``spectrograms_root`` is set, the run fills it with that mapping (and ``masking_type`` with ``none``), and an empty ``model_cells`` otherwise stops the run. Model package cells are the only models it embeds with: the single-model route (``model_cell_directory``, or a ``train-qlvm`` ``qmc_decoder_weights.npz`` with fine and coarse reference ``arrays.npz``) is retired.

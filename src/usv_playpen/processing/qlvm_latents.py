@@ -564,13 +564,14 @@ def frozen_condition_values(values: np.ndarray, condition_bins: dict, decode: st
     return bin_mean[np.digitize(values, edges[1:-1], right=False)]
 
 
-def _minmax_per_spectrogram(spectrograms: np.ndarray, epsilon: np.float32) -> np.ndarray:
+def minmax_per_spectrogram(spectrograms: np.ndarray, epsilon: np.float32) -> np.ndarray:
     """
     Description
     -----------
     Rescales each spectrogram on its own to ``(x - min) / (max - min + epsilon)``,
-    the min-max a QLVM model package applies to its decoder inputs. Zeros stay
-    zeros when they are the spectrogram's minimum (a SAM-masked background).
+    the min-max a QLVM model package applies to its decoder inputs (and
+    :mod:`train_qlvm` to its training inputs). Zeros stay zeros when they are the
+    spectrogram's minimum (a SAM-masked background).
 
     Parameters
     ----------
@@ -595,8 +596,8 @@ def normalize_model_inputs(spectrograms: np.ndarray, contract: dict) -> np.ndarr
     -----------
     Applies the input normalization a decoder was trained with to resized
     spectrograms, as its training contract records it. ``input_normalization``
-    ``"none"`` (the contract ``train-qlvm`` writes) leaves the stored values as
-    they are. ``"minmax"`` (QLVM model packages) rescales each
+    ``"none"`` leaves the stored values as they are. ``"minmax"`` (QLVM model
+    packages, and every contract ``train-qlvm`` writes) rescales each
     spectrogram to ``(x - min) / (max - min + normalization_epsilon)`` in float32,
     and a non-null ``floor`` then applies ``clip((x - floor) / (1 - floor), 0, 1)``
     followed by a second min-max -- the order the package's ``model_input`` uses.
@@ -619,11 +620,11 @@ def normalize_model_inputs(spectrograms: np.ndarray, contract: dict) -> np.ndarr
     if contract["input_normalization"] == "none":
         return inputs
     epsilon = np.float32(contract["normalization_epsilon"])
-    inputs = _minmax_per_spectrogram(inputs, epsilon)
+    inputs = minmax_per_spectrogram(inputs, epsilon)
     if contract["floor"] is not None:
         floor = np.float32(contract["floor"])
         inputs = np.clip((inputs - floor) / np.float32(1.0 - floor), np.float32(0.0), np.float32(1.0))
-        inputs = _minmax_per_spectrogram(inputs, epsilon)
+        inputs = minmax_per_spectrogram(inputs, epsilon)
     return inputs.astype(np.float32, copy=False)
 
 
@@ -1580,7 +1581,7 @@ class QLVMLatentInference:
             # build_session_masks gives a call without mask instances an all-ones mask.
             # A set built with require_mask left such calls out, and their mean frequency
             # or loudness would span the whole call, so those decoders give them null
-            # columns. Sets without require_mask (e.g. train-qlvm on a main-built set)
+            # columns. Sets without require_mask (e.g. a build-qlvm-training-set set)
             # trained on them under that all-ones mask, so they are embedded as before.
             drop_maskless = require_mask or masked_call_condition
             masks = None

@@ -1,30 +1,36 @@
 """
 @author: bartulem
-JAX (torch-free) re-implementation of the QLVM (QMC latent-variable model)
+JAX (torch-free) re-implementation of the QLVM (QMC latent-variable model): the
 *inference* path, for embedding USV spectrograms into the trained model's fixed
-toroidal latent space.
+toroidal latent space, and the model half of its *training* (decoder
+initialization, the shifted-lattice forward pass and the evidence objective),
+which :mod:`train_qlvm` optimizes.
 
 The model has no encoder: the torus is defined by a fixed quasi-random lattice
-and a frozen ConvTranspose decoder. Embedding a new spectrogram is a forward
-operation — decode every lattice point once (an "atlas"), score each new
-spectrogram against the atlas under the Bernoulli likelihood the model was
-trained with, and read off the posterior-weighted torus coordinate. Because the
-architecture and weights are fixed, any new session embeds into the SAME torus.
+and a ConvTranspose decoder. Training decodes the whole lattice, shifted by one
+uniform random torus offset per batch, and maximizes the QMC estimate of every
+spectrogram's marginal likelihood (:func:`binary_evidence`). Embedding a new
+spectrogram is a forward operation -- decode every lattice point once (an
+"atlas"), score each new spectrogram against the atlas under the Bernoulli
+likelihood the model was trained with, and read off the posterior-weighted torus
+coordinate. Because the architecture and weights are fixed after training, any
+new session embeds into the SAME torus.
 
 This is a faithful port of ``qmc_deep_gen``'s ``models/qmc_base.py``
-(``QMCLVM`` / ``TorusBasis``), ``models/sampling.py`` (lattice generators) and
-``train/losses.py`` (``binary_lp``). The decoder weights are loaded from a
-``.npz`` produced once (externally, where torch lives) from the training
-checkpoint's ``state_dict``; usv-playpen never imports torch.
+(``QMCLVM`` / ``TorusBasis``), ``models/qmc_decoder.py`` (the decoder and its two
+heads), ``models/sampling.py`` (lattice generators) and ``train/losses.py``
+(``binary_lp`` / ``binary_evidence``). Inference reads the decoder weights from a
+QLVM model package cell's torch ``checkpoint.tar`` without importing torch
+(:func:`qlvm_latents.read_torch_checkpoint`).
 
 PARITY: the JAX ``conv_transpose2d`` reproduces ``torch.nn.ConvTranspose2d``'s
 exact definition (validated against a pure-numpy reference in the tests), and
-``tests/processing/test_train_qlvm.py`` runs a seeded torch decoder, exported the
-way ``train-qlvm`` exports it, through both frameworks: decoded images agree to
-1e-5 and lattice posteriors to 1e-4 against the vendored
-``QMCLVM.posterior_probability``. Those checks run on the CPU; on a CUDA GPU they
-hold because the decoder, the likelihood and the posterior mean multiply
-matrices at full float32 precision (see ``_MATMUL_PRECISION``).
+``tests/processing/test_train_qlvm.py`` runs seeded torch decoders of both heads
+through both frameworks: decoded images agree to 1e-5, lattice posteriors to
+5e-4, and the training objective and its gradients match a torch transcription
+of ``binary_evidence``. Those checks run on the CPU; on a CUDA GPU they hold
+because the decoder, the likelihood and the posterior mean multiply matrices at
+full float32 precision (see ``_MATMUL_PRECISION``).
 """
 
 from __future__ import annotations
@@ -44,9 +50,7 @@ _BINARY_LP_EPS = 1e-6
 _MATMUL_PRECISION = "float32"
 
 
-# --------------------------------------------------------------------------- #
 # Lattice generators (port of models/sampling.py)
-# --------------------------------------------------------------------------- #
 def _fibonacci(n: int) -> int:
     """Return the n-th Fibonacci number (``fib(0)=0``, ``fib(1)=1``)."""
     a, b = 0, 1
@@ -162,9 +166,7 @@ def roberts_sequence(num_points: int, num_dims: int, root_iters: int = 10_000) -
     return jnp.asarray(np.arange(0, num_points)[:, None] * basis[None, :])
 
 
-# --------------------------------------------------------------------------- #
 # TorusBasis (port of models/qmc_base.py)
-# --------------------------------------------------------------------------- #
 def torus_basis_forward(data: jnp.ndarray) -> jnp.ndarray:
     """
     Description
@@ -212,9 +214,7 @@ def torus_basis_reverse(data: jnp.ndarray) -> jnp.ndarray:
     return (angles / (2 * jnp.pi)) % 1.0
 
 
-# --------------------------------------------------------------------------- #
 # Likelihood (port of train/losses.py:binary_lp)
-# --------------------------------------------------------------------------- #
 def binary_lp(samples: jnp.ndarray, data: jnp.ndarray) -> jnp.ndarray:
     """
     Description
@@ -243,9 +243,40 @@ def binary_lp(samples: jnp.ndarray, data: jnp.ndarray) -> jnp.ndarray:
     return t1 + t2
 
 
-# --------------------------------------------------------------------------- #
+def binary_evidence(samples: jnp.ndarray, data: jnp.ndarray) -> jnp.ndarray:
+    """
+    Description
+    -----------
+    The QLVM training objective, matching ``train/losses.py:binary_evidence`` with
+    its defaults (``reduce=True``, ``full=True``, no importance weights): the
+    negative mean, over the data spectrograms, of the quasi-Monte Carlo estimate
+    of each spectrogram's log marginal likelihood,
+
+    ``log p(x_b) ~= logsumexp_s log p(x_b | z_s) - log K``,
+
+    where ``z_1 .. z_K`` are the (randomly shifted) lattice points the decoder
+    produced ``samples`` from and ``log p(x_b | z_s)`` is :func:`binary_lp`. The
+    lattice is an equal-weight quadrature of the uniform prior on the torus, so
+    the ``- log K`` turns the sum into a mean over it.
+
+    Parameters
+    ----------
+    samples (jnp.ndarray)
+        Decoded reconstructions of the ``K`` lattice points, shape ``(K, C, H, W)``.
+    data (jnp.ndarray)
+        Data spectrograms, shape ``(B, C, H, W)``, values in ``[0, 1]``.
+
+    Returns
+    -------
+    loss (jnp.ndarray)
+        Scalar negative mean log evidence (nats per spectrogram); lower is better.
+    """
+    log_likelihood = binary_lp(samples, data)                                   # (B, K)
+    log_evidence = jax.scipy.special.logsumexp(log_likelihood, axis=1) - jnp.log(samples.shape[0])
+    return -jnp.mean(log_evidence)
+
+
 # Decoder forward (torch ConvTranspose2d / Linear, in JAX)
-# --------------------------------------------------------------------------- #
 def _linear(x: jnp.ndarray, weight: jnp.ndarray, bias: jnp.ndarray) -> jnp.ndarray:
     """Apply ``torch.nn.Linear``: ``y = x @ weight.T + bias`` (weight is (out, in))."""
     with jax.default_matmul_precision(_MATMUL_PRECISION):
@@ -392,9 +423,131 @@ def decoder_forward(latent_embeddings: jnp.ndarray, params: dict[str, jnp.ndarra
     return h
 
 
-# --------------------------------------------------------------------------- #
+def decoder_parameter_shapes(latent_dim: int, c_dim: int, head: str) -> dict[str, tuple[int, ...]]:
+    """
+    Description
+    -----------
+    The ``state_dict`` keys and array shapes of the QLVM decoder
+    (qmc_deep_gen's ``build_qmc_decoder``), in the order torch's
+    ``nn.Sequential.parameters()`` yields them -- the order a torch ``Adam``
+    ``state_dict`` numbers its per-parameter states by. The input width is
+    ``2 * latent_dim + c_dim``: ``TorusBasis`` turns each latent coordinate into a
+    ``(cos, sin)`` pair and a conditioning vector of width ``c_dim`` is appended
+    to it. The ``"legacy"`` head keys its layers ``0, 1, 3, 5, 7, 9``; the
+    ``"relu"`` head, with a ReLU at index 1, keys them ``0, 2, 4, 6, 8, 10``.
+
+    Parameters
+    ----------
+    latent_dim (int)
+        Torus dimensionality.
+    c_dim (int)
+        Conditioning width, ``0`` for an unconditional decoder.
+    head (str)
+        ``"relu"`` or ``"legacy"``.
+
+    Returns
+    -------
+    shapes (dict[str, tuple[int, ...]])
+        ``"<layer_idx>.weight"`` / ``"<layer_idx>.bias"`` -> shape, in parameter order.
+    """
+    if head not in ("relu", "legacy"):
+        error_message = f"decoder_parameter_shapes: head must be 'relu' or 'legacy', got {head!r}."
+        raise ValueError(error_message)
+    offset = int(head == "relu")
+    input_width = 2 * latent_dim + c_dim
+    hidden_width = 2048
+    reshape_width = int(np.prod(_DECODER_RESHAPE))
+    shapes: dict[str, tuple[int, ...]] = {
+        "0.weight": (hidden_width, input_width),
+        "0.bias": (hidden_width,),
+        f"{1 + offset}.weight": (reshape_width, hidden_width),
+        f"{1 + offset}.bias": (reshape_width,),
+    }
+    channels = (_DECODER_RESHAPE[0], 32, 16, 8, 1)
+    for n_block, legacy_idx in enumerate(_DECODER_CONV_INDICES):
+        idx = legacy_idx + offset
+        shapes[f"{idx}.weight"] = (channels[n_block], channels[n_block + 1], 3, 3)
+        shapes[f"{idx}.bias"] = (channels[n_block + 1],)
+    return shapes
+
+
+def init_decoder_params(key: jax.Array, latent_dim: int, c_dim: int, head: str) -> dict[str, jnp.ndarray]:
+    """
+    Description
+    -----------
+    Draws fresh QLVM decoder weights with torch's default initialization, so a
+    run starts from the same distribution the reference torch trainer does:
+    ``nn.Linear`` and ``nn.ConvTranspose2d`` both apply
+    ``kaiming_uniform_(a=sqrt(5))`` to the weight and ``U(-1/sqrt(fan_in),
+    1/sqrt(fan_in))`` to the bias, and the Kaiming bound with ``a = sqrt(5)`` is
+    also ``1/sqrt(fan_in)``. torch takes ``fan_in`` from the weight's dimension 1
+    times the kernel area: the input width for a Linear layer (weight
+    ``(out, in)``), and ``out_channels * kH * kW`` for a transposed convolution
+    (weight ``(in, out, kH, kW)``). Every array is ``float32``. The draws are
+    JAX's, not torch's, so the same seed does not give torch's numbers.
+
+    Parameters
+    ----------
+    key (jax.Array)
+        PRNG key.
+    latent_dim (int)
+        Torus dimensionality.
+    c_dim (int)
+        Conditioning width, ``0`` for an unconditional decoder.
+    head (str)
+        ``"relu"`` or ``"legacy"`` (see :func:`decoder_parameter_shapes`).
+
+    Returns
+    -------
+    params (dict[str, jnp.ndarray])
+        Decoder weights keyed by ``"<layer_idx>.weight"`` / ``"<layer_idx>.bias"``.
+    """
+    shapes = decoder_parameter_shapes(latent_dim=latent_dim, c_dim=c_dim, head=head)
+    weight_keys = [name for name in shapes if name.endswith(".weight")]
+    layer_keys = jax.random.split(key, 2 * len(weight_keys))
+    params: dict[str, jnp.ndarray] = {}
+    for n_layer, weight_name in enumerate(weight_keys):
+        weight_shape = shapes[weight_name]
+        fan_in = int(weight_shape[1] * int(np.prod(weight_shape[2:])))
+        bound = 1.0 / np.sqrt(fan_in)
+        bias_name = weight_name.replace(".weight", ".bias")
+        params[weight_name] = jax.random.uniform(
+            layer_keys[2 * n_layer], weight_shape, dtype=jnp.float32, minval=-bound, maxval=bound,
+        )
+        params[bias_name] = jax.random.uniform(
+            layer_keys[2 * n_layer + 1], shapes[bias_name], dtype=jnp.float32, minval=-bound, maxval=bound,
+        )
+    return {name: params[name] for name in shapes}
+
+
+def decode_shifted_lattice(lattice: jnp.ndarray, shift: jnp.ndarray, params: dict[str, jnp.ndarray]) -> jnp.ndarray:
+    """
+    Description
+    -----------
+    The QMCLVM forward pass (``QMCLVM.forward`` with ``random=True``,
+    ``mod=True``): shifts the whole lattice by one torus offset, wraps it back
+    into ``[0, 1)``, maps it through the torus basis and decodes every point. A
+    conditional decoder would take its conditioning vector appended to the basis
+    here, once for the whole lattice; this unconditional pass appends nothing.
+
+    Parameters
+    ----------
+    lattice (jnp.ndarray)
+        Lattice points, shape ``(K, latent_dim)``.
+    shift (jnp.ndarray)
+        Torus offset, shape ``(1, latent_dim)``, drawn ``U[0, 1)`` per batch.
+    params (dict[str, jnp.ndarray])
+        Decoder weights.
+
+    Returns
+    -------
+    samples (jnp.ndarray)
+        Decoded reconstructions, shape ``(K, 1, 128, 128)``.
+    """
+    return decoder_forward(torus_basis_forward((lattice + shift) % 1), params)
+
+
 # Posterior + embedding (port of QMCLVM.posterior_probability / embed_data)
-# --------------------------------------------------------------------------- #
 def decode_lattice_atlas(lattice: jnp.ndarray, params: dict[str, jnp.ndarray]) -> jnp.ndarray:
     """
     Description
