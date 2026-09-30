@@ -29,7 +29,8 @@ Architecture
   pooled (and cached to a per-selection parquet) by ``build_pooled_embeddings_df``.
 - An altair scatter of the chosen QLVM map's torus (the regular model or one of
   the four conditional ones, ``os_utils.QLVM_MAPS``; the Map dropdown starts at
-  ``shared_resources.qlvm_map``; or the "Squeaks" map, ``qlvm_squeak1`` /
+  ``shared_resources.qlvm_map``; the USV maps never show segments flagged as
+  squeaks, so the USV and squeak maps never overlap; or the "Squeaks" map, ``qlvm_squeak1`` /
   ``qlvm_squeak2`` from ``infer-qlvm-squeak-latents``, which holds squeak rows
   only and has no categories, so there a category colouring falls back to
   density and boundaries are skipped, with a note in the chart title), colored by a categorical label (category /
@@ -566,6 +567,15 @@ def _scatter_chart(
         squeak_fallback = squeak_map and (
             color_dropdown.value in ("category", "supercategory") or boundary_dropdown.value != "none"
         )
+        # No overlap between the USV maps and the squeak map: a USV map never
+        # shows a segment detect-usv-squeaks flagged as a squeak (the package
+        # also embedded squeaks on the USV tori), and the squeak map holds only
+        # squeaks (its coordinates exist on squeak rows only). A null flag
+        # (a summary without squeak columns) counts as not a squeak.
+        _is_squeak = pooled["squeak"].fill_null(False)
+        pooled = pooled.filter(_is_squeak if squeak_map else ~_is_squeak)
+        if pooled.height == 0:
+            return None, None, None, None
 
         # Color source: category/supercategory/session_type categorical; emitter
         # colors the derived sex column; density is computed below from the 2D

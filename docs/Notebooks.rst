@@ -2617,6 +2617,8 @@ summaries:
   every other row is left off this map. It has positions only — no fine / coarse clusters —
   so on it a **Color by** category / supercategory falls back to density and **Boundaries** are skipped (the chart title says so); the controls stay available.
 
+The USV maps never show a segment ``detect-usv-squeaks`` flagged as a squeak (the model package also placed squeaks on its USV tori), and the squeak map shows only squeaks, so the two never overlap.
+
 **Controls** (stacked above the plot):
 
 * **Session lists** — every ``*.txt`` list in the configured input-files directory (playback
