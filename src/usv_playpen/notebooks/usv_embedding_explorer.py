@@ -30,11 +30,11 @@ Architecture
 - An altair scatter of the chosen QLVM map's torus (the regular model or one of
   the four conditional ones, ``os_utils.QLVM_MAPS``; the Map dropdown starts at
   ``shared_resources.qlvm_map``; the USV maps show only the segments
-  ``detect-usv-squeaks`` classed as pure USVs, ``call_class`` "usv"; or the
+  ``detect-usv-squeaks`` classed as pure USVs (``usv & ~squeak``); or the
   "Squeaks" map, ``qlvm_squeak1`` / ``qlvm_squeak2`` from
   ``infer-qlvm-squeak-latents``, which holds the squeak-bearing classes only,
-  filtered by the "Squeak class" dropdown to squeaks only (``call_class``
-  "squeak"), segments holding both a squeak and a USV ("both"), or the two
+  filtered by the "Squeak class" dropdown to pure squeaks
+  (``squeak & ~usv``), segments holding both a squeak and a USV (``usv & squeak``), or the two
   together (the default), and has no categories, so there a category colouring
   falls back to density and boundaries are skipped, with a note in the chart
   title; the USV and squeak maps therefore never overlap), colored by a categorical label (category /
@@ -70,6 +70,7 @@ use and OS-resolved via ``os_utils.resolve_experimenter_path`` (set the
 ``EXPERIMENTER_ID`` env var to override the host config's experimenter), so the
 app follows whoever launches it and resolves correctly on macOS / Linux.
 """
+from __future__ import annotations
 
 import marimo
 
@@ -104,9 +105,13 @@ def _imports():
         resolve_experimenter_path,
         resolve_squeak_spectrogram_store_path,
     )
-    from usv_playpen.processing.build_squeak_spectrogram_store import squeak_store_thumbnail
+    from usv_playpen.processing.build_squeak_spectrogram_store import (
+        squeak_store_thumbnail,
+    )
     from usv_playpen.visualizations.make_usv_spectrograms import (
         _knn_boundary_grid as knn_boundary_grid,
+    )
+    from usv_playpen.visualizations.make_usv_spectrograms import (
         build_pooled_embeddings_df,
     )
 
@@ -386,7 +391,7 @@ def _widgets(SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
         label="Apply mask",
     )
     # Which squeak-bearing call classes the Squeaks map shows: pure squeaks
-    # (call_class "squeak"), segments holding a squeak and a USV ("both"), or
+    # (squeak & ~usv), segments holding a squeak and a USV (usv & squeak), or
     # both kinds together (the default). {display label -> selection name of
     # os_utils.SQUEAK_CLASS_SELECTIONS}; .value returns the selection name. The
     # USV maps ignore it: they always show pure USVs only.
@@ -628,11 +633,11 @@ def _scatter_chart(
             color_dropdown.value in ("category", "supercategory") or boundary_dropdown.value != "none"
         )
         # No overlap between the USV maps and the squeak map: a USV map shows only
-        # the segments detect-usv-squeaks classed as pure USVs (call_class "usv";
-        # squeak and both rows, and unclassed rows, never), and the squeak map
+        # the segments detect-usv-squeaks classed as pure USVs (usv & ~squeak;
+        # squeak-bearing rows and unclassed rows never), and the squeak map
         # shows the squeak-bearing classes the "Squeak class" dropdown selects
-        # (squeak, both, or both kinds). A pooled table without call_class (older
-        # summaries) raises with a message naming the missing column.
+        # (squeak, both, or both kinds). A pooled table without the usv / squeak
+        # booleans (older summaries) raises with a message naming the missing columns.
         _classes = SQUEAK_CLASS_SELECTIONS[squeak_class_dropdown.value] if squeak_map else ("usv",)
         pooled = pooled.filter(call_class_mask(pooled, _classes, "the pooled embeddings table"))
         if pooled.height == 0:

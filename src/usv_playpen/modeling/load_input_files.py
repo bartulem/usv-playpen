@@ -17,18 +17,19 @@ Key Capabilities:
 6.  Data cleaning: Applying category-based noise filtering and clean-history
     constraints to ensure biological accuracy.
 """
+from __future__ import annotations
+
+import pickle
+import re
+from pathlib import Path
 
 import h5py
 import numpy as np
-from scipy.stats import invgauss, norm
-import re
-from pathlib import Path
-import pickle
 import polars as pls
+from astropy.convolution import Gaussian1DKernel, convolve
+from scipy.stats import invgauss, norm
 
-from ..os_utils import CALL_CLASS_COLUMN, drop_noise_usvs
-from astropy.convolution import convolve
-from astropy.convolution import Gaussian1DKernel
+from ..os_utils import VOCAL_FLAG_COLUMNS, call_class_mask, drop_noise_usvs
 
 
 def load_behavioral_feature_data(behavior_file_paths: list = None,
@@ -614,11 +615,11 @@ def find_onset_epochs(root_directories: list = None,
         (default), all USV categories are pooled (original behavior).
     target_type : str, optional
         Which calls are the POSITIVE onset source, read from the summary's
-        ``call_class`` column (written by the call classifier, ``detect-usv-squeaks``):
-        ``'usv'`` (default) keeps the rows with ``call_class`` ``"usv"`` only,
-        ``'squeak'`` the rows with ``call_class`` ``"squeak"`` only, ``'all'`` every
-        row. A ``"both"`` segment (a squeak and an ultrasonic call together) and a
-        null class (a segment too short to score) are in neither ``'usv'`` nor
+        ``usv`` / ``squeak`` booleans (written by the call classifier, ``detect-usv-squeaks``):
+        ``'usv'`` (default) keeps pure USVs only (``usv & ~squeak``), ``'squeak'``
+        pure squeaks only (``squeak & ~usv``), ``'all'`` every row. A segment holding
+        both (a squeak and an ultrasonic call together) and null booleans (a segment
+        too short to score) are in neither ``'usv'`` nor
         ``'squeak'``, so they are removed from both positive sequences. Applied before
         `target_category`, in every mode whose positives are call times ('bout_onset',
         'individual', 'bout_offset'), so in 'usv' mode bouts are grouped from pure
@@ -629,7 +630,7 @@ def find_onset_epochs(root_directories: list = None,
         negative window is silent of squeaks too. ``'squeak'`` is accepted in
         'individual' mode only: bout grouping needs an inter-bout threshold, and
         the per-sex thresholds are calibrated on ultrasonic-call intervals, not on
-        squeaks. A summary without a ``call_class`` column raises unless ``'all'``.
+        squeaks. A summary without the ``usv`` / ``squeak`` columns raises unless ``'all'``.
     negative_scheme : str, optional
         ``'bout_offset'`` mode only. ``'cross_bout'``: each positive (the last
         call's offset of a bout) is paired with an interior call's offset from
@@ -718,9 +719,9 @@ def find_onset_epochs(root_directories: list = None,
                                         summary_columns=usv_summary_data.columns, source=str(csv_path))
         if exclude_noise_usvs:
             usv_summary_data = drop_noise_usvs(usv_summary_data, Path(csv_path).name)[0]
-        if target_type != 'all' and CALL_CLASS_COLUMN not in usv_summary_data.columns:
+        if target_type != 'all' and any(column not in usv_summary_data.columns for column in VOCAL_FLAG_COLUMNS):
             raise ValueError(
-                f"{Path(csv_path).name} has no '{CALL_CLASS_COLUMN}' column, so target_type {target_type!r} "
+                f"{Path(csv_path).name} has no {list(VOCAL_FLAG_COLUMNS)} columns, so target_type {target_type!r} "
                 "cannot be applied; run detect-usv-squeaks on the session, or use 'all'."
             )
 
@@ -772,10 +773,10 @@ def find_onset_epochs(root_directories: list = None,
             # still drives the silent-epoch (negative) reference, so neither the
             # predictors nor the negatives are affected by the category choice.
             # The target type is applied first: pure ultrasonic calls, pure squeaks, or
-            # every call. A "both" segment and a null class match neither single type.
+            # every call. A segment holding both and null booleans match neither single type.
             if target_type in ('usv', 'squeak'):
                 typed_source_df = mouse_usvs_df.filter(
-                    pls.col(CALL_CLASS_COLUMN).cast(pls.Utf8).eq(target_type).fill_null(False)
+                    call_class_mask(mouse_usvs_df, (target_type,), Path(csv_path).name)
                 )
             else:
                 typed_source_df = mouse_usvs_df

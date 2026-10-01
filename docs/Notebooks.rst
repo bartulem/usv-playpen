@@ -2371,7 +2371,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
     female_cmap = sex_cmaps["female_cm"]
     male_cmap = sex_cmaps["male_cm"]
 
-**Load the session.** The **Extract data** cell fans the sessions-list file out into per-session roots and folds them into one master per-USV frame (``usv_pls``) plus a background-frames frame (``bg_pls``), filtering the noise bucket in the process and, with ``usv_only=True``, keeping only the segments ``detect-usv-squeaks`` classed as pure USVs (``call_class`` ``usv``), so every USV count, rate and category statistic downstream counts USVs alone (squeaks and segments holding both a squeak and a USV are left out; the number left out is printed). A summary without ``call_class`` raises. It also derives the pandas view ``usv_df`` with a ``duration_ms`` column. Every statistics cell downstream consumes these in-memory objects.
+**Load the session.** The **Extract data** cell fans the sessions-list file out into per-session roots and folds them into one master per-USV frame (``usv_pls``) plus a background-frames frame (``bg_pls``), filtering the noise bucket in the process and, with ``usv_only=True``, keeping only the segments ``detect-usv-squeaks`` classed as pure USVs (``usv`` true and ``squeak`` false), so every USV count, rate and category statistic downstream counts USVs alone (squeaks and segments holding both a squeak and a USV are left out; the number left out is printed). A summary without the ``usv`` / ``squeak`` booleans raises. It also derives the pandas view ``usv_df`` with a ``duration_ms`` column. Every statistics cell downstream consumes these in-memory objects.
 
 .. code-block:: python
 
@@ -2554,7 +2554,7 @@ The §6 category-embedding panel reads its own knobs from the **Statistics param
 * **polar_grid_threshold_male** / **polar_grid_threshold_female** — minimum per-category USV count to render a panel in the sex likelihood grids.
 * **estrous_kde_min_points** — minimum count to render a category × estrous-stage panel.
 
-**§20 Per-session squeak timing.** ``uss.plot_session_squeak_time_heatmap`` draws one row per session showing where in the recording its squeaks (broadband vocalizations, from the ``call_class`` column written by ``detect-usv-squeaks``) sit. **squeak_class** picks which classes count as squeaks: ``'squeak'`` (pure squeaks), ``'both'`` (segments holding a squeak and a USV) or ``'squeak+both'`` (either; the default); the colour-bar label and the title name the selection. The share is estimated continuously along each row, like a kernel-smoothed firing rate: every segment contributes a Gaussian in time, and the colour is the kernel-weighted percentage of nearby vocalizations that are squeaks, so a lone squeak is weighed against the calls around it rather than being 1 of 1 in a bin. Rows are never smoothed into one another. Where no vocalization is nearby the share is undefined and left blank (white) — not the same as vocalizing with no squeak (the faint tint of the block's colour). Rows are grouped by condition and sorted by the session's overall squeak rate, shown as bars on the right; a strip between the heatmap and the bars colours each row by condition, the condition legend sits in the rate panel, and a short colour bar sits at the top left. Every session with at least the minimum number of vocal segments is drawn, including sessions with no squeak (pale rows); the legend counts the rows drawn per condition. Noise segments are removed first when ``exclude_noise_usvs`` is set, so the rate is squeaks among vocal segments. Each condition block has its own colour ramp (``create_colormap``), from a faint tint of the condition's colour at 0 % to the colour itself at 100 %, and the key on the left is the same ramp in grey, from the same tint to a grey as light as the condition colours on average. The cell carries its own parameters; condition colours and labels come from ``session_condition_styles`` in ``visualizations_settings.json``. Adapted from the reference BBV corpus figure; playback sessions are left out because they were never processed.
+**§20 Per-session squeak timing.** ``uss.plot_session_squeak_time_heatmap`` draws one row per session showing where in the recording its squeaks (broadband vocalizations, from the ``usv`` / ``squeak`` booleans written by ``detect-usv-squeaks``) sit. **squeak_class** picks which classes count as squeaks: ``'squeak'`` (pure squeaks), ``'both'`` (segments holding a squeak and a USV) or ``'squeak+both'`` (either; the default); the colour-bar label and the title name the selection. The share is estimated continuously along each row, like a kernel-smoothed firing rate: every segment contributes a Gaussian in time, and the colour is the kernel-weighted percentage of nearby vocalizations that are squeaks, so a lone squeak is weighed against the calls around it rather than being 1 of 1 in a bin. Rows are never smoothed into one another. Where no vocalization is nearby the share is undefined and left blank (white) — not the same as vocalizing with no squeak (the faint tint of the block's colour). Rows are grouped by condition and sorted by the session's overall squeak rate, shown as bars on the right; a strip between the heatmap and the bars colours each row by condition, the condition legend sits in the rate panel, and a short colour bar sits at the top left. Every session with at least the minimum number of vocal segments is drawn, including sessions with no squeak (pale rows); the legend counts the rows drawn per condition. Noise segments are removed first when ``exclude_noise_usvs`` is set, so the rate is squeaks among vocal segments. Each condition block has its own colour ramp (``create_colormap``), from a faint tint of the condition's colour at 0 % to the colour itself at 100 %, and the key on the left is the same ramp in grey, from the same tint to a grey as light as the condition colours on average. The cell carries its own parameters; condition colours and labels come from ``session_condition_styles`` in ``visualizations_settings.json``. Adapted from the reference BBV corpus figure; playback sessions are left out because they were never processed.
 
 .. code-block:: python
 
@@ -2616,8 +2616,8 @@ summaries:
   are what is left once that acoustic variable is removed.
 * **Squeaks** (``qlvm_squeak``) — the squeak (broadband vocalization) map: the phase 3 BBV
   model's coordinates ``qlvm_squeak1`` / ``qlvm_squeak2``, written by
-  ``infer-qlvm-squeak-latents`` on the squeak-bearing rows only (``call_class`` ``squeak`` or
-  ``both``; noise rows have no class), so every other row is left off this map. The
+  ``infer-qlvm-squeak-latents`` on the squeak-bearing rows only (``squeak`` true: pure squeaks
+  and segments holding both; noise rows have null booleans), so every other row is left off this map. The
   **Squeak class** control filters it further. It has positions only — no fine / coarse clusters —
   so on it a **Color by** category / supercategory falls back to density and **Boundaries** are skipped (the chart title says so); the controls stay available.
   Its example spectrograms come from the squeak spectrogram store (the newest
@@ -2629,7 +2629,7 @@ summaries:
   store the grid falls back to the 30-125 kHz ultrasonic spectrograms, with a one-line note
   above it.
 
-The USV maps show only the segments ``detect-usv-squeaks`` classed as pure USVs (``call_class`` ``usv``: no squeak and no ``both`` segment, and no unclassed row), and the squeak map shows only squeak-bearing segments, so the two never overlap.
+The USV maps show only the segments ``detect-usv-squeaks`` classed as pure USVs (``usv`` true and ``squeak`` false: no pure squeak, no segment holding both, and no unclassed row), and the squeak map shows only squeak-bearing segments, so the two never overlap.
 
 **Controls** (stacked above the plot):
 
@@ -2656,8 +2656,8 @@ The USV maps show only the segments ``detect-usv-squeaks`` classed as pure USVs 
 * **Apply mask** — multiplies each sampled spectrogram by its SAM2 segmentation mask, so only
   the segmented call shows.
 * **Squeak class** — on the Squeaks map, which squeak-bearing classes are shown: **squeak +
-  both** (the default), **squeak only** (``call_class`` ``squeak``) or **both only** (segments
-  holding a squeak and a USV). The USV maps ignore it.
+  both** (the default), **squeak only** (``squeak`` true, ``usv`` false) or **both only** (segments
+  holding a squeak and a USV, both booleans true). The USV maps ignore it.
 
 **Hover tooltip.** Hovering a point shows its ``session id``, ``emitter`` (the animal id, or
 ``unassigned``), ``mean amplitude``, ``mean frequency`` (kHz), and ``spectral entropy``.

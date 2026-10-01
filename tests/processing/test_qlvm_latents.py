@@ -77,8 +77,8 @@ def _make_inference_session(tmp_path, rng, *, with_masks=True):
     the cells it embeds with, see :func:`_make_model_cell`). Rows 0 and 2 are real
     64-bin calls (inside the synthetic cells' duration window of 100), row 1 is a
     placeholder; with ``with_masks``, rows 0 and 2 each get one all-ones SAM mask.
-    The summary carries the ``call_class`` column detect-usv-squeaks writes (rows 0
-    and 2 ``"usv"``, the placeholder row null), which inference requires."""
+    The summary carries the ``usv`` / ``squeak`` booleans detect-usv-squeaks writes (rows 0
+    and 2 pure USVs, ``(true, false)``; the placeholder row null), which inference requires."""
     session_id = "20230119_155302"
     root = tmp_path / session_id
     (root / "audio" / "spectrograms").mkdir(parents=True)
@@ -99,7 +99,8 @@ def _make_inference_session(tmp_path, rng, *, with_masks=True):
         "usv_id": [f"{i:04d}" for i in range(3)],
         "start": [0.1, 0.3, 0.5],
         "stop": [0.15, 0.35, 0.55],
-        "call_class": ["usv", None, "usv"],
+        "usv": pls.Series([True, None, True], dtype=pls.Boolean),
+        "squeak": pls.Series([False, None, False], dtype=pls.Boolean),
     }).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")
 
     cfg = {
@@ -1134,7 +1135,7 @@ def test_model_cells_write_prefixed_coordinates_and_labels(tmp_path, mocker):
 
     df = pls.read_csv(summary_path)
     assert df.columns == [
-        "usv_id", "start", "stop", "call_class", "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
+        "usv_id", "start", "stop", "usv", "squeak", "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
         "quality", "qlvm_x1", "qlvm_x2", "qlvm_x_category", "qlvm_x_supercategory",
     ]
     for column in ("qlvm1", "qlvm2", "qlvm_x1", "qlvm_x2"):
@@ -1269,7 +1270,7 @@ def test_model_cells_fall_back_to_inference_when_the_gate_fails(tmp_path, mocker
     if failure == "summary_rows":
         summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
         summary = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
-        pls.concat([summary, pls.DataFrame({"usv_id": ["0003"], "start": [0.7], "stop": [0.75], "call_class": ["usv"]})]).write_csv(summary_path)
+        pls.concat([summary, pls.DataFrame({"usv_id": ["0003"], "start": [0.7], "stop": [0.75], "usv": [True], "squeak": [False]})]).write_csv(summary_path)
 
     embedded, messages = _run_model_cells(root, cfg, mocker)
 
@@ -1398,7 +1399,7 @@ def test_model_cells_write_the_configured_label_levels(tmp_path, mocker):
 
     df = pls.read_csv(summary_path)
     assert df.columns == [
-        "usv_id", "start", "stop", "call_class", "qlvm1", "qlvm2", "qlvm_category",
+        "usv_id", "start", "stop", "usv", "squeak", "qlvm1", "qlvm2", "qlvm_category",
         "qlvm_x1", "qlvm_x2", "qlvm_x_category", "qlvm_x_supercategory", "qlvm_y1", "qlvm_y2",
     ]
     _assert_labels_follow_coordinates(df, "qlvm", 0, ("fine",))
@@ -1454,24 +1455,29 @@ def test_model_cell_label_columns_refuse_to_overwrite_summary_columns(mocker):
     }
 
 
-def _set_call_class(root, session_id, classes):
-    """Overwrite the session summary's ``call_class`` column with ``classes``."""
+def _set_vocal_flags(root, session_id, flags):
+    """Overwrite the session summary's ``usv`` / ``squeak`` booleans with ``flags``, one
+    ``(usv, squeak)`` pair (or ``(None, None)``) per row."""
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
     summary = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
-    summary.with_columns(call_class=pls.Series(classes, dtype=pls.String)).write_csv(summary_path)
+    summary.with_columns(
+        usv=pls.Series([pair[0] for pair in flags], dtype=pls.Boolean),
+        squeak=pls.Series([pair[1] for pair in flags], dtype=pls.Boolean),
+    ).write_csv(summary_path)
 
 
 @pytest.mark.parametrize("route", ["inference", "package"])
 def test_model_cells_skip_pure_squeaks_on_both_routes(tmp_path, mocker, route):
-    """A pure squeak (call_class 'squeak') is not a USV the maps can place: on the
+    """A pure squeak (squeak true, usv false) is not a USV the maps can place: on the
     inference route the cell never embeds it, on the package route the package's
     coordinates are dropped for it, and either way its coordinates and labels are
-    null. A 'both' segment is placed as before."""
+    null. A segment holding both (usv and squeak true) is placed as before: only pure
+    squeaks are nulled, never a row whose usv is true."""
     rng = np.random.default_rng(35)
     root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm",))
     expected = _write_fake_package(tmp_path, root, session_id, cfg, rng)
     cfg["prefer_package_values"] = route == "package"
-    _set_call_class(root, session_id, ["squeak", None, "both"])
+    _set_vocal_flags(root, session_id, [(False, True), (None, None), (True, True)])
 
     embedded, messages = _run_model_cells(root, cfg, mocker)
 
@@ -1487,13 +1493,13 @@ def test_model_cells_skip_pure_squeaks_on_both_routes(tmp_path, mocker, route):
     _assert_labels_follow_coordinates(df, "qlvm", 0, ("fine", "coarse"))
 
 
-def test_infer_and_merge_refuses_a_summary_without_call_class(tmp_path, mocker):
-    """Without call_class the pure squeaks cannot be kept off the USV maps, so the run
+def test_infer_and_merge_refuses_a_summary_without_vocal_flags(tmp_path, mocker):
+    """Without the usv / squeak booleans the pure squeaks cannot be kept off the USV maps, so the run
     stops with a KeyError naming detect-usv-squeaks and leaves the summary untouched."""
     rng = np.random.default_rng(36)
     root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm",))
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
-    pls.read_csv(summary_path).drop("call_class").write_csv(summary_path)
+    pls.read_csv(summary_path).drop("usv").write_csv(summary_path)
     before = summary_path.read_bytes()
 
     with pytest.raises(KeyError, match="detect-usv-squeaks"):

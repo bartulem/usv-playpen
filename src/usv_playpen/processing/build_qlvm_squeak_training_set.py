@@ -15,11 +15,12 @@ no spectrogram H5, no SAM masks, no mask-count strata. It shares the session spl
 the resize (:func:`build_qlvm_training_set.stretch_specs`). The steps:
 
 1. **Candidates.** Every row of every session's ``*_usv_summary.csv`` that
-   ``detect-usv-squeaks`` classified as ``squeak`` or ``both`` (``call_class``;
-   with ``exclude_noise`` also not ``noise``, a guard, since noise rows carry no
-   call class) and gave a squeak envelope (``squeak_start`` / ``squeak_end``, the
-   first start and last end of its ``squeak_spans``) is a candidate; a row with
-   several squeaks is ONE candidate, cropped to their envelope, as
+   ``detect-usv-squeaks`` marked ``squeak`` true (pure squeaks and segments
+   holding both a squeak and a USV; with ``exclude_noise`` also not ``noise``, a
+   guard, since noise rows carry null booleans) and gave a squeak extent
+   (``squeak_start`` / ``squeak_end``, the envelope of the segment's
+   above-threshold squeak frames) is a candidate; a row with several squeaks is
+   ONE candidate, cropped to that envelope, as
    ``infer-qlvm-squeak-latents`` embeds it. Its audio window is the segment
    widened to hold the envelope plus the context frames
    (:func:`detect_usv_squeaks.squeak_crop_window`: a squeak often extends past its
@@ -87,7 +88,12 @@ import polars as pls
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import CALL_CLASS_COLUMN, first_match_or_raise
+from ..os_utils import (
+    SQUEAK_FLAG_COLUMN,
+    USV_FLAG_COLUMN,
+    first_match_or_raise,
+    squeak_bearing_mask,
+)
 from ..time_utils import is_gui_context, smart_wait
 from .build_qlvm_training_set import (
     parse_int_list,
@@ -96,7 +102,6 @@ from .build_qlvm_training_set import (
     stretch_specs,
 )
 from .detect_usv_squeaks import (
-    SQUEAK_QLVM_CALL_CLASSES,
     SQUEAK_REFERENCE_WINDOW_FRAMES,
     SQUEAK_SPEC_PARAMS,
     squeak_crop_window,
@@ -117,9 +122,10 @@ def squeak_candidates_from_summary(usv_summary: pls.DataFrame, exclude_noise: bo
     """
     Description
     -----------
-    The squeak candidates of one session: rows whose ``call_class`` is ``squeak``
-    or ``both`` (and, with ``exclude_noise``, ``noise`` not true; noise rows carry
-    no call class, so this is a guard), with a finite squeak envelope
+    The squeak candidates of one session: rows with ``squeak`` true (pure squeaks
+    and "both", :func:`os_utils.squeak_bearing_mask`; and, with ``exclude_noise``,
+    ``noise`` not true; noise rows carry null booleans, so this is a guard), with a
+    finite squeak extent
     (``squeak_start`` / ``squeak_end``) and an audio window of at least one frame.
     Each candidate's audio window is the segment widened to hold the envelope plus
     its context (:func:`detect_usv_squeaks.squeak_crop_window`), and its extent
@@ -129,7 +135,7 @@ def squeak_candidates_from_summary(usv_summary: pls.DataFrame, exclude_noise: bo
     Parameters
     ----------
     usv_summary (pls.DataFrame)
-        The session's USV summary (``start``, ``stop``, ``call_class``,
+        The session's USV summary (``start``, ``stop``, ``usv``, ``squeak``,
         ``p_squeak``, ``p_both``, ``squeak_start``, ``squeak_end`` and, with
         ``exclude_noise``, ``noise``).
     exclude_noise (bool)
@@ -150,12 +156,12 @@ def squeak_candidates_from_summary(usv_summary: pls.DataFrame, exclude_noise: bo
         A needed column is missing.
     """
 
-    needed = ["start", "stop", CALL_CLASS_COLUMN, "p_squeak", "p_both", "squeak_start", "squeak_end", *(["noise"] if exclude_noise else [])]
+    needed = ["start", "stop", USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN, "p_squeak", "p_both", "squeak_start", "squeak_end", *(["noise"] if exclude_noise else [])]
     missing = [column for column in needed if column not in usv_summary.columns]
     if missing:
         error_message = f"The USV summary has no {missing} column(s); run detect-usv-noise and detect-usv-squeaks first."
         raise ValueError(error_message)
-    keep = usv_summary[CALL_CLASS_COLUMN].cast(pls.String).is_in(list(SQUEAK_QLVM_CALL_CLASSES)).fill_null(False).to_numpy().copy()
+    keep = squeak_bearing_mask(usv_summary, "the USV summary").to_numpy().copy()
     if exclude_noise:
         keep &= ~usv_summary["noise"].cast(pls.Boolean).fill_null(False).to_numpy()
     start = usv_summary["start"].cast(pls.Float64).to_numpy()
@@ -501,7 +507,7 @@ class QLVMSqueakTrainingSetBuilder:
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
         candidates, session_roots, session_type_by_key = self.collect_candidates()
-        self.build_from_candidates(candidates, session_roots, session_type_by_key, "usv_summary call_class squeak / both rows")
+        self.build_from_candidates(candidates, session_roots, session_type_by_key, "usv_summary rows with squeak true (pure squeak and both)")
         self.message_output(
             f"QLVM squeak training-set build ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
         )

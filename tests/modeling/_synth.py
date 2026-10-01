@@ -315,7 +315,8 @@ def build_usv_summary_csv(
         # Every synthetic row is a real vocalization: the noise classifier's verdict is what the
         # loaders filter on, and a summary without the column now raises rather than passing.
         'noise': [False] * n_rows,
-        'call_class': ['usv'] * n_rows,
+        'usv': [True] * n_rows,
+        'squeak': [False] * n_rows,
         category_column: [1] * n_rows,
         f"{category_column.rsplit('_', 1)[0]}_category": [1] * n_rows,
         'mask_number': [2] * n_rows,

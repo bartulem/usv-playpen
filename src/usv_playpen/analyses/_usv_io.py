@@ -149,16 +149,16 @@ def load_and_filter_usv_data(
 
     ``call_type`` selects among the vocalizations that survive. Dropping noise leaves ultrasonic
     calls AND squeaks, and the two are different vocalizations: a squeak is a broadband call with a
-    3-8 kHz fundamental, while a USV is ultrasonic. ``detect_usv_squeaks`` writes the class of every
-    non-noise segment into ``call_class``: ``"usv"`` (an ultrasonic call only), ``"squeak"`` (a
-    squeak only) or ``"both"`` (a squeak and an ultrasonic call in one segment). Callers that want
+    3-8 kHz fundamental, while a USV is ultrasonic. ``detect_usv_squeaks`` writes two booleans for
+    every non-noise segment, ``usv`` and ``squeak``: a pure USV is ``usv & ~squeak``, a pure squeak
+    ``squeak & ~usv``, and a segment holding both has both true. Callers that want
     one kind and not the other must say so, because the union is rarely what an analysis means. In
     the cohort the distinction is large -- with the earlier binary squeak detector, 7.6% of the
     male's segments and 48.0% of the female's were squeaks -- and treating them as one class puts a
     squeak between two ultrasonic calls, which suppresses the long interval those calls would have
-    formed and contributes two short ones in its place. A ``"both"`` segment is neither a clean USV
-    nor a clean squeak, so it belongs to neither ``'usv'`` nor ``'squeak'`` and is removed from both
-    sequences; a null class (a segment too short to score) is likewise in neither.
+    formed and contributes two short ones in its place. A segment holding both is neither a clean
+    USV nor a clean squeak, so it belongs to neither ``'usv'`` nor ``'squeak'`` and is removed from
+    both sequences; null booleans (a segment too short to score) are likewise in neither.
 
     Parameters
     ----------
@@ -169,9 +169,9 @@ def load_and_filter_usv_data(
     exclude_noise_usvs (bool)
         Whether to drop the segments flagged as noise.
     call_type (str or None)
-        Which vocalizations to keep: ``'usv'`` for the rows with ``call_class`` ``"usv"`` only,
-        ``'squeak'`` for the rows with ``call_class`` ``"squeak"`` only (``"both"`` and null
-        classes are in neither), or None to keep every row that survives the noise filter.
+        Which vocalizations to keep: ``'usv'`` for pure USVs only (``usv & ~squeak``),
+        ``'squeak'`` for pure squeaks only (``squeak & ~usv``; segments holding both and null
+        booleans are in neither), or None to keep every row that survives the noise filter.
         Defaults to None, which preserves the behaviour of every caller written before the call
         classifier existed.
 

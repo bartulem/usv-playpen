@@ -2,8 +2,8 @@
 @author: bartulem
 Tests for processing/build_qlvm_squeak_training_set.
 
-The frame count, the candidate selection from the USV summary (call_class
-squeak and both, the crop window that widens a segment to hold a squeak running
+The frame count, the candidate selection from the USV summary (squeak true:
+pure squeaks and both, the crop window that widens a segment to hold a squeak running
 past it), the crop gates of both crop windows, the per-session/stratum cap, the
 natural and uniform duration-stratified draws and the crop normalizations are
 tested directly; the end-to-end build runs on synthetic sessions (a metadata YAML
@@ -58,7 +58,8 @@ def test_squeak_candidates_from_summary():
     summary = pls.DataFrame({
         "start": [1.0, 2.0, 3.0, 4.0, 5.0],
         "stop": [1.1, 2.1, 3.1, 4.1, 5.1],
-        "call_class": ["squeak", "usv", "both", "both", "squeak"],
+        "usv": [False, True, True, True, False],
+        "squeak": [True, False, True, True, True],
         "p_squeak": [0.8, 0.1, 0.3, 0.2, 0.6],
         "p_both": [0.1, 0.0, 0.6, 0.7, 0.3],
         "squeak_start": [1.0 + 3 * dt, None, 3.0 - 5 * dt, 4.0 + 2 * dt, None],
@@ -75,8 +76,8 @@ def test_squeak_candidates_from_summary():
     assert squeak_set.squeak_candidates_from_summary(summary, exclude_noise=True)["row"].tolist() == [0, 2]
     with pytest.raises(ValueError, match="column"):
         squeak_set.squeak_candidates_from_summary(summary.drop("squeak_end"), exclude_noise=False)
-    with pytest.raises(ValueError, match="call_class"):
-        squeak_set.squeak_candidates_from_summary(summary.drop("call_class"), exclude_noise=False)
+    with pytest.raises(ValueError, match="usv"):
+        squeak_set.squeak_candidates_from_summary(summary.drop("usv"), exclude_noise=False)
 
 
 def test_squeak_crop_gates_windows():
@@ -151,7 +152,8 @@ def _write_session(tmp_path, session_id, sexes, n_squeaks):
         "usv_id": [f"{i:06d}" for i in range(n)],
         "start": start,
         "stop": start + 0.2,
-        "call_class": [("squeak" if i % 2 else "both") if i < n_squeaks else "usv" for i in range(n)],
+        "usv": [(i % 2 == 0) if i < n_squeaks else True for i in range(n)],
+        "squeak": [i < n_squeaks for i in range(n)],
         "p_squeak": [0.5 if i < n_squeaks else 0.0 for i in range(n)],
         "p_both": [0.4 if i < n_squeaks else 0.0 for i in range(n)],
         "squeak_start": [start[i] + 5 * FRAME_DT_S if i < n_squeaks else None for i in range(n)],

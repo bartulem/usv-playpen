@@ -41,38 +41,36 @@ bundle holds several members; their class probabilities and frame squeak
 probabilities are averaged.
 
 Columns written into ``usv_summary.csv`` (any pre-existing ones are replaced, and
-the columns of the retired binary squeak detector -- ``squeak``,
-``squeak_probability``, ``squeak_frame_runs`` -- are removed):
+the columns of earlier encodings -- ``squeak_probability``, ``squeak_frame_runs``,
+``call_class``, ``squeak_spans``, ``n_squeaks`` -- are removed):
 
-* ``call_class`` -- ``"usv"``, ``"squeak"`` or ``"both"``: the class of highest
-  ensemble-mean probability; null on noise rows and on rows too short for one
-  STFT window;
+* ``usv`` / ``squeak`` -- two booleans from the class of highest ensemble-mean
+  probability: a pure USV is ``(true, false)``, a pure squeak ``(false, true)``
+  and a segment holding both ``(true, true)``; both null on noise rows and on
+  rows too short for one STFT window. ``usv`` alone does NOT mean "USV only":
+  a pure-USV filter is ``usv & ~squeak`` (:func:`os_utils.pure_usv_mask`);
 * ``p_usv`` / ``p_squeak`` / ``p_both`` -- the ensemble-mean class
-  probabilities (they sum to 1); null where ``call_class`` is null;
-* ``squeak_spans`` -- a JSON list of ``[start_s, end_s]`` session-second pairs,
-  one per squeak, in time order: every run of consecutive frames whose
-  ensemble-mean squeak probability exceeds the bundle's span threshold
-  (``extent_rule['threshold']``, 0.6) for at least ``extent_rule['min_run_frames']``
-  frames (12, 24.6 ms) is one span, from half a hop before its first frame's
-  centre to half a hop after its last; only spans that overlap the segment
-  ``[start, stop]`` are kept (a span lying wholly in the context belongs to a
-  neighbouring segment), but a kept span may extend past the segment into the
-  context. ``"[]"`` on ``usv`` rows (whatever the frame track says), and also on
-  a ``squeak`` / ``both`` row whose track has no run that passes the rule; null
-  where ``call_class`` is null;
-* ``squeak_start`` / ``squeak_end`` -- the envelope of ``squeak_spans`` (first
-  span's start, last span's end, session seconds); null when the row has no span;
-* ``n_squeaks`` -- the number of spans (0 on ``usv`` rows); null where
-  ``call_class`` is null.
+  probabilities (they sum to 1); null where the booleans are null;
+* ``squeak_start`` / ``squeak_end`` -- ONE squeak extent per segment, in
+  session seconds, on rows with ``squeak`` true only (null otherwise): the
+  envelope of every frame whose ensemble-mean squeak probability exceeds the
+  bundle's threshold (``extent_rule['threshold']``, 0.6), counting only the
+  above-threshold runs that touch the segment's own frames (a run lying wholly
+  in the context belongs to a neighbouring segment) and with no minimum run
+  length, from half a hop before the first such frame's centre to half a hop
+  after the last (:func:`squeak_envelope_frames`). The extent may reach into
+  the context. A ``squeak`` row with no above-threshold frame touching the
+  segment falls back to the segment frame of highest squeak probability (a
+  one-frame extent); the step reports how many rows needed it.
 
-The rule and its constants were chosen on session-grouped cross-fitted
-predictions of the same recipe; the bundle records them, its class names, its
+The threshold was chosen on session-grouped cross-fitted predictions of the
+same recipe; the bundle records it, its class names, its
 input constants and scalar standardization, its training recipe and the label
 files it was trained on, and this step reads every one of them from the bundle.
 
 Squeak QLVM embedding (``infer-qlvm-squeak-latents``,
 :class:`USVSqueakQLVMEmbedder`): a second step places every row of call class
-``squeak`` or ``both`` that is not noise on the torus of one of the phase 3
+``squeak`` true (pure squeaks and "both") that is not noise on the torus of one of the phase 3
 broadband-vocalization QLVM cells (``qlvm_models_latest/phase3_BBVs_qlvm/<cell>``:
 the ``infer_qlvm_squeak_latents.model_cell_directory`` setting, filled with the
 production ``natural_session_N11000_nomask`` cell when empty) and writes the two
@@ -84,8 +82,9 @@ cells' training sets: the frames whose centres lie inside
 ``[squeak_start, squeak_end]`` plus two frames of context either side, min-max
 normalized per crop, zero-padded to 128 frames, centred by ``stretch_specs`` and
 min-max normalized once more as the decoder's data loader did
-(:func:`squeak_qlvm_inputs`). One row has two coordinates, so a row with several
-squeaks is embedded ONCE, over the envelope of its spans (gaps included).
+(:func:`squeak_qlvm_inputs`). One row has one squeak extent (the envelope of all its
+above-threshold frames), so a row with several squeaks is embedded ONCE, over
+that envelope (gaps included).
 Because a squeak may extend past its segment, the audio the spectrogram is built
 from covers the segment and the envelope plus its context
 (:func:`squeak_crop_window`), so a crop is never cut off at the segment
@@ -108,9 +107,11 @@ binary cross-entropy) and writes a bundle this step loads unchanged. Training
 lives in this module, not in its own, for the reason the noise model's does: the
 network, the input construction and the label-to-frame mapping must exist once,
 shared by both directions, so a trained bundle sees exactly the input it is
-later scored on. Session-grouped cross-validation and the choice of the span
-rule are an evaluation step outside the package; the trainer takes the rule
-from its settings and records it in the bundle.
+later scored on. The labelled spans (several per segment where the labeller
+marked several squeaks) remain the frame head's training targets; the envelope
+rule is applied at inference only. Session-grouped cross-validation and the
+choice of the threshold are an evaluation step outside the package; the trainer
+takes the threshold from its settings and records it in the bundle.
 """
 
 from __future__ import annotations
@@ -133,13 +134,15 @@ from torch import nn
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
-    CALL_CLASS_COLUMN,
     CALL_CLASSES,
+    SQUEAK_FLAG_COLUMN,
+    USV_FLAG_COLUMN,
     atomic_output_path,
     configure_path,
     derive_spectrogram_model_paths,
     first_match_or_raise,
     order_usv_summary_columns,
+    squeak_bearing_mask,
 )
 from ..time_utils import is_gui_context, smart_wait
 from .build_qlvm_training_set import stretch_specs
@@ -167,10 +170,14 @@ from .qlvm_latents import cell_file, load_decoder_params, normalize_model_inputs
 from .qlvm_model import decoder_head, embed_data, gen_fib_basis_float32
 
 # Columns written into the USV summary CSV, in canonical order.
-CALL_CLASS_COLUMNS = (CALL_CLASS_COLUMN, "p_usv", "p_squeak", "p_both", "squeak_spans", "squeak_start", "squeak_end", "n_squeaks")
+VOCAL_CLASS_COLUMNS = (USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN, "p_usv", "p_squeak", "p_both", "squeak_start", "squeak_end")
 
-# Columns of the retired binary squeak detector, dropped whenever a summary is rewritten here.
-RETIRED_SQUEAK_COLUMNS = ("squeak", "squeak_probability", "squeak_frame_runs")
+# The two booleans each call class is written as: (usv, squeak).
+CALL_CLASS_FLAGS = {"usv": (True, False), "squeak": (False, True), "both": (True, True)}
+
+# Columns of earlier encodings (the retired binary squeak detector's and the call-class / span
+# encoding's), dropped whenever a summary is rewritten here.
+RETIRED_SQUEAK_COLUMNS = ("squeak_probability", "squeak_frame_runs", "call_class", "squeak_spans", "n_squeaks")
 
 # Name the bundle records for its network, checked on load.
 USV_SQUEAK_MODEL_NAME = "usv_squeak_timemil_ensemble"
@@ -191,8 +198,9 @@ USV_SQUEAK_SAMPLE_COLUMNS = ("panel_id", "session_dir", "row_index", "start", "s
 # session's USV summary: a larger gap means the summary was rewritten since the sample was drawn.
 USV_SQUEAK_START_TOLERANCE_S = 1e-5
 
-# Decimals of the session-second times written into squeak_spans (1 us; the audio sample is 4 us).
-SQUEAK_SPAN_DECIMALS = 6
+# Decimals of the session-second times written into squeak_start / squeak_end (1 us; the audio
+# sample is 4 us).
+SQUEAK_TIME_DECIMALS = 6
 
 # Front end of the squeak QLVM cells (the sonic band of the retired squeak classifier, which their
 # training sets were cropped from): 3-30 kHz, 128 linear bins, Blackman-Harris STFT (nperseg 2048, hop
@@ -217,9 +225,6 @@ SQUEAK_REFERENCE_WINDOW_FRAMES = 128
 
 # Columns the squeak QLVM embedding writes into the USV summary CSV.
 SQUEAK_QLVM_COLUMNS = ("qlvm_squeak1", "qlvm_squeak2")
-
-# Call classes the squeak QLVM embedding places on its torus.
-SQUEAK_QLVM_CALL_CLASSES = ("squeak", "both")
 
 # Input contract of the phase 3 squeak (BBV) QLVM cells, fixed by the way
 # scripts/dataset_construct/build_bbv_dataset.py built their training sets (the
@@ -325,7 +330,7 @@ def load_usv_squeak_model(model_path: str, device: torch.device) -> dict:
     Description
     -----------
     Loads the call-class bundle: every member's weights in eval mode on ``device``, the input
-    constants, the scalar standardization, the class names and the span rule. A bundle whose model
+    constants, the scalar standardization, the class names and the squeak-extent threshold. A bundle whose model
     name, class names or bands differ from what this module builds is refused rather than scored with.
 
     Parameters
@@ -340,8 +345,8 @@ def load_usv_squeak_model(model_path: str, device: torch.device) -> dict:
     bundle (dict)
         ``models`` (list[USVSqueakTimeMIL]), ``class_names`` (tuple), ``scalar_mean`` / ``scalar_std``
         (float32 arrays), ``bands_hz``, ``db_floor``, ``db_ceil``, ``db_center``, ``db_half``,
-        ``max_frames``, ``context_frames``, ``span_threshold`` (float), ``span_min_run_frames`` (int)
-        and ``labels`` (the label files it was trained on).
+        ``max_frames``, ``context_frames``, ``span_threshold`` (float, the squeak-frame threshold of
+        the extent rule) and ``labels`` (the label files it was trained on).
 
     Raises
     ------
@@ -387,7 +392,6 @@ def load_usv_squeak_model(model_path: str, device: torch.device) -> dict:
         "db_center": float(checkpoint["db_center"]), "db_half": float(checkpoint["db_half"]),
         "max_frames": int(checkpoint["max_frames"]), "context_frames": int(checkpoint["context_frames"]),
         "span_threshold": float(checkpoint["extent_rule"]["threshold"]),
-        "span_min_run_frames": int(checkpoint["extent_rule"]["min_run_frames"]),
         "labels": list(checkpoint["labels"]),
     }
 
@@ -512,19 +516,21 @@ def ensemble_usv_squeak_predict(
     return class_sum / len(models), [frames / len(models) for frames in frame_sum]
 
 
-def squeak_track_spans(
+def squeak_envelope_frames(
     frame_probability: np.ndarray,
     threshold: float,
-    min_run_frames: int,
-    read_start_s: float,
-) -> list[tuple[float, float]]:
+    segment_first: int,
+    segment_last: int,
+) -> tuple[int, int, bool]:
     """
     Description
     -----------
-    Turns a frame squeak track into spans: every maximal run of consecutive frames whose probability
-    EXCEEDS ``threshold`` (strictly) and is at least ``min_run_frames`` frames long is one span, from
-    half a hop before its first frame's centre to half a hop after its last frame's centre. Frame ``k``
-    is centred at ``read_start_s + k * hop``.
+    The single squeak extent of one window, in frames: every maximal run of consecutive frames whose
+    probability EXCEEDS ``threshold`` (strictly; no minimum run length) is kept when it touches the
+    segment's own frames ``segment_first .. segment_last`` (a run lying wholly in the context belongs
+    to a neighbouring segment), and the extent runs from the first kept run's first frame to the last
+    kept run's last frame (so it may reach into the context). When no frame above the threshold
+    touches the segment, the extent falls back to the one segment frame of highest probability.
 
     Parameters
     ----------
@@ -532,72 +538,61 @@ def squeak_track_spans(
         ``(T,)`` frame squeak probabilities of one window.
     threshold (float)
         Frame threshold (the bundle's ``extent_rule['threshold']``).
-    min_run_frames (int)
-        Shortest run kept, in frames (the bundle's ``extent_rule['min_run_frames']``).
+    segment_first (int)
+        First segment frame of the window.
+    segment_last (int)
+        Last segment frame of the window (inclusive).
+
+    Returns
+    -------
+    first (int)
+        First frame of the extent.
+    last (int)
+        Last frame of the extent (inclusive).
+    fallback (bool)
+        True when no above-threshold frame touched the segment and the highest-scoring segment frame
+        was used.
+    """
+
+    probability = np.asarray(frame_probability)
+    above = np.concatenate([[False], probability > threshold, [False]])
+    edges = np.flatnonzero(np.diff(above.astype(np.int8)))
+    kept = [(int(first), int(stop) - 1) for first, stop in zip(edges[::2], edges[1::2], strict=True)
+            if first <= segment_last and stop - 1 >= segment_first]
+    if kept:
+        return kept[0][0], kept[-1][1], False
+    best = segment_first + int(np.argmax(probability[segment_first:segment_last + 1]))
+    return best, best, True
+
+
+def frames_to_session_seconds(first: int, last: int, read_start_s: float) -> tuple[float, float]:
+    """
+    Description
+    -----------
+    Converts an inclusive frame range of a window into session seconds: from half a hop before the
+    first frame's centre to half a hop after the last frame's centre (frame ``k`` is centred at
+    ``read_start_s + k * hop``), rounded to ``SQUEAK_TIME_DECIMALS``.
+
+    Parameters
+    ----------
+    first (int)
+        First frame.
+    last (int)
+        Last frame (inclusive).
     read_start_s (float)
         Session time of frame 0's centre.
 
     Returns
     -------
-    spans (list[tuple[float, float]])
-        Session-second ``(start, end)`` spans in time order.
+    start_s (float)
+        Extent start (s).
+    end_s (float)
+        Extent end (s).
     """
 
     hop_s = HOP_SAMPLES / NOISE_SAMPLING_RATE
-    above = np.concatenate([[False], np.asarray(frame_probability) > threshold, [False]])
-    edges = np.flatnonzero(np.diff(above.astype(np.int8)))
-    spans = []
-    for first, stop in zip(edges[::2], edges[1::2], strict=True):
-        if stop - first >= min_run_frames:
-            spans.append((read_start_s + (first - 0.5) * hop_s, read_start_s + (stop - 0.5) * hop_s))
-    return spans
-
-
-def segment_squeak_spans(spans: list[tuple[float, float]], start: float, stop: float) -> list[tuple[float, float]]:
-    """
-    Description
-    -----------
-    Keeps the spans that overlap the segment ``[start, stop]`` (closed interval). A span lying wholly in
-    the context before or after the segment belongs to a neighbouring segment and is dropped; a kept span
-    is not clipped, so it may extend past the segment.
-
-    Parameters
-    ----------
-    spans (list[tuple[float, float]])
-        Session-second spans of the window (:func:`squeak_track_spans`).
-    start (float)
-        Segment start (s).
-    stop (float)
-        Segment stop (s).
-
-    Returns
-    -------
-    kept (list[tuple[float, float]])
-        The overlapping spans, in time order.
-    """
-
-    return [(span_start, span_end) for span_start, span_end in spans if span_end >= start and span_start <= stop]
-
-
-def format_squeak_spans(spans: list[tuple[float, float]]) -> str:
-    """
-    Description
-    -----------
-    Serializes spans as the ``squeak_spans`` JSON text: a list of ``[start_s, end_s]`` pairs rounded to
-    ``SQUEAK_SPAN_DECIMALS`` decimals, ``"[]"`` when empty.
-
-    Parameters
-    ----------
-    spans (list[tuple[float, float]])
-        Session-second spans.
-
-    Returns
-    -------
-    text (str)
-        JSON text, e.g. ``"[[12.3456, 12.3912]]"``.
-    """
-
-    return json.dumps([[round(float(span_start), SQUEAK_SPAN_DECIMALS), round(float(span_end), SQUEAK_SPAN_DECIMALS)] for span_start, span_end in spans])
+    return (round(read_start_s + (first - 0.5) * hop_s, SQUEAK_TIME_DECIMALS),
+            round(read_start_s + (last + 0.5) * hop_s, SQUEAK_TIME_DECIMALS))
 
 
 def classify_usv_squeak_rows(
@@ -612,15 +607,16 @@ def classify_usv_squeak_rows(
     """
     Description
     -----------
-    Classifies every row of one session's USV summary that is not noise and returns the call-class
+    Classifies every row of one session's USV summary that is not noise and returns the vocal-class
     columns. For each such row the call-class input is built (:func:`usv_squeak_window_input`) with
     the noise model's scalars (:func:`detect_usv_noise.noise_scalars`, standardized with the bundle's
     mean and std), the ensemble scores every input (:func:`ensemble_usv_squeak_predict`), the class is
-    the arg-max of the mean probabilities, and the spans come from the mean frame track
-    (:func:`squeak_track_spans` with the bundle's rule, kept when they overlap the segment,
-    :func:`segment_squeak_spans`) on ``squeak`` / ``both`` rows only. Rows flagged as noise
-    (``noise`` true; a null ``noise`` counts as not noise, :func:`os_utils.drop_noise_usvs`) are not
-    read at all and get nulls in every column, as do rows too short for one STFT window.
+    the arg-max of the mean probabilities, written as the ``usv`` / ``squeak`` booleans
+    (``CALL_CLASS_FLAGS``), and on rows with ``squeak`` true the squeak extent is the envelope of the
+    mean frame track's above-threshold frames touching the segment (:func:`squeak_envelope_frames`,
+    with its fallback; :func:`frames_to_session_seconds`). Rows flagged as noise (``noise`` true; a
+    null ``noise`` counts as not noise, :func:`os_utils.drop_noise_usvs`) are not read at all and get
+    nulls in every column, as do rows too short for one STFT window.
 
     cuDNN is put in deterministic mode for the duration of the call and restored afterwards, and
     autocast is disabled locally, so a mixed-precision context left open by an earlier step in the same
@@ -646,9 +642,9 @@ def classify_usv_squeak_rows(
     Returns
     -------
     scores (pls.DataFrame)
-        One row per summary row, the ``CALL_CLASS_COLUMNS``: ``call_class`` (String), ``p_usv`` /
-        ``p_squeak`` / ``p_both`` (Float64), ``squeak_spans`` (String, JSON), ``squeak_start`` /
-        ``squeak_end`` (Float64) and ``n_squeaks`` (Int64).
+        One row per summary row, the ``VOCAL_CLASS_COLUMNS``: ``usv`` / ``squeak`` (Boolean),
+        ``p_usv`` / ``p_squeak`` / ``p_both`` (Float64) and ``squeak_start`` / ``squeak_end``
+        (Float64). The number of squeak rows whose extent fell back to one frame is logged.
 
     Raises
     ------
@@ -683,12 +679,12 @@ def classify_usv_squeak_rows(
             for handle in handles:
                 handle.close()
 
-    call_class: list[str | None] = [None] * n_rows
+    usv_flag: list[bool | None] = [None] * n_rows
+    squeak_flag: list[bool | None] = [None] * n_rows
     probability = np.full((n_rows, len(CALL_CLASSES)), np.nan, dtype=np.float64)
-    spans_text: list[str | None] = [None] * n_rows
     squeak_start: list[float | None] = [None] * n_rows
     squeak_end: list[float | None] = [None] * n_rows
-    n_squeaks: list[int | None] = [None] * n_rows
+    n_fallback = 0
     if scored_rows:
         raw_scalars = np.stack([noise_scalars(chs_counts[row], starts[row], stops[row]) for row in scored_rows])
         standardized = ((raw_scalars - bundle["scalar_mean"]) / bundle["scalar_std"]).astype(np.float32)
@@ -707,47 +703,41 @@ def classify_usv_squeak_rows(
         for position, row in enumerate(scored_rows):
             probability[row] = class_probability[position]
             label = CALL_CLASSES[int(np.argmax(class_probability[position]))]
-            call_class[row] = label
-            kept: list[tuple[float, float]] = []
-            if label != "usv":
-                kept = segment_squeak_spans(
-                    squeak_track_spans(frame_probability[position], bundle["span_threshold"], bundle["span_min_run_frames"], windows[position]["read_start_s"]),
-                    float(starts[row]), float(stops[row]),
+            usv_flag[row], squeak_flag[row] = CALL_CLASS_FLAGS[label]
+            if squeak_flag[row]:
+                window = windows[position]
+                first, last, fallback = squeak_envelope_frames(
+                    frame_probability[position], bundle["span_threshold"],
+                    window["first_frame"], window["first_frame"] + window["n_segment_frames"] - 1,
                 )
-            spans_text[row] = format_squeak_spans(kept)
-            n_squeaks[row] = len(kept)
-            if kept:
-                squeak_start[row] = round(float(kept[0][0]), SQUEAK_SPAN_DECIMALS)
-                squeak_end[row] = round(float(max(span_end for _span_start, span_end in kept)), SQUEAK_SPAN_DECIMALS)
+                n_fallback += fallback
+                squeak_start[row], squeak_end[row] = frames_to_session_seconds(first, last, window["read_start_s"])
     unscorable = candidates.size - len(scored_rows)
     if unscorable:
-        message_output(f"{unscorable} non-noise USV(s) are too short for one STFT window and get an empty call class.")
-    no_span = sum(1 for row in scored_rows if call_class[row] != "usv" and n_squeaks[row] == 0)
-    if no_span:
-        message_output(
-            f"{no_span} squeak / both segment(s) have no squeak-track run that passes the span rule "
-            f"(> {bundle['span_threshold']} for >= {bundle['span_min_run_frames']} frames): squeak_spans '[]', no envelope."
-        )
+        message_output(f"{unscorable} non-noise USV(s) are too short for one STFT window and get empty vocal-class columns.")
+    n_squeak = sum(1 for row in scored_rows if squeak_flag[row])
+    message_output(
+        f"Squeak extents: {n_fallback} of {n_squeak} squeak-bearing segment(s) had no frame above {bundle['span_threshold']} "
+        f"touching the segment and took the highest-scoring segment frame instead."
+    )
     return pls.DataFrame(
         {
-            CALL_CLASS_COLUMN: call_class,
+            USV_FLAG_COLUMN: usv_flag,
+            SQUEAK_FLAG_COLUMN: squeak_flag,
             "p_usv": probability[:, 0],
             "p_squeak": probability[:, 1],
             "p_both": probability[:, 2],
-            "squeak_spans": spans_text,
             "squeak_start": squeak_start,
             "squeak_end": squeak_end,
-            "n_squeaks": n_squeaks,
         },
         schema={
-            CALL_CLASS_COLUMN: pls.String,
+            USV_FLAG_COLUMN: pls.Boolean,
+            SQUEAK_FLAG_COLUMN: pls.Boolean,
             "p_usv": pls.Float64,
             "p_squeak": pls.Float64,
             "p_both": pls.Float64,
-            "squeak_spans": pls.String,
             "squeak_start": pls.Float64,
             "squeak_end": pls.Float64,
-            "n_squeaks": pls.Int64,
         },
         nan_to_null=True,
     )
@@ -757,8 +747,9 @@ class USVSqueakDetector:
     """
     Description
     -----------
-    Classifies every USV segment of one session that is not noise as ``usv`` / ``squeak`` / ``both``,
-    locates its squeaks, and merges the call-class columns into its ``*_usv_summary.csv``.
+    Classifies every USV segment of one session that is not noise as a pure USV, a pure squeak or both,
+    writes the class as the ``usv`` / ``squeak`` booleans with the squeak extent, and merges the
+    vocal-class columns into its ``*_usv_summary.csv``.
     """
 
     def __init__(
@@ -797,9 +788,9 @@ class USVSqueakDetector:
         Description
         -----------
         Loads the call-class bundle, classifies every non-noise row of the session's USV summary (see
-        :func:`classify_usv_squeak_rows`), and writes the ``CALL_CLASS_COLUMNS`` into the summary,
-        replacing any existing ones and removing the retired detector's ``squeak``,
-        ``squeak_probability`` and ``squeak_frame_runs``. Every other column is left as it was. Run it
+        :func:`classify_usv_squeak_rows`), and writes the ``VOCAL_CLASS_COLUMNS`` into the summary,
+        replacing any existing ones (an old ``squeak`` column included) and removing the columns of
+        earlier encodings (``RETIRED_SQUEAK_COLUMNS``). Every other column is left as it was. Run it
         after ``das_summarize`` (re-summarizing rewrites the CSV with its base columns only) and after
         ``detect-usv-noise`` (whose ``noise`` column it reads). The summary is rewritten atomically.
 
@@ -808,7 +799,7 @@ class USVSqueakDetector:
 
         Returns
         -------
-        Updated ``*_usv_summary.csv`` with the call-class columns.
+        Updated ``*_usv_summary.csv`` with the vocal-class columns.
         """
 
         self.message_output(
@@ -821,8 +812,8 @@ class USVSqueakDetector:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         bundle = load_usv_squeak_model(cfg['squeak_model_path'], device)
         self.message_output(
-            f"Call classes {'/'.join(bundle['class_names'])} from a {len(bundle['models'])}-member ensemble; squeak spans are "
-            f"runs of frame probability > {bundle['span_threshold']} for >= {bundle['span_min_run_frames']} frames."
+            f"Call classes {'/'.join(bundle['class_names'])} from a {len(bundle['models'])}-member ensemble; the squeak extent is the "
+            f"envelope of frames with squeak probability > {bundle['span_threshold']} touching the segment."
         )
 
         root = pathlib.Path(self.root_directory)
@@ -833,7 +824,7 @@ class USVSqueakDetector:
             label="USV summary CSV",
         )
         usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
-        usv_df = usv_df.drop([column for column in (*CALL_CLASS_COLUMNS, *RETIRED_SQUEAK_COLUMNS) if column in usv_df.columns])
+        usv_df = usv_df.drop([column for column in (*VOCAL_CLASS_COLUMNS, *RETIRED_SQUEAK_COLUMNS) if column in usv_df.columns])
 
         scores = classify_usv_squeak_rows(
             session_root=root,
@@ -848,11 +839,12 @@ class USVSqueakDetector:
         with atomic_output_path(usv_summary_loc) as tmp_summary_path:
             merged.write_csv(file=str(tmp_summary_path))
 
-        counts = {name: int((scores[CALL_CLASS_COLUMN] == name).sum()) for name in CALL_CLASSES}
+        usv_flag = scores[USV_FLAG_COLUMN].fill_null(False)
+        squeak_flag = scores[SQUEAK_FLAG_COLUMN].fill_null(False)
         self.message_output(
-            f"Merged call classes into {usv_summary_loc.name}: {counts['usv']} usv, {counts['squeak']} squeak, {counts['both']} both "
-            f"({int(scores['n_squeaks'].fill_null(0).sum())} squeak span(s)) among {usv_df.height} segments "
-            f"({int(scores[CALL_CLASS_COLUMN].null_count())} without a class: noise or too short)."
+            f"Merged vocal classes into {usv_summary_loc.name}: {int((usv_flag & ~squeak_flag).sum())} pure usv, "
+            f"{int((squeak_flag & ~usv_flag).sum())} pure squeak, {int((usv_flag & squeak_flag).sum())} both among {usv_df.height} "
+            f"segments ({int(scores[USV_FLAG_COLUMN].null_count())} without a class: noise or too short)."
         )
         self.message_output(
             f"USV call-class detection ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
@@ -1276,7 +1268,7 @@ class USVSqueakModelTrainer:
             Output bundle (``.pt``); must not exist yet.
         input_parameter_dict (dict)
             Processing settings; the ``train_usv_squeak_model`` block supplies the label sets and
-            overrides, the initialization, the span rule, the channel-exclusion switch, the seeds and the
+            overrides, the initialization, the squeak-extent threshold, the channel-exclusion switch, the seeds and the
             recipe (and ``detect_usv_noise.noise_model_path`` the pretrained trunk).
         message_output (Callable)
             Logging callback; defaults to ``print``.
@@ -1299,7 +1291,7 @@ class USVSqueakModelTrainer:
         training set, trains one member per seed (cuDNN in deterministic mode for the run; a GPU is still
         not bit-reproducible, so a retrained ensemble matches an earlier one in its decisions, not its
         weights), writes the bundle with the input contract, the scalar standardization, the class
-        names, the span rule, the recipe and the provenance, and loads it back through
+        names, the squeak-extent threshold, the recipe and the provenance, and loads it back through
         :func:`load_usv_squeak_model` to prove ``detect-usv-squeaks`` accepts it. With ``pretrained``
         the trunk of member ``i`` starts from member ``seed_i mod n`` of the noise ensemble of
         ``detect_usv_noise.noise_model_path`` (derived from ``spectrograms_root`` when empty).
@@ -1324,8 +1316,8 @@ class USVSqueakModelTrainer:
         if not cfg['seeds'] or len(set(cfg['seeds'])) != len(cfg['seeds']):
             error_message = f"train_usv_squeak_model['seeds'] must list distinct seeds, one per ensemble member; got {cfg['seeds']}."
             raise ValueError(error_message)
-        if not 0.0 < cfg['span_threshold'] < 1.0 or int(cfg['span_min_run_frames']) < 1:
-            error_message = "train_usv_squeak_model needs 0 < span_threshold < 1 and span_min_run_frames >= 1."
+        if not 0.0 < cfg['span_threshold'] < 1.0:
+            error_message = "train_usv_squeak_model needs 0 < span_threshold < 1."
             raise ValueError(error_message)
         labels = read_usv_squeak_labels(cfg['label_sets'], cfg['label_overrides'], self.message_output)
         noise_state_dicts = None
@@ -1376,7 +1368,11 @@ class USVSqueakModelTrainer:
             "sampling_rate": NOISE_SAMPLING_RATE, "hop_samples": HOP_SAMPLES,
             "input": "two-band absolute-dB spectrogram of the whole window (context_frames hops either side of the segment, read as "
                      "window_segment_input reads it), NOT cropped; channel 3 = 1 on the segment's frames, 0 on context frames",
-            "extent_rule": {"threshold": float(cfg['span_threshold']), "min_run_frames": int(cfg['span_min_run_frames'])},
+            "extent_rule": {
+                "threshold": float(cfg['span_threshold']),
+                "rule": "one extent per segment: envelope of the frames above threshold in runs touching the segment, "
+                        "no minimum run; the highest-scoring segment frame when none",
+            },
             "recipe": {
                 **recipe, "pretrained": bool(cfg['pretrained']), "seeds": [int(seed) for seed in cfg['seeds']],
                 "augmentation": {
@@ -1674,16 +1670,16 @@ def squeak_qlvm_rows(usv_summary: pls.DataFrame) -> np.ndarray:
     """
     Description
     -----------
-    The USV summary rows the squeak QLVM embedding (and the squeak spectrogram store) considers: call
-    class ``squeak`` or ``both`` (``SQUEAK_QLVM_CALL_CLASSES``) and not noise. A noise row has no call
-    class, so the noise test is a guard; a null ``noise`` (a segment the noise model could not score)
+    The USV summary rows the squeak QLVM embedding (and the squeak spectrogram store) considers:
+    ``squeak`` true (pure squeaks and "both", :func:`os_utils.squeak_bearing_mask`) and not noise. A
+    noise row has null booleans, so the noise test is a guard; a null ``noise`` (a segment the noise model could not score)
     counts as not noise, the single definition of noise the analyses share
     (:func:`os_utils.drop_noise_usvs`).
 
     Parameters
     ----------
     usv_summary (pls.DataFrame)
-        The session's USV summary; must hold ``call_class`` and ``noise``.
+        The session's USV summary; must hold ``usv``, ``squeak`` and ``noise``.
 
     Returns
     -------
@@ -1693,17 +1689,17 @@ def squeak_qlvm_rows(usv_summary: pls.DataFrame) -> np.ndarray:
     Raises
     ------
     ValueError
-        The summary lacks ``noise``, ``call_class`` or the squeak envelope columns.
+        The summary lacks ``noise``, ``usv``, ``squeak`` or the squeak extent columns.
     """
 
-    missing = [column for column in ("noise", CALL_CLASS_COLUMN, "squeak_start", "squeak_end") if column not in usv_summary.columns]
+    missing = [column for column in ("noise", USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN, "squeak_start", "squeak_end") if column not in usv_summary.columns]
     if missing:
         error_message = (
             f"The USV summary has no {missing} column(s); run detect-usv-noise and detect-usv-squeaks "
             f"on the session before embedding its squeaks."
         )
         raise ValueError(error_message)
-    squeaky = usv_summary[CALL_CLASS_COLUMN].cast(pls.String).is_in(list(SQUEAK_QLVM_CALL_CLASSES)).fill_null(False).to_numpy()
+    squeaky = squeak_bearing_mask(usv_summary, "the USV summary").to_numpy()
     noise = usv_summary["noise"].cast(pls.Boolean).fill_null(False).to_numpy()
     return np.flatnonzero(squeaky & ~noise).astype(np.int64)
 
@@ -1717,24 +1713,26 @@ def squeak_qlvm_inputs(
     """
     Description
     -----------
-    Builds the squeak QLVM decoder inputs of one session: selects the ``squeak`` / ``both`` rows that
-    are not noise (:func:`squeak_qlvm_rows`), leaves out rows without a squeak envelope (no span passed
-    the span rule), rebuilds each remaining row's sonic spectrogram over its crop window (the segment
+    Builds the squeak QLVM decoder inputs of one session: selects the rows with ``squeak`` true (pure
+    squeaks and "both") that are not noise (:func:`squeak_qlvm_rows`), leaves out rows without a
+    squeak extent (only possible in a hand-edited summary: every squeak row gets one), rebuilds each remaining row's sonic spectrogram over its crop window (the segment
     widened to hold the envelope plus its context, :func:`squeak_crop_window`,
     :func:`squeak_window_spectrograms`), crops each to its envelope plus context
     (:func:`squeak_crop_frames`), leaves out crops narrower than ``SQUEAK_QLVM_MIN_CROP_FRAMES`` (the
     training set's minimum) or wider than the 128-frame decoder frame (never trained on: the decoder
     frame has no room for them and the training crops were never compressed in time), and normalizes
-    the rest (:func:`squeak_crop_inputs`). A row with several squeaks is cropped to the envelope of
-    all of them (one row holds one pair of coordinates).
+    the rest (:func:`squeak_crop_inputs`). The extent is already the envelope of all the row's
+    above-threshold squeak frames, so a row with several squeaks is cropped to their envelope (one row
+    holds one pair of coordinates). A fallback extent (one frame) gives a crop of 5 frames, below the
+    8-frame minimum, so those rows get nulls.
 
     Parameters
     ----------
     session_root (pathlib.Path)
         Session root directory.
     usv_summary (pls.DataFrame)
-        The session's USV summary (``start``, ``stop``, ``noise``, ``call_class``, ``squeak_start`` and
-        ``squeak_end``).
+        The session's USV summary (``start``, ``stop``, ``noise``, ``usv``, ``squeak``, ``squeak_start``
+        and ``squeak_end``).
     exclude_metadata_audio_channels (bool)
         Whether to drop metadata-excluded channels from the spectrogram average.
     message_output (Callable)
@@ -2066,8 +2064,7 @@ def detect_usv_squeaks_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--label-set', 'label_set', type=(str, str, str), multiple=True, default=None, required=False, help='NAME LABELS_CSV SAMPLE_CSV of one label set (labelling-tool labels and their sample); repeat per set (replaces the label_sets setting).')
 @click.option('--label-override', 'label_override', type=(str, str), multiple=True, default=None, required=False, help='NAME OVERRIDE_CSV: a review CSV (labels format) whose panels replace those of label set NAME; repeat per file (replaces the label_overrides setting).')
 @click.option('--pretrained/--no-pretrained', 'pretrained', default=None, required=False, help='Initialize every member\'s trunk from the noise ensemble (detect_usv_noise.noise_model_path).')
-@click.option('--span-threshold', 'span_threshold', type=float, default=None, required=False, help='Frame squeak-probability threshold of the span rule the bundle carries.')
-@click.option('--span-min-run-frames', 'span_min_run_frames', type=int, default=None, required=False, help='Shortest above-threshold run (frames) the span rule keeps.')
+@click.option('--span-threshold', 'span_threshold', type=float, default=None, required=False, help='Frame squeak-probability threshold of the squeak-extent rule the bundle carries.')
 @click.option('--exclude-metadata-audio-channels/--no-exclude-metadata-audio-channels', 'exclude_metadata_audio_channels', default=None, required=False, help='Drop channels the session metadata marks as excluded from the spectrogram average (keep it as detect-usv-squeaks runs).')
 @click.option('--n-workers', 'n_workers', type=int, default=None, required=False, help='Sessions whose audio is read concurrently (threads) while the training inputs are built.')
 @click.option('--seed', 'seeds', type=int, multiple=True, default=None, required=False, help='Seed of one ensemble member; repeat once per member (replaces the seeds setting).')

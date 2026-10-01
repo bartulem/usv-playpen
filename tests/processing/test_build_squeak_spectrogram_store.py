@@ -7,8 +7,8 @@ inside a log bin, interpolation where none does, rows summing to 1), the
 channel-averaged log spectrogram of pure tones, the dB quantization round trip,
 the display-window placement and the explorer's tile reader are tested
 directly. The builder runs end to end on a synthetic session (per-channel
-PCM_16 wavs under ``audio/hpss`` plus a ``*_usv_summary.csv`` with call-class and
-noise columns) and the written store is read back: which rows it holds, their
+PCM_16 wavs under ``audio/hpss`` plus a ``*_usv_summary.csv`` with the usv / squeak
+booleans and noise column) and the written store is read back: which rows it holds, their
 frame counts, the window of a segment longer than the stored window, the
 quantized values against a direct recomputation, the attrs, and the resolver
 that finds it without matching the consolidated store's pattern.
@@ -112,13 +112,14 @@ def _build_session(tmp_path: pathlib.Path, excluded_channels: list[str] | None =
             "usv_id": ["0000", "0001", "0002", "0003", "0004"],
             "start": [0.10, 0.30, 1.00, 1.20, 1.50],
             "stop": [0.15, 0.90, 1.05, 1.25, 1.504],
-            "call_class": ["squeak", "both", None, "usv", "squeak"],
+            "usv": [False, True, None, True, False],
+            "squeak": [True, True, None, False, True],
             "squeak_start": [0.11, 0.70, None, None, None],
             "squeak_end": [0.14, 0.80, None, None, None],
             "noise": [False, None, True, False, False],
         },
         schema={
-            "usv_id": pls.String, "start": pls.Float64, "stop": pls.Float64, "call_class": pls.String,
+            "usv_id": pls.String, "start": pls.Float64, "stop": pls.Float64, "usv": pls.Boolean, "squeak": pls.Boolean,
             "squeak_start": pls.Float64, "squeak_end": pls.Float64, "noise": pls.Boolean,
         },
     ).write_csv(root / "audio" / f"{SESSION_ID}_usv_summary.csv")

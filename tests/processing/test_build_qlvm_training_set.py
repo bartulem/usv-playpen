@@ -7,9 +7,9 @@ headroom, capped-even water-filling, the natural / uniform within-session draw,
 the type-budgeted draw, the type-stratified session split, the loudness floor and
 the resize), and end-to-end builds on synthetic sessions (per-session spectrogram
 H5 with a SAM mask group, a metadata YAML with the subjects' sexes and a USV
-summary with a ``call_class`` column): the masked and the unmasked-floor twin of
-one draw, the squeak exclusion (``squeak`` and ``both`` rows out, ``usv`` rows
-in), the reference squeak index's strict rule, the left-out session types,
+summary with the ``usv`` / ``squeak`` booleans): the masked and the unmasked-floor
+twin of one draw, the squeak exclusion (pure squeaks and segments holding both out,
+pure USVs in), the reference squeak index's strict rule, the left-out session types,
 full_dataset, the settings checks and the per-session H5 fingerprints.
 """
 
@@ -248,8 +248,9 @@ def _write_session(tmp_path, session_id, session_type, n=8, n_f=16, n_t=20, sque
     bins, and a ``mask/<session>`` group giving row i ``1 + i % 3`` mask instances
     except row 0, which has none), ``<session>_metadata.yaml`` with the subjects'
     sexes of ``session_type``, and ``audio/<session>_usv_summary.csv`` whose
-    ``call_class`` is ``"squeak"`` on ``squeak_rows``, ``"both"`` on ``both_rows``
-    and ``"usv"`` elsewhere. Returns the session root.
+    ``(usv, squeak)`` booleans are ``(false, true)`` (pure squeak) on ``squeak_rows``,
+    ``(true, true)`` (both) on ``both_rows`` and ``(true, false)`` (pure USV)
+    elsewhere. Returns the session root.
     """
     rng = np.random.default_rng(abs(hash(session_id)) % (2**32))
     root = tmp_path / session_id
@@ -277,7 +278,8 @@ def _write_session(tmp_path, session_id, session_type, n=8, n_f=16, n_t=20, sque
             "usv_id": [f"{i:06d}" for i in range(n)],
             "start": np.arange(n, dtype=np.float64),
             "stop": np.arange(n, dtype=np.float64) + 0.05,
-            "call_class": ["squeak" if i in squeak_rows else "both" if i in both_rows else "usv" for i in range(n)],
+            "usv": [i not in squeak_rows for i in range(n)],
+            "squeak": [i in squeak_rows or i in both_rows for i in range(n)],
         }).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")
     return root
 
@@ -418,12 +420,14 @@ def test_build_copies_the_summary_condition_columns_row_for_row(tmp_path, cohort
 
 
 def test_build_exclude_squeaks_keeps_usv_rows_only(tmp_path, cohort):
-    """exclude_squeaks leaves out call_class 'squeak' and 'both' rows alike, so only
-    'usv' rows are drawn; without it both come back, and a null call_class (noise or
-    unscorable) is not a squeak."""
+    """exclude_squeaks leaves out pure squeaks (squeak true, usv false) and segments
+    holding both (usv and squeak true) alike -- usv true alone does not admit a row --
+    so only pure USVs are drawn; without it both come back, and null booleans (noise
+    or unscorable) do not mark a squeak."""
     summary = cohort[1] / "audio" / f"{cohort[1].name}_usv_summary.csv"
     pls.read_csv(summary).with_columns(
-        pls.Series("call_class", ["usv", "usv", "usv", None, "usv", "usv", "usv", "usv"], dtype=pls.String)
+        pls.Series("usv", [True, True, True, None, True, True, True, True], dtype=pls.Boolean),
+        pls.Series("squeak", [False, False, False, None, False, False, False, False], dtype=pls.Boolean),
     ).write_csv(summary)
     kept_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True}, "usv_only")
     all_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True, "exclude_squeaks": False}, "all")
@@ -434,11 +438,13 @@ def test_build_exclude_squeaks_keeps_usv_rows_only(tmp_path, cohort):
     assert sorted(set(all_ids) - set(kept_ids)) == ["20230101_100000_1", "20230101_100000_2"]
 
 
-def test_build_exclude_squeaks_needs_call_class(tmp_path, cohort):
-    """A summary without call_class (never scored by detect-usv-squeaks) stops a build that excludes squeaks."""
+def test_build_exclude_squeaks_needs_vocal_flags(tmp_path, cohort):
+    """A summary without the usv boolean (never scored by detect-usv-squeaks, or scored only by the
+    retired binary detector, whose summaries carry a squeak column alone) stops a build that
+    excludes squeaks."""
     summary = cohort[0] / "audio" / f"{cohort[0].name}_usv_summary.csv"
-    pls.read_csv(summary).drop("call_class").write_csv(summary)
-    with pytest.raises(ValueError, match="call_class"):
+    pls.read_csv(summary).drop("usv").write_csv(summary)
+    with pytest.raises(ValueError, match="usv"):
         _build(tmp_path, cohort, _CFG)
 
 
@@ -459,8 +465,8 @@ def test_read_reference_squeak_index_applies_the_strict_rule(tmp_path, cohort):
 def test_build_strict_squeak_exclusion_reads_the_reference_index(tmp_path, cohort):
     """
     strict_squeak_exclusion takes the squeak rows from the reference squeak index's
-    strict rule (is_bbv OR n_bouts_min3 >= 1) INSTEAD of call_class: the index's rows
-    go, the call_class squeak / both rows the index does not flag come back.
+    strict rule (is_bbv OR n_bouts_min3 >= 1) INSTEAD of the summary's squeak flag: the
+    index's rows go, the squeak-bearing rows the index does not flag come back.
     """
     path = _write_reference_index(tmp_path, cohort, {"20230101_100000": {3: (True, 0), 4: (False, 1)}})
     default_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True}, "default")

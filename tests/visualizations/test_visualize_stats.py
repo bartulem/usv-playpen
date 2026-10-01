@@ -112,7 +112,7 @@ def _make_synthetic_session(
     n_noise: int = 2,
     n_squeak: int = 0,
     n_both: int = 0,
-    write_call_class_column: bool = True,
+    write_vocal_flag_columns: bool = True,
 ):
     """Build a session_root containing:
 
@@ -120,8 +120,9 @@ def _make_synthetic_session(
       with `track_names`, `recording_frame_rate`, `experimental_code`.
     - A USV summary CSV at <root>/audio/<session_id>_usv_summary.csv with
       `start`, `duration`, `emitter`, the noise column, the category column and
-      the `call_class` column (`usv` on the calls, `n_squeak` male `squeak` rows and
-      `n_both` male `both` rows appended before the noise rows, null on noise rows).
+      the `usv` / `squeak` booleans (pure USVs (true, false) on the calls, `n_squeak` male
+      pure squeaks (false, true) and `n_both` male both rows (true, true) appended before
+      the noise rows, null on noise rows).
     - Optionally a behavioral features CSV at
       <root>/<session_id>_behavioral_features.csv with the standard
       `nose-nose`, `<X>-allo_yaw-nose`, `<X>-nose-allo_yaw` suffix columns.
@@ -213,8 +214,9 @@ def _make_synthetic_session(
     }
     if write_noise_column:
         cols["noise"] = rows_noise
-    if write_call_class_column:
-        cols["call_class"] = pls.Series(rows_class, dtype=pls.Utf8)
+    if write_vocal_flag_columns:
+        cols["usv"] = pls.Series([None if c is None else c in ("usv", "both") for c in rows_class], dtype=pls.Boolean)
+        cols["squeak"] = pls.Series([None if c is None else c in ("squeak", "both") for c in rows_class], dtype=pls.Boolean)
     if include_embedding:
         cols[cat_col] = rows_cat
         cols["umap_x"] = rows_umap_x
@@ -516,8 +518,9 @@ def test_build_master_usv_dataframe_skips_session_without_category_col(tmp_path)
 
 
 def test_build_master_usv_dataframe_counts_pure_usvs_only(tmp_path):
-    """With ``usv_only`` (the default) the master frame counts call_class 'usv' rows only:
-    squeak and both rows are left out (so every USV count built on it is a USV count), and
+    """With ``usv_only`` (the default) the master frame counts pure USVs only (usv true, squeak
+    false): pure squeaks AND both rows (usv true too) are left out (so every USV count built on
+    it is a USV count), and
     ``usv_only=False`` keeps every non-noise vocalization."""
     sess = tmp_path / "20260101_120000"
     _make_synthetic_session(sess, n_male_calls=4, n_female_calls=3, n_unassigned=1,
@@ -531,12 +534,13 @@ def test_build_master_usv_dataframe_counts_pure_usvs_only(tmp_path):
     assert every_call_df.height == 11
 
 
-def test_build_master_usv_dataframe_usv_only_needs_call_class(tmp_path):
-    """A summary without ``call_class`` cannot be split into USVs and squeaks, so
-    ``usv_only`` raises a KeyError naming the column rather than counting squeaks as USVs."""
+def test_build_master_usv_dataframe_usv_only_needs_vocal_flags(tmp_path):
+    """A summary without the ``usv`` / ``squeak`` booleans cannot be split into USVs and
+    squeaks, so ``usv_only`` raises a KeyError naming detect-usv-squeaks rather than counting
+    squeaks as USVs."""
     sess = tmp_path / "20260101_120000"
-    _make_synthetic_session(sess, write_call_class_column=False)
-    with pytest.raises(KeyError, match="call_class"):
+    _make_synthetic_session(sess, write_vocal_flag_columns=False)
+    with pytest.raises(KeyError, match="detect-usv-squeaks"):
         build_master_usv_dataframe(
             session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="usv_supercategory",
             distance_suffix="nose-nose", mf_angle_suffix="allo_yaw-nose", fm_angle_suffix="nose-allo_yaw",
@@ -544,8 +548,8 @@ def test_build_master_usv_dataframe_usv_only_needs_call_class(tmp_path):
 
 
 def test_extract_category_embedding_data_keeps_pure_usvs_only(tmp_path):
-    """The category embedding keeps call_class 'usv' rows only by default; squeak and both
-    rows (category 4 in the synthetic session) come back with ``usv_only=False``."""
+    """The category embedding keeps pure USVs only by default; pure squeak and both rows
+    (category 4 in the synthetic session) come back with ``usv_only=False``."""
     sess = tmp_path / "20260101_120000"
     _make_synthetic_session(sess, n_squeak=1, n_both=1)
     kwargs = dict(session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="usv_supercategory",
@@ -2360,14 +2364,18 @@ _SQUEAK_STYLES = {
 }
 
 
-def _write_squeak_session(root: Path, starts: list[float], call_class: list[str | None], noise: list[bool]) -> None:
-    """Writes ``<root>/audio/<name>_usv_summary.csv`` with the three columns the heatmap reads
-    (``call_class`` null on noise rows, as ``detect-usv-squeaks`` writes it)."""
+def _write_squeak_session(root: Path, starts: list[float], classes: list[str | None], noise: list[bool]) -> None:
+    """Writes ``<root>/audio/<name>_usv_summary.csv`` with the columns the heatmap reads: each
+    class ("usv", "squeak", "both" or None) written as the ``usv`` / ``squeak`` booleans
+    detect-usv-squeaks writes ((true, false), (false, true), (true, true), null on noise rows)."""
 
     (root / "audio").mkdir(parents=True)
-    pls.DataFrame({"start": starts, "call_class": call_class, "noise": noise},
-                  schema_overrides={"call_class": pls.Utf8}).write_csv(
-        str(root / "audio" / f"{root.name}_usv_summary.csv"))
+    pls.DataFrame({
+        "start": starts,
+        "usv": pls.Series([None if c is None else c in ("usv", "both") for c in classes], dtype=pls.Boolean),
+        "squeak": pls.Series([None if c is None else c in ("squeak", "both") for c in classes], dtype=pls.Boolean),
+        "noise": noise,
+    }).write_csv(str(root / "audio" / f"{root.name}_usv_summary.csv"))
 
 
 def _squeak_cohort(tmp_path: Path) -> dict[str, list[str]]:
@@ -2490,9 +2498,9 @@ def test_plot_session_squeak_time_heatmap_rejects_unknown_class(tmp_path):
                         squeak_class="usv")
 
 
-def test_plot_session_squeak_time_heatmap_needs_call_class(tmp_path):
-    """A summary without ``call_class`` (scored only by the retired binary squeak detector) is a
-    KeyError, never a silent all-USV session."""
+def test_plot_session_squeak_time_heatmap_needs_vocal_flags(tmp_path):
+    """A summary scored only by the retired binary squeak detector (a ``squeak`` column but no
+    ``usv``) is a KeyError, never a silent all-USV session."""
 
     root = tmp_path / "s_old"
     (root / "audio").mkdir(parents=True)
@@ -2500,7 +2508,7 @@ def test_plot_session_squeak_time_heatmap_needs_call_class(tmp_path):
         str(root / "audio" / f"{root.name}_usv_summary.csv"))
     session_list = tmp_path / "list.txt"
     session_list.write_text(f"{root}\n")
-    with pytest.raises(KeyError, match="call_class"):
+    with pytest.raises(KeyError, match="detect-usv-squeaks"):
         _squeak_heatmap({"courtship": [str(session_list)]}, exclude_noise_usvs=True, min_session_segments=1)
 
 

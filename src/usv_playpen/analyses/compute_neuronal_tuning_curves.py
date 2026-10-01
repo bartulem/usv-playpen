@@ -16,9 +16,9 @@ Behavioral path (driven by `*_behavioral_features.csv` + tracking H5):
   - per-cluster, per-animal 2D spatial ratemap
 
 Vocal path (driven by `*_usv_summary.csv` + tracking H5 + audio sync;
-noise segments are always dropped; segments whose `call_class` is not
-"usv" -- squeaks, "both" segments (a squeak and a USV together) and
-unscored rows -- per `exclude_squeaks_self` / `exclude_squeaks_partner`):
+noise segments are always dropped; segments that are not pure USVs
+(`usv & ~squeak`) -- pure squeaks, segments holding both a squeak and a
+USV, and unscored rows -- per `exclude_squeaks_self` / `exclude_squeaks_partner`):
   `usv_peth`              pooled peri-USV-onset PETH per emitter side
                           (default [-2, +0.5] s window, 50 ms bins)
   `usv_property_tuning`   within-USV firing rate vs each continuous
@@ -28,8 +28,8 @@ unscored rows -- per `exclude_squeaks_self` / `exclude_squeaks_partner`):
                           number)
   `usv_category_tuning`   per-category within-USV firing rate for every
                           QLVM map (`<map>_category` and
-                          `<map>_supercategory`; only `call_class`
-                          "usv" segments enter)
+                          `<map>_supercategory`; only pure USVs,
+                          `usv & ~squeak`, enter)
   `usv_category_peth`     per-category time-resolved peri-USV PETH
                           (computed and saved; not plotted)
 
@@ -56,10 +56,15 @@ import polars as pls
 from scipy import ndimage, stats
 from tqdm import tqdm
 
-from ..os_utils import QLVM_MAPS, atomic_output_path, call_class_mask, drop_noise_usvs, first_match_or_raise
+from ..os_utils import (
+    QLVM_MAPS,
+    atomic_output_path,
+    call_class_mask,
+    drop_noise_usvs,
+    first_match_or_raise,
+)
 from ..time_utils import is_gui_context, smart_wait
 from .compute_behavioral_features import FeatureZoo
-
 
 CONTINUOUS_PROPERTIES = (
     "duration",
@@ -1481,8 +1486,8 @@ class NeuronalTuning(FeatureZoo):
         Description
         -----------
         Locate `*_usv_summary.csv` and the tracking H5; filter the USV
-        summary to non-noise rows (raising when it has no ``call_class``
-        column, which the squeak and category exclusions need), read sex assignment from h5
+        summary to non-noise rows (raising when it has no ``usv`` /
+        ``squeak`` columns, which the squeak and category exclusions need), read sex assignment from h5
         `track_names`, and derive session duration from the H5 as
         `tracks.shape[0] / recording_frame_rate` (same time base the
         spikes are aligned to). Returns None if either required file
@@ -1498,9 +1503,9 @@ class NeuronalTuning(FeatureZoo):
             None if any required input is missing; otherwise a dict with
             keys: `usv_df` (filtered pls.DataFrame), `track_names`,
             `male`, `female`, `duration_seconds`, `starts`, `stops`,
-            `emitters`, `is_usv` (bool per row; True only where
-            ``call_class`` is ``"usv"``, so squeak, both and null classes
-            are False).
+            `emitters`, `is_usv` (bool per row; True only on pure USVs,
+            ``usv & ~squeak``, so pure squeaks, segments holding both and
+            null booleans are False).
         """
 
         root = pathlib.Path(self.root_directory)
@@ -1521,10 +1526,11 @@ class NeuronalTuning(FeatureZoo):
         df = drop_noise_usvs(df, usv_csv.name)[0]
         if df.shape[0] == 0:
             return None
-        # Segments that are not pure USVs (call_class "squeak" or "both", or an unscored null)
-        # are dropped from the anchors per side (exclude_squeaks_self / exclude_squeaks_partner)
-        # and always from the QLVM category tuning, so the call class is required; a summary
-        # without it raises (call_class_mask) rather than silently tuning to squeaks.
+        # Segments that are not pure USVs (usv & ~squeak: pure squeaks, segments holding both,
+        # unscored nulls) are dropped from the anchors per side (exclude_squeaks_self /
+        # exclude_squeaks_partner) and always from the QLVM category tuning, so the two booleans
+        # are required; a summary without them raises (call_class_mask) rather than silently
+        # tuning to squeaks.
         is_usv = call_class_mask(df, ("usv",), usv_csv.name).to_numpy()
 
         emitters = [
@@ -1918,14 +1924,14 @@ class NeuronalTuning(FeatureZoo):
         --------------
         - `male` = `track_names[0]`, `female` = `track_names[1]` (locked
           convention).
-        - Sort sides by their count of USVs (``call_class`` ``"usv"``
+        - Sort sides by their count of pure USVs (``usv & ~squeak``
           only); the more-vocal side is `self`, the less-vocal side is
           `partner` (counting squeaks would make a squeak-heavy female
           `self`).
-        - A side's anchors are its calls, restricted to ``call_class``
-          ``"usv"`` when `exclude_squeaks_self` (self) /
-          `exclude_squeaks_partner` (partner) is set: a ``"both"`` segment
-          (a squeak and a USV together) is treated like a squeak. Every
+        - A side's anchors are its calls, restricted to pure USVs
+          (``usv & ~squeak``) when `exclude_squeaks_self` (self) /
+          `exclude_squeaks_partner` (partner) is set: a segment holding both
+          a squeak and a USV is treated like a squeak. Every
           noise-filtered segment, squeaks and both included, still counts
           as another call in the overlap / cleanliness checks.
         - `self` included iff its anchor count >= `n_usv_min_self`.
@@ -1933,9 +1939,9 @@ class NeuronalTuning(FeatureZoo):
           `include_partner_vocalization_tuning_bool` AND its anchor count
           >= `n_usv_min_partner`.
         - The QLVM category tuning (every map of `CATEGORICAL_FEATURES`)
-          uses ``call_class`` ``"usv"`` anchors only, whatever the knobs: the
+          uses pure-USV anchors only, whatever the knobs: the
           QLVM models were trained on pure USVs (squeaks get their own
-          embedding), so the label of a squeak or of a "both" segment is not
+          embedding), so the label of a squeak or of a segment holding both is not
           a USV category.
 
         Parameters

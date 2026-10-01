@@ -52,15 +52,16 @@ package's per-row durations and mask counts) takes the package's own coordinates
 (:func:`package_route_verdict`, :func:`load_package_session_rows`); every other
 session is embedded with the cell as above.
 
-Pure squeaks. The USV maps were trained on ultrasonic calls, so a segment whose
-``call_class`` (written by ``detect-usv-squeaks``) is ``"squeak"`` -- a broadband
-squeak with no ultrasonic call in it -- is not a USV the maps can place: it is
-skipped by every model cell and gets null coordinates and null labels (squeaks
-have their own map, ``infer-qlvm-squeak-latents``). A ``"both"`` segment (a squeak
-and a USV together) is embedded like any other call. Rows with a null
-``call_class`` (noise, or too short to score) are treated as before. Because the
-rule needs ``call_class``, a summary without it raises: run ``detect-usv-noise``
-and ``detect-usv-squeaks`` on the session first.
+Pure squeaks. The USV maps were trained on ultrasonic calls, so a pure squeak --
+``squeak`` true and ``usv`` false in the summary (written by
+``detect-usv-squeaks``), a broadband squeak with no ultrasonic call in it -- is not
+a USV the maps can place: it is skipped by every model cell and gets null
+coordinates and null labels (squeaks have their own map,
+``infer-qlvm-squeak-latents``). A segment holding both (``usv`` and ``squeak``
+true) is embedded like any other call. Rows with null booleans (noise, or too
+short to score) are treated as before. Because the rule needs the two booleans, a
+summary without them raises: run ``detect-usv-noise`` and ``detect-usv-squeaks`` on
+the session first.
 """
 
 from __future__ import annotations
@@ -87,13 +88,12 @@ from ..os_utils import (
     QLVM_PRODUCTION_MODEL_CELLS,
     USV_SUMMARY_COLUMN_ORDER,
     atomic_output_path,
-    call_class_mask,
     cell_cluster_directory,
     configure_path,
     derive_spectrogram_model_paths,
     first_match_or_raise,
     order_usv_summary_columns,
-    require_call_class,
+    pure_squeak_mask,
 )
 from ..processing.build_qlvm_training_set import (
     build_session_masks,
@@ -1303,9 +1303,9 @@ class QLVMLatentInference:
         row index, since the spectrogram rows are 1:1 with the
         ``usv_summary.csv`` rows; USVs with non-positive duration, or with a
         duration at or above the training set's ``length_threshold``, are skipped
-        and get nulls). Pure squeaks (``call_class`` ``"squeak"``) are skipped by
-        every cell and get nulls; ``"both"`` segments are embedded as usual; a
-        summary without ``call_class`` raises KeyError (run ``detect-usv-squeaks``
+        and get nulls). Pure squeaks (``squeak & ~usv``) are skipped by
+        every cell and get nulls; segments holding both are embedded as usual; a
+        summary without ``usv`` / ``squeak`` raises KeyError (run ``detect-usv-squeaks``
         first). When the contract's training set kept only calls with a SAM mask
         (``require_mask``) or the decoder conditions on mean frequency or
         loudness, USVs without a mask instance are skipped and get nulls too.
@@ -1430,10 +1430,10 @@ class QLVMLatentInference:
         once per session), a summary as long as the H5, and the package's
         durations and mask counts equal to the H5's on every one of its rows. Any
         other case embeds the session with the cell (:meth:`_embed_session`).
-        Both routes label by the same grid lookup. Pure squeaks (``call_class``
-        ``"squeak"``) are left out of both routes -- not embedded by the cell, and
-        dropped from the package's rows -- so their coordinates and labels are
-        null; a summary without ``call_class`` raises before anything is embedded.
+        Both routes label by the same grid lookup. Pure squeaks (``squeak & ~usv``)
+        are left out of both routes -- not embedded by the cell, and dropped from
+        the package's rows -- so their coordinates and labels are null; a summary
+        without ``usv`` / ``squeak`` raises before anything is embedded.
 
         No model-provenance column is written; the legacy ``qlvm_model`` column
         (which summaries embedded by the retired single-model run still carry)
@@ -1472,10 +1472,9 @@ class QLVMLatentInference:
         root, h5_loc, usv_summary_loc, usv_df = self._locate_session_files()
         # Pure squeaks are not USVs the maps can place; every cell skips them (null
         # coordinates and labels). "both" segments hold a USV too and are embedded.
-        require_call_class(usv_df, usv_summary_loc.name)
-        is_pure_squeak = call_class_mask(usv_df, ("squeak",), usv_summary_loc.name).to_numpy()
+        is_pure_squeak = pure_squeak_mask(usv_df, usv_summary_loc.name).to_numpy()
         self.message_output(
-            f"{int(np.count_nonzero(is_pure_squeak))} pure squeak(s) (call_class 'squeak') are skipped by every "
+            f"{int(np.count_nonzero(is_pure_squeak))} pure squeak(s) (squeak true, usv false) are skipped by every "
             f"model and get null coordinates and labels."
         )
         h5_durations, h5_mask_counts = session_h5_call_table(h5_loc, root.name)

@@ -21,8 +21,8 @@ tables, so neither of those modules is a natural home; adding it to
 :mod:`detect_usv_squeaks` (per-session summary writers) would mix a cohort
 store into a per-session step.
 
-Rows. Per session, the rows of ``*_usv_summary.csv`` whose ``call_class`` is
-``squeak`` or ``both`` and whose ``noise`` is not true
+Rows. Per session, the rows of ``*_usv_summary.csv`` with ``squeak`` true (pure
+squeaks and segments holding both a squeak and a USV) and ``noise`` not true
 (:func:`detect_usv_squeaks.squeak_qlvm_rows`), the rows
 ``infer-qlvm-squeak-latents`` considers; every row that carries
 ``qlvm_squeak1`` / ``qlvm_squeak2`` is among them. The store holds every call

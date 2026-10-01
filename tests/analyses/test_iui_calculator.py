@@ -620,24 +620,28 @@ def test_extract_animal_sexes_invalid_sex_raises(tmp_path):
         extract_animal_sexes(str(tmp_path), ["A_0"])
 
 
-def _write_summary(root: Path, with_call_class: bool) -> None:
-    """Writes a five-row ``audio/<session>_usv_summary.csv`` (classes usv, squeak, usv, both and an
-    unscored null), with or without the ``call_class`` column."""
+def _write_summary(root: Path, with_vocal_flags: bool) -> None:
+    """Writes a five-row ``audio/<session>_usv_summary.csv`` (pure usv, pure squeak, pure usv, both
+    flags true and an unscored null), with or without the ``usv`` / ``squeak`` booleans."""
 
     audio = root / "audio"
     audio.mkdir(parents=True, exist_ok=True)
     frame = pls.DataFrame({"start": [1.0, 2.0, 3.0, 4.0, 5.0], "stop": [1.1, 2.1, 3.1, 4.1, 5.1],
                            "noise": [False, False, False, False, False]})
-    if with_call_class:
-        frame = frame.with_columns(pls.Series("call_class", ["usv", "squeak", "usv", "both", None], dtype=pls.String))
+    if with_vocal_flags:
+        frame = frame.with_columns(
+            pls.Series("usv", [True, False, True, True, None], dtype=pls.Boolean),
+            pls.Series("squeak", [False, True, False, True, None], dtype=pls.Boolean),
+        )
     frame.write_csv(str(audio / f"{root.name}_usv_summary.csv"))
 
 
 def test_load_and_filter_usv_data_call_type_filters(tmp_path):
-    """``call_type='usv'`` keeps the ``usv`` rows and ``'squeak'`` the ``squeak`` rows; a ``both``
-    segment and an unscored (null) row belong to neither, and None keeps every row."""
+    """``call_type='usv'`` keeps the pure USVs (usv true, squeak false) and ``'squeak'`` the pure
+    squeaks; a segment with both flags true (usv true is not enough) and an unscored (null) row
+    belong to neither, and None keeps every row."""
 
-    _write_summary(tmp_path, with_call_class=True)
+    _write_summary(tmp_path, with_vocal_flags=True)
     usv = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="usv")
     squeak = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="squeak")
     every = load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type=None)
@@ -649,16 +653,16 @@ def test_load_and_filter_usv_data_call_type_filters(tmp_path):
 def test_load_and_filter_usv_data_rejects_unknown_call_type(tmp_path):
     """An unknown ``call_type`` is a ValueError."""
 
-    _write_summary(tmp_path, with_call_class=True)
+    _write_summary(tmp_path, with_vocal_flags=True)
     with pytest.raises(ValueError, match="call_type"):
         load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="bark")
 
 
-def test_load_and_filter_usv_data_without_call_class_column_raises(tmp_path):
+def test_load_and_filter_usv_data_without_vocal_flags_raises(tmp_path):
     """Asking for a call type on a summary the call classifier never ran on is a KeyError that
     says which step to run, rather than treating every row as a USV."""
 
-    _write_summary(tmp_path, with_call_class=False)
+    _write_summary(tmp_path, with_vocal_flags=False)
     with pytest.raises(KeyError, match="detect-usv-squeaks"):
         load_and_filter_usv_data(str(tmp_path), frame_rate=150.0, exclude_noise_usvs=True, call_type="usv")
 
@@ -673,7 +677,7 @@ def _patch_session_identity(monkeypatch) -> None:
 
 
 def test_compute_session_usv_intervals_both_is_neither_usv_nor_squeak(tmp_path, monkeypatch):
-    """A ``both`` segment is left out of the squeak sequence: under ``'filtered'`` it is removed
+    """A segment with both flags true (usv and squeak) is left out of the squeak sequence: under ``'filtered'`` it is removed
     before pairing (the squeaks either side of it form one interval), under ``'strict'`` it stays
     in the record as a non-target call and breaks the pairs it sits between. It never enters the
     USV sequence either."""
@@ -686,7 +690,8 @@ def test_compute_session_usv_intervals_both_is_neither_usv_nor_squeak(tmp_path, 
         "stop": [1.1, 2.1, 3.1, 4.1, 5.1, 6.1],
         "emitter": ["F", "F", "F", "F", "M", "M"],
         "noise": [False] * 6,
-        "call_class": ["squeak", "both", "squeak", "squeak", "usv", "both"],
+        "usv": [False, True, False, False, True, True],
+        "squeak": [True, True, True, True, False, True],
     }).write_csv(str(audio / f"{tmp_path.name}_usv_summary.csv"))
 
     filtered = compute_session_usv_intervals(str(tmp_path), "s2s", exclude_noise_usvs=True,

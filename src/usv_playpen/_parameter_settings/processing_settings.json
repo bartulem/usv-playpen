@@ -333,7 +333,6 @@
     ],
     "pretrained": true,
     "span_threshold": 0.6,
-    "span_min_run_frames": 12,
     "exclude_metadata_audio_channels": true,
     "n_workers": 16,
     "seeds": [0, 1, 2, 3, 4],

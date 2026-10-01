@@ -18,7 +18,6 @@ from typing import Any, Optional
 
 import toml
 
-
 # The lab CUP shares are defined ONCE, in the ``lab_shares`` / ``file_server``
 # entries of the host config (``_config/behavioral_experiments_settings.toml``),
 # read by ``_host_lab_shares`` below -- the single source also consumed by the
@@ -1093,8 +1092,8 @@ def wait_for_subprocesses(
 
 # Canonical column order of a session's ``*_usv_summary.csv``: the DAS event
 # (written by das_summarize), the call-level labels (emitter from vocal assignment,
-# the call-class block from detect_usv_squeaks: call_class, its three class probabilities
-# and the squeak spans with their envelope and count), the acoustic descriptors
+# the vocal-class block from detect_usv_squeaks: the usv / squeak booleans, the three class
+# probabilities and the squeak extent), the acoustic descriptors
 # (compute_usv_acoustic_features, including the absolute loudness_db) and the QLVM torus coordinates and cluster labels of
 # the production models (infer_qlvm_latents with model_cells: the phase 6 regular
 # model's qlvm1/qlvm2 with its fine and coarse labels qlvm_category /
@@ -1102,7 +1101,7 @@ def wait_for_subprocesses(
 # conditional models, each with its fine and coarse labels P_category /
 # P_supercategory), and last the squeak torus coordinates qlvm_squeak1/qlvm_squeak2
 # (infer_qlvm_squeak_latents; kept with the other torus coordinates rather than with
-# the call-class block, and reserved, so no model_cells prefix can write them). The
+# the vocal-class block, and reserved, so no model_cells prefix can write them). The
 # legacy column qlvm_model (written by the retired single-model run) is not listed:
 # production summaries do not carry it, and infer_qlvm_latents drops it from older
 # summaries it rewrites.
@@ -1112,7 +1111,7 @@ USV_SUMMARY_COLUMN_ORDER = (
     "usv_id", "start", "stop", "duration", "peak_amp_ch", "mean_amp_ch", "chs_count", "chs_detected",
     "emitter",
     "noise", "noise_probability",
-    "call_class", "p_usv", "p_squeak", "p_both", "squeak_spans", "squeak_start", "squeak_end", "n_squeaks",
+    "usv", "squeak", "p_usv", "p_squeak", "p_both", "squeak_start", "squeak_end",
     "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "loudness_db",
     "spectral_entropy", "mask_number",
     "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
@@ -1172,14 +1171,21 @@ def drop_noise_usvs(usv_summary: Any, source: str, message_output: Callable = pr
     return kept, n_dropped
 
 
-# Column `detect_usv_squeaks` writes: the call class of every segment that is not noise --
-# "usv" (an ultrasonic call only), "squeak" (a broadband squeak only) or "both" (a squeak and
-# an ultrasonic call in the same segment) -- and null on noise rows and on rows too short to score.
-CALL_CLASS_COLUMN = "call_class"
+# Columns `detect_usv_squeaks` writes: two booleans per segment that is not noise -- `usv` (the
+# segment holds an ultrasonic call) and `squeak` (it holds a broadband squeak) -- both null on noise
+# rows and on rows too short to score. A pure USV is (true, false), a pure squeak (false, true), and a
+# segment holding both is (true, true). `usv` alone is NOT "USV only": a pure-USV filter must also
+# require `squeak` false, which is what `call_class_mask` / `pure_usv_mask` do.
+USV_FLAG_COLUMN = "usv"
+SQUEAK_FLAG_COLUMN = "squeak"
+VOCAL_FLAG_COLUMNS = (USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN)
+
+# The three call classes the two booleans encode: "usv" = pure USV (usv & ~squeak), "squeak" = pure
+# squeak (squeak & ~usv), "both" = a squeak and a USV in one segment (usv & squeak).
 CALL_CLASSES = ("usv", "squeak", "both")
 
 # The three selections every squeak-side consumer (squeak figures, the explorer's squeak map)
-# offers: pure squeaks, segments holding a squeak and a USV, or both kinds together.
+# offers: pure squeaks, segments holding a squeak and a USV, or both kinds together (squeak true).
 SQUEAK_CLASS_SELECTIONS = {
     "squeak": ("squeak",),
     "both": ("both",),
@@ -1187,14 +1193,14 @@ SQUEAK_CLASS_SELECTIONS = {
 }
 
 
-def require_call_class(usv_summary: Any, source: str) -> None:
+def require_vocal_flags(usv_summary: Any, source: str) -> None:
     """
     Description
     -----------
-    Checks that a USV summary table carries the ``call_class`` column ``detect-usv-squeaks``
-    writes, so a consumer that splits USVs from squeaks never silently treats every row as one
-    class. A summary scored only by the retired binary squeak detector (``squeak``,
-    ``squeak_probability``, ``squeak_frame_runs``) has no ``call_class`` and fails here too.
+    Checks that a USV summary table carries the ``usv`` and ``squeak`` booleans ``detect-usv-squeaks``
+    writes, so a consumer that splits USVs from squeaks never silently treats every row as one class.
+    A summary scored only by the retired binary squeak detector has a ``squeak`` column but no ``usv``
+    (and its ``squeak`` meant something else), so it fails here too.
 
     Parameters
     ----------
@@ -1210,43 +1216,69 @@ def require_call_class(usv_summary: Any, source: str) -> None:
     Raises
     ------
     KeyError
-        The table has no ``call_class`` column.
+        The table lacks ``usv`` or ``squeak``.
     """
 
-    if CALL_CLASS_COLUMN not in usv_summary.columns:
+    missing = [column for column in VOCAL_FLAG_COLUMNS if column not in usv_summary.columns]
+    if missing:
         error_message = (
-            f"{source} has no '{CALL_CLASS_COLUMN}' column, so its USVs cannot be told from its squeaks. "
+            f"{source} has no {missing} column(s), so its USVs cannot be told from its squeaks. "
             f"Run detect-usv-squeaks on the session (after detect-usv-noise)."
         )
         raise KeyError(error_message)
+
+
+def _vocal_flag(usv_summary: Any, column: str) -> Any:
+    """
+    Description
+    -----------
+    One of the two booleans as a null-free boolean Series (null -> False). The column is cast through
+    text, so a flag read from CSV as Boolean, as the strings "true" / "false", or as an all-null
+    column of any type all give the same answer.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A table holding ``column``.
+    column (str)
+        ``"usv"`` or ``"squeak"``.
+
+    Returns
+    -------
+    flag (polars.Series)
+        Boolean, False where the value is null.
+    """
+
+    return usv_summary[column].cast(str).str.to_lowercase().eq("true").fill_null(False)
 
 
 def call_class_mask(usv_summary: Any, classes: Iterable[str], source: str) -> Any:
     """
     Description
     -----------
-    Marks the rows of a USV summary whose ``call_class`` is one of ``classes``. A null class
-    (a noise row, or a segment too short to score) is in no selection, so a mask built here
-    never admits noise.
+    Marks the rows of a USV summary whose call class -- derived from the two booleans, never from
+    ``usv`` alone -- is one of ``classes``: ``"usv"`` = pure USV (``usv & ~squeak``), ``"squeak"`` =
+    pure squeak (``squeak & ~usv``), ``"both"`` = ``usv & squeak``. A null flag counts as false, so a
+    noise row (both null) is in no selection and a mask built here never admits noise.
 
     Parameters
     ----------
     usv_summary (polars.DataFrame)
-        A session's USV summary table (or any table holding ``call_class``).
+        A session's USV summary table (or any table holding ``usv`` and ``squeak``).
     classes (Iterable[str])
         Call classes to keep, each one of ``CALL_CLASSES``.
     source (str)
-        What the table came from, named in the error when ``call_class`` is missing.
+        What the table came from, named in the error when a flag is missing.
 
     Returns
     -------
     mask (polars.Series)
-        Boolean, one value per row, False on null classes.
+        Boolean, one value per row.
 
     Raises
     ------
     KeyError
-        The table has no ``call_class`` column.
+        The table lacks ``usv`` or ``squeak``.
     ValueError
         A requested class is not one of ``CALL_CLASSES``.
     """
@@ -1256,8 +1288,107 @@ def call_class_mask(usv_summary: Any, classes: Iterable[str], source: str) -> An
     if unknown:
         error_message = f"call_class_mask: unknown call class(es) {unknown}; the classes are {list(CALL_CLASSES)}."
         raise ValueError(error_message)
-    require_call_class(usv_summary, source)
-    return usv_summary[CALL_CLASS_COLUMN].cast(str).is_in(classes).fill_null(False)
+    require_vocal_flags(usv_summary, source)
+    usv = _vocal_flag(usv_summary, USV_FLAG_COLUMN)
+    squeak = _vocal_flag(usv_summary, SQUEAK_FLAG_COLUMN)
+    by_class = {"usv": usv & ~squeak, "squeak": squeak & ~usv, "both": usv & squeak}
+    mask = usv & ~usv
+    for value in classes:
+        mask = mask | by_class[value]
+    return mask.alias("call_class_mask")
+
+
+def pure_usv_mask(usv_summary: Any, source: str) -> Any:
+    """
+    Description
+    -----------
+    Rows holding an ultrasonic call and no squeak (``usv & ~squeak``): what every USV-only consumer
+    keeps. Shorthand for ``call_class_mask(usv_summary, ("usv",), source)``.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A table holding ``usv`` and ``squeak``.
+    source (str)
+        What the table came from, named in the error when a flag is missing.
+
+    Returns
+    -------
+    mask (polars.Series)
+        Boolean, one value per row.
+    """
+
+    return call_class_mask(usv_summary, ("usv",), source)
+
+
+def pure_squeak_mask(usv_summary: Any, source: str) -> Any:
+    """
+    Description
+    -----------
+    Rows holding a squeak and no ultrasonic call (``squeak & ~usv``). Shorthand for
+    ``call_class_mask(usv_summary, ("squeak",), source)``.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A table holding ``usv`` and ``squeak``.
+    source (str)
+        What the table came from, named in the error when a flag is missing.
+
+    Returns
+    -------
+    mask (polars.Series)
+        Boolean, one value per row.
+    """
+
+    return call_class_mask(usv_summary, ("squeak",), source)
+
+
+def both_mask(usv_summary: Any, source: str) -> Any:
+    """
+    Description
+    -----------
+    Rows holding a squeak and an ultrasonic call (``usv & squeak``). Shorthand for
+    ``call_class_mask(usv_summary, ("both",), source)``.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A table holding ``usv`` and ``squeak``.
+    source (str)
+        What the table came from, named in the error when a flag is missing.
+
+    Returns
+    -------
+    mask (polars.Series)
+        Boolean, one value per row.
+    """
+
+    return call_class_mask(usv_summary, ("both",), source)
+
+
+def squeak_bearing_mask(usv_summary: Any, source: str) -> Any:
+    """
+    Description
+    -----------
+    Rows holding a squeak, with or without an ultrasonic call (``squeak`` true: pure squeaks and
+    "both"): the rows the squeak QLVM embedding, its training-set builder and the squeak spectrogram
+    store take. Shorthand for ``call_class_mask(usv_summary, ("squeak", "both"), source)``.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A table holding ``usv`` and ``squeak``.
+    source (str)
+        What the table came from, named in the error when a flag is missing.
+
+    Returns
+    -------
+    mask (polars.Series)
+        Boolean, one value per row.
+    """
+
+    return call_class_mask(usv_summary, ("squeak", "both"), source)
 
 
 def squeak_class_selection(selection: str) -> tuple[str, ...]:

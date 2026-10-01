@@ -840,7 +840,7 @@ class TestExtractionGuards:
         )
         for root in session_roots:
             csv_path = next((Path(root) / 'audio').glob('*_usv_summary.csv'))
-            pls.read_csv(csv_path).with_columns(pls.lit('squeak').alias('call_class')).write_csv(csv_path)
+            pls.read_csv(csv_path).with_columns(pls.lit(False).alias('usv'), pls.lit(True).alias('squeak')).write_csv(csv_path)
         list_file = write_session_list_file(session_roots, tmp_path / 'session_list.txt')
         save_dir = tmp_path / 'out'
         save_dir.mkdir(parents=True, exist_ok=True)

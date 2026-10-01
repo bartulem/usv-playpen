@@ -2,15 +2,16 @@
 @author: bartulem
 Tests for processing/detect_usv_squeaks.
 
-The call-class model: the network (and its noise-trunk initialization), the span rule (strict
-threshold, minimum run, half-hop edges), the overlap filter that keeps spans touching the segment,
-the JSON encoding, the window input (segment indicator, frame grid) and the bundle loader with its
-refusals are tested directly. The end-to-end classifier runs on a synthetic session (per-channel
-PCM_16 wavs under ``audio/hpss`` plus a small ``*_usv_summary.csv``) with a stub ensemble whose class
-logits are set by the segment length and whose frame logits are set per frame relative to the segment,
-so every row's class, probabilities, spans, envelope and span count are known: that pins the
-encoding (classes, probabilities summing to 1, spans JSON, envelope, n_squeaks, ``"[]"`` on usv rows,
-nulls on noise and unscorable rows) and the merge that removes the retired binary detector's columns.
+The call-class model: the network (and its noise-trunk initialization), the squeak-extent rule (the
+envelope of above-threshold frames in runs touching the segment, no minimum run, half-hop edges, and
+the highest-scoring-frame fallback), the window input (segment indicator, frame grid) and the bundle
+loader with its refusals are tested directly. The end-to-end classifier runs on a synthetic session
+(per-channel PCM_16 wavs under ``audio/hpss`` plus a small ``*_usv_summary.csv``) with a stub ensemble
+whose class logits are set by the segment length and whose frame logits are set per frame relative to
+the segment, so every row's class, probabilities and extent are known: that pins the boolean encoding
+(pure USV (true, false), pure squeak (false, true), both (true, true), nulls on noise rows),
+probabilities summing to 1, the single extent on squeak rows only, the fallback count, and the merge
+that removes the columns of earlier encodings.
 
 Training: the labelling tool's label sets with review overrides, the frame targets, one training seed
 from a noise trunk, and an end-to-end training run on the synthetic session whose bundle the detector's
@@ -53,7 +54,7 @@ class _StubCallClassModel(torch.nn.Module):
     first segment frame and -5 elsewhere, so every row's class and squeak track are known.
     """
 
-    def __init__(self, class_by_segment_frames: dict[int, int], above_offsets: list[int]) -> None:
+    def __init__(self, class_by_segment_frames: dict[int, int], above_offsets: list[int], peak_offset: int | None = None) -> None:
         """
         Description
         -----------
@@ -65,6 +66,9 @@ class _StubCallClassModel(torch.nn.Module):
             Segment frame count -> class index whose logit is +4 (the others 0).
         above_offsets (list[int])
             Frame offsets from the first segment frame (negative = context before) whose logit is +5.
+        peak_offset (int | None)
+            Optional frame offset whose logit is -1 (below the threshold but above every other frame
+            left at -5), the frame the extent rule's fallback must pick.
 
         Returns
         -------
@@ -74,6 +78,7 @@ class _StubCallClassModel(torch.nn.Module):
         super().__init__()
         self.class_by_segment_frames = class_by_segment_frames
         self.above_offsets = above_offsets
+        self.peak_offset = peak_offset
 
     def forward(self, x: torch.Tensor, valid: torch.Tensor, segment: torch.Tensor, scalars: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:  # noqa: ARG002
         """
@@ -107,6 +112,8 @@ class _StubCallClassModel(torch.nn.Module):
             n_segment = int(segment[item].sum())
             class_logits[item, self.class_by_segment_frames.get(n_segment, 0)] = 4.0
             first = int(torch.nonzero(segment[item])[0, 0])
+            if self.peak_offset is not None:
+                frame_logits[item, first + self.peak_offset] = -1.0
             for offset in self.above_offsets:
                 if 0 <= first + offset < n_time and bool(valid[item, first + offset]):
                     frame_logits[item, first + offset] = 5.0
@@ -203,18 +210,21 @@ def _segment_frames(start: float, stop: float) -> int:
     return 1 + (int(np.ceil(stop * SAMPLING_RATE)) - int(np.floor(start * SAMPLING_RATE))) // HOP_SAMPLES
 
 
-def _stub_bundle() -> dict:
+def _stub_bundle(fallback: bool = False) -> dict:
     """
     Description
     -----------
     A loaded-bundle dict around the stub model: the 50 ms row is "both", the 400 ms row "squeak", every
-    other row "usv"; the frame track is above the threshold on frames -30 .. -16 from the first segment
-    frame (a run wholly in the context before the segment), 2 .. 29 (a 28-frame run that starts inside
-    the segment and, for the 25-frame 50 ms segment, extends past its end) and 32 .. 36 (a 5-frame run,
-    too short for the 12-frame rule).
+    other row "usv". By default the frame track is above the threshold on frames -30 .. -16 from the
+    first segment frame (a run wholly in the context before the segment, which the extent ignores),
+    2 .. 29 (a run that starts inside the segment and, for the 25-frame 50 ms segment, extends past its
+    end) and 32 .. 36 (a 5-frame run, counted when it touches the segment: there is no minimum run). With ``fallback`` only the context run is above the threshold and frame 7 holds the
+    highest segment score, so every squeak row falls back to frame 7.
 
     Parameters
     ----------
+    fallback (bool)
+        Build the fallback track instead.
 
     Returns
     -------
@@ -222,10 +232,11 @@ def _stub_bundle() -> dict:
         The keys :func:`classify_usv_squeak_rows` reads.
     """
 
-    above = list(range(-30, -15)) + list(range(2, 30)) + list(range(32, 37))
+    above = list(range(-30, -15)) if fallback else list(range(-30, -15)) + list(range(2, 30)) + list(range(32, 37))
     model = _StubCallClassModel(
         {_segment_frames(0.10, 0.15): 2, _segment_frames(0.30, 0.70): 1, _segment_frames(0.20, 0.30): 0},
         above,
+        peak_offset=7 if fallback else None,
     )
     return {
         **squeaks.USV_SQUEAK_INPUT_CONTRACT,
@@ -234,7 +245,6 @@ def _stub_bundle() -> dict:
         "scalar_mean": np.zeros(2, dtype=np.float32),
         "scalar_std": np.ones(2, dtype=np.float32),
         "span_threshold": 0.6,
-        "span_min_run_frames": 12,
         "labels": [],
     }
 
@@ -286,32 +296,36 @@ def test_usv_squeak_timemil_shapes_and_noise_trunk():
     assert frame_logits.shape == (2, 40)
 
 
-def test_squeak_track_spans_rule():
-    """A run counts when it is strictly above the threshold for at least min_run frames; its span runs
-    from half a hop before its first frame's centre to half a hop after its last."""
-    track = np.zeros(40)
-    track[3:15] = 0.9
-    track[18:22] = 0.9
-    track[25:38] = 0.6
-    spans = squeaks.squeak_track_spans(track, 0.6, 12, read_start_s=10.0)
-    assert len(spans) == 1
-    assert spans[0][0] == pytest.approx(10.0 + 2.5 * HOP_S)
-    assert spans[0][1] == pytest.approx(10.0 + 14.5 * HOP_S)
-    assert len(squeaks.squeak_track_spans(track, 0.5, 4, read_start_s=0.0)) == 3
+def test_squeak_envelope_frames_rule():
+    """The extent runs from the first to the last frame strictly above the threshold, over every run
+    that touches the segment (no minimum run; gaps included), ignoring runs wholly in the context."""
+    track = np.zeros(60)
+    track[2:6] = 0.9
+    track[12:14] = 0.9
+    track[20:22] = 0.61
+    track[30:40] = 0.9
+    track[45:50] = 0.6
+    assert squeaks.squeak_envelope_frames(track, 0.6, 10, 25) == (12, 21, False)
+    assert squeaks.squeak_envelope_frames(track, 0.6, 5, 25) == (2, 21, False)
+    assert squeaks.squeak_envelope_frames(track, 0.6, 21, 31) == (20, 39, False)
+    assert squeaks.squeak_envelope_frames(track, 0.6, 45, 55) == (45 + int(np.argmax(track[45:56])), 45 + int(np.argmax(track[45:56])), True)
 
 
-def test_segment_squeak_spans_keeps_spans_touching_the_segment():
-    """A span overlapping the segment is kept unclipped (it may extend past it); one wholly in the
-    context is dropped."""
-    spans = [(0.90, 0.95), (0.98, 1.02), (1.05, 1.20), (1.25, 1.30)]
-    assert squeaks.segment_squeak_spans(spans, 1.0, 1.1) == [(0.98, 1.02), (1.05, 1.20)]
+def test_squeak_envelope_frames_fallback_takes_the_best_segment_frame():
+    """With no frame above the threshold touching the segment, the extent is the one segment frame of
+    highest score, even when a context frame scores higher."""
+    track = np.full(40, 0.1)
+    track[3] = 0.95
+    track[17] = 0.4
+    track[22] = 0.3
+    assert squeaks.squeak_envelope_frames(track, 0.6, 10, 30) == (17, 17, True)
 
 
-def test_format_squeak_spans_is_json():
-    """Spans are a JSON list of [start, end] pairs rounded to 6 decimals; no span is "[]"."""
-    assert squeaks.format_squeak_spans([]) == "[]"
-    text = squeaks.format_squeak_spans([(1.23456789, 1.3), (2.0, 2.5)])
-    assert json.loads(text) == [[1.234568, 1.3], [2.0, 2.5]]
+def test_frames_to_session_seconds_uses_half_hop_edges():
+    """An extent runs from half a hop before its first frame's centre to half a hop after its last."""
+    start, end = squeaks.frames_to_session_seconds(3, 14, 10.0)
+    assert start == pytest.approx(10.0 + 2.5 * HOP_S, abs=1e-6)
+    assert end == pytest.approx(10.0 + 14.5 * HOP_S, abs=1e-6)
 
 
 def test_usv_squeak_window_input_marks_the_segment(tmp_path):
@@ -346,7 +360,7 @@ def test_load_usv_squeak_model_round_trip_and_refusals(tmp_path):
     bundle = squeaks.load_usv_squeak_model(str(tmp_path / "ok.pt"), torch.device("cpu"))
     assert len(bundle["models"]) == 2
     assert bundle["class_names"] == ("usv", "squeak", "both")
-    assert (bundle["span_threshold"], bundle["span_min_run_frames"]) == (0.6, 12)
+    assert bundle["span_threshold"] == 0.6
     assert bundle["max_frames"] == 1024
     assert bundle["context_frames"] == 49
     with pytest.raises(FileNotFoundError):
@@ -358,36 +372,51 @@ def test_load_usv_squeak_model_round_trip_and_refusals(tmp_path):
 
 def test_classify_usv_squeak_rows_encoding(tmp_path):
     """
-    Classes, probabilities, spans, envelope and counts on every kind of row: "both" (50 ms) and
-    "squeak" (400 ms) rows get their one span overlapping the segment (the run in the context before the
-    segment and the 5-frame run are dropped; on the 50 ms row the span runs past the segment's stop),
-    the "usv" rows get "[]" and 0 although their tracks hold the same run, the noise row is not read and
-    gets nulls everywhere, and a null noise value counts as not noise. A 4 ms segment is still scored:
-    its window holds 49 context hops either side.
+    The boolean encoding on every kind of row: the "both" (50 ms) row is (true, true), the "squeak"
+    (400 ms) row (false, true), the "usv" rows (true, false), and the noise row is not read and gets
+    nulls everywhere (a null noise value counts as not noise). Squeak rows get one extent, the envelope
+    of the runs touching the segment: on the 400 ms row frames 2 .. 36 (the context-only run dropped,
+    the 5-frame run kept, the gap included); on the 25-frame 50 ms row frames 2 .. 29, past the
+    segment's stop, because the 32 .. 36 run lies wholly in the context after it. usv rows get none
+    although their tracks hold the same runs.
+    A 4 ms segment is still scored: its window holds 49 context hops either side.
     """
     root = _build_session(tmp_path)
     summary = pls.read_csv(root / "audio" / f"{SESSION_ID}_usv_summary.csv", schema_overrides={"usv_id": pls.String})
-    scores = squeaks.classify_usv_squeak_rows(root, summary, _stub_bundle(), torch.device("cpu"), True, 64, lambda *_a, **_kw: None)
-    assert scores.columns == list(squeaks.CALL_CLASS_COLUMNS)
-    assert scores.schema["n_squeaks"] == pls.Int64
-    assert scores["call_class"].to_list() == ["both", "squeak", "usv", None, "usv"]
+    messages = []
+    scores = squeaks.classify_usv_squeak_rows(root, summary, _stub_bundle(), torch.device("cpu"), True, 64, messages.append)
+    assert scores.columns == list(squeaks.VOCAL_CLASS_COLUMNS)
+    assert scores.schema["usv"] == pls.Boolean
+    assert scores.schema["squeak"] == pls.Boolean
+    assert scores["usv"].to_list() == [True, False, True, None, True]
+    assert scores["squeak"].to_list() == [True, True, False, None, False]
     probabilities = scores.select("p_usv", "p_squeak", "p_both").to_numpy()
     assert np.allclose(probabilities[[0, 1, 2, 4]].sum(axis=1), 1.0)
     assert probabilities[0].argmax() == 2
     assert np.isnan(probabilities[3]).all()
     assert scores["p_usv"].null_count() == 1
-    assert scores["squeak_spans"].to_list()[2:] == ["[]", None, "[]"]
-    assert scores["n_squeaks"].to_list() == [1, 1, 0, None, 0]
-    for row, start in ((0, 0.10), (1, 0.30)):
-        spans = json.loads(scores["squeak_spans"][row])
+    for row, start, last in ((0, 0.10, 29), (1, 0.30, 36)):
         first_centre = np.floor(start * SAMPLING_RATE) / SAMPLING_RATE
-        assert len(spans) == 1
-        assert spans[0][0] == pytest.approx(first_centre + 1.5 * HOP_S, abs=2e-6)
-        assert spans[0][1] == pytest.approx(first_centre + 29.5 * HOP_S, abs=2e-6)
-        assert scores["squeak_start"][row] == pytest.approx(spans[0][0])
-        assert scores["squeak_end"][row] == pytest.approx(spans[0][1])
-    assert json.loads(scores["squeak_spans"][0])[0][1] > 0.15
+        assert scores["squeak_start"][row] == pytest.approx(first_centre + 1.5 * HOP_S, abs=2e-6)
+        assert scores["squeak_end"][row] == pytest.approx(first_centre + (last + 0.5) * HOP_S, abs=2e-6)
+    assert scores["squeak_end"][0] > 0.15
     assert scores["squeak_start"].is_null().to_list() == [False, False, True, True, True]
+    assert scores["squeak_end"].is_null().to_list() == [False, False, True, True, True]
+    assert any("0 of 2 squeak-bearing" in message for message in messages)
+
+
+def test_classify_usv_squeak_rows_fallback_extent(tmp_path):
+    """Squeak rows whose track has no frame above the threshold touching the segment take the
+    highest-scoring segment frame (one frame, half-hop edges), and the step reports how many did."""
+    root = _build_session(tmp_path)
+    summary = pls.read_csv(root / "audio" / f"{SESSION_ID}_usv_summary.csv", schema_overrides={"usv_id": pls.String})
+    messages = []
+    scores = squeaks.classify_usv_squeak_rows(root, summary, _stub_bundle(fallback=True), torch.device("cpu"), True, 64, messages.append)
+    for row, start in ((0, 0.10), (1, 0.30)):
+        first_centre = np.floor(start * SAMPLING_RATE) / SAMPLING_RATE
+        assert scores["squeak_start"][row] == pytest.approx(first_centre + 6.5 * HOP_S, abs=2e-6)
+        assert scores["squeak_end"][row] == pytest.approx(first_centre + 7.5 * HOP_S, abs=2e-6)
+    assert any("2 of 2 squeak-bearing" in message for message in messages)
 
 
 def test_classify_usv_squeak_rows_needs_the_noise_column(tmp_path):
@@ -409,16 +438,18 @@ def test_squeak_wav_channels_honours_metadata_exclusion(tmp_path):
 
 def test_detect_and_merge_replaces_the_retired_columns(tmp_path, mocker):
     """
-    The merge removes the retired detector's squeak / squeak_probability / squeak_frame_runs, replaces
-    stale call-class columns, keeps every other column (and the usv_id zero-padding) unchanged, and
-    places the call-class block between the noise block and the acoustic features.
+    The merge removes the columns of earlier encodings (squeak_probability, squeak_frame_runs,
+    call_class, squeak_spans, n_squeaks), replaces a stale squeak flag and extent, keeps every other
+    column (and the usv_id zero-padding) unchanged, and places the vocal-class block between the noise
+    block and the acoustic features.
     """
     root = _build_session(tmp_path)
     summary_path = root / "audio" / f"{SESSION_ID}_usv_summary.csv"
     original = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
     original.with_columns(
         pls.lit(True).alias("squeak"), pls.lit(0.9).alias("squeak_probability"), pls.lit(1.0).alias("squeak_start"),
-        pls.lit(9).alias("squeak_frame_runs"), pls.lit("usv").alias("call_class"), pls.lit(40000.0).alias("mean_freq_hz"),
+        pls.lit(9).alias("squeak_frame_runs"), pls.lit("usv").alias("call_class"), pls.lit("[]").alias("squeak_spans"),
+        pls.lit(0).alias("n_squeaks"), pls.lit(40000.0).alias("mean_freq_hz"),
     ).write_csv(summary_path)
 
     mocker.patch("usv_playpen.processing.detect_usv_squeaks.smart_wait")
@@ -432,13 +463,14 @@ def test_detect_and_merge_replaces_the_retired_columns(tmp_path, mocker):
 
     written = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
     assert written.columns == [
-        "usv_id", "start", "stop", "duration", "chs_count", "emitter", "noise", *squeaks.CALL_CLASS_COLUMNS, "mean_freq_hz",
+        "usv_id", "start", "stop", "duration", "chs_count", "emitter", "noise", *squeaks.VOCAL_CLASS_COLUMNS, "mean_freq_hz",
     ]
     assert not set(squeaks.RETIRED_SQUEAK_COLUMNS) & set(written.columns)
     assert written.select(original.columns).equals(original)
     assert written["mean_freq_hz"].to_list() == [40000.0] * 5
-    assert written["call_class"].to_list() == ["both", "squeak", "usv", None, "usv"]
-    assert written["n_squeaks"].to_list() == [1, 1, 0, None, 0]
+    assert written["usv"].to_list() == [True, False, True, None, True]
+    assert written["squeak"].to_list() == [True, True, False, None, False]
+    assert written["squeak_start"].is_null().to_list() == [False, False, True, True, True]
 
 
 def test_detect_usv_squeaks_cli_routes(mocker, tmp_path):
@@ -558,7 +590,7 @@ def test_train_usv_squeak_seed_from_a_noise_trunk():
 
 def test_usv_squeak_model_trainer_writes_a_loadable_bundle(tmp_path, mocker):
     """The trainer reads the label set, builds the inputs with the detector's window, trains and writes
-    a bundle the detector's loader accepts, carrying the span rule and the label provenance; an existing
+    a bundle the detector's loader accepts, carrying the extent threshold and the label provenance; an existing
     bundle path is refused."""
     root = _build_session(tmp_path)
     labels, sample, review = _write_label_set(tmp_path / "labels", root)
@@ -567,7 +599,7 @@ def test_usv_squeak_model_trainer_writes_a_loadable_bundle(tmp_path, mocker):
         "train_usv_squeak_model": {
             "label_sets": [{"name": "r1", "labels_csv": str(labels), "sample_csv": str(sample)}],
             "label_overrides": [{"name": "r1", "override_csv": str(review)}],
-            "pretrained": False, "span_threshold": 0.6, "span_min_run_frames": 12,
+            "pretrained": False, "span_threshold": 0.6,
             "exclude_metadata_audio_channels": True, "n_workers": 2, "seeds": [0, 1],
             "epochs": 1, "batch_size": 2, "learning_rate": 1e-3, "weight_decay": 1e-4,
             "label_smoothing": 0.05, "frame_loss_weight": 1.0, "class_weighted": False,
@@ -577,7 +609,7 @@ def test_usv_squeak_model_trainer_writes_a_loadable_bundle(tmp_path, mocker):
     bundle_path = squeaks.USVSqueakModelTrainer(str(tmp_path / "bundle.pt"), settings, lambda *_a, **_kw: None).train()
     raw = torch.load(bundle_path, weights_only=True)
     assert raw["n_labels"] == {"usv": 1, "squeak": 1, "both": 1}
-    assert raw["extent_rule"] == {"threshold": 0.6, "min_run_frames": 12}
+    assert raw["extent_rule"]["threshold"] == 0.6
     assert raw["label_overrides"] == [["r1", str(review)]]
     assert raw["max_frames"] == 1024
     assert len(squeaks.load_usv_squeak_model(str(bundle_path), torch.device("cpu"))["models"]) == 2
@@ -622,7 +654,7 @@ def _build_squeak_embedding_session(tmp_path: pathlib.Path) -> pathlib.Path:
     * row 5 -- squeak on a 1 ms segment at the very start of the recording with a 0.5 ms envelope (the
       window cannot extend before 0 s and stays shorter than one STFT window: no spectrogram);
     * row 6 -- usv (not a candidate);
-    * row 7 -- both without an envelope (no span passed the rule: no squeak extent).
+    * row 7 -- both without an extent (only a hand-edited summary has one: no squeak extent).
 
     Parameters
     ----------
@@ -644,14 +676,15 @@ def _build_squeak_embedding_session(tmp_path: pathlib.Path) -> pathlib.Path:
             "start": [0.10, 0.20, 0.40, 0.30, 0.75, 0.0, 0.85, 0.05],
             "stop": [0.20, 0.25, 0.60, 0.70, 0.78, 0.001, 0.90, 0.08],
             "noise": [False, True, None, False, False, False, False, False],
-            "call_class": ["squeak", None, "both", "squeak", "both", "squeak", "usv", "both"],
+            "usv": [False, None, True, False, True, False, True, True],
+            "squeak": [True, None, True, True, True, True, False, True],
             "squeak_start": [0.10 + 4.5 * dt, None, 0.40 - 10 * dt, 0.30 + 10 * dt, 0.75 + 5 * dt, 0.0, None, None],
             "squeak_end": [0.10 + 20.5 * dt, None, 0.40 + 30 * dt, 0.30 + 180 * dt, 0.75 + 5 * dt, 0.0005, None, None],
             "mean_freq_hz": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
         },
         schema={
             "usv_id": pls.String, "start": pls.Float64, "stop": pls.Float64, "noise": pls.Boolean,
-            "call_class": pls.String, "squeak_start": pls.Float64, "squeak_end": pls.Float64, "mean_freq_hz": pls.Float64,
+            "usv": pls.Boolean, "squeak": pls.Boolean, "squeak_start": pls.Float64, "squeak_end": pls.Float64, "mean_freq_hz": pls.Float64,
         },
     ).write_csv(root / "audio" / f"{SESSION_ID}_usv_summary.csv")
     return root
@@ -712,16 +745,17 @@ def test_squeak_crop_inputs_normalizes_per_crop_and_centres_the_crop():
 
 def test_squeak_qlvm_rows_selects_squeak_and_both_that_are_not_noise():
     """squeak and both rows with noise false or null are selected, never usv or unclassed rows; a
-    summary without noise or call_class raises."""
+    summary without noise or the usv / squeak booleans raises."""
     summary = pls.DataFrame(
-        {"noise": [False, True, None, False, False, False], "call_class": ["squeak", "squeak", "both", "usv", None, "both"]},
-        schema={"noise": pls.Boolean, "call_class": pls.String},
+        {"noise": [False, True, None, False, False, False],
+         "usv": [False, False, True, True, None, True], "squeak": [True, True, True, False, None, True]},
+        schema={"noise": pls.Boolean, "usv": pls.Boolean, "squeak": pls.Boolean},
     ).with_columns(pls.lit(None, dtype=pls.Float64).alias(column) for column in ("squeak_start", "squeak_end"))
     assert squeaks.squeak_qlvm_rows(summary).tolist() == [0, 2, 5]
     with pytest.raises(ValueError, match="detect-usv-noise"):
         squeaks.squeak_qlvm_rows(summary.drop("noise"))
-    with pytest.raises(ValueError, match="call_class"):
-        squeaks.squeak_qlvm_rows(summary.drop("call_class"))
+    with pytest.raises(ValueError, match="usv"):
+        squeaks.squeak_qlvm_rows(summary.drop("usv"))
 
 
 def test_squeak_qlvm_inputs_crops_and_excludes(tmp_path):
