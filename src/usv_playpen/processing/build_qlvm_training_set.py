@@ -60,8 +60,8 @@ SAM region; all zero under ``masking_type`` ``"none"``), ``masks_len`` (N,) int6
 (N,) str (``{session}_{row}``), ``session_id`` (N,) str, ``session_type`` (N,)
 str, ``mask_count`` (N,) int64, the scalar ``apply_mask`` that tells
 ``train-qlvm`` whether to multiply the masks in, and ``mean_freq_hz``,
-``freq_bandwidth_hz`` and ``loudness_db`` (N,) float64, copied row for row from
-the session's USV summary (NaN where it has no value;
+``freq_bandwidth_hz``, ``loudness_db`` and ``spectral_entropy`` (N,) float64,
+copied row for row from the session's USV summary (NaN where it has no value;
 :func:`usv_summary_condition_values`) -- the raw values a conditional
 ``train-qlvm`` run conditions on, captured with the rows they belong to so a later
 rewrite of the summary cannot shift them. ``metadata.npz`` records every
@@ -114,8 +114,9 @@ FLOOR_MINMAX_EPSILON = 1e-8
 # The USV summary columns copied into every split, row for row: the raw per-call
 # values a conditional train-qlvm run conditions on (mean frequency and bandwidth
 # of the SAM-masked call, written by generate-usv-acoustic-features, and the
-# absolute loudness it measures with compute_usv_loudness.session_image_level_db).
-SUMMARY_CONDITION_COLUMNS = ("mean_freq_hz", "freq_bandwidth_hz", "loudness_db")
+# absolute loudness it measures with compute_usv_loudness.session_image_level_db,
+# and the spectral entropy in nats of the call's normalized frequency power profile).
+SUMMARY_CONDITION_COLUMNS = ("mean_freq_hz", "freq_bandwidth_hz", "loudness_db", "spectral_entropy")
 
 
 def file_sha256(path: str | pathlib.Path, chunk_bytes: int = 8 * 1024 * 1024) -> str:
@@ -791,8 +792,9 @@ def usv_summary_condition_values(root_directory: str, n_rows: int) -> dict[str, 
     is checked): ``mean_freq_hz`` and ``freq_bandwidth_hz`` (the energy-weighted
     mean frequency and the bandwidth of the call's SAM-masked region) and
     ``loudness_db`` (the absolute image-level loudness over the same mask region,
-    :func:`compute_usv_loudness.session_image_level_db`), all three written by
-    ``generate-usv-acoustic-features``. A column the summary lacks, a null or NaN
+    :func:`compute_usv_loudness.session_image_level_db`) and ``spectral_entropy``
+    (the entropy in nats of the call's normalized frequency power profile), all
+    four written by ``generate-usv-acoustic-features``. A column the summary lacks, a null or NaN
     value, and every row of a session without a summary are NaN: the values are
     only needed by a conditional ``train-qlvm`` run, which refuses a training row
     without one.

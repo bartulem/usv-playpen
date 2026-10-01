@@ -23,7 +23,9 @@ Conditional cells take one conditioning value per call: phase 10 cells
 corpus bin mean, phase 11 cells (``qlvm_models_latest/v3``, duration, mean
 frequency, bandwidth or loudness) at the call's own value clamped to the training
 range or snapped to the cell's decode grid, as the contract's ``condition.decode``
-says (:func:`frozen_condition_values`).
+says (:func:`frozen_condition_values`); a phase 11 recipe cell trained by
+``train-qlvm`` on spectral entropy (the summary's ``spectral_entropy``, min-max
+scaled by its training split's range) is decoded on its grid the same way.
 
 The session is placed on the torus of every listed cell and each prefix ``P``
 gets the float columns ``P1`` / ``P2`` and integer cluster labels read off the
@@ -105,8 +107,9 @@ LABEL_LEVEL_SUFFIXES = {"fine": "category", "coarse": "supercategory"}
 # keep the historical names qlvm_category / qlvm_supercategory.
 REGULAR_MODEL_PREFIX = "qlvm"
 
-# Conditions a package decoder may be trained on (phase 10: the first two; phase 11: all four).
-CONDITION_NAMES = ("duration", "mean_freq", "bandwidth", "loudness")
+# Conditions a package decoder may be trained on (phase 10: the first two; phase 11: the
+# first four; train-qlvm: all five, spectral_entropy only there).
+CONDITION_NAMES = ("duration", "mean_freq", "bandwidth", "loudness", "spectral_entropy")
 
 # The file that marks a QLVM model package's root: the SHA-256 and row counts of the
 # spectrogram H5 of every session its corpus was built from.
@@ -464,9 +467,13 @@ def compute_condition_values(
     ``(mean_freq_hz - 30000) * 127 / (128 * 90000)``, which equals it to 1.5e-7).
     ``"bandwidth"`` (phase 11): ``clip(freq_bandwidth_hz / 90000, 0, 1)``.
     ``"loudness"`` (phase 11): ``clip((dB - lo) / (hi - lo), 0, 1)`` of the masked
-    image-level loudness, with ``[lo, hi]`` the contract's ``db_range``. The two
-    raw-unit maps run in float64 and round to float32, as the training sets
-    stored them.
+    image-level loudness, with ``[lo, hi]`` the contract's ``db_range``.
+    ``"spectral_entropy"`` (``train-qlvm``):
+    ``clip((H - entropy_min) / (entropy_max - entropy_min), 0, 1)`` of the
+    summary's ``spectral_entropy`` in nats, with ``entropy_min`` / ``entropy_max``
+    the training split's range the contract records, so a call outside it is
+    clamped to 0 or 1. The three raw-unit maps run in float64 and round to
+    float32, as the training sets stored them; a NaN raw value stays NaN.
 
     Parameters
     ----------
@@ -477,21 +484,25 @@ def compute_condition_values(
     masked_spectrograms (np.ndarray | None)
         ``(N, F, T)`` resized SAM-masked spectrograms; required for ``"mean_freq"``.
     raw_values (np.ndarray | None)
-        ``(N,)`` raw values in Hz (``"bandwidth"``: ``freq_bandwidth_hz``) or dB
-        (``"loudness"``: ``image_level_db``); required for those two. Defaults to None.
+        ``(N,)`` raw values in Hz (``"bandwidth"``: ``freq_bandwidth_hz``), dB
+        (``"loudness"``: ``image_level_db``) or nats (``"spectral_entropy"``:
+        ``spectral_entropy``); required for those three. Defaults to None.
 
     Returns
     -------
     values (np.ndarray)
         ``(N,)`` float32 conditioning values.
     """
-    if condition["name"] in ("bandwidth", "loudness"):
+    if condition["name"] in ("bandwidth", "loudness", "spectral_entropy"):
         if raw_values is None:
             error_message = f"compute_condition_values: {condition['name']} needs each call's raw value."
             raise ValueError(error_message)
         raw = np.asarray(raw_values, dtype=np.float64)
         if condition["name"] == "bandwidth":
             return np.clip(raw / 90000.0, 0.0, 1.0).astype(np.float32)
+        if condition["name"] == "spectral_entropy":
+            low, high = float(condition["entropy_min"]), float(condition["entropy_max"])
+            return np.clip((raw - low) / (high - low), 0.0, 1.0).astype(np.float32)
         low, high = (float(value) for value in condition["db_range"])
         return np.clip((raw - low) / (high - low), 0.0, 1.0).astype(np.float32)
     if condition["name"] == "duration":
@@ -524,7 +535,7 @@ def frozen_condition_values(values: np.ndarray, condition_bins: dict, decode: st
     Phase 11 (``condition_bins`` has a ``decode_grid``): with ``decode``
     ``"exact"`` (duration, bandwidth) each call's own value clamped to the
     training range ``[train_c_min, train_c_max]``; with ``"grid"`` (mean
-    frequency, loudness) the nearest point of ``decode_grid``, a value beyond
+    frequency, loudness, spectral entropy) the nearest point of ``decode_grid``, a value beyond
     the grid decoding at its end point. The package embedded every corpus call
     this way, so a new call is decoded exactly like a corpus call.
 
@@ -645,7 +656,9 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
     contract's ``decoder_head``. The contract must also describe a decoder this
     module can run: no conditioning input (``c_dim`` 0) or one conditioning value
     of a model package's ``"duration"`` / ``"mean_freq"`` / ``"bandwidth"`` /
-    ``"loudness"`` condition (a phase 11 ``decode`` of ``"grid"`` or ``"exact"``), an
+    ``"loudness"`` condition or of ``train-qlvm``'s ``"spectral_entropy"`` (a
+    phase 11 ``decode`` of ``"grid"`` or ``"exact"``; a spectral entropy block
+    must carry ``entropy_min`` < ``entropy_max``), an
     ``input_normalization`` of ``"none"`` or ``"minmax"``, and a ``floor`` that is
     null or in ``[0, 1)``.
 
@@ -687,6 +700,13 @@ def enforce_training_contract(contract: dict, cfg: dict, params: dict[str, jnp.n
         )
     if condition is not None and "decode" in condition and condition["decode"] not in ("grid", "exact"):
         mismatches.append(f"condition.decode: expected 'grid' or 'exact', trained {condition['decode']!r}")
+    if condition is not None and condition["name"] == "spectral_entropy" and not (
+        "entropy_min" in condition and "entropy_max" in condition and condition["entropy_max"] > condition["entropy_min"]
+    ):
+        mismatches.append(
+            f"condition: a spectral_entropy cell needs entropy_min < entropy_max (its training split's range), "
+            f"trained {condition!r}"
+        )
     if contract["input_normalization"] not in ("none", "minmax"):
         mismatches.append(f"input_normalization: expected 'none' or 'minmax', trained {contract['input_normalization']!r}")
     if contract["floor"] is not None and not 0.0 <= contract["floor"] < 1.0:
@@ -1282,7 +1302,10 @@ class QLVMLatentInference:
         column raises), a loudness condition from the summary's ``loudness_db``
         (the absolute loudness ``generate-usv-acoustic-features`` measured from the
         session audio with :func:`compute_usv_loudness.session_image_level_db`;
-        missing column raises), and calls with no value get nulls. The summary is rewritten atomically.
+        missing column raises), a spectral entropy condition from the summary's
+        ``spectral_entropy`` (scaled by the contract's ``entropy_min`` /
+        ``entropy_max`` and clamped to ``[0, 1]``; missing column raises), and
+        calls with no value get nulls. The summary is rewritten atomically.
 
         Each prefix ``P`` gets the float columns ``P1`` / ``P2`` plus the cluster
         labels of its ``model_cell_label_levels`` (by default ``qlvm_category`` and
@@ -1610,8 +1633,8 @@ class QLVMLatentInference:
             specs = specs[usv_indices].astype(np.float32)
             durations = durations[usv_indices]
 
-        # Bandwidth and loudness conditions (phase 11) take each call's raw value from
-        # outside the stored spectrogram; a call without one gets null columns.
+        # Bandwidth, loudness and spectral entropy conditions take each call's raw value
+        # from outside the stored spectrogram; a call without one gets null columns.
         raw_values = None
         if condition is not None and condition['name'] == 'bandwidth':
             if "freq_bandwidth_hz" not in usv_df.columns:
@@ -1632,6 +1655,25 @@ class QLVMLatentInference:
                 )
                 raise ValueError(error_message)
             raw_values = usv_df["loudness_db"].cast(pls.Float64).fill_null(np.nan).to_numpy()[usv_indices]
+        elif condition is not None and condition['name'] == 'spectral_entropy':
+            # The spectral entropy generate-usv-acoustic-features wrote; the contract's
+            # training-split min-max scales it (compute_condition_values).
+            if "spectral_entropy" not in usv_df.columns:
+                error_message = (
+                    f"{usv_summary_loc.name} has no spectral_entropy column, which this spectral-entropy-conditioned "
+                    f"decoder is decoded at. Run generate-usv-acoustic-features on the session first."
+                )
+                raise ValueError(error_message)
+            raw_values = usv_df["spectral_entropy"].cast(pls.Float64).fill_null(np.nan).to_numpy()[usv_indices]
+            # The min-max clamps these to 0 or 1 before the decode rule sees them, so the
+            # decode-grid count below cannot see them; they are counted here instead.
+            n_outside = int(np.count_nonzero(
+                (raw_values < condition['entropy_min']) | (raw_values > condition['entropy_max'])
+            ))
+            self.message_output(
+                f"{n_outside} USVs have a spectral_entropy outside the training range "
+                f"[{condition['entropy_min']:.4f}, {condition['entropy_max']:.4f}] and are clamped to it."
+            )
         if raw_values is not None:
             has_value = np.isfinite(raw_values)
             self.message_output(

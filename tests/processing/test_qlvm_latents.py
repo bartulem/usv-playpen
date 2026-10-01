@@ -772,6 +772,72 @@ def test_infer_and_merge_phase11_loudness_reads_the_summary_loudness(tmp_path, m
         _run_capturing_c(root, cfg, mocker)
 
 
+_ENTROPY_CONDITION = {
+    "name": "spectral_entropy",
+    "source": "usv_summary spectral_entropy",
+    "entropy_min": 1.051373310783529,
+    "entropy_max": 4.82961777804439,
+    "decode": "grid",
+}
+
+
+def test_compute_condition_values_scales_spectral_entropy_by_the_training_range():
+    """The spectral entropy map: (H - entropy_min) / (entropy_max - entropy_min) in
+    float64 rounded to float32, clamped to [0, 1] beyond the training range, NaN
+    kept for a call without an entropy."""
+    low, high = _ENTROPY_CONDITION["entropy_min"], _ENTROPY_CONDITION["entropy_max"]
+    raw = np.array([low, high, 2.5, 0.3, 6.0, np.nan])
+    got = ql.compute_condition_values(_ENTROPY_CONDITION, np.zeros(6, dtype=np.int64), None, raw)
+    assert got.dtype == np.float32
+    np.testing.assert_array_equal(got[:5], np.array([0.0, 1.0, (2.5 - low) / (high - low), 0.0, 1.0], dtype=np.float32))
+    assert np.isnan(got[5])
+    with pytest.raises(ValueError, match="needs each call's raw value"):
+        ql.compute_condition_values(_ENTROPY_CONDITION, np.zeros(1, dtype=np.int64), None)
+
+
+def test_enforce_training_contract_accepts_spectral_entropy_with_a_range():
+    """A spectral entropy cell is embeddable when its block carries a non-empty
+    training range; a missing or degenerate range is refused."""
+    cfg = _contract_cfg()
+    params = {"0.weight": np.zeros((2, 4)), "1.weight": np.zeros((2, 2))}
+    assert ql.enforce_training_contract(_matching_contract(cfg, c_dim=1, condition=_ENTROPY_CONDITION), cfg, params) == 128.0
+    for broken in ({**_ENTROPY_CONDITION, "entropy_max": _ENTROPY_CONDITION["entropy_min"]},
+                   {key: value for key, value in _ENTROPY_CONDITION.items() if key != "entropy_min"}):
+        with pytest.raises(ValueError, match="entropy_min < entropy_max"):
+            ql.enforce_training_contract(_matching_contract(cfg, c_dim=1, condition=broken), cfg, params)
+
+
+def test_infer_and_merge_spectral_entropy_reads_the_summary_and_snaps_to_the_grid(tmp_path, mocker):
+    """A spectral entropy cell is decoded at each call's summary spectral_entropy,
+    scaled by the contract's training range, clamped to [0, 1] and snapped to the
+    nearest decode-grid point; a call without an entropy gets null columns, and a
+    summary without the column raises."""
+    rng = np.random.default_rng(24)
+    low, high = _ENTROPY_CONDITION["entropy_min"], _ENTROPY_CONDITION["entropy_max"]
+    root, session_id, cfg, _masks = _phase11_session(
+        tmp_path, rng, _ENTROPY_CONDITION, _phase11_bins("spectral_entropy", 0.0, 1.0, 0.0025),
+        summary_columns={"spectral_entropy": pls.Series([low + 0.6182 * (high - low), 3.0, None])},
+    )
+
+    condition_values, messages = _run_capturing_c(root, cfg, mocker)
+
+    np.testing.assert_allclose(condition_values, np.array([0.6175], dtype=np.float32), atol=1e-6)
+    assert any("1 USVs without a spectral_entropy value" in message for message in messages)
+    df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
+    assert df["qlvm1"][0] is not None
+    assert df["qlvm1"][2] is None
+
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    pls.read_csv(summary_path).with_columns(spectral_entropy=pls.Series([high + 2.0, 3.0, low - 0.5])).write_csv(summary_path)
+    condition_values, messages = _run_capturing_c(root, cfg, mocker)
+    np.testing.assert_array_equal(condition_values, np.array([1.0, 0.0], dtype=np.float32))
+    assert any("2 USVs have a spectral_entropy outside the training range" in message for message in messages)
+
+    pls.read_csv(summary_path).drop("spectral_entropy").write_csv(summary_path)
+    with pytest.raises(ValueError, match="no spectral_entropy column"):
+        _run_capturing_c(root, cfg, mocker)
+
+
 def test_export_model_cell_arrays_writes_the_reference_layout(tmp_path):
     """The visualizations read arrays_{fine,coarse}.npz: a package cell exported to
     that layout must carry its grid, its peaks in label order, its calls with their

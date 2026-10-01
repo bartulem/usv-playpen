@@ -776,3 +776,110 @@ def test_condition_table_supplies_values_and_gaps_stop_the_run(tmp_path, mocker)
     np.savez(table, spec_id=spec_ids, image_level_db=decibels)
     with pytest.raises(ValueError, match="no finite loudness_db"):
         _train(dataset_dir, tmp_path / "out_nan", _conditional_cfg("loudness", condition_table=str(table)), mocker)
+
+
+def _entropy_columns(n_samples, seed, low, high):
+    """Raw spectral entropy values (nats) drawn uniformly over ``[low, high]``, as the
+    spectral_entropy column build-qlvm-training-set copies into a split."""
+    return {"spectral_entropy": np.random.default_rng(seed).uniform(low, high, n_samples)}
+
+
+def test_spectral_entropy_condition_scales_by_the_training_range(tmp_path, mocker):
+    """A spectral_entropy run min-max scales the summary entropy by the TRAINING
+    split's range (recorded in the contract as entropy_min / entropy_max), so the
+    training values span exactly [0, 1]; validation values beyond that range are
+    clamped; the decode rule is 'grid' with the configured step; and the cell
+    round-trips through enforce_training_contract, load_model_cell and the grid
+    decode of new calls (inside, below and above the training range)."""
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    _write_split(dataset_dir / "train_data.npz", 32, seed=0, apply_mask=False, condition_columns=_entropy_columns(32, 30, 1.5, 4.5))
+    _write_split(dataset_dir / "val_data.npz", 12, seed=1, apply_mask=False, condition_columns=_entropy_columns(12, 31, 0.5, 5.5))
+    _write_metadata(dataset_dir)
+    trained = tmp_path / "cell"
+    _train(dataset_dir, trained, _conditional_cfg("spectral_entropy", n_epochs=2), mocker)
+
+    contract = json.loads((trained / "config" / "training_contract.json").read_text())
+    assert contract["c_dim"] == 1
+    assert contract["conditional"] == "spectral_entropy"
+    condition = contract["condition"]
+    with np.load(dataset_dir / "train_data.npz") as split:
+        train_entropy = split["spectral_entropy"]
+        train_durations = split["durations"]
+    assert condition["name"] == "spectral_entropy"
+    assert condition["source"] == "usv_summary spectral_entropy"
+    assert condition["entropy_min"] == float(train_entropy.min())
+    assert condition["entropy_max"] == float(train_entropy.max())
+    assert condition["decode"] == "grid"
+    assert "0.0025 apart" in condition["decode_rule"]
+
+    train_c = compute_condition_values(condition, train_durations, None, train_entropy)
+    expected_c = ((train_entropy - train_entropy.min()) / (train_entropy.max() - train_entropy.min())).astype(np.float32)
+    np.testing.assert_array_equal(train_c, expected_c)
+    with np.load(trained / "config" / "condition_bins.npz") as bins:
+        assert str(bins["conditional"]) == "spectral_entropy"
+        assert float(bins["train_c_min"]) == 0.0
+        assert float(bins["train_c_max"]) == 1.0
+        np.testing.assert_array_equal(bins["edges"], _reference_bin_edges(train_c, 4, "quantile_capped"))
+        np.testing.assert_allclose(bins["decode_grid"], 0.0025 * np.arange(401))
+    with np.load(trained / "metrics" / "val_diagnostics.npz") as diagnostics, np.load(dataset_dir / "val_data.npz") as split:
+        val_c = compute_condition_values(condition, split["durations"], None, split["spectral_entropy"])
+        assert np.any(split["spectral_entropy"] < train_entropy.min())
+        assert np.any(split["spectral_entropy"] > train_entropy.max())
+        assert val_c.min() == 0.0
+        assert val_c.max() == 1.0
+        np.testing.assert_array_equal(diagnostics["val_diag_c"], val_c[diagnostics["val_diag_indices"]])
+    run_config = json.loads((trained / "config" / "run_config.json").read_text())
+    assert run_config["condition_source"] == "the splits' spectral_entropy column"
+    assert run_config["condition_stats"]["val"]["n_clamped"] == int(np.count_nonzero((val_c <= 0.0) | (val_c >= 1.0)))
+
+    params = load_decoder_params(str(trained / "checkpoint.tar"))
+    assert enforce_training_contract(contract, _INFERENCE_CFG, params) == 128.0
+    cell = tmp_path / "package" / "phase" / "cell"
+    (cell / "config").mkdir(parents=True)
+    (cell / "checkpoint.tar").write_bytes((trained / "checkpoint.tar").read_bytes())
+    for name in ("training_contract.json", "condition_bins.npz"):
+        (cell / "config" / name).write_bytes((trained / "config" / name).read_bytes())
+    for level in ("fine", "coarse"):
+        (cell / "inference" / f"clusters_{level}").mkdir(parents=True)
+        np.save(cell / "inference" / f"clusters_{level}" / "label_grid.npy", np.ones((8, 8), dtype=np.int64))
+    model = load_model_cell(str(cell))
+    loaded = model["contract"]["condition"]
+    assert loaded == condition
+    low, high = loaded["entropy_min"], loaded["entropy_max"]
+    raw = np.array([low - 1.0, low + 0.4321 * (high - low), high + 1.0, np.nan])
+    own_values = compute_condition_values(loaded, np.zeros(4, dtype=np.int64), None, raw)
+    assert own_values[0] == 0.0
+    assert own_values[2] == 1.0
+    assert np.isnan(own_values[3])
+    frozen = frozen_condition_values(own_values[:3], model["condition_bins"], loaded["decode"])
+    np.testing.assert_allclose(frozen, [0.0, 0.4325, 1.0], atol=1e-6)
+
+
+def test_spectral_entropy_condition_table_and_degenerate_range(tmp_path, mocker):
+    """A per-call condition_table with a spectral_entropy column supplies the raw
+    values (its training rows' range becomes the contract's min-max), a training
+    split whose entropy is constant (no range to scale by) stops the run, and so
+    does a split without the column when no table is given."""
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    _write_split(dataset_dir / "train_data.npz", 24, seed=0, apply_mask=False)
+    _write_metadata(dataset_dir)
+    spec_ids = np.array([f"sess_{i}" for i in range(24)])
+    entropy = np.random.default_rng(3).uniform(1.0, 4.8, 24)
+    table = tmp_path / "entropy_table.npz"
+    np.savez(table, spec_id=spec_ids, spectral_entropy=entropy)
+    _train(dataset_dir, tmp_path / "cell", _conditional_cfg("spectral_entropy", n_epochs=1, condition_table=str(table)), mocker)
+    contract = json.loads((tmp_path / "cell" / "config" / "training_contract.json").read_text())
+    assert contract["condition"]["entropy_min"] == float(entropy.min())
+    assert contract["condition"]["entropy_max"] == float(entropy.max())
+    run_config = json.loads((tmp_path / "cell" / "config" / "run_config.json").read_text())
+    assert run_config["condition_source"] == f"condition_table {table}"
+    assert run_config["condition_stats"]["train"]["c_min"] == 0.0
+    assert run_config["condition_stats"]["train"]["c_max"] == 1.0
+
+    np.savez(table, spec_id=spec_ids, spectral_entropy=np.full(24, 2.5))
+    with pytest.raises(ValueError, match="same spectral_entropy"):
+        _train(dataset_dir, tmp_path / "out_constant", _conditional_cfg("spectral_entropy", condition_table=str(table)), mocker)
+    with pytest.raises(ValueError, match="no spectral_entropy column"):
+        _train(dataset_dir, tmp_path / "out_no_column", _conditional_cfg("spectral_entropy"), mocker)
