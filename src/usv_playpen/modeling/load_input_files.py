@@ -26,7 +26,7 @@ from pathlib import Path
 import pickle
 import polars as pls
 
-from ..os_utils import drop_noise_usvs
+from ..os_utils import CALL_CLASS_COLUMN, drop_noise_usvs
 from astropy.convolution import convolve
 from astropy.convolution import Gaussian1DKernel
 
@@ -613,19 +613,23 @@ def find_onset_epochs(root_directories: list = None,
         sequence; in those modes all categories are pooled as before. If None
         (default), all USV categories are pooled (original behavior).
     target_type : str, optional
-        Which calls are the POSITIVE onset source, read from the summary's boolean
-        ``squeak`` column (written by the squeak classifier): ``'usv'`` (default)
-        keeps the ultrasonic calls only, ``'squeak'`` the squeaks only, ``'all'``
-        both. Applied before `target_category`, in every mode whose positives are
-        call times ('bout_onset', 'individual', 'bout_offset'), so in 'usv' mode bouts are
-        grouped from ultrasonic calls alone -- a squeak between two calls no longer
-        joins or splits a bout -- and squeak onsets are no longer counted as USV
+        Which calls are the POSITIVE onset source, read from the summary's
+        ``call_class`` column (written by the call classifier, ``detect-usv-squeaks``):
+        ``'usv'`` (default) keeps the rows with ``call_class`` ``"usv"`` only,
+        ``'squeak'`` the rows with ``call_class`` ``"squeak"`` only, ``'all'`` every
+        row. A ``"both"`` segment (a squeak and an ultrasonic call together) and a
+        null class (a segment too short to score) are in neither ``'usv'`` nor
+        ``'squeak'``, so they are removed from both positive sequences. Applied before
+        `target_category`, in every mode whose positives are call times ('bout_onset',
+        'individual', 'bout_offset'), so in 'usv' mode bouts are grouped from pure
+        ultrasonic calls alone -- a squeak or a "both" segment between two calls no
+        longer joins or splits a bout -- and squeak onsets are no longer counted as USV
         onsets. As with `target_category`, the predictor vocal traces and the
         silent-epoch (negative) reference still use ALL of the mouse's calls, so a
         negative window is silent of squeaks too. ``'squeak'`` is accepted in
         'individual' mode only: bout grouping needs an inter-bout threshold, and
         the per-sex thresholds are calibrated on ultrasonic-call intervals, not on
-        squeaks. A summary without a ``squeak`` column raises unless ``'all'``.
+        squeaks. A summary without a ``call_class`` column raises unless ``'all'``.
     negative_scheme : str, optional
         ``'bout_offset'`` mode only. ``'cross_bout'``: each positive (the last
         call's offset of a bout) is paired with an interior call's offset from
@@ -714,10 +718,10 @@ def find_onset_epochs(root_directories: list = None,
                                         summary_columns=usv_summary_data.columns, source=str(csv_path))
         if exclude_noise_usvs:
             usv_summary_data = drop_noise_usvs(usv_summary_data, Path(csv_path).name)[0]
-        if target_type != 'all' and 'squeak' not in usv_summary_data.columns:
+        if target_type != 'all' and CALL_CLASS_COLUMN not in usv_summary_data.columns:
             raise ValueError(
-                f"{Path(csv_path).name} has no 'squeak' column, so target_type {target_type!r} "
-                "cannot be applied; run the squeak classifier on the session, or use 'all'."
+                f"{Path(csv_path).name} has no '{CALL_CLASS_COLUMN}' column, so target_type {target_type!r} "
+                "cannot be applied; run detect-usv-squeaks on the session, or use 'all'."
             )
 
         if session_id not in mouse_ids_dict:
@@ -767,11 +771,12 @@ def find_onset_epochs(root_directories: list = None,
             # drives the predictor vocal traces below, and the all-USV frame
             # still drives the silent-epoch (negative) reference, so neither the
             # predictors nor the negatives are affected by the category choice.
-            # The target type is applied first: ultrasonic calls, squeaks, or both.
-            if target_type == 'usv':
-                typed_source_df = mouse_usvs_df.filter(~pls.col('squeak'))
-            elif target_type == 'squeak':
-                typed_source_df = mouse_usvs_df.filter(pls.col('squeak'))
+            # The target type is applied first: pure ultrasonic calls, pure squeaks, or
+            # every call. A "both" segment and a null class match neither single type.
+            if target_type in ('usv', 'squeak'):
+                typed_source_df = mouse_usvs_df.filter(
+                    pls.col(CALL_CLASS_COLUMN).cast(pls.Utf8).eq(target_type).fill_null(False)
+                )
             else:
                 typed_source_df = mouse_usvs_df
             if target_category is not None and prediction_mode == 'individual':

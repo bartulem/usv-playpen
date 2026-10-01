@@ -42,7 +42,7 @@ from scipy.optimize import minimize_scalar
 from sklearn.preprocessing import SplineTransformer
 from statsmodels.tools.sm_exceptions import IterationLimitWarning
 
-from ..os_utils import configure_path
+from ..os_utils import CALL_CLASS_COLUMN, configure_path, require_call_class
 from ._usv_io import (
     extract_animal_sexes,
     extract_session_metadata,
@@ -199,11 +199,15 @@ def compute_session_usv_intervals(
         Whether to drop the segments ``detect_usv_noise`` flagged as holding no
         vocalization before the intervals are measured.
     call_type (str or None)
-        Restrict to ``'usv'`` (ultrasonic calls) or ``'squeak'``, or None for both.
+        Restrict to ``'usv'`` (rows with ``call_class`` ``"usv"``) or ``'squeak'``
+        (rows with ``call_class`` ``"squeak"``), or None for every non-noise row.
         Defaults to None. An inter-USV interval analysis wants ``'usv'``: dropping
         noise alone leaves squeaks in the record, and a squeak between two ultrasonic
         calls suppresses the long interval those calls would have formed and
-        contributes two short ones instead.
+        contributes two short ones instead. A ``"both"`` segment (a squeak and an
+        ultrasonic call together) and a null class are in neither type: under
+        ``'filtered'`` they are removed from both sequences, under ``'strict'`` they
+        stay in the record as non-target calls that break a pair.
     adjacency (str)
         How "consecutive" is defined, and the two are not interchangeable:
 
@@ -267,6 +271,8 @@ def compute_session_usv_intervals(
         )
     except FileNotFoundError:
         return {}
+    if call_type is not None and adjacency == "strict":
+        require_call_class(usv_info, session_root)
 
     # column lookup for the two interval modes
     usv0_tag, usv1_tag = ("start", "start") if interval_type == "s2s" else ("stop", "start")
@@ -289,7 +295,7 @@ def compute_session_usv_intervals(
     # carried alongside start/stop/sex rather than applied as a row filter.
     target_expr = (
         pls.lit(True).alias("is_target") if (call_type is None or adjacency == "filtered")
-        else (pls.col("squeak") if call_type == "squeak" else ~pls.col("squeak")).alias("is_target")
+        else pls.col(CALL_CLASS_COLUMN).cast(pls.Utf8).eq(call_type).fill_null(False).alias("is_target")
     )
     if "stop" in usv_info.columns:
         sub = usv_info.with_columns([emitter_expr, target_expr]).select(

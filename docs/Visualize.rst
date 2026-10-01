@@ -548,7 +548,7 @@ Being cohort-level, the figure is written to the project-wide ``figures.save_dir
 The layout / sampling knobs live in the ``embedding_thumbnails`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (the figure DPI and the sampling seed come from the general ``figures`` block). Core keys:
 
 * **category_col_suffix** : the label column that colors / groups the scatter and thumbnail rows — ``category`` or ``supercategory``.
-* **exclude_squeaks** : leave out the segments ``detect-usv-squeaks`` flagged as squeaks (``squeak`` True) from the scatter, the four small maps and the thumbnails (default ``true``). The QLVM models were trained without squeaks, so squeaks sit wherever the decoder places them.
+* **exclude_squeaks** : keep only the segments ``detect-usv-squeaks`` classed as pure USVs (``call_class`` ``usv``) in the scatter, the four small maps and the thumbnails, leaving out squeaks, segments holding both a squeak and a USV (``call_class`` ``squeak`` / ``both``) and unclassed rows (default ``true``). The USV QLVM models were trained on USVs only, so squeak-bearing segments sit wherever the decoder places them. A pooled embeddings table without ``call_class`` (built from summaries ``detect-usv-squeaks`` has not classified) raises; a cache written before the column existed is rebuilt automatically.
 * **n_samples_per_category** : number of thumbnail spectrograms sampled per category.
 * **tile_orientation** : thumbnail grid orientation — ``vertical`` / ``horizontal``.
 * **apply_mask** : apply the SAM2 mask to each thumbnail spectrogram.

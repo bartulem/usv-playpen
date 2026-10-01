@@ -59,9 +59,9 @@ def _write_usv_summary(session_root, rows: dict, csv_sep: str = ',') -> None:
     rows (dict)
         Column-name -> value-list mapping passed straight to
         ``polars.DataFrame``; must include at least the ``emitter``, ``start``
-        and ``stop`` columns the loaders rely on. ``noise`` and ``squeak``
-        columns of all-False are added when the caller does not supply them, since
-        the loaders filter on both and raise when either is missing.
+        and ``stop`` columns the loaders rely on. An all-False ``noise`` column and
+        an all-``"usv"`` ``call_class`` column are added when the caller does not
+        supply them, since the loaders filter on both and raise when either is missing.
     csv_sep (str)
         Field separator written into the CSV (mirrors the loaders' ``csv_sep``).
 
@@ -75,8 +75,8 @@ def _write_usv_summary(session_root, rows: dict, csv_sep: str = ',') -> None:
     csv_path = audio_dir / f'{session_root.name}_usv_summary.csv'
     if 'noise' not in rows:
         rows = {**rows, 'noise': [False] * len(next(iter(rows.values())))}
-    if 'squeak' not in rows:
-        rows = {**rows, 'squeak': [False] * len(next(iter(rows.values())))}
+    if 'call_class' not in rows:
+        rows = {**rows, 'call_class': ['usv'] * len(next(iter(rows.values())))}
     pls.DataFrame(rows).write_csv(file=csv_path, separator=csv_sep)
 
 
@@ -524,18 +524,19 @@ class TestFindBoutEpochs:
         np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0, 3.0, 4.0])
 
     def test_target_type_selects_the_positive_onsets(self, tmp_path):
-        """The ``squeak`` column decides which onsets are positive: 'usv' (the
-        default) keeps the ultrasonic calls only, 'squeak' the squeaks only, 'all'
-        both; the silent-epoch negatives are the same in all three because they are
+        """The ``call_class`` column decides which onsets are positive: 'usv' (the
+        default) keeps the ``usv`` rows only, 'squeak' the ``squeak`` rows only, 'all'
+        every row; a ``both`` segment (and a null class) is in neither single type;
+        the silent-epoch negatives are the same in all three because they are
         sampled against every call of the mouse."""
 
         rows = {
-            'emitter': ['male', 'male', 'male'],
-            'start': [2.0, 3.0, 4.0],
-            'stop': [2.05, 3.05, 4.05],
-            'usv_category': [1, 1, 1],
-            'usv_supercategory': [1, 1, 1],
-            'squeak': [False, True, False],
+            'emitter': ['male', 'male', 'male', 'male', 'male'],
+            'start': [2.0, 3.0, 4.0, 5.0, 6.0],
+            'stop': [2.05, 3.05, 4.05, 5.05, 6.05],
+            'usv_category': [1, 1, 1, 1, 1],
+            'usv_supercategory': [1, 1, 1, 1, 1],
+            'call_class': ['usv', 'squeak', 'usv', 'both', None],
         }
         kwargs = self._build(tmp_path, rows)
         common = dict(prediction_mode='individual', filter_history=1.0,
@@ -545,7 +546,7 @@ class TestFindBoutEpochs:
                for kind in ('usv', 'squeak', 'all')}
         np.testing.assert_allclose(out['usv']['positive_events'], [2.0, 4.0])
         np.testing.assert_allclose(out['squeak']['positive_events'], [3.0])
-        np.testing.assert_allclose(out['all']['positive_events'], [2.0, 3.0, 4.0])
+        np.testing.assert_allclose(out['all']['positive_events'], [2.0, 3.0, 4.0, 5.0, 6.0])
         np.testing.assert_allclose(out['usv']['negative_events'], out['squeak']['negative_events'])
         np.testing.assert_allclose(out['usv']['negative_events'], out['all']['negative_events'])
         # the default is 'usv'
@@ -554,7 +555,7 @@ class TestFindBoutEpochs:
 
     def test_target_type_refuses_what_it_cannot_do(self, tmp_path):
         """Squeak onsets outside 'individual' mode, an unknown call type, and a
-        summary without a ``squeak`` column (unless 'all') all raise rather than
+        summary without a ``call_class`` column (unless 'all') all raise rather than
         silently falling back to every call."""
 
         rows = {
@@ -563,7 +564,7 @@ class TestFindBoutEpochs:
             'stop': [2.05, 3.05],
             'usv_category': [1, 1],
             'usv_supercategory': [1, 1],
-            'squeak': [False, True],
+            'call_class': ['usv', 'squeak'],
         }
         kwargs = self._build(tmp_path, rows)
         common = dict(filter_history=1.0, usv_bout_time=0.5, min_usv_per_bout=2,
@@ -577,8 +578,8 @@ class TestFindBoutEpochs:
         bare_kwargs = self._build(bare, {'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
                                          'usv_category': [1], 'usv_supercategory': [1]})
         csv_path = next((bare / 'sess_B' / 'audio').glob('*_usv_summary.csv'))
-        pls.read_csv(csv_path).drop('squeak').write_csv(csv_path)
-        with pytest.raises(ValueError, match="no 'squeak' column"):
+        pls.read_csv(csv_path).drop('call_class').write_csv(csv_path)
+        with pytest.raises(ValueError, match="no 'call_class' column"):
             find_onset_epochs(prediction_mode='individual', target_type='usv', **common, **bare_kwargs)
         out = find_onset_epochs(prediction_mode='individual', target_type='all', **common, **bare_kwargs)
         np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0])

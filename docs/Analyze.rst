@@ -166,7 +166,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **n_spatial_bins** : number of spatial bins (2D behavioral feature)
 * **spatial_scale_cm** : maximum distance from center of arena to one edge (in cm)
 * **shuffle_seconds_range** : ``[min, max]`` of the uniform circular shift (in s) used to build the null distribution
-* **peth_window_seconds** : ``[start, stop]`` of the PETH window relative to each call's onset (in s); default ``[-2, 0.5]``. Bins before onset honour the two cleanliness rules below; a bin after onset is kept only while it ends before the next USV's onset (any emitter, squeaks included), so the post-onset PETH covers the call itself and the silence after it, never a following call
+* **peth_window_seconds** : ``[start, stop]`` of the PETH window relative to each call's onset (in s); default ``[-2, 0.5]``. Bins before onset honour the two cleanliness rules below; a bin after onset is kept only while it ends before the next USV's onset (any emitter, squeak and both segments included), so the post-onset PETH covers the call itself and the silence after it, never a following call
 * **peth_bin_seconds** : PETH bin width (in s)
 * **bout_quiet_seconds** : inter-bout silence required to define a new bout (in s)
 * **vocal_require_clean_post_anchor** : if ``true``, the time after the USV onset must be free of contaminating USVs to keep the anchor
@@ -177,8 +177,8 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **behavioral_min_occupancy_seconds** : minimum behavioral occupancy per bin (in s) to draw that bin in 1D feature plots; persisted into ``behavioral_metadata``
 * **usv_property_min_occupancy_seconds** : minimum vocal-property occupancy per bin (in s) to keep the rate estimate finite
 * **include_partner_vocalization_tuning_bool** : also compute partner-side vocal tuning when its threshold is met
-* **exclude_squeaks_self** : leave the self side's squeaks (``squeak`` True) out of its anchors (default ``true``). The self side is the emitter with more non-squeak USVs. Squeaks still count as other calls in the overlap checks, and a summary without a ``squeak`` column raises
-* **exclude_squeaks_partner** : the same for the partner side (default ``false``, since the partner is usually the female, who emits the squeaks). Either way, squeaks never enter the QLVM category tuning
+* **exclude_squeaks_self** : restrict the self side's anchors to pure USVs (``call_class`` ``usv``), leaving its squeaks and its ``both`` segments (a squeak and a USV together, treated like squeaks) out (default ``true``). The self side is the emitter with more ``usv``-class segments. Squeak and both segments still count as other calls in the overlap checks, and a summary without a ``call_class`` column raises
+* **exclude_squeaks_partner** : the same for the partner side (default ``false``, since the partner is usually the female, who emits the squeaks). Either way, only ``usv``-class anchors enter the QLVM category tuning (a squeak's or a both segment's QLVM label is not a USV category)
 * **excluded_behavioral_features** : behavioral base features left out of the tuning, derivatives (``_1st_der`` / ``_2nd_der``) included (default ``nose-nose``, ``allo_yaw-nose``, ``nose-allo_yaw``, ``allo_pitch-nose``, ``nose-allo_pitch``: their head-anchored versions, ``head-head``, ``allo_yaw-head``, ``head-allo_yaw``, ``allo_pitch-head``, ``head-allo_pitch``, are tuned instead)
 * **smoothing_sd** : standard deviation of the Gaussian kernel (in bins) applied to ratemaps and shuffle distributions; ``0`` disables smoothing
 * **circular_features** : list of behavioral feature suffixes that are wrap-around in nature (e.g. ``allo_yaw``, ``body_dir``); used by the triage helpers to detect divergence runs that span the bin-0 / bin-N boundary

@@ -474,7 +474,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     * ``generate_masks.sam2_model_dir``  -> ``<root>/sam``
     * ``generate_masks.sam2_model_path`` -> ``<root>/sam/checkpoint.pt``
     * ``generate_masks.yolo_weights``    -> ``<root>/sam/best.pt``
-    * ``detect_usv_squeaks.squeak_model_path`` -> ``<root>/squeak/mil_absdb_final.pt``
+    * ``detect_usv_squeaks.squeak_model_path`` -> ``<root>/squeak/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt``
     * ``detect_usv_noise.noise_model_path`` -> ``<root>/noise/noise_timemil_ens5_n4680_20260926.pt``
 
     A granular key is filled only when it is empty, so an explicit path set in
@@ -534,12 +534,14 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     sam_dir = f'{root}/sam'
     squeak_dir = f'{root}/squeak'
     # The noise model file name carries its training: TimeMIL, 5-seed ensemble, 3,562 labels, build date.
+    # The call-class (usv / squeak / both) model's likewise: 5-member ensemble, 2,476 non-unsure labels,
+    # build date, and "_reviewed" for the label set with the review overrides applied.
     noise_dir = f'{root}/noise'
     derived = (
         ('generate_masks', 'sam2_model_dir', sam_dir),
         ('generate_masks', 'sam2_model_path', f'{sam_dir}/checkpoint.pt'),
         ('generate_masks', 'yolo_weights', f'{sam_dir}/best.pt'),
-        ('detect_usv_squeaks', 'squeak_model_path', f'{squeak_dir}/mil_absdb_final.pt'),
+        ('detect_usv_squeaks', 'squeak_model_path', f'{squeak_dir}/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt'),
         ('detect_usv_noise', 'noise_model_path', f'{noise_dir}/noise_timemil_ens5_n4680_20260926.pt'),
     )
     for block, key, derived_path in derived:
@@ -1091,7 +1093,8 @@ def wait_for_subprocesses(
 
 # Canonical column order of a session's ``*_usv_summary.csv``: the DAS event
 # (written by das_summarize), the call-level labels (emitter from vocal assignment,
-# the squeak columns and squeak_frame_runs from detect_usv_squeaks), the acoustic descriptors
+# the call-class block from detect_usv_squeaks: call_class, its three class probabilities
+# and the squeak spans with their envelope and count), the acoustic descriptors
 # (compute_usv_acoustic_features, including the absolute loudness_db) and the QLVM torus coordinates and cluster labels of
 # the production models (infer_qlvm_latents with model_cells: the phase 6 regular
 # model's qlvm1/qlvm2 with its fine and coarse labels qlvm_category /
@@ -1099,7 +1102,7 @@ def wait_for_subprocesses(
 # conditional models, each with its fine and coarse labels P_category /
 # P_supercategory), and last the squeak torus coordinates qlvm_squeak1/qlvm_squeak2
 # (infer_qlvm_squeak_latents; kept with the other torus coordinates rather than with
-# the squeak columns, and reserved, so no model_cells prefix can write them). The
+# the call-class block, and reserved, so no model_cells prefix can write them). The
 # legacy column qlvm_model (written by the retired single-model run) is not listed:
 # production summaries do not carry it, and infer_qlvm_latents drops it from older
 # summaries it rewrites.
@@ -1109,7 +1112,7 @@ USV_SUMMARY_COLUMN_ORDER = (
     "usv_id", "start", "stop", "duration", "peak_amp_ch", "mean_amp_ch", "chs_count", "chs_detected",
     "emitter",
     "noise", "noise_probability",
-    "squeak", "squeak_probability", "squeak_start", "squeak_end", "squeak_frame_runs",
+    "call_class", "p_usv", "p_squeak", "p_both", "squeak_spans", "squeak_start", "squeak_end", "n_squeaks",
     "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "loudness_db",
     "spectral_entropy", "mask_number",
     "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
@@ -1167,6 +1170,123 @@ def drop_noise_usvs(usv_summary: Any, source: str, message_output: Callable = pr
     if n_dropped:
         message_output(f"    {source}: dropped {n_dropped} noise segment(s) of {usv_summary.height}.")
     return kept, n_dropped
+
+
+# Column `detect_usv_squeaks` writes: the call class of every segment that is not noise --
+# "usv" (an ultrasonic call only), "squeak" (a broadband squeak only) or "both" (a squeak and
+# an ultrasonic call in the same segment) -- and null on noise rows and on rows too short to score.
+CALL_CLASS_COLUMN = "call_class"
+CALL_CLASSES = ("usv", "squeak", "both")
+
+# The three selections every squeak-side consumer (squeak figures, the explorer's squeak map)
+# offers: pure squeaks, segments holding a squeak and a USV, or both kinds together.
+SQUEAK_CLASS_SELECTIONS = {
+    "squeak": ("squeak",),
+    "both": ("both",),
+    "squeak+both": ("squeak", "both"),
+}
+
+
+def require_call_class(usv_summary: Any, source: str) -> None:
+    """
+    Description
+    -----------
+    Checks that a USV summary table carries the ``call_class`` column ``detect-usv-squeaks``
+    writes, so a consumer that splits USVs from squeaks never silently treats every row as one
+    class. A summary scored only by the retired binary squeak detector (``squeak``,
+    ``squeak_probability``, ``squeak_frame_runs``) has no ``call_class`` and fails here too.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table (or any table holding its columns).
+    source (str)
+        What the table came from (a session id or file name), named in the error.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    KeyError
+        The table has no ``call_class`` column.
+    """
+
+    if CALL_CLASS_COLUMN not in usv_summary.columns:
+        error_message = (
+            f"{source} has no '{CALL_CLASS_COLUMN}' column, so its USVs cannot be told from its squeaks. "
+            f"Run detect-usv-squeaks on the session (after detect-usv-noise)."
+        )
+        raise KeyError(error_message)
+
+
+def call_class_mask(usv_summary: Any, classes: Iterable[str], source: str) -> Any:
+    """
+    Description
+    -----------
+    Marks the rows of a USV summary whose ``call_class`` is one of ``classes``. A null class
+    (a noise row, or a segment too short to score) is in no selection, so a mask built here
+    never admits noise.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table (or any table holding ``call_class``).
+    classes (Iterable[str])
+        Call classes to keep, each one of ``CALL_CLASSES``.
+    source (str)
+        What the table came from, named in the error when ``call_class`` is missing.
+
+    Returns
+    -------
+    mask (polars.Series)
+        Boolean, one value per row, False on null classes.
+
+    Raises
+    ------
+    KeyError
+        The table has no ``call_class`` column.
+    ValueError
+        A requested class is not one of ``CALL_CLASSES``.
+    """
+
+    classes = list(classes)
+    unknown = [value for value in classes if value not in CALL_CLASSES]
+    if unknown:
+        error_message = f"call_class_mask: unknown call class(es) {unknown}; the classes are {list(CALL_CLASSES)}."
+        raise ValueError(error_message)
+    require_call_class(usv_summary, source)
+    return usv_summary[CALL_CLASS_COLUMN].cast(str).is_in(classes).fill_null(False)
+
+
+def squeak_class_selection(selection: str) -> tuple[str, ...]:
+    """
+    Description
+    -----------
+    Resolves a squeak-class selection name (``"squeak"``, ``"both"`` or ``"squeak+both"``) to
+    the call classes it covers.
+
+    Parameters
+    ----------
+    selection (str)
+        One of the keys of ``SQUEAK_CLASS_SELECTIONS``.
+
+    Returns
+    -------
+    classes (tuple[str, ...])
+        The call classes the selection keeps.
+
+    Raises
+    ------
+    ValueError
+        The name is not a known selection.
+    """
+
+    if selection not in SQUEAK_CLASS_SELECTIONS:
+        error_message = f"Unknown squeak class selection {selection!r}; choose one of {list(SQUEAK_CLASS_SELECTIONS)}."
+        raise ValueError(error_message)
+    return SQUEAK_CLASS_SELECTIONS[selection]
 
 
 def order_usv_summary_columns(usv_summary: Any) -> Any:

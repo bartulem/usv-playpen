@@ -1696,8 +1696,8 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
         "emitter": ["m1"] * n_usvs,
         # Every synthetic call is real; the tuning-curve loader drops noise-flagged rows.
         "noise": [False] * n_usvs,
-        # No squeaks: the vocal tuning drops squeak anchors, so the flag is required.
-        "squeak": [False] * n_usvs,
+        # No squeaks: the vocal tuning keeps call_class "usv" anchors, so the class is required.
+        "call_class": ["usv"] * n_usvs,
         "qlvm_supercategory": rng.integers(1, 4, size=n_usvs).tolist(),
         "qlvm_category":     rng.integers(1, 6, size=n_usvs).tolist(),
         # the four conditional QLVM maps' labels (every map is tuned)
@@ -1924,41 +1924,61 @@ def test_load_behavioral_inputs_drops_excluded_features(synthetic_compute_sessio
 
 
 def test_squeaks_are_dropped_from_self_anchors_and_never_categorised(synthetic_compute_session):
-    """With exclude_squeaks_self (default) the self side's squeak calls are not
-    anchors; with it off they are anchors but still carry no QLVM category (every
-    map's category tuning is squeak-free), and a category held only by squeaks
-    does not appear."""
+    """With exclude_squeaks_self (default) the self side's anchors are its call_class "usv"
+    segments only: squeak AND both segments are dropped alike. With it off they are anchors but
+    still carry no QLVM category (every map's category tuning is usv-only), and a category held
+    only by squeak / both segments does not appear."""
     root, _ = synthetic_compute_session
     usv_csv = next(root.rglob("*_usv_summary.csv"))
     df = pls.read_csv(usv_csv)
-    squeak = np.zeros(df.height, dtype=bool)
-    squeak[:10] = True
-    # category 99 only on squeaks
+    call_class = np.array(["usv"] * df.height, dtype=object)
+    call_class[:5] = "squeak"
+    call_class[5:10] = "both"
+    not_usv = call_class != "usv"
+    # category 99 only on squeak / both segments
     df.with_columns(
-        pls.Series("squeak", squeak),
-        pls.when(pls.Series(squeak)).then(99).otherwise(pls.col("qlvm_category")).alias("qlvm_category"),
+        pls.Series("call_class", call_class.tolist(), dtype=pls.String),
+        pls.when(pls.Series(not_usv)).then(99).otherwise(pls.col("qlvm_category")).alias("qlvm_category"),
     ).write_csv(usv_csv)
 
     nt = _make_neuronal_tuning(root)
     voc_inputs = nt._load_vocal_inputs()
+    np.testing.assert_array_equal(voc_inputs["is_usv"], ~not_usv)
     excluded = nt._build_vocal_side_precompute(voc_inputs)["self"]
     assert excluded["side"]["n"] == df.height - 10
-    assert not voc_inputs["is_squeak"][excluded["anchor_idx"]].any()
+    assert excluded["side"]["n_usv"] == df.height - 10
+    assert voc_inputs["is_usv"][excluded["anchor_idx"]].all()
 
     nt.tuning_parameters_dict["exclude_squeaks_self"] = False
     kept = nt._build_vocal_side_precompute(voc_inputs)["self"]
     assert kept["side"]["n"] == df.height
     categorical = kept["anchor_categorical"]["qlvm_category"]
     assert 99 not in categorical["unique_cats"].tolist()
-    assert (categorical["anchor_cat_idx_dense"][voc_inputs["is_squeak"][kept["anchor_idx"]]] == -1).all()
+    assert (categorical["anchor_cat_idx_dense"][~voc_inputs["is_usv"][kept["anchor_idx"]]] == -1).all()
 
 
-def test_load_vocal_inputs_requires_the_squeak_column(synthetic_compute_session):
-    """A summary without a squeak column raises instead of tuning to squeaks."""
+def test_unscored_rows_are_not_usv_anchors(synthetic_compute_session):
+    """A non-noise row with a null call_class (a segment too short to score) is not a USV: it is
+    dropped from the anchors when squeaks are excluded, like a squeak or a both segment."""
     root, _ = synthetic_compute_session
     usv_csv = next(root.rglob("*_usv_summary.csv"))
-    pls.read_csv(usv_csv).drop("squeak").write_csv(usv_csv)
-    with pytest.raises(KeyError, match="no 'squeak' column"):
+    df = pls.read_csv(usv_csv)
+    call_class = ["usv"] * df.height
+    call_class[0] = None
+    df.with_columns(pls.Series("call_class", call_class, dtype=pls.String)).write_csv(usv_csv)
+
+    nt = _make_neuronal_tuning(root)
+    voc_inputs = nt._load_vocal_inputs()
+    assert not voc_inputs["is_usv"][0]
+    assert nt._build_vocal_side_precompute(voc_inputs)["self"]["side"]["n"] == df.height - 1
+
+
+def test_load_vocal_inputs_requires_the_call_class_column(synthetic_compute_session):
+    """A summary without a call_class column raises instead of tuning to squeaks."""
+    root, _ = synthetic_compute_session
+    usv_csv = next(root.rglob("*_usv_summary.csv"))
+    pls.read_csv(usv_csv).drop("call_class").write_csv(usv_csv)
+    with pytest.raises(KeyError, match="no 'call_class' column"):
         _make_neuronal_tuning(root)._load_vocal_inputs()
 
 

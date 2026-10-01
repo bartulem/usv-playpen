@@ -5,7 +5,7 @@ Tests for processing/detect_usv_noise -- the step that flags USV segments holdin
 The load-bearing checks are the ones a wrong answer would be silent about: the exclusion threshold taken
 from the bundle's ``decision`` block (and the refusal of a bundle without one), the input the models are
 handed (segment frames only, cut out of a context window), and the merge, which must replace stale noise
-columns and leave the summary in the canonical column order with the noise block before the squeak block.
+columns and leave the summary in the canonical column order with the noise block before the call-class block.
 """
 
 from __future__ import annotations
@@ -205,16 +205,16 @@ def test_load_noise_model_reports_a_missing_bundle(tmp_path):
         noise.load_noise_model(str(tmp_path / "absent.pt"), torch.device("cpu"))
 
 
-def test_detect_and_merge_writes_the_noise_columns_before_the_squeak_block(tmp_path, mocker):
+def test_detect_and_merge_writes_the_noise_columns_before_the_call_class_block(tmp_path, mocker):
     """
     The merge replaces stale noise columns, keeps every other column and the usv_id zero-padding, and
-    leaves the summary in the canonical order: emitter, the noise block, then the squeak block.
+    leaves the summary in the canonical order: emitter, the noise block, then the call-class block.
     """
     root = _build_session(tmp_path)
     summary_path = root / "audio" / f"{SESSION_ID}_usv_summary.csv"
     stale = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String}).with_columns(
         pls.lit(True).alias("noise"), pls.lit(0.1).alias("noise_probability"),
-        pls.lit(False).alias("squeak"), pls.lit(40000.0).alias("mean_freq_hz"),
+        pls.lit("usv").alias("call_class"), pls.lit(40000.0).alias("mean_freq_hz"),
     )
     stale.write_csv(summary_path)
 
@@ -235,7 +235,7 @@ def test_detect_and_merge_writes_the_noise_columns_before_the_squeak_block(tmp_p
     ).detect_and_merge()
 
     written = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
-    assert written.columns == ["usv_id", "start", "stop", "duration", "chs_count", "emitter", *noise.NOISE_COLUMNS, "squeak", "mean_freq_hz"]
+    assert written.columns == ["usv_id", "start", "stop", "duration", "chs_count", "emitter", *noise.NOISE_COLUMNS, "call_class", "mean_freq_hz"]
     assert written["usv_id"].to_list() == ["0000", "0001", "0002"]
     assert written["noise"].to_list() == [True, True, True]
     assert written["noise_probability"].null_count() == 0

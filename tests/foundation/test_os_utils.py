@@ -526,20 +526,21 @@ def test_order_usv_summary_columns_puts_known_columns_in_canonical_order():
     """Known columns follow USV_SUMMARY_COLUMN_ORDER whatever order they arrive in; unknown
     columns keep their relative order after them; values are untouched."""
     table = pls.DataFrame({
-        "custom_b": [1], "mean_freq_hz": [2.0], "usv_id": ["000000"], "squeak": [True],
+        "custom_b": [1], "mean_freq_hz": [2.0], "usv_id": ["000000"], "call_class": ["both"],
         "start": [0.1], "custom_a": [3], "emitter": [None], "stop": [0.2], "qlvm1": [0.5],
         "squeak_end": [0.19],
     })
     ordered = os_utils.order_usv_summary_columns(table)
     assert ordered.columns == [
-        "usv_id", "start", "stop", "emitter", "squeak", "squeak_end", "mean_freq_hz", "qlvm1",
+        "usv_id", "start", "stop", "emitter", "call_class", "squeak_end", "mean_freq_hz", "qlvm1",
         "custom_b", "custom_a",
     ]
     assert ordered.equals(table.select(ordered.columns))
 
 
-def test_usv_summary_column_order_places_squeaks_between_emitter_and_features():
-    """The agreed layout: DAS event -> emitter -> squeak block -> acoustic features -> QLVM,
+def test_usv_summary_column_order_places_call_classes_between_noise_and_features():
+    """The agreed layout: DAS event -> emitter -> noise block -> call-class block -> acoustic
+    features -> QLVM; the retired binary squeak detector's columns are not listed;
     where the QLVM block is the production torus coordinates and labels (phase 6 regular
     model with its fine and coarse labels, then the duration / mean-frequency / bandwidth /
     loudness conditional models, each with its fine and coarse labels, and last the squeak
@@ -555,13 +556,14 @@ def test_usv_summary_column_order_places_squeaks_between_emitter_and_features():
         "qlvm_squeak1", "qlvm_squeak2",
     ]
     assert "qlvm_model" not in order
-    assert order[order.index("squeak"):order.index("squeak") + 5] == [
-        "squeak", "squeak_probability", "squeak_start", "squeak_end", "squeak_frame_runs",
+    assert order[order.index("call_class"):order.index("call_class") + 8] == [
+        "call_class", "p_usv", "p_squeak", "p_both", "squeak_spans", "squeak_start", "squeak_end", "n_squeaks",
     ]
+    assert not {"squeak", "squeak_probability", "squeak_frame_runs"} & set(order)
     assert order.index("emitter") + 1 == order.index("noise")
     assert order[order.index("noise"):order.index("noise") + 2] == ["noise", "noise_probability"]
-    assert order.index("noise_probability") + 1 == order.index("squeak")
-    assert order.index("squeak_frame_runs") + 1 == order.index("mean_freq_hz")
+    assert order.index("noise_probability") + 1 == order.index("call_class")
+    assert order.index("n_squeaks") + 1 == order.index("mean_freq_hz")
     assert order.index("mask_number") < order.index("qlvm1")
 
 
@@ -604,7 +606,7 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     assert settings["infer_qlvm_squeak_latents"]["model_cell_directory"] == (
         "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm/natural_session_N11000_nomask"
     )
-    assert settings["detect_usv_squeaks"]["squeak_model_path"] == f"{root}/squeak/mil_absdb_final.pt"
+    assert settings["detect_usv_squeaks"]["squeak_model_path"] == f"{root}/squeak/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt"
     assert settings["detect_usv_noise"]["noise_model_path"] == f"{root}/noise/noise_timemil_ens5_n4680_20260926.pt"
 
 
@@ -826,3 +828,23 @@ def test_rebase_experimenter_in_paths_is_idempotent():
     already = {"p": "/mnt/falkner/Annegret/EPHYS"}
     out = os_utils.rebase_experimenter_in_paths(already, experimenter_list=["Bartul"], exp_id="Annegret")
     assert out == already
+
+
+# call classes
+
+
+def test_call_class_mask_selects_classes_and_never_nulls():
+    """call_class_mask keeps the requested classes, never a null (noise or unscored) row, rejects an
+    unknown class and raises on a summary without call_class."""
+    table = pls.DataFrame({"call_class": ["usv", None, "both", "squeak", "usv"]}, schema={"call_class": pls.String})
+    assert os_utils.call_class_mask(table, ["usv"], "s").to_list() == [True, False, False, False, True]
+    assert os_utils.call_class_mask(table, os_utils.squeak_class_selection("squeak+both"), "s").to_list() == [False, False, True, True, False]
+    assert os_utils.call_class_mask(table, os_utils.squeak_class_selection("both"), "s").to_list() == [False, False, True, False, False]
+    all_null = pls.DataFrame({"call_class": [None, None]})
+    assert os_utils.call_class_mask(all_null, ["usv"], "s").to_list() == [False, False]
+    with pytest.raises(ValueError, match="unknown call class"):
+        os_utils.call_class_mask(table, ["squeaks"], "s")
+    with pytest.raises(KeyError, match="detect-usv-squeaks"):
+        os_utils.call_class_mask(pls.DataFrame({"squeak": [True]}), ["usv"], "old_summary.csv")
+    with pytest.raises(ValueError, match="squeak class selection"):
+        os_utils.squeak_class_selection("usv")
