@@ -43,6 +43,7 @@ from .neural_artifacts import write_unit_section
 from .neural_cohort import emitter_usv_counts
 from .neural_design_assembly import (
     assemble_unit_sessions,
+    filter_vocalizations,
     load_session_usvs,
     silent_gap_before_call,
     spike_labels_at_frames,
@@ -102,7 +103,7 @@ def load_settings(settings_path: str | None = None) -> dict:
 
 
 def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id: str, fps: float,
-                       n_lags: int) -> tuple:
+                       n_lags: int, vocal_settings: dict) -> tuple:
     """
     Description
     -----------
@@ -140,7 +141,8 @@ def focal_vocal_frames(session: dict, session_id: str, data_root: str, mouse_id:
     # Match the emitter label EXACTLY, as the assembler does. Substring matching buys nothing here
     # -- across 77 courtship sessions it never once found a focal animal that equality missed -- and
     # it is fragile, because a bare mouse id is a prefix of the same animal's suffixed form.
-    usv_table = load_session_usvs(data_root, session_id)
+    usv_table = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings,
+                                     "analysed")
     focal_calls = usv_table.filter(usv_table["emitter"] == mouse_id)
     if focal_calls.height == 0:
         # The focal animal simply did not vocalize in this session, which is ordinary: it happens in
@@ -246,7 +248,8 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"]["vocal_emitter"])
+                                         settings["vocalization_settings"]["vocal_emitter"],
+                                         settings["vocalization_settings"])
     fps = per_session[sessions[0]]["fps"]
     # `history_pre_seconds` does THREE jobs at once, deliberately coupled: it is the kinematic
     # filter's LENGTH (these lags), the quiet window's backward guard, and the train/validation gap
@@ -271,7 +274,7 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     # split is what stops the block-CV branch raising NameError instead of returning its artifact.
     session = per_session[test_id]
     vocal_frames, pointer, gaps = focal_vocal_frames(session, test_id, data_root, unit["mouse_id"],
-                                                     fps, n_lags)
+                                                     fps, n_lags, settings["vocalization_settings"])
 
     inner_sessions, inner_ids = per_session, pool_ids
     if len(pool_ids) == 1:
@@ -377,7 +380,8 @@ def run_fold(unit: dict, fold_index: int, settings: dict, data_root: str, output
     vocal_everywhere = []
     for other_id in [s for s in sessions if s in set(unit["vocal_sessions"])]:
         other_frames, other_pointer, other_gaps = focal_vocal_frames(
-            per_session[other_id], other_id, data_root, unit["mouse_id"], fps, n_lags)
+            per_session[other_id], other_id, data_root, unit["mouse_id"], fps, n_lags,
+            settings["vocalization_settings"])
         scored = score_fold(estimator, per_session[other_id], selected, other_frames, n_lags,
                             base_rate, encoding, linear_predictor_at_frames)
         scored["session_id"] = other_id
@@ -587,7 +591,8 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"]["vocal_emitter"])
+                                         settings["vocalization_settings"]["vocal_emitter"],
+                                         settings["vocalization_settings"])
     fps = per_session[sessions[0]]["fps"]
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     feature_names = list(per_session[sessions[0]]["feature_names"])
@@ -675,7 +680,8 @@ def run_single(unit: dict, settings: dict, data_root: str, output_directory: str
     vocal_ids = [s for s in sessions if s in set(unit["vocal_sessions"])]
     for session_id in vocal_ids:
         frames, pointer, gaps = focal_vocal_frames(per_session[session_id], session_id, data_root,
-                                                   unit["mouse_id"], fps, n_lags)
+                                                   unit["mouse_id"], fps, n_lags,
+                                                   settings["vocalization_settings"])
         vocal_frames_by_session[session_id] = frames
         result = score_fold(estimator, per_session[session_id], selected, frames, n_lags, base_rate,
                             encoding, linear_predictor_at_frames)
@@ -776,7 +782,8 @@ def combine(unit: dict, settings: dict, data_root: str, output_directory: str,
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"]["vocal_emitter"])
+                                         settings["vocalization_settings"]["vocal_emitter"],
+                                         settings["vocalization_settings"])
     fps = per_session[sessions[0]]["fps"]
     n_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     feature_names = list(per_session[sessions[0]]["feature_names"])
@@ -954,7 +961,8 @@ def build_unit_record(unit_id: str, mouse_id: str, rec_date: int, sessions: list
     """
 
     counts = emitter_usv_counts(sessions, data_root, dict.fromkeys(sessions, mouse_id),
-                                settings["vocalization_settings"]["vocal_emitter"])
+                                settings["vocalization_settings"]["vocal_emitter"],
+                                settings["vocalization_settings"])
     threshold = settings["data_sufficiency"]["min_emitter_usvs_per_session"]
     return {"unit_uid": f"{mouse_id}_{rec_date}_{unit_id}", "mouse_id": mouse_id,
             "rec_date": rec_date, "unit_id": unit_id, "courtship_sessions": list(sessions),

@@ -27,6 +27,7 @@ import polars as pl
 import pytest
 
 from usv_playpen.neural_modeling.main_neural_encoding_dispatcher import (
+    filter_vocalizations,
     focal_vocal_frames,
 )
 from usv_playpen.neural_modeling.neural_design_assembly import (
@@ -83,6 +84,9 @@ class TestCleanWindowMask:
         assert clean_window_mask(np.array([1.0]), np.array([]), np.array([]), 0.05).tolist() == [True]
 
 
+VOCAL_SETTINGS = {"exclude_noise": True, "exclude_squeaks": True, "squeaks_block_quiet": True}
+
+
 def _write_session(root: pathlib.Path, session_id: str, unit_id: str, *, n_frames: int,
                    frame_rate: float, calls: list[tuple[float, float, str, float, float]],
                    spike_seconds: np.ndarray) -> None:
@@ -103,6 +107,10 @@ def _write_session(root: pathlib.Path, session_id: str, unit_id: str, *, n_frame
         "emitter": [c[2] for c in calls],
         "qlvm1": [c[3] for c in calls],
         "qlvm2": [c[4] for c in calls],
+        # The classifier columns the vocalization filter reads. A call tuple may carry them as a
+        # 6th and 7th element; the default is a clean vocalization, which is what most tests want.
+        "noise": [bool(c[5]) if len(c) > 5 else False for c in calls],
+        "squeak": [bool(c[6]) if len(c) > 6 else False for c in calls],
     }).write_csv(audio_dir / f"{session_id}_usv_summary.csv")
 
     ephys_dir = root / session_id / "ephys" / "imec0" / "cluster_data"
@@ -447,7 +455,7 @@ class TestFocalVocalFrames:
                        spike_seconds=np.array([99.98]))
         session = {"n_frames": 150000}
         frames, pointer, gaps = focal_vocal_frames(session, "20250101_000000", str(tmp_path),
-                                                   "male", 150.0, 600)
+                                                   "male", 150.0, 600, VOCAL_SETTINGS)
         assert frames.size == 0
         assert gaps.size == 0
         assert pointer.tolist() == [0]
@@ -461,7 +469,7 @@ class TestFocalVocalFrames:
                        spike_seconds=np.array([99.98]))
         session = {"n_frames": 150000}
         frames, _pointer, gaps = focal_vocal_frames(session, "20250101_000000", str(tmp_path),
-                                                    "147366", 150.0, 600)
+                                                    "147366", 150.0, 600, VOCAL_SETTINGS)
         assert gaps.size == 1                     # only the exact-match call, not the "147366_1" one
         assert frames.min() >= int(200.0 * 150.0)
 
@@ -489,7 +497,7 @@ class TestQuietSideKeepsEverySession:
         unit = {"unit_id": self.UNIT, "mouse_id": "male",
                 "courtship_sessions": ["s_rich", "s_thin"],
                 "vocal_sessions": ["s_rich"]}
-        assemble_unit_sessions(unit, "/data", {}, 4.0, 2.0, "all", "self")
+        assemble_unit_sessions(unit, "/data", {}, 4.0, 2.0, "all", "self", VOCAL_SETTINGS)
 
         assert seen["dirs"] == ["/data/s_rich", "/data/s_thin"]
         assert "/data/s_thin" in seen["dirs"]        # the thin session is FITTED on, not dropped
@@ -595,3 +603,55 @@ class TestVocalSessionScope:
         gated = assemble_unit_vocal_events(one, str(tmp_path), settings, 0.05, 0.05)
         assert gated["session_ids"] == ["20250101_000000"]
         assert set(gated["session_index"].tolist()) == {0}
+
+
+class TestVocalizationFilter:
+    """Noise and squeaks are excluded, and the two categories deliberately have DIFFERENT scopes.
+
+    Noise is not a vocalization, so it is dropped everywhere including the quiet guard. A squeak is a
+    real sound of a different type, so it leaves the analysed call set but -- at the shipped default --
+    still stops a frame counting as quiet.
+    """
+
+    TABLE = pl.DataFrame({"start": [0.0, 1.0, 2.0, 3.0],
+                          "noise": [True, False, False, False],
+                          "squeak": [False, True, False, False]})
+
+    def test_analysed_scope_drops_both(self):
+        kept = filter_vocalizations(self.TABLE, VOCAL_SETTINGS, "analysed")
+        assert kept["start"].to_list() == [2.0, 3.0]
+
+    def test_guard_keeps_squeaks_by_default(self):
+        """The animal DID vocalize, so the surrounding frames are not silent."""
+        kept = filter_vocalizations(self.TABLE, VOCAL_SETTINGS, "guard")
+        assert kept["start"].to_list() == [1.0, 2.0, 3.0]
+
+    def test_guard_drops_squeaks_when_they_do_not_block_quiet(self):
+        settings = dict(VOCAL_SETTINGS, squeaks_block_quiet=False)
+        kept = filter_vocalizations(self.TABLE, settings, "guard")
+        assert kept["start"].to_list() == [2.0, 3.0]
+
+    def test_noise_is_dropped_from_the_guard_too(self):
+        """A microphone artefact must never veto a genuinely silent frame."""
+        for scope in ("analysed", "guard"):
+            kept = filter_vocalizations(self.TABLE, VOCAL_SETTINGS, scope)
+            assert 0.0 not in kept["start"].to_list()
+
+    def test_flags_off_keeps_everything(self):
+        settings = {"exclude_noise": False, "exclude_squeaks": False, "squeaks_block_quiet": True}
+        for scope in ("analysed", "guard"):
+            assert filter_vocalizations(self.TABLE, settings, scope).height == 4
+
+    def test_a_missing_column_raises_rather_than_silently_skipping(self):
+        """An unfiltered run must never be indistinguishable from a filtered one in its numbers."""
+        table = pl.DataFrame({"start": [0.0, 1.0]})
+        with pytest.raises(KeyError, match="no such column"):
+            filter_vocalizations(table, VOCAL_SETTINGS, "analysed")
+
+    def test_an_unknown_scope_raises(self):
+        with pytest.raises(ValueError, match="scope must be one of"):
+            filter_vocalizations(self.TABLE, VOCAL_SETTINGS, "everything")
+
+    def test_the_filter_preserves_row_order(self):
+        table = pl.DataFrame({"start": [5.0, 1.0, 9.0], "noise": [False] * 3, "squeak": [False] * 3})
+        assert filter_vocalizations(table, VOCAL_SETTINGS, "analysed")["start"].to_list() == [5.0, 1.0, 9.0]

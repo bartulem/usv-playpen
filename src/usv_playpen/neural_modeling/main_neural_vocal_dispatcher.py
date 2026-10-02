@@ -684,7 +684,8 @@ def run_nested_vocal_manifold_position_decoding(unit: dict, events: dict, settin
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"]["vocal_emitter"])
+                                         settings["vocalization_settings"]["vocal_emitter"],
+                                         settings["vocalization_settings"])
     fps = per_session[unit["courtship_sessions"][0]]["fps"]
     history_lags = int(np.floor(encoding["history_pre_seconds"] * fps))
     reduced = reduced_model_features(settings)
@@ -786,7 +787,8 @@ def run_vocal_gating(unit: dict, settings: dict, data_root: str, output_director
     per_session = assemble_unit_sessions(unit, data_root, settings["kinematic_features"],
                                          encoding["history_pre_seconds"], encoding["clean_post_seconds"],
                                          settings["vocalization_settings"]["clean_against"],
-                                         settings["vocalization_settings"]["vocal_emitter"])
+                                         settings["vocalization_settings"]["vocal_emitter"],
+                                         settings["vocalization_settings"])
     seed = int(settings["null"]["shuffle_seed"])
     universe = gating_universe(unit, data_root, per_session, gating, settings["vocalization_settings"],
                                seed=seed)

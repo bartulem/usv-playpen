@@ -331,6 +331,10 @@ class TestSurvivorReporting:
         assert "forward_stop_gain" not in _gating()
 
 
+VOCAL_SETTINGS = {"vocal_emitter": "self", "exclude_noise": True, "exclude_squeaks": True,
+                  "squeaks_block_quiet": True}
+
+
 class TestTheUniverse:
     """Three frame categories, two of which the model sees. The third -- peri-vocal -- must be absent
     from BOTH, because it holds most of the firing and folding it into quiet manufactures a feature
@@ -346,7 +350,9 @@ class TestTheUniverse:
                             lambda _root, _sid: (["male", "female"], self.FPS, self.N_FRAMES))
         monkeypatch.setattr(module, "load_session_usvs", lambda _root, _sid: pl.DataFrame(
             {"start": [c[0] for c in calls], "stop": [c[1] for c in calls],
-             "emitter": [c[2] for c in calls]}))
+             "emitter": [c[2] for c in calls],
+             # The classifier columns the vocalization filter reads, as the real summaries carry them.
+             "noise": [False] * len(calls), "squeak": [False] * len(calls)}))
 
     def _per_session(self, session_ids, quiet, spike_frames):
         series = np.column_stack([np.arange(self.N_FRAMES, dtype=float),
@@ -366,7 +372,7 @@ class TestTheUniverse:
         quiet = np.arange(3000, 3500)                              # far from the call
         universe = gating_universe(self._unit(), "/data",
                                    self._per_session(["s0", "s1"], quiet, [1005, 3010]),
-                                   _gating(), {"vocal_emitter": "self"})
+                                   _gating(), VOCAL_SETTINGS)
         frames_used = universe["features"][:, 0]                   # feature 0 IS the frame index
         assert 1005 in frames_used                                 # inside the call -> vocal
         assert 3010 in frames_used                                 # a quiet anchor
@@ -377,7 +383,7 @@ class TestTheUniverse:
         self._patch(monkeypatch, [(10.0, 10.5, "male")])
         universe = gating_universe(self._unit(), "/data",
                                    self._per_session(["s0", "s1"], np.arange(3000, 3500), [1005]),
-                                   _gating(), {"vocal_emitter": "self"})
+                                   _gating(), VOCAL_SETTINGS)
         frames = universe["features"][:, 0]
         inside = (frames >= 1000) & (frames < 1050)
         np.testing.assert_array_equal(universe["vocal"] > 0, inside)
@@ -388,7 +394,7 @@ class TestTheUniverse:
         self._patch(monkeypatch, [(10.0, 10.2, "male")])
         universe = gating_universe(self._unit(), "/data",
                                    self._per_session(["s0", "s1"], np.arange(3000, 3100), [1005]),
-                                   _gating(), {"vocal_emitter": "self"})
+                                   _gating(), VOCAL_SETTINGS)
         assert universe["features"].shape[1] == 2                  # one column per feature, no lags
         np.testing.assert_allclose(universe["features"][:, 1], -universe["features"][:, 0])
 
@@ -397,7 +403,7 @@ class TestTheUniverse:
         self._patch(monkeypatch, [(10.0, 10.5, "female")])
         universe = gating_universe(self._unit(), "/data",
                                    self._per_session(["s0", "s1"], np.arange(3000, 3100), [1005]),
-                                   _gating(), {"vocal_emitter": "self"})
+                                   _gating(), VOCAL_SETTINGS)
         assert universe["vocal"].sum() == 0
 
     def test_the_quiet_cap_is_honoured(self, monkeypatch):
@@ -406,7 +412,7 @@ class TestTheUniverse:
         settings["max_quiet_frames_per_session"] = 50
         universe = gating_universe(self._unit(), "/data",
                                    self._per_session(["s0", "s1"], np.arange(2000, 3000), [1005]),
-                                   settings, {"vocal_emitter": "self"})
+                                   settings, VOCAL_SETTINGS)
         for book in universe["per_session"].values():
             assert book["n_quiet_frames_available"] == 1000
             assert book["n_quiet_frames_fitted"] == 50
@@ -423,7 +429,7 @@ class TestTheUniverse:
         quiet = np.arange(2000, 3000)
         universe = gating_universe(self._unit(), "/data",
                                    self._per_session(["s0", "s1"], quiet, [1005, 2500]),
-                                   settings, {"vocal_emitter": "self"})
+                                   settings, VOCAL_SETTINGS)
         per_session_rows = universe["spikes_quiet"][universe["session_quiet"] == 0]
         assert per_session_rows.sum() == 1                         # the one quiet spike is kept
         assert per_session_rows.size == 4                          # plus 3 zeros, not 999
@@ -434,7 +440,7 @@ class TestTheUniverse:
         self._patch(monkeypatch, [(10.0, 10.5, "male")])
         universe = gating_universe(self._unit(), "/data",
                                    self._per_session(["s0", "s1"], np.arange(3000, 3500), [1005]),
-                                   _gating(), {"vocal_emitter": "self"})
+                                   _gating(), VOCAL_SETTINGS)
         book = universe["per_session"]["s0"]
         assert book["n_vocal_frames"] == 50
         assert book["n_quiet_frames_available"] == 500

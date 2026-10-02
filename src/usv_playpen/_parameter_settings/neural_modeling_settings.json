@@ -60,6 +60,9 @@
   "vocalization_settings": {
     "vocal_emitter": "self",
     "clean_against": "all",
+    "exclude_noise": true,
+    "exclude_squeaks": true,
+    "squeaks_block_quiet": true,
     "spike_window": {
       "pre_offset_seconds": 0.05,
       "width_seconds": 0.1

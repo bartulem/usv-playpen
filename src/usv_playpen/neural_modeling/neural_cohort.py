@@ -49,7 +49,8 @@ from pathlib import Path
 import polars as pl
 
 from ..os_utils import configure_path
-from .neural_design_assembly import emitter_names, load_session_usvs, session_timebase
+from .neural_design_assembly import (emitter_names, filter_vocalizations, load_session_usvs,
+                                     session_timebase)
 
 
 def load_courtship_session_ids(session_list_files: list[str]) -> set[str]:
@@ -146,7 +147,7 @@ def recorded_mouse_by_session(catalog_path: str) -> dict:
 
 
 def emitter_usv_counts(session_ids, data_root: str, mouse_by_session: dict,
-                     vocal_emitter: str = "self") -> dict:
+                     vocal_emitter: str, vocal_settings: dict) -> dict:
     """
     Description
     -----------
@@ -182,7 +183,11 @@ def emitter_usv_counts(session_ids, data_root: str, mouse_by_session: dict,
     for session_id in sorted(session_ids):
         try:
             track_names, _frame_rate, _n_frames = session_timebase(data_root, session_id)
-            usv = load_session_usvs(data_root, session_id)
+            # The gate decides which sessions are vocal-ELIGIBLE, so it must count the calls the
+            # analyses will actually score -- counting noise and squeaks would admit a session on
+            # the strength of events no analysis ever sees.
+            usv = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings,
+                                       "analysed")
         except FileNotFoundError:
             counts[session_id] = 0
             continue
@@ -319,7 +324,8 @@ def build_cohort_manifest(settings: dict) -> list[dict]:
     mouse_by_session = recorded_mouse_by_session(catalog_path)
     counts = emitter_usv_counts(session_ids & set(mouse_by_session),
                                 settings["data_roots"]["data_root"], mouse_by_session,
-                                settings["vocalization_settings"]["vocal_emitter"])
+                                settings["vocalization_settings"]["vocal_emitter"],
+                                settings["vocalization_settings"])
     return select_cohort(
         catalog_path=catalog_path,
         courtship_session_ids=session_ids,

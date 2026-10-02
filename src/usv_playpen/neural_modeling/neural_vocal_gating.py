@@ -55,6 +55,7 @@ import numpy as np
 from .deviance_metrics import bernoulli_deviance, calibrate_intercept, newton_logistic
 from .neural_design_assembly import (
     emitter_names,
+    filter_vocalizations,
     load_session_usvs,
     session_timebase,
     spike_labels_at_frames,
@@ -638,7 +639,8 @@ def gating_universe(unit: dict, data_root: str, per_session: dict, settings: dic
             raise ValueError(msg)
 
         track_names, fps, n_frames = session_timebase(data_root, session_id)
-        usv = load_session_usvs(data_root, session_id)
+        usv = filter_vocalizations(load_session_usvs(data_root, session_id), vocal_settings,
+                                   "analysed")
         focal_name = emitter_names(track_names, unit["mouse_id"],
                                    vocal_settings["vocal_emitter"])[0]
         focal = usv.filter(usv["emitter"] == focal_name)

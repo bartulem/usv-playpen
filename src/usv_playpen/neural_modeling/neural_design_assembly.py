@@ -407,6 +407,74 @@ def load_session_usvs(data_root: str, session_id: str, csv_sep: str = ",") -> pl
     return pl.read_csv(usv_path, separator=csv_sep, infer_schema_length=5000)
 
 
+VOCALIZATION_SCOPES = ("analysed", "guard")
+
+
+def filter_vocalizations(usv_df: pl.DataFrame, vocal_settings: dict, scope: str) -> pl.DataFrame:
+    """
+    Description
+    -----------
+    Drop the rows of a USV summary that the settings say are not vocalizations of the analysed kind.
+
+    Two categories are removed, for different reasons, and they do NOT have the same scope.
+
+    ``noise`` is not a vocalization at all -- the classifier's positive class is "no vocalization" --
+    so a noise row is removed EVERYWHERE, including from the guard that decides which frames count as
+    quiet. Leaving it in the guard would let a microphone artefact veto a genuinely silent frame.
+
+    ``squeak`` is a real sound the animal made, but a different TYPE with its own model and its own
+    ``qlvm_squeak*`` coordinates, so a squeak pushed through the base encoder is out of distribution
+    and does not belong in the analysed call set. Whether it should still make surrounding frames
+    non-quiet is a separate question, because there it is acting as evidence the animal vocalized
+    rather than as a point on the manifold. ``squeaks_block_quiet`` decides that, and shipping true
+    means "quiet" keeps its stronger reading: the animal made no sound of any kind.
+
+    Measured exposure (2026-09-30): 3.5% noise and 7.3% squeaks across the 176 behavioural courtship
+    sessions, 10.6% together; far less on the ephys days, 0.8-1.5% of focal calls on 20250919. On the
+    behavioural corpus the unfiltered base map's densest cell sat INSIDE the squeak cluster, so the
+    density panel was reporting squeaks as the repertoire's mode.
+
+    Parameters
+    ----------
+    usv_df (pl.DataFrame)
+        A session's USV summary, as ``load_session_usvs`` returns it.
+    vocal_settings (dict)
+        The ``vocalization_settings`` block, carrying the three exclusion flags.
+    scope (str)
+        ``'analysed'`` for the calls an analysis scores, ``'guard'`` for the set that decides
+        cleanliness.
+
+    Returns
+    -------
+    filtered (pl.DataFrame)
+        The rows that survive, in their original order.
+    """
+
+    if scope not in VOCALIZATION_SCOPES:
+        msg = f"scope must be one of {VOCALIZATION_SCOPES}, got {scope!r}"
+        raise ValueError(msg)
+
+    drop_noise = vocal_settings["exclude_noise"]
+    drop_squeaks = vocal_settings["exclude_squeaks"]
+    if scope == "guard" and vocal_settings["squeaks_block_quiet"]:
+        drop_squeaks = False
+
+    wanted = ([("noise", drop_noise)] if drop_noise else []) + ([("squeak", drop_squeaks)]
+                                                                if drop_squeaks else [])
+    for column, _flag in wanted:
+        # Fail loudly: a summary predating the classifier would otherwise be silently unfiltered,
+        # and an unfiltered run is indistinguishable from a filtered one in the numbers it writes.
+        if column not in usv_df.columns:
+            msg = (f"vocalization_settings asks to exclude '{column}' but the usv_summary has no such "
+                   f"column. Available: {usv_df.columns}.")
+            raise KeyError(msg)
+
+    filtered = usv_df
+    for column, _flag in wanted:
+        filtered = filtered.filter(~pl.col(column).cast(pl.Boolean))
+    return filtered
+
+
 def emitter_names(track_names: list, recorded_mouse_id: str, spec: str) -> list:
     """
     Description
@@ -651,6 +719,7 @@ def assemble_unit_sessions(
         clean_post_seconds: float,
         clean_against,
         vocal_emitter: str,
+        vocal_settings: dict,
 ) -> dict:
     """
     Description
@@ -705,12 +774,17 @@ def assemble_unit_sessions(
         n_frames = feature_ts.shape[0]
 
         _spk_sec, spike_frames = load_unit_spike_frames(data_root, session_id, unit["unit_id"])
-        usv = load_session_usvs(data_root, session_id)
+        raw_usv = load_session_usvs(data_root, session_id)
+        # Two scopes, deliberately: the guard decides which frames are QUIET and may keep squeaks
+        # (the animal did vocalize), while the onset anchors are calls the analysis scores and must
+        # not contain a squeak or a noise artefact.
+        usv = filter_vocalizations(raw_usv, vocal_settings, "guard")
+        analysed = filter_vocalizations(raw_usv, vocal_settings, "analysed")
         starts = usv["start"].to_numpy()
         stops = usv["stop"].to_numpy()
         onset_names = emitter_names(names[session_id], unit["mouse_id"], vocal_emitter)
-        onset_table = usv.filter(usv["emitter"].is_in(onset_names)) if onset_names else usv
-        onset_starts = onset_table["start"].to_numpy() if usv.height else np.array([])
+        onset_table = analysed.filter(analysed["emitter"].is_in(onset_names)) if onset_names else analysed
+        onset_starts = onset_table["start"].to_numpy() if analysed.height else np.array([])
 
         # `clean_against` decides WHOSE calls make a frame unclean. Under the default every emitter
         # counts, so a quiet frame is one in which the animal was not even HEARING a call -- PAG sits
@@ -923,10 +997,13 @@ def assemble_unit_vocal_events(unit: dict, data_root: str, settings: dict, pre_o
         # that "quiet" means the animal could not even hear a partner) or one named mouse. It governs
         # the tile guard and the prevocal filter alike, so one definition serves both.
         guard_names = emitter_names(track_names, unit["mouse_id"], clean_against)
-        guard = usv if not guard_names else usv.filter(usv["emitter"].is_in(guard_names))
+        guard_table = filter_vocalizations(usv, settings["vocalization_settings"], "guard")
+        guard = guard_table if not guard_names else guard_table.filter(
+            guard_table["emitter"].is_in(guard_names))
         all_starts = guard["start"].to_numpy().astype(np.float64)
         all_stops = guard["stop"].to_numpy().astype(np.float64)
-        focal = usv.filter(usv["emitter"] == focal_name)
+        analysed = filter_vocalizations(usv, settings["vocalization_settings"], "analysed")
+        focal = analysed.filter(analysed["emitter"] == focal_name)
         focal_starts = focal["start"].to_numpy().astype(np.float64)
         focal_stops = focal["stop"].to_numpy().astype(np.float64)
         focal_positions = focal.select(position_columns).to_numpy().astype(np.float64)
