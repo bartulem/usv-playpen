@@ -34,23 +34,17 @@
     "spatial_hist_num_bins": 196
   },
   "compute_inter_usv_interval_distributions": {
-    "seam_ladder_thin_bool": true,
-    "seam_ladder_stride_samples": 8128,
-    "seam_ladder_half_width_ms": 1.5,
-    "seam_ladder_max_rung": 6,
-    "seam_ladder_seed": 0,
     "session_lists": [
       "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
     ],
-    "output_directory": "/mnt/falkner/Bartul/modeling/usv_interval_results",
+    "output_directory": "/mnt/falkner/Bartul/modeling/usv_interval_results/male_female",
     "figures_directory": "/mnt/falkner/Bartul/figures",
-    "noise_col_id": "qlvm_supercategory",
-    "noise_categories": [],
-    "fit_mixture_model": true,
+    "exclude_noise_usvs": true,
+    "fit_mixture_model": false,
     "n_components_min": 2,
     "n_components_max": 6,
     "n_repeats": 10,
-    "max_modes_reported": 3,
+    "max_modes_reported": 6,
     "random_seed_base": 0,
     "cv_n_folds": 5,
     "cv_n_init": 5,
@@ -69,7 +63,36 @@
     "bootstrap_lrt_alpha": 0.01,
     "bootstrap_lrt_bonferroni": true,
     "bootstrap_lrt_n_jobs": 24,
-    "bootstrap_lrt_n_init": 10
+    "bootstrap_lrt_n_init": 10,
+    "interval_pools": [
+      {
+        "sex": "male",
+        "call_type": "usv",
+        "adjacency": "filtered",
+        "fit": true
+      },
+      {
+        "sex": "female",
+        "call_type": "squeak",
+        "adjacency": "strict",
+        "fit": false
+      }
+    ],
+    "min_intervals_for_fitting": 5000,
+    "tied_n_background": 2,
+    "tied_peak_grid": [1, 2, 3],
+    "tied_n_init": 4,
+    "tied_n_init_boot": 2,
+    "design_bootstrap": 2000,
+    "fit_serial_dependence": true,
+    "serial_dependence_n_knots": 6,
+    "serial_dependence_corner_widths": [0.05, 0.15, 0.3],
+    "serial_dependence_bootstrap": 1000,
+    "serial_dependence_level": 99.0,
+    "serial_dependence_bend_bounds_ms": [30.0, 600.0],
+    "serial_dependence_grid_percentiles": [1.0, 99.0],
+    "serial_dependence_max_iter": 20000,
+    "fit_tied_model": true
   },
   "send_email": {
     "analyses_pc_list": [
@@ -143,7 +166,7 @@
     "n_spatial_bins": 196,
     "spatial_scale_cm": 32,
     "shuffle_seconds_range": [20, 60],
-    "peth_window_seconds": [-2, 0],
+    "peth_window_seconds": [-2, 0.5],
     "peth_bin_seconds": 0.05,
     "bout_quiet_seconds": 2.0,
     "vocal_require_clean_post_anchor": true,
@@ -154,6 +177,15 @@
     "behavioral_min_occupancy_seconds": 1.0,
     "usv_property_min_occupancy_seconds": 0.25,
     "include_partner_vocalization_tuning_bool": false,
+    "exclude_squeaks_self": true,
+    "exclude_squeaks_partner": false,
+    "excluded_behavioral_features": [
+      "nose-nose",
+      "allo_yaw-nose",
+      "nose-allo_yaw",
+      "allo_pitch-nose",
+      "nose-allo_pitch"
+    ],
     "smoothing_sd": 1.0,
     "circular_features": ["allo_yaw", "body_dir"]
   },

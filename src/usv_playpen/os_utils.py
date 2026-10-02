@@ -369,22 +369,113 @@ def rebase_experimenter_in_paths(obj: object = None,
     return obj
 
 
+# The QLVM model package the production usv_summary.csv columns come from (the
+# v3 package; read-only). A module constant rather than a processing_settings.json
+# key: the GUI and the CLI re-key every experimenter name in those settings to the
+# active experimenter (`rebase_experimenter_in_paths`), which would rewrite this
+# path under another experimenter's directory to the active one's, where no
+# package exists.
+QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3"
+
+# The production embedding: column prefix -> cell of the package above. The
+# unconditional phase 6 regular model gives qlvm1/qlvm2; the four phase 11
+# tail-bin conditional models give qlvm_dur1/2, qlvm_mf1/2, qlvm_bw1/2 and
+# qlvm_loud1/2. Every cell is the natural_5strata_N29000 design, unmasked, floored.
+QLVM_PRODUCTION_MODEL_CELLS = {
+    "qlvm": "phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm_dur": "phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm_mf": "phase11_cond_mean_freq_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm_bw": "phase11_cond_bandwidth_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm_loud": "phase11_cond_loudness_floor/natural_5strata_N29000_unmasked_floor",
+}
+
+# The production squeak (broadband vocalization) embedding: the phase 3 BBV package
+# and its natural_session cell (natural draw over the duration bins, per-session bin
+# cap; the production choice since 2026-09-30), written by infer-qlvm-squeak-latents as
+# qlvm_squeak1/qlvm_squeak2. A constant for the same reason as the package root above.
+QLVM_SQUEAK_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm"
+QLVM_SQUEAK_PRODUCTION_CELL = "natural_session_N11000_nomask"
+
+# The spectrogram preprocessing every production cell was trained with (their
+# training_contract.json `masking_type`): raw, unmasked spectrograms.
+QLVM_PRODUCTION_MASKING_TYPE = "none"
+
+# The QLVM maps a visualization can draw, one per production model: the column
+# prefix of QLVM_PRODUCTION_MODEL_CELLS. A map `P` places calls at `P1`/`P2` and
+# labels them `P_category` (fine) / `P_supercategory` (coarse); the visualizations
+# pick one with `shared_resources.qlvm_map` in visualizations_settings.json.
+QLVM_MAPS = tuple(QLVM_PRODUCTION_MODEL_CELLS)
+
+# The folder under the spectrograms base directory (`shared_resources.spectrograms_dir`)
+# holding the QLVM reference arrays the visualizations draw, one subfolder per map
+# (`<map>/arrays_fine.npz` / `<map>/arrays_coarse.npz`: label grids, cluster
+# centres, corpus coordinates, density heatmap). Each subfolder is its production
+# cell's clustering (QLVM_PRODUCTION_MODEL_CELLS[<map>] under
+# QLVM_MODEL_PACKAGE_ROOT), written by `export-qlvm-reference-arrays`
+# (processing.qlvm_latents.export_model_cell_arrays), so a map sits on the same torus
+# and carries the same fine / coarse labels as its `<map>1`/`<map>2`,
+# `<map>_category` and `<map>_supercategory` summary columns (15 / 9 clusters for
+# the regular map). The folder is versioned by name: the old in-house model's
+# arrays lived in `<dir>/qlvm/`.
+QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME = "qlvm_v3"
+
+# File name of the cohort pooled-embeddings parquet cache under
+# `<spectrograms_dir>/embeddings/`. Versioned by the QLVM model its qlvm1/qlvm2 and
+# qlvm_category / qlvm_supercategory columns come from, so the cache built from the
+# v3 summaries never overwrites the one pooled from the old model's summaries.
+POOLED_EMBEDDINGS_CACHE_NAME = "pooled_embeddings_qlvmv3.parquet"
+
+
+def cell_cluster_directory(cell: pathlib.Path, level: str) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Locates one cluster level of a QLVM model package cell in either package layout:
+    ``inference/clusters_<level>/`` (v3) or ``cluster/<level>/`` (v2 / v2.1). Kept
+    here, free of the JAX stack ``processing.qlvm_latents`` imports, so light
+    readers of a cell's ``label_grid.npy`` (e.g. the neuronal tuning figures) can
+    find it too.
+
+    Parameters
+    ----------
+    cell (pathlib.Path)
+        The package cell directory.
+    level (str)
+        ``"fine"`` or ``"coarse"``.
+
+    Returns
+    -------
+    directory (pathlib.Path)
+        The first existing candidate.
+
+    Raises
+    ------
+    FileNotFoundError
+        Neither exists.
+    """
+    candidates = (cell / "inference" / f"clusters_{level}", cell / "cluster" / level)
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    error_message = f"{cell}: no {level} cluster folder ({' or '.join(str(candidate) for candidate in candidates)})."
+    raise FileNotFoundError(error_message)
+
+
 def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     """
     Description
     -----------
-    Fills the six spectrogram-pipeline model paths from the single
-    ``spectrograms_root`` setting, so the user configures one directory
-    instead of six. The shipped ``processing_settings.json`` leaves the six
-    granular keys empty and carries only ``spectrograms_root``; this helper
-    resolves the conventional layout beneath it:
+    Fills the spectrogram-pipeline model paths from the single
+    ``spectrograms_root`` setting, so the user configures one directory instead
+    of many. The shipped ``processing_settings.json`` leaves the granular keys
+    empty and carries only ``spectrograms_root``; this helper resolves the
+    conventional layout beneath it:
 
     * ``generate_masks.sam2_model_dir``  -> ``<root>/sam``
     * ``generate_masks.sam2_model_path`` -> ``<root>/sam/checkpoint.pt``
     * ``generate_masks.yolo_weights``    -> ``<root>/sam/best.pt``
-    * ``infer_qlvm_latents.weights_npz_path`` -> ``<root>/qlvm/qmc_decoder_weights.npz``
-    * ``infer_qlvm_latents.reference_arrays_fine_npz_path``   -> ``<root>/qlvm/arrays_fine.npz``
-    * ``infer_qlvm_latents.reference_arrays_coarse_npz_path`` -> ``<root>/qlvm/arrays_coarse.npz``
+    * ``detect_usv_squeaks.squeak_model_path`` -> ``<root>/squeak/mil_absdb_final.pt``
+    * ``detect_usv_noise.noise_model_path`` -> ``<root>/noise/noise_timemil_ens5_n4680_20260926.pt``
 
     A granular key is filled only when it is empty, so an explicit path set in
     the JSON (or via a CLI flag) wins -- the root supplies defaults, it never
@@ -395,13 +486,41 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     them to the host mount downstream, exactly like the other model paths. The
     mutation is in place and idempotent.
 
+    The QLVM embedding is NOT derived from ``spectrograms_root`` any more: the
+    old in-house model under ``<root>/qlvm`` (``qmc_decoder_weights.npz`` and
+    its ``arrays_{fine,coarse}.npz`` watershed grids) would re-embed sessions on
+    a different torus and write its own ``qlvm_category`` / ``qlvm_supercategory``,
+    and ``infer-qlvm-latents`` no longer reads such a decoder at all (model
+    package cells are its only models). Instead, when ``infer_qlvm_latents``
+    names no model (``model_cells`` empty), ``infer_qlvm_latents.model_cells``
+    is filled with the production
+    mapping ``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``
+    (prefixes ``qlvm``, ``qlvm_dur``, ``qlvm_mf``, ``qlvm_bw``, ``qlvm_loud``),
+    and ``infer_qlvm_latents.masking_type`` is set to the cells' trained
+    ``QLVM_PRODUCTION_MASKING_TYPE`` (``"none"``). The masking type is part of
+    the derived model, not a separate choice: ``infer-qlvm-latents`` checks it
+    against each cell's training contract and refuses to embed on a mismatch
+    (the shipped default is already ``"none"``; this keeps a derived run correct
+    when a user's settings still say ``"sam"``). An
+    explicitly configured ``model_cells`` is left entirely alone,
+    ``masking_type`` included. ``infer_qlvm_latents.model_cell_label_levels`` is
+    never touched: its shipped ``{}`` already gives the production label columns
+    (``qlvm_category`` and ``qlvm_supercategory`` for ``qlvm``, ``P_category`` and
+    ``P_supercategory`` for every other prefix ``P``). Likewise an empty
+    ``infer_qlvm_squeak_latents.model_cell_directory`` is filled with the
+    production squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under
+    ``QLVM_SQUEAK_PACKAGE_ROOT`` (the phase 3 BBV ``natural_session`` cell); an
+    explicitly configured squeak cell is left alone.
+
     Parameters
     ----------
     settings (dict)
         The full processing-settings dictionary. When ``spectrograms_root`` is
         absent or empty the dictionary is returned unchanged (legacy settings
-        files that set the granular ``generate_masks`` / ``infer_qlvm_latents``
-        paths directly keep working); otherwise those two blocks must exist.
+        files that set the granular ``generate_masks`` paths and
+        ``infer_qlvm_latents.model_cells`` directly keep working); otherwise the ``generate_masks``,
+        ``infer_qlvm_latents``, ``infer_qlvm_squeak_latents``, ``detect_usv_squeaks``
+        and ``detect_usv_noise`` blocks must exist.
 
     Returns
     -------
@@ -413,18 +532,28 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         return settings
     root = settings['spectrograms_root']
     sam_dir = f'{root}/sam'
-    qlvm_dir = f'{root}/qlvm'
+    squeak_dir = f'{root}/squeak'
+    # The noise model file name carries its training: TimeMIL, 5-seed ensemble, 3,562 labels, build date.
+    noise_dir = f'{root}/noise'
     derived = (
         ('generate_masks', 'sam2_model_dir', sam_dir),
         ('generate_masks', 'sam2_model_path', f'{sam_dir}/checkpoint.pt'),
         ('generate_masks', 'yolo_weights', f'{sam_dir}/best.pt'),
-        ('infer_qlvm_latents', 'weights_npz_path', f'{qlvm_dir}/qmc_decoder_weights.npz'),
-        ('infer_qlvm_latents', 'reference_arrays_fine_npz_path', f'{qlvm_dir}/arrays_fine.npz'),
-        ('infer_qlvm_latents', 'reference_arrays_coarse_npz_path', f'{qlvm_dir}/arrays_coarse.npz'),
+        ('detect_usv_squeaks', 'squeak_model_path', f'{squeak_dir}/mil_absdb_final.pt'),
+        ('detect_usv_noise', 'noise_model_path', f'{noise_dir}/noise_timemil_ens5_n4680_20260926.pt'),
     )
     for block, key, derived_path in derived:
         if not settings[block][key]:
             settings[block][key] = derived_path
+    qlvm_cfg = settings['infer_qlvm_latents']
+    if not qlvm_cfg['model_cells']:
+        qlvm_cfg['model_cells'] = {
+            prefix: f'{QLVM_MODEL_PACKAGE_ROOT}/{cell}' for prefix, cell in QLVM_PRODUCTION_MODEL_CELLS.items()
+        }
+        qlvm_cfg['masking_type'] = QLVM_PRODUCTION_MASKING_TYPE
+    squeak_qlvm_cfg = settings['infer_qlvm_squeak_latents']
+    if not squeak_qlvm_cfg['model_cell_directory']:
+        squeak_qlvm_cfg['model_cell_directory'] = f'{QLVM_SQUEAK_PACKAGE_ROOT}/{QLVM_SQUEAK_PRODUCTION_CELL}'
     return settings
 
 
@@ -960,6 +1089,113 @@ def wait_for_subprocesses(
     return status
 
 
+# Canonical column order of a session's ``*_usv_summary.csv``: the DAS event
+# (written by das_summarize), the call-level labels (emitter from vocal assignment,
+# the squeak columns and squeak_frame_runs from detect_usv_squeaks), the acoustic descriptors
+# (compute_usv_acoustic_features, including the absolute loudness_db) and the QLVM torus coordinates and cluster labels of
+# the production models (infer_qlvm_latents with model_cells: the phase 6 regular
+# model's qlvm1/qlvm2 with its fine and coarse labels qlvm_category /
+# qlvm_supercategory, then the duration, mean-frequency, bandwidth and loudness
+# conditional models, each with its fine and coarse labels P_category /
+# P_supercategory), and last the squeak torus coordinates qlvm_squeak1/qlvm_squeak2
+# (infer_qlvm_squeak_latents; kept with the other torus coordinates rather than with
+# the squeak columns, and reserved, so no model_cells prefix can write them). The
+# legacy column qlvm_model (written by the retired single-model run) is not listed:
+# production summaries do not carry it, and infer_qlvm_latents drops it from older
+# summaries it rewrites.
+# Steps that re-append their own columns reorder to this before writing, so a
+# column's position no longer depends on which step ran last.
+USV_SUMMARY_COLUMN_ORDER = (
+    "usv_id", "start", "stop", "duration", "peak_amp_ch", "mean_amp_ch", "chs_count", "chs_detected",
+    "emitter",
+    "noise", "noise_probability",
+    "squeak", "squeak_probability", "squeak_start", "squeak_end", "squeak_frame_runs",
+    "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "loudness_db",
+    "spectral_entropy", "mask_number",
+    "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
+    "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category", "qlvm_dur_supercategory",
+    "qlvm_mf1", "qlvm_mf2", "qlvm_mf_category", "qlvm_mf_supercategory",
+    "qlvm_bw1", "qlvm_bw2", "qlvm_bw_category", "qlvm_bw_supercategory",
+    "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category", "qlvm_loud_supercategory",
+    "qlvm_squeak1", "qlvm_squeak2",
+)
+
+
+# Column `detect_usv_noise` writes: True when the segment holds no vocalization at all.
+NOISE_COLUMN = "noise"
+
+
+def drop_noise_usvs(usv_summary: Any, source: str, message_output: Callable = print) -> tuple[Any, int]:
+    """
+    Description
+    -----------
+    Drops the USV segments a trained classifier flagged as noise -- the single definition of "noise"
+    every analysis, figure and model shares, so the rule cannot drift between them. A row survives when
+    its ``noise`` value is False, or null (a segment too short to score is a detection, not a verdict).
+
+    A summary WITHOUT the column raises rather than passing every row through: the previous convention
+    (a category value treated as noise) degraded silently when its column was missing, so analyses went
+    on reporting numbers that quietly included noise. Run ``detect-usv-noise`` on the session, or turn
+    the filter off in the settings.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table.
+    source (str)
+        What the table came from (a session id or file name), named in the error.
+    message_output (Callable)
+        Logging callback; defaults to ``print``.
+
+    Returns
+    -------
+    kept (polars.DataFrame)
+        The rows that are not noise.
+    n_dropped (int)
+        How many rows were dropped.
+    """
+
+    if NOISE_COLUMN not in usv_summary.columns:
+        error_message = (
+            f"{source} has no '{NOISE_COLUMN}' column, so its noise segments cannot be excluded. Run "
+            f"detect-usv-noise on the session, or set the analysis' exclude_noise_usvs to false to keep "
+            f"every detection."
+        )
+        raise KeyError(error_message)
+    kept = usv_summary.filter(~usv_summary[NOISE_COLUMN].fill_null(False))
+    n_dropped = usv_summary.height - kept.height
+    if n_dropped:
+        message_output(f"    {source}: dropped {n_dropped} noise segment(s) of {usv_summary.height}.")
+    return kept, n_dropped
+
+
+def order_usv_summary_columns(usv_summary: Any) -> Any:
+    """
+    Description
+    -----------
+    Reorders a USV summary table to ``USV_SUMMARY_COLUMN_ORDER``. Canonical columns
+    that are present come first, in canonical order; any other column keeps its
+    relative order and follows them, so nothing is dropped and a column this
+    function does not know about is never lost. Only the column order changes: no
+    value, dtype or row is touched.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        The summary table about to be written.
+
+    Returns
+    -------
+    ordered (polars.DataFrame)
+        The same table with its columns in canonical order.
+    """
+
+    present = set(usv_summary.columns)
+    canonical = [column for column in USV_SUMMARY_COLUMN_ORDER if column in present]
+    extra = [column for column in usv_summary.columns if column not in USV_SUMMARY_COLUMN_ORDER]
+    return usv_summary.select(canonical + extra)
+
+
 def first_match_or_raise(
     root: pathlib.Path,
     pattern: str,
@@ -1074,26 +1310,34 @@ def newest_match_or_raise(
 # Embedding-landscape resolution. The visualization layer reads its precomputed
 # cohort artifacts from a single base directory (``shared_resources.spectrograms_dir``)
 # by convention, rather than from several hard-coded file paths:
-#   <dir>/qlvm/arrays_{coarse,fine}.npz      QLVM torus density + watershed labels
-#   <dir>/vae/vae_density_{coarse,fine}.npz  VAE umap density + category labels
+#   <dir>/qlvm_v3/<map>/arrays_{coarse,fine}.npz  QLVM torus density + label grids +
+#                                             centres of one map (QLVM_MAPS;
+#                                             QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME)
 #   <dir>/spectrograms_*.h5                   consolidated spectrogram/mask/latent store
-def resolve_embedding_arrays_path(spectrograms_dir: str, embedding: str, clustering: str) -> str:
+#   <dir>/squeak_spectrograms_*.h5            2-125 kHz log-frequency squeak spectrogram store
+#   <dir>/embeddings/pooled_embeddings_qlvmv3.parquet  pooled cohort embeddings cache
+#                                             (POOLED_EMBEDDINGS_CACHE_NAME)
+def resolve_embedding_arrays_path(spectrograms_dir: str, qlvm_map: str, clustering: str) -> str:
     """
     Description
     -----------
     Build the path to a precomputed embedding-landscape ``.npz`` under the
-    spectrograms base directory, by convention -- QLVM at
-    ``<dir>/qlvm/arrays_{coarse,fine}.npz`` and VAE at
-    ``<dir>/vae/vae_density_{coarse,fine}.npz``. This is a pure path builder (run
-    through ``configure_path``); whether the file exists is the caller's concern
-    (the sequence figure falls back to a bare panel, the torus video requires it).
+    spectrograms base directory, by convention --
+    ``<dir>/<QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME>/<qlvm_map>/arrays_{coarse,fine}.npz``
+    (``<dir>/qlvm_v3/qlvm/...`` for the regular map: the production v3 cell's
+    clustering of that map, exported by ``export-qlvm-reference-arrays``; the old
+    in-house model's ``<dir>/qlvm/`` arrays are not read). This is a pure path
+    builder (run through ``configure_path``); whether the file exists is the
+    caller's concern (the sequence figure falls back to a bare panel, the torus
+    video requires it).
 
     Parameters
     ----------
     spectrograms_dir (str)
-        Base directory where the ``qlvm`` / ``vae`` subdirectories branch off.
-    embedding (str)
-        ``"qlvm"`` or ``"vae"``.
+        Base directory where the ``qlvm_v3`` subdirectory branches off.
+    qlvm_map (str)
+        One of ``QLVM_MAPS`` (e.g. ``"qlvm"`` for the regular model,
+        ``"qlvm_dur"`` for the duration-conditional one).
     clustering (str)
         ``"fine"`` selects the fine map; anything else selects the coarse map.
 
@@ -1101,13 +1345,18 @@ def resolve_embedding_arrays_path(spectrograms_dir: str, embedding: str, cluster
     -------
     path (str)
         The OS-resolved ``.npz`` path (not checked for existence).
+
+    Raises
+    ------
+    ValueError
+        If ``qlvm_map`` is not one of ``QLVM_MAPS``.
     """
 
+    if qlvm_map not in QLVM_MAPS:
+        raise ValueError(f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}.")
     base = pathlib.Path(configure_path(spectrograms_dir))
     tag = "fine" if clustering == "fine" else "coarse"
-    if embedding == "vae":
-        return str(base / "vae" / f"vae_density_{tag}.npz")
-    return str(base / "qlvm" / f"arrays_{tag}.npz")
+    return str(base / QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME / qlvm_map / f"arrays_{tag}.npz")
 
 
 def resolve_consolidated_h5_path(spectrograms_dir: str) -> str:
@@ -1117,7 +1366,7 @@ def resolve_consolidated_h5_path(spectrograms_dir: str) -> str:
     Resolve the consolidated spectrogram/mask/latent ``.h5`` store: the most
     recently modified ``spectrograms_*.h5`` directly under the base directory. The
     name pattern is deliberate -- it selects the consolidated store and skips other
-    ``.h5`` siblings (e.g. ``qlvm_clusters_*.h5``). Raises ``FileNotFoundError`` with
+    ``.h5`` siblings (e.g. the legacy ``qlvm_clusters_*.h5``). Raises ``FileNotFoundError`` with
     a clear message if the directory is missing or holds no matching store.
 
     Parameters
@@ -1142,17 +1391,55 @@ def resolve_consolidated_h5_path(spectrograms_dir: str) -> str:
     )
 
 
+def resolve_squeak_spectrogram_store_path(spectrograms_dir: str) -> str:
+    """
+    Description
+    -----------
+    Resolve the squeak spectrogram store written by
+    ``build-squeak-spectrogram-store`` (2-125 kHz, log-frequency spectrograms of
+    the squeaks the squeak QLVM map holds): the most recently modified
+    ``squeak_spectrograms_*.h5`` directly under the base directory. The pattern
+    and the consolidated store's ``spectrograms_*.h5`` never match each other's
+    files. Raises ``FileNotFoundError`` with a clear message if the directory is
+    missing or holds no matching store.
+
+    Parameters
+    ----------
+    spectrograms_dir (str)
+        Base spectrograms directory (run through ``configure_path``).
+
+    Returns
+    -------
+    path (str)
+        The OS-resolved path to the newest ``squeak_spectrograms_*.h5``.
+    """
+
+    base = pathlib.Path(configure_path(spectrograms_dir))
+    return str(
+        newest_match_or_raise(
+            base,
+            "squeak_spectrograms_*.h5",
+            key=lambda p: p.stat().st_mtime,
+            label="squeak spectrogram store .h5",
+        )
+    )
+
+
 def resolve_pooled_embeddings_cache(spectrograms_dir: str) -> str:
     """
     Description
     -----------
     Build the path to the cohort pooled-embeddings parquet cache under the
     spectrograms base directory, by convention:
-    ``<dir>/embeddings/pooled_embeddings.parquet``. This is a pure path builder
-    (run through ``configure_path``); whether the file exists is the caller's
-    concern -- the embedding figures pass it as ``embeddings_cache_path`` so that
-    ``build_pooled_embeddings_df`` loads it when present (one combined table that
-    carries both the VAE and QLVM coordinates and the coarse + fine labels), and
+    ``<dir>/embeddings/<POOLED_EMBEDDINGS_CACHE_NAME>``
+    (``<dir>/embeddings/pooled_embeddings_qlvmv3.parquet``). The name is
+    versioned by the QLVM model, so the cache pooled from the v3 summaries sits
+    beside (and never overwrites) the old model's ``pooled_embeddings.parquet``.
+    This is a pure path builder (run through ``configure_path``); whether the file
+    exists is the caller's concern -- the embedding figures pass it as
+    ``embeddings_cache_path`` so that ``build_pooled_embeddings_df`` loads it when
+    present and its summaries fingerprint matches (one combined table that
+    carries the QLVM coordinates and the coarse + fine labels), and
     otherwise pools the cohort and writes it there.
 
     Parameters
@@ -1167,4 +1454,4 @@ def resolve_pooled_embeddings_cache(spectrograms_dir: str) -> str:
     """
 
     base = pathlib.Path(configure_path(spectrograms_dir))
-    return str(base / "embeddings" / "pooled_embeddings.parquet")
+    return str(base / "embeddings" / POOLED_EMBEDDINGS_CACHE_NAME)

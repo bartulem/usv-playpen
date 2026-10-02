@@ -10,7 +10,7 @@ self-describing HDF5 file, structured as::
     ├── /attrs                  analysis-level provenance (every JSON
     │                           parameter that drove the run, plus
     │                           created_at_iso / git_sha / source_lists /
-    │                           n_sessions_loaded)
+    │                           n_sessions_loaded / session_roots)
     ├── /<mode>/                mode group (``s2s`` and/or ``e2s``)
     │   ├── /attrs              mode-level provenance
     │   │                       (alpha_effective, K_selected_male,
@@ -23,8 +23,14 @@ self-describing HDF5 file, structured as::
     │   │                       store; pick the best rep at load time)
     │   ├── bootstrap_lrt       per-pair LRT summary plus per-sex
     │   │                       step-up-selected K
-    │   └── bootstrap_lrt_null  long-form null draws used by the
-    │                           bootstrap-LRT panel plot
+    │   ├── bootstrap_lrt_null  long-form null draws used by the
+    │   │                       bootstrap-LRT panel plot
+    │   ├── serial_dependence_curves  median spline and bent line of
+    │   │                       log(next) on log(current) with their
+    │   │                       session-bootstrap bands, per fitted pool
+    │   ├── serial_dependence_fit     the bend and its interval, slope,
+    │   │                       flat level and solver diagnostics
+    │   └── serial_dependence_bends   the bootstrap bends, one per replicate
 
 The corresponding loaders return shapes identical to the in-memory
 objects produced by the compute path, so plot helpers can run off-line
@@ -49,6 +55,29 @@ from .mixture_model_utils import IGMixture, TMixture
 
 # Internal helpers: polars <-> HDF5 dataset translation
 
+
+
+# Every per-mode table the archive can hold, shared by the writer and the reader so the two cannot
+# drift: the reader once carried its own copy, and tables added to the writer were silently
+# dropped on load. The tied-scale ("peaks plus background") model and its session-corrected
+# peak-count test sit beside the unconstrained sweep rather than replacing it, and
+# ``pool_summary`` is written for every pool -- it is the only record of a pool archived for
+# description and not fitted.
+ARCHIVE_TABLES = (
+    "intervals",
+    "drop_counts",
+    "pool_summary",
+    "mixture_model_fits",
+    "bootstrap_lrt",
+    "bootstrap_lrt_null",
+    "tied_fits",
+    "tied_modes",
+    "peak_lrt",
+    "peak_lrt_null",
+    "serial_dependence_curves",
+    "serial_dependence_fit",
+    "serial_dependence_bends",
+)
 
 def _polars_to_h5(group: h5py.Group, name: str, df: pls.DataFrame) -> None:
     """
@@ -273,15 +302,25 @@ def write_ivi_h5(
         Provenance attributes attached to the file root. Should include
         every JSON parameter that drove the run (so a re-render months
         later is fully self-describing) plus ``created_at_iso``,
-        ``git_sha``, ``source_lists`` (list of resolved paths), and
-        ``n_sessions_loaded``.
+        ``git_sha``, ``source_lists`` (list of resolved paths),
+        ``n_sessions_loaded`` and ``session_roots`` (the session
+        directories that contributed data, so the archive identifies its
+        sessions even after a list file changes).
     per_mode (dict)
         Mapping ``mode -> {'attrs': {...}, 'intervals': pls.DataFrame,
         'drop_counts': pls.DataFrame, 'mixture_model_fits': pls.DataFrame |
         None, 'bootstrap_lrt': pls.DataFrame | None,
-        'bootstrap_lrt_null': pls.DataFrame | None}``. Tables that the
-        compute path skipped (e.g. when ``fit_mixture_model`` is false) may be
+        'bootstrap_lrt_null': pls.DataFrame | None, 'tied_fits':
+        pls.DataFrame | None, 'peak_lrt': pls.DataFrame | None,
+        'peak_lrt_null': pls.DataFrame | None}``. Tables that the
+        compute path skipped (e.g. when ``fit_mixture_model`` is false, or when a
+        pool is too small to fit and is archived for description only) may be
         ``None`` and are then not written.
+
+        Every table carries ``sex``, ``call_type`` and ``adjacency`` columns
+        identifying which pool it describes, because a mode group now holds several:
+        an inter-USV interval analysis and an inter-squeak interval analysis are
+        different measurements of different vocalizations and must not be read as one.
 
     Returns
     -------
@@ -301,13 +340,7 @@ def write_ivi_h5(
             for k, v in payload.get("attrs", {}).items():
                 grp.attrs[k] = _attr_value(v)
 
-            tables = (
-                "intervals",
-                "drop_counts",
-                "mixture_model_fits",
-                "bootstrap_lrt",
-                "bootstrap_lrt_null",
-            )
+            tables = ARCHIVE_TABLES
             for table_name in tables:
                 df = payload.get(table_name)
                 if df is None:
@@ -401,13 +434,7 @@ def read_usv_interval_h5(h5_path: str | Path) -> dict:
             for k, v in grp.attrs.items():
                 mode_payload["attrs"][k] = _decode_attr(v)
 
-            for table_name in (
-                "intervals",
-                "drop_counts",
-                "mixture_model_fits",
-                "bootstrap_lrt",
-                "bootstrap_lrt_null",
-            ):
+            for table_name in ARCHIVE_TABLES:
                 if table_name in grp:
                     mode_payload[table_name] = _h5_to_polars(grp[table_name])
                 else:

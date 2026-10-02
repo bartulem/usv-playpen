@@ -47,6 +47,7 @@ from tqdm import tqdm
 
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .load_input_files import load_behavioral_feature_data, find_variable_length_bouts
+from .load_input_files import require_labels_for_vocal_predictors
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -150,6 +151,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         target_variable = self.modeling_settings['model_params']['model_target_variable']
         print(f"--- Extracting Data for Regression Target: {target_variable} ---")
 
+        # Label-dependent vocal predictors fail here, before any session is loaded.
+        require_labels_for_vocal_predictors(self.modeling_settings['vocal_features'])
+
         txt_modeling_sessions = prepare_modeling_sessions(self.modeling_settings)
 
         mixture_model_idx = self.modeling_settings['model_params']['mixture_model_component_index']
@@ -159,7 +163,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         voc_type = self.modeling_settings['vocal_features']['usv_predictor_type']
         partner_only = self.modeling_settings['vocal_features']['usv_predictor_partner_only']
         smooth_sd = self.modeling_settings['vocal_features']['usv_predictor_smoothing_sd']
-        noise_cats = self.modeling_settings['vocal_features']['usv_noise_categories']
+        exclude_noise = self.modeling_settings['vocal_features']['exclude_noise_usvs']
 
         print("Loading behavioral feature data...")
         beh_feature_data_dict, camera_fr_dict, mouse_track_names_dict = load_behavioral_feature_data(
@@ -181,9 +185,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             filter_history=self.modeling_settings['model_params']['filter_history'],
             proportion_smoothing_sd=smooth_sd,
             vocal_output_type=voc_type,
-            noise_vocal_categories=noise_cats,
+            exclude_noise_usvs=exclude_noise,
             category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
-            noise_column=self.modeling_settings['vocal_features']['usv_noise_column'],
         )
 
         processed_beh_feature_data_dict = {}
@@ -337,7 +340,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             feature_zoo_kept=feature_zoo_kept_md,
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
             dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
-            noise_vocal_categories_excluded=list(voc_settings['usv_noise_categories']),
+            noise_usvs_excluded=voc_settings['exclude_noise_usvs'],
             vocal_signal_columns_added=vocal_columns_md,
             filter_history_seconds=float(self.modeling_settings['model_params']['filter_history']),
             filter_history_frames=int(self.history_frames),

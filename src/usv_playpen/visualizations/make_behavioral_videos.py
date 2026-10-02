@@ -1393,6 +1393,7 @@ class Create3DVideo:
                                      "tail_curvature": "Tail(a.u.)", "tail_curvature_1st_der": "Tail'(a.u.)", "tail_curvature_2nd_der": "Tail''(a.u.)",
 
                                      "nose-nose": "ΔN(cm)", "nose-nose_1st_der": "ΔN'(cm/s)", "nose-nose_2nd_der": "ΔN''(cm/s²)",
+                                     "head-head": "ΔH(cm)", "head-head_1st_der": "ΔH'(cm/s)", "head-head_2nd_der": "ΔH''(cm/s²)",
                                      "TTI-TTI": "ΔT(cm)", "TTI-TTI_1st_der": "ΔT'(cm/s)", "TTI-TTI_2nd_der": "ΔT''(cm/s²)",
                                      "nose-TTI": "ΔNT(cm)", "nose-TTI_1st_der": "ΔNT'(cm/s)", "nose-TTI_2nd_der": "ΔNT''(cm/s²)",
                                      "TTI-nose": "ΔTN(cm)", "TTI-nose_1st_der": "ΔTN'(cm/s)", "TTI-nose_2nd_der": "ΔTN''(cm/s²)",
@@ -1400,10 +1401,14 @@ class Create3DVideo:
                                      "nose-allo_yaw": "N-Yaw(°)", "nose-allo_yaw_1st_der": "N-Yaw'(°/s)", "nose-allo_yaw_2nd_der": "N-Yaw''(°/s²)",
                                      "allo_yaw-TTI": "Yaw-T(°)", "allo_yaw-TTI_1st_der": "Yaw-T'(°/s)", "allo_yaw-TTI_2nd_der": "Yaw-T''(°/s²)",
                                      "TTI-allo_yaw": "T-Yaw(°)", "TTI-allo_yaw_1st_der": "T-Yaw'(°/s)", "TTI-allo_yaw_2nd_der": "T-Yaw''(°/s²)",
+                                     "allo_yaw-head": "Yaw-H(°)", "allo_yaw-head_1st_der": "Yaw-H'(°/s)", "allo_yaw-head_2nd_der": "Yaw-H''(°/s²)",
+                                     "head-allo_yaw": "H-Yaw(°)", "head-allo_yaw_1st_der": "H-Yaw'(°/s)", "head-allo_yaw_2nd_der": "H-Yaw''(°/s²)",
                                      "allo_pitch-nose": "Pitch-N(°)", "allo_pitch-nose_1st_der": "Pitch-N'(°/s)", "allo_pitch-nose_2nd_der": "Pitch-N''(°/s²)",
                                      "nose-allo_pitch": "N-Pitch(°)", "nose-allo_pitch_1st_der": "N-Pitch'(°/s)", "nose-allo_pitch_2nd_der": "N-Pitch''(°/s²)",
                                      "allo_pitch-TTI": "Pitch-T(°)", "allo_pitch-TTI_1st_der": "Pitch-T'(°/s)", "allo_pitch-TTI_2nd_der": "Pitch-T''(°/s²)",
                                      "TTI-allo_pitch": "T-Pitch(°)", "TTI-allo_pitch_1st_der": "T-Pitch'(°/s)", "TTI-allo_pitch_2nd_der": "T-Pitch''(°/s²)",
+                                     "allo_pitch-head": "Pitch-H(°)", "allo_pitch-head_1st_der": "Pitch-H'(°/s)", "allo_pitch-head_2nd_der": "Pitch-H''(°/s²)",
+                                     "head-allo_pitch": "H-Pitch(°)", "head-allo_pitch_1st_der": "H-Pitch'(°/s)", "head-allo_pitch_2nd_der": "H-Pitch''(°/s²)",
                                      "orofacial-sei": "SEI(a.u.)", "orofacial-sei_1st_der": "SEI'(a.u./s)", "orofacial-sei_2nd_der": "SEI''(a.u./s²)",
                                      "anogenital-sei": "SEI(a.u.)", "anogenital-sei_1st_der": "SEI'(a.u./s)", "anogenital-sei_2nd_der": "SEI''(a.u./s²)"}
 

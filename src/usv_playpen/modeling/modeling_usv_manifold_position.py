@@ -58,6 +58,7 @@ from typing import Any, List, Tuple
 from tqdm import tqdm
 
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
+from .load_input_files import require_labels_for_vocal_predictors
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -76,6 +77,7 @@ from .modeling_utils import (
     zscore_features_across_sessions,
     run_predictor_audits,
     format_split_line,
+    manifold_tag_segment,
 )
 from .manifold_torus_regression import resolve_manifold_regressor_cls
 from .manifold_metric import (
@@ -85,11 +87,13 @@ from .manifold_metric import (
     resolve_manifold_metric,
     manifold_prediction_metrics,
     inverse_region_frequency_weights,
+    warn_if_no_region_labels,
 )
 from .modeling_torus_geodesics import (
     build_torus_geodesic_context,
     geodesic_mae_columns,
-    make_qlvm_decode_fn_from_npz,
+    make_qlvm_decode_fn_from_source,
+    resolve_geodesic_decoder_source,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import resolve_modeling_setting
@@ -646,7 +650,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                     # it survived, letting the tuner pick it and hand a diverging
                     # hyperparameter to the outer fit. (The closed-form torus
                     # estimator never trips this; it guards the iterative
-                    # euclidean/VAE `SmoothBivariateRegression` path. Mirror of
+                    # euclidean `SmoothBivariateRegression` path. Mirror of
                     # the multinomial tuner's guard.) `coef_` is read defensively:
                     # the real estimators always expose it, but a lightweight
                     # scoring stub may not, in which case there is nothing to
@@ -853,6 +857,9 @@ class ContinuousModelingPipeline(FeatureZoo):
             - 'w': Inverse-density sample weights of shape (n_samples,).
         """
 
+        # Label-dependent vocal predictors fail here, before any session is loaded.
+        require_labels_for_vocal_predictors(self.modeling_settings['vocal_features'])
+
         txt_sessions = prepare_modeling_sessions(self.modeling_settings)
 
         print("Loading behavioral feature data...")
@@ -867,7 +874,7 @@ class ContinuousModelingPipeline(FeatureZoo):
         voc_mode = voc_settings['usv_predictor_type']
         smooth_sd = voc_settings['usv_predictor_smoothing_sd']
         column_name_cats = voc_settings['usv_category_column_name']
-        noise_cats = voc_settings['usv_noise_categories']
+        exclude_noise = voc_settings['exclude_noise_usvs']
         manifold_cols = voc_settings['usv_manifold_column_names']
 
         if not isinstance(manifold_cols, (list, tuple)) or len(manifold_cols) < 2:
@@ -896,9 +903,8 @@ class ContinuousModelingPipeline(FeatureZoo):
             filter_history=filter_hist,
             vocal_output_type=voc_mode,
             proportion_smoothing_sd=smooth_sd,
-            noise_vocal_categories=noise_cats,
+            exclude_noise_usvs=exclude_noise,
             manifold_column_names=manifold_cols,
-            noise_column=voc_settings['usv_noise_column'],
         )
 
         print("Extracting continuous targets and computing Global Inverse Density Weights...")
@@ -1055,11 +1061,13 @@ class ContinuousModelingPipeline(FeatureZoo):
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
         # Tag carries the USV category column the UMAP target derives
-        # from (e.g. `vae_supercategory`, `qlvm_category`) so every
+        # from (e.g. `qlvm_supercategory`, `qlvm_category`) so every
         # downstream filename — modeling input pickle, univariate pkls,
         # model-selection step pkls, consolidated artifact — makes the
         # source clustering explicit.
-        analysis_tag = f"manifold_{column_name_cats}"
+        # Without a label column the tag names the embedding instead (e.g.
+        # `manifold_qlvm`), see `manifold_tag_segment`.
+        analysis_tag = f"manifold_{manifold_tag_segment(column_name_cats, manifold_cols)}"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
@@ -1126,7 +1134,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             feature_zoo_kept=feature_zoo_kept_md,
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
             dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
-            noise_vocal_categories_excluded=list(noise_cats),
+            noise_usvs_excluded=exclude_noise,
             vocal_signal_columns_added=vocal_columns_md,
             filter_history_seconds=float(filter_hist),
             filter_history_frames=int(self.history_frames),
@@ -1136,7 +1144,7 @@ class ContinuousModelingPipeline(FeatureZoo):
                 'usv_manifold_column_names': list(manifold_cols),
                 'manifold_metric': str(voc_settings['usv_manifold_metric']),
                 'manifold_period': float(voc_settings['usv_manifold_period']),
-                # Pins the USV category column (e.g. `vae_supercategory`,
+                # Pins the USV category column (e.g. `qlvm_supercategory`,
                 # `qlvm_category`) the manifold targets were derived
                 # from so the selector can route per-step filenames +
                 # the consolidated artifact through the same tag.
@@ -1299,7 +1307,7 @@ class ContinuousModelRunner:
     so the active model and both baselines are evaluated on the same
     support:
     - `r2_spatial` — pooled spatial variance explained by the predictions;
-      bounded above by 1. **Selection score on Euclidean / VAE / UMAP
+      bounded above by 1. **Selection score on Euclidean
       manifolds** (higher is better).
     - `vm_logscore` — macro (per-region) product-von-Mises log-likelihood of
       the decoded prediction (see `manifold_metric.macro_von_mises_logscore`).
@@ -1559,12 +1567,14 @@ class ContinuousModelRunner:
                 and manifold_metric == 'torus' and Y is not None):
             _geo_cfg = _vf_settings['usv_manifold_geodesic_metrics']
             if _geo_cfg['compute']:
+                # Resolved outside the soft-failure block: a settings block without
+                # decoder_model_cell_directory is a settings error, not a NaN column.
+                _geo_decoder_source = resolve_geodesic_decoder_source(_geo_cfg)
                 try:
                     _geo_decode_fn = None
-                    _geo_weights_path = _geo_cfg['decoder_weights_npz_path']
-                    if _geo_weights_path:
+                    if _geo_decoder_source is not None:
                         try:
-                            _geo_decode_fn = make_qlvm_decode_fn_from_npz(_geo_weights_path)
+                            _geo_decode_fn = make_qlvm_decode_fn_from_source(_geo_decoder_source)
                         except Exception as _decode_err:
                             print(f"    [geodesic] decoder unavailable ({_decode_err}); "
                                   f"pullback_geodesic_mae -> NaN")
@@ -1616,7 +1626,7 @@ class ContinuousModelRunner:
         ---------------
         The headline score is geometry-dependent: `r2_spatial` (pooled-axis
         coefficient of determination against the test-fold marginal mean) on
-        Euclidean / VAE / UMAP manifolds, and `dcor_xy` (wrap-aware distance
+        Euclidean manifolds, and `dcor_xy` (wrap-aware distance
         correlation between the decoded prediction and the truth) on the
         near-uniform periodic TORUS manifold, where the centroid-referenced
         `r2_spatial` is structurally inverted. Both are directly comparable
@@ -1782,6 +1792,7 @@ class ContinuousModelRunner:
         # settings flip produces consistent torus / euclidean behaviour
         # end-to-end.
         manifold_metric, manifold_period = resolve_manifold_metric(self.modeling_settings)
+        warn_if_no_region_labels(region, metric=manifold_metric, context=f"manifold univariate '{feat_name}'")
         # Geometry selects the estimator: torus runs use the convex closed-form
         # sin-cos embedding ridge (wound-aware); euclidean runs keep the
         # unchanged coordinate model, so they stay byte-identical.
@@ -1821,7 +1832,7 @@ class ContinuousModelRunner:
         # Canonical set of metric keys emitted by `evaluate_metrics`. Used
         # both to initialise the per-fold metric dict and to summarise at
         # the end so the two stay in lockstep. `r2_spatial` is first
-        # because it is the selection score on Euclidean/VAE/UMAP manifolds
+        # because it is the selection score on Euclidean manifolds
         # (on the torus the selection score is `vm_logscore`; `dcor_xy` is NaN
         # there and `vm_logscore` is NaN on euclidean).
         metric_keys = [

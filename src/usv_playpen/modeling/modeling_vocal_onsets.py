@@ -1,9 +1,15 @@
 """
 @author: bartulem
-Module for modeling USV (bout) onsets.
+Module for modeling vocal event boundaries from behavioural history.
 
-This module provides the core pipeline for modeling mouse vocal onset probability
-using 3D-extracted kinematic features. It handles the orchestration of
+This module provides the core pipeline for classifying a binary vocal event
+from the 3D-extracted kinematic history that precedes it. Which event is the
+target is set by ``model_params.model_target_vocal_type``: the onset of a USV
+bout (``'bout_onset'``), the onset of a single USV (``'individual'``), whether the
+animal is vocalizing at a grid time (``'state'``), or the END of a bout against
+an interior call of a bout that continued (``'bout_offset'``, configured by the
+``bout_offset`` settings block). The module name predates the offset target and
+is kept for continuity; the class name likewise. It handles the orchestration of
 data preparation, feature engineering (egocentric/dyadic), and statistical
 classification using both Linear (sklearn) and Non-linear (PyGAM) engines.
 """
@@ -21,6 +27,7 @@ from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
 from tqdm import tqdm
 
 from .load_input_files import load_behavioral_feature_data, find_onset_epochs
+from .load_input_files import require_labels_for_vocal_predictors, require_usv_category_column
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -57,14 +64,18 @@ _ECE_N_BINS = resolve_modeling_setting('diagnostics', 'ece_n_bins')
 
 class VocalOnsetModelingPipeline(FeatureZoo):
     """
-    End-to-end pipeline for modeling the onset of USV bouts from behavioural kinematics.
+    End-to-end pipeline for modeling a vocal event boundary from behavioural kinematics.
 
+    The event is a bout onset, a single-USV onset, the vocal state at a grid time,
+    or a bout offset, per ``model_params.model_target_vocal_type``; the class is
+    named for the first of these, which it modelled before the others existed.
     The pipeline has three responsibilities:
 
     1. **Data preparation**: ingests raw behavioural time-series (polars DataFrames
        produced by the upstream extraction), detects vocal bouts via mixture-model-driven
        inter-bout-interval thresholds, assembles per-session history windows
-       around USV and No-USV event timestamps, applies cross-session z-scoring,
+       around the positive and negative event timestamps (onset vs silent tile,
+       or last call vs interior call in ``'bout_offset'`` mode), applies cross-session z-scoring,
        and serializes the resulting `{feature: {session: {usv_feature_arr,
        no_usv_feature_arr}}}` dictionary to disk.
     2. **Cross-validation splitting**: the `create_data_splits` generator
@@ -119,7 +130,17 @@ class VocalOnsetModelingPipeline(FeatureZoo):
 
         try:
             camera_rate = self.modeling_settings['io']['camera_sampling_rate']
-            filter_history_sec = self.modeling_settings['model_params']['filter_history']
+            # The history window is `model_params.filter_history` for every target
+            # except bout offsets, whose window is that block's own `filter_history`:
+            # the shared value is coupled to the silent-tile width, the clean-history
+            # criterion and the 'state' grid, none of which the offset target uses.
+            model_params = self.modeling_settings['model_params']
+            target_mode = model_params['model_target_vocal_type'] if 'model_target_vocal_type' in model_params else None
+            if target_mode == 'bout_offset':
+                filter_history_sec = self.modeling_settings['bout_offset']['filter_history']
+            else:
+                filter_history_sec = model_params['filter_history']
+            self.history_seconds = float(filter_history_sec)
             self.history_frames = int(np.floor(camera_rate * filter_history_sec))
             print(f"History frames calculated: {self.history_frames} (for {filter_history_sec}s at {camera_rate}fps)")
         except KeyError as e:
@@ -152,7 +173,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         Pipeline Steps:
         1.  Calls `find_onset_epochs` to detect vocal bouts.
             - Uses `mixture_model_component_index` and `mixture_model_z_score` to calculate a dynamic IBI threshold per mouse.
-            - Filters out specific noise categories (e.g., [0, 19]) via `noise_vocal_categories`.
+            - Filters out the segments holding no vocalization via `exclude_noise_usvs`.
             - Enforces `min_usv_per_bout` constraints.
             - Returns positive (`positive_events`) and negative (`negative_events`) event times.
         2. Removes sessions where the target mouse has 0 valid bouts.
@@ -192,6 +213,16 @@ class VocalOnsetModelingPipeline(FeatureZoo):
              'another_feature': {...}, ...}`
         """
 
+        # Label-dependent vocal predictors fail here, before any session is loaded.
+        require_labels_for_vocal_predictors(self.modeling_settings['vocal_features'])
+        # A single-category onset target ('individual' mode) needs a label column too.
+        if (self.modeling_settings['model_params']['onset_target_category'] is not None
+                and self.modeling_settings['model_params']['model_target_vocal_type'] == 'individual'):
+            require_usv_category_column(
+                self.modeling_settings['vocal_features']['usv_category_column_name'],
+                f"model_params.onset_target_category {self.modeling_settings['model_params']['onset_target_category']}",
+            )
+
         txt_modeling_sessions = prepare_modeling_sessions(self.modeling_settings)
 
         print("Loading behavioral feature data...")
@@ -200,6 +231,19 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             csv_sep=self.modeling_settings['io']['csv_separator']
         )
         print("Loading USV data and selecting epochs...")
+
+        # The offset target's four knobs are read only in that mode, so settings
+        # written before the block existed keep working for the other targets.
+        if self.modeling_settings['model_params']['model_target_vocal_type'] == 'bout_offset':
+            offset_block = self.modeling_settings['bout_offset']
+            bout_offset_kwargs = {
+                'negative_scheme': offset_block['negative_scheme'],
+                'min_singing_after_negative': offset_block['min_singing_after_negative_seconds'],
+                'time_since_bout_onset_tolerance': offset_block['time_since_bout_onset_tolerance_seconds'],
+                'max_negatives_per_bout': offset_block['max_negatives_per_bout'],
+            }
+        else:
+            bout_offset_kwargs = {}
 
         usv_data_dict = find_onset_epochs(
             root_directories=txt_modeling_sessions,
@@ -210,16 +254,17 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             mixture_model_component_index=self.modeling_settings['model_params']['mixture_model_component_index'],
             mixture_model_z_score=self.modeling_settings['model_params']['mixture_model_z_score'],
             mixture_model_params=self.modeling_settings['mixture_model_params'],
-            noise_vocal_categories=self.modeling_settings['vocal_features']['usv_noise_categories'],
+            exclude_noise_usvs=self.modeling_settings['vocal_features']['exclude_noise_usvs'],
             proportion_smoothing_sd=self.modeling_settings['vocal_features']['usv_predictor_smoothing_sd'],
             vocal_output_type=self.modeling_settings['vocal_features']['usv_predictor_type'],
-            filter_history=self.modeling_settings['model_params']['filter_history'],
+            filter_history=self.history_seconds,
             prediction_mode=self.modeling_settings['model_params']['model_target_vocal_type'],
             usv_bout_time=self.modeling_settings['model_params']['usv_bout_time'],
             min_usv_per_bout=self.modeling_settings['model_params']['usv_per_bout_floor'],
             category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
             target_category=self.modeling_settings['model_params']['onset_target_category'],
-            noise_column=self.modeling_settings['vocal_features']['usv_noise_column'],
+            target_type=self.modeling_settings['model_params']['onset_target_type'],
+            **bout_offset_kwargs,
         )
 
         predictor_mouse_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
@@ -327,15 +372,15 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         )
         print("Z-scoring complete.")
 
-        max_hist_sec = self.modeling_settings['model_params']['filter_history']
+        max_hist_sec = self.history_seconds
         target_vocal_type = self.modeling_settings['model_params']['model_target_vocal_type']
         mixture_model_idx = self.modeling_settings['model_params']['mixture_model_component_index']
 
-        # Optional single-category onset target (e.g. broadband vocalizations =
-        # vae_supercategory 6). The category COLUMN is the existing
+        # Optional single-category onset target (e.g. qlvm_supercategory 3;
+        # squeaks are targeted with onset_target_type instead). The category COLUMN is the existing
         # `usv_category_column_name`; only the integer index lives in
         # `onset_target_category`. Category filtering is honoured in
-        # 'individual' mode only (see `find_onset_epochs`): in 'bout'/'state'
+        # 'individual' mode only (see `find_onset_epochs`): in 'bout_onset'/'state'
         # mode the setting is ignored and the run pools all USVs as before, so
         # warn the user that their category choice has no effect there.
         onset_cat = self.modeling_settings['model_params']['onset_target_category']
@@ -358,13 +403,18 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # model-selection consolidated). Keep it tight. When a single onset
         # target category is active, embed BOTH the category column name and
         # the index (mirrors the binomial category pipeline's
-        # `category_<col>_<idx>` convention), so VAE-vs-QLVM and
+        # `category_<col>_<idx>` convention), so the QLVM map and
         # category-vs-supercategory are unambiguous in every downstream
         # artifact name and provenance block.
+        # The onset target type ('usv' default, 'squeak', 'all') joins the tag whenever it
+        # is not the default, so a squeak-onset run and a USV-onset run of the same
+        # cohort never share an artifact name.
+        onset_target_type = self.modeling_settings['model_params']['onset_target_type']
+        target_type_seg = "" if onset_target_type == 'usv' else f"_{onset_target_type}"
         if onset_category_active:
-            analysis_tag = f"{target_vocal_type}_cat_{cat_col}_{onset_cat}"
+            analysis_tag = f"{target_vocal_type}{target_type_seg}_cat_{cat_col}_{onset_cat}"
         else:
-            analysis_tag = target_vocal_type
+            analysis_tag = f"{target_vocal_type}{target_type_seg}"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         file_name_ = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
@@ -422,7 +472,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             feature_zoo_kept=feature_zoo_kept_md,
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
             dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
-            noise_vocal_categories_excluded=list(voc_settings['usv_noise_categories']),
+            noise_usvs_excluded=voc_settings['exclude_noise_usvs'],
             # `build_vocal_signal_columns` emits exactly these per-mouse suffixes
             # (from `continuous_vocal_signals`): the scalar `usv_event` /
             # `usv_rate` traces and any number of per-category `usv_cat_<int>`
@@ -442,10 +492,13 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             ibi_thresholds=ibi_thresholds_md,
             analysis_specific={
                 'model_target_vocal_type': target_vocal_type,
+                'onset_target_type': onset_target_type,
                 'usv_bout_time': self.modeling_settings['model_params']['usv_bout_time'],
                 'usv_per_bout_floor': self.modeling_settings['model_params']['usv_per_bout_floor'],
                 **({'onset_target_category': int(onset_cat),
                     'usv_category_column_name': cat_col} if onset_category_active else {}),
+                **({'bout_offset': dict(self.modeling_settings['bout_offset'])}
+                   if target_vocal_type == 'bout_offset' else {}),
             },
         )
 

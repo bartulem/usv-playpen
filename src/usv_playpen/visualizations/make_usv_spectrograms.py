@@ -27,6 +27,7 @@ parameters live in the ``make_usv_spectrograms`` block of
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -38,7 +39,6 @@ import tempfile
 from collections.abc import Callable
 from datetime import datetime
 
-import click
 import h5py
 import librosa
 import librosa.display
@@ -49,12 +49,15 @@ import polars as pls
 from matplotlib import gridspec
 from matplotlib.collections import LineCollection
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-from scipy.ndimage import gaussian_filter, gaussian_filter1d, zoom
+from scipy.ndimage import gaussian_filter1d, zoom
 from scipy.signal.windows import tukey
 from sklearn.neighbors import KNeighborsClassifier
 
 from ..os_utils import (
+    NOISE_COLUMN,
+    QLVM_MAPS,
     configure_path,
+    drop_noise_usvs,
     first_match_or_raise,
     resolve_consolidated_h5_path,
     resolve_embedding_arrays_path,
@@ -1145,12 +1148,10 @@ class USVSpectrogramPlotter:
         """
         Description
         -----------
-        Draw a precomputed cohort embedding landscape on ``ax``: the density
-        ``heatmap`` (gray_r) over its coordinate ``extent`` and — when
-        ``draw_boundaries`` is True — the black category lines. Serves BOTH the
-        QLVM torus (arrays ``.npz`` with no ``extent`` key → the unit square, also
-        used by the torus-traversal video) and the VAE umap (a ``vae_density``
-        ``.npz`` carrying its own ``extent``). The boundaries are a
+        Draw a precomputed cohort QLVM landscape on ``ax``: the density
+        ``heatmap`` (gray_r) over the unit torus square and — when
+        ``draw_boundaries`` is True — the black category lines (the same arrays
+        ``.npz`` the torus-traversal video reads). The boundaries are a
         uniform-thickness neighbour-difference mask, NOT ``ax.contour`` on the
         label field: contour stacks several iso-lines wherever neighbouring region
         labels differ by more than one, which renders as uneven line thickness.
@@ -1161,9 +1162,7 @@ class USVSpectrogramPlotter:
             Axes to draw the embedding / boundaries on.
         arrays_npz_path (str)
             Path to the cohort arrays ``.npz`` — keys ``heatmap`` and
-            ``ws_labels_periodic`` (the QLVM watershed field or the VAE
-            category/supercategory field), plus an optional ``extent``
-            ``[x0, x1, y0, y1]`` (absent for QLVM → the unit square).
+            ``ws_labels_periodic`` (the map's fine or coarse label grid).
         draw_boundaries (bool)
             Whether to overlay the black category lines; defaults to True.
 
@@ -1174,7 +1173,7 @@ class USVSpectrogramPlotter:
 
         arrays = np.load(configure_path(arrays_npz_path))
         heatmap = arrays["heatmap"]
-        extent = tuple(float(v) for v in arrays["extent"]) if "extent" in arrays else (0.0, 1.0, 0.0, 1.0)
+        extent = (0.0, 1.0, 0.0, 1.0)
         nonzero = heatmap[heatmap > 0]
         vmax = float(np.percentile(nonzero, 95)) if nonzero.size else None
         ax.imshow(
@@ -1208,13 +1207,13 @@ class USVSpectrogramPlotter:
         Render a per-session "USV sequence" figure for the shared analysis window
         ``time_window`` (``[start, end]`` seconds; the GUI sets it from a start +
         duration pair). LEFT:
-        an embedding -- QLVM torus (a periodic [0, 1] density heatmap with black
-        watershed category boundaries) or VAE (plain) -- where the window's USVs
+        the QLVM torus of ``shared_resources.qlvm_map`` (a periodic [0, 1] density
+        heatmap with black category boundaries) -- where the window's USVs
         are colored by emitter (male / female / unassigned), sized by call
         duration, numbered ``1..n`` in time order, and joined by a connecting line
         whose color is a white -> male time gradient and whose per-segment width
-        tracks the inter-USV silent gap (on the QLVM torus the line takes the short
-        wrap-around route across an edge when that is closer). RIGHT: ONE
+        tracks the inter-USV silent gap (the line takes the short wrap-around
+        route across an edge when that is closer). RIGHT: ONE
         continuous spectrogram over the same window -- the per-USV averaged
         spectrograms, SAM2-masked when ``apply_mask``, stitched at their true times
         onto a black background, with an optional raw-audio trace on top
@@ -1232,7 +1231,7 @@ class USVSpectrogramPlotter:
         Raises
         ------
         ValueError
-            If the chosen embedding's coordinate columns are absent from the
+            If the chosen QLVM map's coordinate columns are absent from the
             session's USV summary CSV.
         """
 
@@ -1259,14 +1258,13 @@ class USVSpectrogramPlotter:
         )
         usv_df = pls.read_csv(str(usv_summary_path)).with_row_index(name="row_index")
 
-        embedding = seq_cfg["embedding"]
-        x_col, y_col = (
-            ("vae1", "vae2") if embedding == "vae" else ("qlvm1", "qlvm2")
-        )
+        qlvm_map = shared["qlvm_map"]
+        x_col, y_col = f"{qlvm_map}1", f"{qlvm_map}2"
         if x_col not in usv_df.columns or y_col not in usv_df.columns:
             msg = (
-                f"Session {session_key!r} USV summary has no {embedding!r} embedding "
-                f"columns ({x_col!r}, {y_col!r}); choose a different 'embedding'."
+                f"Session {session_key!r} USV summary has no {qlvm_map!r} map "
+                f"columns ({x_col!r}, {y_col!r}); run infer-qlvm-latents or choose a different "
+                f"'shared_resources.qlvm_map'."
             )
             raise ValueError(msg)
 
@@ -1297,13 +1295,12 @@ class USVSpectrogramPlotter:
 
         # # # # LEFT: precomputed cohort embedding landscape (density + category
         # boundaries), resolved by convention from the shared spectrograms dir --
-        # QLVM -> <dir>/qlvm/arrays_{coarse,fine}.npz, VAE ->
-        # <dir>/vae/vae_density_{coarse,fine}.npz; boundary_clustering picks
-        # coarse/fine. If the npz is not present (e.g. the VAE density was never
-        # precomputed) fall back to bare axes, but still strip ticks so the panel
-        # never shows ticks/ticklabels.
+        # <dir>/qlvm_v3/<qlvm_map>/arrays_{coarse,fine}.npz (the map's v3 cell);
+        # boundary_clustering picks coarse/fine. If the npz is not present (e.g. the
+        # arrays were never exported) fall back to bare axes, but still strip ticks so
+        # the panel never shows ticks/ticklabels.
         arrays_path = resolve_embedding_arrays_path(
-            shared["spectrograms_dir"], embedding, seq_cfg["boundary_clustering"]
+            shared["spectrograms_dir"], qlvm_map, seq_cfg["boundary_clustering"]
         )
         if pathlib.Path(arrays_path).exists():
             self._draw_embedding_left_map(ax_left, arrays_path, draw_boundaries=bool(seq_cfg["draw_boundaries"]))
@@ -1373,14 +1370,13 @@ class USVSpectrogramPlotter:
                 frac = min(1.0, max(0.0, (gap - gap_lo) / (gap_hi - gap_lo)))
                 return _SEQ_LW_MIN + frac * (_SEQ_LW_MAX - _SEQ_LW_MIN)
 
-            # QLVM is a periodic unit torus ([0,1] in both dims), so the shortest
+            # The QLVM map is a periodic unit torus ([0,1] in both dims), so the shortest
             # route between two points may wrap across an edge rather than run
             # straight over the map. For each pair pick the nearest periodic image
             # of the second point (wrap an axis whose gap exceeds 0.5) and emit two
             # collinear sub-segments -- p1 -> image, and the mirror (p1's image) ->
             # p2 -- both clipped to the [0,1] axes so the geodesic exits one edge
-            # and re-enters the opposite. VAE is a plain plane: no wrapping.
-            is_torus = embedding == "qlvm"
+            # and re-enters the opposite.
 
             def _wrap_offset(delta: float) -> float:
                 if delta > 0.5:
@@ -1391,8 +1387,8 @@ class USVSpectrogramPlotter:
 
             def _sub_segments(i: int) -> list[list[tuple[float, float]]]:
                 (x1, y1), (x2, y2) = path_pts[i], path_pts[i + 1]
-                mx = _wrap_offset(x2 - x1) if is_torus else 0.0
-                my = _wrap_offset(y2 - y1) if is_torus else 0.0
+                mx = _wrap_offset(x2 - x1)
+                my = _wrap_offset(y2 - y1)
                 subs = [[(x1, y1), (x2 + mx, y2 + my)]]
                 if mx or my:
                     subs.append([(x1 - mx, y1 - my), (x2, y2)])
@@ -1481,7 +1477,7 @@ class USVSpectrogramPlotter:
                     solid_capstyle="butt", zorder=5,
                 )
 
-        self._save_figure(fig, f"sequence_{embedding}", file_basename)
+        self._save_figure(fig, f"sequence_{qlvm_map}", file_basename)
         return fig
 
     def make_usv_spectrograms(self) -> plt.Figure:
@@ -1598,8 +1594,7 @@ def plot_usv_property_histograms(
     sessions_txt_path: str,
     output_path: str | None = None,
     fig_format: str | None = None,
-    noise_col_id: str = "vae_supercategory",
-    noise_categories: tuple[int, ...] = (0,),
+    exclude_noise_usvs: bool = True,
     fig_size: tuple[float, float] = (15.0, 3.0),
     fig_dpi: int = 300,
     message_output: Callable | None = None,
@@ -1616,7 +1611,7 @@ def plot_usv_property_histograms(
     path (each line of the txt file is run through
     ``os_utils.configure_path`` first so paths that were written for a
     different OS / mountpoint still resolve here). Rows whose
-    ``noise_col_id`` value is in ``noise_categories`` are dropped
+    the ``noise`` classifier flagged are dropped
     before pooling so the histograms reflect the non-noise
     distribution.
 
@@ -1643,11 +1638,9 @@ def plot_usv_property_histograms(
         regardless of any extension on ``output_path``. When ``None``,
         the extension is taken from ``output_path`` (matplotlib's
         default inference).
-    noise_col_id (str)
-        CSV column used to identify noise rows; default
-        ``"vae_supercategory"``.
-    noise_categories (tuple of int)
-        Values of ``noise_col_id`` to drop as noise; default ``(0,)``.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as
+        holding no vocalization; default ``True``.
     fig_size (tuple of float)
         Figure size in inches; default ``(15, 3)`` for a 5-wide row.
     fig_dpi (int)
@@ -1679,7 +1672,7 @@ def plot_usv_property_histograms(
     n_sessions_loaded = 0
     n_usvs_total = 0
 
-    columns_to_read = list(set(properties_in_csv + [noise_col_id]))
+    columns_to_read = list(set(properties_in_csv + [NOISE_COLUMN]))
     for session_root in session_roots:
         try:
             csv_path = first_match_or_raise(
@@ -1698,8 +1691,8 @@ def plot_usv_property_histograms(
         except (OSError, IOError) as exc:
             message_output(f"[skip] {csv_path}: {exc}")
             continue
-        if noise_col_id in df.columns and noise_categories:
-            df = df.filter(~pls.col(noise_col_id).is_in(list(noise_categories)))
+        if exclude_noise_usvs:
+            df = drop_noise_usvs(df, csv_path.name, message_output)[0]
         if df.height == 0:
             continue
         n_sessions_loaded += 1
@@ -1819,8 +1812,7 @@ def plot_usv_property_histograms(
 
 def _count_usvs_per_session(
     sessions_txt_path: str,
-    noise_col_id: str,
-    noise_categories: tuple[int, ...],
+    exclude_noise_usvs: bool,
     message_output: Callable,
 ) -> np.ndarray:
     """
@@ -1838,10 +1830,9 @@ def _count_usvs_per_session(
     ----------
     sessions_txt_path (str)
         Path to a text file listing one session root per line.
-    noise_col_id (str)
-        Column in the per-session CSV used to flag noise rows.
-    noise_categories (tuple of int)
-        Values of ``noise_col_id`` that mark noise rows to drop.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as
+        holding no vocalization; default ``True``.
     message_output (Callable)
         Logger for per-session load failures.
 
@@ -1861,7 +1852,7 @@ def _count_usvs_per_session(
         ]
 
     counts: list[int] = []
-    columns_to_read = [noise_col_id] if noise_col_id and noise_categories else None
+    columns_to_read = [NOISE_COLUMN] if exclude_noise_usvs else None
     for session_root in session_roots:
         try:
             csv_path = first_match_or_raise(
@@ -1883,8 +1874,8 @@ def _count_usvs_per_session(
         except (OSError, IOError) as exc:
             message_output(f"[skip] {csv_path}: {exc}")
             continue
-        if noise_col_id in df.columns and noise_categories:
-            df = df.filter(~pls.col(noise_col_id).is_in(list(noise_categories)))
+        if exclude_noise_usvs:
+            df = drop_noise_usvs(df, csv_path.name, message_output)[0]
         counts.append(df.height)
 
     return np.asarray(counts, dtype=float)
@@ -1896,8 +1887,7 @@ def plot_session_type_usv_counts(
     lone_male_txt_path: str,
     output_path: str | None = None,
     fig_format: str | None = None,
-    noise_col_id: str = "vae_supercategory",
-    noise_categories: tuple[int, ...] = (0,),
+    exclude_noise_usvs: bool = True,
     fig_size: tuple[float, float] = (6.0, 3.0),
     fig_dpi: int = 300,
     male_color: str = SESSION_TYPE_MALE_COLOR,
@@ -1925,8 +1915,8 @@ def plot_session_type_usv_counts(
     ``plot_usv_property_histograms``: one session root per line,
     ``#`` / blank lines skipped, every path run through
     ``configure_path``. For each session the function discovers the
-    ``*_usv_summary.csv``, drops rows whose ``noise_col_id`` value is
-    in ``noise_categories``, and counts the remaining rows. Sessions
+    ``*_usv_summary.csv``, drops the rows the ``noise`` classifier
+    flagged, and counts the remaining rows. Sessions
     whose CSV is unreadable (missing or SMB timeout) are logged and
     excluded from that type's mean / SEM.
 
@@ -1944,11 +1934,9 @@ def plot_session_type_usv_counts(
     fig_format (str | None)
         Optional output extension override (``"svg"``, ``"pdf"``, etc).
         Replaces any extension on ``output_path`` when given.
-    noise_col_id (str)
-        CSV column used to flag noise rows; default
-        ``"vae_supercategory"``.
-    noise_categories (tuple of int)
-        Values of ``noise_col_id`` to drop as noise; default ``(0,)``.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as
+        holding no vocalization; default ``True``.
     fig_size (tuple of float)
         Figure size in inches; default ``(6, 3)``.
     fig_dpi (int)
@@ -1973,13 +1961,13 @@ def plot_session_type_usv_counts(
         message_output = print
 
     mf_counts = _count_usvs_per_session(
-        male_female_txt_path, noise_col_id, noise_categories, message_output
+        male_female_txt_path, exclude_noise_usvs, message_output
     )
     ff_counts = _count_usvs_per_session(
-        female_female_txt_path, noise_col_id, noise_categories, message_output
+        female_female_txt_path, exclude_noise_usvs, message_output
     )
     lm_counts = _count_usvs_per_session(
-        lone_male_txt_path, noise_col_id, noise_categories, message_output
+        lone_male_txt_path, exclude_noise_usvs, message_output
     )
 
     def _mean_sem(arr: np.ndarray) -> tuple[float, float, int]:
@@ -2099,8 +2087,7 @@ def plot_session_usv_timeline(
     time_window: tuple[float, float] | None = None,
     output_path: str | None = None,
     fig_format: str | None = None,
-    noise_col_id: str = "vae_supercategory",
-    noise_categories: tuple[int, ...] = (0,),
+    exclude_noise_usvs: bool = True,
     fig_size: tuple[float, float] = (7.5, 1.6),
     fig_dpi: int = 300,
     male_color: str = USV_TIMELINE_MALE_COLOR,
@@ -2127,7 +2114,7 @@ def plot_session_usv_timeline(
     convention as ``usv_summary_statistics.extract_session_metadata``:
     ``track_names[0]`` is male, ``track_names[1]`` is female). The
     USV summary CSV is read non-recursively from ``<session>/audio``
-    and rows whose ``noise_col_id`` value is in ``noise_categories``
+    and rows the ``noise`` classifier flagged
     are dropped before rendering.
 
     Parameters
@@ -2142,11 +2129,9 @@ def plot_session_usv_timeline(
         Optional save path. Run through ``configure_path``.
     fig_format (str | None)
         Optional extension override (``"svg"``, ``"pdf"``, ...).
-    noise_col_id (str)
-        CSV column used to identify noise; default
-        ``"vae_supercategory"``.
-    noise_categories (tuple of int)
-        Values of ``noise_col_id`` to drop; default ``(0,)``.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as
+        holding no vocalization; default ``True``.
     fig_size (tuple of float)
         Figure size in inches; default ``(7.5, 1.6)`` for a wide,
         short timeline strip.
@@ -2186,8 +2171,8 @@ def plot_session_usv_timeline(
         label="USV summary CSV",
     )
     df = pls.read_csv(str(csv_path))
-    if noise_col_id in df.columns and noise_categories:
-        df = df.filter(~pls.col(noise_col_id).is_in(list(noise_categories)))
+    if exclude_noise_usvs:
+        df = drop_noise_usvs(df, csv_path.name, message_output)[0]
 
     df = df.with_columns(
         pls.when(pls.col("emitter") == male_id).then(pls.lit("male"))
@@ -2269,22 +2254,28 @@ def plot_session_usv_timeline(
     return fig
 
 
-# Embedding columns expected in each session's USV summary CSV. Two
-# maps live side-by-side: VAE-based UMAP and QLVM-based UMAP. Both
-# carry a category and a supercategory integer label.
+# Embedding columns expected in each session's USV summary CSV: the torus
+# coordinates of every QLVM map (os_utils.QLVM_MAPS; map P at P1/P2), the squeak
+# map's coordinates (qlvm_squeak1/qlvm_squeak2, written by infer-qlvm-squeak-latents
+# on squeak rows only; the squeak map has no category labels) and each USV map's
+# fine (P_category) and coarse (P_supercategory) integer labels.
+SQUEAK_EMBEDDING_COORD_COLS = ("qlvm_squeak1", "qlvm_squeak2")
 EMBEDDING_COORD_COLS = (
-    "vae1",
-    "vae2",
-    "qlvm1",
-    "qlvm2",
+    tuple(f"{qlvm_map}{axis}" for qlvm_map in QLVM_MAPS for axis in (1, 2)) + SQUEAK_EMBEDDING_COORD_COLS
 )
-EMBEDDING_LABEL_COLS = (
-    "vae_category",
-    "vae_supercategory",
-    "qlvm_category",
-    "qlvm_supercategory",
+EMBEDDING_LABEL_COLS = tuple(
+    f"{qlvm_map}_{suffix}" for qlvm_map in QLVM_MAPS for suffix in ("category", "supercategory")
 )
 EMBEDDING_ALL_COLS = EMBEDDING_COORD_COLS + EMBEDDING_LABEL_COLS
+# Label columns carried when a summary has them but never required or null-filled:
+# summaries embedded before infer-qlvm-latents wrote a map's cluster labels hold
+# torus coordinates only, so requiring them would make a cache of such summaries fail
+# its own check, and null-filling them would present an all-null label as if it existed.
+EMBEDDING_OPTIONAL_LABEL_COLS = EMBEDDING_LABEL_COLS
+
+# Parquet key-value metadata key holding the fingerprint of the summaries a pooled
+# embeddings cache was built from (see `_pooled_summaries_fingerprint`).
+POOLED_CACHE_FINGERPRINT_KEY = "usv_playpen_summaries_fingerprint"
 
 # Per-USV acoustic features (written by compute_usv_acoustic_features into
 # usv_summary.csv) -- pulled into the pooled embeddings DataFrame as continuous
@@ -2297,20 +2288,80 @@ EMBEDDING_FEATURE_COLS = (
     "max_amplitude",
     "spectral_entropy",
 )
+# Per-USV squeak flag (written by detect_usv_squeaks into usv_summary.csv): True
+# when the segment holds a squeak (broadband vocalization). Carried in the pooled
+# embeddings DataFrame so the embedding figures can leave squeaks out.
+SQUEAK_COLUMN = "squeak"
+
 # Extra per-USV columns pulled into the pooled embeddings DataFrame.
-# They power the auxiliary scatters (sex, duration) and the acoustic-feature
+# They power the auxiliary scatters (sex, duration), the acoustic-feature
 # color-by metrics in ``plot_embedding_with_category_thumbnails`` / the embedding
-# explorer. The cache file is invalidated automatically when these columns are
-# missing -- see schema-check logic in ``build_pooled_embeddings_df``.
-EMBEDDING_EXTRA_COLS = ("emitter", "duration") + EMBEDDING_FEATURE_COLS
+# explorer, and the squeak filter. The cache file is invalidated automatically
+# when these columns are missing -- see schema-check logic in
+# ``build_pooled_embeddings_df``.
+EMBEDDING_EXTRA_COLS = ("emitter", "duration", SQUEAK_COLUMN) + EMBEDDING_FEATURE_COLS
+
+
+def _pooled_summaries_fingerprint(
+    session_roots: list[str],
+    exclude_noise_usvs: bool,
+) -> tuple[str, dict]:
+    """
+    Description
+    -----------
+    Locates every session's ``*_usv_summary.csv`` and fingerprints the set: a
+    SHA-256 over each session root with its summary's path, size in bytes and
+    modification time in nanoseconds (or the note that it could not be found),
+    plus the ``exclude_noise_usvs`` flag the pooled table is filtered with. A
+    pooled embeddings cache stores this fingerprint in its parquet metadata, so a
+    cache built from other or older summaries (e.g. before the QLVM columns were
+    re-embedded with another model) no longer matches and is rebuilt instead of
+    being served. Only file metadata is read, never the CSV contents, so the check
+    costs one directory listing and one ``stat`` per session.
+
+    Parameters
+    ----------
+    session_roots (list[str])
+        Session root directories (already through ``configure_path``).
+    exclude_noise_usvs (bool)
+        Whether the pooled table drops noise segments (part of what the cache
+        holds, so part of the fingerprint).
+
+    Returns
+    -------
+    fingerprint (str)
+        Hex SHA-256 of the summary set.
+    located (dict)
+        ``session_root -> pathlib.Path`` of its summary, or the exception raised
+        while locating / stat-ing it (the loader skips those sessions).
+    """
+
+    digest = hashlib.sha256()
+    digest.update(f"exclude_noise_usvs={bool(exclude_noise_usvs)}\n".encode())
+    located: dict = {}
+    for session_root in session_roots:
+        try:
+            csv_path = first_match_or_raise(
+                root=pathlib.Path(session_root) / "audio",
+                pattern="*_usv_summary.csv",
+                recursive=False,
+                label="USV summary CSV",
+            )
+            csv_stat = csv_path.stat()
+        except (FileNotFoundError, OSError) as exc:
+            located[session_root] = exc
+            digest.update(f"{session_root}\tmissing\n".encode())
+            continue
+        located[session_root] = csv_path
+        digest.update(f"{session_root}\t{csv_path}\t{csv_stat.st_size}\t{csv_stat.st_mtime_ns}\n".encode())
+    return digest.hexdigest(), located
 
 
 def build_pooled_embeddings_df(
     sessions_txt_path: str,
     cache_path: str | None = None,
     rebuild_cache: bool = False,
-    noise_col_id: str = "vae_supercategory",
-    noise_categories: tuple[int, ...] = (0,),
+    exclude_noise_usvs: bool = True,
     message_output: Callable | None = None,
 ) -> pls.DataFrame:
     """
@@ -2320,10 +2371,12 @@ def build_pooled_embeddings_df(
     that pools per-USV embedding coordinates and category labels
     across every session listed in ``sessions_txt_path``. The returned
     DataFrame is the master table consumed by the marimo embedding
-    explorer notebook: it carries the four UMAP coordinate columns
-    (``vae1/2``, ``qlvm1/2``), the four label columns
-    (``vae_category``, ``vae_supercategory``, ``qlvm_category``,
-    ``qlvm_supercategory``), and — critically — a ``(session_id,
+    explorer notebook: it carries the torus coordinate columns of every
+    QLVM map (``EMBEDDING_COORD_COLS``: ``qlvm1/2``, ``qlvm_dur1/2``,
+    ``qlvm_mf1/2``, ``qlvm_bw1/2``, ``qlvm_loud1/2``, plus the squeak map's
+    ``qlvm_squeak1/2``), the USV maps' fine / coarse
+    label columns (``EMBEDDING_LABEL_COLS``, e.g. ``qlvm_category``,
+    ``qlvm_dur_supercategory``), and — critically — a ``(session_id,
     row_index)`` pair per row that keys directly back into the
     consolidated spectrogram h5 at
     ``/spectrogram/<session_id>/spectrograms[row_index]`` (and the
@@ -2334,7 +2387,18 @@ def build_pooled_embeddings_df(
     When ``cache_path`` is supplied the function writes the pooled
     DataFrame to parquet so subsequent launches load in seconds
     instead of re-reading 100s of CSVs. Set ``rebuild_cache=True`` to
-    force a fresh rebuild.
+    force a fresh rebuild. A cache is served only when it has every
+    required column AND its parquet metadata carries the fingerprint of
+    the current summaries (``_pooled_summaries_fingerprint``: each
+    summary's path, size and modification time, plus
+    ``exclude_noise_usvs``); a cache written from other or older
+    summaries, or before fingerprints existed, is reported stale and
+    rebuilt (then overwritten). Nothing is deleted.
+
+    The label columns are optional: kept when the summaries carry them,
+    never required and never null-filled (summaries embedded before
+    ``infer-qlvm-latents`` wrote a map's labels hold its coordinates
+    only).
 
     Parameters
     ----------
@@ -2349,12 +2413,9 @@ def build_pooled_embeddings_df(
     rebuild_cache (bool)
         If True, ignore any existing cache file and rebuild from
         CSVs (then overwrite the cache).
-    noise_col_id (str)
-        CSV column used to flag noise rows; default
-        ``"vae_supercategory"``.
-    noise_categories (tuple of int)
-        Values of ``noise_col_id`` to drop as noise; default
-        ``(0,)``.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as
+        holding no vocalization; default ``True``.
     message_output (Callable | None)
         Logger; defaults to ``print``. Per-session load failures
         (missing CSV, SMB timeouts, missing columns) are logged and
@@ -2366,13 +2427,15 @@ def build_pooled_embeddings_df(
         Schema:
             session_id (Utf8)
             row_index (UInt32)
-            vae1, vae2 (Float64)
-            vae_category, vae_supercategory (Int64)
-            qlvm1, qlvm2 (Float64)
-            qlvm_category, qlvm_supercategory (Int64)
+            <map>1, <map>2 (Float64) for every map in QLVM_MAPS
+            qlvm_squeak1, qlvm_squeak2 (Float64; null off squeak rows and
+                where a summary has no squeak embedding)
+            <map>_category, <map>_supercategory (Int64; only when some
+                summary carries them)
             emitter (Utf8)
             sex (Utf8)
             duration (Float64)
+            squeak (Boolean; null where a summary has no squeak column)
             mean_freq_hz, peak_freq_hz, freq_bandwidth_hz,
             mean_amplitude, max_amplitude, spectral_entropy (Float64)
         Columns missing from individual sessions become nulls in the
@@ -2386,26 +2449,12 @@ def build_pooled_embeddings_df(
     # disk is missing any of these (older cache), trigger a rebuild
     # transparently so the caller doesn't have to flip ``rebuild_cache``
     # every time the schema is extended.
-    required_extra_cols = {"emitter", "sex", "duration"} | set(EMBEDDING_FEATURE_COLS)
+    required_extra_cols = {"emitter", "sex", "duration", SQUEAK_COLUMN} | set(EMBEDDING_FEATURE_COLS)
     required_cols = (
         {"session_id", "row_index"}
-        | set(EMBEDDING_ALL_COLS)
+        | (set(EMBEDDING_ALL_COLS) - set(EMBEDDING_OPTIONAL_LABEL_COLS))
         | required_extra_cols
     )
-
-    cache_p: pathlib.Path | None = None
-    if cache_path is not None:
-        cache_p = pathlib.Path(configure_path(cache_path))
-        if cache_p.exists() and not rebuild_cache:
-            cached = pls.read_parquet(str(cache_p))
-            missing = required_cols - set(cached.columns)
-            if not missing:
-                message_output(f"Loading pooled embeddings DF from cache: {cache_p}")
-                return cached
-            message_output(
-                f"Cache at {cache_p} is missing columns {sorted(missing)}; "
-                f"rebuilding."
-            )
 
     sessions_txt_path = configure_path(sessions_txt_path)
     with open(sessions_txt_path, "r") as txt_file:
@@ -2415,8 +2464,35 @@ def build_pooled_embeddings_df(
             if stripped and not stripped.startswith("#")
         ]
 
+    # Fingerprint the summaries the table would be built from; a cache from any
+    # other set (older summaries, other sessions, other noise filter) is stale.
+    summaries_fingerprint, located_summaries = _pooled_summaries_fingerprint(session_roots, exclude_noise_usvs)
+
+    cache_p: pathlib.Path | None = None
+    if cache_path is not None:
+        cache_p = pathlib.Path(configure_path(cache_path))
+        if cache_p.exists() and not rebuild_cache:
+            cached_metadata = pls.read_parquet_metadata(str(cache_p))
+            cached_fingerprint = (cached_metadata[POOLED_CACHE_FINGERPRINT_KEY]
+                                  if POOLED_CACHE_FINGERPRINT_KEY in cached_metadata else None)
+            cached = pls.read_parquet(str(cache_p))
+            missing = required_cols - set(cached.columns)
+            if missing:
+                message_output(
+                    f"Cache at {cache_p} is missing columns {sorted(missing)}; "
+                    f"rebuilding."
+                )
+            elif cached_fingerprint != summaries_fingerprint:
+                reason = ("carries no summaries fingerprint (written before fingerprints existed)"
+                          if cached_fingerprint is None else
+                          "was built from other or older usv_summary.csv files")
+                message_output(f"Cache at {cache_p} is stale: it {reason}; rebuilding.")
+            else:
+                message_output(f"Loading pooled embeddings DF from cache: {cache_p}")
+                return cached
+
     select_cols = list(
-        set(EMBEDDING_ALL_COLS) | set(EMBEDDING_EXTRA_COLS) | {noise_col_id}
+        set(EMBEDDING_ALL_COLS) | set(EMBEDDING_EXTRA_COLS) | {NOISE_COLUMN}
     )
 
     frames: list[pls.DataFrame] = []
@@ -2426,15 +2502,9 @@ def build_pooled_embeddings_df(
         # especially over a network mount, and are otherwise silent).
         if session_idx == 1 or session_idx % 25 == 0 or session_idx == total_sessions:
             message_output(f"[pool] reading session {session_idx}/{total_sessions} ...")
-        try:
-            csv_path = first_match_or_raise(
-                root=pathlib.Path(session_root) / "audio",
-                pattern="*_usv_summary.csv",
-                recursive=False,
-                label="USV summary CSV",
-            )
-        except (FileNotFoundError, OSError) as exc:
-            message_output(f"[skip] {session_root}: {exc}")
+        csv_path = located_summaries[session_root]
+        if isinstance(csv_path, Exception):
+            message_output(f"[skip] {session_root}: {csv_path}")
             continue
         try:
             df = pls.read_csv(str(csv_path), columns=select_cols)
@@ -2467,8 +2537,8 @@ def build_pooled_embeddings_df(
         ]
         if casts:
             df = df.with_columns(casts)
-        if noise_col_id in df.columns and noise_categories:
-            df = df.filter(~pls.col(noise_col_id).is_in(list(noise_categories)))
+        if exclude_noise_usvs:
+            df = drop_noise_usvs(df, csv_path.name, message_output)[0]
 
         # Look up the session's male / female track ids from the
         # tracking h5 so we can map ``emitter`` -> ``sex``. Failure
@@ -2510,7 +2580,12 @@ def build_pooled_embeddings_df(
         keep_cols = ["session_id", "row_index"] + [
             c for c in EMBEDDING_ALL_COLS if c in df.columns
         ]
-        for c in ("emitter", "sex", "duration") + EMBEDDING_FEATURE_COLS:
+        if SQUEAK_COLUMN in df.columns:
+            # CSV inference reads the squeak flag as Boolean, or as String /
+            # Null in a session whose column is empty; coerce so every session
+            # frame concatenates.
+            df = df.with_columns(pls.col(SQUEAK_COLUMN).cast(pls.Boolean, strict=False))
+        for c in ("emitter", "sex", "duration", SQUEAK_COLUMN) + EMBEDDING_FEATURE_COLS:
             if c in df.columns:
                 keep_cols.append(c)
         frames.append(df.select(keep_cols))
@@ -2524,7 +2599,8 @@ def build_pooled_embeddings_df(
         for c in EMBEDDING_COORD_COLS:
             empty_schema[c] = pls.Float64
         for c in EMBEDDING_LABEL_COLS:
-            empty_schema[c] = pls.Int64
+            if c not in EMBEDDING_OPTIONAL_LABEL_COLS:
+                empty_schema[c] = pls.Int64
         return pls.DataFrame(schema=empty_schema)
 
     pooled = pls.concat(frames, how="diagonal")
@@ -2537,13 +2613,14 @@ def build_pooled_embeddings_df(
     # keeps it stable.
     fill_dtypes = {c: pls.Float64 for c in ("duration",) + EMBEDDING_FEATURE_COLS}
     fill_dtypes["sex"] = pls.Utf8
-    # An embedding family absent from every session's summary (e.g. vae_* while
-    # VAE inference is skipped) would otherwise be dropped from the pooled frame
+    fill_dtypes[SQUEAK_COLUMN] = pls.Boolean
+    # A map's coordinates absent from every session's summary (e.g. a conditional
+    # map a cohort was never embedded with) would otherwise be dropped from the pooled frame
     # while the cache validator above still requires it, so a written cache would
     # fail its own check and rebuild on every load. Filling the family with typed
     # nulls keeps the cache valid and the schema stable.
     fill_dtypes.update({c: pls.Float64 for c in EMBEDDING_COORD_COLS})
-    fill_dtypes.update({c: pls.Int64 for c in EMBEDDING_LABEL_COLS})
+    fill_dtypes.update({c: pls.Int64 for c in EMBEDDING_LABEL_COLS if c not in EMBEDDING_OPTIONAL_LABEL_COLS})
     missing_fills = [
         pls.lit(None, dtype=dtype).alias(c)
         for c, dtype in fill_dtypes.items()
@@ -2554,159 +2631,13 @@ def build_pooled_embeddings_df(
 
     if cache_p is not None:
         cache_p.parent.mkdir(parents=True, exist_ok=True)
-        pooled.write_parquet(str(cache_p))
+        pooled.write_parquet(str(cache_p), metadata={POOLED_CACHE_FINGERPRINT_KEY: summaries_fingerprint})
         message_output(
             f"Cached pooled embeddings DF to {cache_p} "
             f"({pooled.height:,} rows, {pooled.select('session_id').unique().height} sessions)"
         )
 
     return pooled
-
-
-def build_vae_density_npz(
-    sessions_txt_path: str,
-    out_npz_path: str,
-    *,
-    label_col: str = "vae_supercategory",
-    cache_path: str | None = None,
-    grid: int = 300,
-    smooth_sigma: float = 1.5,
-    knn: int = 15,
-    message_output: Callable | None = None,
-) -> str:
-    """
-    Description
-    -----------
-    Precompute the cohort VAE embedding landscape and save it to an ``.npz`` in the
-    SAME schema the sequence figure's left panel reads for QLVM, so the VAE panel can
-    show a precomputed cohort gray_r density + category boundaries (rather than
-    re-pooling ~600k coordinates on every per-session render). Unlike QLVM — whose
-    coordinates live on the periodic unit torus and whose watershed arrays ship from
-    the modeling pipeline — VAE coordinates live only in per-session
-    ``usv_summary.csv`` files, so this builds the analogue once from the pooled
-    cohort table.
-
-    The output carries three arrays:
-    ``heatmap`` — a 2-D histogram density of ``(vae1, vae2)`` over the
-    cohort's coordinate range (optionally Gaussian-smoothed into a KDE-like density
-    estimate), oriented ``[row=y, col=x]`` for ``origin="lower"``;
-    ``ws_labels_periodic`` — the category field on the same grid, assigned by a
-    nearest-neighbour classifier fit on the cohort points (the VAE analogue of the
-    QLVM watershed label field, so the figure's neighbour-difference boundary mask
-    works unchanged);
-    ``extent`` — ``[x0, x1, y0, y1]`` (the umap coordinate range; QLVM omits this and
-    defaults to the unit square).
-
-    Run once per clustering granularity: ``label_col="vae_supercategory"`` for the
-    COARSE map and ``label_col="vae_category"`` for the FINE map. Write them to
-    ``<spectrograms_dir>/vae/vae_density_{coarse,fine}.npz`` so the figure resolves
-    them from ``shared_resources.spectrograms_dir`` by convention.
-
-    Parameters
-    ----------
-    sessions_txt_path (str)
-        Path to a text file listing one session root per line (passed straight to
-        ``build_pooled_embeddings_df``).
-    out_npz_path (str)
-        Destination ``.npz`` path (run through ``configure_path``).
-    label_col (str)
-        Cohort label column to rasterize into ``ws_labels_periodic`` —
-        ``"vae_supercategory"`` (coarse) or ``"vae_category"`` (fine).
-    cache_path (str | None)
-        Optional parquet cache for the pooled DataFrame (forwarded to
-        ``build_pooled_embeddings_df``).
-    grid (int)
-        Side length of the square density / label grid (``grid x grid`` cells).
-    smooth_sigma (float)
-        Gaussian-filter sigma (in grid cells) applied to the histogram density;
-        ``0`` leaves the raw histogram.
-    knn (int)
-        Number of neighbours for the grid label classifier.
-    message_output (Callable | None)
-        Optional logger; ``None`` is silent.
-
-    Returns
-    -------
-    out_path (str)
-        The path the ``.npz`` was written to.
-    """
-
-    emit = message_output if message_output is not None else (lambda *_a, **_kw: None)
-    pooled = build_pooled_embeddings_df(
-        sessions_txt_path, cache_path=cache_path, message_output=message_output
-    )
-    sub = pooled.select(["vae1", "vae2", label_col]).drop_nulls()
-    coords_x = sub["vae1"].to_numpy().astype(np.float64)
-    coords_y = sub["vae2"].to_numpy().astype(np.float64)
-    point_labels = sub[label_col].to_numpy()
-
-    x0, x1 = float(coords_x.min()), float(coords_x.max())
-    y0, y1 = float(coords_y.min()), float(coords_y.max())
-    extent = np.array([x0, x1, y0, y1], dtype=np.float64)
-
-    # Density: 2-D histogram over the coordinate range; counts come out [x, y] so
-    # transpose to [y, x] for origin="lower". An optional Gaussian filter turns the
-    # histogram into a smooth density estimate (rendered without interpolation).
-    counts, _, _ = np.histogram2d(coords_x, coords_y, bins=grid, range=[[x0, x1], [y0, y1]])
-    heatmap = counts.T
-    if smooth_sigma > 0:
-        heatmap = gaussian_filter(heatmap, sigma=smooth_sigma)
-
-    # Label field: a nearest-neighbour classifier fit on the cohort points, predicted
-    # on the grid, yields a Voronoi-like category map (the VAE analogue of the QLVM
-    # watershed labels) on which the figure's neighbour-difference mask draws lines.
-    classifier = KNeighborsClassifier(n_neighbors=knn, weights="uniform")
-    classifier.fit(np.column_stack([coords_x, coords_y]), point_labels)
-    grid_x = np.linspace(x0, x1, grid)
-    grid_y = np.linspace(y0, y1, grid)
-    mesh_x, mesh_y = np.meshgrid(grid_x, grid_y)
-    grid_labels = classifier.predict(
-        np.column_stack([mesh_x.ravel(), mesh_y.ravel()])
-    ).reshape(grid, grid)
-
-    out_path = str(configure_path(out_npz_path))
-    np.savez(
-        out_path,
-        heatmap=heatmap.astype(np.float32),
-        ws_labels_periodic=grid_labels.astype(np.int16),
-        extent=extent,
-    )
-    emit(f"Saved VAE cohort density ({label_col}, {coords_x.size} USVs) to {out_path}.")
-    return out_path
-
-
-@click.command(name="build-vae-density")
-@click.option('--sessions-txt', type=str, required=True, help='Text file listing one session root per line.')
-@click.option('--out-coarse', type=str, required=True, help='Output .npz path for the COARSE map (vae_supercategory).')
-@click.option('--out-fine', type=str, required=True, help='Output .npz path for the FINE map (vae_category).')
-@click.option('--cache-path', type=str, default=None, required=False, help='Optional parquet cache for the pooled DataFrame.')
-@click.option('--grid', type=int, default=300, required=False, help='Density / label grid side length.')
-@click.option('--smooth-sigma', type=float, default=1.5, required=False, help='Gaussian sigma (grid cells); 0 = raw histogram.')
-@click.option('--knn', type=int, default=15, required=False, help='Neighbours for the grid label classifier.')
-def build_vae_density_cli(sessions_txt, out_coarse, out_fine, cache_path, grid, smooth_sigma, knn) -> None:
-    """
-    Description
-    -----------
-    One-off CLI that builds BOTH cohort VAE landscape files consumed by the USV
-    sequence figure: the COARSE map (``vae_supercategory`` boundaries) and the FINE
-    map (``vae_category`` boundaries). Write them to
-    ``<shared_resources.spectrograms_dir>/vae/vae_density_{coarse,fine}.npz`` so the
-    figure resolves them automatically.
-
-    Parameters
-    ----------
-    See the command options.
-
-    Returns
-    -------
-    None
-    """
-
-    for label_col, out_path in (("vae_supercategory", out_coarse), ("vae_category", out_fine)):
-        build_vae_density_npz(
-            sessions_txt, out_path, label_col=label_col, cache_path=cache_path,
-            grid=grid, smooth_sigma=smooth_sigma, knn=knn, message_output=print,
-        )
 
 
 def _pick_spiral_with_grid(
@@ -3068,7 +2999,7 @@ def _knn_boundary_grid(
     point density** (a Gaussian-smoothed 2D histogram of the same
     points): cells whose smoothed count is below
     ``density_min_count`` are set to NaN, so when the result is fed
-    to ``ax.contour`` the contour algorithm skips empty UMAP regions
+    to ``ax.contour`` the contour algorithm skips empty map regions
     and the boundaries appear only where data actually lives. The
     boundaries themselves still follow point density via k-NN, not
     centroid Voronoi geometry.
@@ -3138,7 +3069,7 @@ def _knn_boundary_grid(
 def plot_embedding_with_category_thumbnails(
     sessions_txt_path: str,
     consolidated_h5_path: str,
-    map_type: str = "vae",
+    qlvm_map: str = "qlvm",
     category_col_suffix: str = "supercategory",
     n_samples_per_category: int = 8,
     apply_mask: bool = True,
@@ -3146,7 +3077,7 @@ def plot_embedding_with_category_thumbnails(
     category_colors: dict | None = None,
     sampling_method: str = "random",
     cluster_centers_xy: dict | None = None,
-    cluster_centers_h5_path: str | None = None,
+    cluster_centers_npz_path: str | None = None,
     cluster_centers_json_path: str | None = None,
     draw_spiral_overlay: bool = False,
     spiral_show_only_for: int | None = None,
@@ -3173,8 +3104,8 @@ def plot_embedding_with_category_thumbnails(
     fig_dpi: int = 300,
     output_path: str | None = None,
     fig_format: str | None = None,
-    noise_col_id: str = "vae_supercategory",
-    noise_categories: tuple[int, ...] = (0,),
+    exclude_noise_usvs: bool = True,
+    exclude_squeaks: bool = True,
     scatter_max_points: int = 50_000,
     scatter_point_size: float = 4.0,
     scatter_point_alpha: float = 0.5,
@@ -3220,9 +3151,12 @@ def plot_embedding_with_category_thumbnails(
         Path to a text file listing one session root per line.
     consolidated_h5_path (str)
         Path to the consolidated SAM2 + spectrogram HDF5 store.
-    map_type (str)
-        ``"vae"`` or ``"qlvm"`` - selects which embedding map to plot
-        (the VAE umap or the QLVM torus).
+    qlvm_map (str)
+        One of ``os_utils.QLVM_MAPS`` - selects which QLVM map to plot
+        (``"qlvm"`` the regular model; ``"qlvm_dur"``, ``"qlvm_mf"``,
+        ``"qlvm_bw"``, ``"qlvm_loud"`` the conditional ones): its
+        coordinates ``<qlvm_map>1/2`` and labels
+        ``<qlvm_map>_<category_col_suffix>``.
     category_col_suffix (str)
         ``"category"`` or ``"supercategory"`` - selects which
         categorical label to color and group by.
@@ -3237,6 +3171,30 @@ def plot_embedding_with_category_thumbnails(
     category_colors (dict | None)
         Optional mapping ``{category_int: hex_color}``. If ``None``,
         uses ``tab10`` / ``tab20`` automatically.
+    sampling_method (str)
+        How each category's ``n_samples_per_category`` USVs are picked:
+        ``"random"``, ``"spiral"`` (a spiral walk out from the category's
+        centre, see ``cluster_centers_*`` below) or any method
+        ``_pick_category_samples`` accepts.
+    cluster_centers_xy (dict | None)
+        Explicit ``{label: (x, y)}`` cluster centres in the map's
+        coordinates; highest priority of the centre sources.
+    cluster_centers_npz_path (str | None)
+        Reference arrays ``.npz`` whose ``centers`` array (``(K, 2)``,
+        ``(peak_x, peak_y)``, row ``i`` = label ``i + 1``) gives the
+        cluster centres; second priority. This is the map's v3 cell
+        ``<spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_fine.npz``
+        (``category_col_suffix="category"``; 15 centres for the regular
+        map) or ``arrays_coarse.npz`` (``"supercategory"``; 9 centres),
+        resolved by ``os_utils.resolve_embedding_arrays_path`` and written
+        by ``export-qlvm-reference-arrays``; the caller must pass the map
+        and level that match ``qlvm_map`` / ``category_col_suffix``. Every category label in the
+        pooled table must lie in ``1..K``, otherwise ValueError: the
+        centres and the labels come from different clusterings (e.g. the
+        old model's 12 / 7 arrays against the v3 15 / 9 labels).
+    cluster_centers_json_path (str | None)
+        A QLVM provenance JSON whose ``cluster_centers`` list (row ``i``
+        = label ``i + 1``) gives the centres; lowest priority.
     annotate_picks_on_scatter (bool)
         If ``True``, overlay the integer pick index (1..N) on each
         sampled point in the main scatter so the row of spectrograms
@@ -3247,7 +3205,7 @@ def plot_embedding_with_category_thumbnails(
         If ``True``, draw the integer cluster ID at the (resolved)
         center of each category on the main scatter. Centers are
         taken from ``cluster_centers_xy`` /
-        ``cluster_centers_h5_path`` / ``cluster_centers_json_path``
+        ``cluster_centers_npz_path`` / ``cluster_centers_json_path``
         when supplied (same priority chain as the spiral overlay);
         otherwise the per-category mean of the displayed scatter
         points is used as a fallback so the label still lands inside
@@ -3291,10 +3249,17 @@ def plot_embedding_with_category_thumbnails(
     output_path, fig_format (str | None)
         Optional save path; ``fig_format`` overrides any extension on
         ``output_path``. Both run through ``configure_path``.
-    noise_col_id, noise_categories
+    exclude_noise_usvs
         Noise filtering passed through to
         ``build_pooled_embeddings_df`` (only used when ``pooled_df`` is
         ``None``).
+    exclude_squeaks (bool)
+        Leave out the segments ``detect_usv_squeaks`` flagged as squeaks
+        (``squeak`` True) from the scatter, the auxiliary maps and the
+        thumbnail picks; default ``True``. The QLVM models were trained
+        without squeaks, so these calls sit wherever the decoder places
+        them. Rows with a null flag (no squeak column in their summary)
+        are kept; a pooled table without the column raises.
     scatter_max_points (int)
         Optional cap on points rendered in the scatter (random sample
         using the ``seed`` argument); the per-category sampling still draws from
@@ -3304,8 +3269,8 @@ def plot_embedding_with_category_thumbnails(
     pooled_df (pls.DataFrame | None)
         Optionally pass a pre-built pooled-embeddings DataFrame to
         skip the loader. Must contain ``session_id``, ``row_index``,
-        the embedding coordinate columns (``vae1/2`` or
-        ``qlvm1/2``) and the category column.
+        the map's coordinate columns (``<qlvm_map>1/2``) and the
+        category column.
     embeddings_cache_path (str | None)
         Parquet cache path passed to ``build_pooled_embeddings_df``.
     rebuild_embeddings_cache (bool)
@@ -3338,9 +3303,8 @@ def plot_embedding_with_category_thumbnails(
     sessions_txt_path = configure_path(sessions_txt_path)
     consolidated_h5_path = configure_path(consolidated_h5_path)
 
-    map_prefix = map_type.lower()
-    if map_prefix not in ("vae", "qlvm"):
-        msg = f"map_type must be 'vae' or 'qlvm', got {map_type!r}."
+    if qlvm_map not in QLVM_MAPS:
+        msg = f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}."
         raise ValueError(msg)
     if category_col_suffix not in ("category", "supercategory"):
         msg = (
@@ -3349,30 +3313,33 @@ def plot_embedding_with_category_thumbnails(
         )
         raise ValueError(msg)
 
-    # The QLVM torus coordinates are named qlvm1/qlvm2 (they are not a
-    # UMAP); only the VAE embedding uses the _umap1/_umap2 suffix.
-    if map_prefix == "qlvm":
-        x_col, y_col = "qlvm1", "qlvm2"
-    else:
-        x_col, y_col = "vae1", "vae2"
-    cat_col = f"{map_prefix}_{category_col_suffix}"
+    x_col, y_col = f"{qlvm_map}1", f"{qlvm_map}2"
+    cat_col = f"{qlvm_map}_{category_col_suffix}"
 
     if pooled_df is None:
         pooled_df = build_pooled_embeddings_df(
             sessions_txt_path=sessions_txt_path,
             cache_path=embeddings_cache_path,
             rebuild_cache=rebuild_embeddings_cache,
-            noise_col_id=noise_col_id,
-            noise_categories=noise_categories,
+            exclude_noise_usvs=exclude_noise_usvs,
             message_output=message_output,
         )
 
     df_clean = pooled_df.drop_nulls(subset=[x_col, y_col, cat_col])
-    categories = sorted(
-        c for c in set(df_clean[cat_col].to_list()) if c not in noise_categories
-    )
+    if exclude_squeaks:
+        if SQUEAK_COLUMN not in df_clean.columns:
+            msg = (
+                f"The pooled embeddings table has no '{SQUEAK_COLUMN}' column, so squeaks cannot be "
+                f"excluded; rebuild the embeddings cache from summaries detect-usv-squeaks has run on, "
+                f"or pass exclude_squeaks=False."
+            )
+            raise KeyError(msg)
+        n_before = df_clean.height
+        df_clean = df_clean.filter(~pls.col(SQUEAK_COLUMN).fill_null(False))
+        message_output(f"Excluded {n_before - df_clean.height} squeak(s) of {n_before} placed calls.")
+    categories = sorted(set(df_clean[cat_col].to_list()))
     if not categories:
-        msg = "No non-noise categories found in pooled_df."
+        msg = "No categories found in pooled_df."
         raise RuntimeError(msg)
     n_categories = len(categories)
 
@@ -3389,11 +3356,11 @@ def plot_embedding_with_category_thumbnails(
     # Resolve explicit cluster centers (used by the spiral sampler).
     # Priority order:
     #   1. ``cluster_centers_xy`` dict (caller-supplied, highest).
-    #   2. ``cluster_centers_h5_path`` -> a small h5 produced by
-    #      ``build_qlvm_clusters_h5.py`` with ``/coarse`` and ``/fine``
-    #      groups, each carrying ``cluster_centers (N, 2)``. The
-    #      group is picked from ``category_col_suffix``
-    #      (``supercategory`` -> ``/coarse``; ``category`` -> ``/fine``).
+    #   2. ``cluster_centers_npz_path`` -> a reference arrays ``.npz``
+    #      (``export-qlvm-reference-arrays``) whose ``centers (K, 2)``
+    #      are the cluster peaks of the level the caller picked to match
+    #      ``category_col_suffix`` (fine -> ``category``, coarse ->
+    #      ``supercategory``).
     #   3. ``cluster_centers_json_path`` -> a single QLVM provenance
     #      JSON's ``cluster_centers`` list.
     # Center index ``i`` always maps to label ``i + 1`` (verified
@@ -3403,17 +3370,18 @@ def plot_embedding_with_category_thumbnails(
         cluster_centers_resolved = {
             int(k): (float(v[0]), float(v[1])) for k, v in cluster_centers_xy.items()
         }
-    elif cluster_centers_h5_path is not None:
-        cc_h5_group = "coarse" if category_col_suffix == "supercategory" else "fine"
-        with h5py.File(configure_path(cluster_centers_h5_path), "r") as _cc_h5:
-            if cc_h5_group not in _cc_h5:
-                msg = (
-                    f"Group '/{cc_h5_group}' not found in "
-                    f"{cluster_centers_h5_path!r}; expected for "
-                    f"category_col_suffix={category_col_suffix!r}."
-                )
-                raise KeyError(msg)
-            centers_arr = _cc_h5[f"{cc_h5_group}/cluster_centers"][:]
+    elif cluster_centers_npz_path is not None:
+        with np.load(configure_path(cluster_centers_npz_path)) as _cc_npz:
+            centers_arr = _cc_npz["centers"]
+        foreign_labels = sorted(int(c) for c in categories if not 1 <= int(c) <= centers_arr.shape[0])
+        if foreign_labels:
+            msg = (
+                f"{cat_col} labels {foreign_labels} fall outside the {centers_arr.shape[0]} cluster "
+                f"centres of {cluster_centers_npz_path!r}: the centres and the labels come from "
+                f"different clusterings (or the arrays level does not match "
+                f"category_col_suffix={category_col_suffix!r})."
+            )
+            raise ValueError(msg)
         for i, c in enumerate(centers_arr):
             cluster_centers_resolved[i + 1] = (float(c[0]), float(c[1]))
     elif cluster_centers_json_path is not None:
@@ -3438,7 +3406,7 @@ def plot_embedding_with_category_thumbnails(
     y_all = scatter_df[y_col].to_numpy()
     cat_all = scatter_df[cat_col].to_numpy()
 
-    # Data-extent bounds used by ALL five UMAP panels so their axes
+    # Data-extent bounds used by ALL five map panels so their axes
     # stay pinned to the actual data range and overlays (boundaries,
     # spirals, picks) get clipped to that range instead of pushing
     # the axes outward.
@@ -3449,7 +3417,7 @@ def plot_embedding_with_category_thumbnails(
 
     # Cluster boundaries via a k-NN classifier on (x, y) -> category,
     # predicted on a 200x200 grid AND masked by point density so the
-    # contour algorithm skips empty UMAP regions and the boundary lines
+    # contour algorithm skips empty map regions and the boundary lines
     # appear only where data actually lives.
     boundary_xx = boundary_yy = boundary_labels = None
     if (
@@ -3542,7 +3510,7 @@ def plot_embedding_with_category_thumbnails(
     # Two rows. TOP: the big category-colored scatter (left) + the per-category
     # thumbnail grid (right) as two EQUAL-width cells, so the scatter and the whole
     # thumbnail block render at the same (square) size. BOTTOM: the four auxiliary
-    # maps (male / female emitter, duration, mean frequency) in a single line.
+    # maps (male / female emitter, duration, frequency bandwidth) in a single line.
     # ``height_ratios=[2, 1]`` keeps the top cells ~twice the side of the line below.
     outer = fig.add_gridspec(2, 1, height_ratios=[2, 1], hspace=0.16)
     top_row = outer[0, 0].subgridspec(1, 2, wspace=0.08)
@@ -3621,7 +3589,7 @@ def plot_embedding_with_category_thumbnails(
     # Overlay the integer cluster ID at the centre of each category
     # so the scatter doubles as a legend. Centres come from the
     # already-resolved ``cluster_centers_resolved`` map (caller-
-    # supplied xy / h5 / json, in that priority); when none was
+    # supplied xy / reference-arrays npz / json, in that priority); when none was
     # provided we fall back to the per-category mean of the points
     # actually plotted on the scatter so the label still lands
     # inside its cluster.
@@ -3652,13 +3620,13 @@ def plot_embedding_with_category_thumbnails(
             )
 
     # QLVM is a quasi-Monte Carlo latent variable model, not UMAP -- label
-    # accordingly.
-    map_axis_token = "DIM" if map_prefix == "qlvm" else "UMAP"
+    # the torus dimensions of the chosen map (e.g. "QLVM DUR DIM 1").
+    map_axis_name = qlvm_map.upper().replace("_", " ")
     ax_scatter.set_xlabel(
-        f"{map_prefix.upper()} {map_axis_token} 1", fontsize=12,
+        f"{map_axis_name} DIM 1", fontsize=12,
     )
     ax_scatter.set_ylabel(
-        f"{map_prefix.upper()} {map_axis_token} 2", fontsize=12,
+        f"{map_axis_name} DIM 2", fontsize=12,
     )
     ax_scatter.set_xticks([])
     ax_scatter.set_yticks([])
@@ -3706,7 +3674,7 @@ def plot_embedding_with_category_thumbnails(
     ax_male.set_xlabel("male emitted", fontsize=10)
     ax_female.set_xlabel("female emitted", fontsize=10)
 
-    # Bottom row: duration / mean-frequency scatters colored by value
+    # Bottom row: duration / frequency-bandwidth scatters colored by value
     # (project default cmap from `figures.sequential_cmap`). Points are sorted
     # ascending by value so high (bright) values are drawn last and sit
     # on top of low (dark) ones, giving a legible gradient even with
@@ -3743,11 +3711,11 @@ def plot_embedding_with_category_thumbnails(
     else:
         ax_dur.set_xlabel("duration (n/a)", fontsize=10)
 
-    if "mean_freq_hz" in scatter_df.columns:
-        freqs = scatter_df["mean_freq_hz"].to_numpy().astype(float) / 1000.0  # Hz -> kHz
-        _render_continuous(ax_freq, freqs, "mean freq ({lo:.0f}-{hi:.0f} kHz)")
+    if "freq_bandwidth_hz" in scatter_df.columns:
+        bandwidths = scatter_df["freq_bandwidth_hz"].to_numpy().astype(float) / 1000.0  # Hz -> kHz
+        _render_continuous(ax_freq, bandwidths, "freq bandwidth ({lo:.0f}-{hi:.0f} kHz)")
     else:
-        ax_freq.set_xlabel("mean freq (n/a)", fontsize=10)
+        ax_freq.set_xlabel("freq bandwidth (n/a)", fontsize=10)
 
     # All four small panels get a full box (all 4 spines visible) at
     # slightly-thicker line width than the matplotlib default.
@@ -3762,7 +3730,7 @@ def plot_embedding_with_category_thumbnails(
         ax.set_ylim(y_lo - y_pad, y_hi + y_pad)
         ax.set_box_aspect(1)
         # Overlay cluster boundaries at lower alpha so each panel reads
-        # as living inside the same UMAP geometry.
+        # as living inside the same map geometry.
         _overlay_boundaries(ax, alpha=1.0, linewidth=1.5)
 
     # Top-right per-category x per-sample grid, filling the whole top-right cell so
@@ -3962,7 +3930,8 @@ def render_embedding_thumbnails_for_cohort(
     -----------
     Cohort-level driver for the embedding + per-category spectrogram thumbnails
     figure. Pools every ``*sessions_list.txt`` under
-    ``shared_resources['input_files_directory']`` into one combined session list,
+    ``shared_resources['input_files_directory']`` (except playback lists, which the
+    embedding explorer also drops) into one combined session list,
     resolves the consolidated store as the newest ``spectrograms_*.h5`` under
     ``shared_resources['spectrograms_dir']``, and renders
     ``plot_embedding_with_category_thumbnails`` with the knobs from the
@@ -4012,8 +3981,11 @@ def render_embedding_thumbnails_for_cohort(
     )
 
     # Pool every cohort session list into one deduplicated combined list (same
-    # cohort definition as the embedding explorer / VAE-density precompute).
-    list_files = sorted(input_files_dir.glob("*sessions_list.txt"))
+    # cohort definition as the embedding explorer). Playback
+    # lists are dropped, as the explorer drops them: playback sessions carry no
+    # emitter / embedding structure (and no noise column, so pooling them with
+    # exclude_noise_usvs fails).
+    list_files = sorted(p for p in input_files_dir.glob("*sessions_list.txt") if "playback" not in p.name.lower())
     if not list_files:
         raise FileNotFoundError(
             f"embedding thumbnails: no '*sessions_list.txt' under '{input_files_dir}'."
@@ -4034,21 +4006,29 @@ def render_embedding_thumbnails_for_cohort(
         combined_sessions_txt = combined_file.name
 
     # Cluster-center provenance for the QLVM cluster-ID labels / spiral centers:
-    # the newest qlvm_clusters_*.h5 under the spectrograms dir (it carries the
-    # /coarse + /fine cluster_centers). Only meaningful for the QLVM map; the VAE
-    # umap has no equivalent, so leave it unset there (centers fall back to the
-    # data-derived medoids/centroids).
-    cluster_centers_h5_path = None
-    if cfg["map_type"] == "qlvm":
-        spec_base = pathlib.Path(
-            configure_path(visualizations_parameter_dict["shared_resources"]["spectrograms_dir"])
+    # the `centers` (cluster peaks) of the chosen map's v3 reference arrays,
+    # <spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_{fine,coarse}.npz, at the level
+    # matching the colored label (category -> fine; supercategory -> coarse; 15 / 9
+    # for the regular map). The same peaks sit in the consolidated store's
+    # qlvm_models/<qlvm_map>/clusters_<level>; the arrays are the one source, shared
+    # with the sequence map and the torus video. When they are missing the centers
+    # fall back to the data-derived medoids/centroids.
+    qlvm_map = visualizations_parameter_dict["shared_resources"]["qlvm_map"]
+    cluster_centers_npz_path = None
+    centers_level = "fine" if cfg["category_col_suffix"] == "category" else "coarse"
+    centers_candidate = resolve_embedding_arrays_path(
+        visualizations_parameter_dict["shared_resources"]["spectrograms_dir"], qlvm_map, centers_level
+    )
+    if pathlib.Path(centers_candidate).is_file():
+        cluster_centers_npz_path = centers_candidate
+    else:
+        log(
+            f"[embedding-thumbnails] no QLVM reference arrays at {centers_candidate} "
+            f"(export-qlvm-reference-arrays writes them); cluster centres fall back to the data."
         )
-        cc_matches = sorted(spec_base.glob("qlvm_clusters_*.h5"), key=lambda p: p.stat().st_mtime, reverse=True)
-        if cc_matches:
-            cluster_centers_h5_path = str(cc_matches[0])
 
     # Pooled-embeddings cache resolved by convention from the spectrograms dir
-    # (<dir>/embeddings/pooled_embeddings.parquet, precomputed once on a fast mount);
+    # (<dir>/embeddings/pooled_embeddings_qlvmv3.parquet, precomputed once on a fast mount);
     # build_pooled_embeddings_df loads it when present instead of re-reading the
     # cohort's CSVs, and otherwise pools + writes it there.
     cache_path = resolve_pooled_embeddings_cache(
@@ -4058,7 +4038,7 @@ def render_embedding_thumbnails_for_cohort(
     out_dir = pathlib.Path(configure_path(figures["save_directory"]))
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_format = figures["fig_format"]
-    stem = f"embedding_thumbnails_{cfg['map_type']}_{cfg['category_col_suffix']}"
+    stem = f"embedding_thumbnails_{qlvm_map}_{cfg['category_col_suffix']}"
     if figures["timestamp_in_name"]:
         stem = f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_path = str(out_dir / f"{stem}.{fig_format}")
@@ -4067,14 +4047,15 @@ def render_embedding_thumbnails_for_cohort(
         fig = plot_embedding_with_category_thumbnails(
             sessions_txt_path=combined_sessions_txt,
             consolidated_h5_path=store_path,
-            map_type=cfg["map_type"],
+            qlvm_map=qlvm_map,
             category_col_suffix=cfg["category_col_suffix"],
+            exclude_squeaks=cfg["exclude_squeaks"],
             n_samples_per_category=cfg["n_samples_per_category"],
             apply_mask=cfg["apply_mask"],
             mask_excluded_categories=tuple(cfg["mask_excluded_categories"]),
             category_colors=cfg["category_colors"],
             sampling_method=cfg["sampling_method"],
-            cluster_centers_h5_path=cluster_centers_h5_path,
+            cluster_centers_npz_path=cluster_centers_npz_path,
             draw_spiral_overlay=cfg["draw_spiral_overlay"],
             spiral_show_only_for=cfg["spiral_show_only_for"],
             spiral_color=cfg["spiral_color"],

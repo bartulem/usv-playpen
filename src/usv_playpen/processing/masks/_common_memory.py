@@ -1,4 +1,4 @@
-# ABOUTME: Memory + device + seed utilities shared by the GPU steps (masks, vae) and the CPU step.
+# ABOUTME: Memory + device + seed utilities shared by the GPU steps (masks) and the CPU step.
 # ABOUTME: torch is imported lazily so the CPU spectrogram step never pays for it at import time.
 import os
 import gc

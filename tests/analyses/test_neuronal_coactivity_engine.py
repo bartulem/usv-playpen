@@ -791,6 +791,68 @@ def test_load_animal_sessions_picks_richest_day_and_builds_entries(tmp_path):
     assert any("common filtered units" in line for line in messages)
 
 
+@pytest.mark.parametrize("category_column", [None, ""])
+def test_load_animal_sessions_null_category_column_raises(category_column):
+    """
+    Description
+    -----------
+    A null / empty category column (no QLVM labels chosen) raises a ValueError that
+    says QLVM labels are unavailable, before any file is touched.
+    """
+
+    with pytest.raises(ValueError, match="QLVM category labels are not available"):
+        engine.load_animal_sessions(
+            "mouse_focal",
+            ["20240101_run0"],
+            data_root=pathlib.Path("/nonexistent"),
+            catalog={},
+            category_column=category_column,
+            group_a_ids=[1],
+            group_b_ids=[7],
+            cluster_group="good",
+            require_somatic=False,
+            brain_areas=set(),
+        )
+
+
+def test_load_animal_sessions_absent_category_column_raises(tmp_path):
+    """
+    Description
+    -----------
+    A summary without the configured category column (the production summaries
+    carry qlvm1/qlvm2 but no qlvm_supercategory) raises a ValueError naming the
+    column and saying QLVM labels are unavailable, instead of polars'
+    ColumnNotFoundError.
+    """
+
+    animal_id = "mouse_focal"
+    rows = [
+        {"emitter": animal_id, "start": 1.0, "qlvm1": 0.1, "qlvm2": 0.2, "peak_amp_ch": 2},
+        {"emitter": animal_id, "start": 2.0, "qlvm1": 0.3, "qlvm2": 0.4, "peak_amp_ch": 0},
+    ]
+    _write_session_dir(tmp_path / "20240101_run0", unit_stems=["u_a_good"], rows=rows)
+    catalog = {
+        (animal_id, "20240101", "u_a_good"): {
+            "cluster_group": "good", "somatic": "True", "brain_area": "PAG",
+        },
+    }
+    with pytest.raises(ValueError, match="'qlvm_supercategory' is absent") as excinfo:
+        engine.load_animal_sessions(
+            animal_id,
+            ["20240101_run0"],
+            data_root=tmp_path,
+            catalog=catalog,
+            category_column="qlvm_supercategory",
+            group_a_ids=[1],
+            group_b_ids=[7],
+            cluster_group="good",
+            require_somatic=True,
+            brain_areas={"PAG"},
+            message_output=lambda *_a: None,
+        )
+    assert "QLVM category labels are not available" in str(excinfo.value)
+
+
 def test_compute_group_acoustics_reads_peak_amp_ch(tmp_path, monkeypatch):
     """
     Description

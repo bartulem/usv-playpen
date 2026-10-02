@@ -455,6 +455,99 @@ Process
       --seam-repair-max-boundary-shift-s
                             Seam repair: maximum outward correction (s) permitted per call edge.
 
+``detect-usv-noise``
+``detect-usv-noise`` flags the USV segments of a session that hold no vocalization at all and merges two columns into ``usv_summary.csv``: ``noise`` (true / false in every row; true excludes the segment) and ``noise_probability`` (the ensemble's probability in every row, so an analysis can separate confident noise from the uncertain band, or re-threshold, without re-running). The decision comes from the model bundle, not from an option: ``noise`` is true for confident noise and for the uncertain band (``noise_probability`` >= 0.14), whose confident decisions reach a held-out precision of 0.944 and recall of 0.955 (0.9% of segments uncertain; see *Detect noise* in :doc:`Process`). The step prints these numbers on every run. The input spectrogram is rebuilt from the unfiltered ``audio/hpss`` wavs (30-120 kHz and 3-30 kHz, absolute dB) over a window that extends ~100 ms either side of the segment and is then cropped back to it; run it after ``das-summarize``, which rewrites the summary without these columns, and before ``detect-usv-squeaks``. A GPU is used when present but is not required (about 64 s against 90 s on the CPU for a 424-USV session).
+
+.. code-block:: text
+
+    usage: detect-usv-noise [-h] --root-directory PATH
+                            [--noise-model-path TEXT]
+                            [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
+                            [--batch-size INTEGER]
+
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --noise-model-path    Path to the noise model bundle (.pt); derived from spectrograms_root when empty.
+      --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
+                            Drop channels the session metadata marks as excluded from the spectrogram average.
+      --batch-size          Segments per forward pass at the typical call length; a batch is budgeted at batch-size x 128 frame slots, so one long call never inflates it.
+
+``train-noise-model``
+``train-noise-model`` trains the ``detect-usv-noise`` ensemble (one model per seed) on a labels CSV and writes a bundle that ``detect-usv-noise`` loads unchanged. The CSV holds one row per training example: ``sample_id``, ``session_dir``, ``start``, ``stop``, ``chs_count`` and ``noise`` (``1`` = no vocalization at all, ``0`` = a vocalization; drop unsure answers first). Every input is rebuilt from the session's unfiltered ``audio/hpss`` wavs by the same function ``detect-usv-noise`` scores with, and the models are trained with the production recipe (40 epochs, batch 32, Adam at 0.001 with a cosine schedule, label smoothing 0.05, spectrogram augmentation). The calibration table and the decision block the detector reads are not measured here: they come from the ``--calibration-path`` JSON and are written into the bundle as given. An existing bundle path is refused. GPU recommended (see *Noise model* in :doc:`Process`).
+
+.. code-block:: text
+
+    usage: train-noise-model [-h] --labels-csv FILE --bundle-path FILE
+                            [--calibration-path TEXT]
+                            [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
+                            [--n-workers INTEGER] [--seed INTEGER ...]
+                            [--epochs INTEGER] [--batch-size INTEGER]
+                            [--learning-rate FLOAT] [--weight-decay FLOAT]
+                            [--label-smoothing FLOAT]
+
+    required arguments:
+      --labels-csv          Labels CSV: sample_id, session_dir, start, stop, chs_count, noise (1 = no vocalization, 0 = vocalization).
+      --bundle-path         Output bundle (.pt); must not exist yet.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --calibration-path    JSON with the calibration table and the decision block the bundle carries.
+      --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
+                            Drop channels the session metadata marks as excluded from the spectrogram average (keep it as detect-usv-noise runs).
+      --n-workers           Sessions whose audio is read concurrently (threads) while the training inputs are built.
+      --seed                Seed of one ensemble member; repeat once per member (replaces the seeds setting).
+      --epochs              Training epochs per member.
+      --batch-size          Segments per training batch.
+      --learning-rate       Adam learning rate (cosine-annealed over the run).
+      --weight-decay        Adam weight decay.
+      --label-smoothing     Label smoothing towards 0.5.
+
+``detect-usv-squeaks``
+``detect-usv-squeaks`` scores every USV segment of a session for a squeak (a broadband harmonic stack) and merges five columns into ``usv_summary.csv``: ``squeak`` (true / false), on squeak rows only ``squeak_probability``, ``squeak_start`` and ``squeak_end`` (session seconds), and in every row ``squeak_frame_runs``, the number of runs of at least 3 consecutive frames at or above the threshold in the first 128 frames (the reference squeak index's ``n_bouts_min3``, which ``build-qlvm-training-set --strict-squeak-exclusion`` uses). The call, probability and frame runs come from the first 128 STFT frames of each segment (the model's training window); onset and offset come from a full-length pass. The input spectrogram is rebuilt from the unfiltered ``audio/hpss`` wavs (3-30 kHz, absolute dB); run it after ``das-summarize``, which rewrites the summary without these columns. GPU recommended.
+
+.. code-block:: text
+
+    usage: detect-usv-squeaks [-h] --root-directory PATH
+                            [--squeak-model-path TEXT] [--squeak-threshold FLOAT]
+                            [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
+                            [--batch-size INTEGER]
+
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --squeak-model-path   Path to the squeak classifier checkpoint (.pt); derived from spectrograms_root when empty.
+      --squeak-threshold    Decision threshold on the squeak probability, used for both the segment call and the onset / offset frames.
+      --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
+                            Drop channels the session metadata marks as excluded from the spectrogram average.
+      --batch-size          Number of 128-frame windows scored per forward pass.
+
+``infer-qlvm-squeak-latents``
+``infer-qlvm-squeak-latents`` places every squeak of a session that is not noise (``squeak`` true and ``noise`` not true) on the torus of one of the phase 3 broadband-vocalization QLVM cells (``qlvm_models_latest/phase3_BBVs_qlvm/<cell>``) and merges two float columns into ``usv_summary.csv``: ``qlvm_squeak1`` / ``qlvm_squeak2``, the torus coordinates in ``[0, 1)`` (null on every other row; no cluster labels). Each squeak's input is the ``detect-usv-squeaks`` spectrogram cropped to ``squeak_start`` .. ``squeak_end`` plus two frames either side, min-max normalized per crop and centred in a 128-frame frame, exactly as the cells' training sets were built; crops narrower than 8 or wider than 128 frames get nulls. The cell is the ``infer_qlvm_squeak_latents.model_cell_directory`` setting; left empty (the shipped value), it is filled with the production cell ``phase3_BBVs_qlvm/natural_session_N11000_nomask`` (``os_utils.QLVM_SQUEAK_PRODUCTION_CELL``) whenever ``spectrograms_root`` is set, and ``--model-cell-directory`` names another. Run it after ``detect-usv-noise`` and ``detect-usv-squeaks``. A GPU speeds it up but is not required.
+
+.. code-block:: text
+
+    usage: infer-qlvm-squeak-latents [-h] --root-directory PATH
+                            [--model-cell-directory TEXT]
+                            [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
+                            [--lattice-batch-size INTEGER] [--data-batch-size INTEGER]
+
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --model-cell-directory
+                            A squeak (BBV) QLVM cell; filled with the production phase3_BBVs_qlvm/natural_session_N11000_nomask cell when empty and spectrograms_root is set.
+      --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
+                            Drop channels the session metadata marks as excluded from the spectrogram average (keep it equal to the detect-usv-squeaks run).
+      --lattice-batch-size  Lattice points decoded and scored per block; lower it to cut memory.
+      --data-batch-size     Squeaks whose lattice posteriors are computed together; memory grows with this times the lattice size.
+
 ``prepare-vcl-assign``
 ``prepare-vcl-assign`` is the command-line interface for preparing data for vocalization assignment using the Vocalocator sound-source localizer.
 
@@ -612,33 +705,121 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
       --high-energy-frac    Upper edge of the bandwidth energy band.
 
 ``consolidate-spectrogram-store``
-``consolidate-spectrogram-store`` merges per-session spectrogram/mask H5 files into one multi-session store under ``spectrograms_root`` (shared ``frequency_bins`` axis, per-session ``spectrogram/<session>`` and ``mask/<session>`` groups, and a per-session ``qlvm_dim`` latent dataset injected from each summary's ``qlvm1``/``qlvm2`` columns). The store is written atomically as ``spectrograms_sam2masks_<S>sessions_<N>vocalizations_<timestamp>.h5``; consumers resolve the newest such file automatically.
+``consolidate-spectrogram-store`` merges per-session spectrogram/mask H5 files and the QLVM v3 columns of their USV summaries into one multi-session store under ``spectrograms_root``: the shared ``frequency_bins`` axis, per-session ``spectrogram/<session>`` and ``mask/<session>`` groups (plus ``spectrogram/<session>/qlvm_dim``, the regular model's ``qlvm1``/``qlvm2``), per-session ``qlvm/<session>/`` coordinates of all five production models (NaN = not embedded), int16 labels (0 = no label) and an int8 ``status`` (0 embedded, 1 too long, 2 no SAM mask, 3 both), a ``qlvm_models/<prefix>/`` group of provenance attrs and cluster tables / label grids per model, and a ``sessions`` table (session type, H5 and summary SHA-256, row and embedded counts). ``--package-corpus`` takes exactly the package's corpus sessions (its ``corpus/SESSION_H5_BASELINE.tsv``); every session's H5 must match the baseline's SHA-256 and its summary must carry the QLVM columns, or nothing is written. The store is written atomically as ``spectrograms_qlvmv3_<S>sessions_<N>vocalizations_<timestamp>.h5``; consumers resolve the newest ``spectrograms_*.h5`` (this or an older ``spectrograms_sam2masks_*`` store) automatically. The full layout is in *Process* (*The consolidated store*).
 
 .. code-block:: text
 
-    usage: consolidate-spectrogram-store [-h] --root-directories TEXT
-                                         [--spectrograms-root PATH]
+    usage: consolidate-spectrogram-store [-h] (--root-directories TEXT | --package-corpus)
+                                         [--package-root PATH] [--spectrograms-root PATH]
 
-    required arguments:
+    required arguments (exactly one):
       --root-directories    Comma-separated string of session root directory paths, in store order.
+      --package-corpus      Consolidate exactly the QLVM model package's corpus sessions, in the order of its SESSION_H5_BASELINE.tsv.
 
     optional arguments:
       -h, --help            Show this help message and exit.
+      --package-root        QLVM model package root whose models' columns and tables the store carries; defaults to the production v3 package.
       --spectrograms-root   Output directory the consolidated store is written to.
 
+``build-squeak-spectrogram-store``
+``build-squeak-spectrogram-store`` writes the squeak spectrogram store the embedding explorer's *Squeaks* map reads: for every squeak row that is not noise (``squeak`` true, ``noise`` not true) of every given session, a 2-125 kHz spectrogram on log-spaced frequency bins, rebuilt from the unfiltered ``audio/hpss`` wavs with the squeak classifier's STFT (Blackman-Harris, ``nperseg`` 2048, hop 512, centred; metadata-excluded channels dropped, variance-weighted channel average, absolute dB), placed in a fixed window of ``--window-frames`` frames (a longer segment keeps the window centred on its squeak) and quantized to uint8 over ``[--db-floor, --db-ceil]``. Sessions come from ``--root-directories`` and/or ``--session-lists`` and are processed in ``--n-workers`` parallel processes; a failing session is reported and left out. The store is written atomically to ``spectrograms_root`` as ``squeak_spectrograms_<F>logbins_<S>sessions_<N>squeaks_<timestamp>.h5``; the explorer resolves the newest one automatically. The full layout is in *Process* (*The squeak spectrogram store*).
+
+.. code-block:: text
+
+    usage: build-squeak-spectrogram-store [-h] [--root-directories TEXT,TEXT,...] [--session-lists TEXT,TEXT,...]
+                                          [--spectrograms-root PATH]
+                                          [--min-freq FLOAT] [--max-freq FLOAT]
+                                          [--n-frequency-bins INT] [--window-frames INT]
+                                          [--db-floor FLOAT] [--db-ceil FLOAT]
+                                          [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
+                                          [--n-workers INT]
+
+    required arguments (at least one):
+      --root-directories    Comma-separated string of session root directory paths.
+      --session-lists       Comma-separated string of session-list .txt files (one session root per line).
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --spectrograms-root   Output directory the store is written to (the spectrograms_root setting when not given).
+      --min-freq            Lower edge (Hz) of the lowest log-frequency bin.
+      --max-freq            Upper edge (Hz) of the highest log-frequency bin (at most 125000, the Nyquist frequency).
+      --n-frequency-bins    Number of log-spaced frequency bins.
+      --window-frames       Width (2.048 ms frames) of the fixed window every call is stored in.
+      --db-floor            Absolute dB mapped to uint8 code 0 (values below are clipped).
+      --db-ceil             Absolute dB mapped to uint8 code 255 (values above are clipped).
+      --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
+                            Drop channels the session metadata marks as excluded from the spectrogram average
+                            (keep it equal to the detect-usv-squeaks run).
+      --n-workers           Sessions processed in parallel worker processes (1: in this process).
+
 ``build-qlvm-training-set``
-``build-qlvm-training-set`` aggregates a list of session root directories into a single curated ``.npz`` training set (``train_data.npz`` + ``val_data.npz``, or ``full_data.npz``) for the QLVM. With ``--masking-type sam`` (default), each kept spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group (background zeroed; a call with no detected mask keeps an all-ones mask); ``--masking-type none`` keeps raw spectrograms.
+``build-qlvm-training-set`` builds a QLVM training set of USV spectrograms (``train_data.npz`` + ``val_data.npz``, plus ``full_data.npz`` with ``--full-dataset``, and ``metadata.npz``) from a list of session root directories, drawn the way the v3 model packages' sets were (the port of the reference builders ``build_masked_usvs.py`` / ``build_unmasked_usvs_floor.py``, MMMmB). Each session's type (``MF``, ``FF``, ``MM``, ``lone_male``, ...) is read from the subjects' sexes in its metadata YAML; ``--session-type-targets`` gives each type's row budget (``null``: take the type whole; unlisted types are left out). A row is eligible when its duration is below ``--length-threshold``, it has a SAM mask instance (``--require-mask``) and the USV summary does not flag it as a squeak (``--exclude-squeaks``; with ``--strict-squeak-exclusion`` also not when its ``squeak_frame_runs`` is 1 or more, the strict rule by which the reference sets left broadband calls out; off by default, and a summary without that column stops the build) or noise (``--exclude-noise``). A type's budget is split into per-session quotas by capped-even water-filling and drawn per session, either uniformly over the eligible rows (``--draw-mode natural``) or equally across the mask-count strata of ``--mask-count-bin-edges`` (``uniform``, quotas allocated against each session's exactly-uniform headroom). Whole sessions are held out for validation per type. The drawn spectrograms (and their binarized SAM mask unions) are resized to ``--target-shape``, and then masked (``--apply-mask``, the phase 9 sets) or kept unmasked, optionally with a loudness floor baked in (``--floor``, the phase 6 sets). Every split also carries the rows' ``mean_freq_hz``, ``freq_bandwidth_hz``, ``loudness_db`` and ``spectral_entropy`` from the USV summary (NaN where missing), the raw values a conditional ``train-qlvm`` run conditions on. The defaults rebuild the production phase 6 set (``natural_5strata_N29000_unmasked_floor``). Every session's spectrogram H5 is fingerprinted as it is read: its SHA-256, row count and the number of its rows that entered the set go into ``metadata.npz`` and into two sidecars, ``SESSION_H5.sha256`` (checkable with ``sha256sum -c``) and ``SESSION_H5.tsv``. ``spec_id`` is a row number in that H5, so a consumer should compare the hash before joining on it: a rebuilt H5 renumbers its rows.
 
 .. code-block:: text
 
     usage: build-qlvm-training-set [-h] --root-directories TEXT,TEXT,... --output-directory PATH
+                            [--session-type-targets JSON]
+                            [--draw-mode {natural,uniform}]
+                            [--mask-count-bin-edges INT,INT,...]
                             [--length-threshold FLOAT]
-                            [--dataset-size-constraint INTEGER]
-                            [--validation-split FLOAT] [--random-state INTEGER]
-                            [--target-shape INTEGER INTEGER]
-                            [--full-dataset | --no-full-dataset]
-                            [--time-stretch | --no-time-stretch]
+                            [--require-mask | --no-require-mask]
+                            [--exclude-squeaks | --no-exclude-squeaks]
+                            [--strict-squeak-exclusion | --no-strict-squeak-exclusion]
+                            [--exclude-noise | --no-exclude-noise]
                             [--masking-type {sam,none}]
+                            [--apply-mask | --no-apply-mask]
+                            [--floor FLOAT|none]
+                            [--validation-split FLOAT] [--random-state INTEGER]
+                            [--full-dataset | --no-full-dataset]
+                            [--target-shape INTEGER INTEGER]
+                            [--time-stretch | --no-time-stretch]
+
+    required arguments:
+      --root-directories              Comma-separated string of session root directory paths (the order sessions are drawn in).
+      --output-directory              Directory to write the .npz training set.
+
+    optional arguments:
+      -h, --help                      Show this help message and exit.
+      --session-type-targets          JSON object of session type -> rows (null takes the type whole), e.g. '{"MF": 29000, "FF": 29000, "MM": null, "lone_male": null}'; sessions of unlisted types are left out.
+      --draw-mode                     Within-session draw: uniform over rows ("natural") or equal across mask-count strata ("uniform").
+      --mask-count-bin-edges          Comma-separated inclusive lower bounds of the mask-count strata above 0, the last open-ended, e.g. 1,2,3,4,5 (strata 0/1/2/3/4/5+).
+      --length-threshold              Drop spectrograms with duration >= threshold (time bins).
+      --require-mask / --no-require-mask
+                                      Leave out calls without a SAM mask instance.
+      --exclude-squeaks / --no-exclude-squeaks
+                                      Leave out rows the USV summary flags as squeaks (detect-usv-squeaks).
+      --strict-squeak-exclusion / --no-strict-squeak-exclusion
+                                      With --exclude-squeaks, also leave out rows with squeak_frame_runs >= 1 (the reference squeak index's strict rule); needs a summary scored by a detect-usv-squeaks that writes squeak_frame_runs.
+      --exclude-noise / --no-exclude-noise
+                                      Leave out rows the USV summary flags as noise (detect-usv-noise).
+      --masking-type                  Read SAM masks from the mask/<session> groups ("sam") or none ("none").
+      --apply-mask / --no-apply-mask  Multiply the binarized SAM mask into the stored spectrograms (masked set) or keep them unmasked.
+      --floor                         Loudness floor baked into unmasked spectrograms after a per-spectrogram min-max (e.g. 0.2), or "none".
+      --validation-split              Fraction of each session type's rows held out (as whole sessions) for validation.
+      --random-state                  Seed of the quota tie-breaks, the draw and the session split.
+      --full-dataset / --no-full-dataset
+                                      Take every eligible row (no draw) and also write full_data.npz.
+      --target-shape                  Output spectrogram (freq, time) shape as two ints, e.g. --target-shape 128 128.
+      --time-stretch / --no-time-stretch
+                                      Time-warp the signal window instead of center-resizing.
+
+``build-qlvm-squeak-training-set``
+``build-qlvm-squeak-training-set`` builds a QLVM training set of squeak crops (the port of the reference builder ``build_bbv_dataset.py`` (MMMmB), which built the phase 3 squeak cells' sets) from a list of session root directories. The candidates are the rows ``detect-usv-squeaks`` flagged as squeaks (optionally not noise), with their ``squeak_start`` / ``squeak_end`` extents; each is cropped to its extent plus ``--context-frames`` either side, crops narrower than ``--min-trimmed-frames`` (or wider than 128 frames) are dropped, and the crop width sets its duration stratum (``--duration-bin-edges``). ``--per-session-bin-cap`` keeps at most that many squeaks of one session in one stratum (0: no cap), and ``--n-total`` squeaks are then drawn uniformly (``--draw-mode natural``) or equally across strata (``uniform``); ``--full-dataset`` takes every squeak instead. The sonic spectrograms are rebuilt from the session audio exactly as ``detect-usv-squeaks`` builds them, each crop is min-max normalized (``--crop-normalization per_crop``) and centred in a 128 x 128 frame. ``--crop-window full_length`` (default) crops from the whole segment, the rule ``infer-qlvm-squeak-latents`` embeds with; ``first_128_frames`` cuts every segment to its first 128 frames and drops squeaks still going at frame 127 (the phase 3 sets). Sessions are taken in sorted order. The defaults are those of the production ``natural_session_N11000`` cell's set, except the crop window and the channel exclusion.
+
+.. code-block:: text
+
+    usage: build-qlvm-squeak-training-set [-h] --root-directories TEXT,TEXT,... --output-directory PATH
+                            [--draw-mode {natural,uniform}] [--n-total INTEGER]
+                            [--per-session-bin-cap INTEGER]
+                            [--duration-bin-edges INT,INT,...]
+                            [--context-frames INTEGER] [--min-trimmed-frames INTEGER]
+                            [--crop-window {full_length,first_128_frames}]
+                            [--crop-normalization {per_crop,absolute}]
+                            [--exclude-noise | --no-exclude-noise]
+                            [--exclude-metadata-audio-channels | --no-exclude-metadata-audio-channels]
+                            [--validation-split FLOAT] [--random-state INTEGER]
+                            [--full-dataset | --no-full-dataset]
+                            [--target-shape INTEGER INTEGER]
 
     required arguments:
       --root-directories              Comma-separated string of session root directory paths.
@@ -646,85 +827,127 @@ Inference flow (per session): ``generate-usv-spectrograms`` → ``generate-usv-m
 
     optional arguments:
       -h, --help                      Show this help message and exit.
-      --length-threshold              Drop spectrograms with duration >= threshold (time bins).
-      --dataset-size-constraint       Optional cap on the total number of kept spectrograms (absolute count if > 1, proportion if in (0, 1]); omit for no cap (null = all data).
-      --validation-split              Fraction held out for validation.
-      --random-state                  RNG (random number generator) seed for reproducible subsampling and the train/val split.
-      --target-shape                  Output spectrogram (freq, time) shape as two ints, e.g. --target-shape 128 128.
+      --draw-mode                     Draw uniformly over squeaks ("natural") or equally across duration strata ("uniform").
+      --n-total                       Squeaks to draw.
+      --per-session-bin-cap           Most squeaks any one session may give any one duration stratum before the draw (0: no cap, the "lumped" sets).
+      --duration-bin-edges            Comma-separated crop-width edges (frames) of the duration strata, e.g. 26,40,62.
+      --context-frames                Frames added either side of the squeak extent.
+      --min-trimmed-frames            Narrowest crop (frames) kept.
+      --crop-window                   Crop from the full-length segment ("full_length") or from its first 128 frames, dropping right-censored squeaks ("first_128_frames", the phase 3 sets).
+      --crop-normalization            Min-max each crop ("per_crop") or apply the fixed dB transform ("absolute").
+      --exclude-noise / --no-exclude-noise
+                                      Leave out squeak rows the USV summary flags as noise.
+      --exclude-metadata-audio-channels / --no-exclude-metadata-audio-channels
+                                      Drop channels the session metadata marks as excluded from the spectrogram average.
+      --validation-split              Fraction of each session type's squeaks held out (as whole sessions) for validation.
+      --random-state                  Seed of the cap, the draw and the session split.
       --full-dataset / --no-full-dataset
-                                      Write a single full_data.npz (no train/val split).
-      --time-stretch / --no-time-stretch
-                                      Time-warp the signal window instead of center-resizing.
-      --masking-type                  Apply SAM mask regions from the mask/<session> groups ("sam") or keep raw spectrograms ("none").
+                                      Take every squeak that passes the gates (no cap, no draw) and also write full_data.npz.
+      --target-shape                  Output spectrogram (freq, time) shape as two ints, e.g. --target-shape 128 128.
 
 ``train-qlvm``
-``train-qlvm`` trains the QLVM decoder on a ``build-qlvm-training-set`` ``.npz`` set (fixed quasi-random torus lattice + ConvTranspose decoder, Bernoulli evidence objective) and writes ``qmc_train_qlvm.tar`` (full checkpoint) plus ``qmc_decoder_weights.npz``. That ``.npz`` is the train→inference bridge: point ``infer-qlvm-latents``' ``weights_npz_path`` at it (the torch-free JAX (the JAX numerical-computing library) inference reloads exactly these decoder weights). GPU recommended.
+``train-qlvm`` trains a QLVM decoder on a prebuilt ``.npz`` training set (``build-qlvm-training-set`` output or a QLVM model package's training set: ``train_data.npz`` or ``full_data.npz``, optionally ``val_data.npz``, and ``metadata.npz``) with the recipe the shipped v3 models were trained with (JAX; per-spectrogram min-max, masks applied when the set applies them, a Fibonacci training lattice with one random torus shift per batch, the QMC log-evidence loss, Adam at a constant learning rate, the last epoch's weights kept) and writes a model package cell: ``checkpoint.tar`` (torch zip, readable by ``infer-qlvm-latents`` without torch), ``config/training_contract.json``, ``config/run_config.json`` and ``metrics/val_diagnostics.npz``. The defaults are the phase 6 / 9 recipe; phase 3 (BBVs) is ``--decoder-head legacy --n-epochs 2500 --val-freq 80 --val-samples-per-mask-count 1600``. ``--conditional duration|mean_freq|bandwidth|loudness|spectral_entropy`` trains a phase 11 conditional decoder (one conditioning value per call appended to the decoder input; batches drawn one width-capped quantile bin at a time and decoded at their mean value, the step loss scaled by rows / batch size) and adds ``config/condition_bins.npz`` (bins, training range, decode grid) and a ``condition`` block to the training contract, which ``infer-qlvm-latents`` reads; the raw values come from the set's ``mean_freq_hz`` / ``freq_bandwidth_hz`` / ``loudness_db`` / ``spectral_entropy`` columns or from ``--condition-table`` (e.g. a package's ``corpus/cond_table.npz``). Spectral entropy is min-max scaled by the training split's own range (written to the contract as ``entropy_min`` / ``entropy_max``; values outside it are clamped) and decoded on the grid. The run refuses a set without ``metadata.npz``, and a ``train_data.npz`` or ``val_data.npz`` older than a ``full_data.npz`` in the same directory. GPU recommended (about 3.3 s per epoch on 49,411 calls on an RTX 4080 SUPER, plus about 25 s per validation); on a shared GPU set ``XLA_PYTHON_CLIENT_PREALLOCATE=false``.
 
 .. code-block:: text
 
     usage: train-qlvm [-h] --dataset-directory PATH --output-directory PATH
-                            [--n-epochs INTEGER] [--latent-dim INTEGER]
-                            [--lattice-type {korobov,roberts,fibonacci}]
-                            [--korobov-a INTEGER] [--train-n-points INTEGER]
-                            [--test-n-points INTEGER] [--fib-m INTEGER]
-                            [--batch-size INTEGER] [--learning-rate FLOAT]
-                            [--val-freq INTEGER] [--seed INTEGER]
-                            [--num-workers INTEGER]
+                            [--n-epochs INTEGER] [--decoder-head {relu,legacy}]
+                            [--training-fib-m INTEGER] [--validation-fib-m INTEGER]
+                            [--embedding-fib-m INTEGER] [--batch-size INTEGER]
+                            [--learning-rate FLOAT] [--val-freq INTEGER]
+                            [--val-samples-per-mask-count INTEGER] [--seed INTEGER]
+                            [--conditional {none,duration,mean_freq,bandwidth,loudness,spectral_entropy}]
+                            [--condition-n-bins INTEGER]
+                            [--condition-bin-scheme {quantile,quantile_capped}]
+                            [--condition-scale-loss-by-batch | --no-condition-scale-loss-by-batch]
+                            [--condition-decode-grid-step FLOAT] [--condition-table TEXT]
 
     required arguments:
-      --dataset-directory   Directory holding the .npz training set (build-qlvm-training-set output).
-      --output-directory    Directory to write the checkpoint + decoder-weights .npz.
+      --dataset-directory   Directory holding the .npz training set (train_data.npz or full_data.npz, val_data.npz, metadata.npz).
+      --output-directory    Directory the model package cell (checkpoint.tar, config/, metrics/) is written to.
 
     optional arguments:
       -h, --help            Show this help message and exit.
       --n-epochs            Number of training epochs.
-      --latent-dim          Torus latent dimensionality.
-      --lattice-type        Quasi-random lattice generator.
-      --korobov-a           Korobov generating integer.
-      --train-n-points      Number of quasi-random lattice points used during training (korobov/roberts).
-      --test-n-points       Number of quasi-random lattice points used at evaluation/validation (korobov/roberts).
-      --fib-m               Fibonacci lattice order (used only when lattice-type=fibonacci; 2D only).
+      --decoder-head        Decoder head: relu (ReLU between the two Linear layers) or legacy (none).
+      --training-fib-m      Fibonacci index of the training lattice (fib(m) points).
+      --validation-fib-m    Fibonacci index of the validation lattice (fib(m) points).
+      --embedding-fib-m     Fibonacci index of the embedding lattice recorded in the training contract.
       --batch-size          Training batch size.
-      --learning-rate       Adam learning rate.
-      --val-freq            Run validation-evidence evaluation every N epochs (must be >= 1).
-      --seed                Global RNG seed (torch + numpy) for reproducible shuffling / per-batch torus shifts.
-      --num-workers         DataLoader worker processes (0 = load in the main process).
+      --learning-rate       Constant Adam learning rate.
+      --val-freq            Compute the validation loss every N epochs (and after the last).
+      --val-samples-per-mask-count
+                            Validation subset: at most this many spectrograms per masks_len value.
+      --seed                Seed of the initialization, shuffling, lattice shifts and validation subset.
+      --conditional         Train a decoder conditioned on this per-call value (the phase 11 recipe), or none for an unconditional decoder.
+      --condition-n-bins    Quantile bins the training values are cut into (conditional runs).
+      --condition-bin-scheme
+                            quantile, or quantile_capped (bins wider than the widest inner bin split into equal-width pieces).
+      --condition-scale-loss-by-batch / --no-condition-scale-loss-by-batch
+                            Scale each step's loss by rows / batch size (conditional runs).
+      --condition-decode-grid-step
+                            Spacing of the decode grid written to condition_bins.npz.
+      --condition-table     Per-call .npz (spec_id + mean_freq_hz / freq_bandwidth_hz / loudness_db or image_level_db / spectral_entropy) to read the raw values from instead of the splits' columns, or none.
 
 ``infer-qlvm-latents``
-``infer-qlvm-latents`` embeds a session's spectrograms into the trained QLVM toroidal latent space (loading the ``qmc_decoder_weights.npz`` written by ``train-qlvm``) and merges four columns into ``usv_summary.csv``: the torus coordinates ``qlvm1`` / ``qlvm2``, plus ``qlvm_category`` (fine cluster) and ``qlvm_supercategory`` (coarse cluster), each looked up in the ``ws_labels_periodic`` grid of a fine and a coarse reference ``arrays.npz``. With ``--masking-type sam`` (default) each spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group before embedding -- matching how the decoder was trained by ``build-qlvm-training-set`` (embedding raw spectrograms into a masked-trained decoder is out-of-distribution); ``--masking-type none`` embeds raw spectrograms.
+``infer-qlvm-latents`` embeds a session's spectrograms into the torus of every QLVM model package cell of the ``model_cells`` setting (column prefix → cell; one ``--model-cell PREFIX CELL`` per model replaces it) and merges, per model, the ``PREFIX1`` / ``PREFIX2`` float torus coordinates and integer cluster labels read off the cell's ``label_grid.npy`` at the pixel of those coordinates (``1 … k``, 1 the largest cluster; null where the call has no coordinates) into ``usv_summary.csv``: by default both levels: ``qlvm_category`` (fine) and ``qlvm_supercategory`` (coarse) for prefix ``qlvm``, ``PREFIX_category`` and ``PREFIX_supercategory`` for every other prefix. ``--model-cell-labels PREFIX LEVELS`` (the ``model_cell_label_levels`` setting; repeat once per prefix) sets a prefix's comma-separated levels among ``fine`` and ``coarse`` (``fine`` → ``PREFIX_category``, ``coarse`` → ``PREFIX_supercategory``, with the ``qlvm`` names for prefix ``qlvm``; an empty string writes no label). No model column is written; the legacy ``qlvm_model`` column (written by the retired single-model run) and the earlier coordinate and label columns of the listed prefixes are removed. A prefix must be an identifier given once. The production mapping is ``qlvm`` (phase 6), ``qlvm_dur``, ``qlvm_mf``, ``qlvm_bw`` and ``qlvm_loud`` (the phase 11 duration, mean-frequency, bandwidth and loudness cells), all ``qlvm_models_latest/v3/<phase>/natural_5strata_N29000_unmasked_floor`` with ``masking_type`` ``none`` (the shipped default); when ``model_cells`` is empty and ``spectrograms_root`` is set, the run fills it with that mapping (and ``masking_type`` with ``none``), and an empty ``model_cells`` otherwise stops the run. Model package cells are the only models it embeds with: the single-model route (``model_cell_directory``, or a ``train-qlvm`` ``qmc_decoder_weights.npz`` with fine and coarse reference ``arrays.npz``) is retired.
+
+Each cell supplies everything model-specific (``qlvm_models_latest/v2/<phase>/<cell>`` or ``qlvm_models_latest/v3/<phase>/<cell>``): ``checkpoint.tar`` (read without torch; legacy or ReLU head), ``training_contract.json`` (input min-max and loudness floor, duration window), its Fibonacci embedding lattice (46,368 points), and the fine and coarse ``label_grid.npy`` (``inference/clusters_<level>/`` in v3, ``cluster/<level>/`` in v2 / v2.1; in v3 the contract and bins sit in ``config/``, the per-call tables in ``inference/`` and the package's ``SESSION_H5_BASELINE.tsv`` in ``corpus/``, and both layouts are read). The settings are checked against every cell's contract before anything is embedded and the run stops on any disagreement; ``--masking-type`` must match it (``sam`` for phase 9 cells, ``none`` for phase 6, 10 and 11 cells). With ``--masking-type sam`` each spectrogram is masked by the union of its SAM mask regions from the ``mask/<session>`` group before embedding, matching how a masked-trained decoder saw its training set; ``--masking-type none`` embeds raw spectrograms. USVs with a duration at or above the contract's ``length_threshold`` get null columns. When the contract has ``require_mask`` true (its training set left out calls without a SAM mask, as in every v2 and v3 package cell) or the cell conditions on mean frequency or loudness, USVs without a mask instance also get null columns instead of being embedded unmasked. Whenever the decoder needs SAM masks (either case, or ``--masking-type sam``), a session H5 without a ``mask/<session>`` group stops the run. Conditional cells are decoded at one conditioning value per USV, computed from its own: the normalized duration, the mean frequency of its SAM-masked spectrogram (so the session H5 needs its ``mask/<session>`` group even though the decoder is fed unmasked spectrograms), and, for phase 11 (v3) cells, its ``freq_bandwidth_hz`` from the summary (written by ``generate-usv-acoustic-features``; a summary without the column stops the run) or its loudness, the summary's ``loudness_db`` (the masked image-level dB ``generate-usv-acoustic-features`` measures from the session's ``hpss_filtered`` audio; a summary without the column stops the run), and, for a cell ``train-qlvm`` trained on spectral entropy, the summary's ``spectral_entropy`` scaled by the contract's ``entropy_min`` / ``entropy_max`` and clamped to ``[0, 1]`` (a summary without the column stops the run). USVs without a value get null columns. Phase 10 cells replace the value with the frozen corpus bin mean of the cell's ``condition_bins.npz`` (the lattice is decoded once per distinct bin mean, up to 32 times per session). Phase 11 cells follow the contract's ``condition.decode``: ``exact`` (duration, bandwidth) decodes at the value itself clamped to the cell's training range, ``grid`` (mean frequency, loudness, spectral entropy) at the nearest point of its 0.0025-step decode grid, exactly as the package embedded its corpus; the lattice is then decoded once per distinct value, about 100-250 times on a ~900-USV session. The summary CSV is rewritten atomically.
+
+For each model, a session of the package's corpus takes the package's own coordinates (``posterior_cache.npz`` joined on ``spec_id``) when the package's ``SESSION_H5_BASELINE.tsv`` lists it with the SHA-256 of its current spectrogram H5, the summary has as many rows as the H5, and the package's ``durations`` and ``mask_counts`` equal the H5's on every package row; every other session is inferred with the cell, and the log names the route and the reason per model. ``--no-prefer-package-values`` infers every session.
+
+.. code-block:: text
+
+    infer-qlvm-latents --root-directory /mnt/falkner/Bartul/Data/20251003_143416 \
+        --model-cell qlvm     .../qlvm_models_latest/v3/phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor \
+        --model-cell qlvm_dur .../qlvm_models_latest/v3/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor
 
 .. code-block:: text
 
     usage: infer-qlvm-latents [-h] --root-directory PATH
-                            [--weights-npz-path TEXT]
-                            [--reference-arrays-fine-npz-path TEXT]
-                            [--reference-arrays-coarse-npz-path TEXT]
-                            [--lattice-type {korobov,roberts,fibonacci}]
-                            [--latent-dim INTEGER] [--n-points INTEGER]
-                            [--korobov-a INTEGER] [--fib-m INTEGER]
+                            [--model-cell TEXT TEXT]...
+                            [--model-cell-labels TEXT TEXT]...
+                            [--prefer-package-values | --no-prefer-package-values]
+                            [--latent-dim INTEGER]
                             [--target-shape INTEGER INTEGER]
                             [--time-stretch | --no-time-stretch]
                             [--masking-type {sam,none}]
+                            [--length-threshold FLOAT]
+                            [--lattice-batch-size INTEGER]
+                            [--data-batch-size INTEGER]
 
     required arguments:
       --root-directory      Session root directory path.
 
     optional arguments:
       -h, --help            Show this help message and exit.
-      --weights-npz-path    Path to the converted decoder weights .npz.
-      --reference-arrays-fine-npz-path
-                            Path to the FINE reference arrays.npz (ws_labels_periodic -> qlvm_category).
-      --reference-arrays-coarse-npz-path
-                            Path to the COARSE reference arrays.npz (ws_labels_periodic -> qlvm_supercategory).
-      --lattice-type        Quasi-random lattice generator used to rebuild the fixed QLVM (quasi-Monte Carlo latent variable model) lattice at inference.
-      --latent-dim          Dimensionality of the toroidal latent space.
-      --n-points            Number of lattice points used at inference.
-      --korobov-a           Korobov generating integer (used when lattice-type=korobov).
-      --fib-m               Fibonacci lattice order m (used when lattice-type=fibonacci).
+      --model-cell          A column prefix and a QLVM model package cell (e.g. --model-cell qlvm_dur .../qlvm_models_latest/v3/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor); repeat once per model. When given, these pairs replace the model_cells setting: the session is placed on the torus of every listed cell and <prefix>1/<prefix>2 plus the cluster-label columns of each prefix (see --model-cell-labels) are written. Without it, the model_cells setting is used (by default the production cells).
+      --model-cell-labels   A model_cells column prefix and the comma-separated cluster-label levels it writes, among fine and coarse (e.g. --model-cell-labels qlvm_dur fine,coarse writes qlvm_dur_category and qlvm_dur_supercategory; an empty string writes none); repeat once per prefix. When given, these pairs replace the model_cell_label_levels setting; prefixes not listed keep the default (fine and coarse: qlvm_category, qlvm_supercategory for qlvm; P_category, P_supercategory for every other prefix P).
+      --prefer-package-values / --no-prefer-package-values
+                            With model cells: take a corpus session's coordinates from the package's own embedding when its spectrogram H5 is unchanged since the package (SHA-256, row count, durations and mask counts verified), else infer them; --no-prefer-package-values infers every session.
+      --latent-dim          Dimensionality of the toroidal latent space; must equal every model cell's training contract.
       --target-shape        Output spectrogram (freq, time) shape as two ints, matching the training preprocessing, e.g. --target-shape 128 128.
       --time-stretch / --no-time-stretch
                             Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.
-      --masking-type        Apply SAM mask regions from the mask/<session> groups before embedding ("sam", matching how the decoder was trained) or embed raw spectrograms ("none").
+      --masking-type        Embed raw spectrograms ("none", the default; the production phase 6 and 11 cells) or apply SAM mask regions before embedding ("sam", phase 9 cells); must match every cell's training contract. With "sam", a session without a mask group raises.
+      --length-threshold    Embed only USVs with duration below this (time bins); when set, must equal every model cell's training contract. Unset in the settings (null), each cell's contract sets it.
+      --lattice-batch-size  Lattice points decoded and scored per block; lower it to cut memory on large lattices.
+      --data-batch-size     Spectrograms whose lattice posteriors are computed together; memory grows with this times the lattice size.
+
+``export-qlvm-reference-arrays``
+``export-qlvm-reference-arrays`` writes one QLVM model package cell's clustering as ``arrays_fine.npz`` and ``arrays_coarse.npz``, the reference-arrays layout the QLVM visualizations read (``qlvm-torus-traversal-video``, the sequence embedding map, the manifold atlas). Each file holds the cell's ``label_grid.npy`` as ``ws_labels_periodic`` and ``ws_labels``, the ``clusters.csv`` peaks as ``centers`` (row ``i`` for label ``i + 1``), the corpus calls' torus coordinates and labels as ``latent_coords`` / ``sample_ws`` / ``sample_ws_periodic``, a ``heatmap`` of the aggregated posterior over the cell's embedding lattice (summing to the number of corpus calls; not the reference arrays' smoothing), and ``model_id``. Write each production cell to its map's folder, ``<spectrograms_dir>/qlvm_v3/<map>`` (``qlvm`` for the phase 6 regular cell ``phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor``; ``qlvm_dur``, ``qlvm_mf``, ``qlvm_bw``, ``qlvm_loud`` for the phase 11 cells), the folders the QLVM visualizations read for ``shared_resources.qlvm_map`` (``os_utils.QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME``, ``os_utils.QLVM_MAPS``); write any other cell under a separate ``spectrograms_dir`` so the models never overwrite each other.
+
+.. code-block:: text
+
+    usage: export-qlvm-reference-arrays [-h] --model-cell-directory PATH --output-directory PATH
+
+    required arguments:
+      --model-cell-directory
+                            A QLVM model package cell, e.g. .../qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked.
+      --output-directory    Directory to write arrays_fine.npz and arrays_coarse.npz into (created if missing), e.g. <spectrograms_dir>/qlvm_v3/<map> (the folder the QLVM visualizations read for that map; qlvm for the production regular cell).
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
 
 ``export-yolo-dataset``
 ``export-yolo-dataset`` renders USV spectrograms to images (exactly as the detector renders them at inference) and writes an Ultralytics-format YOLO dataset (``images/{train,val}``, ``labels/{train,val}``, ``data.yaml``). ``--label-source cc`` (default) pseudo-labels boxes with the unlearned connected-component detector (no annotation needed); ``manual`` ingests hand-verified ``{spec_id}.txt`` labels; ``merge`` uses cc overridden by manual where present.
@@ -884,109 +1107,121 @@ The output directory is not a CLI option: it is ``naturalistic_usv_repository_di
 The repository is not selected by an explicit file path: ``context_label`` picks the sex subdirectory + context, and the newest matching build in ``<naturalistic_usv_repository_dir>/<sex>/`` is used. ``playback_seed`` (for a reproducible stimulus) is the one parameter without a command-line flag — set it in the ``create_naturalistic_usv_playback_wav`` block of *analyses_settings.json*.
 
 ``generate-usv-interval-distributions``
-``generate-usv-interval-distributions`` is the command-line interface for computing inter-vocalization-interval (inter-USV interval) distributions across one or more session-list text files and (optionally) sweeping a 1D mixture model (Gaussian or Student-t) on the pooled log-inter-USV intervals.
+``generate-usv-interval-distributions`` is the command-line interface for computing inter-USV interval distributions across one or more session-list text files and modelling them. It runs the same code as the ``inter_usv_interval_analyses.ipynb`` compute cell and writes the same archive.
 
-By convention, ``track_names[0]`` is treated as the male and ``track_names[1]`` as the female. Each session-list text file contains one session root directory per line; paths are run through ``configure_path`` so Mac/Linux/Windows entries resolve correctly on the host platform. ``--session-list`` may be passed multiple times to merge multiple cohorts.
+**Pools and pairing.** The analysis works on the pools declared in ``interval_pools`` (JSON only): each names an emitter sex, a call type (``usv`` or ``squeak``), an adjacency rule (``filtered`` or ``strict``) and whether it is fitted. Each animal's sex is read from the ``Subjects`` block of the session's ``*_metadata.yaml``, not from its track slot, and a session whose metadata does not record an animal's sex raises. Intervals are measured only between two consecutive calls of the *same* animal, so a pool holds every animal of its sex in a session -- one in courtship, both in a female-female session -- without ever pairing the two. Each session-list text file contains one session root directory per line; paths are run through ``configure_path`` so Mac/Linux/Windows entries resolve correctly on the host platform. ``--session-list`` may be passed multiple times to merge multiple cohorts.
 
-Both interval definitions are computed unconditionally on every run: ``s2s`` = ``start[i+1] - start[i]`` (literature standard), and ``e2s`` = ``start[i+1] - stop[i]`` (alternate; can be negative for overlapping calls and is dropped via the ``> 0`` filter, with the drop count reported per session per mode). Both definitions share the same per-session pass over the noise-filtered USV table, so there is no compute saving from omitting one.
+Both interval definitions are computed unconditionally on every run: ``s2s`` = ``start[i+1] - start[i]`` (literature standard), and ``e2s`` = ``start[i+1] - stop[i]`` (can be negative for overlapping calls and is dropped via the ``> 0`` filter, with the drop count reported per pool). Both definitions share the same per-session pass over the noise-filtered USV table.
 
-The command writes a single self-describing HDF5 archive ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5`` to ``--output-directory``. Per interval mode it holds the tidy one-row-per-interval table, the per-sex drop counts, and (when ``--fit-mixture-model``) the full Gaussian / Student-t mixture sweep — all four information criteria plus per-component parameters — and the bootstrap-LRT results; the root ``/attrs`` records every parameter that drove the run (plus ``git_sha`` and the source lists), so the archive is fully self-describing. See :doc:`Notebooks` for the complete archive schema and the plotting notebook that reads it.
+**Models.** On every fitted pool with at least ``min_intervals_for_fitting`` intervals, three analyses run as the JSON enables them:
+
+* ``fit_tied_model`` -- the tied-scale Student-t peak model (``tied_peak_grid`` peak counts, each with ``tied_n_background`` free background components) and its step-up peak-count test, every rung's likelihood ratio divided by its session design effect (``design_bootstrap`` session resamples) before it is scored against the parametric-bootstrap null. This is the model the male courtship analysis reports.
+* ``fit_mixture_model`` -- the unconstrained mixture sweep (``n_components_min`` to ``n_components_max``, ``--model-class``) and its step-up LRT, session-corrected the same way. This is the model the female-female analysis reports.
+* ``fit_serial_dependence`` -- median regressions of the next interval on the current one over all consecutive same-animal pairs: a spline and a bent line whose bend estimates the bout boundary from serial dependence alone, with session-bootstrap bands (``serial_dependence_*`` keys).
+
+The options below override the JSON for the extraction and the unconstrained sweep; the pools, the tied model and the serial-dependence knobs are set in the JSON (see :doc:`Notebooks`, *Inter-USV interval analyses*, for every key and the archive layout).
+
+**Output.** A single self-describing HDF5 archive ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5`` in ``--output-directory``. Per interval type it holds the tidy one-row-per-interval table (with each interval's ``emitter_id``), per-pool drop counts and descriptive summaries, and the tables of every analysis that ran; the root ``/attrs`` record every parameter that drove the run, the ``git_sha``, the list files (``source_lists``) and the session directories they resolved to (``session_roots``).
 
 .. code-block:: text
 
-    usage: generate-usv-interval-distributions [-h] [--session-list PATH...] [--output-directory PATH]
-                            [--noise-col-id TEXT] [--noise-categories INTEGER...]
+    usage: generate-usv-interval-distributions [--session-list FILE...] [--output-directory DIRECTORY]
+                            [--exclude-noise-usvs | --no-exclude-noise-usvs]
                             [--fit-mixture-model | --no-fit-mixture-model]
                             [--n-components-min INTEGER] [--n-components-max INTEGER]
                             [--n-repeats INTEGER] [--max-modes-reported INTEGER]
                             [--random-seed-base INTEGER]
                             [--cv-n-folds INTEGER] [--cv-n-init INTEGER]
                             [--mixture-model-n-init INTEGER] [--mixture-model-reg-covar FLOAT]
-                            [--tau FLOAT] [--figures-directory PATH]
+                            [--tau FLOAT] [--figures-directory DIRECTORY]
                             [--model-class {gauss,t,ig}]
                             [--bootstrap-lrt-B INTEGER]
-                            [--bootstrap-lrt-n-init INTEGER]
-                            [--bootstrap-lrt-n-jobs INTEGER]
                             [--bootstrap-lrt-n-subsample INTEGER]
                             [--bootstrap-lrt-alpha FLOAT]
+                            [--bootstrap-lrt-n-init INTEGER]
+                            [--bootstrap-lrt-n-jobs INTEGER]
                             [--bootstrap-lrt-bonferroni | --no-bootstrap-lrt-bonferroni]
+                            [--help]
 
     optional arguments:
-      -h, --help                  Show this help message and exit.
       --session-list              Path to a text file containing session root
                                   directories (one per line). Repeatable.
       --output-directory          Directory in which to write the consolidated
                                   usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5 archive.
-      --noise-col-id              Name of the noise classification column in the
-                                  USV summary CSV. A summary that does not carry
-                                  this column is kept whole and a line is printed
-                                  naming the session and row count -- the
-                                  acoustic-embedding columns are added after
-                                  das-summarize and are dropped whenever the merge
-                                  is re-run, so their absence is an ordinary state
-                                  rather than an error.
-      --noise-categories          Integer label(s) in noise_col_id that mark a
-                                  USV as noise. There is no separate on/off
-                                  switch: an empty list, or a column that is not
-                                  present, filters nothing.
-      --fit-mixture-model / --no-fit-mixture-model    Whether to run the mixture-model sweep after inter-USV interval extraction.
-      --n-components-min          Minimum number of mixture components.
-      --n-components-max          Maximum number of mixture components.
-      --n-repeats                 Number of EM-init repeats per (key, n_components).
+      --exclude-noise-usvs / --no-exclude-noise-usvs
+                                  Drop the USV segments ``detect-usv-noise``
+                                  flagged as holding no vocalization (default:
+                                  enabled). A session whose summary has no
+                                  ``noise`` column raises rather than passing its
+                                  detections through unfiltered; run
+                                  ``detect-usv-noise`` on it, or pass
+                                  ``--no-exclude-noise-usvs``.
+      --fit-mixture-model / --no-fit-mixture-model
+                                  Whether to run the unconstrained mixture sweep
+                                  and its session-corrected LRT on the fitted pools.
+      --n-components-min          Minimum number of mixture components. Default 2.
+      --n-components-max          Maximum number of mixture components. Default 6.
+      --n-repeats                 Number of EM-init repeats per (pool, n_components).
+                                  Default 10.
       --max-modes-reported        Maximum number of mixture modes recorded per fit.
-      --random-seed-base          Base seed; rep r uses random_seed_base + r.
+                                  Default 6.
+      --random-seed-base          Base seed; rep r uses random_seed_base + r. It
+                                  also seeds the subsamples, the bootstrap nulls
+                                  and the session resamples. Default 0.
       --cv-n-folds                Number of K-fold splits for CV log-likelihood.
                                   Default 5.
       --cv-n-init                 EM restarts per fold during CV. Default 5.
-      --mixture-model-n-init      EM restarts per in-sample mixture-model fit. Default 10.
-      --mixture-model-reg-covar   Covariance regularisation passed to sklearn's
-                                  GaussianMixture. Default 1e-4.
+      --mixture-model-n-init      EM restarts per in-sample mixture-model fit.
+                                  Default 10.
+      --mixture-model-reg-covar   Variance floor of the EM solver (also used by
+                                  the tied model). Default 1e-4.
       --tau                       Posterior threshold for the LEFT component
                                   when computing inter-component decision
                                   boundaries. Default 0.5 (standard Bayes
                                   boundary).
       --figures-directory         Directory the inter-USV interval notebook uses to save
-                                  rendered figures.
-      --model-class               Mixture class. 't' = Student-t mixture
-                                  (default; one heavy-tailed component
-                                  absorbs the long-pause tail). 'gauss' =
-                                  log-Gaussian mixture (classical). 'ig' =
-                                  inverse-Gaussian mixture in linear time
-                                  (first-passage-time family for waiting
-                                  times).
-      --bootstrap-lrt-B           Number of parametric bootstrap replicates
-                                  per pairwise LRT. Default 1000.
-      --bootstrap-lrt-n-init      EM restarts for the bootstrap REFITS, separate
-                                  from --mixture-model-n-init which governs the
-                                  observed fit. Default 1. Restarts dominate the
-                                  cost of this test and barely move its answer:
-                                  measured on one male end-to-start K=4 vs K=5
-                                  comparison, going 3 -> 10 -> 20 moved the
-                                  failed-refit rate 75% -> 70% -> 65% and p
-                                  0.0090 -> 0.0080 -> 0.0070, at 38 and 57
-                                  minutes for a SINGLE pair. A high failure rate
-                                  is not necessarily an optimiser problem: it
-                                  also arises when the larger K is simply not
-                                  identifiable on the data.
+                                  rendered figures (not used by the analysis itself).
+      --model-class               Mixture class of the unconstrained sweep. 't' =
+                                  Student-t mixture in log space (default;
+                                  heavy-tailed components absorb the long-pause
+                                  tail). 'gauss' = log-Gaussian mixture
+                                  (classical). 'ig' = inverse-Gaussian mixture in
+                                  linear time (first-passage-time family for
+                                  waiting times).
+      --bootstrap-lrt-B           Number of parametric bootstrap replicates per
+                                  rung, for the unconstrained LRT and the tied
+                                  peak test alike. Default 1000.
+      --bootstrap-lrt-n-subsample Subsample size for both observed and bootstrap
+                                  fits. Default 10000. This is the effective
+                                  sample size of the whole test, not just of the
+                                  null: the observed statistic is computed on the
+                                  same subsample, so raising it increases the
+                                  test's power rather than sharpening the null
+                                  against a fixed value.
+      --bootstrap-lrt-alpha       Significance threshold for the step-up rule,
+                                  before any Bonferroni correction. Default 0.01.
+      --bootstrap-lrt-n-init      EM restarts for the bootstrap REFITS of the
+                                  unconstrained LRT, separate from
+                                  --mixture-model-n-init which governs the observed
+                                  fit. Default 10. Restarts dominate the cost of
+                                  this test and barely move its answer: measured on
+                                  one male end-to-start K=4 vs K=5 comparison,
+                                  going 3 -> 10 -> 20 moved the failed-refit rate
+                                  75% -> 70% -> 65% and p 0.0090 -> 0.0080 ->
+                                  0.0070, at 38 and 57 minutes for a SINGLE pair.
+                                  A high failure rate is not necessarily an
+                                  optimiser problem: it also arises when the
+                                  larger K is simply not identifiable on the data.
       --bootstrap-lrt-n-jobs      Number of parallel workers for the bootstrap
-                                  LRT replicates (1 = sequential legacy path).
-      --bootstrap-lrt-n-subsample Subsample size for both observed and
-                                  bootstrap fits. Default 10000. This is the
-                                  effective sample size of the whole test, not
-                                  just of the null: the observed statistic is
-                                  computed on the same subsample, so raising it
-                                  increases the test's power rather than
-                                  sharpening the null against a fixed value.
-      --bootstrap-lrt-alpha       Significance threshold for the step-up
-                                  rule. Default 0.01.
+                                  replicates and the serial-dependence resamples
+                                  (1 = sequential). Default 24.
       --bootstrap-lrt-bonferroni / --no-bootstrap-lrt-bonferroni
-                                  Divide alpha by the number of pairwise
-                                  tests before applying the step-up rule
-                                  (default: enabled). With the shipped
-                                  K range there are four comparisons per
-                                  sex and interval type, so the effective
-                                  per-comparison threshold is 0.01 / 4 =
-                                  0.0025.
+                                  Divide alpha by the number of rungs before
+                                  applying the step-up rule (default: enabled).
+                                  With the shipped grids the unconstrained sweep
+                                  has four rungs (2 vs 3 ... 5 vs 6, per-rung
+                                  0.01 / 4 = 0.0025) and the tied peak test three
+                                  (1 vs 2 ... 3 vs 4 peaks, 0.01 / 3 = 0.0033).
 
 ``generate-rm``
 ``generate-rm`` is the command-line interface for calculating per-cluster neuronal tuning curves (behavioral + vocal in one pass). Behavioral tuning runs when the session's ``*_behavioral_features.csv`` exists; vocal tuning runs when the ``*_usv_summary.csv`` and synced spike data exist. Sessions missing both inputs return cleanly without producing any tuning files.
@@ -1014,7 +1249,7 @@ The command writes a single self-describing HDF5 archive ``usv_interval_analysis
       --total-bin-num                        Total number of bins for 1D tuning curves.
       --n-spatial-bins                       Number of spatial bins.
       --spatial-scale-cm                     Spatial extent of the arena (in cm).
-      --peth-window-seconds                  Pre-USV PETH window [start stop] (in s).
+      --peth-window-seconds                  Peri-USV-onset PETH window [start stop] relative to each call onset (in s); default -2 0.5.
       --peth-bin-seconds                     PETH bin width (in s).
       --bout-quiet-seconds                   Inter-bout silence required to define a new bout (in s).
       --n-usv-min-self                       Minimum self-side USV count to compute self plots.
@@ -1022,6 +1257,15 @@ The command writes a single self-describing HDF5 archive ``usv_interval_analysis
       --n-usv-min-category                   Minimum per-category USV count to retain that category.
       --include-partner-tuning /
         --no-include-partner-tuning          Also compute partner-side vocal tuning when partner threshold is met.
+      --exclude-squeaks-self /
+        --keep-squeaks-self                  Leave the self side's squeaks out of its vocal tuning anchors
+                                             (default: exclude). QLVM category tuning never uses squeaks.
+      --exclude-squeaks-partner /
+        --keep-squeaks-partner               Leave the partner side's squeaks out of its vocal tuning anchors
+                                             (default: keep). QLVM category tuning never uses squeaks.
+      --excluded-behavioral-features         Behavioral base features (derivatives included) left out of
+                                             tuning; repeat once per feature (default: nose-nose,
+                                             allo_yaw-nose, nose-allo_yaw, allo_pitch-nose, nose-allo_pitch).
       --behavioral-min-occupancy-seconds     Minimum behavioral occupancy per bin (in s) for that bin
                                              to be rendered in the 1D feature line plots; persisted
                                              into ``behavioral_metadata`` of each cluster pkl.
@@ -1200,27 +1444,6 @@ Visualize
       --output-path         Output .mp4 / .gif path (default: figures.save_directory + timestamp).
       --clustering          Clustering type borders (coarse / fine).
       --fps                 Video frames per second.
-
-``build-vae-density``
-``build-vae-density`` builds the pooled variational autoencoder (VAE)-Uniform Manifold Approximation and Projection (UMAP) density / category-label maps (coarse + fine) used as the embedding-space background for the USV spectrogram figures.
-
-.. code-block:: text
-
-    usage: build-vae-density [-h] --sessions-txt TEXT --out-coarse TEXT
-                             --out-fine TEXT [--cache-path TEXT]
-                             [--grid INTEGER] [--smooth-sigma FLOAT] [--knn INTEGER]
-
-    required arguments:
-      --sessions-txt        Text file listing one session root per line.
-      --out-coarse          Output .npz path for the COARSE map (vae_supercategory).
-      --out-fine            Output .npz path for the FINE map (vae_category).
-
-    optional arguments:
-      -h, --help            Show this help message and exit.
-      --cache-path          Optional parquet cache for the pooled DataFrame.
-      --grid                Density / label grid side length (default 300).
-      --smooth-sigma        Gaussian sigma in grid cells; 0 = raw histogram (default 1.5).
-      --knn                 Neighbours for the grid label classifier (default 15).
 
 Neuropixels
 -----------

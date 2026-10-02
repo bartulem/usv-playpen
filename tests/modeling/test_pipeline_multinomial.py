@@ -103,7 +103,7 @@ HISTORY_FRAMES = int(np.floor(CAMERA_FPS * FILTER_HISTORY))
 N_FRAMES = 7200       # 120 s sessions -> plenty of room for many spread events
 N_SESSIONS = 4
 N_CATEGORIES = 3      # non-noise vocal categories: labels 1, 2, 3
-NOISE_CATEGORY = 0    # stripped when ``usv_noise_categories`` enables it (shipped default: [])
+NOISE_CATEGORY = 0    # the synthetic noise label; those rows also carry ``noise`` True
 
 # Multinomial-specific settings overrides. The shipped JSON's multinomial knobs
 # (max_iter=20000, tuning on, inner_max_iter=2500, smoothness order 2) are far
@@ -164,8 +164,8 @@ def build_multinomial_usv_summary_csv(
         ``filter_history`` warm-up region so its pre-event window never clips
         before frame 0, and all events spread across the usable session so the
         per-class onset frame indices are distinct.
-      - a handful of noise rows (category ``0``) that the
-        ``usv_noise_categories`` filter strips before label extraction, so the
+      - a handful of noise rows (category ``0``, flagged ``noise`` True) that the
+        ``exclude_noise_usvs`` filter strips before label extraction, so the
         noise-filter branch in ``find_usv_categories`` is genuinely exercised.
       - a couple of sparse partner-mouse rows late in the session so partner
         vocal predictors have content without polluting the target's events.
@@ -196,7 +196,7 @@ def build_multinomial_usv_summary_csv(
     events_per_category (int)
         Isolated target events written per non-noise category.
     category_column (str)
-        Integer category column name (also the noise column by default).
+        Integer category column name.
     manifold_columns (tuple of str)
         Two synthetic acoustic-manifold coordinate column names.
     seed (int)
@@ -242,7 +242,7 @@ def build_multinomial_usv_summary_csv(
             event_counter += 1
 
     # A few noise rows (category 0) for the target, late but inside the session,
-    # so the ``usv_noise_categories`` filter has something to strip.
+    # so the noise filter has something to strip.
     noise_anchor = warmup + (total_target_events + 1) * spacing
     for s in range(3):
         start = noise_anchor + s * 0.25
@@ -269,6 +269,8 @@ def build_multinomial_usv_summary_csv(
         'stop': stops,
         category_column: categories,
         'vae_category': categories,
+        # The classifier's verdict: the synthesized noise rows are what the loaders now strip.
+        'noise': [category == NOISE_CATEGORY for category in categories],
         'mask_number': [2] * n_rows,
         manifold_columns[0]: (rng.standard_normal(n_rows)).round(6).tolist(),
         manifold_columns[1]: (rng.standard_normal(n_rows)).round(6).tolist(),
@@ -410,7 +412,7 @@ def _apply_multinomial_overrides(settings: dict) -> dict:
     # The shipped default is now [] (QLVM convention: the Phase-4 gate removes
     # noise upstream); these tests exercise the category-strip mechanism, so
     # the noise filter is enabled explicitly.
-    settings['vocal_features']['usv_noise_categories'] = [NOISE_CATEGORY]
+    settings['vocal_features']['exclude_noise_usvs'] = True
     return settings
 
 
@@ -1592,8 +1594,8 @@ class TestMultinomialExtractionEdgeCases:
         guard and writes no input pickle.
         """
 
-        # Build the tree, then overwrite every target USV row's category with
-        # the noise label so `events_by_category` carries no usable class.
+        # Build the tree, then flag every USV row as noise so `events_by_category`
+        # carries no usable class.
         session_roots = build_multinomial_session_tree(base_dir=tmp_path / 'sessions')
         for root in session_roots:
             csv_path = next((root / 'audio').glob('*_usv_summary.csv'))
@@ -1601,6 +1603,7 @@ class TestMultinomialExtractionEdgeCases:
             df = df.with_columns(
                 pls.lit(NOISE_CATEGORY).alias('qlvm_supercategory'),
                 pls.lit(NOISE_CATEGORY).alias('vae_category'),
+                pls.lit(value=True).alias('noise'),
             )
             df.write_csv(csv_path)
 
@@ -1650,3 +1653,24 @@ class TestMultinomialExtractionEdgeCases:
             tok in k for k in feature_keys
             for tok in ('usv_rate', 'usv_cat_', 'usv_event')
         ), f"expected at least one vocal-signal feature key, got {feature_keys}"
+
+
+@pytest.mark.parametrize('usv_predictor_type', [None, 'categories_rate'])
+def test_multinomial_extraction_without_labels_fails_before_loading(tmp_path, mocker, usv_predictor_type):
+    """
+    With no category label column (the shipped ``usv_category_column_name``
+    null, QLVM labels unavailable) the multinomial category extraction stops with the labels-unavailable
+    error before any session list or behavioral file is read.
+    """
+
+    settings = build_modeling_settings(
+        session_list_file=tmp_path / 'session_list.txt',
+        save_directory=tmp_path,
+        usv_predictor_type=usv_predictor_type,
+        usv_category_column_name=None,
+    )
+    prepare = mocker.patch('usv_playpen.modeling.modeling_vocal_categories_multinomial.prepare_modeling_sessions')
+    with pytest.raises(ValueError, match='QLVM category labels are not available') as excinfo:
+        MultinomialModelingPipeline(modeling_settings_dict=settings).extract_and_save_multinomial_input_data()
+    assert 'vocal_features.usv_category_column_name' in str(excinfo.value)
+    prepare.assert_not_called()

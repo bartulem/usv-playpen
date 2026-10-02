@@ -1694,10 +1694,16 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
         "stop": stops.tolist(),
         "duration": durations.tolist(),
         "emitter": ["m1"] * n_usvs,
-        "vae_supercategory": rng.integers(1, 5, size=n_usvs).tolist(),
-        "vae_category":      rng.integers(1, 8, size=n_usvs).tolist(),
+        # Every synthetic call is real; the tuning-curve loader drops noise-flagged rows.
+        "noise": [False] * n_usvs,
+        # No squeaks: the vocal tuning drops squeak anchors, so the flag is required.
+        "squeak": [False] * n_usvs,
         "qlvm_supercategory": rng.integers(1, 4, size=n_usvs).tolist(),
         "qlvm_category":     rng.integers(1, 6, size=n_usvs).tolist(),
+        # the four conditional QLVM maps' labels (every map is tuned)
+        **{f"{qlvm_map}_{suffix}": rng.integers(1, 4, size=n_usvs).tolist()
+           for qlvm_map in ("qlvm_dur", "qlvm_mf", "qlvm_bw", "qlvm_loud")
+           for suffix in ("category", "supercategory")},
         "mean_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
         "peak_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
         "freq_bandwidth_hz": rng.uniform(5000, 30000, n_usvs).tolist(),
@@ -1751,6 +1757,10 @@ def _make_neuronal_tuning(root, *, n_shuffles=5, smoothing_sd=0.0):
             "behavioral_min_occupancy_seconds": 0.1,
             "usv_property_min_occupancy_seconds": 0.05,
             "include_partner_vocalization_tuning_bool": False,
+            "exclude_squeaks_self": True,
+            "exclude_squeaks_partner": False,
+            "excluded_behavioral_features": ["nose-nose", "allo_yaw-nose", "nose-allo_yaw",
+                                             "allo_pitch-nose", "nose-allo_pitch"],
             "smoothing_sd": smoothing_sd,
             "circular_features": ["allo_yaw", "body_dir"],
         },
@@ -1874,6 +1884,104 @@ def test_build_vocal_side_precompute_includes_self_side(synthetic_compute_sessio
 
 
 # _compute_one_cluster_vocal ------------------------------------------------
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_behavioral_feature_base_strips_prefix_and_derivatives():
+    """A behavioral column's base feature drops the animal / pair prefix and any
+    derivative suffix, so an exclusion covers the feature and its derivatives."""
+    from usv_playpen.analyses.compute_neuronal_tuning_curves import behavioral_feature_base
+
+    assert behavioral_feature_base("158112_0-156693_3.allo_yaw-nose_1st_der") == "allo_yaw-nose"
+    assert behavioral_feature_base("158112_0-156693_3.nose-nose_2nd_der") == "nose-nose"
+    assert behavioral_feature_base("158112_0-156693_3.head-head") == "head-head"
+    assert behavioral_feature_base("m1.speed") == "speed"
+
+
+def test_load_behavioral_inputs_drops_excluded_features(synthetic_compute_session):
+    """Columns whose base feature is in excluded_behavioral_features (derivatives
+    included) are not tuned; their head-anchored versions and every other column stay."""
+    root, _ = synthetic_compute_session
+    beh_csv = next(root.rglob("*_behavioral_features.csv"))
+    rng = np.random.default_rng(3)
+    df = pls.read_csv(beh_csv)
+    extra = {
+        "m1-f1.nose-nose": rng.uniform(0, 30, df.height),
+        "m1-f1.nose-nose_1st_der": rng.uniform(-5, 5, df.height),
+        "m1-f1.head-head": rng.uniform(0, 30, df.height),
+        "m1-f1.allo_yaw-nose": rng.uniform(-180, 180, df.height),
+        "m1-f1.allo_yaw-head": rng.uniform(-180, 180, df.height),
+        "m1-f1.nose-TTI": rng.uniform(0, 30, df.height),
+    }
+    df.with_columns([pls.Series(name, values) for name, values in extra.items()]).write_csv(beh_csv)
+    nt = _make_neuronal_tuning(root)
+
+    columns = nt._load_behavioral_inputs()["behavioral_data"].columns
+
+    assert "m1-f1.nose-nose" not in columns and "m1-f1.nose-nose_1st_der" not in columns
+    assert "m1-f1.allo_yaw-nose" not in columns
+    assert {"m1-f1.head-head", "m1-f1.allo_yaw-head", "m1-f1.nose-TTI", "m1.speed"} <= set(columns)
+
+
+def test_squeaks_are_dropped_from_self_anchors_and_never_categorised(synthetic_compute_session):
+    """With exclude_squeaks_self (default) the self side's squeak calls are not
+    anchors; with it off they are anchors but still carry no QLVM category (every
+    map's category tuning is squeak-free), and a category held only by squeaks
+    does not appear."""
+    root, _ = synthetic_compute_session
+    usv_csv = next(root.rglob("*_usv_summary.csv"))
+    df = pls.read_csv(usv_csv)
+    squeak = np.zeros(df.height, dtype=bool)
+    squeak[:10] = True
+    # category 99 only on squeaks
+    df.with_columns(
+        pls.Series("squeak", squeak),
+        pls.when(pls.Series(squeak)).then(99).otherwise(pls.col("qlvm_category")).alias("qlvm_category"),
+    ).write_csv(usv_csv)
+
+    nt = _make_neuronal_tuning(root)
+    voc_inputs = nt._load_vocal_inputs()
+    excluded = nt._build_vocal_side_precompute(voc_inputs)["self"]
+    assert excluded["side"]["n"] == df.height - 10
+    assert not voc_inputs["is_squeak"][excluded["anchor_idx"]].any()
+
+    nt.tuning_parameters_dict["exclude_squeaks_self"] = False
+    kept = nt._build_vocal_side_precompute(voc_inputs)["self"]
+    assert kept["side"]["n"] == df.height
+    categorical = kept["anchor_categorical"]["qlvm_category"]
+    assert 99 not in categorical["unique_cats"].tolist()
+    assert (categorical["anchor_cat_idx_dense"][voc_inputs["is_squeak"][kept["anchor_idx"]]] == -1).all()
+
+
+def test_load_vocal_inputs_requires_the_squeak_column(synthetic_compute_session):
+    """A summary without a squeak column raises instead of tuning to squeaks."""
+    root, _ = synthetic_compute_session
+    usv_csv = next(root.rglob("*_usv_summary.csv"))
+    pls.read_csv(usv_csv).drop("squeak").write_csv(usv_csv)
+    with pytest.raises(KeyError, match="no 'squeak' column"):
+        _make_neuronal_tuning(root)._load_vocal_inputs()
+
+
+def test_build_vocal_side_precompute_notices_missing_qlvm_labels(synthetic_compute_session):
+    """Without some QLVM label columns (e.g. a summary embedded before infer-qlvm-latents
+    wrote them) the precompute prints a one-line notice naming them, instead of leaving
+    those outputs empty without a word; with every map's labels present nothing is
+    printed."""
+    root, _ = synthetic_compute_session
+    nt = _make_neuronal_tuning(root)
+    messages: list[str] = []
+    nt.message_output = messages.append
+    voc_inputs = nt._load_vocal_inputs()
+
+    assert nt._build_vocal_side_precompute(voc_inputs) is not None
+    assert not any("QLVM category tuning skipped" in m for m in messages)
+
+    voc_inputs["usv_df"] = voc_inputs["usv_df"].drop(["qlvm_category", "qlvm_supercategory"])
+    assert nt._build_vocal_side_precompute(voc_inputs) is not None
+    notices = [m for m in messages if "QLVM category tuning skipped" in m]
+    assert len(notices) == 1
+    assert "qlvm_category, qlvm_supercategory" in notices[0]
+    assert "labels are unavailable" in notices[0]
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -2282,8 +2390,7 @@ def test_compute_session_usv_intervals_invalid_type_raises():
         compute_session_usv_intervals(
             session_root="/whatever",
             interval_type="bogus",
-            noise_col_id="cluster",
-            noise_categories=[],
+            exclude_noise_usvs=True,
         )
 
 
@@ -2297,8 +2404,7 @@ def test_compute_session_usv_intervals_missing_session_returns_empty(monkeypatch
     out = compute_session_usv_intervals(
         session_root="/missing",
         interval_type="s2s",
-        noise_col_id="cluster",
-        noise_categories=[],
+        exclude_noise_usvs=True,
     )
     assert out == {}
 
@@ -2310,6 +2416,9 @@ def test_compute_session_usv_intervals_basic_pairs(monkeypatch):
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
         "male_id": "M", "female_id": "F", "frame_rate": 150.0,
     })
+    monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
+        "M": "male", "F": "female",
+    })
     fake_usv = pls.DataFrame({
         "start": [0.0, 0.5, 1.0, 1.7],
         "stop":  [0.1, 0.6, 1.1, 1.8],
@@ -2320,7 +2429,7 @@ def test_compute_session_usv_intervals_basic_pairs(monkeypatch):
                         lambda **kw: fake_usv)
     out = compute_session_usv_intervals(
         session_root="/ok", interval_type="s2s",
-        noise_col_id="cluster", noise_categories=[],
+        exclude_noise_usvs=True,
     )
     # M-M interval: start[1]-start[0] = 0.5
     # F-F interval: start[3]-start[2] = 0.7
@@ -2337,6 +2446,9 @@ def test_compute_session_usv_intervals_empty_usv_returns_empty_arrays(monkeypatc
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
         "male_id": "M", "female_id": "F", "frame_rate": 150.0,
     })
+    monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
+        "M": "male", "F": "female",
+    })
     monkeypatch.setattr(cmod, "load_and_filter_usv_data",
                         lambda **kw: pls.DataFrame({
                             "start": pls.Series([], dtype=pls.Float64),
@@ -2346,7 +2458,7 @@ def test_compute_session_usv_intervals_empty_usv_returns_empty_arrays(monkeypatc
                         }))
     out = compute_session_usv_intervals(
         session_root="/ok", interval_type="s2s",
-        noise_col_id="cluster", noise_categories=[],
+        exclude_noise_usvs=True,
     )
     assert out["male"].size == 0 and out["female"].size == 0
 
@@ -2356,6 +2468,9 @@ def test_compute_session_usv_intervals_e2s_drops_overlapping(monkeypatch):
     import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
         "male_id": "M", "female_id": "F", "frame_rate": 150.0,
+    })
+    monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
+        "M": "male", "F": "female",
     })
     fake_usv = pls.DataFrame({
         "start": [0.0, 0.5, 1.0],
@@ -2367,12 +2482,59 @@ def test_compute_session_usv_intervals_e2s_drops_overlapping(monkeypatch):
                         lambda **kw: fake_usv)
     out = compute_session_usv_intervals(
         session_root="/ok", interval_type="e2s",
-        noise_col_id="cluster", noise_categories=[],
+        exclude_noise_usvs=True,
     )
     # First M-M pair: start[1]-stop[0] = 0.5 - 0.6 = -0.1 → dropped
     # Second M-M pair: start[2]-stop[1] = 1.0 - 0.7 = 0.3 → kept
     np.testing.assert_allclose(out["male"], [0.3])
     assert out["n_dropped_male"] == 1
+
+
+def test_compute_session_usv_intervals_same_sex_session_pairs_per_animal(monkeypatch):
+    """
+    A female-female session: both animals are female by their metadata, so both
+    animals' intervals land in the 'female' pool and nothing in 'male'; a call of
+    one female is never paired with a call of the other (the A->B step breaks the
+    chain), and each interval carries the animal it belongs to.
+    """
+    import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
+    monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
+        "male_id": "A", "female_id": "B", "frame_rate": 150.0,
+    })
+    monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
+        "A": "female", "B": "female",
+    })
+    fake_usv = pls.DataFrame({
+        "start": [0.0, 0.5, 1.0, 1.7, 2.0],
+        "stop":  [0.1, 0.6, 1.1, 1.8, 2.1],
+        "duration": [0.1] * 5,
+        "emitter": ["A", "A", "B", "B", "A"],
+    })
+    monkeypatch.setattr(cmod, "load_and_filter_usv_data", lambda **kw: fake_usv)
+    out = compute_session_usv_intervals(
+        session_root="/ok", interval_type="s2s", exclude_noise_usvs=True,
+    )
+    # A-A 0.5 (rows 0-1) and B-B 0.7 (rows 2-3); B->A (rows 3-4) is not a pair
+    assert out["male"].size == 0
+    np.testing.assert_allclose(out["female"], [0.5, 0.7])
+    assert list(out["emitter_female"]) == ["A", "B"]
+
+
+def test_extract_animal_sexes_reads_metadata_and_refuses_to_guess(tmp_path):
+    """
+    Sex comes from the metadata Subjects block, matched on the stripped track
+    name; a track without a recorded sex raises instead of falling back to its slot.
+    """
+    from usv_playpen.analyses._usv_io import extract_animal_sexes
+    (tmp_path / "20260101_120000_metadata.yaml").write_text(
+        "Subjects:\n- subject_id: '124784_2'\n  sex: female\n"
+        "- subject_id: '124784_3'\n  sex: female\n")
+    assert extract_animal_sexes(str(tmp_path), ["124784_2\x00", "124784_3"]) == {
+        "124784_2": "female", "124784_3": "female"}
+    with pytest.raises(ValueError, match="no subject with a recorded sex"):
+        extract_animal_sexes(str(tmp_path), ["124784_2", "999999_1"])
+    with pytest.raises(FileNotFoundError):
+        extract_animal_sexes(str(tmp_path / "absent"), ["124784_2"])
 
 
 # ===========================================================================
@@ -3240,3 +3402,89 @@ def test_anchor_bin_validity_grid_post_and_prior():
     )
     assert grid.shape == (1, 2)
     assert grid.dtype == bool
+
+
+def test_anchor_bin_validity_grid_cuts_post_onset_bins_at_the_next_onset():
+    """Post-onset bins stay valid only while they end before the next USV's onset
+    (any USV after the anchor's onset); pre-onset bins are untouched by that rule,
+    and a last call keeps its post-onset bins up to the recording end."""
+    starts = np.array([1.0, 1.25, 3.0])
+    stops = np.array([1.1, 1.3, 3.1])
+    edges = np.arange(-0.5, 0.5 + 1e-9, 0.1)
+    rel_bin_lo, rel_bin_hi = edges[:-1], edges[1:]
+    grid = _anchor_bin_validity_grid(
+        np.array([0, 2]), starts, stops, duration_seconds=10.0,
+        rel_bin_lo=rel_bin_lo, rel_bin_hi=rel_bin_hi,
+        require_clean_post=False, require_clean_prior=False,
+    )
+    post = rel_bin_hi > 1e-9
+    # anchor 0 (onset 1.0 s): the next onset is 1.25 s, so post-onset bins ending at
+    # 1.1 and 1.2 s are valid and those ending at 1.3 / 1.4 / 1.5 s are not
+    np.testing.assert_array_equal(grid[0, post], [True, True, False, False, False])
+    assert grid[0, ~post].all()
+    # anchor 2 (the last call): nothing follows it, so every post-onset bin is valid
+    assert grid[1].all()
+    # another USV starting at the anchor's very onset leaves no clean post-onset bin
+    same = _anchor_bin_validity_grid(
+        np.array([0]), np.array([1.0, 1.0]), np.array([1.1, 1.2]), duration_seconds=10.0,
+        rel_bin_lo=rel_bin_lo, rel_bin_hi=rel_bin_hi,
+        require_clean_post=False, require_clean_prior=False,
+    )
+    assert not same[0, post].any() and same[0, ~post].all()
+
+
+def test_consecutive_interval_pairs_stay_within_one_animal_of_one_session():
+    """Neighbouring intervals pair only when they share the session AND the animal: the switch
+    from female A to female B, and from one session to the next, never forms a pair."""
+    from usv_playpen.analyses.compute_inter_usv_interval_distributions import consecutive_interval_pairs
+    values = np.array([0.1, 0.2, 0.3, 5.0, 6.0, 0.4, 0.5])
+    sessions = np.array(["s1"] * 5 + ["s2"] * 2)
+    emitters = np.array(["A", "A", "A", "B", "B", "A", "A"])
+    current, following, pair_sessions = consecutive_interval_pairs(values, sessions, emitters)
+    np.testing.assert_allclose(current, [0.1, 0.2, 5.0, 0.4])
+    np.testing.assert_allclose(following, [0.2, 0.3, 6.0, 0.5])
+    assert list(pair_sessions) == ["s1", "s1", "s1", "s2"]
+
+
+def test_fit_serial_dependence_recovers_a_known_bend():
+    """
+    Pairs whose median log(next) rises with slope 0.6 below 100 ms and is flat above it (Laplace
+    noise, 30 sessions): the bent line recovers the bend near 100 ms with an interval that
+    covers it, the slope near 0.6, and the tables carry the pool identity and one bend per
+    replicate.
+    """
+    from usv_playpen.analyses.compute_inter_usv_interval_distributions import fit_serial_dependence
+    rng = np.random.default_rng(0)
+    n = 6000
+    x = rng.uniform(np.log(0.02), np.log(5.0), n)
+    c = np.log(0.1)
+    y = -1.0 + 0.6 * np.minimum(x, c) + rng.laplace(0.0, 0.25, n)
+    sessions = np.repeat(np.arange(30).astype(str), n // 30)
+    identity = {"sex": "male", "call_type": "usv", "adjacency": "filtered"}
+    curves, fit, bends = fit_serial_dependence(
+        current=np.exp(x), following=np.exp(y), pair_sessions=sessions, pool_identity=identity,
+        n_knots=5, corner_widths=[0.05, 0.15], n_bootstrap=20, level=90.0,
+        bend_bounds_ms=(30.0, 600.0), grid_percentiles=(1.0, 99.0), max_iter=5000, seed=0,
+        n_jobs=1, n_grid=50)
+    row = fit.row(0, named=True)
+    assert 85.0 < row["bend_ms"] < 118.0
+    assert row["bend_low_ms"] <= 100.0 <= row["bend_high_ms"]
+    assert 0.5 < row["slope"] < 0.7
+    assert row["n_pairs"] == n and row["n_sessions"] == 30
+    assert curves.height == 50 and bends.height == 20
+    assert set(curves["sex"].to_list()) == {"male"}
+    assert (curves["spline_low_ms"] <= curves["spline_high_ms"]).all()
+
+
+def test_summarize_interval_pool_reports_counts_and_percentiles():
+    """The descriptive summary written for every pool: count, sessions and the 5/25/50/75/95th
+    percentiles; an empty pool gives NaN percentiles rather than raising."""
+    from usv_playpen.analyses.compute_inter_usv_interval_distributions import summarize_interval_pool
+    values = np.arange(1, 101, dtype=float) / 1000.0
+    out = summarize_interval_pool(values, 7)
+    assert out["n_intervals"] == 100 and out["n_sessions"] == 7
+    assert out["median_s"] == pytest.approx(np.percentile(values, 50))
+    assert out["p05_s"] == pytest.approx(np.percentile(values, 5))
+    assert out["p95_s"] == pytest.approx(np.percentile(values, 95))
+    empty = summarize_interval_pool(np.array([]), 0)
+    assert empty["n_intervals"] == 0 and np.isnan(empty["median_s"])

@@ -24,6 +24,9 @@ from usv_playpen.modeling.modeling_torus_geodesics import (
     density_geodesic_matrix,
     flat_torus_distance_matrix,
     geodesic_mae_columns,
+    make_qlvm_decode_fn_from_model_cell,
+    make_qlvm_decode_fn_from_source,
+    resolve_geodesic_decoder_source,
     per_event_geodesic_error,
     pullback_geodesic_matrix,
     pullback_metric_at_nodes,
@@ -31,6 +34,9 @@ from usv_playpen.modeling.modeling_torus_geodesics import (
     torus_grid,
     torus_kde_density,
 )
+from usv_playpen.processing.qlvm_latents import load_model_cell
+from usv_playpen.processing.qlvm_model import decode_lattice_atlas, decoder_forward, torus_basis_forward
+from tests.processing.test_qlvm_latents import _make_model_cell, _phase11_bins
 
 
 class TestFlat:
@@ -232,3 +238,67 @@ class TestPerEventHelpers:
         cols = geodesic_mae_columns(yp, yt, None)
         assert np.isnan(cols['density_geodesic_mae'])
         assert np.isnan(cols['pullback_geodesic_mae'])
+
+
+
+class TestModelCellDecoder:
+    """The pullback decoder built from a QLVM model package cell (the v3 route)."""
+
+    def test_matches_the_embedding_decoder(self, tmp_path):
+        """The cell's decode function reproduces, on lattice points, exactly the
+        decoder call the embedding makes (``decoder_forward`` of the torus basis of
+        ``lattice % 1``, as in ``qlvm_model.embed_data``) and the lattice atlas;
+        it is periodic in z and has a finite pullback metric."""
+
+        rng = np.random.default_rng(31)
+        grid = np.ones((8, 8), dtype=np.int64)
+        cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid)
+        decode_fn = make_qlvm_decode_fn_from_model_cell(str(cell))
+        model = load_model_cell(str(cell))
+        points = np.asarray(model['lattice'])[[0, 1, 7, 20]]
+        embedding_call = np.asarray(
+            decoder_forward(torus_basis_forward(jnp.asarray(points) % 1), model['params'])).reshape(len(points), -1)
+        atlas = np.asarray(decode_lattice_atlas(jnp.asarray(points), model['params'])).reshape(len(points), -1)
+        mine = np.stack([np.asarray(decode_fn(jnp.asarray(point))) for point in points])
+        assert mine.shape == (4, 128 * 128)
+        np.testing.assert_allclose(mine, embedding_call, atol=1e-6)
+        np.testing.assert_allclose(mine, atlas, atol=1e-6)
+        np.testing.assert_allclose(np.asarray(decode_fn(jnp.asarray(points[2] + 1.0))), mine[2], atol=1e-6)
+        assert np.isfinite(pullback_metric_at_nodes(points[:2], decode_fn)).all()
+
+    def test_conditional_cell_is_refused(self, tmp_path):
+        """A conditional cell's decoder is not a function of z alone, so it is refused."""
+
+        rng = np.random.default_rng(32)
+        grid = np.ones((8, 8), dtype=np.int64)
+        cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid,
+                                condition={"name": "bandwidth", "decode": "exact"},
+                                bins=_phase11_bins("bandwidth", 0.05, 0.95, 0.01))
+        with pytest.raises(ValueError, match="conditional cell"):
+            make_qlvm_decode_fn_from_model_cell(str(cell))
+
+    def test_source_resolution(self):
+        """The settings block resolves to its model package cell, or to nothing when
+        decoder_model_cell_directory is empty; the retired npz source is gone, so the
+        legacy decoder_weights_npz_path key a user's older settings may still carry
+        is ignored."""
+
+        assert resolve_geodesic_decoder_source({'decoder_model_cell_directory': '/c'}) == ('model_cell', '/c')
+        assert resolve_geodesic_decoder_source({'decoder_model_cell_directory': ''}) is None
+        assert resolve_geodesic_decoder_source(
+            {'decoder_weights_npz_path': '/w.npz', 'decoder_model_cell_directory': ''}) is None
+
+    def test_source_builder_uses_the_cell(self, tmp_path):
+        """Building from a model-cell source gives the cell's decoder; any other
+        source kind (including the retired 'npz') is refused."""
+
+        rng = np.random.default_rng(33)
+        grid = np.ones((8, 8), dtype=np.int64)
+        cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid)
+        z = jnp.asarray([0.3, 0.7])
+        from_source = np.asarray(make_qlvm_decode_fn_from_source(('model_cell', str(cell)))(z))
+        from_cell = np.asarray(make_qlvm_decode_fn_from_model_cell(str(cell))(z))
+        np.testing.assert_allclose(from_source, from_cell, atol=1e-7)
+        for kind in ('npz', 'zip'):
+            with pytest.raises(ValueError, match="unknown decoder source"):
+                make_qlvm_decode_fn_from_source((kind, 'x'))

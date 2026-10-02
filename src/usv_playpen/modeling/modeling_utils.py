@@ -92,6 +92,7 @@ the single audit-orchestration entry point:
 
 from datetime import datetime
 from pathlib import Path
+import re
 import numpy as np
 import polars as pls
 from scipy.stats import pearsonr, spearmanr
@@ -169,6 +170,37 @@ def prepare_modeling_sessions(modeling_settings: dict) -> list:
         raise RuntimeError(f"Error reading session paths: {e}")
 
     return txt_modeling_sessions
+
+
+def manifold_tag_segment(category_column: str | None, manifold_column_names: list) -> str:
+    """
+    Description
+    -----------
+    Names the source of a continuous-manifold run in its analysis tag and in the
+    model-selection step-file prefix. With a category label column configured
+    the segment is that column (e.g. ``'qlvm_supercategory'``), as before; with
+    none (``usv_category_column_name`` null) it is the embedding the
+    coordinates come from, the first manifold
+    column without its trailing digits (``['qlvm1', 'qlvm2']`` -> ``'qlvm'``), so
+    the tag never reads ``manifold_None``. The extraction pipeline and the
+    selector both call this, so the two always agree on the name.
+
+    Parameters
+    ----------
+    category_column (str | None)
+        The configured ``vocal_features.usv_category_column_name``.
+    manifold_column_names (list)
+        The configured ``vocal_features.usv_manifold_column_names``.
+
+    Returns
+    -------
+    segment (str)
+        The column name, or the manifold prefix when no column is configured.
+    """
+
+    if category_column:
+        return category_column
+    return re.sub(r'\d+$', '', manifold_column_names[0])
 
 
 def seeded_session_holdout(session_ids: list,
@@ -762,7 +794,8 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
                                     suffixes: list,
                                     feature_bounds: dict,
                                     abs_features: list | None = None,
-                                    smooth_abs_features: dict | None = None) -> dict:
+                                    smooth_abs_features: dict | None = None,
+                                    stats_out: dict | None = None) -> dict:
     """
     Z-scores every session's feature columns using pooled cross-session statistics.
 
@@ -804,6 +837,12 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
         ego_yaw (range ±180°), ε = 0.5° for back_yaw (range ±36°).
         Forwarded to `zscore_different_sessions_together`.
 
+    stats_out : dict, optional
+        When supplied, populated in-place with the pooled mean and
+        standard deviation applied to each feature, so a caller can
+        recover the native scale after the frames are overwritten.
+        Forwarded to `zscore_different_sessions_together`.
+
     Returns
     -------
     dict
@@ -816,6 +855,7 @@ def zscore_features_across_sessions(processed_beh_dict: dict,
         feature_bounds=feature_bounds,
         abs_features=abs_features,
         smooth_abs_features=smooth_abs_features,
+        stats_out=stats_out,
     )
 
 
@@ -1896,7 +1936,7 @@ def extract_univariate_headline(analysis_type: str, res: dict) -> dict:
                 }
     elif analysis_type == 'continuous':
         # Geometry selects the headline: `vm_logscore` is finite only on the
-        # torus (NaN on euclidean/VAE), `dcor_xy` only on euclidean (NaN on the
+        # torus (NaN on euclidean), `dcor_xy` only on euclidean (NaN on the
         # torus), else `r2_spatial`. Guard the unconditional `actual` read so a
         # malformed / minimal result dict (e.g. a mocked dispatcher test) yields
         # an empty summary rather than raising.

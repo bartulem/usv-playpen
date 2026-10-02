@@ -294,8 +294,8 @@ Precise rules:
   an `@author: <you>` line, then a one-line purpose; keep the line when editing
   an existing file. **Exactly one blank line separates the closing `"""` from
   the first import** (`from __future__ import annotations`). Vendored /
-  clean-room subtrees (`processing/masks`, `processing/qlvm_training`,
-  `other/…`, `neuropixels/sglx_meta_to_coords.py`) are exempt.
+  clean-room subtrees (`processing/masks`, `other/…`,
+  `neuropixels/sglx_meta_to_coords.py`) are exempt.
 - The minority `name : type` (numpydoc) form appears in `modeling/` and
   `other/cluster/`. Don't convert those files; match whichever form the file
   already uses.

@@ -24,6 +24,8 @@ from .anipose_operations import ConvertTo3D
 from .assign_vocalizations import Vocalocator
 from .compute_usv_acoustic_features import USVAcousticFeatureExtractor
 from .das_inference import FindMouseVocalizations
+from .detect_usv_noise import USVNoiseDetector
+from .detect_usv_squeaks import USVSqueakDetector
 from .extract_phidget_data import Gatherer
 from .generate_masks import MaskGenerator
 from .generate_spectrograms import SpectrogramGenerator
@@ -326,6 +328,18 @@ class Stylist:
                         FindMouseVocalizations(root_directory=one_directory,
                                                input_parameter_dict=self.input_parameter_dict,
                                                message_output=self.message_output).summarize_das_findings()
+
+                    # # # flag the USV segments that hold no vocalization (after das_summarize, which rewrites the summary)
+                    if self.input_parameter_dict['processing_booleans']['detect_usv_noise']:
+                        USVNoiseDetector(root_directory=one_directory,
+                                         input_parameter_dict=self.input_parameter_dict,
+                                         message_output=self.message_output).detect_and_merge()
+
+                    # # # detect squeaks among the curated USV segments (after das_summarize, which rewrites the summary)
+                    if self.input_parameter_dict['processing_booleans']['detect_usv_squeaks']:
+                        USVSqueakDetector(root_directory=one_directory,
+                                          input_parameter_dict=self.input_parameter_dict,
+                                          message_output=self.message_output).detect_and_merge()
 
                     # # # prepare data for vocal assignment
                     if self.input_parameter_dict['processing_booleans']['prepare_assign_vocalizations']:

@@ -54,7 +54,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 from scipy.stats import gaussian_kde
 
-from ..processing.qlvm_latents import load_decoder_params
+from ..processing.qlvm_latents import load_model_cell
 from ..processing.qlvm_model import decoder_forward, torus_basis_forward
 from .manifold_metric import _geodesic_distance_matrix, signed_diff
 
@@ -375,7 +375,8 @@ def make_qlvm_decode_fn(params: dict):
     ----------
     params : dict
         Decoder weights as returned by
-        ``processing.qlvm_latents.load_decoder_params``.
+        ``processing.qlvm_latents.load_decoder_params`` (the ``params`` entry of
+        ``processing.qlvm_latents.load_model_cell``).
 
     Returns
     -------
@@ -391,28 +392,101 @@ def make_qlvm_decode_fn(params: dict):
     return decode_fn
 
 
-def make_qlvm_decode_fn_from_npz(weights_npz_path: str):
+def make_qlvm_decode_fn_from_model_cell(model_cell_directory: str):
     """
-    Load the frozen QLVM decoder weights and return its decode function.
+    Description
+    -----------
+    Loads the decoder of one QLVM model package cell and returns its decode
+    function, so the pullback metric is computed with the same decoder whose
+    torus the ``qlvm1`` / ``qlvm2`` coordinates live on (for the production
+    summaries: the v3 phase 6 regular cell
+    ``phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor``). The
+    cell is read by :func:`processing.qlvm_latents.load_model_cell` (its
+    ``checkpoint.tar`` without torch, plus its training contract), and the
+    weights go through :func:`make_qlvm_decode_fn`, whose
+    ``qlvm_model.decoder_forward`` runs either decoder head (``"legacy"`` or
+    ``"relu"``) exactly as the embedding's lattice decode does.
 
-    Convenience wrapper around :func:`make_qlvm_decode_fn` that reads the
-    ``.npz`` weights (via ``processing.qlvm_latents.load_decoder_params``, which
-    routes the path through ``configure_path``), so callers only need the weights
-    path to obtain a differentiable ``z -> spectrogram`` decoder for the pullback
-    geometry.
+    Only unconditional cells (``c_dim`` 0) are accepted: a conditional cell's
+    decoder takes one extra condition value per call, so ``z -> spectrogram``
+    is not a function of the torus position alone and the pullback metric is
+    undefined without fixing that value.
 
     Parameters
     ----------
-    weights_npz_path : str
-        Path to the converted decoder-weights ``.npz``.
+    model_cell_directory (str)
+        Path to the package cell (routed through ``configure_path`` by
+        ``load_model_cell``).
 
     Returns
     -------
-    callable
+    decode_fn (callable)
         ``z (2,) -> g(z) (16384,)`` differentiable decode function.
     """
 
-    return make_qlvm_decode_fn(load_decoder_params(weights_npz_path))
+    model = load_model_cell(model_cell_directory)
+    if model['contract']['c_dim'] != 0:
+        error_message = (
+            f"make_qlvm_decode_fn_from_model_cell: {model['model_id']} is a conditional cell "
+            f"(c_dim {model['contract']['c_dim']}, condition {model['contract']['condition']!r}); the "
+            f"pullback metric needs an unconditional decoder, e.g. the phase 6 regular cell."
+        )
+        raise ValueError(error_message)
+    return make_qlvm_decode_fn(model['params'])
+
+
+def resolve_geodesic_decoder_source(geodesic_settings: dict) -> tuple[str, str] | None:
+    """
+    Description
+    -----------
+    Reads which decoder the pullback geodesic metric uses from the
+    ``vocal_features.usv_manifold_geodesic_metrics`` block: the QLVM model
+    package cell ``decoder_model_cell_directory`` (the only decoder source; the
+    legacy in-house decoder ``.npz`` is retired). An empty directory means no
+    pullback metric (``pullback_geodesic_mae`` is NaN). This is read before any
+    geometry is built, so a configuration error is not swallowed by the
+    geometry's soft-failure handling.
+
+    Parameters
+    ----------
+    geodesic_settings (dict)
+        The ``usv_manifold_geodesic_metrics`` settings block.
+
+    Returns
+    -------
+    source (tuple[str, str] | None)
+        ``('model_cell', <directory>)``, or None when no decoder is configured.
+    """
+
+    cell_directory = geodesic_settings['decoder_model_cell_directory']
+    if cell_directory:
+        return 'model_cell', cell_directory
+    return None
+
+
+def make_qlvm_decode_fn_from_source(source: tuple[str, str]):
+    """
+    Description
+    -----------
+    Builds the decode function for a decoder source returned by
+    :func:`resolve_geodesic_decoder_source`.
+
+    Parameters
+    ----------
+    source (tuple[str, str])
+        ``('model_cell', <directory>)``.
+
+    Returns
+    -------
+    decode_fn (callable)
+        ``z (2,) -> g(z) (16384,)`` differentiable decode function.
+    """
+
+    kind, location = source
+    if kind == 'model_cell':
+        return make_qlvm_decode_fn_from_model_cell(location)
+    error_message = f"make_qlvm_decode_fn_from_source: unknown decoder source kind {kind!r}."
+    raise ValueError(error_message)
 
 
 def torus_distance(nodes: np.ndarray, method: str, *,

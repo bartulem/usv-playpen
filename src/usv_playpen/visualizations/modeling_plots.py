@@ -47,7 +47,9 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import matplotlib.patheffects as mpe
 import matplotlib.transforms as mtransforms
-from matplotlib.colors import ListedColormap
+from matplotlib.collections import LineCollection
+from matplotlib.transforms import offset_copy
+from matplotlib.colors import ListedColormap, Normalize
 from matplotlib.patches import Patch, Rectangle
 from matplotlib.lines import Line2D
 import numpy as np
@@ -56,6 +58,7 @@ import pathlib
 import pickle
 import re
 import seaborn as sns
+from scipy import stats
 from scipy.stats import gaussian_kde
 from sklearn.metrics import confusion_matrix, roc_auc_score
 from sklearn.cluster import KMeans
@@ -65,10 +68,11 @@ from scipy.ndimage import gaussian_filter1d
 
 from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.manifold_metric import pairwise_distance
+from ..modeling.modeling_torus_geodesics import resolve_geodesic_decoder_source
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..processing.qlvm_latents import load_decoder_params
+from ..processing.qlvm_latents import load_model_cell
 from ..processing.qlvm_model import decode_lattice_atlas
-from ..os_utils import configure_path
+from ..os_utils import configure_path, resolve_embedding_arrays_path
 from .plot_style import apply_plot_style
 
 
@@ -89,6 +93,13 @@ male_color = _VIZ_SETTINGS["male_colors"][0]
 male_color_secondary = _VIZ_SETTINGS["male_colors"][1]
 female_color = _VIZ_SETTINGS["female_colors"][0]
 DYADIC_COLOR = _VIZ_SETTINGS["social_colors"][0]
+# Name fragments that mark a behavioral feature as dyadic (a relation between the
+# two animals, e.g. 'nose-nose' distance or 'allo_yaw-head' angle). One list, shared
+# by every plot that colours predictors by feature group.
+DYADIC_KEYWORDS = ("nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
+                   "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI",
+                   "allo_pitch-head", "head-allo_pitch", "allo_pitch-nose", "nose-allo_pitch",
+                   "allo_pitch-TTI", "TTI-allo_pitch")
 NEUTRAL_COLOR = "#D3D3D3"
 MEAN_LINE_COLOR = '#DCB400'
 TEXT_COLOR = '#202020'
@@ -329,11 +340,7 @@ def plot_feature_ranking(
             is_significant = significance_map[feature_name]
 
             if is_significant:
-                dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                                   "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
-                                   "allo_pitch-nose", "nose-allo_pitch",
-                                   "allo_pitch-TTI", "TTI-allo_pitch"]
-                if any(x in feature_name for x in dyadic_keywords):
+                if any(x in feature_name for x in DYADIC_KEYWORDS):
                     feat_color = DYADIC_COLOR
                 elif '-sei' in feature_name:
                     # Per the column-selection rule in `modeling_utils.select_kinematic_columns`,
@@ -506,11 +513,7 @@ def plot_significant_filters(
             print(f"Filter shapes missing for {feature}")
             continue
 
-        dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                           "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
-                           "allo_pitch-nose", "nose-allo_pitch",
-                           "allo_pitch-TTI", "TTI-allo_pitch"]
-        if any(x in feature for x in dyadic_keywords):
+        if any(x in feature for x in DYADIC_KEYWORDS):
             feat_color = DYADIC_COLOR
         elif '-sei' in feature:
             # SEI signals are target-attending-to-predictor (see column-selection rule);
@@ -740,10 +743,7 @@ def plot_significant_filters_grid(
         all_y_values.extend(ci_lower_corrected)
         all_y_values.extend(ci_upper_corrected)
 
-        if any(x in beh_feature for x in ["nose-nose", "nose-TTI", "TTI-nose", "neck_elevation_diff",
-                                          "allo_yaw-nose", "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
-                                          "allo_pitch-nose", "nose-allo_pitch",
-                                          "allo_pitch-TTI", "TTI-allo_pitch"]):
+        if any(x in beh_feature for x in DYADIC_KEYWORDS):
             c = dyadic_color
         elif '-sei' in beh_feature:
             # SEI signals are target-attending-to-predictor; target is "self" → self_color.
@@ -1363,14 +1363,10 @@ def plot_model_selection_results(
     # (renamed via ``feature_label_overrides``) makes the composition
     # of each model self-explanatory without needing a legend.
 
-    dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
-                       "allo_pitch-nose", "nose-allo_pitch",
-                       "allo_pitch-TTI", "TTI-allo_pitch"]
 
     def _category_color(fname: str) -> str:
         """Return the self / other / dyadic hex colour for a feature."""
-        if any(x in fname for x in dyadic_keywords):
+        if any(x in fname for x in DYADIC_KEYWORDS):
             return DYADIC_COLOR
         if '-sei' in fname:
             # SEI signals are target-attending-to-predictor; target is
@@ -1737,10 +1733,6 @@ def plot_model_selection_results(
     if nrows == 1 and ncols == 1: axes_grid = np.array([axes_grid])
     axes_grid = axes_grid.flatten()
 
-    dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
-                       "allo_pitch-nose", "nose-allo_pitch",
-                       "allo_pitch-TTI", "TTI-allo_pitch"]
 
     for i, feature in enumerate(feature_keys):
         ax = axes_grid[i]
@@ -1781,7 +1773,7 @@ def plot_model_selection_results(
             if mean_filter is not None:
                 filter_size_vector = np.arange(mean_filter.size)
 
-                if any(x in feature for x in dyadic_keywords):
+                if any(x in feature for x in DYADIC_KEYWORDS):
                     c = DYADIC_COLOR
                 elif '-sei' in feature:
                     # SEI signals are target-attending-to-predictor; target is "self" → self_color.
@@ -1972,7 +1964,7 @@ def plot_univariate_multinomial_performance(
             is_sig = actual_mean > thresh
 
         if is_sig:
-            if any(x in feat for x in ["nose", "TTI", "allo_yaw", "neck_elevation_diff"]):
+            if any(x in feat for x in DYADIC_KEYWORDS):
                 color = DYADIC_COLOR
             elif '-sei' in feat:
                 # SEI signals are target-attending-to-predictor; target is "self" → self_color.
@@ -2246,7 +2238,7 @@ def plot_univariate_multinomial_filters_grid(
         if not is_sig:
             continue
 
-        if any(x in feat for x in ["nose", "TTI", "allo_yaw", "neck_elevation_diff"]):
+        if any(x in feat for x in DYADIC_KEYWORDS):
             feat_color = DYADIC_COLOR
         elif '-sei' in feat:
             # SEI signals are target-attending-to-predictor; target is "self" → self_color.
@@ -2578,13 +2570,9 @@ def plot_multinomial_selection_trajectory(
     # Feature-category colour map (mirrors the bout-onset selector
     # plotter so the same feature always gets the same colour across
     # figures).
-    dyadic_keywords = ["nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                       "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
-                       "allo_pitch-nose", "nose-allo_pitch",
-                       "allo_pitch-TTI", "TTI-allo_pitch"]
 
     def _category_color(fname: str) -> str:
-        if any(x in fname for x in dyadic_keywords):
+        if any(x in fname for x in DYADIC_KEYWORDS):
             return DYADIC_COLOR
         if '-sei' in fname:
             return self_col
@@ -3585,16 +3573,9 @@ def plot_manifold_selection_trajectory(
     # colour; self-prefixed and sex-emitted-from-self features get
     # self_col; everything else (other.*, partner orofacial, etc.)
     # gets other_col.
-    dyadic_keywords = [
-        "nose-nose", "nose-TTI", "TTI-nose",
-        "allo_yaw-nose", "nose-allo_yaw",
-        "allo_yaw-TTI", "TTI-allo_yaw",
-        "allo_pitch-nose", "nose-allo_pitch",
-        "allo_pitch-TTI", "TTI-allo_pitch",
-    ]
 
     def _category_color(fname: str) -> str:
-        if any(x in fname for x in dyadic_keywords):
+        if any(x in fname for x in DYADIC_KEYWORDS):
             return DYADIC_COLOR
         if '-sei' in fname:
             return self_col
@@ -4045,6 +4026,97 @@ def _extract_manifold_final_bivariate_weights(selection_results_path,
     return mean_weights, features, n_time_bins, selection_metadata, is_magnitude
 
 
+def _resolve_atlas_decoder_and_arrays(
+        decoder_model_cell_directory: str | None,
+        supercategory_arrays_npz_path: str | None,
+) -> tuple[dict, str, str]:
+    """
+    Description
+    -----------
+    Resolves what ``plot_manifold_filter_atlas`` decodes its vocal-space atlas
+    with and which supercategory label grid it draws over it.
+
+    * **Decoder.** An explicit ``decoder_model_cell_directory`` (a QLVM model
+      package cell, the only decoder source; the legacy in-house decoder ``.npz``
+      is retired) wins. Without it, the cell is read from
+      ``modeling_settings.json`` -> ``vocal_features.usv_manifold_geodesic_metrics`` by
+      ``resolve_geodesic_decoder_source`` (the shipped setting names the v3
+      regular cell, the model of the ``qlvm1`` / ``qlvm2`` summary columns); no
+      configured cell raises ValueError. The cell is loaded by
+      ``processing.qlvm_latents.load_model_cell`` and must be unconditional
+      (``c_dim`` 0): a conditional decoder needs one condition value per call, so
+      its decode is not a function of the torus position alone.
+    * **Supercategory arrays.** An explicit ``supercategory_arrays_npz_path``
+      wins. Otherwise the regular map's v3 coarse reference arrays are taken by
+      convention, ``os_utils.resolve_embedding_arrays_path(<spectrograms_dir>,
+      "qlvm", "coarse")`` with ``spectrograms_dir`` from
+      ``visualizations_settings.json`` -> ``shared_resources`` (i.e.
+      ``<spectrograms_dir>/qlvm_v3/qlvm/arrays_coarse.npz``; the regular map
+      because the decoder must be unconditional, see above). When the arrays
+      record a ``model_id`` (every ``export-qlvm-reference-arrays`` export does),
+      it must name the decoder's cell, otherwise ValueError: boundaries from one
+      model over an atlas decoded by another would mislabel every region.
+
+    Parameters
+    ----------
+    decoder_model_cell_directory (str | None)
+        QLVM model package cell, or None for the one ``modeling_settings.json``
+        names.
+    supercategory_arrays_npz_path (str | None)
+        Coarse reference arrays ``.npz`` (``ws_labels_periodic``), or None for
+        the default described above.
+
+    Returns
+    -------
+    decoder_params (dict)
+        Decoder weights for ``processing.qlvm_model.decode_lattice_atlas``.
+    supercategory_arrays_npz_path (str)
+        The OS-resolved coarse arrays path.
+    decoder_model_id (str)
+        ``<package>/<phase>/<cell>`` of the decoder's cell (for messages and
+        tests).
+    """
+
+    if decoder_model_cell_directory is not None:
+        decoder_source = ('model_cell', decoder_model_cell_directory)
+    else:
+        with (_PKG_ROOT / "_parameter_settings" / "modeling_settings.json").open() as _msf:
+            _ms = json.load(_msf)
+        decoder_source = resolve_geodesic_decoder_source(
+            _ms['vocal_features']['usv_manifold_geodesic_metrics'])
+        if decoder_source is None:
+            raise ValueError(
+                "plot_manifold_filter_atlas: modeling_settings.json names no QLVM decoder "
+                "(usv_manifold_geodesic_metrics.decoder_model_cell_directory is empty); pass "
+                "decoder_model_cell_directory."
+            )
+
+    model = load_model_cell(decoder_source[1])
+    if model['contract']['c_dim'] != 0:
+        raise ValueError(
+            f"plot_manifold_filter_atlas: {model['model_id']} is a conditional cell "
+            f"(c_dim {model['contract']['c_dim']}); the atlas needs an unconditional decoder, "
+            f"e.g. the phase 6 regular cell."
+        )
+    decoder_params = model['params']
+    decoder_model_id = model['model_id']
+    if supercategory_arrays_npz_path is None:
+        with (_PKG_ROOT / "_parameter_settings" / "visualizations_settings.json").open() as _vsf:
+            _vs = json.load(_vsf)
+        supercategory_arrays_npz_path = resolve_embedding_arrays_path(
+            _vs['shared_resources']['spectrograms_dir'], "qlvm", "coarse")
+    supercategory_arrays_npz_path = configure_path(str(supercategory_arrays_npz_path))
+    with np.load(supercategory_arrays_npz_path) as _arrays:
+        arrays_model_id = str(_arrays['model_id']) if 'model_id' in _arrays.files else None
+    if arrays_model_id is not None and arrays_model_id != decoder_model_id:
+        raise ValueError(
+            f"plot_manifold_filter_atlas: the supercategory arrays {supercategory_arrays_npz_path} "
+            f"hold the clustering of {arrays_model_id}, but the atlas decoder is {decoder_model_id}; "
+            f"export that cell's arrays (export-qlvm-reference-arrays) or pass matching paths."
+        )
+    return decoder_params, supercategory_arrays_npz_path, decoder_model_id
+
+
 def plot_manifold_filter_atlas(
         selection_results_path: str,
         history_window_sec: float = None,
@@ -4052,7 +4124,7 @@ def plot_manifold_filter_atlas(
         display_bins: int = 25,
         smooth_sigma: float = 3.0,
         atlas_grid_n: int = 10,
-        decoder_weights_npz_path: str = None,
+        decoder_model_cell_directory: str = None,
         supercategory_arrays_npz_path: str = None,
         save_plot: bool = False,
         output_dir: str = None,
@@ -4067,11 +4139,14 @@ def plot_manifold_filter_atlas(
     ------
     * **Top-left -- vocal-space atlas.** A tiled ``atlas_grid_n`` x
       ``atlas_grid_n`` grid of torus positions is decoded through the frozen
-      QLVM decoder (``decode_lattice_atlas``) into canonical USV spectrograms,
+      QLVM decoder (``decode_lattice_atlas``; by default the v3 regular cell's
+      decoder, the torus the ``qlvm1`` / ``qlvm2`` coordinates live on) into
+      canonical USV spectrograms,
       each drawn as a small ``figures.sequential_cmap`` (inferno) image on a black
       background at its torus location and **normalised to its own peak** so the
       contour shape reads at every position regardless of absolute intensity.
-      The 7 supercategory regions are overlaid as thin white boundaries. This is
+      The supercategory regions (the 9 coarse clusters of the v3 regular cell)
+      are overlaid as thin white boundaries. This is
       the "what vocalization lives where" key for the two field panels.
     * **Bottom-left -- filter magnitude.** One ``|W(t)|`` line per selected
       feature (the L2 norm across the 4 torus output coordinates), averaged into
@@ -4099,7 +4174,7 @@ def plot_manifold_filter_atlas(
         produced by ``continuous_vocal_manifold_model_selection`` (or a directory
         containing one; latest mtime wins). Routed through ``configure_path``.
         The run must be a **torus** manifold (4-D ``(sin, cos)`` embedding filter);
-        a euclidean/VAE run prints why and returns.
+        a euclidean run prints why and returns.
     history_window_sec : float, optional
         Duration of the behavioural-history window (labels the time axes). ``None``
         (default) reads ``filter_history_seconds`` from the artifact metadata,
@@ -4116,15 +4191,29 @@ def plot_manifold_filter_atlas(
     atlas_grid_n : int, default 10
         Tiling density of the vocal-space atlas (``atlas_grid_n ** 2`` decoded
         USVs across the torus).
-    decoder_weights_npz_path : str, optional
-        Path to the frozen QLVM decoder ``.npz``. ``None`` (default) reads it from
-        ``modeling_settings.json`` -> ``vocal_features.usv_manifold_geodesic_metrics
-        .decoder_weights_npz_path``. Routed through ``configure_path``.
+    decoder_model_cell_directory : str, optional
+        QLVM model package cell whose decoder draws the atlas (its
+        ``checkpoint.tar`` + training contract, read by
+        ``processing.qlvm_latents.load_model_cell``; only unconditional cells,
+        ``c_dim`` 0, since a conditional decoder is not a function of the torus
+        position alone). ``None`` (default) reads the decoder cell from ``modeling_settings.json`` ->
+        ``vocal_features.usv_manifold_geodesic_metrics`` via
+        ``resolve_geodesic_decoder_source`` -- the shipped
+        ``decoder_model_cell_directory`` is the v3 regular cell
+        ``phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor``, the
+        model the ``qlvm1`` / ``qlvm2`` summary columns come from. Routed through
+        ``configure_path``.
     supercategory_arrays_npz_path : str, optional
-        Path to the ``.npz`` holding the coarse supercategory watershed
-        (``ws_labels_periodic``, 200 x 200, indexed ``[dim2, dim1]``). ``None``
-        (default) derives ``arrays_coarse.npz`` co-located with the decoder
-        weights. Routed through ``configure_path``.
+        Path to the ``.npz`` holding the coarse supercategory label grid
+        (``ws_labels_periodic``, indexed ``[dim2, dim1]``). ``None`` (default)
+        resolves the v3 coarse reference arrays by convention,
+        ``os_utils.resolve_embedding_arrays_path(<visualizations_settings.json
+        shared_resources.spectrograms_dir>, "qlvm", "coarse")`` ->
+        ``<spectrograms_dir>/qlvm_v3/qlvm/arrays_coarse.npz`` (written by
+        ``export-qlvm-reference-arrays``), and raises ValueError when those arrays
+        record (``model_id``) a different cell than the decoder, so the boundaries
+        always partition the torus the atlas is decoded on. Routed through
+        ``configure_path``.
     save_plot : bool, default False
         If True, writes the figure (format / timestamp per the shared figure
         settings).
@@ -4169,18 +4258,14 @@ def plot_manifold_filter_atlas(
         history_window_sec = (float(_im['filter_history_seconds'])
                               if 'filter_history_seconds' in _im else 4.0)
 
-    # Resolve the QLVM artifact paths (settings-driven; the supercategory arrays
-    # are co-located with the decoder weights in the QLVM output directory).
-    if decoder_weights_npz_path is None:
-        with (_PKG_ROOT / "_parameter_settings" / "modeling_settings.json").open() as _msf:
-            _ms = json.load(_msf)
-        decoder_weights_npz_path = (
-            _ms['vocal_features']['usv_manifold_geodesic_metrics']['decoder_weights_npz_path'])
-    decoder_weights_npz_path = configure_path(str(decoder_weights_npz_path))
-    if supercategory_arrays_npz_path is None:
-        supercategory_arrays_npz_path = str(
-            pathlib.Path(decoder_weights_npz_path).parent / "arrays_coarse.npz")
-    supercategory_arrays_npz_path = configure_path(str(supercategory_arrays_npz_path))
+    # Resolve the QLVM decoder and the supercategory arrays: the decoder's model
+    # package cell from the argument or, when it is not given, from
+    # modeling_settings.json; the arrays from the argument, else the v3 coarse
+    # reference arrays by os_utils convention.
+    decoder_params, supercategory_arrays_npz_path, _ = _resolve_atlas_decoder_and_arrays(
+        decoder_model_cell_directory=decoder_model_cell_directory,
+        supercategory_arrays_npz_path=supercategory_arrays_npz_path,
+    )
 
     # Feature colours: self / partner by cohort, dyadic social; features sharing a
     # category are separated by OPACITY only (mirrors the trajectory plotter).
@@ -4190,7 +4275,7 @@ def plot_manifold_filter_atlas(
     else:
         self_col, other_col = male_color, female_color
     _dyadic_kw = ("nose-nose", "nose-TTI", "TTI-nose", "allo_yaw-nose",
-                  "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw",
+                  "nose-allo_yaw", "allo_yaw-TTI", "TTI-allo_yaw", "allo_yaw-head", "head-allo_yaw", "head-head", "TTI-TTI", "allo_pitch-head", "head-allo_pitch",
                   "allo_pitch-nose", "nose-allo_pitch", "allo_pitch-TTI",
                   "TTI-allo_pitch")
 
@@ -4211,11 +4296,12 @@ def plot_manifold_filter_atlas(
         _n = _counts[_c]
         alphas.append(1.0 if _n == 1 else 1.0 - 0.55 * (_k / (_n - 1)))
 
-    # Supercategory partition (coarse watershed, 7 regions) on the torus. The grid
+    # Supercategory partition (coarse label grid; 9 regions for the v3 regular
+    # cell) on the torus. The grid
     # is indexed [dim2, dim1], so contour(X=dim1, Y=dim2, lab) is already oriented
     # to match the field panels' (dim1 = x, dim2 = y) convention.
-    _arrays = np.load(supercategory_arrays_npz_path)
-    lab = _arrays['ws_labels_periodic']
+    with np.load(supercategory_arrays_npz_path) as _arrays:
+        lab = _arrays['ws_labels_periodic']
     n_super = int(lab.max())
     g_lab = lab.shape[0]
     axg = (np.arange(g_lab) + 0.5) / g_lab
@@ -4243,8 +4329,7 @@ def plot_manifold_filter_atlas(
     vmax = float(np.ceil(_raw_peak / 0.1) * 0.1) if _raw_peak > 0.0 else 0.1
 
     # Vocal-space atlas: decode a tiled grid of torus positions into canonical
-    # USV spectrograms through the frozen QLVM decoder.
-    decoder_params = load_decoder_params(decoder_weights_npz_path)
+    # USV spectrograms through the frozen QLVM decoder resolved above.
     _tile_c = (np.arange(int(atlas_grid_n)) + 0.5) / int(atlas_grid_n)
     _tile_gx, _tile_gy = np.meshgrid(_tile_c, _tile_c, indexing='ij')
     _lattice = np.column_stack([_tile_gx.ravel(), _tile_gy.ravel()]).astype(np.float32)
@@ -5452,7 +5537,7 @@ class DeepResultsVisualizer:
         cbar2.set_label(r'Error Reduction ($\Delta E$)', color='#202020', rotation=270, labelpad=20, fontsize=label_fontsize)
 
         # Axis-label prefix reflects the upstream latent space:
-        # ``torus`` -> the QLVM latent; otherwise the VAE / UMAP plane.
+        # ``torus`` -> the QLVM latent; otherwise a flat plane.
         dim_prefix = 'QLVM' if self.manifold_metric == 'torus' else 'UMAP'
 
         # Formatting all axes
@@ -5763,7 +5848,7 @@ class DeepResultsVisualizer:
 
         # Axis-label prefix reflects the upstream latent space:
         # ``torus`` -> the QLVM latent (named QLVM Dimension N);
-        # otherwise the VAE / UMAP-style continuous plane.
+        # otherwise a flat continuous plane.
         dim_prefix = 'QLVM' if self.manifold_metric == 'torus' else 'UMAP'
         ax1.set_xlabel(f'{dim_prefix} Dimension 1', fontsize=12, color=text_color)
         ax1.set_ylabel(f'{dim_prefix} Dimension 2', fontsize=12, color=text_color)
@@ -7442,3 +7527,568 @@ def plot_timescale_audit_per_feature(timescale_pkl_path: str,
         'n_features': n_features,
         'configured_filter_history': cfg_hist,
     }
+
+
+# Display names for the behavioural-response figures. `ego_yaw` is the head's yaw
+# relative to the body, which the settings key does not say to a reader.
+_BEHAVIORAL_RESPONSE_NAMES = {
+    'speed': 'female speed',
+    'neck_elevation': 'female neck elevation',
+    'allo_roll': 'female head roll',
+    'allo_pitch': 'female head pitch',
+    'ego_yaw': 'female head yaw',
+    'back_pitch': 'female back pitch',
+    'back_yaw': 'female back yaw',
+    'tail_curvature': 'female tail curvature',
+}
+
+
+def _benjamini_hochberg(p_values: np.ndarray, false_discovery_rate: float) -> np.ndarray:
+    """
+    Benjamini-Hochberg step-up procedure.
+
+    Parameters
+    ----------
+    p_values : np.ndarray
+        Raw p-values.
+    false_discovery_rate : float
+        Target proportion of false positives among the rejections.
+
+    Returns
+    -------
+    rejected : np.ndarray
+        Boolean mask of hypotheses rejected at ``false_discovery_rate``.
+    """
+
+    finite = np.isfinite(p_values)
+    rejected = np.zeros(p_values.shape, dtype=bool)
+    if not np.any(finite):
+        return rejected
+    values = p_values[finite]
+    order = np.argsort(values)
+    ranks = np.arange(1, values.size + 1)
+    passing = values[order] <= false_discovery_rate * ranks / values.size
+    if np.any(passing):
+        rejected[finite] = values <= values[order][np.flatnonzero(passing)[-1]]
+    return rejected
+
+
+def _reportable_effect(term: dict, likelihood: str, alpha: float) -> tuple:
+    """
+    Puts one coefficient and its interval on the scale it should be read in.
+
+    The interval is rebuilt from the coefficient and its standard error at the
+    requested alpha rather than taken from the artifact, whose stored bounds are
+    95%, so a figure cannot drift from the alpha its caption claims.
+
+    Parameters
+    ----------
+    term : dict
+        One term's ``coefficient`` and ``std_error``.
+    likelihood : str
+        ``'lognormal'`` (multiplicative) or ``'gaussian'`` (additive).
+    alpha : float
+        Two-sided error rate for the interval.
+
+    Returns
+    -------
+    value, low, high, unit : tuple
+        Effect, interval edges and the unit label.
+    """
+
+    half = stats.norm.ppf(1.0 - alpha / 2.0) * term['std_error']
+    low, high = term['coefficient'] - half, term['coefficient'] + half
+    if likelihood == 'lognormal':
+        as_percent = lambda number: 100.0 * (np.exp(number) - 1.0)  # noqa: E731
+        return (as_percent(term['coefficient']), as_percent(low), as_percent(high),
+                '% change in median')
+    return (term['coefficient'], low, high, 'degrees')
+
+
+def plot_behavioral_response_forest(
+        contrast_results_path: str,
+        alpha: float = 0.01,
+        false_discovery_rate: float = 0.05,
+        axis_limits: tuple = ((-15.0, 15.0), (-5.0, 5.0), (-6.0, 6.0), (-2.0, 2.0)),
+        duration_sd_factor: float = 2.25,
+        save_plot: bool = False,
+        output_dir: str = None,
+) -> None:
+    """
+    Both behavioural-response questions as forest plots, one row per feature.
+
+    The left column carries the fitted model, a schematic of the windows and the
+    variance each model explains; the two right columns carry the estimates. The
+    first is the contrast itself -- behaviour in the forward window after a bout
+    offset against the matched control -- and the second is the
+    ``vocal x log(duration)`` slope, which answers whether longer bouts do more.
+
+    Two units, two panel rows
+    -------------------------
+    The likelihood is derived from each feature's support rather than chosen, so
+    the features do not share a scale and cannot share an axis. Non-negative
+    features are fitted on ``log y``, where ``exp(beta_V)`` is a ratio of medians
+    and is shown as a percent change; the signed ones (``allo_pitch``,
+    ``back_pitch``) are fitted on ``y`` and land in degrees. A percent of a
+    signed angle is undefined -- zero means horizontal, not "none of it" -- so
+    the two groups get separate rows with their own axes.
+
+    The duration slope reads per STANDARD DEVIATION of log duration, not per
+    e-fold: ``build_continuous_design_matrix`` z-scores the log term across the
+    vocal rows. ``duration_sd_factor`` states what that SD is in bout lengths so
+    the axis can say so.
+
+    Reading it
+    ----------
+    A filled marker survived Benjamini-Hochberg correction across all features at
+    ``false_discovery_rate``; an open one did not. The FDR level and ``alpha``
+    are different guarantees: an FDR of 0.01 says at most 1% of everything
+    declared significant is false, which over eight features puts the
+    second-smallest p-value's threshold at 0.0025. The conventional 0.05 is used
+    for the correction while the intervals stay at ``1 - alpha``.
+
+    The variance panels are ordered by fit, which makes the inverse relation
+    legible: the features the model explains least from behaviour alone are the
+    ones the vocal terms contribute most to. The share axis is logarithmic
+    because it spans more than two decades, and on a linear axis most features
+    would sit on the spine.
+
+    Parameters
+    ----------
+    contrast_results_path : str
+        Pickle written by ``behavioral_response_contrast``.
+    alpha : float
+        Two-sided error rate for the plotted intervals.
+    false_discovery_rate : float
+        Level for the Benjamini-Hochberg correction deciding marker fill.
+    axis_limits : tuple
+        Four ``(low, high)`` pairs: contrast percent, contrast degrees, duration
+        percent, duration degrees. Fixed rather than per-panel so the two
+        questions are read on comparable scales.
+    duration_sd_factor : float
+        Bout-length factor corresponding to one SD of log duration, for the
+        axis heading.
+    save_plot : bool
+        Whether to write the figure to ``output_dir``.
+    output_dir : str
+        Destination directory when saving.
+
+    Returns
+    -------
+    None
+    """
+
+    with open(contrast_results_path, 'rb') as handle:
+        payload = pickle.load(handle)
+    features = payload['response_features']
+    likelihoods = payload['response_likelihoods']
+    columns = (('behaviour after a bout\nvs matched silence', 'vocal'),
+               (f'effect of bout duration\n(per SD of log duration, {duration_sd_factor:g}x)',
+                'vocal_x_log_duration'))
+    groups = [[f for f in features if likelihoods[f] == 'lognormal'],
+              [f for f in features if likelihoods[f] != 'lognormal']]
+
+    equations = (
+        (r'$\log y_i = \beta_0 + \beta_V V_i + \beta_D\, V_i \log d_i'
+         r' + \sum_k \gamma_k x_{ik} + \varepsilon_i$',
+         ('non-negative features, fitted on log y',
+          r'$\beta_V$ is a log ratio; $\exp(\beta_V)$ is the vocal/control',
+          'median ratio, shown as % change')),
+        (r'$y_i = \beta_0 + \beta_V V_i + \beta_D\, V_i \log d_i'
+         r' + \sum_k \gamma_k x_{ik} + \varepsilon_i$',
+         ('signed features, fitted on y',
+          r'$\beta_V$ is additive, in degrees')),
+    )
+    key_entries = (
+        (r'$y_i$', r'mean of the feature over the forward window'),
+        (r'$V_i$', '1 after a bout offset, 0 in the control'),
+        (r'$d_i$', 'bout duration (s), standardised in log; control rows carry none'),
+        (r'$x_{ik}$', 'pre-anchor covariates, each Yeo-Johnson transformed,'),
+        ('', r'$\lambda$ by ML, then standardised'),
+        (r'$\varepsilon_i$', r'$\mathbb{E}[\varepsilon_i \mid X] = 0$; SEs cluster-robust on session'),
+    )
+
+    fig = plt.figure(figsize=(3.4 * (len(columns) + 1.45), 0.42 * len(features) + 2.4))
+    grid = fig.add_gridspec(len(groups), len(columns) + 1,
+                            width_ratios=[1.45] + [1.0] * len(columns),
+                            height_ratios=[len(group) for group in groups])
+    axes = [[fig.add_subplot(grid[row, column + 1]) for column in range(len(columns))]
+            for row in range(len(groups))]
+
+    for column, (heading, term_name) in enumerate(columns):
+        raw = np.array([payload['per_feature'][f]['window']['terms'][term_name]['p_value']
+                        for f in features])
+        corrected = _benjamini_hochberg(raw, false_discovery_rate)
+        print(f"  {term_name}: BH q<{false_discovery_rate} passes "
+              f"{[f for f, flag in zip(features, corrected) if flag] or 'nothing'}")
+
+        for row, group in enumerate(groups):
+            axis = axes[row][column]
+            for offset, feature in enumerate(reversed(group)):
+                term = payload['per_feature'][feature]['window']['terms'][term_name]
+                value, low, high, unit = _reportable_effect(
+                    term, likelihoods[feature], alpha)
+                significant = bool(corrected[features.index(feature)])
+                colour = female_color if significant else DYADIC_COLOR
+                axis.plot([low, high], [offset, offset], color=colour, linewidth=1.4,
+                          solid_capstyle='butt', zorder=2)
+                axis.plot(value, offset, marker='o', markersize=5.0, zorder=3,
+                          color=colour if significant else '#FFFFFF',
+                          markeredgecolor=colour, markeredgewidth=1.2)
+
+            axis.set_xlim(*axis_limits[column * len(groups) + row])
+            axis.axvline(0.0, color='#000000', linewidth=0.8, linestyle=':')
+            axis.set_yticks(range(len(group)))
+            axis.set_yticklabels([_BEHAVIORAL_RESPONSE_NAMES[f] for f in reversed(group)],
+                                 fontsize=8)
+            axis.set_ylim(-0.7, len(group) - 0.3)
+            axis.tick_params(labelsize=7)
+            axis.set_xlabel(unit, fontsize=8)
+            if row == 0:
+                axis.set_title(f"{heading}\n{int((1 - alpha) * 100)}% CI, "
+                               f"filled = BH q<{false_discovery_rate}", fontsize=9)
+
+    _draw_behavioral_response_key(fig=fig, grid=grid, payload=payload,
+                                  features=features, equations=equations,
+                                  key_entries=key_entries)
+
+    if save_plot:
+        out_name = os.path.join(output_dir,
+                                _figure_filename('behavioral_response_forest'))
+        fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI)
+        print(f"Figure saved to: {out_name}")
+    plt.show()
+
+
+def _draw_behavioral_response_key(fig, grid, payload: dict, features: list,
+                                  equations: tuple, key_entries: tuple) -> None:
+    """
+    Draws the left column: the model, the window schematic and the fit panels.
+
+    Everything sits on ONE blank axis spanning every row and is laid out from the
+    top down, so the spacing between an equation and its note is set here rather
+    than inherited from the height ratios of the panels beside it. The block
+    overshoots the axis top on purpose: that axis begins at the top of the
+    PANELS, and the panel titles sit above it.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        Figure being drawn into.
+    grid : matplotlib.gridspec.GridSpec
+        Layout whose first column this fills.
+    payload : dict
+        Contrast artifact, read for ``variance_explained`` and the settings block.
+    features : list of str
+        Response features, in artifact order.
+    equations : tuple
+        ``(equation, note_lines)`` per likelihood family.
+    key_entries : tuple
+        ``(symbol, description)`` per rendered line of the symbol key.
+
+    Returns
+    -------
+    None
+    """
+
+    panel = fig.add_subplot(grid[:, 0])
+    panel.axis('off')
+    left_edge, cursor = -0.20, 1.075
+    for equation, note in equations:
+        panel.text(left_edge, cursor, equation, fontsize=10.5, va='top', ha='left',
+                   clip_on=False)
+        cursor -= 0.052
+        for line in note:
+            panel.text(left_edge, cursor, line, fontsize=7.5, va='top', ha='left',
+                       color=DYADIC_COLOR, clip_on=False)
+            cursor -= 0.032
+        cursor -= 0.030
+    for symbol, description in key_entries:
+        if symbol:
+            panel.text(left_edge, cursor, symbol, fontsize=7.0, va='top', ha='left',
+                       clip_on=False)
+        panel.text(left_edge + 0.085, cursor, description, fontsize=7.0, va='top',
+                   ha='left', clip_on=False)
+        cursor -= 0.032
+
+    # The schematic draws the covariate windows themselves, so their widths come
+    # from `covariate_summary_seconds` rather than from the pre-anchor history:
+    # a window the model never summarises would be a window the figure invents.
+    settings = payload['_input_metadata']['analysis_specific']
+    summary_widths = sorted(float(s) for s in settings['covariate_summary_seconds'])
+    short, history = summary_widths[0], summary_widths[-1]
+    window = float(settings['target_window_seconds'])
+    schematic = panel.inset_axes([left_edge, cursor - 0.035 - 0.115, 0.92, 0.115])
+    for level, start, stop, colour, label in (
+            (2, -history, 0.0, '#BDC3C7', f'long history, {history:g} s'),
+            (1, -short, 0.0, DYADIC_COLOR, f'short history, {short:g} s'),
+            (0, 0.0, window, female_color, f'response $y_i$, no further bout')):
+        schematic.barh(level, stop - start, left=start, height=0.62, color=colour,
+                       alpha=0.55, linewidth=0)
+        schematic.text(stop + 0.10, level, label, fontsize=6.5, va='center', ha='left')
+    schematic.axvline(0.0, color='#000000', linewidth=0.9, linestyle='--')
+    schematic.text(0.0, 2.95, 'bout offset', fontsize=6.5, ha='center', va='bottom')
+    schematic.set_xlim(-history - 0.3, window + 0.3)
+    schematic.set_ylim(-0.6, 2.9)
+    schematic.set_yticks([])
+    schematic.set_xticks([-history, 0.0, window])
+    schematic.set_xticklabels([f'{-history:g}', '0', f'+{window:g}'])
+    schematic.tick_params(labelsize=6.5, length=2, pad=1)
+    schematic.set_xlabel('time from bout offset (s)', fontsize=6.5, labelpad=1)
+    for side in ('top', 'right', 'left'):
+        schematic.spines[side].set_visible(False)
+
+    statistics = {f: payload['per_feature'][f]['variance_explained'] for f in features}
+    ordered = sorted(features, key=lambda name: -statistics[name]['r_squared_full'])
+    positions = np.arange(len(ordered))[::-1]
+    fit_axis = panel.inset_axes([left_edge + 0.205, 0.03, 0.30, 0.26])
+    share_axis = panel.inset_axes([left_edge + 0.665, 0.03, 0.30, 0.26])
+    fit_axis.barh(positions, [statistics[f]['r_squared_full'] for f in ordered],
+                  height=0.82, color=female_color, alpha=0.85, linewidth=0)
+    share_axis.barh(positions, [statistics[f]['vocal_share_percent'] for f in ordered],
+                    height=0.82, color=female_color, alpha=0.85, linewidth=0)
+    share_axis.set_xscale('log')
+    share_axis.set_xlim(left=5e-4)
+    for axis, label in ((fit_axis, 'R$^2$ of the full model'),
+                        (share_axis, '% of explained variance\nfrom the vocal terms')):
+        axis.set_yticks(positions)
+        axis.set_xlabel(label, fontsize=6.5, labelpad=1)
+        axis.tick_params(axis='x', labelsize=6.0, length=2, pad=1)
+        axis.tick_params(axis='y', labelsize=6.5, length=0, pad=2)
+        axis.set_ylim(-0.6, len(ordered) - 0.4)
+        for side in ('top', 'right'):
+            axis.spines[side].set_visible(False)
+    fit_axis.set_yticklabels([_BEHAVIORAL_RESPONSE_NAMES[f] for f in ordered], fontsize=6.5)
+    share_axis.set_yticklabels([])
+
+
+def plot_matched_divergence(
+        divergence_results_path: str,
+        alpha: float = 0.01,
+        display_seconds: tuple = (-2.0, 2.0),
+        panel_columns: int = 4,
+        between_block_gap: float = 0.30,
+        onset_run_seconds: float = 1.0,
+        save_plot: bool = False,
+        output_dir: str = None,
+) -> None:
+    """
+    Female kinematics around a male bout offset, against baseline-matched silence.
+
+    Reads the pickle written by
+    :meth:`MatchedDivergencePipeline.extract_and_save_matched_divergence`. Both
+    arms are clean of every vocalization across their windows, and each vocal
+    anchor carries the mean of the silent anchors whose pre-anchor level matched
+    it, so the two conditions enter the anchor from a comparable state and what
+    follows is divergence rather than a level difference.
+
+    Layout
+    ------
+    Each feature gets two stacked panels: the two arms above, and the paired
+    difference below. Pairing removes the between-anchor variance that dominates
+    the upper panel, so the lower one is far more sensitive and is what should be
+    read. The difference curve is coloured by its own value off a diverging map,
+    and its band is split AT ZERO -- the part of each frame's interval below zero
+    is blue and the part above is red -- rather than by the sign of the mean,
+    which breaks the band into slivers wherever the curve crosses.
+
+    Statistics are printed rather than drawn: a per-bin paired t-test on the
+    difference, Benjamini-Hochberg corrected across all bins within a feature,
+    plus the onset -- the start of the first run of ``onset_run_seconds`` of
+    consecutive significant bins, so a single crossing cannot be read as a
+    separation. Bins are heavily autocorrelated, so the corrected count describes
+    where an effect lives rather than standing as that many independent tests.
+
+    A pair contributes to a frame only where BOTH arms are tracked. Missingness
+    is condition-dependent, since bout offsets happen when the animals are close
+    and occluding, and averaging the arms over their own separate sets of usable
+    pairs makes the two curves incomparable -- at one point that alone flipped
+    the sign of the speed difference at t=0.
+
+    Parameters
+    ----------
+    divergence_results_path : str
+        Pickle written by ``MatchedDivergencePipeline``.
+    alpha : float
+        Two-sided error rate for the intervals and the per-bin tests.
+    display_seconds : tuple
+        ``(from, to)`` window to draw; the stored curves usually run wider.
+    panel_columns : int
+        Features per block. Panel size is held fixed, so the figure grows
+        downward rather than the panels stretching.
+    between_block_gap : float
+        Height of the spacer row between blocks, as a fraction of a panel. A
+        feature's two panels belong together, so they are packed tight and the
+        blocks are separated instead.
+    onset_run_seconds : float
+        Consecutive significant time required before an onset is reported.
+    save_plot : bool
+        Whether to write the figure to ``output_dir``.
+    output_dir : str
+        Destination directory when saving.
+
+    Returns
+    -------
+    None
+    """
+
+    with open(divergence_results_path, 'rb') as handle:
+        payload = pickle.load(handle)
+    features = payload['features']
+    anchor_index = payload['anchor_index']
+    camera_fps = payload['camera_fps']
+
+    n_columns = min(panel_columns, len(features))
+    n_blocks = int(np.ceil(len(features) / n_columns))
+    height_ratios = []
+    for block in range(n_blocks):
+        if block:
+            height_ratios.append(between_block_gap)
+        height_ratios.extend([1.0, 1.0])
+    fig = plt.figure(figsize=(2.1 * n_columns, 1.7 * sum(height_ratios)))
+    grid = fig.add_gridspec(len(height_ratios), n_columns, height_ratios=height_ratios,
+                            hspace=0.30, wspace=0.52)
+    colour_map = plt.get_cmap(_DIVERGING_CMAP)
+
+    for position, feature in enumerate(features):
+        block, column = divmod(position, n_columns)
+        top = fig.add_subplot(grid[3 * block, column])
+        bottom = fig.add_subplot(grid[3 * block + 1, column])
+
+        vocal = payload['pairs'][feature]['vocal']
+        silence = payload['pairs'][feature]['silence']
+        complete = np.isfinite(vocal) & np.isfinite(silence)
+        vocal = np.where(complete, vocal, np.nan)
+        silence = np.where(complete, silence, np.nan)
+        time_axis = (np.arange(vocal.shape[1]) - anchor_index) / camera_fps
+        shown = (time_axis >= display_seconds[0]) & (time_axis <= display_seconds[1])
+
+        def band(values: np.ndarray) -> tuple:
+            """
+            Per-frame mean and a two-sided interval across pairs.
+
+            The number of contributing pairs varies by frame, so the t quantile
+            is taken per frame from that frame's own degrees of freedom.
+
+            Parameters
+            ----------
+            values : np.ndarray
+                ``(n_pairs, n_frames)`` array.
+
+            Returns
+            -------
+            mean, low, high : tuple of np.ndarray
+                Point estimate and interval edges.
+            """
+
+            counts = np.sum(np.isfinite(values), axis=0)
+            mean = np.nanmean(values, axis=0)
+            error = np.nanstd(values, axis=0, ddof=1) / np.sqrt(np.maximum(counts, 1))
+            half = stats.t.ppf(1.0 - alpha / 2.0, np.maximum(counts - 1, 1)) * error
+            return mean, mean - half, mean + half
+
+        # The two arms hold different amounts of data: one curve per vocal anchor
+        # against every control curve averaged into those anchors' means. The
+        # control total counts a silent period once per anchor it serves.
+        control_total = int(np.sum(payload['pair_control_counts'][feature]))
+        for values, colour, label, count in ((vocal, female_color, 'vocal', vocal.shape[0]),
+                                             (silence, DYADIC_COLOR, 'silence',
+                                              control_total)):
+            mean, low, high = band(values)
+            top.plot(time_axis, mean, color=colour, linewidth=1.1,
+                     label=f'{label} (N={count:,})')
+            top.fill_between(time_axis, low, high, color=colour, alpha=0.20, linewidth=0)
+        top.axhline(0.0, color='#000000', linewidth=0.7, linestyle=':')
+        top.axvline(0.0, color='#000000', linewidth=0.7, linestyle=':')
+        top.set_title(_BEHAVIORAL_RESPONSE_NAMES[feature], fontsize=8, pad=10)
+        top.annotate(f'{vocal.shape[0]} anchors', xy=(0.5, 1.0), xycoords='axes fraction',
+                     ha='center', va='bottom', fontsize=6)
+        top.set_ylabel('z-score (pooled)', fontsize=7)
+        top.set_xlim(*display_seconds)
+        top.tick_params(labelsize=6)
+        if position == 0:
+            top.legend(fontsize=6, frameon=False, loc='best')
+
+        difference = vocal - silence
+        mean, low, high = band(difference)
+        _, p_values = stats.ttest_1samp(difference, 0.0, axis=0, nan_policy='omit')
+        corrected = _benjamini_hochberg(np.asarray(p_values, dtype=float), alpha)
+        run, onset = 0, None
+        for index, flag in enumerate(corrected):
+            run = run + 1 if flag else 0
+            if run >= int(round(onset_run_seconds * camera_fps)) and onset is None:
+                onset = time_axis[index - int(round(onset_run_seconds * camera_fps)) + 1]
+
+        extent = np.nanmax(np.abs(mean[shown])) or 1.0
+        normaliser = Normalize(vmin=-extent, vmax=extent)
+        vertices = np.column_stack([time_axis, mean])
+        bottom.add_collection(LineCollection(
+            np.stack([vertices[:-1], vertices[1:]], axis=1),
+            colors=colour_map(normaliser(0.5 * (mean[:-1] + mean[1:]))),
+            linewidth=1.3, zorder=3))
+        bottom.fill_between(time_axis, low, np.minimum(high, 0.0), where=low < 0.0,
+                            color=colour_map(0.15), alpha=0.28, linewidth=0)
+        bottom.fill_between(time_axis, np.maximum(low, 0.0), high, where=high > 0.0,
+                            color=colour_map(0.85), alpha=0.28, linewidth=0)
+        bottom.axhline(0.0, color='#000000', linewidth=0.7, linestyle=':')
+        bottom.axvline(0.0, color='#000000', linewidth=0.7, linestyle=':')
+        bottom.set_ylabel('vocal - matched control\n(z-score)', fontsize=7)
+        bottom.set_xlabel('time from male bout offset (s)', fontsize=7)
+        bottom.set_xlim(*display_seconds)
+        bottom.tick_params(labelsize=6)
+        visible = np.concatenate([low[shown], high[shown]])
+        margin = 0.05 * (visible.max() - visible.min())
+        bottom.set_ylim(visible.min() - margin, visible.max() + margin)
+
+        # The extremum that matters is the response, so the search is restricted
+        # to t > 0: the largest excursion anywhere in the window is often the
+        # approach into the anchor, which is not what the marker is claiming.
+        after = shown & (time_axis > 0.0)
+        peak = int(np.flatnonzero(after)[np.nanargmax(np.abs(mean[after]))])
+        peak_colour = colour_map(0.85 if mean[peak] > 0.0 else 0.15)
+        # Offset by half the marker's height in INCHES through a transform, so
+        # the tip lands on the curve whatever the dpi and however the layout
+        # resizes the axes.
+        marker_size = 7.0
+        bottom.plot(time_axis[peak], mean[peak], marker='^', markersize=marker_size,
+                    color=peak_colour, markeredgewidth=0.0, clip_on=False, zorder=5,
+                    transform=offset_copy(bottom.transData, fig=fig, x=0.0,
+                                          y=-0.5 * marker_size / 72.0, units='inches'))
+        ticks = [tick for tick in bottom.get_xticks()
+                 if display_seconds[0] <= tick <= display_seconds[1]
+                 and abs(tick - time_axis[peak]) > 0.3]
+        positions = sorted(ticks + [float(time_axis[peak])])
+        bottom.set_xticks(positions)
+        bottom.set_xticklabels([f'{value:.1f}' if value == time_axis[peak] else f'{value:g}'
+                                for value in positions])
+        for tick_label, value in zip(bottom.get_xticklabels(), positions):
+            if value == time_axis[peak]:
+                tick_label.set_color(peak_colour)
+
+        # One colour key for the figure, in the first difference panel.
+        if position == 0:
+            key = bottom.inset_axes([0.05, 0.10, 0.045, 0.26])
+            key.imshow(np.linspace(0.0, 1.0, 256).reshape(-1, 1), aspect='auto',
+                       cmap=colour_map, origin='lower')
+            key.set_yticks([0, 255])
+            key.set_yticklabels(['min', 'max'], fontsize=5.0)
+            key.yaxis.tick_right()
+            key.set_xticks([])
+            key.tick_params(length=0, pad=1)
+            for spine in key.spines.values():
+                spine.set_visible(False)
+
+        print(f"  {feature:16s} n={vocal.shape[0]:5d}  BH {int(corrected.sum()):4d}/"
+              f"{corrected.size}  peak {mean[peak]:+.3f} at {time_axis[peak]:+.2f}s  "
+              f"onset {f'{onset:+.2f}s' if onset is not None else 'none':>8s}")
+
+    for spare in range(len(features), n_blocks * n_columns):
+        spare_block, spare_column = divmod(spare, n_columns)
+        fig.add_subplot(grid[3 * spare_block, spare_column]).set_visible(False)
+        fig.add_subplot(grid[3 * spare_block + 1, spare_column]).set_visible(False)
+
+    if save_plot:
+        out_name = os.path.join(output_dir, _figure_filename('matched_divergence'))
+        fig.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI)
+        print(f"Figure saved to: {out_name}")
+    plt.show()

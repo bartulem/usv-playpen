@@ -18,6 +18,8 @@
     "anipose_trm": false,
     "das_infer": false,
     "das_summarize": false,
+    "detect_usv_noise": false,
+    "detect_usv_squeaks": false,
     "prepare_assign_vocalizations": false,
     "assign_vocalizations": false,
     "generate_usv_spectrograms": false,
@@ -289,29 +291,100 @@
     "low_energy_frac": 0.05,
     "high_energy_frac": 0.95
   },
+  "detect_usv_noise": {
+    "noise_model_path": "",
+    "exclude_metadata_audio_channels": true,
+    "batch_size": 64
+  },
+  "train_noise_model": {
+    "calibration_path": "",
+    "exclude_metadata_audio_channels": true,
+    "n_workers": 16,
+    "seeds": [20269914, 20269915, 20269916, 20269917, 20269918],
+    "epochs": 40,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "label_smoothing": 0.05
+  },
+  "detect_usv_squeaks": {
+    "squeak_model_path": "",
+    "squeak_threshold": 0.385,
+    "exclude_metadata_audio_channels": true,
+    "batch_size": 256
+  },
+  "infer_qlvm_squeak_latents": {
+    "model_cell_directory": "",
+    "exclude_metadata_audio_channels": true,
+    "lattice_batch_size": 2048,
+    "data_batch_size": 512
+  },
+  "build_squeak_spectrogram_store": {
+    "min_freq": 2000.0,
+    "max_freq": 125000.0,
+    "n_frequency_bins": 128,
+    "window_frames": 256,
+    "db_floor": -100.0,
+    "db_ceil": 60.0,
+    "exclude_metadata_audio_channels": true,
+    "n_workers": 6
+  },
   "build_qlvm_training_set": {
-    "length_threshold": 50.0,
-    "dataset_size_constraint": null,
+    "session_type_targets": {
+      "MF": 29000,
+      "FF": 29000,
+      "MM": null,
+      "lone_male": null
+    },
+    "draw_mode": "natural",
+    "mask_count_bin_edges": [1, 2, 3, 4, 5],
+    "length_threshold": 128.0,
+    "require_mask": true,
+    "exclude_squeaks": true,
+    "strict_squeak_exclusion": false,
+    "exclude_noise": true,
+    "masking_type": "sam",
+    "apply_mask": false,
+    "floor": 0.2,
     "validation_split": 0.2,
     "random_state": 42,
     "full_dataset": false,
     "target_shape": [128, 128],
-    "time_stretch": false,
-    "masking_type": "sam"
+    "time_stretch": false
+  },
+  "build_qlvm_squeak_training_set": {
+    "draw_mode": "natural",
+    "n_total": 11000,
+    "per_session_bin_cap": 48,
+    "duration_bin_edges": [26, 40, 62],
+    "context_frames": 2,
+    "min_trimmed_frames": 8,
+    "crop_window": "full_length",
+    "crop_normalization": "per_crop",
+    "exclude_noise": true,
+    "exclude_metadata_audio_channels": true,
+    "validation_split": 0.2,
+    "random_state": 42,
+    "full_dataset": false,
+    "target_shape": [128, 128]
   },
   "train_qlvm": {
     "n_epochs": 300,
-    "latent_dim": 2,
-    "lattice_type": "korobov",
-    "korobov_a": 76,
-    "train_n_points": 1021,
-    "test_n_points": 2039,
-    "fib_m": 15,
-    "batch_size": 64,
+    "decoder_head": "relu",
+    "training_fib_m": 15,
+    "validation_fib_m": 20,
+    "embedding_fib_m": 24,
+    "batch_size": 512,
     "learning_rate": 0.001,
     "val_freq": 10,
+    "val_samples_per_mask_count": 100,
     "seed": 42,
-    "num_workers": 0
+    "conditional": null,
+    "condition_n_bins": 32,
+    "condition_bin_scheme": "quantile_capped",
+    "condition_scale_loss_by_batch": true,
+    "condition_decode_grid_step": 0.0025,
+    "condition_table": null
   },
   "export_yolo_dataset": {
     "label_source": "cc",
@@ -329,16 +402,15 @@
     "run_name": "usv_yolo_detector"
   },
   "infer_qlvm_latents": {
-    "weights_npz_path": "",
-    "reference_arrays_fine_npz_path": "",
-    "reference_arrays_coarse_npz_path": "",
-    "lattice_type": "korobov",
+    "model_cells": {},
+    "model_cell_label_levels": {},
+    "prefer_package_values": true,
     "latent_dim": 2,
-    "n_points": 1021,
-    "korobov_a": 76,
-    "fib_m": 16,
     "time_stretch": false,
-    "masking_type": "sam",
-    "target_shape": [128, 128]
+    "masking_type": "none",
+    "target_shape": [128, 128],
+    "length_threshold": null,
+    "lattice_batch_size": 4096,
+    "data_batch_size": 8192
   }
 }

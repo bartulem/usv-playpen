@@ -13,21 +13,28 @@ from __future__ import annotations
 
 import json
 import pathlib
+import warnings
 
 import click
 import pytest
 from click.testing import CliRunner
 
 from usv_playpen.processing.qlvm_latents import infer_qlvm_latents_cli
+from usv_playpen.processing.build_qlvm_squeak_training_set import build_qlvm_squeak_training_set_cli
+from usv_playpen.processing.build_squeak_spectrogram_store import build_squeak_spectrogram_store_cli
 from usv_playpen.processing.build_qlvm_training_set import build_qlvm_training_set_cli
 from usv_playpen.processing.compute_usv_acoustic_features import (
     compute_usv_acoustic_features_cli,
 )
 from usv_playpen.processing.generate_masks import generate_masks_cli
 from usv_playpen.processing.generate_spectrograms import generate_spectrograms_cli
-from usv_playpen.processing.train_qlvm import train_qlvm_cli
 from usv_playpen.processing.export_yolo_dataset import export_yolo_dataset_cli
 from usv_playpen.processing.train_masks import train_masks_cli
+
+# train_qlvm pulls optax -> a one-time JAX DeprecationWarning at import.
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    from usv_playpen.processing.train_qlvm import train_qlvm_cli
 
 
 @pytest.fixture
@@ -80,6 +87,25 @@ def test_build_qlvm_training_set_cli_routes_and_splits_paths(runner, mocker, tmp
     mock_cls.return_value.build.assert_called_once()
 
 
+def test_build_qlvm_training_set_cli_decodes_structured_options(runner, mocker, tmp_path):
+    """--session-type-targets (JSON), --mask-count-bin-edges (comma-separated) and
+    --floor none reach the settings override decoded, as a dict, a list and None."""
+    mocker.patch("usv_playpen.processing.build_qlvm_training_set.QLVMTrainingSetBuilder")
+    seen = {}
+
+    def _capture(ctx, provided_params, **_kwargs):
+        seen.update({key: ctx.params[key] for key in provided_params})
+        return {"build_qlvm_training_set": {}}
+
+    mocker.patch("usv_playpen.processing.build_qlvm_training_set.modify_settings_json_for_cli", side_effect=_capture)
+    result = runner.invoke(build_qlvm_training_set_cli, [
+        "--root-directories", "/a/sess1", "--output-directory", str(tmp_path / "out"),
+        "--session-type-targets", '{"MF": 10, "MM": null}', "--mask-count-bin-edges", "1,2,3", "--floor", "none",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen == {"session_type_targets": {"MF": 10, "MM": None}, "mask_count_bin_edges": [1, 2, 3], "floor": None}
+
+
 def test_infer_qlvm_latents_cli_routes(runner, mocker, tmp_path):
     """infer-qlvm-latents calls QLVMLatentInference once."""
     mock_cls = mocker.patch("usv_playpen.processing.qlvm_latents.QLVMLatentInference")
@@ -91,6 +117,65 @@ def test_infer_qlvm_latents_cli_routes(runner, mocker, tmp_path):
     assert result.exit_code == 0, result.output
     mock_cls.assert_called_once()
     mock_cls.return_value.infer_and_merge.assert_called_once()
+
+
+def test_infer_qlvm_latents_cli_model_cell_pairs_become_model_cells(runner, mocker, tmp_path):
+    """Repeated --model-cell PREFIX CELL options become the model_cells object (prefix
+    -> cell, in the given order), written after the generic overrides, which never see
+    them; a prefix given twice is refused."""
+    mock_cls = mocker.patch("usv_playpen.processing.qlvm_latents.QLVMLatentInference")
+    spy = mocker.patch(
+        "usv_playpen.processing.qlvm_latents.modify_settings_json_for_cli",
+        return_value={"infer_qlvm_latents": {"model_cells": {}}},
+    )
+    result = runner.invoke(infer_qlvm_latents_cli, [
+        "--root-directory", str(tmp_path),
+        "--model-cell", "qlvm", "/pkg/phase6/cell",
+        "--model-cell", "qlvm_dur", "/pkg/phase11_duration/cell",
+        "--no-prefer-package-values",
+    ])
+    assert result.exit_code == 0, result.output
+    assert spy.call_args.kwargs["provided_params"] == ["prefer_package_values"]
+    settings = mock_cls.call_args.kwargs["input_parameter_dict"]["infer_qlvm_latents"]
+    assert settings["model_cells"] == {"qlvm": "/pkg/phase6/cell", "qlvm_dur": "/pkg/phase11_duration/cell"}
+    assert list(settings["model_cells"]) == ["qlvm", "qlvm_dur"]
+
+    result = runner.invoke(infer_qlvm_latents_cli, [
+        "--root-directory", str(tmp_path),
+        "--model-cell", "qlvm", "/a",
+        "--model-cell", "qlvm", "/b",
+    ])
+    assert result.exit_code != 0
+    assert "prefixes listed more than once" in str(result.exception)
+
+
+def test_infer_qlvm_latents_cli_model_cell_labels_become_label_levels(runner, mocker, tmp_path):
+    """Repeated --model-cell-labels PREFIX LEVELS options become the model_cell_label_levels
+    object (prefix -> list of comma-separated levels; an empty string is no level), written
+    after the generic overrides, which never see them; a prefix given twice is refused."""
+    mock_cls = mocker.patch("usv_playpen.processing.qlvm_latents.QLVMLatentInference")
+    spy = mocker.patch(
+        "usv_playpen.processing.qlvm_latents.modify_settings_json_for_cli",
+        return_value={"infer_qlvm_latents": {"model_cells": {}, "model_cell_label_levels": {}}},
+    )
+    result = runner.invoke(infer_qlvm_latents_cli, [
+        "--root-directory", str(tmp_path),
+        "--model-cell-labels", "qlvm_dur", "fine, coarse",
+        "--model-cell-labels", "qlvm", "",
+        "--no-prefer-package-values",
+    ])
+    assert result.exit_code == 0, result.output
+    assert spy.call_args.kwargs["provided_params"] == ["prefer_package_values"]
+    settings = mock_cls.call_args.kwargs["input_parameter_dict"]["infer_qlvm_latents"]
+    assert settings["model_cell_label_levels"] == {"qlvm_dur": ["fine", "coarse"], "qlvm": []}
+
+    result = runner.invoke(infer_qlvm_latents_cli, [
+        "--root-directory", str(tmp_path),
+        "--model-cell-labels", "qlvm", "fine",
+        "--model-cell-labels", "qlvm", "coarse",
+    ])
+    assert result.exit_code != 0
+    assert "lists prefix 'qlvm' more than once" in str(result.exception)
 
 
 def test_train_qlvm_cli_routes(runner, mocker, tmp_path):
@@ -108,6 +193,29 @@ def test_train_qlvm_cli_routes(runner, mocker, tmp_path):
     mock_cls.assert_called_once()
     assert mock_cls.call_args.kwargs["dataset_directory"] == str(tmp_path)
     mock_cls.return_value.train.assert_called_once()
+
+
+def test_train_qlvm_cli_none_is_the_null_setting(runner, mocker, tmp_path):
+    """train-qlvm's --conditional none and --condition-table none reach the settings
+    as null (an unconditional run, no table); a named condition passes through."""
+    mocker.patch("usv_playpen.processing.train_qlvm.QLVMTrainer")
+    modify = mocker.patch(
+        "usv_playpen.processing.train_qlvm.modify_settings_json_for_cli",
+        return_value={"train_qlvm": {}},
+    )
+    base = ["--dataset-directory", str(tmp_path), "--output-directory", str(tmp_path / "out")]
+    result = runner.invoke(train_qlvm_cli, [*base, "--conditional", "none", "--condition-table", "None"])
+    assert result.exit_code == 0, result.output
+    ctx = modify.call_args.kwargs["ctx"]
+    assert ctx.params["conditional"] is None
+    assert ctx.params["condition_table"] is None
+    assert {"conditional", "condition_table"} <= set(modify.call_args.kwargs["provided_params"])
+
+    result = runner.invoke(train_qlvm_cli, [*base, "--conditional", "loudness", "--no-condition-scale-loss-by-batch"])
+    assert result.exit_code == 0, result.output
+    ctx = modify.call_args.kwargs["ctx"]
+    assert ctx.params["conditional"] == "loudness"
+    assert ctx.params["condition_scale_loss_by_batch"] is False
 
 
 def test_export_yolo_dataset_cli_routes_and_splits_paths(runner, mocker, tmp_path):
@@ -153,6 +261,8 @@ _PIPELINE_CLIS = [
     (generate_masks_cli, "usv_playpen.processing.generate_masks", "MaskGenerator", "generate_masks", ["--root-directory", "{d}"]),
     (compute_usv_acoustic_features_cli, "usv_playpen.processing.compute_usv_acoustic_features", "USVAcousticFeatureExtractor", "compute_usv_acoustic_features", ["--root-directory", "{d}"]),
     (build_qlvm_training_set_cli, "usv_playpen.processing.build_qlvm_training_set", "QLVMTrainingSetBuilder", "build_qlvm_training_set", ["--root-directories", "/a,/b", "--output-directory", "{o}"]),
+    (build_qlvm_squeak_training_set_cli, "usv_playpen.processing.build_qlvm_squeak_training_set", "QLVMSqueakTrainingSetBuilder", "build_qlvm_squeak_training_set", ["--root-directories", "/a,/b", "--output-directory", "{o}"]),
+    (build_squeak_spectrogram_store_cli, "usv_playpen.processing.build_squeak_spectrogram_store", "SqueakSpectrogramStoreBuilder", "build_squeak_spectrogram_store", ["--root-directories", "/a,/b"]),
     (train_qlvm_cli, "usv_playpen.processing.train_qlvm", "QLVMTrainer", "train_qlvm", ["--dataset-directory", "{d}", "--output-directory", "{o}"]),
     (infer_qlvm_latents_cli, "usv_playpen.processing.qlvm_latents", "QLVMLatentInference", "infer_qlvm_latents", ["--root-directory", "{d}"]),
     (export_yolo_dataset_cli, "usv_playpen.processing.export_yolo_dataset", "YOLODatasetExporter", "export_yolo_dataset", ["--root-directories", "/a,/b", "--output-directory", "{o}"]),

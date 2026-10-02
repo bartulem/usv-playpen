@@ -6,8 +6,8 @@ The continuous regression and CNN pipelines in this project predict 2-D
 acoustic-manifold positions from behavioural-kinematic histories. Two
 manifolds are currently supported:
 
-- **`'euclidean'`** — the VAE UMAP manifold (`vae1`, `vae2`).
-  Treats the 2-D plane as flat R^2; standard Euclidean distance,
+- **`'euclidean'`** — a flat 2-D manifold (no production embedding
+  uses it; the QLVM maps are all tori). Treats the 2-D plane as flat R^2; standard Euclidean distance,
   arithmetic mean, sample covariance.
 - **`'torus'`** — the QLVM manifold (`qlvm1`, `qlvm2`).
   Each axis is periodic with period `P` (so the manifold is the
@@ -38,6 +38,10 @@ import jax.numpy as jnp
 from scipy.stats import spearmanr
 from scipy.special import i0e, i1e
 from scipy.optimize import brentq
+
+# Holds one entry once `macro_von_mises_logscore` has announced its pooled fallback
+# (no region labels), so the per-fold / per-candidate calls print it only once.
+_POOLED_FALLBACK_ANNOUNCED: list[bool] = []
 
 
 VALID_METRICS = ('euclidean', 'torus')
@@ -585,10 +589,18 @@ def macro_von_mises_logscore(Y_pred: np.ndarray, Y_true: np.ndarray,
     region_labels = np.asarray(region_labels, dtype=np.float64)
     labelled = ~np.isnan(region_labels)
     if not labelled.any():
-        # No usable region labels (e.g. a torus run on a pickle that predates
-        # supercategory storage) -> degrade to the pooled single-region score
-        # rather than returning NaN, so the score stays defined and the run
-        # proceeds (identical to `region_labels=None`).
+        # No usable region labels (a pickle extracted without supercategory
+        # labels) -> degrade to the pooled
+        # single-region score rather than returning NaN, so the score stays
+        # defined and the run proceeds (identical to `region_labels=None`). The
+        # fallback is printed once per process (this is called per fold and per
+        # candidate), so a 'macro' score is never silently a pooled one; the
+        # pipelines also print `warn_if_no_region_labels` once per run. A print,
+        # not `warnings.warn`: the test suite escalates warnings to errors.
+        if not _POOLED_FALLBACK_ANNOUNCED:
+            _POOLED_FALLBACK_ANNOUNCED.append(True)
+            print("WARNING [macro_von_mises_logscore]: no region labels (all NaN; the modeling input "
+                  "carries no QLVM labels), so the macro score fell back to the pooled von Mises score.")
         return float(np.mean(per_point)) if per_point.size else float('nan')
     region_means = []
     for region_id in np.unique(region_labels[labelled]):
@@ -599,6 +611,50 @@ def macro_von_mises_logscore(Y_pred: np.ndarray, Y_true: np.ndarray,
         if np.isfinite(region_mean):
             region_means.append(region_mean)
     return float(np.mean(region_means)) if region_means else float('nan')
+
+
+def warn_if_no_region_labels(region_labels: np.ndarray, *, metric: str, context: str) -> bool:
+    """
+    Description
+    -----------
+    Announces, once per run, that the torus region-balanced machinery has no
+    region labels to balance over. The per-event acoustic-region labels are the
+    supercategory packet the extraction stage writes only when the summaries carry
+    labels; without it (no label column configured, or summaries without one) the
+    loaders fill the region array with NaN, and two things fall back: the ``'macro'`` von Mises
+    score (:func:`macro_von_mises_logscore`, the torus selection objective
+    ``vm_logscore``) becomes the pooled score (numerically ``vm_logscore_pooled``),
+    and the equal-region fit reweighting
+    (:func:`inverse_region_frequency_weights`) becomes uniform. Both keep the run
+    defined; this makes the substitution loud instead of silent. Euclidean runs
+    use neither, so nothing is printed there.
+
+    Parameters
+    ----------
+    region_labels (np.ndarray)
+        The per-event region labels of the run (NaN = unlabelled).
+    metric (str)
+        The resolved manifold geometry (``'torus'`` or ``'euclidean'``).
+    context (str)
+        Who is reporting (named in the message), e.g. the pipeline or feature.
+
+    Returns
+    -------
+    fell_back (bool)
+        True when the run is on the torus and no event carries a region label
+        (the warning was printed), False otherwise.
+    """
+
+    if metric != 'torus':
+        return False
+    labels = np.asarray(region_labels, dtype=np.float64)
+    if labels.size > 0 and bool((~np.isnan(labels)).any()):
+        return False
+    print(f"WARNING [{context}]: no acoustic-region (supercategory) labels in the modeling data (QLVM labels "
+          f"are unavailable), so the torus 'macro' von Mises score (vm_logscore) fell back to the pooled "
+          f"score (identical to vm_logscore_pooled), and the equal-region fit reweighting fell back to "
+          f"uniform weights.")
+    return True
 
 
 def inverse_region_frequency_weights(region_labels: np.ndarray) -> np.ndarray:

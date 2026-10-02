@@ -1,5 +1,5 @@
 """
-Marimo notebook for interactively exploring USV embeddings (VAE / QLVM).
+Marimo notebook for interactively exploring USV embeddings (the QLVM maps).
 
 Usage
 -----
@@ -27,12 +27,22 @@ Architecture
   color/sample tweak never rebuilds the pooled DataFrame.
 - Pick one or more session lists; their per-session ``usv_summary.csv`` rows are
   pooled (and cached to a per-selection parquet) by ``build_pooled_embeddings_df``.
-- An altair scatter of the chosen embedding map (VAE UMAP or QLVM torus),
-  colored by a categorical label (category / supercategory / session type /
-  session id / emitter sex) OR a continuous metric through the colormap
-  (density, duration, frequencies, amplitudes, spectral entropy), with an
-  ``alt.selection_interval`` brush. Optional category-boundary contours overlay
-  the scatter. The spec inlines session_id / row_index / x / y / color per
+- An altair scatter of the chosen QLVM map's torus (the regular model or one of
+  the four conditional ones, ``os_utils.QLVM_MAPS``; the Map dropdown starts at
+  ``shared_resources.qlvm_map``; the USV maps never show segments flagged as
+  squeaks, so the USV and squeak maps never overlap; or the "Squeaks" map, ``qlvm_squeak1`` /
+  ``qlvm_squeak2`` from ``infer-qlvm-squeak-latents``, which holds squeak rows
+  only and has no categories, so there a category colouring falls back to
+  density and boundaries are skipped, with a note in the chart title), colored by a categorical label (category /
+  supercategory / session type / session id / emitter sex) OR a continuous metric
+  through the colormap (density, duration, frequencies, amplitudes, spectral
+  entropy), with an ``alt.selection_interval`` brush. Optional category-boundary
+  contours overlay the scatter: the map's v3 cell's own label grid (15 fine / 9
+  coarse clusters for the regular map, the ``ws_labels_periodic`` of
+  ``<spectrograms_dir>/qlvm_v3/<map>/arrays_{fine,coarse}.npz`` resolved by
+  ``os_utils.resolve_embedding_arrays_path``, the same partition that wrote the
+  ``<map>_category`` / ``<map>_supercategory`` summary columns); when those
+  arrays are missing, a k-NN boundary estimated from the labels. The spec inlines session_id / row_index / x / y / color per
   point (~200 bytes each), so the max_points ceiling is bounded by marimo's
   ``output_max_bytes`` (raised to 200 MB in pyproject.toml).
 - Brushing samples spectrograms from the selection along an Archimedean spiral
@@ -41,6 +51,15 @@ Architecture
   fixed window so each call's width reflects its true duration, embedded inline
   as a base64 PNG. The brushed rows are recovered with
   ``chart_widget.apply_selection`` (``.value`` fails on the layered chart).
+- On the Squeaks map the tiles come instead from the squeak spectrogram store
+  (the newest ``<spectrograms_dir>/squeak_spectrograms_*.h5``, written by
+  ``build-squeak-spectrogram-store``, resolved by
+  ``os_utils.resolve_squeak_spectrogram_store_path``): 2-125 kHz on a log
+  frequency axis, so the 3-8 kHz harmonic stack of a squeak shows with its
+  ultrasonic part; each tile spans the top 60 dB below its own peak, padded to
+  the store's fixed window like the USV tiles, with no SAM mask. When that
+  store has not been built the grid falls back to the ultrasonic thumbnails
+  with a one-line note above it.
 
 The shipped ``/mnt/falkner/Bartul/...`` paths are re-keyed to the experimenter in
 use and OS-resolved via ``os_utils.resolve_experimenter_path`` (set the
@@ -72,7 +91,14 @@ def _imports():
 
     alt.data_transformers.disable_max_rows()
 
-    from usv_playpen.os_utils import resolve_consolidated_h5_path, resolve_experimenter_path
+    from usv_playpen.os_utils import (
+        QLVM_MAPS,
+        resolve_consolidated_h5_path,
+        resolve_embedding_arrays_path,
+        resolve_experimenter_path,
+        resolve_squeak_spectrogram_store_path,
+    )
+    from usv_playpen.processing.build_squeak_spectrogram_store import squeak_store_thumbnail
     from usv_playpen.visualizations.make_usv_spectrograms import (
         _knn_boundary_grid as knn_boundary_grid,
         build_pooled_embeddings_df,
@@ -81,6 +107,7 @@ def _imports():
     return (
         BytesIO,
         Path,
+        QLVM_MAPS,
         alt,
         base64,
         build_pooled_embeddings_df,
@@ -94,12 +121,23 @@ def _imports():
         pls,
         plt,
         resolve_consolidated_h5_path,
+        resolve_embedding_arrays_path,
         resolve_experimenter_path,
+        resolve_squeak_spectrogram_store_path,
+        squeak_store_thumbnail,
     )
 
 
 @app.cell
-def _settings(Path, json, resolve_consolidated_h5_path, resolve_experimenter_path):
+def _settings(
+    Path,
+    QLVM_MAPS,
+    json,
+    resolve_consolidated_h5_path,
+    resolve_embedding_arrays_path,
+    resolve_experimenter_path,
+    resolve_squeak_spectrogram_store_path,
+):
     # Cell 2 = ALL settings/config (imports are all in cell 1). Reads
     # visualizations_settings.json once and exposes everything downstream cells
     # need: the colormap, sex colors, the consolidated store path, the available
@@ -142,6 +180,47 @@ def _settings(Path, json, resolve_consolidated_h5_path, resolve_experimenter_pat
         )
     except (KeyError, FileNotFoundError, RuntimeError):
         _input_dir, consolidated_h5_path = None, None
+
+    # The squeak spectrogram store (newest squeak_spectrograms_*.h5 under
+    # `spectrograms_dir`, from build-squeak-spectrogram-store): 2-125 kHz,
+    # log-frequency spectrograms the Squeaks map shows instead of the 30-125 kHz
+    # ultrasonic ones. None when it has not been built (the grid then falls back
+    # to the consolidated store with a note). Each squeak tile is scaled over the
+    # top SQUEAK_DYNAMIC_RANGE_DB dB below its own peak.
+    try:
+        squeak_store_path = resolve_squeak_spectrogram_store_path(
+            resolve_experimenter_path(_viz["shared_resources"]["spectrograms_dir"])
+        )
+    except (KeyError, FileNotFoundError, RuntimeError):
+        squeak_store_path = None
+    SQUEAK_DYNAMIC_RANGE_DB = 60.0
+
+    # The Map dropdown's starting map: the shared `shared_resources.qlvm_map` the
+    # other QLVM figures draw (regular map when the setting is absent or unknown).
+    try:
+        default_qlvm_map = _viz["shared_resources"]["qlvm_map"]
+    except KeyError:
+        default_qlvm_map = "qlvm"
+    if default_qlvm_map not in QLVM_MAPS:
+        default_qlvm_map = "qlvm"
+
+    # QLVM reference arrays of each map's v3 cell under `spectrograms_dir`
+    # (<dir>/qlvm_v3/<map>/arrays_{fine,coarse}.npz, os_utils convention), keyed by
+    # (map, Boundaries dropdown value): "category" -> fine (15 clusters for the
+    # regular map), "supercategory" -> coarse (9). Their `ws_labels_periodic` grids
+    # are the exact partition the <map>_category / <map>_supercategory columns were
+    # read from, so the map draws them instead of a k-NN estimate. Missing arrays
+    # -> no entry (k-NN fallback).
+    try:
+        _spec_dir = resolve_experimenter_path(_viz["shared_resources"]["spectrograms_dir"])
+        qlvm_arrays_paths = {
+            (_map, _choice): resolve_embedding_arrays_path(_spec_dir, _map, _level)
+            for _map in QLVM_MAPS
+            for _choice, _level in (("category", "fine"), ("supercategory", "coarse"))
+            if Path(resolve_embedding_arrays_path(_spec_dir, _map, _level)).is_file()
+        }
+    except KeyError:
+        qlvm_arrays_paths = {}
     if _input_dir is not None and Path(_input_dir).is_dir():
         available_lists = {
             p.name: str(p)
@@ -175,16 +254,20 @@ def _settings(Path, json, resolve_consolidated_h5_path, resolve_experimenter_pat
     return (
         CHART_DATA_WIDTH_PX,
         CHART_HEIGHT_PX,
+        SQUEAK_DYNAMIC_RANGE_DB,
         available_lists,
         consolidated_h5_path,
+        default_qlvm_map,
         global_cmap,
         list_to_sessions,
+        qlvm_arrays_paths,
         sex_colors,
+        squeak_store_path,
     )
 
 
 @app.cell
-def _widgets(available_lists, mo):
+def _widgets(available_lists, default_qlvm_map, mo):
     # Session-list picker: a multiselect dropdown (pick one / some / all),
     # FIXED WIDTH so it never widens, capped height with overflow so extra chips
     # SCROLL inside the box rather than growing the layout. .style() returns a
@@ -226,9 +309,19 @@ def _widgets(available_lists, mo):
         ],
         align="center", justify="start", gap=0.6,
     )
+    # {display label -> QLVM map (os_utils.QLVM_MAPS, plus the squeak map, whose
+    # qlvm_squeak1/qlvm_squeak2 exist on squeak rows only)}; .value returns the map.
+    _map_labels = {
+        "QLVM": "qlvm",
+        "QLVM | duration": "qlvm_dur",
+        "QLVM | mean freq": "qlvm_mf",
+        "QLVM | bandwidth": "qlvm_bw",
+        "QLVM | loudness": "qlvm_loud",
+        "Squeaks": "qlvm_squeak",
+    }
     map_dropdown = mo.ui.dropdown(
-        options=["QLVM", "VAE"],
-        value="QLVM",
+        options=_map_labels,
+        value=next(_label for _label, _map in _map_labels.items() if _map == default_qlvm_map),
         label="Map",
     )
     # Color by a CATEGORICAL label (category / supercategory) OR a CONTINUOUS
@@ -419,8 +512,7 @@ def _load_pooled_df(
                 sessions_txt_path=str(combined_list_path),
                 cache_path=cache_path,
                 rebuild_cache=False,
-                noise_col_id="vae_supercategory",
-                noise_categories=(0,),
+                exclude_noise_usvs=True,
             )
         except (FileNotFoundError, OSError, ValueError) as exc:
             mo.stop(
@@ -472,6 +564,7 @@ def _scatter_chart(
     pd,
     plt,
     pooled_df,
+    qlvm_arrays_paths,
     sessions_select,
     sex_colors,
 ):
@@ -492,18 +585,34 @@ def _scatter_chart(
         if pooled.height == 0:
             return None, None, None, None
 
-        map_prefix = "vae" if map_dropdown.value == "VAE" else "qlvm"
-        # QLVM torus coords are qlvm1/qlvm2 (not a UMAP); only VAE uses
-        # the _umap1/_umap2 suffix.
-        if map_prefix == "qlvm":
-            x_col, y_col = "qlvm1", "qlvm2"
-        else:
-            x_col, y_col = "vae1", "vae2"
+        map_prefix = map_dropdown.value
+        # A QLVM map P places calls at P1/P2 on the unit torus.
+        x_col, y_col = f"{map_prefix}1", f"{map_prefix}2"
+        # The squeak map ships positions only (no fine / coarse clustering), so
+        # category colouring falls back to density and boundaries are skipped
+        # there. A fallback rather than mo.stop: stopping this cell would also
+        # hide the controls (_explorer draws them from this cell's outputs), so
+        # the dropdowns could not be changed back.
+        squeak_map = map_prefix == "qlvm_squeak"
+        squeak_fallback = squeak_map and (
+            color_dropdown.value in ("category", "supercategory") or boundary_dropdown.value != "none"
+        )
+        # No overlap between the USV maps and the squeak map: a USV map never
+        # shows a segment detect-usv-squeaks flagged as a squeak (the package
+        # also embedded squeaks on the USV tori), and the squeak map holds only
+        # squeaks (its coordinates exist on squeak rows only). A null flag
+        # (a summary without squeak columns) counts as not a squeak.
+        _is_squeak = pooled["squeak"].fill_null(False)
+        pooled = pooled.filter(_is_squeak if squeak_map else ~_is_squeak)
+        if pooled.height == 0:
+            return None, None, None, None
 
         # Color source: category/supercategory/session_type categorical; emitter
         # colors the derived sex column; density is computed below from the 2D
         # positions; the rest are continuous acoustic-feature columns.
         color_metric = color_dropdown.value
+        if squeak_map and color_metric in ("category", "supercategory"):
+            color_metric = "density"
         if color_metric in ("category", "supercategory"):
             color_col, color_kind = f"{map_prefix}_{color_metric}", "categorical"
         elif color_metric == "session_type":
@@ -520,7 +629,7 @@ def _scatter_chart(
             color_col, color_kind = color_metric, "continuous"
 
         # Boundaries use the map-specific categorical label column (overlay).
-        boundary_choice = boundary_dropdown.value
+        boundary_choice = "none" if squeak_map else boundary_dropdown.value
         boundary_col = (
             None if boundary_choice == "none" else f"{map_prefix}_{boundary_choice}"
         )
@@ -577,20 +686,20 @@ def _scatter_chart(
         # No axes -- points alone. Keep the scales (data domain) but drop
         # ticks/labels/titles/spines via axis=None. Shared scales so the scatter
         # and the boundary overlay align exactly.
-        if map_prefix == "qlvm":
-            x_scale = alt.Scale(domain=[0.0, 1.0], nice=False)
-            y_scale = alt.Scale(domain=[0.0, 1.0], nice=False)
-        else:
-            x_scale = alt.Scale(domain=[5, 18], nice=False)
-            y_scale = alt.Scale(nice=False)
+        x_scale = alt.Scale(domain=[0.0, 1.0], nice=False)
+        y_scale = alt.Scale(domain=[0.0, 1.0], nice=False)
         x_enc = alt.X(x_col, type="quantitative", axis=None, scale=x_scale)
         y_enc = alt.Y(y_col, type="quantitative", axis=None, scale=y_scale)
 
         # Color setup: categorical -> fixed palette, emitter -> settings sex
         # colors, density / acoustic feature -> project colormap (quantitative).
+        # 20 distinct colours so the 15 QLVM fine categories (and the 9 coarse
+        # ones) each get their own colour instead of cycling.
         PALETTE = (
             "#4C78A8", "#F58518", "#E45756", "#72B7B2", "#54A24B", "#EECA3B",
             "#B279A2", "#FF9DA6", "#9D755D", "#BAB0AC", "#1F77B4", "#FF7F0E",
+            "#17BECF", "#BCBD22", "#8C564B", "#E377C2", "#2CA02C", "#9467BD",
+            "#D62728", "#393B79",
         )
         color_field = None
         cat_domain, cat_range = None, None
@@ -665,7 +774,7 @@ def _scatter_chart(
             else:
                 # Hide the legend when there are too many categories (e.g. many
                 # sessions) -- a list of hundreds of ids is unreadable and the
-                # 12-color palette cycles anyway. Points stay colored.
+                # 20-color palette cycles anyway. Points stay colored.
                 _cat_legend = (
                     None if len(cat_domain) > 24 else alt.Legend(
                         title=None, orient="left", direction="vertical",
@@ -691,18 +800,23 @@ def _scatter_chart(
         )
         scatter = scatter.add_params(brush)
 
-        # Boundary overlay: KNN-predicted category grid (density-masked) ->
-        # contour lines at half-integer class transitions -> one line per seg.
+        # Boundary overlay: the map's v3 cell label grid (ws_labels_periodic of the
+        # reference arrays, indexed [y, x] over the unit square), else (arrays
+        # missing) a KNN-predicted category grid (density-masked); either way
+        # one 0.5 contour per category -> one line per seg.
         layers = [scatter]
-        if boundary_col is not None and chart_pd.shape[0] >= 5:
+        grid_labels = None
+        if (map_prefix, boundary_choice) in qlvm_arrays_paths:
+            with np.load(qlvm_arrays_paths[(map_prefix, boundary_choice)]) as _arrays:
+                _grid = _arrays["ws_labels_periodic"].astype(float)
+            _axis = (np.arange(_grid.shape[0]) + 0.5) / _grid.shape[0]
+            grid_xx, grid_yy = np.meshgrid(_axis, _axis)
+            grid_labels = np.where(_grid > 0, _grid, np.nan)
+        elif boundary_col is not None and chart_pd.shape[0] >= 5:
             bx_pts = chart_pd[x_col].to_numpy()
             by_pts = chart_pd[y_col].to_numpy()
             labels = chart_pd[boundary_col].to_numpy()
-            if map_prefix == "qlvm":
-                x_lo, x_hi, y_lo, y_hi = 0.0, 1.0, 0.0, 1.0
-            else:
-                x_lo, x_hi = float(np.min(bx_pts)), float(np.max(bx_pts))
-                y_lo, y_hi = float(np.min(by_pts)), float(np.max(by_pts))
+            x_lo, x_hi, y_lo, y_hi = 0.0, 1.0, 0.0, 1.0
             # Adapt grid resolution to point count, and keep the density mask
             # LOOSE (low min-count, strong smoothing) so the predicted-label
             # field stays connected -- a tight mask NaNs out lean cells and
@@ -714,61 +828,65 @@ def _scatter_chart(
                 n_neighbors=25, grid_resolution=grid_res,
                 density_smoothing_sigma=3.5, density_min_count=0.04,
             )
-            if not np.all(np.isnan(grid_labels)):
-                # Outline EACH category's region as the 0.5 contour of its own
-                # binary mask, rather than contouring the integer label grid at
-                # half-integer levels. The latter bunches several lines together
-                # wherever non-consecutive category numbers sit adjacent (every
-                # in-between level crosses there), making the boundary look
-                # thicker in spots. Per-category 0.5 contours put each shared
-                # border at exactly one position, so the line is uniform width.
-                present_labels = [v for v in np.unique(grid_labels) if not np.isnan(v)]
-                tmp_fig, tmp_ax = plt.subplots()
-                seg_rows = []
-                seg_id = 0
-                for _lab in present_labels:
-                    _mask = np.where(
-                        np.isnan(grid_labels), 0.0, (grid_labels == _lab).astype(float)
-                    )
-                    _cs = tmp_ax.contour(grid_xx, grid_yy, _mask, levels=[0.5])
-                    for level_segs in _cs.allsegs:
-                        for seg in level_segs:
-                            for order, (sx, sy) in enumerate(seg):
-                                seg_rows.append(
-                                    {"bx": float(sx), "by": float(sy),
-                                     "seg": seg_id, "order": order}
-                                )
-                            seg_id += 1
-                plt.close(tmp_fig)
-                if seg_rows:
-                        boundary_df = pd.DataFrame(seg_rows)
-
-                        # Haloed contour: a thick BLACK outline under a bright
-                        # core. Over the warm colormap (inferno; used when
-                        # coloring by density / a continuous feature) a CYAN core
-                        # pops; over the categorical palette a white core reads
-                        # cleanly.
-                        def _bline(_color, _width):
-                            return (
-                                alt.Chart(boundary_df)
-                                .mark_line(color=_color, strokeWidth=_width, opacity=1.0)
-                                .encode(
-                                    x=alt.X("bx:Q", scale=x_scale, axis=None),
-                                    y=alt.Y("by:Q", scale=y_scale, axis=None),
-                                    detail="seg:N",
-                                    order="order:Q",
-                                )
+        if grid_labels is not None and not np.all(np.isnan(grid_labels)):
+            # Outline EACH category's region as the 0.5 contour of its own
+            # binary mask, rather than contouring the integer label grid at
+            # half-integer levels. The latter bunches several lines together
+            # wherever non-consecutive category numbers sit adjacent (every
+            # in-between level crosses there), making the boundary look
+            # thicker in spots. Per-category 0.5 contours put each shared
+            # border at exactly one position, so the line is uniform width.
+            present_labels = [v for v in np.unique(grid_labels) if not np.isnan(v)]
+            tmp_fig, tmp_ax = plt.subplots()
+            seg_rows = []
+            seg_id = 0
+            for _lab in present_labels:
+                _mask = np.where(
+                    np.isnan(grid_labels), 0.0, (grid_labels == _lab).astype(float)
+                )
+                _cs = tmp_ax.contour(grid_xx, grid_yy, _mask, levels=[0.5])
+                for level_segs in _cs.allsegs:
+                    for seg in level_segs:
+                        for order, (sx, sy) in enumerate(seg):
+                            seg_rows.append(
+                                {"bx": float(sx), "by": float(sy),
+                                 "seg": seg_id, "order": order}
                             )
+                        seg_id += 1
+            plt.close(tmp_fig)
+            if seg_rows:
+                boundary_df = pd.DataFrame(seg_rows)
 
-                        _core = "#00E5E5" if color_kind in ("density", "continuous") else "#FFFFFF"
-                        layers.append(_bline("#000000", 5.0))   # black outline
-                        layers.append(_bline(_core, 2.4))       # bright core
+                # Haloed contour: a thick BLACK outline under a bright
+                # core. Over the warm colormap (inferno; used when
+                # coloring by density / a continuous feature) a CYAN core
+                # pops; over the categorical palette a white core reads
+                # cleanly.
+                def _bline(_color, _width):
+                    return (
+                        alt.Chart(boundary_df)
+                        .mark_line(color=_color, strokeWidth=_width, opacity=1.0)
+                        .encode(
+                            x=alt.X("bx:Q", scale=x_scale, axis=None),
+                            y=alt.Y("by:Q", scale=y_scale, axis=None),
+                            detail="seg:N",
+                            order="order:Q",
+                        )
+                    )
+
+                _core = "#00E5E5" if color_kind in ("density", "continuous") else "#FFFFFF"
+                layers.append(_bline("#000000", 5.0))   # black outline
+                layers.append(_bline(_core, 2.4))       # bright core
 
         chart = (alt.layer(*layers) if len(layers) > 1 else scatter).properties(
             width=CHART_DATA_WIDTH_PX,
             height=CHART_HEIGHT_PX,
             background="#FFFFFF",
             padding=0,
+            # Say why the squeak map ignored a category colouring / boundaries
+            # (no title otherwise, so the other maps keep their layout).
+            **({"title": "Squeaks have no categories: coloured by density, no boundaries"}
+               if squeak_fallback else {}),
         ).configure_legend(
             labelFontSize=15, symbolSize=450, rowPadding=10,
             gradientThickness=30, gradientLength=CHART_HEIGHT_PX,
@@ -801,6 +919,7 @@ def _tooltip_style(mo):
 def _explorer(
     BytesIO,
     CHART_HEIGHT_PX,
+    SQUEAK_DYNAMIC_RANGE_DB,
     apply_mask_checkbox,
     available_lists,
     base64,
@@ -812,6 +931,7 @@ def _explorer(
     get_loaded_lists,
     global_cmap,
     h5py,
+    map_dropdown,
     mo,
     n_samples_slider,
     np,
@@ -819,6 +939,8 @@ def _explorer(
     plt,
     session_row,
     sessions_row,
+    squeak_store_path,
+    squeak_store_thumbnail,
 ):
     def _():
         # The control panel is rendered at the TOP of THIS cell's output, with
@@ -906,46 +1028,81 @@ def _explorer(
             # several samples come from the same session.
             mask_index_cache: dict = {}
             h5_open_error = None
+            # The Squeaks map reads its tiles from the squeak spectrogram store
+            # (2-125 kHz, log-frequency rows, so the imshow below draws a log
+            # frequency axis); every other map, and the Squeaks map when that
+            # store has not been built, reads the consolidated 30-125 kHz store.
+            # The missing-store case is a one-line note above the grid, not
+            # mo.stop, which would also hide the controls drawn by this cell.
+            squeak_map = map_dropdown.value == "qlvm_squeak"
+            squeak_tiles = squeak_map and squeak_store_path is not None
+            tile_store_path = squeak_store_path if squeak_tiles else consolidated_h5_path
+            squeak_note = (
+                mo.md(
+                    "_No squeak spectrogram store (`build-squeak-spectrogram-store`) under "
+                    "`spectrograms_dir`: showing the 30-125 kHz ultrasonic spectrograms._"
+                )
+                if squeak_map and not squeak_tiles else None
+            )
             try:
-                with h5py.File(consolidated_h5_path, "r") as h5:
-                    for _, row in picks.iterrows():
-                        sess = str(row["session_id"])
-                        idx = int(row["row_index"])
-                        spec_group_key = f"spectrogram/{sess}"
-                        if spec_group_key not in h5:
-                            continue
-                        grp = h5[spec_group_key]
-                        spec = grp["spectrograms"][idx, :, :].astype(np.float32)
-                        time_window = spec.shape[1]
-                        dur = int(grp["durations"][idx])
-                        dur = max(1, min(dur, spec.shape[1]))
+                with h5py.File(tile_store_path, "r") as h5:
+                    if squeak_tiles:
+                        # Squeak store: one fixed window for every call, absolute dB
+                        # quantized to uint8 over the stored [db_floor, db_ceil];
+                        # each tile is scaled over the top SQUEAK_DYNAMIC_RANGE_DB
+                        # below its own peak. No SAM masks exist for these rows.
+                        time_window = int(h5.attrs["window_frames"])
+                        _db_floor = float(h5.attrs["db_floor"])
+                        _db_ceil = float(h5.attrs["db_ceil"])
+                        for _, row in picks.iterrows():
+                            sess = str(row["session_id"])
+                            idx = int(row["row_index"])
+                            if f"spectrogram/{sess}" not in h5:
+                                continue
+                            squeak_tile = squeak_store_thumbnail(
+                                h5[f"spectrogram/{sess}"], idx, _db_floor, _db_ceil, SQUEAK_DYNAMIC_RANGE_DB
+                            )
+                            if squeak_tile is not None:
+                                tiles.append((sess, idx, squeak_tile))
+                    else:
+                        for _, row in picks.iterrows():
+                            sess = str(row["session_id"])
+                            idx = int(row["row_index"])
+                            spec_group_key = f"spectrogram/{sess}"
+                            if spec_group_key not in h5:
+                                continue
+                            grp = h5[spec_group_key]
+                            spec = grp["spectrograms"][idx, :, :].astype(np.float32)
+                            time_window = spec.shape[1]
+                            dur = int(grp["durations"][idx])
+                            dur = max(1, min(dur, spec.shape[1]))
 
-                        if apply_mask:
-                            mask_group_key = f"mask/{sess}"
-                            if mask_group_key in h5:
-                                mask_grp = h5[mask_group_key]
-                                if sess not in mask_index_cache:
-                                    mask_index_cache[sess] = mask_grp["spectrogram_index"][:]
-                                spec_indices = mask_index_cache[sess]
-                                matching = np.where(spec_indices == idx)[0]
-                                if matching.size > 0:
-                                    masks_for_spec = mask_grp["segmentations"][
-                                        matching, :, :dur
-                                    ]
-                                    combined_mask = np.any(masks_for_spec, axis=0)
-                                    spec_to_show = spec[:, :dur] * combined_mask.astype(np.float32)
+                            if apply_mask:
+                                mask_group_key = f"mask/{sess}"
+                                if mask_group_key in h5:
+                                    mask_grp = h5[mask_group_key]
+                                    if sess not in mask_index_cache:
+                                        mask_index_cache[sess] = mask_grp["spectrogram_index"][:]
+                                    spec_indices = mask_index_cache[sess]
+                                    matching = np.where(spec_indices == idx)[0]
+                                    if matching.size > 0:
+                                        masks_for_spec = mask_grp["segmentations"][
+                                            matching, :, :dur
+                                        ]
+                                        combined_mask = np.any(masks_for_spec, axis=0)
+                                        spec_to_show = spec[:, :dur] * combined_mask.astype(np.float32)
+                                    else:
+                                        spec_to_show = spec[:, :dur]
                                 else:
                                     spec_to_show = spec[:, :dur]
                             else:
                                 spec_to_show = spec[:, :dur]
-                        else:
-                            spec_to_show = spec[:, :dur]
-                        tiles.append((sess, idx, spec_to_show))
+                            tiles.append((sess, idx, spec_to_show))
             except (OSError, FileNotFoundError) as exc:
                 tiles = []
                 h5_open_error = mo.md(
-                    f"**Could not open the consolidated store** "
-                    f"`{consolidated_h5_path}`:\n\n```\n{exc}\n```"
+                    f"**Could not open the {'squeak spectrogram' if squeak_tiles else 'consolidated'} store** "
+                    f"`{tile_store_path}`:\n\n```\n{exc}\n```"
                 )
 
             if h5_open_error is not None:
@@ -1018,6 +1175,8 @@ def _explorer(
                     f'style="display:block;height:{CHART_HEIGHT_PX}px;width:auto;'
                     'margin:0;padding:0;" />'
                 )
+            if squeak_note is not None:
+                spectrograms_out = mo.vstack([squeak_note, spectrograms_out], align="start", gap=0.2)
         plot_row = mo.hstack(
             [chart_widget, spectrograms_out],
             justify="start", gap=1, align="start",

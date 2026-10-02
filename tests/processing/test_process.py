@@ -636,6 +636,8 @@ def mock_dependencies(mocker):
         'MaskGenerator': mocker.patch('usv_playpen.processing.preprocess_data.MaskGenerator'),
         'USVAcousticFeatureExtractor': mocker.patch('usv_playpen.processing.preprocess_data.USVAcousticFeatureExtractor'),
         'QLVMLatentInference': mocker.patch('usv_playpen.processing.preprocess_data.QLVMLatentInference'),
+        'USVNoiseDetector': mocker.patch('usv_playpen.processing.preprocess_data.USVNoiseDetector'),
+        'USVSqueakDetector': mocker.patch('usv_playpen.processing.preprocess_data.USVSqueakDetector'),
     }
     mocked_classes['Gatherer'].return_value.prepare_data_for_analyses.return_value = {}
     mocked_classes['Synchronizer'].return_value.find_audio_sync_trains.return_value = {}
@@ -715,6 +717,63 @@ def test_inhouse_usv_pipeline_dispatch_order(processing_settings, mock_dependenc
     call_names = [c[0] for c in manager.mock_calls]
     first_idx = {name: call_names.index(name) for name in ('spectrograms', 'masks', 'features', 'qlvm')}
     assert first_idx['spectrograms'] < first_idx['masks'] < first_idx['features'] < first_idx['qlvm']
+
+
+def test_squeak_detection_runs_after_das_summarize_only_when_enabled(processing_settings, mock_dependencies, tmp_path, mocker):
+    """detect_usv_squeaks is off by default; when enabled it runs once, after
+    das_summarize (which rewrites the summary with its base columns only)."""
+    assert processing_settings['processing_booleans']['detect_usv_squeaks'] is False
+
+    Stylist(
+        input_parameter_dict=processing_settings,
+        root_directories=[str(tmp_path)],
+    ).prepare_data_for_analyses()
+    mock_dependencies['USVSqueakDetector'].assert_not_called()
+
+    processing_settings['processing_booleans']['das_summarize'] = True
+    processing_settings['processing_booleans']['detect_usv_squeaks'] = True
+    manager = mocker.Mock()
+    manager.attach_mock(mock_dependencies['FindMouseVocalizations'], 'das_summary')
+    manager.attach_mock(mock_dependencies['USVSqueakDetector'], 'squeaks')
+
+    Stylist(
+        input_parameter_dict=processing_settings,
+        root_directories=[str(tmp_path)],
+    ).prepare_data_for_analyses()
+
+    mock_dependencies['USVSqueakDetector'].return_value.detect_and_merge.assert_called_once()
+    call_names = [c[0] for c in manager.mock_calls]
+    assert call_names.index('das_summary') < call_names.index('squeaks')
+
+
+def test_noise_detection_runs_after_das_summarize_and_before_squeaks(processing_settings, mock_dependencies, tmp_path, mocker):
+    """detect_usv_noise is off by default; when enabled it runs once, after das_summarize (which rewrites
+    the summary with its base columns only) and before detect_usv_squeaks, the order the summary's column
+    layout follows."""
+    assert processing_settings['processing_booleans']['detect_usv_noise'] is False
+
+    Stylist(
+        input_parameter_dict=processing_settings,
+        root_directories=[str(tmp_path)],
+    ).prepare_data_for_analyses()
+    mock_dependencies['USVNoiseDetector'].assert_not_called()
+
+    processing_settings['processing_booleans']['das_summarize'] = True
+    processing_settings['processing_booleans']['detect_usv_noise'] = True
+    processing_settings['processing_booleans']['detect_usv_squeaks'] = True
+    manager = mocker.Mock()
+    manager.attach_mock(mock_dependencies['FindMouseVocalizations'], 'das_summary')
+    manager.attach_mock(mock_dependencies['USVNoiseDetector'], 'noise')
+    manager.attach_mock(mock_dependencies['USVSqueakDetector'], 'squeaks')
+
+    Stylist(
+        input_parameter_dict=processing_settings,
+        root_directories=[str(tmp_path)],
+    ).prepare_data_for_analyses()
+
+    mock_dependencies['USVNoiseDetector'].return_value.detect_and_merge.assert_called_once()
+    call_names = [c[0] for c in manager.mock_calls]
+    assert call_names.index('das_summary') < call_names.index('noise') < call_names.index('squeaks')
 
 
 def test_inhouse_usv_pipeline_subset_gated_by_booleans(processing_settings, mock_dependencies, tmp_path):

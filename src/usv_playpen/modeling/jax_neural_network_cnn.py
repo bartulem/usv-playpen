@@ -307,8 +307,8 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
 def _output_axes_count(hp: Dict[str, Any]) -> int:
     """
     Returns the number of manifold axes the CNN predicts. The CNN
-    pipeline assumes a 2-D acoustic manifold (`vae{1,2}` /
-    `qlvm{1,2}`); this helper centralises that constant so the
+    pipeline assumes a 2-D acoustic manifold (e.g. `qlvm{1,2}` /
+    `qlvm_dur{1,2}`); this helper centralises that constant so the
     output-head sizing logic doesn't sprinkle bare `2`s through
     `init_cnn_params_and_state`, `cnn_forward`, and the loss block.
 
@@ -1410,17 +1410,21 @@ class NeuralContinuousCNNRunner:
             if preflight_labels is None:
                 raise RuntimeError(
                     f"saliency.enable=true and saliency.segmentation="
-                    f"'{preflight_seg}', but the modeling pickle does not carry "
-                    f"per-USV {preflight_seg} labels. Re-extract the data with "
-                    f"the updated pipeline (extract_and_save_continuous_data) "
-                    f"before training, or set saliency.enable=false. Failing "
-                    f"now (before Phase 1) to avoid burning training time on a "
-                    f"run that will die in Phase 3."
+                    f"'{preflight_seg}', but the modeling pickle carries no "
+                    f"per-USV {preflight_seg} labels: QLVM category labels are "
+                    f"not available (the summaries it was extracted from carry "
+                    f"no {preflight_seg} label column). Every "
+                    f"saliency segmentation is label-based, so set "
+                    f"hyperparameters.deep_learning.cnn_continuous.saliency.enable "
+                    f"to false, or re-extract the modeling pickle "
+                    f"(extract_and_save_continuous_data) from summaries that carry "
+                    f"a <prefix>_{preflight_seg} label column. Failing now "
+                    f"(before Phase 1) to avoid burning training time on a run "
+                    f"that would die in Phase 3."
                 )
             preflight_centres = derive_cluster_centers_empirically(
                 np.asarray(Y),
                 np.asarray(preflight_labels),
-                drop_label=saliency_cfg['noise_label'],
                 metric=self.manifold_metric,
                 period=self.manifold_period,
             )
@@ -1429,8 +1433,8 @@ class NeuralContinuousCNNRunner:
                     f"saliency.segmentation='{preflight_seg}' produces only "
                     f"{len(preflight_centres)} cluster centre(s) on this "
                     f"modeling pickle; need at least 2 for the alpha-gap "
-                    f"radius rule. Check the label coverage / noise_label "
-                    f"setting. Failing now (before Phase 1)."
+                    f"radius rule. Check the label coverage. Failing now "
+                    f"(before Phase 1)."
                 )
 
         n_feats = len(features)
@@ -2068,10 +2072,12 @@ class NeuralContinuousCNNRunner:
 
             if labels_all is None:
                 raise RuntimeError(
-                    f"saliency.segmentation='{segmentation}' but the modeling pickle does "
-                    f"not carry per-USV {segmentation} labels. Re-extract the data with "
-                    f"the updated pipeline (extract_and_save_continuous_data) before "
-                    f"training, or set saliency.enable=false."
+                    f"saliency.segmentation='{segmentation}' but the modeling pickle carries "
+                    f"no per-USV {segmentation} labels: QLVM category labels are not "
+                    f"available. Every saliency segmentation is label-based, so set "
+                    f"hyperparameters.deep_learning.cnn_continuous.saliency.enable to false, "
+                    f"or re-extract the modeling pickle (extract_and_save_continuous_data) "
+                    f"from summaries that carry a <prefix>_{segmentation} label column."
                 )
 
             labels_all_np = np.asarray(labels_all)
@@ -2083,7 +2089,6 @@ class NeuralContinuousCNNRunner:
             centres = derive_cluster_centers_empirically(
                 np.asarray(Y),
                 labels_all_np,
-                drop_label=saliency_cfg['noise_label'],
                 metric=self.manifold_metric,
                 period=self.manifold_period,
             )
@@ -2110,7 +2115,6 @@ class NeuralContinuousCNNRunner:
                 'segmentation': segmentation,
                 'alpha': float(saliency_cfg['alpha']),
                 'radius_mode': str(saliency_cfg['radius_mode']),
-                'noise_label': saliency_cfg['noise_label'],
                 'metric': self.manifold_metric,
                 'period': float(self.manifold_period),
                 'clusters': {

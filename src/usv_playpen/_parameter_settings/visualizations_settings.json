@@ -20,6 +20,7 @@
   },
   "shared_resources": {
     "spectrograms_dir": "/mnt/falkner/Bartul/spectrograms",
+    "qlvm_map": "qlvm",
     "input_files_directory": "/mnt/falkner/Bartul/modeling/input_files"
   },
   "credentials_directory": "",
@@ -28,6 +29,19 @@
   "social_colors": ["#5A6470"],
   "manifold_colors": ["#7B3FA0", "#C8860A"],
   "unassigned_colors": ["#C0C0C0"],
+  "session_condition_styles": {
+    "courtship_intact_partners": {
+      "color": "#CD928A",
+      "label": "courtship intact partners"
+    },
+    "courtship_mute_female": {
+      "color": "#CD928A80",
+      "label": "courtship mute female"
+    },
+    "female_female": { "color": "#FF6347", "label": "female-female" },
+    "courtship_male_male": { "color": "#9AC0CD", "label": "male-male" },
+    "lone_male": { "color": "#2A9D8F", "label": "isolated male" }
+  },
   "brain_area_colors": {
     "PAG": "#677470",
     "MRN": "#939884",
@@ -93,7 +107,6 @@
     "apply_mask": true,
     "auto_open_figure": true,
     "sequence": {
-      "embedding": "qlvm",
       "draw_boundaries": true,
       "boundary_clustering": "coarse",
       "annotate_right": false,
@@ -211,8 +224,8 @@
     "accent_color": "#00FFFF"
   },
   "embedding_thumbnails": {
-    "map_type": "qlvm",
     "category_col_suffix": "supercategory",
+    "exclude_squeaks": true,
     "n_samples_per_category": 8,
     "tile_orientation": "vertical",
     "apply_mask": true,
@@ -229,7 +242,7 @@
     "spiral_color": "#000000",
     "spiral_linewidth": 1.0,
     "spiral_radius_scale": 0.1,
-    "spiral_radius_abs": 0.1,
+    "spiral_radius_abs": 0.03,
     "spiral_n_turns": 3,
     "spiral_random_phase": true,
     "annotate_picks_on_scatter": false,

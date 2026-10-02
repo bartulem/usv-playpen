@@ -15,9 +15,9 @@ ANALYSIS_TYPE=$1
 # Define core variables
 EXPERIMENTER_ID="Name"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
-UNIVARIATE_PATH="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/univariate_results/univariate_multinomial_results.pkl"
-INPUT_DATA="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/data/modeling_male_hist4s.pkl"
-OUTPUT_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/model_selection_results"
+UNIVARIATE_PATH="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/cluster/univariate_results_multi_file/univariate_results.pkl"
+INPUT_DATA="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/modeling_UMAP_manifold_position_female_20260226_150803_hist4s.pkl"
+OUTPUT_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/cluster/model_selection_multi_file"
 
 mkdir -p logs
 

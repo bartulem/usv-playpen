@@ -444,7 +444,7 @@ class TestBoutOnsetSelectionBranches:
         ms_dir.mkdir()
 
         # The prefix the selector computes for an 'unknown' target condition.
-        prefix = 'model_selection_unknown_bout_mixed_step_'
+        prefix = 'model_selection_unknown_bout_onset_mixed_step_'
         # A checkpoint whose stored candidate ('self.speed') clears the
         # (baseline - score) > se promotion test, so resume appends it.
         checkpoint = {

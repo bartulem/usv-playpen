@@ -23,6 +23,7 @@ import matplotlib
 import numpy as np
 import pytest
 from numpy.linalg import cholesky, inv
+from scipy import stats
 from sklearn.mixture import GaussianMixture
 
 # Headless matplotlib in case any imported helper touches a backend.
@@ -34,17 +35,23 @@ from usv_playpen.analyses.mixture_model_utils import (
     IGMixture,
     TMixture,
     _sample_from_mixture,
+    _session_design_effect,
     _t_update_nu,
     bootstrap_lrt,
     fit_log_gmm,
     fit_log_ig_mixture,
     fit_log_t_mixture,
+    fit_tied_nested_by_splitting,
+    fit_tied_scale_t_mixture,
     gmm_boundaries_logspace,
     gmm_modes,
     ig_mixture_cdf_logspace,
     ig_mixture_quantile_logspace,
     plot_gmm_fit,
-    thin_seam_ladder_surplus,
+    stable_subsample,
+    t_mixture_modes,
+    tied_peak_bootstrap_lrt,
+    tied_scale_n_parameters,
 )
 
 
@@ -606,58 +613,6 @@ def test_plot_gmm_fit_bin_means_conserve_probability_mass():
     plt.close(fig)
 
 
-# ===========================================================================
-# thin_seam_ladder_surplus — seam-ladder correction
-# ===========================================================================
-
-_STRIDE_SAMPLES = 8128
-_SAMPLING_RATE = 250000
-_RUNG_MS = (_STRIDE_SAMPLES / _SAMPLING_RATE) * 1000.0   # 32.512 ms
-
-
-def _intervals_with_ladder(background_per_window: int, surplus_at_rung2: int) -> np.ndarray:
-    """Flat interval background plus an injected surplus on the second rung."""
-    rng = np.random.default_rng(0)
-    # Uniform background across 10-230 ms so every rung has comparable support.
-    background = rng.uniform(10.0, 230.0, size=background_per_window * 220)
-    rung = 2 * _RUNG_MS
-    surplus = rng.uniform(rung - 1.0, rung + 1.0, size=surplus_at_rung2)
-    return np.concatenate([background, surplus]) / 1000.0
-
-
-def test_thin_seam_ladder_removes_injected_surplus():
-    """An injected pile-up on a rung is removed, leaving the background intact."""
-    intervals = _intervals_with_ladder(background_per_window=6, surplus_at_rung2=400)
-    keep = thin_seam_ladder_surplus(
-        intervals, stride_samples=_STRIDE_SAMPLES, sampling_rate=_SAMPLING_RATE,
-        half_width_ms=1.5, max_rung=6, seed=0)
-    removed = int((~keep).sum())
-    # The injected surplus dominates what is dropped; the estimate is a count
-    # against a sampled background, so it is not expected to be exact.
-    assert 300 < removed < 500
-    assert keep.sum() == intervals.size - removed
-
-
-def test_thin_seam_ladder_is_a_noop_without_a_ladder():
-    """A distribution with no rung excess loses at most a negligible fraction."""
-    rng = np.random.default_rng(1)
-    intervals = rng.uniform(10.0, 230.0, size=20000) / 1000.0
-    keep = thin_seam_ladder_surplus(
-        intervals, stride_samples=_STRIDE_SAMPLES, sampling_rate=_SAMPLING_RATE,
-        half_width_ms=1.5, max_rung=6, seed=0)
-    assert (~keep).mean() < 0.01
-
-
-def test_thin_seam_ladder_keeps_mask_shape_and_dtype():
-    """The return is a boolean mask aligned to the input array."""
-    intervals = _intervals_with_ladder(background_per_window=3, surplus_at_rung2=50)
-    keep = thin_seam_ladder_surplus(
-        intervals, stride_samples=_STRIDE_SAMPLES, sampling_rate=_SAMPLING_RATE,
-        half_width_ms=1.5, max_rung=6, seed=3)
-    assert keep.dtype == bool
-    assert keep.shape == intervals.shape
-
-
 @pytest.mark.parametrize("fitter", [fit_log_gmm, fit_log_t_mixture])
 def test_x_is_log_matches_the_seconds_route(fitter):
     """Passing log-space values with x_is_log=True is equivalent to passing the
@@ -692,3 +647,275 @@ def test_x_is_log_survives_a_draw_that_overflows_exp(fitter):
 
     model, _ = fitter(log_x, 2, seed=0, n_init=1, x_is_log=True)
     assert np.isfinite(np.ravel(model.means_)).all()
+
+
+# ===========================================================================
+# stable_subsample — the value-keyed draw used by bootstrap_lrt
+# ===========================================================================
+
+
+def _multiset_overlap(left, right):
+    """How many points two draws share, counting repeats (interval values tie often)."""
+    left_values, left_counts = np.unique(left, return_counts=True)
+    right_values, right_counts = np.unique(right, return_counts=True)
+    positions = np.searchsorted(right_values, left_values)
+    positions[positions == right_values.size] = 0
+    matched = right_values[positions] == left_values
+    return int(np.minimum(left_counts[matched], right_counts[positions[matched]]).sum())
+
+
+def test_stable_subsample_is_deterministic_and_seed_dependent():
+    """The same pool and seed give the same draw every time, and a different seed gives a
+    different one, so a run is reproducible without being locked to one arbitrary sample."""
+    pool = np.random.default_rng(1).lognormal(-2.7, 1.0, 5000)
+    assert np.array_equal(stable_subsample(pool, 1000, 0), stable_subsample(pool, 1000, 0))
+    assert not np.array_equal(stable_subsample(pool, 1000, 0), stable_subsample(pool, 1000, 1))
+
+
+def test_stable_subsample_returns_everything_when_pool_is_small():
+    """A pool no larger than the requested size is returned whole, matching bootstrap_lrt's
+    previous behaviour of skipping the draw entirely."""
+    pool = np.random.default_rng(2).lognormal(-2.7, 1.0, 40)
+    drawn = stable_subsample(pool, 1000, 0)
+    assert drawn.size == 40
+    assert _multiset_overlap(drawn, pool) == 40
+
+
+def test_stable_subsample_survives_deletions_that_reroll_rng_choice():
+    """The point of the value-keyed draw: deleting a small share of the pool removes about that
+    share of the subsample, where rng.choice — which picks POSITIONS — re-rolls most of it because
+    every element after the deletion shifts. This discontinuity is what let a 1.4% change in the
+    interval pool flip the selected component count."""
+    pool = np.round(np.random.default_rng(3).lognormal(-2.7, 1.0, 20000), 9)
+    keep = np.ones(pool.size, dtype=bool)
+    keep[np.random.default_rng(4).choice(pool.size, size=200, replace=False)] = False   # 1%
+
+    keyed_before = stable_subsample(pool, 4000, 0)
+    keyed_after = stable_subsample(pool[keep], 4000, 0)
+    positional_before = np.random.default_rng(0).choice(pool, size=4000, replace=False)
+    positional_after = np.random.default_rng(0).choice(pool[keep], size=4000, replace=False)
+
+    assert _multiset_overlap(keyed_before, keyed_after) > 3800          # > 95% retained
+    assert _multiset_overlap(positional_before, positional_after) < 2000  # < 50% retained
+
+
+def test_stable_subsample_is_representative_of_the_pool():
+    """The draw must stay a uniform subsample, not a stratified or biased one, or the bootstrap
+    null it is compared against would no longer apply. A two-sample KS test against the full pool
+    does not reject at any of several seeds."""
+    pool = np.random.default_rng(5).lognormal(-2.7, 1.0, 40000)
+    for seed in range(5):
+        _, p_value = stats.ks_2samp(stable_subsample(pool, 5000, seed), pool)
+        assert p_value > 0.01
+
+
+def test_t_mixture_modes_recovers_two_separated_modes():
+    """Well-separated components each own a mode, and the returned densities are sorted
+    descending, matching :func:`gmm_modes`' contract."""
+    model = TMixture(
+        weights=np.array([0.6, 0.4]),
+        means=np.array([-2.8, 0.5]),
+        covariances=np.array([0.04, 0.04]),
+        nus=np.array([8.0, 8.0]),
+    )
+    modes, densities = t_mixture_modes(model)
+
+    assert modes.size == 2
+    assert np.allclose(np.sort(modes), [-2.8, 0.5], atol=1e-3)
+    assert densities[0] >= densities[1]
+
+
+def test_t_mixture_modes_are_fewer_than_components_when_overlapping():
+    """The reason this function exists: overlapping components tile one peak rather than marking
+    several. Three components spaced well inside their own scale produce a single local maximum,
+    so reporting component locations as modes would invent two peaks the density does not have."""
+    model = TMixture(
+        weights=np.array([0.5, 0.3, 0.2]),
+        means=np.array([-2.80, -2.60, -2.40]),
+        covariances=np.array([0.25, 0.25, 0.25]),
+        nus=np.array([6.0, 6.0, 6.0]),
+    )
+    modes, _ = t_mixture_modes(model)
+
+    assert modes.size == 1
+    assert modes.size < model.means_.shape[0]
+
+
+def test_t_mixture_modes_match_a_brute_force_grid():
+    """The Newton polish must not move a peak off the density's actual maximum, so every mode is
+    checked against a dense independent grid evaluated straight from the mixture."""
+    model = TMixture(
+        weights=np.array([0.70, 0.18, 0.12]),
+        means=np.array([-2.77, -1.75, 2.30]),
+        covariances=np.array([0.09, 0.05, 0.40]),
+        nus=np.array([5.0, 9.0, 12.0]),
+    )
+    modes, _ = t_mixture_modes(model)
+
+    grid = np.linspace(-8.0, 8.0, 400001)
+    log_p = model.score_samples(grid)
+    peaks = grid[np.flatnonzero((log_p[1:-1] > log_p[:-2]) & (log_p[1:-1] > log_p[2:])) + 1]
+
+    assert modes.size == peaks.size
+    assert np.allclose(np.sort(modes), np.sort(peaks), atol=1e-3)
+
+
+def test_fit_tied_scale_t_mixture_ties_peak_scales_only():
+    """Peak components must come back sharing one width while background components keep their
+    own, which is the entire point of the constraint."""
+    rng = np.random.default_rng(0)
+    pool = np.concatenate([
+        rng.normal(-2.77, 0.24, 6000),
+        rng.normal(-1.72, 0.24, 800),
+        rng.normal(-0.5, 1.2, 1500),
+    ])
+    model, _, shared = fit_tied_scale_t_mixture(pool, n_peak=2, n_background=1, n_init=2)
+    scales = np.sqrt(np.asarray(model.covariances_, dtype=float).ravel())
+
+    assert scales[0] == pytest.approx(scales[1], rel=1e-9)
+    assert shared == pytest.approx(scales[0], rel=1e-9)
+    assert scales[2] != pytest.approx(scales[0], rel=1e-3)
+
+
+def test_fit_tied_scale_t_mixture_finds_a_far_secondary_peak_from_one_init():
+    """The density-seeded start exists so a small, distant second peak is found without random
+    luck. Seeding by quantile spread put both peaks on the dominant mode instead, 166 nats short
+    on the real pool, so a single initialisation must recover both generative locations."""
+    rng = np.random.default_rng(1)
+    pool = np.concatenate([
+        rng.normal(-2.77, 0.24, 8000),   # ~63 ms
+        rng.normal(-1.72, 0.24, 700),    # ~179 ms, far out and lightly weighted
+        rng.normal(-0.2, 1.3, 2000),
+    ])
+    model, _, _ = fit_tied_scale_t_mixture(pool, n_peak=2, n_background=1, n_init=1)
+    peaks = np.sort(np.asarray(model.means_, dtype=float).ravel()[:2])
+
+    assert peaks[0] == pytest.approx(-2.77, abs=0.15)
+    assert peaks[1] == pytest.approx(-1.72, abs=0.25)
+
+
+def test_fit_tied_nested_by_splitting_never_scores_below_its_base():
+    """A peak split into two halves at the parent's location describes the same density, so the
+    alternative starts at the null's likelihood and can only rise. Without this the peak-count
+    null was contaminated by 17.1% negative replicates."""
+    rng = np.random.default_rng(2)
+    pool = np.concatenate([rng.normal(-2.8, 0.25, 4000), rng.normal(-0.4, 1.1, 1200)])
+    base, base_ll, _ = fit_tied_scale_t_mixture(pool, n_peak=2, n_background=1, n_init=2)
+    _, split_ll, _ = fit_tied_nested_by_splitting(pool, base, n_peak=2, n_background=1, n_init=1)
+
+    assert split_ll >= base_ll - 1e-6
+
+
+def test_tied_scale_n_parameters_charges_one_scale_for_all_peaks():
+    """A tied peak costs two parameters where a free component costs three; BIC comparisons
+    against an unconstrained mixture are only honest if that is counted."""
+    # 3 peaks + 2 background: 5 weights - 1, 5 means, 5 nus, and 2 + 1 = 3 scales.
+    assert tied_scale_n_parameters(3, 2) == 4 + 5 + 5 + 3
+    assert tied_scale_n_parameters(1, 1) == 1 + 2 + 2 + 2
+
+
+def test_fit_tied_scale_t_mixture_rejects_a_missing_role():
+    """Both roles are required: with no background the tail has nowhere to go, and with no peak
+    the constraint is meaningless."""
+    pool = np.random.default_rng(3).normal(-2.0, 0.5, 500)
+    with pytest.raises(ValueError, match="at least one peak"):
+        fit_tied_scale_t_mixture(pool, n_peak=2, n_background=0, n_init=1)
+    with pytest.raises(ValueError, match="at least one peak"):
+        fit_tied_scale_t_mixture(pool, n_peak=0, n_background=2, n_init=1)
+
+
+def test_stable_subsample_return_indices_aligns_with_values():
+    """The indices exist so per-observation labels can follow a subsample into a test; they are
+    only useful if ``values[indices]`` is exactly the subsample, in order."""
+    pool = np.random.default_rng(6).lognormal(-2.7, 1.0, 5000)
+    subsample, indices = stable_subsample(pool, 800, 0, return_indices=True)
+
+    assert indices.shape == (800,)
+    assert np.array_equal(pool[indices], subsample)
+    assert np.array_equal(subsample, stable_subsample(pool, 800, 0))
+
+
+def test_stable_subsample_return_indices_on_small_pool():
+    """A pool no larger than the request is returned whole, and the indices must then be the
+    identity so labels still line up."""
+    pool = np.random.default_rng(7).lognormal(-2.7, 1.0, 300)
+    subsample, indices = stable_subsample(pool, 800, 0, return_indices=True)
+
+    assert subsample.size == 300
+    assert np.array_equal(indices, np.arange(300))
+
+
+def test_session_design_effect_is_one_for_independent_data():
+    """With no within-session correlation, resampling sessions and resampling observations give the
+    same variance, so the design effect must sit at one. This is the baseline the correction has to
+    leave alone."""
+    rng = np.random.default_rng(8)
+    delta = rng.normal(0.0, 1.0, 12000)
+    session_index = np.repeat(np.arange(120), 100)
+    design_effect, _, _ = _session_design_effect(delta, session_index, n_bootstrap=1500, seed=0)
+
+    assert design_effect == pytest.approx(1.0, abs=0.2)
+
+
+def test_session_design_effect_grows_with_session_level_shifts():
+    """When every observation in a session shares a common offset, the statistic's variance under
+    session resampling exceeds the iid one, and the design effect must say so. A shift with
+    variance equal to the noise variance and 100 observations per session gives an intra-class
+    correlation of 0.5 and a design effect near 1 + 99 * 0.5."""
+    rng = np.random.default_rng(9)
+    n_sessions, per_session = 120, 100
+    offsets = rng.normal(0.0, 1.0, n_sessions)
+    delta = np.repeat(offsets, per_session) + rng.normal(0.0, 1.0, n_sessions * per_session)
+    session_index = np.repeat(np.arange(n_sessions), per_session)
+    design_effect, clustered_se, independent_se = _session_design_effect(
+        delta, session_index, n_bootstrap=1500, seed=0)
+
+    assert clustered_se > independent_se
+    assert 25.0 < design_effect < 80.0
+
+
+def test_tied_peak_bootstrap_lrt_floors_design_effect_at_one():
+    """With a handful of sessions the session bootstrap can return a design effect below one,
+    which would inflate the statistic the correction exists to shrink. The reported effect must
+    never fall below one, and the corrected statistic must never exceed the raw one."""
+    rng = np.random.default_rng(10)
+    pool = np.exp(np.concatenate([rng.normal(-2.77, 0.24, 1600), rng.normal(-1.7, 0.24, 200),
+                                  rng.normal(-0.5, 1.2, 400)]))
+    labels = np.repeat(np.arange(4), pool.size // 4 + 1)[:pool.size]
+    result = tied_peak_bootstrap_lrt(pool, 1, 1, B=4, n_subsample=2000, n_init_obs=1,
+                                     n_init_boot=1, seed=0, session_labels=labels,
+                                     n_design_bootstrap=100)
+
+    assert result["design_effect"] >= 1.0
+    assert result["lr_corrected"] <= result["lr_obs"] + 1e-9
+
+
+def test_bootstrap_lrt_session_correction_matches_its_own_statistic():
+    """
+    With session labels, the unconstrained test corrects its own statistic: the design effect is
+    floored at one, the corrected statistic is exactly lr_obs / design_effect, the corrected
+    p-value scores it against the same null, and the uncorrected fields are identical to a run
+    without labels (up to floating-point reduction order). Misaligned labels raise instead of
+    being silently truncated.
+    """
+    rng = np.random.default_rng(3)
+    pool = np.exp(np.concatenate([rng.normal(-2.7, 0.25, 1500), rng.normal(0.0, 1.2, 700)]))
+    labels = np.repeat(np.arange(20), pool.size // 20 + 1)[:pool.size]
+    kwargs = dict(K_null=2, K_alt=3, B=4, n_subsample=1500, model_class="t", n_init_obs=1,
+                  n_init_boot=1, seed=0)
+    plain = bootstrap_lrt(pool, **kwargs)
+    corrected = bootstrap_lrt(pool, **kwargs, session_labels=labels, n_design_bootstrap=100)
+
+    assert "lr_corrected" not in plain
+    # identical up to floating-point reduction order in the EM fits
+    for key in ("lr_obs", "p_value", "null_mean", "null_p95", "null_max"):
+        assert corrected[key] == pytest.approx(plain[key], rel=1e-9)
+    np.testing.assert_allclose(corrected["lr_null"], plain["lr_null"], rtol=1e-9)
+    assert corrected["design_effect"] >= 1.0
+    assert corrected["lr_corrected"] == pytest.approx(corrected["lr_obs"] / corrected["design_effect"])
+    assert corrected["p_value_corrected"] == pytest.approx(
+        float(np.mean(corrected["lr_null"] >= corrected["lr_corrected"])))
+    assert corrected["p_value_corrected"] >= corrected["p_value"]
+
+    with pytest.raises(ValueError, match="session_labels has"):
+        bootstrap_lrt(pool, **kwargs, session_labels=labels[:-1], n_design_bootstrap=10)

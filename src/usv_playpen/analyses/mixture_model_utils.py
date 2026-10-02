@@ -12,8 +12,16 @@ Two mixture families are supported in this module:
 * **Student-t mixtures** (custom :class:`TMixture` + EM): see
   :func:`fit_log_t_mixture`, :func:`t_mixture_icl`,
   :func:`t_mixture_cv_neg_loglik`, :func:`report_t_mixture_stats`,
-  :func:`summarize_best_t_mixture`, :func:`t_mixture_cdf_logspace`,
+  :func:`t_mixture_modes`, :func:`summarize_best_t_mixture`,
+  :func:`t_mixture_cdf_logspace`,
   :func:`t_mixture_quantile_logspace`.
+* **Tied-scale ("peaks plus background") t-mixtures**, in which a subset
+  of components share one fitted width and the rest stay free: see
+  :func:`fit_tied_scale_t_mixture`, :func:`fit_tied_nested_by_splitting`,
+  :func:`tied_scale_n_parameters` and :func:`tied_peak_bootstrap_lrt`.
+  These return ordinary :class:`TMixture` objects, so every reader above
+  (modes, CDF, quantiles, BIC) applies unchanged -- but their component
+  ORDER is role-based (peaks first) rather than sorted by location.
 * **Parametric bootstrap likelihood-ratio test (LRT)** for the number
   of components (family-agnostic, dispatches on ``model_class``): see
   :func:`bootstrap_lrt` and :func:`select_n_components_step_up_lrt`
@@ -1394,90 +1402,6 @@ class TMixture:
         return -2.0 * log_lik_total + 2.0 * self._n_params()
 
 
-def thin_seam_ladder_surplus(
-    intervals_sec: np.ndarray,
-    stride_samples: int,
-    sampling_rate: int,
-    half_width_ms: float,
-    max_rung: int,
-    seed: int = 0,
-) -> np.ndarray:
-    """
-    Description
-    -----------
-    Removes the inter-USV intervals a non-overlapping DAS window tiling adds at
-    exact multiples of its stride, returning a boolean keep-mask.
-
-    A legacy DAS model that tiled its input without overlap judged each window
-    without acoustic context from its neighbours, so the faint edges of calls
-    flanking a real pause were clipped to the window seams. Every such pause is
-    recorded with a width close to a whole number of strides, which piles a
-    surplus of intervals onto a ladder of discrete values -- for the shipped
-    model, multiples of 32.512 ms. The surplus is an instrument artifact, and a
-    mixture model fitted to the raw intervals will spend a component describing
-    it: at ``K = 4`` the male end-to-start distribution otherwise places a
-    1.7%-weight component 3 ms from the main peak, on the ladder's second rung.
-
-    Whole rung windows must NOT simply be deleted. The second rung falls inside
-    the main peak of the distribution, so cutting a window out of it removes a
-    slice of the very feature being measured and the fit responds by straddling
-    the hole. Instead each rung window is thinned down to the density of the
-    region either side of it: only the measured excess is dropped, at random,
-    and the rest is kept, so the peak keeps its shape.
-
-    Parameters
-    ----------
-    intervals_sec (np.ndarray)
-        Strictly positive inter-USV intervals, in seconds.
-    stride_samples (int)
-        Window-stitching stride (samples) of the model that produced the
-        annotations -- the same value the seam repair keys on.
-    sampling_rate (int)
-        Audio sampling rate (Hz) the stride refers to.
-    half_width_ms (float)
-        Half-width (ms) of the window taken around each rung.
-    max_rung (int)
-        Highest stride multiple corrected.
-    seed (int)
-        Seed for choosing which of a rung's intervals to drop. The components
-        recovered are stable across seeds; the seed only fixes which individual
-        intervals go.
-
-    Returns
-    -------
-    keep (np.ndarray)
-        Boolean mask over ``intervals_sec``; ``False`` marks an interval
-        removed as ladder surplus.
-    """
-
-    milliseconds = np.asarray(intervals_sec, dtype=float) * 1000.0
-    rung_spacing_ms = (stride_samples / sampling_rate) * 1000.0
-    generator = np.random.default_rng(seed)
-    keep = np.ones(milliseconds.size, dtype=bool)
-
-    for multiple in range(1, max_rung + 1):
-        rung = rung_spacing_ms * multiple
-        in_window = np.flatnonzero((milliseconds >= rung - half_width_ms) &
-                                   (milliseconds <= rung + half_width_ms))
-        if in_window.size == 0:
-            continue
-        # Local background: equal-width windows offset either side of the rung,
-        # far enough not to overlap it but close enough to share its density.
-        background = float(np.mean([
-            ((milliseconds >= rung + offset - half_width_ms) &
-             (milliseconds <= rung + offset + half_width_ms)).sum()
-            for offset in (-3.0 * half_width_ms, -2.0 * half_width_ms,
-                           2.0 * half_width_ms, 3.0 * half_width_ms)
-        ]))
-        surplus = int(round(in_window.size - background))
-        if surplus <= 0:
-            continue
-        keep[generator.choice(in_window, size=min(surplus, in_window.size),
-                              replace=False)] = False
-
-    return keep
-
-
 def fit_log_t_mixture(
     x: np.ndarray,
     n_components: int,
@@ -1487,6 +1411,8 @@ def fit_log_t_mixture(
     tol: float = 1e-5,
     reg_covar: float = 1e-4,
     x_is_log: bool = False,
+    init_params: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None = None,
+    min_component_log_mean: float | None = None,
 ) -> tuple[TMixture, np.ndarray]:
     """
     Description
@@ -1497,6 +1423,12 @@ def fit_log_t_mixture(
     :func:`fit_log_gmm`). Each component's degrees-of-freedom ``nu`` is
     updated each M-step by 1D root-finding (Brent's method on the
     standard ν-update equation).
+
+    Passing ``init_params`` adds one further start from an explicit
+    parameter set, and the best of all starts is still what is returned.
+    :func:`fit_nested_by_splitting` uses it to start a ``K+1`` fit from a
+    ``K`` solution, which is what keeps a nested likelihood ratio from
+    going negative.
 
     Heavy tails are absorbed in single components when ``nu`` is small
     (~3-10); when ``nu`` is large (>= 50) the corresponding component
@@ -1524,6 +1456,16 @@ def fit_log_t_mixture(
     reg_covar (float)
         Lower bound on component variance to prevent singular fits;
         defaults to 1e-4 (matches :func:`fit_log_gmm`).
+    init_params (tuple or None)
+        Optional ``(weights, means, variances, nus)`` start, each of
+        shape ``(n_components,)``, run as one additional initialisation
+        alongside the ``n_init`` random ones; defaults to None.
+    min_component_log_mean (float or None)
+        Lower bound (LOG units) on every component mean. Restarts that
+        place a component below it are discarded whatever their
+        likelihood, so the fit cannot buy score by describing a region
+        the instrument controls rather than the animal. Defaults to
+        None, which imposes no bound.
 
     Returns
     -------
@@ -1541,24 +1483,33 @@ def fit_log_t_mixture(
     best_model: TMixture | None = None
     best_ll = -np.inf
 
-    for ii in range(n_init):
+    for ii in range(n_init + (1 if init_params is not None else 0)):
         # Same restart-diversity scheme as fit_log_ig_mixture: KMeans once,
         # seeded quantile-drawn centers for the remaining restarts (KMeans is
         # seed-insensitive on large samples, collapsing multi-start to one).
-        if ii == 0:
+        if ii == n_init and init_params is not None:
+            # The explicit start, run last so it never displaces a random restart.
+            w, mu, sigma2, nu = (np.asarray(p, dtype=float).ravel().copy() for p in init_params)
+            sigma2 = np.maximum(sigma2, reg_covar)
+        elif ii == 0:
             km = KMeans(n_clusters=n_components, random_state=seed, n_init=10).fit(log_x.reshape(-1, 1))
             labels = km.labels_
             mu = km.cluster_centers_.flatten()
+            sigma2 = np.array([max(np.var(log_x[labels == k]) if np.any(labels == k) else np.var(log_x), reg_covar) for k in range(n_components)])
+            nu = np.full(n_components, 10.0)
+            w = np.array([np.mean(labels == k) for k in range(n_components)])
+            w = np.where(w < 1e-3, 1e-3, w)
+            w = w / w.sum()
         else:
             rng_init = np.random.default_rng((seed, ii))
             qs = np.sort(rng_init.uniform(0.02, 0.98, size=n_components))
             mu = np.quantile(log_x, qs)
             labels = np.argmin(np.abs(log_x[:, None] - mu[None, :]), axis=1)
-        sigma2 = np.array([max(np.var(log_x[labels == k]) if np.any(labels == k) else np.var(log_x), reg_covar) for k in range(n_components)])
-        nu = np.full(n_components, 10.0)
-        w = np.array([np.mean(labels == k) for k in range(n_components)])
-        w = np.where(w < 1e-3, 1e-3, w)
-        w = w / w.sum()
+            sigma2 = np.array([max(np.var(log_x[labels == k]) if np.any(labels == k) else np.var(log_x), reg_covar) for k in range(n_components)])
+            nu = np.full(n_components, 10.0)
+            w = np.array([np.mean(labels == k) for k in range(n_components)])
+            w = np.where(w < 1e-3, 1e-3, w)
+            w = w / w.sum()
 
         prev_ll = -np.inf
         for it in range(max_iter):
@@ -1599,16 +1550,439 @@ def fit_log_t_mixture(
         ])
         final_ll = float(np.sum(np.logaddexp.reduce(final_log_w_pdf, axis=0)))
 
+        # A restart that places a component BELOW min_component_log_mean is rejected outright,
+        # however well it scores. On the male end-to-start pool everything under the dominant
+        # ~63 ms mode is instrument rather than biology -- the segmenter's 15 ms gap-fill censors
+        # that region and the DAS seam piles intervals onto 16.384 ms -- so a component there is
+        # fitted to artifacts. The highest-likelihood K=5 solution is exactly that: a 0.7%-weight
+        # spike at 28.8 ms, which beats every alternative by 42.7 nats and would hand the modeling
+        # pipeline (which reads component 0) a 36 ms inter-bout threshold in place of 122 ms.
+        if min_component_log_mean is not None and np.min(mu) < min_component_log_mean:
+            continue
+
         if final_ll > best_ll:
             best_ll = final_ll
             best_model = TMixture(weights=w, means=mu, covariances=sigma2, nus=nu)
 
     if best_model is None:
-        # Should never happen because n_init >= 1, but be defensive.
-        raise RuntimeError("fit_log_t_mixture: EM did not produce a valid fit.")
+        message = ("fit_log_t_mixture: EM did not produce a valid fit."
+                   if min_component_log_mean is None else
+                   f"fit_log_t_mixture: every one of the {n_init} restarts placed a component below "
+                   f"min_component_log_mean={min_component_log_mean:.4f} "
+                   f"(={np.exp(min_component_log_mean):.4f} s) at n_components={n_components}. "
+                   "Either the bound is above real structure or this component count cannot be fitted "
+                   "without one; it is not silently relaxed.")
+        raise RuntimeError(message)
 
     order = np.argsort(best_model.means_.flatten())
     return best_model, order
+
+
+def fit_nested_by_splitting(
+    log_x: np.ndarray,
+    base_model: TMixture,
+    n_init: int = 10,
+    seed: int = 0,
+    reg_covar: float = 1e-4,
+    split_delta: float = 0.5,
+) -> tuple[TMixture, float]:
+    """
+    Description
+    -----------
+    Fits a ``K+1``-component t-mixture that is guaranteed not to be worse
+    than the supplied ``K``-component one, by starting it from that fit.
+
+    Random restarts give the ``K+1`` model no knowledge of the ``K`` model
+    it will be compared against, and on real interval pools that fails
+    badly: the male end-to-start ``K=5`` fit lands 15.9 nats short of the
+    optimum it reaches with 200 restarts, which collapses ``LR(4 vs 5)``
+    from 33.5 to 2.2 and makes the step-up rule accept ``K=4`` because the
+    alternative was never fitted. Inside the bootstrap the same failure
+    turns 28.9% of that rung's null replicates NEGATIVE, which is
+    impossible for nested models.
+
+    Splitting one component into two copies of half its weight leaves the
+    density unchanged, so that start carries exactly the parent's
+    log-likelihood and EM can only climb from it. An undisturbed duplicate
+    is a saddle point EM cannot leave, so each split is also tried with the
+    copies pulled ``+-split_delta`` standard deviations apart; every
+    component is tried as the split candidate, and ordinary random restarts
+    are kept in the comparison, so the result is never worse than what the
+    unassisted fit would have produced.
+
+    Parameters
+    ----------
+    log_x (np.ndarray)
+        A (n_samples,) ndarray of log-space observations.
+    base_model (TMixture)
+        The fitted ``K``-component mixture to split.
+    n_init (int)
+        Random restarts for the ``K+1`` fit; defaults to 10.
+    seed (int)
+        Seed forwarded to the random restarts; defaults to 0.
+    reg_covar (float)
+        Component variance floor; defaults to 1e-4.
+    split_delta (float)
+        Separation of a split pair, in units of the parent component's
+        standard deviation; defaults to 0.5.
+
+    Returns
+    -------
+    model (TMixture)
+        The best ``K+1``-component mixture found.
+    log_likelihood (float)
+        Its log-likelihood on ``log_x``.
+    """
+
+    weights = np.asarray(base_model.weights_, dtype=float).ravel()
+    means = np.asarray(base_model.means_, dtype=float).ravel()
+    variances = np.asarray(base_model.covariances_, dtype=float).ravel()
+    nus = np.asarray(base_model.nus_, dtype=float).ravel()
+    n_alt = weights.size + 1
+
+    best_model, _ = fit_log_t_mixture(log_x, n_alt, seed=seed, n_init=n_init,
+                                      reg_covar=reg_covar, x_is_log=True)
+    best_ll = float(np.sum(best_model.score_samples(log_x.reshape(-1, 1))))
+
+    for index in range(weights.size):
+        for offset in (0.0, split_delta):
+            sigma = np.sqrt(variances[index])
+            start = (
+                np.concatenate([np.delete(weights, index), [weights[index] / 2.0] * 2]),
+                np.concatenate([np.delete(means, index),
+                                [means[index] - offset * sigma, means[index] + offset * sigma]]),
+                np.concatenate([np.delete(variances, index), [variances[index]] * 2]),
+                np.concatenate([np.delete(nus, index), [nus[index]] * 2]),
+            )
+            candidate, _ = fit_log_t_mixture(log_x, n_alt, seed=seed, n_init=0,
+                                             reg_covar=reg_covar, x_is_log=True,
+                                             init_params=start)
+            candidate_ll = float(np.sum(candidate.score_samples(log_x.reshape(-1, 1))))
+            if candidate_ll > best_ll:
+                best_model, best_ll = candidate, candidate_ll
+
+    return best_model, best_ll
+
+
+def fit_tied_scale_t_mixture(
+    log_x: np.ndarray,
+    n_peak: int,
+    n_background: int,
+    seed: int = 0,
+    n_init: int = 10,
+    max_iter: int = 500,
+    tol: float = 1e-6,
+    reg_covar: float = 1e-4,
+    init_params: tuple | None = None,
+) -> tuple[TMixture, float, float]:
+    """
+    Description
+    -----------
+    Fits a Student-t mixture in which the first ``n_peak`` components share a single
+    fitted scale and the remaining ``n_background`` components keep free scales.
+
+    An unconstrained mixture makes every component do one job, and on inter-USV interval
+    pools there are not enough jobs to go round. The male end-to-start distribution is a
+    narrow peak near 62 ms, a second narrow peak near 180 ms, and a broad background
+    running from ~100 ms to 60 s. At ``K = 4`` two components are spent on the far tail
+    and one on the first peak, so the single component left to cover everything between
+    comes back at ``sigma = 0.869`` -- nearly four times the width of the first peak. It
+    is not a peak but filler, the second peak is never resolved, and each additional
+    component the step-up LRT buys claws back a little of that misfit without ever
+    fixing it, which drives the selected component count to the top of the grid.
+
+    Separating the roles removes the cause rather than penalising the symptom. Peaks are
+    constrained to a common width, which is also a physiological claim worth testing --
+    respiratory-locked events should show comparable log-scatter -- and the shared value
+    is a fitted quantity that can be reported. Background components stay free and carry
+    the tail.
+
+    The E-step is the ordinary Peel & McLachlan one. The M-step differs in a single
+    place: the peak components' variances are replaced by their pooled value,
+
+        sigma2_peak = sum_{k in peaks} sum_i z_ik u_ik (x_i - mu_k)^2
+                      / sum_{k in peaks} n_k ,
+
+    which is the standard homoscedastic-mixture update applied to a subset of components
+    rather than to all of them. The practical consequence is that splitting a peak buys
+    almost nothing: the halves are forced to the same width and land on top of each
+    other, so the likelihood gradient that drives the component count upward is gone.
+
+    Component ORDER is meaningful here and is not sorted: indices ``0 .. n_peak-1`` are
+    the tied peaks and the rest are background. Callers that need ascending locations
+    must sort a copy and keep the role mapping themselves.
+
+    Parameters
+    ----------
+    log_x (np.ndarray)
+        A (n_samples,) shape ndarray of log-space observations.
+    n_peak (int)
+        Number of narrow components sharing one scale; must be >= 1.
+    n_background (int)
+        Number of free-scale components; must be >= 1.
+    seed (int)
+        Seed for the random restarts; defaults to 0.
+    n_init (int)
+        Number of random restarts; defaults to 10. May be 0 when
+        ``init_params`` is supplied.
+    max_iter (int)
+        Maximum EM iterations per restart; defaults to 500.
+    tol (float)
+        Convergence tolerance on the log-likelihood; defaults to 1e-6.
+    reg_covar (float)
+        Lower bound on any component variance; defaults to 1e-4.
+    init_params (tuple or None)
+        Optional ``(weights, means, variances, nus)`` start, each of shape
+        ``(n_peak + n_background,)`` with peak components first, run as one
+        additional restart. Supplying the null fit's parameters (or a split of
+        them) makes the attained likelihood at least that of the start, which is
+        what keeps a nested comparison from returning a negative ratio.
+        Defaults to None.
+
+    Returns
+    -------
+    model (TMixture)
+        The best-scoring fit, peak components first.
+    log_likelihood (float)
+        Its total log-likelihood.
+    shared_scale (float)
+        The fitted common peak standard deviation, in log units.
+    """
+
+    if n_peak < 1 or n_background < 1:
+        msg = (f"fit_tied_scale_t_mixture requires at least one peak and one background "
+               f"component, got n_peak={n_peak}, n_background={n_background}.")
+        raise ValueError(msg)
+
+    log_x = np.asarray(log_x, dtype=float).ravel()
+    n_components = n_peak + n_background
+    peaks = np.arange(n_peak)
+    n_samples = log_x.size
+    best_model, best_ll, best_scale = None, -np.inf, np.nan
+
+    for restart in range(n_init + (1 if init_params is not None else 0)):
+        if restart == n_init and init_params is not None:
+            w, mu, sigma2, nu = (np.asarray(p, dtype=float).ravel().copy() for p in init_params)
+            sigma2 = np.maximum(sigma2, reg_covar)
+            # The tie has to hold from iteration zero, or the first E-step is computed
+            # under a model this function cannot represent and the monotonicity that
+            # makes a split start safe no longer holds.
+            sigma2[peaks] = float(np.mean(sigma2[peaks]))
+            w = w / w.sum()
+        elif restart == 0:
+            # One deterministic start with peaks placed AT the empirical density's local
+            # maxima. Neither randomly drawn nor evenly spaced quantile starts work here:
+            # a secondary peak can carry little mass and sit far out (the male end-to-start
+            # one is at 180 ms against a 70 ms median), so any scheme that spreads by
+            # quantile puts every peak in the dense core and EM then pulls them onto the
+            # same mode. Measured on that pool, a quantile-spread start returned BOTH peaks
+            # stacked at 55 and 70 ms, 166 nats short of the optimum. Seeding from the
+            # smoothed histogram's maxima puts a peak component where a peak actually is,
+            # which is the one thing a location-spreading heuristic cannot guarantee.
+            peak_quantiles = np.linspace(0.15, 0.9, n_peak)
+            seeds_log = np.quantile(log_x, peak_quantiles)
+            counts, edges = np.histogram(log_x, bins=512)
+            centers = 0.5 * (edges[:-1] + edges[1:])
+            kernel = np.exp(-0.5 * (np.arange(-8, 9) / 3.0) ** 2)
+            smoothed = np.convolve(counts.astype(float), kernel / kernel.sum(), mode="same")
+            maxima = np.flatnonzero((smoothed[1:-1] > smoothed[:-2])
+                                    & (smoothed[1:-1] > smoothed[2:])) + 1
+            if maxima.size:
+                # Highest-density maxima first, then restored to ascending location so the
+                # peak block stays ordered the way every reader of this model expects.
+                chosen = maxima[np.argsort(smoothed[maxima])[::-1]][:n_peak]
+                found = np.sort(centers[chosen])
+                seeds_log[:found.size] = found
+            mu = np.concatenate([seeds_log,
+                                 np.quantile(log_x, np.linspace(0.4, 0.97, n_background))])
+            total_variance = float(np.var(log_x))
+            sigma2 = np.concatenate([np.full(n_peak, max(total_variance * 0.05, reg_covar)),
+                                     np.full(n_background, total_variance)])
+            nu = np.concatenate([np.full(n_peak, 10.0), np.full(n_background, 5.0)])
+            w = np.full(n_components, 1.0 / n_components)
+        else:
+            rng_init = np.random.default_rng((seed, restart))
+            # Peaks start inside the body of the distribution and background wide, so the
+            # two roles are distinguishable from the outset; left to discover the split
+            # unaided, EM frequently converges with every component playing the same role.
+            peak_quantiles = np.sort(rng_init.uniform(0.05, 0.95, size=n_peak))
+            background_quantiles = np.sort(rng_init.uniform(0.35, 0.98, size=n_background))
+            mu = np.concatenate([np.quantile(log_x, peak_quantiles),
+                                 np.quantile(log_x, background_quantiles)])
+            total_variance = float(np.var(log_x))
+            sigma2 = np.concatenate([np.full(n_peak, max(total_variance * 0.05, reg_covar)),
+                                     np.full(n_background, total_variance)])
+            nu = np.concatenate([np.full(n_peak, 10.0), np.full(n_background, 5.0)])
+            w = np.full(n_components, 1.0 / n_components)
+
+        prev_ll = -np.inf
+        for _ in range(max_iter):
+            log_w_pdf = np.array([
+                np.log(w[k]) + _t_logpdf_1d(log_x, mu[k], sigma2[k], nu[k])
+                for k in range(n_components)
+            ])
+            log_norm = np.logaddexp.reduce(log_w_pdf, axis=0)
+            ll = float(np.sum(log_norm))
+            z = np.exp(log_w_pdf - log_norm)
+
+            delta = np.array([(log_x - mu[k]) ** 2 / sigma2[k] for k in range(n_components)])
+            u = (nu[:, None] + 1.0) / (nu[:, None] + delta)
+
+            n_k = z.sum(axis=1)
+            zu = z * u
+            n_k_safe = np.maximum(n_k, 1e-10)
+
+            mu = (zu * log_x).sum(axis=1) / np.maximum(zu.sum(axis=1), 1e-10)
+            scatter = (zu * (log_x - mu[:, None]) ** 2).sum(axis=1)
+
+            sigma2 = scatter / n_k_safe
+            sigma2[peaks] = scatter[peaks].sum() / np.maximum(n_k[peaks].sum(), 1e-10)
+            sigma2 = np.maximum(sigma2, reg_covar)
+
+            w = n_k / n_samples
+            nu = np.array([_t_update_nu(z[k], u[k], nu[k], n_k_safe[k])
+                           for k in range(n_components)])
+
+            if abs(ll - prev_ll) < tol:
+                break
+            prev_ll = ll
+
+        # As in fit_log_t_mixture, ``ll`` lags the final M-step by one iteration, so the
+        # score that ranks restarts is recomputed from the parameters actually stored.
+        final_log_w_pdf = np.array([
+            np.log(w[k]) + _t_logpdf_1d(log_x, mu[k], sigma2[k], nu[k])
+            for k in range(n_components)
+        ])
+        final_ll = float(np.sum(np.logaddexp.reduce(final_log_w_pdf, axis=0)))
+        if final_ll > best_ll:
+            best_model = TMixture(weights=w.copy(), means=mu.copy(),
+                                  covariances=sigma2.copy(), nus=nu.copy())
+            best_ll = final_ll
+            best_scale = float(np.sqrt(sigma2[peaks][0]))
+
+    if best_model is None:
+        msg = ("fit_tied_scale_t_mixture: no restart produced a model; supply n_init >= 1 "
+               "or init_params.")
+        raise RuntimeError(msg)
+    return best_model, best_ll, best_scale
+
+
+def fit_tied_nested_by_splitting(
+    log_x: np.ndarray,
+    base_model: TMixture,
+    n_peak: int,
+    n_background: int,
+    seed: int = 0,
+    n_init: int = 6,
+    reg_covar: float = 1e-4,
+    split_delta: float = 0.5,
+) -> tuple[TMixture, float, float]:
+    """
+    Description
+    -----------
+    Fits an ``n_peak + 1`` peak tied-scale mixture starting from an ``n_peak`` solution.
+
+    A peak divided into two components of half weight each, both at the parent's
+    location, describes exactly the same density as the parent. Starting EM there means
+    the attained log-likelihood can only rise, so the nested comparison cannot come back
+    negative. That matters because a negative ratio is what a from-scratch alternative
+    produces when it converges below its own null: in the first run of the peak-count
+    test 17.1% of replicates did exactly that, which inflated the null's 95th percentile
+    to 83.81 against an observed statistic of 10.36 and left the rung with no power. With
+    split starts the same rung returned a null 95th percentile of 6.49 and 0.6% negative
+    replicates.
+
+    Every peak is tried as the split candidate, at zero offset and at ``split_delta``
+    scaled by the shared width, and the best is kept alongside ordinary random restarts.
+
+    Parameters
+    ----------
+    log_x (np.ndarray)
+        A (n_samples,) shape ndarray of log-space observations.
+    base_model (TMixture)
+        The fitted ``n_peak``-peak solution to split, peak components first.
+    n_peak (int)
+        Peak count of ``base_model``.
+    n_background (int)
+        Background count, unchanged by the split.
+    seed (int)
+        Seed for the random restarts; defaults to 0.
+    n_init (int)
+        Random restarts run alongside the split starts; defaults to 6.
+    reg_covar (float)
+        Lower bound on any component variance; defaults to 1e-4.
+    split_delta (float)
+        Offset applied to the duplicated peak, in units of the shared scale;
+        defaults to 0.5.
+
+    Returns
+    -------
+    model (TMixture)
+        The best-scoring ``n_peak + 1`` fit.
+    log_likelihood (float)
+        Its total log-likelihood.
+    shared_scale (float)
+        The fitted common peak standard deviation.
+    """
+
+    log_x = np.asarray(log_x, dtype=float).ravel()
+    weights = np.asarray(base_model.weights_, dtype=float).ravel()
+    means = np.asarray(base_model.means_, dtype=float).ravel()
+    variances = np.asarray(base_model.covariances_, dtype=float).ravel()
+    nus = np.asarray(base_model.nus_, dtype=float).ravel()
+    shared = float(np.mean(variances[:n_peak]))
+    sigma = np.sqrt(shared)
+
+    best = fit_tied_scale_t_mixture(log_x, n_peak + 1, n_background, seed=seed, n_init=n_init,
+                                    reg_covar=reg_covar)
+    for candidate in range(n_peak):
+        for offset in (0.0, split_delta):
+            half = weights[candidate] / 2.0
+            new_weights = np.insert(weights[:n_peak], candidate + 1, half)
+            new_weights[candidate] = half
+            new_means = np.insert(means[:n_peak], candidate + 1,
+                                  means[candidate] + offset * sigma)
+            new_means[candidate] = means[candidate] - offset * sigma
+            new_nus = np.insert(nus[:n_peak], candidate + 1, nus[candidate])
+
+            start_weights = np.concatenate([new_weights, weights[n_peak:]])
+            start = (start_weights / start_weights.sum(),
+                     np.concatenate([new_means, means[n_peak:]]),
+                     np.concatenate([np.full(n_peak + 1, shared), variances[n_peak:]]),
+                     np.concatenate([new_nus, nus[n_peak:]]))
+            attempt = fit_tied_scale_t_mixture(log_x, n_peak + 1, n_background, seed=seed,
+                                               n_init=0, reg_covar=reg_covar, init_params=start)
+            if attempt[1] > best[1]:
+                best = attempt
+    return best
+
+
+def tied_scale_n_parameters(n_peak: int, n_background: int) -> int:
+    """
+    Description
+    -----------
+    Free-parameter count of a tied-scale mixture, for BIC and AIC.
+
+    Weights contribute ``K - 1``, locations ``K`` and degrees of freedom ``K``, but scales
+    contribute only ``n_background + 1`` because every peak shares one. A tied peak
+    therefore costs two parameters where a free component costs three, which is the sense
+    in which the constraint is cheaper and not merely different.
+
+    Parameters
+    ----------
+    n_peak (int)
+        Number of tied-scale components.
+    n_background (int)
+        Number of free-scale components.
+
+    Returns
+    -------
+    n_parameters (int)
+        Number of free parameters.
+    """
+
+    n_components = n_peak + n_background
+    return (n_components - 1) + n_components + n_components + (n_background + 1)
 
 
 def t_mixture_icl(model: TMixture, log_x: np.ndarray) -> float:
@@ -1768,6 +2142,129 @@ def report_t_mixture_stats(
     weights = model.weights_[order]
     densities_at_means = np.exp(model.score_samples(logmeans))
     return logmeans, logscales, nus, weights, densities_at_means
+
+
+def t_mixture_modes(
+    model: TMixture,
+    tol: float = 1e-7,
+    max_iter: int = 300,
+    dedup_eps: float = 1e-3,
+    grid_size: int = 16384,
+    span_scales: float = 6.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Returns the unique modes of a fitted Student-t mixture and the
+    mixture density evaluated at each mode, sorted by descending
+    density. This is the Student-t counterpart of :func:`gmm_modes`,
+    and it exists because component locations are *not* modes: a
+    K-component mixture whose components overlap has at most K local
+    maxima and routinely has far fewer, with extra components tiling a
+    skewed shoulder rather than marking a separate peak. Reporting
+    component locations in place of modes therefore invents structure
+    the density does not have.
+
+    The 1D strategy mirrors the Gaussian path: the mixture density is
+    evaluated on a dense grid spanning
+    ``[mu_min - span_scales * s_max, mu_max + span_scales * s_max]``,
+    strict interior local maxima are detected, and each candidate is
+    polished by Newton iterations on the analytic ``d/dx log p(x)``.
+    For a Student-t component with location ``mu_k``, squared scale
+    ``sigma2_k`` and degrees of freedom ``nu_k``,
+
+        d/dx log f_k(x) = (nu_k + 1) * (mu_k - x) / D_k ,
+        D_k = nu_k * sigma2_k + (x - mu_k) ** 2 ,
+
+    so with responsibilities ``r_k`` the mixture gradient is
+    ``sum_k r_k * g_k`` and the curvature is
+    ``sum_k r_k * g_k' + (sum_k r_k * g_k**2 - (sum_k r_k * g_k)**2)``.
+    The tails are polynomial rather than Gaussian, which is why the
+    default grid span is 6 scales rather than 4 and the grid is denser:
+    a shallow shoulder peak needs resolution to be detected at all.
+
+    Parameters
+    ----------
+    model (TMixture)
+        A fitted Student-t mixture.
+    tol (float)
+        Convergence tolerance for the Newton update; defaults to 1e-7.
+    max_iter (int)
+        Maximum Newton iterations per candidate; defaults to 300.
+    dedup_eps (float)
+        Log-space distance below which two modes are merged; defaults
+        to 1e-3 (~0.1% in seconds, well below any biological scale).
+    grid_size (int)
+        Number of grid points used for peak detection; defaults to
+        16384.
+    span_scales (float)
+        Number of component scales the grid extends past the extreme
+        component locations; defaults to 6.0.
+
+    Returns
+    -------
+    modes (np.ndarray)
+        A (n_modes,) shape ndarray of mode locations in log-space.
+    densities (np.ndarray)
+        A (n_modes,) shape ndarray of mixture densities at the modes,
+        sorted descending.
+    """
+
+    mu = np.asarray(model.means_, dtype=float).flatten()
+    sigma2 = np.asarray(model.covariances_, dtype=float).flatten()
+    nu = np.asarray(model.nus_, dtype=float).flatten()
+    weights = np.asarray(model.weights_, dtype=float).flatten()
+    scales = np.sqrt(sigma2)
+
+    lo = float(mu.min() - span_scales * scales.max())
+    hi = float(mu.max() + span_scales * scales.max())
+    grid = np.linspace(lo, hi, grid_size)
+    log_p = model.score_samples(grid)
+
+    peaks_idx = np.where(
+        (log_p[1:-1] > log_p[:-2]) & (log_p[1:-1] > log_p[2:])
+    )[0] + 1
+
+    polished = []
+    for i in peaks_idx:
+        x = float(grid[i])
+        for _ in range(max_iter):
+            logs = np.array([
+                np.log(weights[k]) + _t_logpdf_1d(np.array([x]), mu[k], sigma2[k], nu[k])[0]
+                for k in range(mu.size)
+            ])
+            m = logs.max()
+            r = np.exp(logs - m)
+            r = r / r.sum()
+
+            centered = x - mu
+            denominator = nu * sigma2 + centered ** 2
+            g = (nu + 1.0) * (-centered) / denominator
+            g_prime = (nu + 1.0) * (2.0 * centered ** 2 - denominator) / denominator ** 2
+
+            grad = float(np.sum(r * g))
+            hess = float(np.sum(r * g_prime) + (np.sum(r * g ** 2) - grad ** 2))
+            if not np.isfinite(hess) or hess >= 0.0:
+                # not at a local max -> fall back to a small gradient step
+                step = grad * 1e-3
+            else:
+                step = -grad / hess
+            x_new = x + step
+            if abs(x_new - x) < tol * (1.0 + abs(x)):
+                x = x_new
+                break
+            x = x_new
+        polished.append(x)
+
+    if not polished:
+        return np.empty((0,)), np.empty((0,))
+
+    modes = np.sort(np.asarray(polished, dtype=float))
+    keep = np.concatenate(([True], np.diff(modes) > dedup_eps))
+    modes = modes[keep]
+    densities = np.exp(model.score_samples(modes))
+    density_order = np.argsort(densities)[::-1]
+    return modes[density_order], densities[density_order]
 
 
 def t_mixture_cdf_logspace(x: np.ndarray | float, model: TMixture) -> np.ndarray:
@@ -2708,6 +3205,108 @@ def _sample_from_mixture(model, N: int, rng: np.random.Generator) -> np.ndarray:
     return out
 
 
+def _splitmix64(state: np.ndarray) -> np.ndarray:
+    """
+    Description
+    -----------
+    The splitmix64 finalizer (Steele, Lea & Flood 2014), applied elementwise.
+
+    Turns a structured 64-bit integer into one whose bits are indistinguishable from random, so that
+    two values adjacent in the input -- neighbouring float bit patterns, consecutive occurrence
+    indices -- receive completely unrelated keys.
+
+    Parameters
+    ----------
+    state (np.ndarray)
+        An (n,) ndarray of ``np.uint64`` seeds.
+
+    Returns
+    -------
+    mixed (np.ndarray)
+        An (n,) ndarray of ``np.uint64``.
+    """
+
+    with np.errstate(over="ignore"):
+        value = state + np.uint64(0x9E3779B97F4A7C15)
+        value = (value ^ (value >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+        value = (value ^ (value >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+        return value ^ (value >> np.uint64(31))
+
+
+def stable_subsample(values: np.ndarray, n_subsample: int, seed: int,
+                     return_indices: bool = False) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    A uniform subsample without replacement that is STABLE under edits to the pool it is drawn from.
+
+    Every element is assigned a pseudo-random key derived from its own value and its occurrence index
+    among exactly equal values, mixed with the seed; the subsample is the ``n_subsample`` elements
+    holding the smallest keys. Because the keys are i.i.d. uniform and independent of position, the
+    selected set has exactly the distribution of ``rng.choice(values, n_subsample, replace=False)``
+    -- measured on the male end-to-start pool, a two-sample KS test against the full pool rejected
+    for neither method over 10 seeds.
+
+    The difference is what happens when the pool changes. ``rng.choice`` selects POSITIONS, so
+    deleting a single element shifts every later one and the draw lands on different values: removing
+    ONE interval from a pool of 79,505 replaced 1,416 of the 10,000 drawn points, and a 0.1% deletion
+    re-rolled a third of the subsample. Because the LRT statistic varies by ~13 units across draws
+    against a rejection threshold near 16, that discontinuity alone could flip the selected component
+    count whenever anything upstream changed by a fraction of a percent. Keying on the value instead
+    makes the draw continuous in the data: deleting an element removes only that element from the
+    subsample and promotes the next smallest key, so a 1.4% change to the pool leaves 98.7% of the
+    subsample intact.
+
+    Parameters
+    ----------
+    values (np.ndarray)
+        A (n_values,) ndarray of sample values.
+    n_subsample (int)
+        Subsample size. The whole array is returned when it holds no more than this many values.
+    seed (int)
+        Seed mixed into every key.
+
+    return_indices (bool)
+        Also return the positions drawn, so per-observation labels that live
+        alongside ``values`` (a session id, say) can follow the subsample into a
+        test that needs them; defaults to False.
+
+    Returns
+    -------
+    subsample (np.ndarray)
+        An (n_subsample,) ndarray drawn from ``values``.
+    indices (np.ndarray)
+        Only when ``return_indices`` is True: the (n_subsample,) positions in
+        ``values`` that were drawn, in the same order as ``subsample``.
+    """
+
+    sample_values = np.asarray(values, dtype=np.float64)
+    if sample_values.size <= n_subsample:
+        if return_indices:
+            return sample_values, np.arange(sample_values.size)
+        return sample_values
+    order = np.argsort(sample_values, kind="stable")
+    sorted_values = sample_values[order]
+    starts_group = np.empty(sorted_values.size, dtype=bool)
+    starts_group[0] = True
+    starts_group[1:] = sorted_values[1:] != sorted_values[:-1]
+    group_index = np.cumsum(starts_group) - 1
+    group_first = np.flatnonzero(starts_group)
+    occurrence_sorted = (np.arange(sorted_values.size, dtype=np.uint64)
+                         - group_first[group_index].astype(np.uint64))
+    occurrence = np.empty(sample_values.size, dtype=np.uint64)
+    occurrence[order] = occurrence_sorted
+    with np.errstate(over="ignore"):
+        state = (sample_values.view(np.uint64)
+                 ^ (occurrence * np.uint64(0x9E3779B97F4A7C15))
+                 ^ np.uint64(seed))
+    keys = _splitmix64(state)
+    chosen = np.argpartition(keys, n_subsample - 1)[:n_subsample]
+    if return_indices:
+        return sample_values[chosen], chosen
+    return sample_values[chosen]
+
+
 def _lr_statistic(model_null, model_alt, log_x: np.ndarray) -> float:
     """
     Description
@@ -2805,6 +3404,21 @@ def _bootstrap_lrt_replicate(
     # can overflow: a heavy-tailed Student-t component draws log_x > 709 often
     # enough over B x N_sub samples that exp() returns inf and the refit raises
     # "Input X contains infinity". Observed on the 172,331-interval e2s male pool.
+    if fit_fn is fit_log_t_mixture:
+        # Under H0 the replicate WAS generated by model_null_obs, so those parameters are the
+        # truthful start for its null fit; without it the K>=5 null refit is the same
+        # under-converged fit that produced 28.9% negative replicates on the male e2s pool, and
+        # the split-initialised alternative then reports that deficit as if it were a component.
+        m_null_b, _ = fit_fn(log_x_b, K_null, seed=seed + b, n_init=n_init_boot,
+                             reg_covar=reg_covar, x_is_log=True,
+                             init_params=(np.asarray(model_null_obs.weights_).ravel(),
+                                          np.asarray(model_null_obs.means_).ravel(),
+                                          np.asarray(model_null_obs.covariances_).ravel(),
+                                          np.asarray(model_null_obs.nus_).ravel()))
+        _, ll_alt_b = fit_nested_by_splitting(log_x_b, m_null_b, n_init=n_init_boot,
+                                              seed=seed + b, reg_covar=reg_covar)
+        ll_null_b = float(np.sum(m_null_b.score_samples(log_x_b.reshape(-1, 1))))
+        return 2.0 * (ll_alt_b - ll_null_b)
     m_null_b, _ = fit_fn(log_x_b, K_null, seed=seed + b, n_init=n_init_boot,
                          reg_covar=reg_covar, x_is_log=True)
     m_alt_b, _ = fit_fn(log_x_b, K_alt, seed=seed + b, n_init=n_init_boot,
@@ -2825,6 +3439,8 @@ def bootstrap_lrt(
     reg_covar: float = 1e-4,
     seed: int = 0,
     message_output=None,
+    session_labels: np.ndarray | None = None,
+    n_design_bootstrap: int = 2000,
 ) -> dict:
     """
     Description
@@ -2883,6 +3499,21 @@ def bootstrap_lrt(
     message_output (callable)
         Optional logging callable for progress messages; if None,
         progress is silent.
+    session_labels (np.ndarray or None)
+        A (n_intervals,) array of session identifiers aligned with
+        ``intervals_sec``. When supplied, the observed statistic is
+        corrected for sessions exactly as :func:`tied_peak_bootstrap_lrt`
+        corrects its own: the design effect is computed from the
+        per-observation log-likelihood differences of the SAME two
+        fits that produced ``lr_obs``, on the SAME subsample, and
+        ``lr_obs / design_effect`` is scored against the same null.
+        The parametric null is drawn iid and has no session structure,
+        so without the correction every rung is compared against a null
+        that is too narrow. Defaults to None, which reports the
+        uncorrected statistic only and leaves the result unchanged.
+    n_design_bootstrap (int)
+        Session-resampling replicates for the design effect; defaults
+        to 2000.
 
     Returns
     -------
@@ -2890,7 +3521,11 @@ def bootstrap_lrt(
         Keys: ``'K_null'``, ``'K_alt'``, ``'B'``, ``'n_subsample'``,
         ``'lr_obs'``, ``'lr_null'`` (length-B array),
         ``'p_value'``, ``'null_mean'``, ``'null_p95'``,
-        ``'null_max'``, ``'model_class'``.
+        ``'null_max'``, ``'model_class'``, and -- when
+        ``session_labels`` is given -- ``'design_effect'`` (floored at
+        one), ``'design_effect_raw'``, ``'clustered_se'``,
+        ``'independent_se'``, ``'effective_n'``, ``'lr_corrected'``,
+        ``'p_value_corrected'``.
     """
 
     if K_alt <= K_null:
@@ -2909,18 +3544,30 @@ def bootstrap_lrt(
         )
 
     rng = np.random.default_rng(seed)
-    intervals_sub = (
-        rng.choice(intervals_sec, size=n_subsample, replace=False)
-        if intervals_sec.size > n_subsample
-        else np.asarray(intervals_sec, dtype=float)
-    )
+    # Keyed on the interval VALUES, not their positions, so that a small change to the pool makes a
+    # small change to the subsample. See stable_subsample for the measurement that motivated it.
+    intervals_sub, chosen = stable_subsample(intervals_sec, n_subsample, seed, return_indices=True)
     log_x = np.log(intervals_sub)
     N_sub = log_x.size
 
-    # Observed LR
-    m_null_obs, _ = fit_fn(intervals_sub, K_null, seed=seed, n_init=n_init_obs, reg_covar=reg_covar)
-    m_alt_obs, _ = fit_fn(intervals_sub, K_alt, seed=seed, n_init=n_init_obs, reg_covar=reg_covar)
-    lr_obs = _lr_statistic(m_null_obs, m_alt_obs, log_x)
+    # Observed LR. For the Student-t family both sides are built by splitting up a ladder that
+    # starts where random restarts still converge: a K >= 5 mixture fitted from scratch stops 15.9
+    # nats short on the male end-to-start pool, and a null left in that state makes the next rung's
+    # alternative look like it found a component when it only repaired the null.
+    if fit_fn is fit_log_t_mixture:
+        m_null_obs, _ = fit_fn(log_x, 2, seed=seed, n_init=n_init_obs,
+                               reg_covar=reg_covar, x_is_log=True)
+        ll_null_obs = float(np.sum(m_null_obs.score_samples(log_x.reshape(-1, 1))))
+        for _ in range(K_null - 2):
+            m_null_obs, ll_null_obs = fit_nested_by_splitting(
+                log_x, m_null_obs, n_init=n_init_obs, seed=seed, reg_covar=reg_covar)
+        m_alt_obs, ll_alt_obs = fit_nested_by_splitting(
+            log_x, m_null_obs, n_init=n_init_obs, seed=seed, reg_covar=reg_covar)
+        lr_obs = 2.0 * (ll_alt_obs - ll_null_obs)
+    else:
+        m_null_obs, _ = fit_fn(intervals_sub, K_null, seed=seed, n_init=n_init_obs, reg_covar=reg_covar)
+        m_alt_obs, _ = fit_fn(intervals_sub, K_alt, seed=seed, n_init=n_init_obs, reg_covar=reg_covar)
+        lr_obs = _lr_statistic(m_null_obs, m_alt_obs, log_x)
     # A materially negative observed LR is impossible for correctly optimized
     # nested mixtures (K_alt can always emulate K_null): it means the
     # alternative's EM landed in a worse local optimum, which would silently
@@ -2933,6 +3580,14 @@ def bootstrap_lrt(
             "increase n_init_obs or fix the initialization."
         )
         raise RuntimeError(msg)
+
+    correction: dict = {}
+    if session_labels is not None:
+        log_x_2d = log_x.reshape(-1, 1)
+        delta = m_alt_obs.score_samples(log_x_2d) - m_null_obs.score_samples(log_x_2d)
+        correction = _session_corrected_statistic(
+            lr_obs, delta, session_labels, np.asarray(intervals_sec).size, chosen,
+            n_design_bootstrap, seed, "bootstrap_lrt")
 
     # Bootstrap null distribution. n_jobs == 1 preserves the legacy sequential
     # path bit-for-bit (one shared resampling RNG stream); n_jobs > 1 runs the
@@ -2973,6 +3628,319 @@ def bootstrap_lrt(
         "null_mean": float(lr_null.mean()),
         "null_p95": float(np.percentile(lr_null, 95)),
         "null_max": float(lr_null.max()),
+        **correction,
+        **({"p_value_corrected": float(np.mean(lr_null >= correction["lr_corrected"]))}
+           if correction and np.isfinite(correction["lr_corrected"]) else {}),
+    }
+
+
+def _tied_peak_lrt_replicate(
+    model: TMixture,
+    n_draw: int,
+    n_peak: int,
+    n_background: int,
+    n_init: int,
+    reg_covar: float,
+    seed: int,
+) -> float:
+    """
+    Description
+    -----------
+    One parametric bootstrap replicate of the peak-count likelihood ratio.
+
+    Both halves are anchored so the difference measures the extra peak rather than EM
+    luck: the null is warm-started at the parameters the data were generated from, so it
+    is not handicapped against an alternative that gets a good start, and the alternative
+    is split-initialised from whatever the null attained, so it begins at an equivalent
+    density and can only improve.
+
+    Parameters
+    ----------
+    model (TMixture)
+        The fitted null mixture to generate from.
+    n_draw (int)
+        Sample size, matched to the observed subsample.
+    n_peak (int)
+        Peak count under H0.
+    n_background (int)
+        Background count, held fixed under both hypotheses.
+    n_init (int)
+        Random restarts per fit.
+    reg_covar (float)
+        Component variance floor.
+    seed (int)
+        Seed for the draw and the fits.
+
+    Returns
+    -------
+    lr (float)
+        Twice the log-likelihood difference between alternative and null.
+    """
+
+    rng = np.random.default_rng(seed)
+    log_draw = np.asarray(_sample_from_mixture(model, n_draw, rng), dtype=float).ravel()
+    start = (np.asarray(model.weights_, dtype=float).ravel(),
+             np.asarray(model.means_, dtype=float).ravel(),
+             np.asarray(model.covariances_, dtype=float).ravel(),
+             np.asarray(model.nus_, dtype=float).ravel())
+    null_model, null_ll, _ = fit_tied_scale_t_mixture(
+        log_draw, n_peak, n_background, seed=seed, n_init=n_init, reg_covar=reg_covar,
+        init_params=start)
+    _, alt_ll, _ = fit_tied_nested_by_splitting(
+        log_draw, null_model, n_peak, n_background, seed=seed, n_init=n_init,
+        reg_covar=reg_covar)
+    return 2.0 * (alt_ll - null_ll)
+
+
+def _session_design_effect(
+    delta: np.ndarray,
+    session_index: np.ndarray,
+    n_bootstrap: int,
+    seed: int,
+) -> tuple[float, float, float]:
+    """
+    Description
+    -----------
+    Design effect of a per-observation statistic whose observations are nested in sessions.
+
+    A likelihood-ratio statistic is a sum over observations, ``LR = 2 * sum_i delta_i``, so
+    it decomposes exactly by session and its sampling variability under the real design is
+    found by resampling SESSIONS. The ratio of that variance to the one an independence
+    assumption gives is the design effect (Rao & Scott, 1981). Intervals within a session are
+    not independent -- the pipeline's own serial-dependence analysis measures that -- and a
+    parametric null built from iid draws has no session structure at all, so without this
+    factor every rung of a step-up test is compared against a null that is too narrow.
+
+    Parameters
+    ----------
+    delta (np.ndarray)
+        A (n_samples,) ndarray of per-observation log-likelihood differences.
+    session_index (np.ndarray)
+        A (n_samples,) ndarray of integer session codes in ``0 .. n_sessions - 1``.
+    n_bootstrap (int)
+        Session-resampling replicates; the iid comparison uses ``min(n_bootstrap, 400)``.
+    seed (int)
+        Seed for both resamplings.
+
+    Returns
+    -------
+    design_effect (float)
+        ``(SE_session / SE_iid) ** 2``; 1.0 means the clustering is immaterial.
+    clustered_se (float)
+        Session-bootstrap standard error of the statistic.
+    independent_se (float)
+        Interval-bootstrap standard error of the statistic.
+    """
+
+    n_sessions = int(session_index.max()) + 1
+    per_session = np.bincount(session_index, weights=delta, minlength=n_sessions)
+    rng = np.random.default_rng(seed)
+    draws = rng.integers(0, n_sessions, size=(int(n_bootstrap), n_sessions))
+    clustered_se = float(np.std(2.0 * per_session[draws].sum(axis=1), ddof=1))
+    interval_draws = rng.integers(0, delta.size, size=(min(int(n_bootstrap), 400), delta.size))
+    independent_se = float(np.std(2.0 * delta[interval_draws].sum(axis=1), ddof=1))
+    if independent_se <= 0.0:
+        return np.nan, clustered_se, independent_se
+    return (clustered_se / independent_se) ** 2, clustered_se, independent_se
+
+
+def _session_corrected_statistic(
+    lr_obs: float,
+    delta: np.ndarray,
+    session_labels: np.ndarray,
+    n_values: int,
+    chosen: np.ndarray,
+    n_design_bootstrap: int,
+    seed: int,
+    caller: str,
+) -> dict:
+    """
+    Description
+    -----------
+    First-order Rao-Scott correction of an observed likelihood-ratio statistic for sessions.
+
+    Shared by :func:`tied_peak_bootstrap_lrt` and :func:`bootstrap_lrt` so both tests correct
+    their statistic with the same arithmetic. ``delta`` is the per-observation log-likelihood
+    difference (alternative minus null) of the SAME two fits that produced ``lr_obs``, on the
+    SAME subsample, so the design effect belongs to the statistic being tested; the sessions of
+    that subsample are ``session_labels[chosen]``.
+
+    Parameters
+    ----------
+    lr_obs (float)
+        The observed statistic, ``2 * sum(delta)``.
+    delta (np.ndarray)
+        A (n_subsample,) ndarray of per-observation log-likelihood differences.
+    session_labels (np.ndarray)
+        A (n_values,) array of session identifiers aligned with the full pool.
+    n_values (int)
+        Size of the full pool the subsample was drawn from.
+    chosen (np.ndarray)
+        Indices of the subsample in the full pool, from :func:`stable_subsample`.
+    n_design_bootstrap (int)
+        Session-resampling replicates for the design effect.
+    seed (int)
+        Seed for the session resampling.
+    caller (str)
+        Name of the calling test, for the error message.
+
+    Returns
+    -------
+    correction (dict)
+        ``'design_effect_raw'``, ``'design_effect'`` (floored at one), ``'clustered_se'``,
+        ``'independent_se'``, ``'effective_n'`` and ``'lr_corrected'``.
+
+    Raises
+    ------
+    ValueError
+        ``session_labels`` is not aligned with the pool.
+    """
+
+    labels = np.asarray(session_labels).ravel()
+    if labels.size != n_values:
+        msg = f"{caller}: session_labels has {labels.size} entries for {n_values} intervals."
+        raise ValueError(msg)
+    _, session_index = np.unique(labels[chosen], return_inverse=True)
+    raw_design_effect, clustered_se, independent_se = _session_design_effect(
+        delta, session_index, n_design_bootstrap, seed)
+    # Floored at one so the correction can only shrink the statistic. A design effect
+    # below one would mean negative within-session correlation; in practice it is
+    # estimation noise from resampling too few sessions -- on a 4-session pool the
+    # bootstrap returned 0.33, which would have tripled a statistic the correction
+    # exists to make MORE conservative. On the 118-session male pool the estimates
+    # were 1.26-1.56 and the floor does not bind.
+    design_effect = max(float(raw_design_effect), 1.0) if np.isfinite(raw_design_effect) \
+        else np.nan
+    return {
+        "design_effect_raw": float(raw_design_effect),
+        "design_effect": float(design_effect),
+        "clustered_se": clustered_se,
+        "independent_se": independent_se,
+        "effective_n": float(delta.size / design_effect) if design_effect > 0 else np.nan,
+        "lr_corrected": float(lr_obs / design_effect) if design_effect > 0 else np.nan,
+    }
+
+
+def tied_peak_bootstrap_lrt(
+    intervals_sec: np.ndarray,
+    n_peak_null: int,
+    n_background: int,
+    B: int = 1000,
+    n_subsample: int = 10000,
+    n_init_obs: int = 12,
+    n_init_boot: int = 4,
+    reg_covar: float = 1e-4,
+    seed: int = 0,
+    n_jobs: int = 1,
+    session_labels: np.ndarray | None = None,
+    n_design_bootstrap: int = 2000,
+) -> dict:
+    """
+    Description
+    -----------
+    Parametric bootstrap likelihood-ratio test for ``H0: n_peak`` vs
+    ``H1: n_peak + 1`` in a tied-scale mixture, with the background count fixed.
+
+    This is the McLachlan (1987) procedure :func:`bootstrap_lrt` implements, with the
+    rung changed from "one more component" to "one more PEAK". That makes the tested
+    quantity the one a timescale claim is about. The unconstrained test has no stopping
+    point on dense interval pools because every extra component tiles a little more of
+    the misfit around the second peak; asking instead how many narrow, shared-width
+    components are needed separates the structure from the nuisance background.
+
+    Holding the background count fixed is an assumption, not a neutral choice: it is
+    used unchanged under null and alternative on every replicate, so the rung isolates
+    the peak, but a different background count is a different test and the value must be
+    reported alongside the result.
+
+    Parameters
+    ----------
+    intervals_sec (np.ndarray)
+        A (n_intervals,) shape ndarray of strictly positive intervals in seconds.
+    n_peak_null (int)
+        Peak count under H0.
+    n_background (int)
+        Background count, fixed under both hypotheses.
+    B (int)
+        Number of bootstrap replicates; defaults to 1000.
+    n_subsample (int)
+        Points drawn for the test, so observed and bootstrap statistics are on the same
+        N scale; defaults to 10000.
+    n_init_obs (int)
+        Random restarts for the observed fits; defaults to 12.
+    n_init_boot (int)
+        Random restarts per replicate fit; defaults to 4. Lower than ``n_init_obs``
+        because each replicate is additionally anchored by a warm start and a split
+        start, which do most of the work.
+    reg_covar (float)
+        Component variance floor; defaults to 1e-4.
+    seed (int)
+        Seed for the subsample, the fits and the replicates; defaults to 0.
+    n_jobs (int)
+        Parallel workers for the replicates; defaults to 1.
+    session_labels (np.ndarray or None)
+        A (n_intervals,) array of session identifiers aligned with ``intervals_sec``. When
+        supplied, the observed statistic's session design effect is computed from the same
+        fits the test uses and the corrected statistic ``lr_obs / design_effect`` is scored
+        against the same null (the first-order Rao-Scott correction). The parametric null is
+        built from iid draws and has no session structure, so without this every rung is
+        compared against a null that is too narrow; on male end-to-start intervals the
+        uncorrected ladder was non-monotonic (2v3 kept, 3v4 rejected) and the corrected one
+        is not. Defaults to None, which reports the uncorrected statistic only.
+    n_design_bootstrap (int)
+        Session-resampling replicates for the design effect; defaults to 2000.
+
+    Returns
+    -------
+    result (dict)
+        Keys: ``'n_peak_null'``, ``'n_peak_alt'``, ``'n_background'``, ``'B'``,
+        ``'n_subsample'``, ``'lr_obs'``, ``'lr_null'`` (length-B array), ``'p_value'``,
+        ``'null_p95'``, ``'negative_fraction'``, ``'shared_scale_null'``, and -- when
+        ``session_labels`` is given -- ``'design_effect'`` (floored at one),
+        ``'design_effect_raw'``, ``'clustered_se'``,
+        ``'independent_se'``, ``'effective_n'``, ``'lr_corrected'``, ``'p_value_corrected'``.
+    """
+
+    values = np.asarray(intervals_sec, dtype=float).ravel()
+    subsample, chosen = stable_subsample(values, int(n_subsample), seed, return_indices=True)
+    log_sub = np.log(subsample)
+
+    null_model, null_ll, shared_scale = fit_tied_scale_t_mixture(
+        log_sub, n_peak_null, n_background, seed=seed, n_init=n_init_obs, reg_covar=reg_covar)
+    alt_model, alt_ll, _ = fit_tied_nested_by_splitting(
+        log_sub, null_model, n_peak_null, n_background, seed=seed, n_init=n_init_obs,
+        reg_covar=reg_covar)
+    lr_obs = 2.0 * (alt_ll - null_ll)
+
+    correction: dict = {}
+    if session_labels is not None:
+        delta = (alt_model.score_samples(log_sub) - null_model.score_samples(log_sub))
+        correction = _session_corrected_statistic(
+            lr_obs, delta, session_labels, values.size, chosen, n_design_bootstrap, seed,
+            "tied_peak_bootstrap_lrt")
+
+    replicates = Parallel(n_jobs=n_jobs)(
+        delayed(_tied_peak_lrt_replicate)(null_model, subsample.size, n_peak_null,
+                                          n_background, n_init_boot, reg_covar, seed + 1 + b)
+        for b in range(int(B))
+    )
+    lr_null = np.asarray(replicates, dtype=float)
+
+    return {
+        "n_peak_null": int(n_peak_null),
+        "n_peak_alt": int(n_peak_null + 1),
+        "n_background": int(n_background),
+        "B": int(B),
+        "n_subsample": int(subsample.size),
+        "lr_obs": float(lr_obs),
+        "lr_null": lr_null,
+        "p_value": float(np.mean(lr_null >= lr_obs)),
+        "null_p95": float(np.percentile(lr_null, 95)),
+        "negative_fraction": float(np.mean(lr_null < 0)),
+        "shared_scale_null": float(shared_scale),
+        **correction,
+        **({"p_value_corrected": float(np.mean(lr_null >= correction["lr_corrected"]))}
+           if correction and np.isfinite(correction["lr_corrected"]) else {}),
     }
 
 

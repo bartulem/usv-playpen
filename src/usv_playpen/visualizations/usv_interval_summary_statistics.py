@@ -13,27 +13,21 @@ panels deviate as documented per function.
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
+from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.ticker import MaxNLocator
 from matplotlib.transforms import offset_copy
 
-from ..analyses.compute_inter_usv_interval_distributions import (
-    _read_session_lists,
-    _session_source_map,
-    compute_session_usv_intervals,
-    fit_mixture_model_sweep,
-)
+from ..analyses.compute_inter_usv_interval_distributions import consecutive_interval_pairs
 from ..analyses.mixture_model_utils import (
     IGMixture,
     TMixture,
-    bootstrap_lrt,
     gmm_quantile_logspace,
     plot_gmm_fit,
-    select_n_components_step_up_lrt,
     summarize_best_gmm,
     summarize_best_ig_mixture,
     summarize_best_t_mixture,
@@ -41,153 +35,10 @@ from ..analyses.mixture_model_utils import (
     t_mixture_quantile_logspace,
 )
 from ..analyses.usv_interval_archive import (
-    git_sha_for_provenance,
     read_usv_interval_h5,
     reconstruct_best_model,
-    write_ivi_h5,
 )
 from ..os_utils import configure_path
-
-
-def build_master_usv_interval_dataframe(
-    session_lists: list[str],
-    noise_col_id: str,
-    noise_categories: list[int],
-    message_output=print,
-) -> tuple[pls.DataFrame, dict]:
-    """
-    Description
-    -----------
-    Reads one or more session-list text files and computes per-session
-    same-emitter inter-USV intervals in **both** definitions (``s2s`` and ``e2s``) for
-    every session. Returns a single tidy Polars DataFrame with one row
-    per inter-USV interval, tagged with an ``interval_type`` column so downstream code
-    can filter / facet by mode without re-running the expensive USV CSV
-    pass.
-
-    Both modes are always computed because they are derived from the
-    same per-session iteration over the noise-filtered USV table; there
-    is no compute saving from omitting one, and downstream comparisons
-    (e.g. how much overlap the ``e2s`` filter introduces) require both
-    to be present.
-
-    The DataFrame has columns ``session_id``, ``source_list``,
-    ``interval_type`` (``'s2s'`` / ``'e2s'``), ``sex`` (``'male'`` /
-    ``'female'``), ``interval_s``, ``log_interval``, ``male_id``,
-    ``female_id``.
-
-    Pure compute helper -- no disk side-effects. To persist results,
-    pass the returned frame and any mixture model / LRT outputs to
-    :func:`save_notebook_archive_to_h5`.
-
-    Parameters
-    ----------
-    session_lists (list[str])
-        List of text file paths, each containing session roots (one
-        per line).
-    noise_col_id (str)
-        Name of the noise classification column in the USV summary
-        CSV.
-    noise_categories (list[int])
-        Integer labels in ``noise_col_id`` that identify a row as
-        noise to be excluded.
-    message_output (callable)
-        Logging callable; defaults to :func:`print`.
-
-    Returns
-    -------
-    usv_interval_df (pls.DataFrame)
-        Tidy DataFrame, one row per inter-USV interval per ``interval_type``.
-    summary (dict)
-        Keys: ``'n_sessions_loaded'`` (number of session roots that
-        produced data in either mode), ``'n_dropped'`` (mapping
-        ``interval_type -> {'male': int, 'female': int}`` of
-        non-positive intervals dropped per mode).
-    """
-
-    interval_types = ("s2s", "e2s")
-
-    sessions = _read_session_lists(session_lists, message_output)
-    source_map = _session_source_map(session_lists)
-
-    rows: list[dict] = []
-    n_dropped = {it: {"male": 0, "female": 0} for it in interval_types}
-    sessions_with_data: set[str] = set()
-
-    for session_root in sessions:
-        session_id = Path(session_root).name
-        source_list = source_map.get(session_root, "")
-
-        for interval_type in interval_types:
-            usv_interval = compute_session_usv_intervals(
-                session_root=session_root,
-                interval_type=interval_type,
-                noise_col_id=noise_col_id,
-                noise_categories=noise_categories,
-            )
-            if not usv_interval:
-                continue
-            sessions_with_data.add(session_root)
-            n_dropped[interval_type]["male"] += usv_interval["n_dropped_male"]
-            n_dropped[interval_type]["female"] += usv_interval["n_dropped_female"]
-
-            # Vectorise the per-element `np.log` into one reduction per
-            # sex; `np.log` over the array yields the same float64
-            # values as the scalar calls did, but avoids a Python-level
-            # `np.log` invocation for every interval.
-            male_intervals = np.asarray(usv_interval["male"], dtype=float)
-            female_intervals = np.asarray(usv_interval["female"], dtype=float)
-            male_log = np.log(male_intervals)
-            female_log = np.log(female_intervals)
-            for v, log_v in zip(male_intervals, male_log):
-                rows.append({
-                    "session_id": session_id,
-                    "source_list": source_list,
-                    "interval_type": interval_type,
-                    "sex": "male",
-                    "interval_s": float(v),
-                    "log_interval": float(log_v),
-                    "male_id": usv_interval["male_id"],
-                    "female_id": usv_interval["female_id"],
-                })
-            for v, log_v in zip(female_intervals, female_log):
-                rows.append({
-                    "session_id": session_id,
-                    "source_list": source_list,
-                    "interval_type": interval_type,
-                    "sex": "female",
-                    "interval_s": float(v),
-                    "log_interval": float(log_v),
-                    "male_id": usv_interval["male_id"],
-                    "female_id": usv_interval["female_id"],
-                })
-
-    # Build the frame with an explicit schema so downstream
-    # `filter(pls.col('interval_type') == ...)` works even when zero
-    # rows were collected (e.g. session list resolved to no readable
-    # sessions on this host).
-    usv_interval_schema = {
-        "session_id": pls.Utf8,
-        "source_list": pls.Utf8,
-        "interval_type": pls.Utf8,
-        "sex": pls.Utf8,
-        "interval_s": pls.Float64,
-        "log_interval": pls.Float64,
-        "male_id": pls.Utf8,
-        "female_id": pls.Utf8,
-    }
-    if rows:
-        usv_interval_df = pls.from_dicts(rows, schema=usv_interval_schema)
-    else:
-        usv_interval_df = pls.DataFrame(schema=usv_interval_schema)
-
-    summary = {
-        "n_sessions_loaded": len(sessions_with_data),
-        "n_dropped": n_dropped,
-    }
-
-    return usv_interval_df, summary
-
 
 def plot_log_usv_interval_histograms(
     usv_interval_df: pls.DataFrame,
@@ -197,6 +48,8 @@ def plot_log_usv_interval_histograms(
     figsize: tuple = (5, 5),
     xlims: tuple = (-5.0, 5.0),
     edge_color: str = "#202020",
+    male_label: str = "male",
+    female_label: str = "female",
 ) -> tuple[plt.Figure, plt.Axes, dict]:
     """
     Description
@@ -206,21 +59,29 @@ def plot_log_usv_interval_histograms(
     as a sanity check before any mixture model fitting.
 
     The caller is responsible for pre-filtering ``usv_interval_df`` to a single
-    ``interval_type`` (the master DataFrame produced by
-    :func:`build_master_usv_interval_dataframe` contains both ``s2s`` and
-    ``e2s`` rows; passing it unfiltered would conflate the two modes
+    ``interval_type`` (the archive's interval table, read with
+    :func:`load_intervals_from_h5`, holds one mode at a time; a frame
+    holding both ``s2s`` and ``e2s`` rows would conflate the two modes
     in the histograms).
 
     Parameters
     ----------
     usv_interval_df (pls.DataFrame)
-        Tidy DataFrame from :func:`build_master_usv_interval_dataframe`.
+        Tidy interval table from :func:`load_intervals_from_h5`.
     bins (int)
         Number of histogram bins.
     male_color (str)
         Colour for the male histogram.
     female_color (str)
         Colour for the female histogram.
+    male_label (str)
+        Legend label for the male histogram, before its count; defaults to
+        ``'male'``. When the two pools are different vocalizations -- the male's
+        ultrasonic calls against the female's squeaks -- the label has to say so,
+        or the figure calls squeak intervals USV intervals.
+    female_label (str)
+        Legend label for the female histogram, before its count; defaults to
+        ``'female'``.
     figsize (tuple)
         Figure size; defaults to (5, 5) (square).
     xlims (tuple)
@@ -247,11 +108,11 @@ def plot_log_usv_interval_histograms(
     if male_log.size:
         ax.hist(male_log, bins=bins, density=True, alpha=0.5,
                 histtype="stepfilled", color=male_color, edgecolor=edge_color,
-                label=f"male (n={male_log.size})")
+                label=f"{male_label} (n={male_log.size})")
     if female_log.size:
         ax.hist(female_log, bins=bins, density=True, alpha=0.5,
                 histtype="stepfilled", color=female_color, edgecolor=edge_color,
-                label=f"female (n={female_log.size})")
+                label=f"{female_label} (n={female_log.size})")
     ax.set_xlabel(r"$\mathrm{log}_{\mathrm{interval}}$ (s)")
     ax.set_ylabel("Density")
     ax.set_xlim(xlims)
@@ -264,65 +125,6 @@ def plot_log_usv_interval_histograms(
         "median_F_sec": float(np.exp(np.median(female_log))) if female_log.size else float("nan"),
     }
     return f, ax, stats
-
-
-def run_bic_sweep(
-    usv_interval_df: pls.DataFrame,
-    n_components_min: int,
-    n_components_max: int,
-    n_repeats: int,
-    max_modes_reported: int,
-    random_seed_base: int,
-    model_class: str = "gauss",
-) -> pls.DataFrame:
-    """
-    Description
-    -----------
-    Convenience wrapper around :func:`compute_inter_usv_interval_distributions.fit_mixture_model_sweep`
-    that takes a tidy inter-USV interval DataFrame and returns the same tidy results
-    table.
-
-    Pure compute helper -- no disk side-effects. Persist via
-    :func:`save_notebook_archive_to_h5` once both modes' sweeps are in
-    hand.
-
-    Parameters
-    ----------
-    usv_interval_df (pls.DataFrame)
-        Tidy inter-USV interval DataFrame from :func:`build_master_usv_interval_dataframe`.
-    n_components_min (int)
-        Minimum number of mixture model components.
-    n_components_max (int)
-        Maximum number of mixture model components.
-    n_repeats (int)
-        Number of EM-init repeats per fit.
-    max_modes_reported (int)
-        Up to this many mixture modes are recorded per fit.
-    random_seed_base (int)
-        Base seed; rep ``r`` uses ``random_seed_base + r``.
-    model_class (str)
-        ``'gauss'`` or ``'t'``; passed straight through to
-        :func:`fit_mixture_model_sweep`.
-
-    Returns
-    -------
-    df_results (pls.DataFrame)
-        Tidy Gaussian / t-mixture sweep results.
-    """
-
-    male_arr = usv_interval_df.filter(pls.col("sex") == "male")["interval_s"].to_numpy()
-    female_arr = usv_interval_df.filter(pls.col("sex") == "female")["interval_s"].to_numpy()
-
-    return fit_mixture_model_sweep(
-        intervals_by_key={"male": male_arr, "female": female_arr},
-        n_components_min=n_components_min,
-        n_components_max=n_components_max,
-        n_repeats=n_repeats,
-        max_modes_reported=max_modes_reported,
-        random_seed_base=random_seed_base,
-        model_class=model_class,
-    )
-
 
 def plot_ic_curves(
     df_results: pls.DataFrame,
@@ -358,8 +160,10 @@ def plot_ic_curves(
     Parameters
     ----------
     df_results (pls.DataFrame)
-        Tidy results from :func:`run_bic_sweep`. Must contain a
-        column named ``ic_col``.
+        Tidy sweep table -- the archive's ``mixture_model_fits`` (via
+        :func:`load_mixture_model_fits_from_h5`) or the tied ladder (via
+        :func:`load_tied_ic_table_from_h5`). Must contain a column named
+        ``ic_col``.
     male_color (str)
         Colour for the male curve (left y-axis).
     female_color (str)
@@ -456,6 +260,16 @@ def plot_ic_curves(
         }
 
     ax_left.set_xlabel("n_components")
+    # Component counts are integers; without this the axis ticks at 1.5, 2.5, ...
+    ax_left.xaxis.set_major_locator(MaxNLocator(integer=True))
+    # A sex with no rows (the tied analysis fits one pool) would leave its twin axis
+    # drawn with an unlabelled 0-1 scale; hide it so the figure shows only data.
+    present = set(df_results["sex"].unique().to_list())
+    for sex, axis in (("male", ax_left), ("female", ax_right)):
+        if sex not in present:
+            axis.get_yaxis().set_visible(False)
+            if sex == "female":
+                axis.spines["right"].set_visible(False)
     return f, (ax_left, ax_right), stats
 
 
@@ -1059,145 +873,14 @@ def plot_qq(
     )
     return f, ax, {"pearson_r": pearson_r}
 
-
-def run_bootstrap_lrt_sweep(
-    intervals_by_key: dict[str, np.ndarray],
-    n_components_min: int,
-    n_components_max: int,
-    B: int = 50,
-    n_subsample: int = 15000,
-    model_class: str = "t",
-    n_init_obs: int = 10,
-    n_init_boot: int = 3,
-    reg_covar: float = 1e-4,
-    seed: int = 0,
-    n_jobs: int = 1,
-    message_output=print,
-) -> dict:
-    """
-    Description
-    -----------
-    Runs the parametric bootstrap likelihood-ratio test for every
-    consecutive pair ``(K, K+1)`` in the range
-    ``[n_components_min, n_components_max]``, separately for each
-    key in ``intervals_by_key``.
-
-    Pure compute helper -- no disk side-effects, no step-up selection.
-    Apply the step-up rule via :func:`select_n_components_from_lrt_sweep`
-    on the returned sweep dict; persist via
-    :func:`save_notebook_archive_to_h5`.
-
-    Parameters
-    ----------
-    intervals_by_key (dict)
-        Mapping ``sex -> np.ndarray`` of strictly positive intervals
-        (``sex`` typically ``'male'`` or ``'female'``).
-    n_components_min (int)
-        Smallest K in the sweep.
-    n_components_max (int)
-        Largest K in the sweep. Pairs tested are
-        ``(K_min, K_min+1), ..., (K_max-1, K_max)``.
-    B (int)
-        Bootstrap replicates per pair.
-    n_subsample (int)
-        Subsample size for both observed and bootstrap fits.
-    model_class (str)
-        ``'gauss'``, ``'t'`` or ``'ig'``.
-    n_init_obs (int)
-        EM restarts for the observed fits.
-    n_init_boot (int)
-        EM restarts for each bootstrap fit.
-    reg_covar (float)
-        Component variance floor.
-    seed (int)
-        RNG seed.
-    n_jobs (int)
-        Number of parallel workers for the bootstrap replicates of each
-        pairwise test (passed through to
-        :func:`mixture_model_utils.bootstrap_lrt`; ``1`` preserves the
-        sequential legacy stream bit-for-bit).
-    message_output (callable)
-        Logging callable.
-
-    Returns
-    -------
-    sweep (dict)
-        Mapping ``key -> {(K_null, K_alt) -> result_dict}``, where
-        each ``result_dict`` is the return value of
-        :func:`mixture_model_utils.bootstrap_lrt`.
-    """
-
-    pairs = [(k, k + 1) for k in range(n_components_min, n_components_max)]
-    sweep: dict = {}
-
-    for sex, intervals_sec in intervals_by_key.items():
-        if intervals_sec.size < 2:
-            continue
-        sweep[sex] = {}
-        for (K_n, K_a) in pairs:
-            message_output(f"  [{sex}] bootstrap LRT K={K_n} vs K={K_a}...")
-            res = bootstrap_lrt(
-                intervals_sec=intervals_sec,
-                K_null=K_n,
-                K_alt=K_a,
-                B=B,
-                n_subsample=n_subsample,
-                model_class=model_class,
-                n_init_obs=n_init_obs,
-                n_init_boot=n_init_boot,
-                reg_covar=reg_covar,
-                seed=seed,
-                n_jobs=n_jobs,
-            )
-            sweep[sex][(K_n, K_a)] = res
-            message_output(
-                f"    LR_obs={res['lr_obs']:.2f}, null_mean={res['null_mean']:.2f}, "
-                f"null_95%={res['null_p95']:.2f}, p={res['p_value']:.3f}"
-            )
-
-    return sweep
-
-
-def select_n_components_from_lrt_sweep(
-    sweep: dict,
-    alpha: float = 0.05,
-    bonferroni: bool = False,
-) -> dict:
-    """
-    Description
-    -----------
-    Applies the step-up rule per key to a bootstrap-LRT sweep
-    produced by :func:`run_bootstrap_lrt_sweep`. Optionally applies
-    a Bonferroni correction across the number of tests per key.
-
-    Parameters
-    ----------
-    sweep (dict)
-        Output of :func:`run_bootstrap_lrt_sweep`.
-    alpha (float)
-        Significance threshold; defaults to 0.05.
-    bonferroni (bool)
-        If True, divide alpha by the number of pairs per key.
-
-    Returns
-    -------
-    selected (dict)
-        Mapping ``key -> int K_selected``.
-    """
-
-    selected: dict = {}
-    for key, pair_results in sweep.items():
-        n_tests = len(pair_results)
-        alpha_eff = alpha / n_tests if (bonferroni and n_tests > 0) else alpha
-        selected[key] = select_n_components_step_up_lrt(pair_results, alpha=alpha_eff)
-    return selected
-
-
 def plot_bootstrap_lrt_panel(
     sweep: dict,
     figsize_per_panel: tuple = (4, 3),
     break_gap_factor: float = 1.5,
     alpha: float = 0.01,
+    pair_title: str = "{key}: K={K_n} vs K={K_a}",
+    obs_label: str = "LR_obs",
+    threshold_label: str | None = None,
 ) -> tuple[plt.Figure, np.ndarray]:
     """
     Description
@@ -1223,7 +906,8 @@ def plot_bootstrap_lrt_panel(
     Parameters
     ----------
     sweep (dict)
-        Output of :func:`run_bootstrap_lrt_sweep`.
+        ``{key: {(K_null, K_alt): result}}`` as returned by
+        :func:`load_lrt_sweep_from_h5` or :func:`load_peak_lrt_sweep_from_h5`.
     figsize_per_panel (tuple)
         Width and height of each individual subplot in inches;
         defaults to (4, 3).
@@ -1232,6 +916,20 @@ def plot_bootstrap_lrt_panel(
         applied when ``LR_obs - null_max > break_gap_factor *
         null_max``. Defaults to 1.5 (i.e. the gap must be at least
         150% of the null's full width).
+    alpha (float)
+        Level of the reference line, drawn at the ``1 - alpha`` null quantile;
+        defaults to 0.01.
+    pair_title (str)
+        Format string for each cell's first title line, filled with ``key``,
+        ``K_n`` and ``K_a``; defaults to ``'{key}: K={K_n} vs K={K_a}'``. The
+        peak-count test passes ``'{key}: {K_n} vs {K_a} peaks'``.
+    obs_label (str)
+        Legend label for the observed-statistic line; defaults to ``'LR_obs'``.
+        The session-corrected peak-count test draws the CORRECTED statistic here
+        and labels it accordingly.
+    threshold_label (str or None)
+        Legend label for the reference line; defaults to None, which gives
+        ``'null <100(1-alpha)>%'``.
 
     Returns
     -------
@@ -1294,6 +992,8 @@ def plot_bootstrap_lrt_panel(
                     ax_l, ax_r, lr_null, lr_obs,
                     null_p99=null_p99,
                     alpha=alpha,
+                    obs_label=obs_label,
+                    threshold_label=threshold_label,
                 )
                 # Centre the title above the *whole* cell (both
                 # sub-axes), not just over ``ax_l``. We derive the
@@ -1305,7 +1005,7 @@ def plot_bootstrap_lrt_panel(
                 f.text(
                     (cell_bbox.x0 + cell_bbox.x1) / 2.0,
                     cell_bbox.y1 + 0.005,
-                    f"{key}: K={K_n} vs K={K_a}\np = {res['p_value']:.3f}",
+                    f"{pair_title.format(key=key, K_n=K_n, K_a=K_a)}\np = {res['p_value']:.3f}",
                     ha="center", va="bottom",
                     fontsize=plt.rcParams["axes.titlesize"],
                 )
@@ -1327,10 +1027,13 @@ def plot_bootstrap_lrt_panel(
                     histtype="stepfilled",
                 )
                 ax.axvline(lr_obs, color="#cc0000", lw=2,
-                           label=f"LR_obs = {lr_obs:.1f}")
+                           label=f"{obs_label} = {lr_obs:.1f}")
+                threshold_text = (threshold_label if threshold_label is not None
+                                  else f"null {100 * (1 - alpha):.4g}%")
                 ax.axvline(null_p99, color="#202020", linestyle=":", lw=1,
-                           label=f"null {100 * (1 - alpha):.4g}% = {null_p99:.1f}")
-                ax.set_title(f"{key}: K={K_n} vs K={K_a}\np = {res['p_value']:.3f}")
+                           label=f"{threshold_text} = {null_p99:.1f}")
+                ax.set_title(f"{pair_title.format(key=key, K_n=K_n, K_a=K_a)}\n"
+                             f"p = {res['p_value']:.3f}")
                 ax.set_xlabel("LR statistic")
                 ax.set_ylabel("count")
                 ax.legend(fontsize=8)
@@ -1352,6 +1055,8 @@ def _draw_lrt_cell_pair(
     *,
     null_p99: float,
     alpha: float = 0.01,
+    obs_label: str = "LR_obs",
+    threshold_label: str | None = None,
 ) -> None:
     """
     Description
@@ -1377,12 +1082,21 @@ def _draw_lrt_cell_pair(
         Observed LR statistic.
     null_p99 (float)
         99th percentile of the null distribution.
+    alpha (float)
+        Level the reference line marks; used for its default label.
+    obs_label (str)
+        Legend label for the observed-statistic line; defaults to ``'LR_obs'``.
+    threshold_label (str or None)
+        Legend label for the reference line; defaults to None, which gives
+        ``'null <100(1-alpha)>%'``.
 
     Returns
     -------
     None
     """
 
+    threshold_text = (threshold_label if threshold_label is not None
+                      else f"null {100 * (1 - alpha):.4g}%")
     null_min = float(lr_null.min()) if lr_null.size else 0.0
     null_max = float(lr_null.max()) if lr_null.size else 0.0
     pad_left = 0.08 * max(null_max - null_min, 1.0)
@@ -1404,13 +1118,13 @@ def _draw_lrt_cell_pair(
     # 99% reference line: drawn on whichever side it falls on
     if null_p99 <= left_hi:
         ax_l.axvline(null_p99, color="#202020", linestyle=":", lw=1,
-                     label=f"null {100 * (1 - alpha):.4g}% = {null_p99:.1f}")
+                     label=f"{threshold_text} = {null_p99:.1f}")
     elif right_lo <= null_p99 <= right_hi:
         ax_r.axvline(null_p99, color="#202020", linestyle=":", lw=1,
-                     label=f"null {100 * (1 - alpha):.4g}% = {null_p99:.1f}")
+                     label=f"{threshold_text} = {null_p99:.1f}")
     # observed LR on the right axes
     ax_r.axvline(lr_obs, color="#cc0000", lw=2,
-                 label=f"LR_obs = {lr_obs:.1f}")
+                 label=f"{obs_label} = {lr_obs:.1f}")
 
     ax_l.set_xlim(left_lo, left_hi)
     ax_r.set_xlim(right_lo, right_hi)
@@ -1448,197 +1162,10 @@ def _draw_lrt_cell_pair(
     ax_r.plot([0], [0], transform=ax_r.transAxes, **marker_kwargs)
 
 
-# HDF5 archive helpers for the notebook flow: persist the in-memory
-# results of build_master_usv_interval_dataframe / run_bic_sweep /
-# run_bootstrap_lrt_sweep into the same archive layout the CLI writes,
-# and locate the most-recent archive in an output directory so plot
+# HDF5 archive helpers for the notebook flow: the archive itself is written by
+# InterUSVIntervalCalculator (the same code the CLI runs); these locate the
+# most-recent archive in an output directory and read its tables back, so plot
 # cells can survive a kernel restart.
-
-
-def save_notebook_archive_to_h5(
-    output_directory: str,
-    usv_interval_df: pls.DataFrame,
-    usv_interval_summary: dict,
-    usv_interval_cfg: dict,
-    mixture_model_fits_by_mode: dict[str, pls.DataFrame] | None = None,
-    lrt_sweep_by_mode: dict[str, dict] | None = None,
-    message_output=print,
-) -> Path:
-    """
-    Description
-    -----------
-    Consolidates the notebook's in-memory inter-USV interval compute outputs into a
-    single ``usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5`` archive in the same
-    layout the CLI (:class:`InterUSVIntervalCalculator`) writes. Lets the notebook
-    iterate on plot cells across kernel restarts via the HDF5 loader
-    family (:func:`load_intervals_from_h5` etc.).
-
-    Empty / missing modes are handled gracefully: a mode with no
-    intervals is not written; a mode with intervals but no mixture model /
-    bootstrap-LRT outputs is written with the corresponding tables
-    omitted.
-
-    Parameters
-    ----------
-    output_directory (str)
-        Directory in which to write the archive. Run through
-        :func:`configure_path`; created if missing.
-    usv_interval_df (pls.DataFrame)
-        Tidy inter-USV interval DataFrame returned by
-        :func:`build_master_usv_interval_dataframe`. Must contain an
-        ``interval_type`` column.
-    usv_interval_summary (dict)
-        ``summary`` dict returned alongside ``usv_interval_df`` by
-        :func:`build_master_usv_interval_dataframe`. Used to populate the
-        archive's ``n_sessions_loaded`` attribute and the per-mode
-        ``drop_counts`` table.
-    usv_interval_cfg (dict)
-        The ``compute_inter_usv_interval_distributions`` block from
-        ``analyses_settings.json``. Every parameter that drove the
-        run is stored as a root-level attribute for provenance.
-    mixture_model_fits_by_mode (dict | None)
-        Optional ``{mode: pls.DataFrame}`` mapping of mixture-model-sweep
-        results (one frame per mode) returned by
-        :func:`run_bic_sweep`. ``None`` is equivalent to "no sweeps
-        ran" -- the ``mixture_model_fits`` dataset is omitted from each mode.
-    lrt_sweep_by_mode (dict | None)
-        Optional ``{mode: sweep_dict}`` mapping returned by
-        :func:`run_bootstrap_lrt_sweep`. The step-up rule is applied
-        here (using ``usv_interval_cfg['bootstrap_lrt_alpha']`` and
-        ``usv_interval_cfg['bootstrap_lrt_bonferroni']``) so the
-        ``bootstrap_lrt`` table contains the same
-        ``K_selected_step_up`` column as the CLI archive, and
-        per-mode ``alpha_effective`` / ``K_selected_*`` attrs are
-        recorded.
-    message_output (callable)
-        Logging callable; receives one summary line.
-
-    Returns
-    -------
-    h5_path (pathlib.Path)
-        Resolved path of the written archive.
-    """
-
-    out_dir = Path(configure_path(output_directory))
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    interval_types = ("s2s", "e2s")
-    per_mode: dict[str, dict] = {}
-
-    for it in interval_types:
-        sub = usv_interval_df.filter(pls.col("interval_type") == it)
-        # No intervals at all for this mode -- skip writing the group.
-        if sub.height == 0 and (
-            mixture_model_fits_by_mode is None or mixture_model_fits_by_mode.get(it) is None
-        ) and (
-            lrt_sweep_by_mode is None or lrt_sweep_by_mode.get(it) is None
-        ):
-            continue
-
-        drops = usv_interval_summary["n_dropped"][it]
-        drop_df = pls.DataFrame([
-            {"sex": "male",   "n_dropped": int(drops["male"])},
-            {"sex": "female", "n_dropped": int(drops["female"])},
-        ])
-
-        mode_payload: dict = {
-            "attrs": {},
-            "intervals": sub,
-            "drop_counts": drop_df,
-            "mixture_model_fits": None,
-            "bootstrap_lrt": None,
-            "bootstrap_lrt_null": None,
-        }
-
-        mixture_model_fits = (mixture_model_fits_by_mode or {}).get(it)
-        if mixture_model_fits is not None:
-            mode_payload["mixture_model_fits"] = mixture_model_fits
-
-        sweep = (lrt_sweep_by_mode or {}).get(it)
-        if sweep:
-            alpha = float(usv_interval_cfg["bootstrap_lrt_alpha"])
-            bonferroni = bool(usv_interval_cfg["bootstrap_lrt_bonferroni"])
-            lrt_rows: list[dict] = []
-            null_rows: list[dict] = []
-            selected_per_sex: dict[str, int] = {}
-            alpha_eff_for_attr: float = alpha
-            for sex, pair_results in sweep.items():
-                n_tests = len(pair_results)
-                alpha_eff = (alpha / n_tests) if (bonferroni and n_tests > 0) else alpha
-                alpha_eff_for_attr = float(alpha_eff)
-                K_sel = select_n_components_step_up_lrt(pair_results, alpha=alpha_eff)
-                selected_per_sex[sex] = int(K_sel)
-                for (K_n, K_a), res in pair_results.items():
-                    lrt_rows.append({
-                        "sex": sex,
-                        "K_null": int(res["K_null"]),
-                        "K_alt": int(res["K_alt"]),
-                        "lr_obs": float(res["lr_obs"]),
-                        "null_mean": float(res["null_mean"]),
-                        "null_p95": float(res["null_p95"]),
-                        "null_max": float(res["null_max"]),
-                        "p_value": float(res["p_value"]),
-                        "B": int(res["B"]),
-                        "n_subsample": int(res["n_subsample"]),
-                        "model_class": str(res["model_class"]),
-                        "alpha_used": float(alpha_eff),
-                        "K_selected_step_up": int(K_sel),
-                    })
-                    for b_idx, lr_b in enumerate(res["lr_null"]):
-                        null_rows.append({
-                            "sex": sex,
-                            "K_null": int(K_n),
-                            "K_alt": int(K_a),
-                            "b": int(b_idx),
-                            "lr_b": float(lr_b),
-                        })
-            if lrt_rows:
-                mode_payload["bootstrap_lrt"] = pls.DataFrame(lrt_rows)
-            if null_rows:
-                mode_payload["bootstrap_lrt_null"] = pls.DataFrame(null_rows)
-            mode_payload["attrs"]["alpha_effective"] = alpha_eff_for_attr
-            mode_payload["attrs"]["K_selected_male"] = selected_per_sex.get("male", -1)
-            mode_payload["attrs"]["K_selected_female"] = selected_per_sex.get("female", -1)
-
-        per_mode[it] = mode_payload
-
-    run_started_at = datetime.now()
-    run_ts = run_started_at.strftime("%Y%m%d_%H%M%S")
-
-    analysis_attrs: dict = {
-        "created_at_iso": run_started_at.isoformat(timespec="seconds"),
-        # Use this module's location to seed the repo-root walk, not
-        # ``out_dir`` (which is typically a user-chosen results
-        # directory outside the repo and would always resolve to
-        # "unknown").
-        "git_sha": git_sha_for_provenance(Path(__file__).resolve().parent),
-        "source_lists": [str(p) for p in usv_interval_cfg["session_lists"]],
-        "n_sessions_loaded": int(usv_interval_summary["n_sessions_loaded"]),
-        "noise_col_id": usv_interval_cfg["noise_col_id"],
-        "noise_categories": list(usv_interval_cfg["noise_categories"]),
-        "fit_mixture_model": bool(usv_interval_cfg["fit_mixture_model"]),
-        "n_components_min": int(usv_interval_cfg["n_components_min"]),
-        "n_components_max": int(usv_interval_cfg["n_components_max"]),
-        "n_repeats": int(usv_interval_cfg["n_repeats"]),
-        "max_modes_reported": int(usv_interval_cfg["max_modes_reported"]),
-        "random_seed_base": int(usv_interval_cfg["random_seed_base"]),
-        "cv_n_folds": int(usv_interval_cfg["cv_n_folds"]),
-        "cv_n_init": int(usv_interval_cfg["cv_n_init"]),
-        "mixture_model_n_init": int(usv_interval_cfg["mixture_model_n_init"]),
-        "mixture_model_reg_covar": float(usv_interval_cfg["mixture_model_reg_covar"]),
-        "tau": float(usv_interval_cfg["tau"]),
-        "model_class": str(usv_interval_cfg["model_class"]),
-        "bootstrap_lrt_B": int(usv_interval_cfg["bootstrap_lrt_B"]),
-        "bootstrap_lrt_n_subsample": int(usv_interval_cfg["bootstrap_lrt_n_subsample"]),
-        "bootstrap_lrt_alpha": float(usv_interval_cfg["bootstrap_lrt_alpha"]),
-        "bootstrap_lrt_bonferroni": bool(usv_interval_cfg["bootstrap_lrt_bonferroni"]),
-    }
-
-    h5_path = out_dir / f"usv_interval_analysis_{run_ts}.h5"
-    write_ivi_h5(h5_path, analysis_attrs=analysis_attrs, per_mode=per_mode)
-    message_output(f"  archive -> {h5_path}")
-    return h5_path
-
 
 def find_latest_archive(output_directory: str) -> Path:
     """
@@ -1687,11 +1214,18 @@ def load_lrt_sweep_from_h5(
     """
     Description
     -----------
-    Re-hydrates the in-memory ``sweep`` dict (the same shape produced
-    by :func:`run_bootstrap_lrt_sweep`) from the two tables stored
+    Re-hydrates the ``sweep`` dict that :func:`plot_bootstrap_lrt_panel`
+    draws, ``{sex: {(K_null, K_alt): result}}``, from the two tables stored
     inside the inter-USV interval HDF5 archive: ``/<mode>/bootstrap_lrt`` for the
     per-pair summary stats and ``/<mode>/bootstrap_lrt_null`` for the
     long-form null distributions used in :func:`plot_bootstrap_lrt_panel`.
+
+    Archives whose sweep was session-corrected (they carry ``lr_corrected``
+    and ``p_value_corrected``) are read the way :func:`load_peak_lrt_sweep_from_h5`
+    reads the tied test: ``lr_obs`` and ``p_value`` hold the CORRECTED statistic
+    and its p-value, because that is what the step-up decided on, and the raw
+    ones move to ``lr_raw`` / ``p_value_raw`` next to ``design_effect``. Older
+    archives, written before the correction existed, are read as they were.
 
     Parameters
     ----------
@@ -1706,7 +1240,8 @@ def load_lrt_sweep_from_h5(
     sweep (dict)
         Mapping ``sex -> {(K_null, K_alt) -> result_dict}`` with
         every key the compute path wrote, including ``'lr_null'``
-        as a numpy array.
+        as a numpy array, and -- for a session-corrected sweep --
+        ``'lr_raw'``, ``'p_value_raw'`` and ``'design_effect'``.
     """
 
     archive = read_usv_interval_h5(h5_path)
@@ -1731,6 +1266,7 @@ def load_lrt_sweep_from_h5(
             msg
         )
 
+    corrected = "lr_corrected" in summary_df.columns
     sweep: dict = {}
     for row in summary_df.iter_rows(named=True):
         sex = row["sex"]
@@ -1756,6 +1292,14 @@ def load_lrt_sweep_from_h5(
             "null_p95": float(row["null_p95"]),
             "null_max": float(row["null_max"]),
         }
+        if corrected:
+            sweep[sex][(K_n, K_a)].update({
+                "lr_obs": float(row["lr_corrected"]),
+                "p_value": float(row["p_value_corrected"]),
+                "lr_raw": float(row["lr_obs"]),
+                "p_value_raw": float(row["p_value"]),
+                "design_effect": float(row["design_effect"]),
+            })
     return sweep
 
 
@@ -1829,8 +1373,8 @@ def load_intervals_from_h5(
     Description
     -----------
     Convenience loader for the tidy per-interval table archived inside
-    an inter-USV interval HDF5 file. Returns a polars DataFrame with the same schema
-    as the in-memory frame from :func:`build_master_usv_interval_dataframe`,
+    an inter-USV interval HDF5 file. Returns a polars DataFrame with one row
+    per interval (session, pool identity, interval in seconds and in log-space),
     pre-filtered to a single ``interval_type``.
 
     Parameters
@@ -1954,3 +1498,472 @@ def load_best_fit_from_h5(
 
     df = load_mixture_model_fits_from_h5(h5_path, interval_type)
     return reconstruct_best_model(df, sex=sex, K=int(K), ic_col=ic_col)
+
+
+def serial_dependence_pairs(usv_interval_df: pls.DataFrame, sex: str) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    Every (current interval, next interval) pair from consecutive rows of one animal in one session.
+
+    The archived table is written session by session and, within a session, animal by animal in
+    time order, so consecutive rows of one animal are its consecutive intervals; the pairing is
+    :func:`..analyses.compute_inter_usv_interval_distributions.consecutive_interval_pairs`, the one
+    the pipeline fits on.
+
+    The animal is the ``emitter_id`` column. It matters whenever a session holds two animals of
+    the same sex (a female-female session puts both females in the ``'female'`` pool), where
+    pairing by session alone would chain the last interval of one female to the first of the
+    other. Archives written before ``emitter_id`` existed hold one animal per sex per session,
+    so for them the session alone identifies the animal and is used instead.
+
+    Parameters
+    ----------
+    usv_interval_df (pls.DataFrame)
+        Tidy interval table for ONE interval type (columns ``session_id``, ``sex``, ``interval_s``,
+        and ``emitter_id`` in archives that record it).
+    sex (str)
+        ``'male'`` or ``'female'``.
+
+    Returns
+    -------
+    current (np.ndarray)
+        A (n_pairs,) ndarray of current intervals, in seconds.
+    following (np.ndarray)
+        A (n_pairs,) ndarray of the interval that follows each, in seconds.
+    """
+
+    subset = usv_interval_df.filter(pls.col("sex") == sex)
+    sessions = subset["session_id"].to_numpy()
+    animals = subset["emitter_id"].to_numpy() if "emitter_id" in subset.columns else sessions
+    current, following, _ = consecutive_interval_pairs(subset["interval_s"].to_numpy(), sessions, animals)
+    return current, following
+
+
+def load_serial_dependence_from_h5(
+    h5_path: str | Path,
+    interval_type: str,
+    sex: str,
+    call_type: str,
+) -> tuple[pls.DataFrame, dict]:
+    """
+    Description
+    -----------
+    Reads one pool's archived serial-dependence fits.
+
+    Parameters
+    ----------
+    h5_path (str | Path)
+        Path to an interval archive written with ``fit_serial_dependence`` enabled.
+    interval_type (str)
+        ``'e2s'`` or ``'s2s'``.
+    sex (str)
+        ``'male'`` or ``'female'``.
+    call_type (str)
+        ``'usv'`` or ``'squeak'``.
+
+    Returns
+    -------
+    curves (pls.DataFrame)
+        The spline and bent line with their bands on a grid of the current interval
+        (``current_ms``, ``spline_ms``, ``spline_low_ms``, ``spline_high_ms``, ``bent_ms``,
+        ``bent_low_ms``, ``bent_high_ms``), ascending in ``current_ms``.
+    fit (dict)
+        The pool's ``serial_dependence_fit`` row: the bend and its interval, slope, flat level,
+        coverage level, bootstrap size and solver diagnostics.
+
+    Raises
+    ------
+    KeyError
+        The archive holds no serial-dependence fit for this pool.
+    """
+
+    mode = read_usv_interval_h5(h5_path)["modes"][interval_type]
+    if mode["serial_dependence_fit"] is None:
+        msg = f"{h5_path} has no serial_dependence_fit for {interval_type}; was fit_serial_dependence enabled?"
+        raise KeyError(msg)
+    pool = (pls.col("sex") == sex) & (pls.col("call_type") == call_type)
+    fit = mode["serial_dependence_fit"].filter(pool)
+    if fit.height == 0:
+        msg = f"{h5_path} has no serial-dependence fit for {sex} {call_type} ({interval_type})."
+        raise KeyError(msg)
+    return mode["serial_dependence_curves"].filter(pool).sort("current_ms"), fit.row(0, named=True)
+
+
+def _draw_serial_dependence_panel(
+    f: plt.Figure,
+    ax: plt.Axes,
+    log_current: np.ndarray,
+    log_following: np.ndarray,
+    color: str,
+    current_ms: np.ndarray,
+    line_ms: np.ndarray,
+    low_ms: np.ndarray,
+    high_ms: np.ndarray,
+    line_label: str,
+    boundary_ms: float | None,
+    lims_ms: tuple,
+    grid_bins: int,
+    bend: tuple | None,
+    colorbar: bool,
+) -> None:
+    """
+    Description
+    -----------
+    One serial-dependence panel: the joint density of consecutive intervals with a fitted median
+    line and its band drawn over it.
+
+    Everything is drawn in log10(ms) coordinates with millisecond tick labels, on square axes.
+
+    Parameters
+    ----------
+    f (plt.Figure)
+        Parent figure (for the colorbar).
+    ax (plt.Axes)
+        Panel.
+    log_current, log_following (np.ndarray)
+        log10 of the current / next intervals in ms.
+    color (str)
+        Density colour.
+    current_ms, line_ms, low_ms, high_ms (np.ndarray)
+        The fitted line and its band on a grid of the current interval, in ms.
+    line_label (str)
+        Legend label of the line.
+    boundary_ms (float or None)
+        Bout boundary drawn as a dotted vertical line, or None.
+    lims_ms (tuple)
+        Axis limits in ms, identical on both axes.
+    grid_bins (int)
+        Bins per axis of the 2-D histogram behind the density.
+    bend (tuple or None)
+        ``(bend_ms, low_ms, high_ms, level, y_ms)``: the bend drawn as a point with a horizontal
+        interval, or None.
+    colorbar (bool)
+        Whether this panel carries the pair-count colorbar.
+
+    Returns
+    -------
+    None
+    """
+
+    lim = (np.log10(lims_ms[0]), np.log10(lims_ms[1]))
+    counts, x_edges, y_edges = np.histogram2d(log_current, log_following, bins=grid_bins,
+                                              range=[lim, lim])
+    shade = np.log10(counts.T + 1.0)
+    cmap = LinearSegmentedColormap.from_list("serial_dependence", ["#FFFFFF", color, "#1F3A45"])
+    cmap.set_under("#FFFFFF")
+    mesh = ax.pcolormesh(0.5 * (x_edges[:-1] + x_edges[1:]), 0.5 * (y_edges[:-1] + y_edges[1:]),
+                         shade, shading="gouraud", cmap=cmap,
+                         norm=Normalize(np.log10(2.0), max(float(shade.max()), np.log10(3.0))),
+                         rasterized=True)
+    ax.plot(lim, lim, color="#8A8F98", lw=0.8, ls=(0, (4, 3)))
+    if boundary_ms is not None:
+        # Round dots: a zero-length dash with round caps; the gap is in units of line width.
+        ax.axvline(np.log10(boundary_ms), color="#B4404A", lw=1.0, ls=(0, (0.01, 4.4)),
+                   dash_capstyle="round", label=f"bout boundary ({boundary_ms:.0f} ms)")
+
+    x = np.log10(current_ms)
+    ax.fill_between(x, np.log10(low_ms), np.log10(high_ms), color="#1F1F1F", alpha=0.25, lw=0,
+                    zorder=3)
+    ax.plot(x, np.log10(line_ms), color="#000000", lw=1.0, zorder=4, label=line_label)
+    if bend is not None:
+        bend_ms, bend_low, bend_high, level, y_ms = bend
+        ax.errorbar([np.log10(bend_ms)], [np.log10(y_ms)],
+                    xerr=[[np.log10(bend_ms) - np.log10(bend_low)],
+                          [np.log10(bend_high) - np.log10(bend_ms)]],
+                    fmt="o", color="#000000", ms=2.0, lw=0.8, capsize=1.5, zorder=5,
+                    label=f"bend {bend_ms:.0f} ms ({bend_low:.0f}-{bend_high:.0f}, {level:.0f}%)")
+
+    ticks = [t for t in (10, 30, 100, 300, 1000, 3000, 10000, 30000) if lims_ms[0] <= t <= lims_ms[1]]
+    for axis in ("x", "y"):
+        getattr(ax, f"set_{axis}ticks")(np.log10(ticks))
+        getattr(ax, f"set_{axis}ticklabels")([f"{t:g}" for t in ticks])
+    ax.set_xlim(lim)
+    ax.set_ylim(lim)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel("current inter-USV interval (ms)")
+    # The legend sits at the top, just right of the bout boundary, in the sparse region between
+    # the boundary line and the diagonal; anchored at the upper left it ran over the boundary.
+    # Its longest entry (the bend) can still reach the diagonal, so it gets an opaque white
+    # background drawn above the lines.
+    legend_x = 0.0
+    if boundary_ms is not None:
+        legend_x = (np.log10(boundary_ms) - lim[0]) / (lim[1] - lim[0]) + 0.02
+    legend = ax.legend(frameon=True, fontsize=5, loc="upper left", bbox_to_anchor=(legend_x, 1.0),
+                       borderpad=0.3, handletextpad=0.5)
+    legend.get_frame().set_facecolor("#FFFFFF")
+    legend.get_frame().set_edgecolor("#FFFFFF")
+    legend.get_frame().set_alpha(1.0)
+    legend.set_zorder(10)
+
+    if colorbar:
+        cax = ax.inset_axes([1.04, 0.72, 0.045, 0.25])
+        cb = f.colorbar(mesh, cax=cax)
+        cb_ticks = [t for t in (2, 10, 100, 1000, 10000) if np.log10(t + 1.0) <= shade.max()]
+        cb.set_ticks(np.log10(np.array(cb_ticks, dtype=float) + 1.0))
+        cb.set_ticklabels([f"{t:g}" for t in cb_ticks])
+        cb.ax.tick_params(labelsize=6)
+        cax.set_title("pairs", fontsize=7, pad=3)
+
+
+def plot_serial_dependence(
+    pairs: tuple[np.ndarray, np.ndarray],
+    color: str,
+    curves: pls.DataFrame,
+    fit: dict,
+    boundary_ms: float | None = None,
+    lims_ms: tuple = (15.0, 20000.0),
+    grid_bins: int = 70,
+    figsize: tuple = (6.2, 2.6),
+) -> tuple[plt.Figure, np.ndarray, dict]:
+    """
+    Description
+    -----------
+    Serial dependence of consecutive inter-USV intervals: two panels, side by side, each the joint
+    distribution of (current, next) interval with a fitted median line drawn over it.
+
+    Serial dependence is the defining property of a bout: an interval inside a bout carries
+    information about the one that follows it, a gap between bouts does not. Both panels show the
+    same pairs; they differ in the median regression of the next interval on the current one,
+    fitted by the pipeline (:func:`..analyses.compute_inter_usv_interval_distributions.fit_serial_dependence`)
+    and read from the archive (:func:`load_serial_dependence_from_h5`):
+
+    * **A: median spline** -- no assumed shape; the relation as the data give it.
+    * **B: bent-line median fit** -- rising below a bend and flat above it, with the bend drawn
+      as a point and its session-bootstrap interval as a horizontal bar. The bend is an estimate
+      of the bout boundary from serial dependence alone, so it can be read against the
+      ``boundary_ms`` line, which is the first mixture peak's bound.
+
+    Each line carries its pointwise session-bootstrap band at the archived coverage level. The
+    density is a 2-D histogram of the pairs on log axes, Gouraud-shaded; the grey dashed line is
+    next = current; the axes are square and share one scale; a single pair-count colorbar sits
+    outside the right panel.
+
+    Parameters
+    ----------
+    pairs (tuple)
+        ``(current, next)`` intervals in seconds, e.g. from :func:`serial_dependence_pairs`.
+    color (str)
+        Density colour (the pool's sex colour).
+    curves (pls.DataFrame)
+        The archived fitted curves of this pool.
+    fit (dict)
+        The archived ``serial_dependence_fit`` row of this pool.
+    boundary_ms (float or None)
+        Bout boundary drawn on both panels; None draws none. Defaults to None.
+    lims_ms (tuple)
+        Axis limits in ms, identical on both axes; defaults to (15, 20000).
+    grid_bins (int)
+        Bins per axis of the 2-D histogram; defaults to 70.
+    figsize (tuple)
+        Figure size in inches; defaults to (6.2, 2.6).
+
+    Returns
+    -------
+    f (plt.Figure)
+        The figure.
+    axes (np.ndarray)
+        The two panels, spline then bent line.
+    stats (dict)
+        ``'n_pairs'`` (pairs drawn), ``'bend_ms'``, ``'bend_low_ms'``, ``'bend_high_ms'``,
+        ``'level'``, ``'slope'`` and ``'flat_level_ms'`` from the fit.
+    """
+
+    current_ms = np.asarray(pairs[0], dtype=float) * 1000.0
+    following_ms = np.asarray(pairs[1], dtype=float) * 1000.0
+    keep = (current_ms > 0) & (following_ms > 0)
+    log_current, log_following = np.log10(current_ms[keep]), np.log10(following_ms[keep])
+    grid_ms = curves["current_ms"].to_numpy()
+
+    f, axes = plt.subplots(1, 2, figsize=figsize)
+    _draw_serial_dependence_panel(
+        f, axes[0], log_current, log_following, color, grid_ms, curves["spline_ms"].to_numpy(),
+        curves["spline_low_ms"].to_numpy(), curves["spline_high_ms"].to_numpy(),
+        "median next interval (fit)", boundary_ms, lims_ms, grid_bins, bend=None, colorbar=False)
+    bent_ms = curves["bent_ms"].to_numpy()
+    _draw_serial_dependence_panel(
+        f, axes[1], log_current, log_following, color, grid_ms, bent_ms,
+        curves["bent_low_ms"].to_numpy(), curves["bent_high_ms"].to_numpy(),
+        "median next interval (fit)", boundary_ms, lims_ms, grid_bins,
+        bend=(fit["bend_ms"], fit["bend_low_ms"], fit["bend_high_ms"], fit["level"],
+              float(np.exp(np.interp(np.log(fit["bend_ms"]), np.log(grid_ms), np.log(bent_ms))))),
+        colorbar=True)
+    axes[0].set_ylabel("next inter-USV interval (ms)")
+    axes[0].set_title("A: median spline", fontsize=7)
+    axes[1].set_title("B: bent-line median fit", fontsize=7)
+
+    stats = {
+        "n_pairs": int(log_current.size),
+        **{k: float(fit[k]) for k in ("bend_ms", "bend_low_ms", "bend_high_ms", "level", "slope",
+                                      "flat_level_ms")},
+    }
+    return f, axes, stats
+
+
+def load_tied_model_from_h5(
+    h5_path: str | Path,
+    interval_type: str,
+    sex: str,
+    call_type: str,
+    n_peak: int | None = None,
+) -> tuple[TMixture, np.ndarray, int, pls.DataFrame]:
+    """
+    Description
+    -----------
+    Rebuilds a fitted tied-scale ("peaks plus background") mixture from an interval archive.
+
+    The archive stores the tied ladder one row per (peak count, component) in ``tied_fits``;
+    this selects one pool and one peak count and reassembles the :class:`TMixture`, keeping
+    the stored role order (peak components first) so the rebuilt model is exactly the fitted
+    one. With ``n_peak`` left as None the peak count selected by the session-corrected
+    step-up test is used, read from the mode's ``selected_n_peak_<sex>_<call_type>`` attribute.
+
+    Parameters
+    ----------
+    h5_path (str | Path)
+        Path to an interval archive written with ``fit_tied_model`` enabled.
+    interval_type (str)
+        ``'e2s'`` or ``'s2s'``.
+    sex (str)
+        ``'male'`` or ``'female'``.
+    call_type (str)
+        ``'usv'`` or ``'squeak'``.
+    n_peak (int or None)
+        Peak count to rebuild; defaults to None, meaning the selected count.
+
+    Returns
+    -------
+    model (TMixture)
+        The rebuilt mixture, peak components first.
+    order (np.ndarray)
+        Indices sorting its components by ascending log-location, for the plotting helpers.
+    n_peak (int)
+        The peak count rebuilt.
+    rows (pls.DataFrame)
+        The ``tied_fits`` rows it was built from, one per component.
+    """
+
+    archive = read_usv_interval_h5(h5_path)
+    mode = archive["modes"][interval_type]
+    fits = mode["tied_fits"]
+    if fits is None:
+        msg = f"{h5_path} has no tied_fits for {interval_type}; was fit_tied_model enabled?"
+        raise KeyError(msg)
+    if n_peak is None:
+        n_peak = int(mode["attrs"][f"selected_n_peak_{sex}_{call_type}"])
+    rows = fits.filter((pls.col("sex") == sex) & (pls.col("call_type") == call_type)
+                       & (pls.col("n_peak") == n_peak)).sort("component")
+    if rows.height == 0:
+        msg = f"no tied fit for {sex} {call_type} {interval_type} at {n_peak} peak(s)."
+        raise KeyError(msg)
+    model = TMixture(
+        weights=rows["weight"].to_numpy(),
+        means=rows["logmean"].to_numpy(),
+        covariances=rows["logscale"].to_numpy() ** 2,
+        nus=rows["nu"].to_numpy(),
+    )
+    order = np.argsort(rows["logmean"].to_numpy())
+    return model, order, int(n_peak), rows
+
+
+def load_peak_lrt_sweep_from_h5(
+    h5_path: str | Path,
+    interval_type: str,
+    sex: str,
+    call_type: str,
+) -> tuple[dict, float]:
+    """
+    Description
+    -----------
+    Reads the session-corrected peak-count test into the ``sweep`` layout that
+    :func:`plot_bootstrap_lrt_panel` draws, so the tied analysis uses the same
+    null-distribution panel as the unconstrained one.
+
+    Each rung is keyed ``(n_peak_null, n_peak_alt)`` under the pool's ``sex``. The
+    statistic placed in ``lr_obs`` is the CORRECTED one -- the observed ratio divided
+    by the session design effect -- and ``p_value`` is its p-value, because that is
+    the statistic the test decided on. The raw ratio and the design effect stay in
+    the archive's ``peak_lrt`` table.
+
+    Parameters
+    ----------
+    h5_path (str | Path)
+        Path to an interval archive written with ``fit_tied_model`` enabled.
+    interval_type (str)
+        ``'e2s'`` or ``'s2s'``.
+    sex (str)
+        ``'male'`` or ``'female'``.
+    call_type (str)
+        ``'usv'`` or ``'squeak'``.
+
+    Returns
+    -------
+    sweep (dict)
+        ``{sex: {(n_null, n_alt): {'lr_obs', 'lr_null', 'p_value', 'null_max'}}}``.
+    alpha (float)
+        The per-rung (Bonferroni-corrected) level the test used.
+    """
+
+    mode = read_usv_interval_h5(h5_path)["modes"][interval_type]
+    if mode["peak_lrt"] is None:
+        msg = f"{h5_path} has no peak_lrt for {interval_type}; was fit_tied_model enabled?"
+        raise KeyError(msg)
+    pool = (pls.col("sex") == sex) & (pls.col("call_type") == call_type)
+    rungs = mode["peak_lrt"].filter(pool).sort("n_peak_null")
+    nulls = mode["peak_lrt_null"].filter(pool)
+    sweep: dict = {sex: {}}
+    for row in rungs.iter_rows(named=True):
+        lr_null = nulls.filter(pls.col("n_peak_null") == row["n_peak_null"]).sort("b")["lr_b"].to_numpy()
+        sweep[sex][(int(row["n_peak_null"]), int(row["n_peak_alt"]))] = {
+            "lr_obs": float(row["lr_corrected"]),
+            "lr_null": lr_null,
+            "p_value": float(row["p_value_corrected"]),
+            "null_max": float(lr_null.max()) if lr_null.size else float("nan"),
+        }
+    return sweep, float(rungs["alpha_used"][0])
+
+
+def load_tied_ic_table_from_h5(
+    h5_path: str | Path,
+    interval_type: str,
+    sex: str,
+    call_type: str,
+) -> pls.DataFrame:
+    """
+    Description
+    -----------
+    One information-criterion row per peak count of the tied ladder, in the column
+    layout :func:`plot_ic_curves` reads (``sex``, ``n_comp``, ``rep``, ``bic``).
+
+    ``n_comp`` holds the PEAK count, since that is the quantity the tied ladder
+    varies; the background count is fixed and recorded in the archive. There is one
+    fit per peak count, so ``rep`` is constant.
+
+    Parameters
+    ----------
+    h5_path (str | Path)
+        Path to an interval archive written with ``fit_tied_model`` enabled.
+    interval_type (str)
+        ``'e2s'`` or ``'s2s'``.
+    sex (str)
+        ``'male'`` or ``'female'``.
+    call_type (str)
+        ``'usv'`` or ``'squeak'``.
+
+    Returns
+    -------
+    table (pls.DataFrame)
+        Columns ``sex``, ``n_comp``, ``rep``, ``bic``, ``log_likelihood``,
+        ``n_parameters``, one row per peak count.
+    """
+
+    fits = read_usv_interval_h5(h5_path)["modes"][interval_type]["tied_fits"]
+    if fits is None:
+        msg = f"{h5_path} has no tied_fits for {interval_type}; was fit_tied_model enabled?"
+        raise KeyError(msg)
+    return (fits.filter((pls.col("sex") == sex) & (pls.col("call_type") == call_type))
+            .group_by("n_peak").agg(pls.col("bic").first(), pls.col("log_likelihood").first(),
+                                   pls.col("n_parameters").first())
+            .sort("n_peak")
+            .select(pls.lit(sex).alias("sex"), pls.col("n_peak").alias("n_comp"),
+                    pls.lit(0).alias("rep"), "bic", "log_likelihood", "n_parameters"))

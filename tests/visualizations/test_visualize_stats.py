@@ -7,7 +7,6 @@ compute / data-loading helpers when wired to synthetic sessions on disk.
 
 from __future__ import annotations
 
-import glob
 import json
 from pathlib import Path
 
@@ -44,6 +43,7 @@ from usv_playpen.visualizations.usv_summary_statistics import (
     plot_category_estrous_rates_grid,
     plot_category_estrous_ratio_grid,
     plot_unassigned_proportion_vs_distance_jointplot,
+    plot_session_squeak_time_heatmap,
     plot_hourly_regressions,
     plot_local_fatigue_binned_trends,
     plot_category_local_fatigue_heatmap,
@@ -52,7 +52,6 @@ from usv_playpen.visualizations.usv_summary_statistics import (
     plot_estrous_category_kde_grid,
 )
 from usv_playpen.visualizations.usv_interval_summary_statistics import (
-    build_master_usv_interval_dataframe,
     find_latest_archive,
     load_intervals_from_h5,
     load_mixture_model_fits_from_h5,
@@ -63,13 +62,16 @@ from usv_playpen.visualizations.usv_interval_summary_statistics import (
     plot_ic_curves,
     plot_qq,
     plot_best_fit_with_annotations,
-    run_bic_sweep,
-    run_bootstrap_lrt_sweep,
-    select_n_components_from_lrt_sweep,
     plot_bootstrap_lrt_panel,
-    save_notebook_archive_to_h5,
+    serial_dependence_pairs,
+    load_serial_dependence_from_h5,
+    plot_serial_dependence,
+    load_tied_model_from_h5,
+    load_peak_lrt_sweep_from_h5,
+    load_tied_ic_table_from_h5,
 )
 from usv_playpen.visualizations import usv_interval_summary_statistics as uiss
+from usv_playpen.analyses.compute_inter_usv_interval_distributions import fit_mixture_model_sweep
 from usv_playpen.analyses.usv_interval_archive import write_ivi_h5
 
 
@@ -105,7 +107,7 @@ def _make_synthetic_session(
     n_unassigned: int = 1,
     include_behavioral: bool = True,
     include_embedding: bool = True,
-    noise_col: str = "cluster",
+    write_noise_column: bool = True,
     cat_col: str = "usv_supercategory",
     n_noise: int = 2,
 ):
@@ -151,7 +153,7 @@ def _make_synthetic_session(
         rows_start.append(t)
         rows_dur.append(0.05)
         rows_emitter.append(male_id)
-        rows_noise.append(0)  # not noise
+        rows_noise.append(False)  # a real vocalization
         rows_cat.append(1)
         rows_umap_x.append(np.random.RandomState(0).rand())
         rows_umap_y.append(np.random.RandomState(1).rand())
@@ -160,7 +162,7 @@ def _make_synthetic_session(
         rows_start.append(t)
         rows_dur.append(0.05)
         rows_emitter.append(female_id)
-        rows_noise.append(0)
+        rows_noise.append(False)
         rows_cat.append(2)
         rows_umap_x.append(0.5)
         rows_umap_y.append(0.5)
@@ -169,7 +171,7 @@ def _make_synthetic_session(
         rows_start.append(t)
         rows_dur.append(0.05)
         rows_emitter.append("UNKNOWN")
-        rows_noise.append(0)
+        rows_noise.append(False)
         rows_cat.append(3)
         rows_umap_x.append(0.7)
         rows_umap_y.append(0.7)
@@ -178,7 +180,7 @@ def _make_synthetic_session(
         rows_start.append(t)
         rows_dur.append(0.01)
         rows_emitter.append(male_id)
-        rows_noise.append(99)  # noise category
+        rows_noise.append(True)  # flagged by the noise classifier
         rows_cat.append(99)
         rows_umap_x.append(0.0)
         rows_umap_y.append(0.0)
@@ -188,8 +190,9 @@ def _make_synthetic_session(
         "start": rows_start,
         "duration": rows_dur,
         "emitter": rows_emitter,
-        noise_col: rows_noise,
     }
+    if write_noise_column:
+        cols["noise"] = rows_noise
     if include_embedding:
         cols[cat_col] = rows_cat
         cols["umap_x"] = rows_umap_x
@@ -269,7 +272,7 @@ def test_load_and_filter_usv_data_drops_noise_and_adds_frame_index(tmp_path):
     md = extract_session_metadata(str(sess))
     df = load_and_filter_usv_data(
         session_root=str(sess), frame_rate=md["frame_rate"],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
     )
     # Only non-noise rows survive: 2 male + 1 female = 3
     assert df.height == 3
@@ -278,26 +281,29 @@ def test_load_and_filter_usv_data_drops_noise_and_adds_frame_index(tmp_path):
     assert df["frame_index"][0] == int(0.05 * 150.0)
 
 
-def test_load_and_filter_usv_data_keeps_everything_when_the_noise_column_is_absent(tmp_path, capsys):
-    """A summary written by das-summarize carries no classification column: the
-    acoustic-embedding columns are added later and are dropped whenever the merge
-    is re-run. Referencing a missing column raised ColumnNotFoundError and killed
-    the whole analysis on its first session, so an absent column now keeps every
-    row and says so once."""
+def test_load_and_filter_usv_data_raises_when_the_noise_column_is_absent(tmp_path):
+    """A summary written by das-summarize carries no ``noise`` column until
+    detect-usv-noise has run. Silently keeping every row there is how the previous
+    convention quietly stopped filtering, so the loader now refuses and the error
+    names both ways out."""
     sess = tmp_path / "20260101_120000"
     _make_synthetic_session(sess, n_male_calls=2, n_female_calls=1,
-                            n_unassigned=0, n_noise=3)
+                            n_unassigned=0, n_noise=3, write_noise_column=False)
     md = extract_session_metadata(str(sess))
 
-    df = load_and_filter_usv_data(
-        session_root=str(sess), frame_rate=md["frame_rate"],
-        noise_col_id="qlvm_supercategory", noise_categories=[0],
-    )
+    with pytest.raises(KeyError, match="detect-usv-noise"):
+        load_and_filter_usv_data(
+            session_root=str(sess), frame_rate=md["frame_rate"],
+            exclude_noise_usvs=True,
+        )
 
-    # Nothing is filtered -- the three "noise" rows survive alongside the rest.
-    assert df.height == 6
-    assert "frame_index" in df.columns
-    assert "qlvm_supercategory" in capsys.readouterr().out
+    # With the filter off the same summary loads untouched.
+    kept = load_and_filter_usv_data(
+        session_root=str(sess), frame_rate=md["frame_rate"],
+        exclude_noise_usvs=False,
+    )
+    assert kept.height == 6
+    assert "frame_index" in kept.columns
 
 
 def test_load_and_filter_usv_data_missing_csv_raises(tmp_path):
@@ -306,7 +312,7 @@ def test_load_and_filter_usv_data_missing_csv_raises(tmp_path):
     sess.mkdir()
     with pytest.raises(FileNotFoundError):
         load_and_filter_usv_data(str(sess), frame_rate=150.0,
-                                 noise_col_id="cluster", noise_categories=[])
+                                 exclude_noise_usvs=True)
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +328,7 @@ def test_extract_category_embedding_data_concats_sessions(tmp_path):
     _make_synthetic_session(sess2)
     df = extract_category_embedding_data(
         session_roots=[str(sess1), str(sess2)],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
         usv_category_col="usv_supercategory",
         usv_continuous_cols=("umap_x", "umap_y"),
     )
@@ -339,7 +345,7 @@ def test_extract_category_embedding_data_skips_missing_columns(tmp_path):
     _make_synthetic_session(sess, include_embedding=False)
     df = extract_category_embedding_data(
         session_roots=[str(sess)],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
         usv_category_col="usv_supercategory",
         usv_continuous_cols=("umap_x", "umap_y"),
     )
@@ -351,7 +357,7 @@ def test_extract_category_embedding_data_skips_bad_session(tmp_path):
     """A non-existent session is skipped silently (FileNotFoundError caught)."""
     df = extract_category_embedding_data(
         session_roots=["/no/such/session"],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
         usv_category_col="usv_supercategory",
         usv_continuous_cols=("umap_x", "umap_y"),
     )
@@ -386,7 +392,7 @@ def test_merge_usv_and_behavioral_features_join_shape(tmp_path):
     sess = tmp_path / "20260101_120000"
     _make_synthetic_session(sess, include_behavioral=True)
     md = extract_session_metadata(str(sess))
-    usv = load_and_filter_usv_data(str(sess), md["frame_rate"], "cluster", [99])
+    usv = load_and_filter_usv_data(str(sess), md["frame_rate"], True)
     beh = get_session_behavioral_features(str(sess))
     out = merge_usv_and_behavioral_features(
         usv_info=usv, behavioral_features=beh,
@@ -414,7 +420,7 @@ def test_build_master_usv_dataframe_returns_two_frames_and_count(tmp_path):
     _make_synthetic_session(sess2, n_noise=3)
     usv_df, bg_df, n_noise_total = build_master_usv_dataframe(
         session_roots=[str(sess1), str(sess2)],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
         usv_category_col="usv_supercategory",
         distance_suffix="nose-nose",
         mf_angle_suffix="allo_yaw-nose",
@@ -446,7 +452,7 @@ def test_build_master_usv_dataframe_handles_heterogeneous_session_dtypes(tmp_pat
     pls.read_csv(csv2).with_columns(pls.col("start").cast(pls.Int64)).write_csv(csv2)
     usv_df, _bg, _n = build_master_usv_dataframe(
         session_roots=[str(sess1), str(sess2)],
-        noise_col_id="cluster", noise_categories=[99],
+        exclude_noise_usvs=True,
         usv_category_col="usv_supercategory",
         distance_suffix="nose-nose",
         mf_angle_suffix="allo_yaw-nose",
@@ -460,7 +466,7 @@ def test_build_master_usv_dataframe_raises_when_all_skipped(tmp_path):
     with pytest.raises(RuntimeError, match="loaded 0 sessions"):
         build_master_usv_dataframe(
             session_roots=[str(tmp_path / "absent")],
-            noise_col_id="cluster", noise_categories=[],
+            exclude_noise_usvs=True,
             usv_category_col="usv_supercategory",
             distance_suffix="nose-nose",
             mf_angle_suffix="allo_yaw-nose",
@@ -479,7 +485,7 @@ def test_build_master_usv_dataframe_skips_session_without_category_col(tmp_path)
     with pytest.raises(RuntimeError):
         build_master_usv_dataframe(
             session_roots=[str(sess1), str(sess2)],
-            noise_col_id="cluster", noise_categories=[99],
+            exclude_noise_usvs=True,
             usv_category_col="some_missing_col",  # neither session has this
             distance_suffix="nose-nose",
             mf_angle_suffix="allo_yaw-nose",
@@ -492,8 +498,10 @@ def test_build_master_usv_dataframe_skips_session_without_category_col(tmp_path)
 # ===========================================================================
 
 
-def _build_archive(tmp_path: Path, *, with_mixture_model: bool = True, with_lrt: bool = True) -> Path:
-    """Constructs a usv_interval_analysis_<ts>.h5 file with both modes populated."""
+def _build_archive(tmp_path: Path, *, with_mixture_model: bool = True, with_lrt: bool = True,
+                   corrected_lrt: bool = False) -> Path:
+    """Constructs a usv_interval_analysis_<ts>.h5 file with both modes populated.
+    ``corrected_lrt`` adds the session-corrected columns a current sweep writes."""
     intervals_df = pls.DataFrame({
         "session_id": ["s1", "s1", "s1", "s2"],
         "source_list": ["g", "g", "g", "g"],
@@ -557,6 +565,13 @@ def _build_archive(tmp_path: Path, *, with_mixture_model: bool = True, with_lrt:
             "null_max": [2.5, 2.1],
             "K_selected_step_up": [2, 3],
         })
+        if corrected_lrt:
+            payload["s2s"]["bootstrap_lrt"] = payload["s2s"]["bootstrap_lrt"].with_columns(
+                pls.Series("design_effect", [1.5, 2.0]),
+                pls.Series("design_effect_raw", [1.5, 2.0]),
+                pls.Series("lr_corrected", [3.0, 3.25]),
+                pls.Series("p_value_corrected", [0.2, 0.4]),
+            )
         payload["s2s"]["bootstrap_lrt_null"] = pls.DataFrame({
             "sex": ["male"] * 5,
             "K_null": [1] * 5,
@@ -654,6 +669,30 @@ def test_load_lrt_sweep_from_h5_returns_dict(tmp_path):
     assert isinstance(male_entry["lr_null"], np.ndarray)
 
 
+def test_load_lrt_sweep_from_h5_reads_the_corrected_statistic(tmp_path):
+    """A session-corrected sweep is read like the tied test: lr_obs / p_value are the
+    corrected ones the step-up decided on, and the raw ones sit next to the design effect."""
+    arc = _build_archive(tmp_path, with_mixture_model=True, with_lrt=True, corrected_lrt=True)
+    entry = load_lrt_sweep_from_h5(str(arc), interval_type="s2s")["male"][(1, 2)]
+    assert entry["lr_obs"] == 3.0 and entry["p_value"] == 0.2
+    assert entry["lr_raw"] == 4.5 and entry["p_value_raw"] == 0.02
+    assert entry["design_effect"] == 1.5
+
+
+def test_serial_dependence_pairs_never_chains_two_animals_of_one_sex():
+    """Two females in one session: each animal's intervals pair only among themselves, so
+    the last interval of one female is never paired with the first of the other."""
+    df = pls.DataFrame({
+        "session_id": ["s1"] * 5,
+        "sex": ["female"] * 5,
+        "interval_s": [0.1, 0.2, 0.3, 5.0, 6.0],
+        "emitter_id": ["A", "A", "A", "B", "B"],
+    })
+    current, following = serial_dependence_pairs(df, "female")
+    np.testing.assert_allclose(current, [0.1, 0.2, 5.0])
+    np.testing.assert_allclose(following, [0.2, 0.3, 6.0])
+
+
 def test_load_lrt_sweep_from_h5_missing_tables_raises(tmp_path):
     """Archive without bootstrap_lrt → ValueError."""
     arc = _build_archive(tmp_path, with_mixture_model=False, with_lrt=False)
@@ -678,40 +717,6 @@ def test_selected_K_from_h5_unknown_mode_raises(tmp_path):
         selected_K_from_h5(str(arc), interval_type="e2s")
 
 
-# ---- build_master_usv_interval_dataframe ---------------------------------
-
-
-def test_build_master_usv_interval_dataframe_empty_when_no_sessions(tmp_path):
-    """Session list resolves to no readable sessions → empty frame, not error."""
-    list_file = tmp_path / "sessions.txt"
-    list_file.write_text("/nonexistent/session\n")
-    df, summary = build_master_usv_interval_dataframe(
-        session_lists=[str(list_file)],
-        noise_col_id="cluster", noise_categories=[99],
-        message_output=lambda *_a, **_kw: None,
-    )
-    assert df.height == 0
-    assert summary["n_sessions_loaded"] == 0
-    # Schema is still set up so downstream filter() calls don't crash
-    assert "interval_type" in df.columns
-
-
-def test_build_master_usv_interval_dataframe_aggregates_two_sessions(tmp_path):
-    """Two synthetic sessions → tidy interval frame with both modes present."""
-    sess1 = tmp_path / "20260101_120000"
-    sess2 = tmp_path / "20260102_120000"
-    _make_synthetic_session(sess1, n_male_calls=4, n_female_calls=3, n_unassigned=0)
-    _make_synthetic_session(sess2, n_male_calls=3, n_female_calls=3, n_unassigned=0)
-    list_file = tmp_path / "sessions.txt"
-    list_file.write_text(f"{sess1}\n{sess2}\n")
-    df, summary = build_master_usv_interval_dataframe(
-        session_lists=[str(list_file)],
-        noise_col_id="cluster", noise_categories=[99],
-        message_output=lambda *_a, **_kw: None,
-    )
-    assert df.height > 0
-    assert set(df["interval_type"].unique().to_list()) == {"s2s", "e2s"}
-    assert summary["n_sessions_loaded"] == 2
 
 
 # Smoke tests for the figure-rendering functions of usv_summary_statistics.
@@ -1383,14 +1388,13 @@ def test_plot_best_fit_with_annotations():
     plt.close(fig)
 
 
-def test_run_bic_sweep_feeds_plot_ic_curves():
+def test_fit_mixture_model_sweep_feeds_plot_ic_curves():
     """
     Description
     -----------
-    `run_bic_sweep` must fit the mixture-model sweep across n_components for each sex
-    from a tidy {sex, interval_s} frame and return a tidy results table;
-    that table must then drive `plot_ic_curves` end-to-end (real compute ->
-    real figure), exercising the fit_mixture_model_sweep wrap path with no mocks.
+    The CLI's `fit_mixture_model_sweep` must fit the mixture-model sweep across
+    n_components for each sex and return a tidy results table; that table must then
+    drive `plot_ic_curves` end-to-end (real compute -> real figure) with no mocks.
 
     Parameters
     ----------
@@ -1401,14 +1405,11 @@ def test_run_bic_sweep_feeds_plot_ic_curves():
     """
 
     rng = np.random.default_rng(16)
-    usv_interval_df = pls.DataFrame({
-        "sex": (["male"] * 200) + (["female"] * 200),
-        "interval_s": np.exp(np.concatenate([
-            rng.normal(-0.5, 0.6, 200), rng.normal(0.6, 0.6, 200),
-        ])).tolist(),
-    })
-    df_results = run_bic_sweep(
-        usv_interval_df,
+    df_results = fit_mixture_model_sweep(
+        intervals_by_key={
+            "male": np.exp(rng.normal(-0.5, 0.6, 200)),
+            "female": np.exp(rng.normal(0.6, 0.6, 200)),
+        },
         n_components_min=1, n_components_max=3, n_repeats=2,
         max_modes_reported=3, random_seed_base=0, model_class="gauss",
     )
@@ -1945,7 +1946,7 @@ def test_plot_estrous_category_kde_grid_degenerate_grid_shapes(cats, stages, wan
 # notebook -> HDF5 archive writer.
 #
 # The panel / cell-pair / step-up / archive paths consume hand-built sweep
-# dicts (shaped exactly like run_bootstrap_lrt_sweep / bootstrap_lrt output)
+# dicts (shaped exactly like load_lrt_sweep_from_h5 / bootstrap_lrt output)
 # so the broken-axis, normal, and empty-fill rendering branches are all
 # driven without paying the bootstrap cost; one small real sweep covers the
 # compute loop and its size<2 skip.
@@ -1957,8 +1958,7 @@ def _lrt_res(K_n, K_a, lr_obs, lr_null, p_value):
     -----------
     Build one `(K_null, K_alt)` bootstrap-LRT result dict shaped exactly
     like `mixture_model_utils.bootstrap_lrt` returns it, so the same dict
-    drives `plot_bootstrap_lrt_panel`, `select_n_components_from_lrt_sweep`,
-    and `save_notebook_archive_to_h5`.
+    drives `plot_bootstrap_lrt_panel`.
 
     Parameters
     ----------
@@ -2077,146 +2077,6 @@ def test_plot_bootstrap_lrt_panel_empty_sweep_returns_single_axis():
     plt.close(fig)
 
 
-@pytest.mark.parametrize("bonferroni", [False, True])
-def test_select_n_components_from_lrt_sweep(bonferroni):
-    """
-    Description
-    -----------
-    `select_n_components_from_lrt_sweep` must apply the per-key step-up
-    rule, returning one selected K per key, and (when `bonferroni=True`)
-    divide alpha by the per-key test count before delegating to the
-    step-up selector.
-
-    Parameters
-    ----------
-    bonferroni (bool)
-        Whether to apply the Bonferroni correction.
-
-    Returns
-    -------
-    None
-    """
-
-    selected = select_n_components_from_lrt_sweep(
-        _lrt_sweep(), alpha=0.05, bonferroni=bonferroni,
-    )
-    assert set(selected) == {"male", "female"}
-    assert all(isinstance(v, int) for v in selected.values())
-
-
-def test_run_bootstrap_lrt_sweep_small_and_skips_tiny_key():
-    """
-    Description
-    -----------
-    `run_bootstrap_lrt_sweep` must run the parametric bootstrap LRT for
-    every consecutive K-pair per key, while skipping keys with fewer than
-    two intervals. Uses a tiny `B` and Gaussian model class to keep the
-    real `bootstrap_lrt` calls fast.
-
-    Parameters
-    ----------
-
-    Returns
-    -------
-    None
-    """
-
-    rng = np.random.default_rng(201)
-    intervals_by_key = {
-        "male": np.exp(rng.normal(-0.4, 0.5, 150)),
-        "tiny": np.array([0.5]),  # size < 2 -> skipped
-    }
-    sweep = run_bootstrap_lrt_sweep(
-        intervals_by_key,
-        n_components_min=1, n_components_max=2,
-        B=3, n_subsample=120, model_class="gauss",
-        n_init_obs=1, n_init_boot=1, seed=0,
-        message_output=lambda *a, **k: None,
-    )
-    assert "tiny" not in sweep, "single-interval key should be skipped"
-    assert (1, 2) in sweep["male"]
-    res = sweep["male"][(1, 2)]
-    assert {"lr_obs", "lr_null", "p_value", "null_max"}.issubset(res)
-
-
-def test_save_notebook_archive_to_h5_round_trips(tmp_path):
-    """
-    Description
-    -----------
-    `save_notebook_archive_to_h5` must consolidate the notebook's in-memory
-    interval frame + mixture-model sweep + bootstrap-LRT sweep into a single
-    `usv_interval_analysis_<ts>.h5` archive (applying the step-up rule and
-    writing the `K_selected_step_up` column), skipping the empty `e2s`
-    mode entirely. Asserts the archive is written and reloads via the
-    existing HDF5 loaders, with the per-sex selected-K attrs intact.
-
-    Parameters
-    ----------
-    tmp_path (pathlib.Path)
-        Pytest temp directory used as the archive output directory.
-
-    Returns
-    -------
-    None
-    """
-
-    intervals_df = pls.DataFrame({
-        "session_id":   ["s1", "s1", "s1", "s2"],
-        "source_list":  ["g", "g", "g", "g"],
-        "interval_type": ["s2s"] * 4,
-        "sex":          ["male", "male", "female", "male"],
-        "interval_s":   [0.5, 0.7, 0.3, 0.9],
-        "log_interval": np.log([0.5, 0.7, 0.3, 0.9]).tolist(),
-        "male_id":      ["M"] * 4,
-        "female_id":    ["F"] * 4,
-    })
-    summary = {
-        "n_sessions_loaded": 2,
-        "n_dropped": {"s2s": {"male": 1, "female": 0}},
-    }
-    settings_path = glob.glob("**/analyses_settings.json", recursive=True)[0]
-    cfg = json.loads(
-        Path(settings_path).read_text()
-    )["compute_inter_usv_interval_distributions"]
-
-    mixture_model_rows = []
-    for sex in ("male", "female"):
-        for K in (1, 2):
-            row = {
-                "sex": sex, "n_comp": K, "rep": 0,
-                "bic": 10.0, "aic": 10.0, "icl": 10.0,
-                "cv_neg_loglik": 1.0, "model_class": "gauss",
-            }
-            for k in range(2):
-                row[f"weight_{k+1}"] = 0.5 if k < K else float("nan")
-                row[f"logmean_{k+1}"] = float(k - 0.5) if k < K else float("nan")
-                row[f"logsd_{k+1}"] = 0.5 if k < K else float("nan")
-                row[f"nu_{k+1}"] = float("nan")
-            mixture_model_rows.append(row)
-
-    h5_path = save_notebook_archive_to_h5(
-        output_directory=str(tmp_path),
-        usv_interval_df=intervals_df,
-        usv_interval_summary=summary,
-        usv_interval_cfg=cfg,
-        mixture_model_fits_by_mode={"s2s": pls.DataFrame(mixture_model_rows)},
-        lrt_sweep_by_mode={"s2s": _lrt_sweep()},
-        message_output=lambda *a, **k: None,
-    )
-
-    assert h5_path.exists()
-    assert h5_path.name.startswith("usv_interval_analysis_")
-
-    # Reloads through the existing loader family.
-    df_back = load_intervals_from_h5(str(h5_path), interval_type="s2s")
-    assert df_back.height == 4
-    lrt_back = load_lrt_sweep_from_h5(str(h5_path), interval_type="s2s")
-    assert lrt_back, "bootstrap_lrt table should round-trip"
-    selected = selected_K_from_h5(str(h5_path), interval_type="s2s")
-    assert set(selected) == {"male", "female"}
-    assert all(isinstance(v, int) for v in selected.values())
-
-
 def _fit_two_comp_gmm(seed: int):
     """
     Description
@@ -2307,3 +2167,249 @@ def test_plot_best_fit_with_annotations_invalid_corner_raises():
             intervals_sec, mixture_model, mixture_model_order, color=_HEX_MALE,
             legend_corner="middle",
         )
+
+
+def _serial_dependence_tables():
+    """Archived-shape serial-dependence tables for one male USV pool: a curve rising to a flat
+    level near 90 ms, bands around it, a bend at 110 ms, and five replicate bends."""
+    grid = np.geomspace(30.0, 20000.0, 40)
+    line = np.minimum(grid, 110.0) * 0.8
+    identity = {"sex": ["male"] * grid.size, "call_type": ["usv"] * grid.size,
+                "adjacency": ["filtered"] * grid.size}
+    curves = pls.DataFrame({**identity, "current_ms": grid, "spline_ms": line,
+                            "spline_low_ms": line * 0.95, "spline_high_ms": line * 1.05,
+                            "bent_ms": line, "bent_low_ms": line * 0.97, "bent_high_ms": line * 1.03})
+    fit = pls.DataFrame([{"sex": "male", "call_type": "usv", "adjacency": "filtered", "n_pairs": 500,
+                          "n_sessions": 10, "n_knots": 6, "corner_width": 0.05, "bend_ms": 110.0,
+                          "bend_low_ms": 100.0, "bend_high_ms": 125.0, "slope": 0.55,
+                          "flat_level_ms": 88.0, "level": 99.0, "n_bootstrap": 5,
+                          "spline_not_converged": 0, "bent_not_converged": 0, "loss_w_0p05": 1.0}])
+    bends = pls.DataFrame({"sex": ["male"] * 5, "call_type": ["usv"] * 5, "adjacency": ["filtered"] * 5,
+                           "b": np.arange(5), "bend_ms": [105.0, 108.0, 110.0, 112.0, 120.0]})
+    return curves, fit, bends
+
+
+def test_load_serial_dependence_from_h5_round_trips_one_pool(tmp_path):
+    """The three serial-dependence tables survive the archive; the loader returns the pool's curves
+    ascending in the current interval and its fit row, and refuses a pool with no fit."""
+    curves, fit, bends = _serial_dependence_tables()
+    out = tmp_path / "usv_interval_analysis_20260101_120000.h5"
+    write_ivi_h5(out, analysis_attrs={"git_sha": "abc"},
+                 per_mode={"e2s": {"attrs": {}, "serial_dependence_curves": curves.reverse(),
+                                   "serial_dependence_fit": fit, "serial_dependence_bends": bends}})
+    loaded_curves, loaded_fit = load_serial_dependence_from_h5(out, "e2s", "male", "usv")
+    np.testing.assert_allclose(loaded_curves["current_ms"].to_numpy(), curves["current_ms"].to_numpy())
+    assert loaded_fit["bend_ms"] == 110.0 and loaded_fit["level"] == 99.0
+    with pytest.raises(KeyError, match="no serial-dependence fit"):
+        load_serial_dependence_from_h5(out, "e2s", "female", "usv")
+
+
+def test_plot_serial_dependence_draws_spline_and_bent_panels():
+    """Two square panels share the pairs; the right one carries the bend with its interval and the
+    single colorbar, and the stats echo the fit."""
+    curves, fit, _ = _serial_dependence_tables()
+    rng = np.random.default_rng(0)
+    current = np.exp(rng.uniform(np.log(0.03), np.log(5.0), 500))
+    following = np.exp(rng.uniform(np.log(0.03), np.log(5.0), 500))
+    f, axes, stats = plot_serial_dependence((current, following), "#4C9BB5", curves,
+                                            fit.row(0, named=True), boundary_ms=115.5)
+    assert len(axes) == 2 and stats["n_pairs"] == 500
+    assert stats["bend_ms"] == 110.0 and stats["bend_high_ms"] == 125.0
+    assert "bend 110 ms (100-125, 99%)" in [t.get_text() for t in axes[1].get_legend().get_texts()]
+    assert axes[0].get_title() == "A: median spline" and axes[1].get_title() == "B: bent-line median fit"
+    # the one colorbar is an inset of the right panel, none on the left
+    assert len(axes[1].child_axes) == 1 and len(axes[0].child_axes) == 0
+    plt.close(f)
+
+
+def _tied_archive(tmp_path):
+    """An archive holding a male USV tied ladder at 1 and 2 peaks (plus 2 background components
+    each), the session-corrected peak test for both rungs with their null draws, and the
+    selected peak count (2) in the mode attributes."""
+    rows = []
+    for n_peak, loglik, bic in ((1, -100.0, 230.0), (2, -90.0, 215.0)):
+        roles = ["peak"] * n_peak + ["background"] * 2
+        means = [-2.8, -1.7][:n_peak] + [-1.2, 2.4]
+        scales = [0.24] * n_peak + [1.2, 1.1]
+        for component, (role, mean, scale) in enumerate(zip(roles, means, scales)):
+            rows.append({"sex": "male", "call_type": "usv", "adjacency": "filtered", "n_peak": n_peak,
+                         "n_background": 2, "component": component, "role": role, "logmean": mean,
+                         "median_sec": float(np.exp(mean)), "logscale": scale, "nu": 20.0,
+                         "weight": 1.0 / len(roles), "log_likelihood": loglik, "n_parameters": 10 + n_peak,
+                         "bic": bic, "shared_peak_scale": 0.24})
+    peak_lrt = pls.DataFrame({
+        "sex": ["male"] * 2, "call_type": ["usv"] * 2, "adjacency": ["filtered"] * 2,
+        "n_peak_null": [1, 2], "n_peak_alt": [2, 3], "n_background": [2, 2],
+        "lr_obs": [68.0, 11.3], "design_effect": [1.56, 1.35], "design_effect_raw": [1.56, 1.35],
+        "effective_n": [6400.0, 7400.0], "lr_corrected": [43.5, 8.4], "null_p95": [6.0, 7.0],
+        "threshold": [10.0, 12.4], "p_value": [0.0, 0.009], "p_value_corrected": [0.0, 0.028],
+        "negative_fraction": [0.0, 0.01], "B": [3, 3], "n_subsample": [10000, 10000],
+        "alpha_used": [0.0033, 0.0033], "rejected": [True, False]})
+    peak_lrt_null = pls.DataFrame({
+        "sex": ["male"] * 6, "call_type": ["usv"] * 6, "adjacency": ["filtered"] * 6,
+        "n_peak_null": [1, 1, 1, 2, 2, 2], "b": [2, 0, 1, 0, 1, 2],
+        "lr_b": [3.0, 1.0, 2.0, 4.0, 5.0, 6.0]})
+    out = tmp_path / "usv_interval_analysis_20260101_120000.h5"
+    write_ivi_h5(out, analysis_attrs={"git_sha": "abc"},
+                 per_mode={"e2s": {"attrs": {"selected_n_peak_male_usv": 2, "alpha_effective_male_usv": 0.0033},
+                                   "tied_fits": pls.DataFrame(rows), "peak_lrt": peak_lrt,
+                                   "peak_lrt_null": peak_lrt_null}})
+    return out
+
+
+def test_load_tied_model_from_h5_rebuilds_the_selected_and_requested_fits(tmp_path):
+    """Without n_peak the selected count (2) is rebuilt from its components; an explicit count is
+    honoured; a pool with no fit raises."""
+    arc = _tied_archive(tmp_path)
+    model, order, n_peak, rows = load_tied_model_from_h5(arc, "e2s", "male", "usv")
+    assert n_peak == 2 and rows.height == 4
+    np.testing.assert_allclose(np.asarray(model.means_).ravel(), [-2.8, -1.7, -1.2, 2.4])
+    np.testing.assert_allclose(np.asarray(model.covariances_).ravel(), np.array([0.24, 0.24, 1.2, 1.1]) ** 2)
+    np.testing.assert_array_equal(order, [0, 1, 2, 3])
+    assert rows["role"].to_list() == ["peak", "peak", "background", "background"]
+    _, _, n_one, rows_one = load_tied_model_from_h5(arc, "e2s", "male", "usv", n_peak=1)
+    assert n_one == 1 and rows_one.height == 3
+    with pytest.raises(KeyError):
+        load_tied_model_from_h5(arc, "e2s", "male", "usv", n_peak=4)
+
+
+def test_load_peak_lrt_sweep_from_h5_reads_the_corrected_statistic(tmp_path):
+    """Each rung is keyed (n_null, n_alt) and carries the CORRECTED statistic and p-value the test
+    decided on, the null draws in replicate order, and the per-rung level the test used."""
+    sweep, alpha = load_peak_lrt_sweep_from_h5(_tied_archive(tmp_path), "e2s", "male", "usv")
+    assert alpha == 0.0033
+    assert list(sweep["male"]) == [(1, 2), (2, 3)]
+    first = sweep["male"][(1, 2)]
+    assert first["lr_obs"] == 43.5 and first["p_value"] == 0.0
+    np.testing.assert_allclose(first["lr_null"], [1.0, 2.0, 3.0])
+    assert sweep["male"][(2, 3)]["p_value"] == 0.028 and sweep["male"][(2, 3)]["null_max"] == 6.0
+
+
+def test_load_tied_ic_table_from_h5_gives_one_row_per_peak_count(tmp_path):
+    """One row per peak count in the plot_ic_curves layout, n_comp holding the PEAK count."""
+    table = load_tied_ic_table_from_h5(_tied_archive(tmp_path), "e2s", "male", "usv")
+    assert table["n_comp"].to_list() == [1, 2]
+    assert table["bic"].to_list() == [230.0, 215.0]
+    assert set(table["sex"].to_list()) == {"male"} and set(table["rep"].to_list()) == {0}
+
+
+_SQUEAK_STYLES = {
+    "courtship": {"color": "#023047", "label": "courtship"},
+    "female_female": {"color": "#C1121F", "label": "female-female"},
+}
+
+
+def _write_squeak_session(root: Path, starts: list[float], squeak: list[bool], noise: list[bool]) -> None:
+    """Writes ``<root>/audio/<name>_usv_summary.csv`` with the three columns the heatmap reads."""
+
+    (root / "audio").mkdir(parents=True)
+    pls.DataFrame({"start": starts, "squeak": squeak, "noise": noise}).write_csv(
+        str(root / "audio" / f"{root.name}_usv_summary.csv"))
+
+
+def _squeak_cohort(tmp_path: Path) -> dict[str, list[str]]:
+    """
+    Three sessions over two conditions, written to disk with one session-list file per
+    condition:
+
+    * ``s_hi`` (courtship): a cluster at 10-13 s of which 2 of 4 segments are squeaks, one
+      plain segment at 90 s, and one noise-flagged squeak at 95 s that the noise filter must
+      remove -- rate 2/5;
+    * ``s_lo`` (courtship): 5 segments at 10-14 s, 1 squeak -- rate 1/5;
+    * ``s_none`` (female_female): 5 segments, no squeak -- drawn as a 0 % row.
+    """
+
+    sessions = {
+        "s_hi": ([10.0, 11.0, 12.0, 13.0, 90.0, 95.0], [True, False, False, True, False, True],
+                 [False, False, False, False, False, True]),
+        "s_lo": ([10.0, 11.0, 12.0, 13.0, 14.0], [True, False, False, False, False], [False] * 5),
+        "s_none": ([10.0, 11.0, 12.0, 13.0, 14.0], [False] * 5, [False] * 5),
+    }
+    for name, (starts, squeak, noise) in sessions.items():
+        _write_squeak_session(tmp_path / name, starts, squeak, noise)
+    courtship_list = tmp_path / "courtship.txt"
+    courtship_list.write_text(f"{tmp_path / 's_lo'}\n{tmp_path / 's_hi'}\n")
+    female_list = tmp_path / "female_female.txt"
+    female_list.write_text(f"{tmp_path / 's_none'}\n")
+    return {"courtship": [str(courtship_list)], "female_female": [str(female_list)]}
+
+
+def _squeak_heatmap(lists, exclude_noise_usvs, min_session_segments):
+    """Runs the heatmap on a 180 s axis with a 1 s grid and a 2 s kernel."""
+
+    return plot_session_squeak_time_heatmap(
+        condition_session_lists=lists, condition_styles=_SQUEAK_STYLES,
+        exclude_noise_usvs=exclude_noise_usvs, kernel_sigma_s=2.0, grid_step_s=1.0,
+        min_vocal_density=0.5, session_length_s=180.0, min_session_segments=min_session_segments,
+        vmax_percent=100.0, zero_tint=0.12, nodata_color="#FFFFFF")
+
+
+def test_plot_session_squeak_time_heatmap_rates_order_and_silence(tmp_path):
+    """
+    Checks the numbers behind the figure: noise segments are dropped before counting, a
+    session without any squeak is still drawn (as a 0 % row), drawn rows are sorted by squeak rate
+    within their condition, the kernel share at the centre of the 10-13 s cluster equals the
+    cluster's squeak fraction (the two squeaks sit at 10 s and 13 s, symmetric about 11.5 s,
+    so the share there is exactly the weight of the outer pair, strictly between 0 and 1/2),
+    a lone non-squeak far from any squeak reads 0 %, and a stretch with no vocalization within
+    the kernel's reach is NaN (blank) rather than 0.
+    """
+
+    fig, axes, stats = _squeak_heatmap(_squeak_cohort(tmp_path), exclude_noise_usvs=True,
+                                       min_session_segments=2)
+    try:
+        sessions = stats["sessions"].sort("session_id")
+        assert sessions["session_id"].to_list() == ["s_hi", "s_lo", "s_none"]
+        assert sessions["n_segments"].to_list() == [5, 5, 5]
+        assert sessions["n_noise_dropped"].to_list() == [1, 0, 0]
+        assert sessions["drawn"].to_list() == [True, True, True]
+        assert stats["n_drawn"] == 3 and stats["n_no_squeak"] == 1 and stats["n_too_few"] == 0
+        matrix, grid = stats["rate_matrix"], stats["grid_s"]
+        assert matrix.shape == (3, 180) and grid[0] == pytest.approx(0.5)
+        # Row 2 is s_none (female_female block, after both courtship rows): 0 % where it vocalizes.
+        assert matrix[2, int(np.argmin(np.abs(grid - 12.5)))] == pytest.approx(0.0, abs=1e-9)
+        at = int(np.argmin(np.abs(grid - 11.5)))
+        outer = 2.0 * np.exp(-0.5 * (1.5 / 2.0) ** 2)
+        inner = 2.0 * np.exp(-0.5 * (0.5 / 2.0) ** 2)
+        # Row 0 is s_hi (rate 2/5 beats s_lo's 1/5).
+        assert matrix[0, at] == pytest.approx(outer / (outer + inner), abs=1e-3)
+        assert matrix[0, int(np.argmin(np.abs(grid - 90.5)))] == pytest.approx(0.0, abs=1e-6)
+        assert np.isnan(matrix[0, int(np.argmin(np.abs(grid - 50.5)))])
+        assert np.isnan(matrix[1, int(np.argmin(np.abs(grid - 150.5)))])
+        assert np.nanmax(matrix) <= 1.0 and np.nanmin(matrix) >= 0.0
+        assert len(axes) == 4
+    finally:
+        plt.close(fig)
+
+
+def test_plot_session_squeak_time_heatmap_keeps_noise_when_asked(tmp_path):
+    """With ``exclude_noise_usvs=False`` the noise-flagged squeak is counted, and sessions below
+    the segment minimum are reported as too few rather than drawn."""
+
+    fig, _axes, stats = _squeak_heatmap(_squeak_cohort(tmp_path), exclude_noise_usvs=False,
+                                        min_session_segments=6)
+    try:
+        sessions = stats["sessions"].sort("session_id")
+        assert sessions["n_squeaks"].to_list() == [3, 1, 0]
+        assert stats["n_drawn"] == 1 and stats["n_too_few"] == 2
+    finally:
+        plt.close(fig)
+
+
+def test_plot_session_squeak_time_heatmap_rejects_session_in_two_conditions(tmp_path):
+    """A session listed under two conditions is a ValueError, since its row would be ambiguous."""
+
+    lists = _squeak_cohort(tmp_path)
+    lists["female_female"].append(lists["courtship"][0])
+    with pytest.raises(ValueError, match="listed under both"):
+        _squeak_heatmap(lists, exclude_noise_usvs=True, min_session_segments=2)
+
+
+def test_plot_session_squeak_time_heatmap_missing_summary_raises(tmp_path):
+    """A listed session without a USV summary is a FileNotFoundError naming its audio folder."""
+
+    (tmp_path / "s_empty").mkdir()
+    session_list = tmp_path / "list.txt"
+    session_list.write_text(f"{tmp_path / 's_empty'}\n")
+    with pytest.raises(FileNotFoundError, match="usv_summary"):
+        _squeak_heatmap({"courtship": [str(session_list)]}, exclude_noise_usvs=True, min_session_segments=2)

@@ -25,6 +25,8 @@ import re
 from pathlib import Path
 import pickle
 import polars as pls
+
+from ..os_utils import drop_noise_usvs
 from astropy.convolution import convolve
 from astropy.convolution import Gaussian1DKernel
 
@@ -68,6 +70,98 @@ def load_behavioral_feature_data(behavior_file_paths: list = None,
         beh_feature_data_dict[sess_id] = pls.read_csv(source=features_csv_file_path, separator=csv_sep)
 
     return beh_feature_data_dict, camera_fr_dict, mouse_track_names_dict
+
+
+# Vocal-predictor modes that build one trace per USV category and therefore need a
+# per-call label column; 'pooled_rate' / 'pooled_binary' never read one.
+CATEGORY_PREDICTOR_TYPES = ('categories_rate', 'all_rate')
+
+
+def require_usv_category_column(category_column: str | None,
+                                purpose: str,
+                                summary_columns: list | None = None,
+                                source: str | None = None) -> None:
+    """
+    Description
+    -----------
+    Fails clearly when a category-dependent analysis has no USV category label
+    column to read. The usv_summary.csv files written by ``infer-qlvm-latents``
+    carry the QLVM cluster labels of the regular model (``qlvm_category`` /
+    ``qlvm_supercategory``, the shipped ``vocal_features.usv_category_column_name``
+    being ``qlvm_supercategory``), but a summary embedded before the labels
+    were written, or a setting of ``null``, leaves a path without them. Every
+    path that needs labels (per-category vocal predictors, the multinomial and
+    binomial category models, the single-category onset target) calls this
+    first, so the run stops with a message naming the setting instead of
+    crashing obscurely on a missing column or silently building nothing.
+
+    Called with ``summary_columns`` = None it checks only the setting (the early,
+    before-anything-is-loaded check); with the columns of one summary it also
+    checks that the configured column exists in that file.
+
+    Parameters
+    ----------
+    category_column (str | None)
+        The configured ``vocal_features.usv_category_column_name``.
+    purpose (str)
+        What needs the labels (named in the error), e.g.
+        ``"usv_predictor_type 'categories_rate'"``.
+    summary_columns (list | None)
+        Columns of one usv_summary.csv; None skips the per-file check.
+    source (str | None)
+        The summary the columns came from (named in the error).
+
+    Returns
+    -------
+    None
+    """
+
+    if category_column is None or category_column == '':
+        error_message = (
+            f"QLVM category labels are not available; set vocal_features.usv_category_column_name to an "
+            f"existing label column. {purpose} needs a per-USV category label, and the setting is "
+            f"{category_column!r}. Point the setting at a label column the usv_summary.csv files carry "
+            f"(e.g. 'qlvm_supercategory' or 'qlvm_category', written by infer-qlvm-latents) or use a "
+            f"label-free alternative (e.g. usv_predictor_type 'pooled_rate')."
+        )
+        raise ValueError(error_message)
+    if summary_columns is not None and category_column not in summary_columns:
+        error_message = (
+            f"QLVM category labels are not available; set vocal_features.usv_category_column_name to an "
+            f"existing label column. {purpose} needs the column '{category_column}', which is absent from "
+            f"{source}."
+        )
+        raise ValueError(error_message)
+
+
+def require_labels_for_vocal_predictors(voc_settings: dict) -> None:
+    """
+    Description
+    -----------
+    The early, settings-only form of the vocal-predictor label check: a pipeline
+    calls it before loading any session, so a ``usv_predictor_type`` of
+    ``'categories_rate'`` / ``'all_rate'`` with no category label column
+    (``usv_category_column_name`` null) stops at once instead of after the
+    behavioral features of every session were read. The per-summary check (the
+    column exists in each file) runs later, inside the loaders.
+
+    Parameters
+    ----------
+    voc_settings (dict)
+        The ``vocal_features`` block of the modeling settings; must contain
+        ``usv_predictor_type`` and ``usv_category_column_name``.
+
+    Returns
+    -------
+    None
+    """
+
+    if voc_settings['usv_predictor_type'] in CATEGORY_PREDICTOR_TYPES:
+        require_usv_category_column(
+            voc_settings['usv_category_column_name'],
+            f"vocal_features.usv_predictor_type '{voc_settings['usv_predictor_type']}'",
+        )
+
 
 def _get_clean_tiled_epochs(usv_starts_all: np.ndarray,
                             usv_stops_all: np.ndarray,
@@ -288,6 +382,145 @@ def _generate_vocal_trace(event_starts: np.ndarray,
     return trace
 
 
+def _group_calls_into_bouts(starts: np.ndarray,
+                            stops: np.ndarray,
+                            ibi_threshold: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Splits one mouse's time-sorted calls into bouts at every inter-call gap
+    of at least ``ibi_threshold`` seconds.
+
+    Parameters
+    ----------
+    starts : np.ndarray
+        Call start times (s), sorted.
+    stops : np.ndarray
+        Call stop times (s), same order.
+    ibi_threshold : float
+        Gap (next start minus previous stop) at or above which a new bout begins.
+
+    Returns
+    -------
+    bout_start_indices, bout_end_indices : tuple of np.ndarray
+        Index of the first and last call of every bout; empty arrays when there
+        are no calls.
+    """
+
+    if len(starts) == 0:
+        return np.array([], dtype=int), np.array([], dtype=int)
+    if len(starts) > 1:
+        gaps = starts[1:] - stops[:-1]
+        break_indices = np.where(gaps >= ibi_threshold)[0]
+        bout_start_indices = np.concatenate(([0], break_indices + 1))
+        bout_end_indices = np.concatenate((break_indices, [len(starts) - 1]))
+    else:
+        bout_start_indices = np.array([0])
+        bout_end_indices = np.array([0])
+    return bout_start_indices, bout_end_indices
+
+
+def _bout_offset_events(starts: np.ndarray,
+                        stops: np.ndarray,
+                        bout_start_indices: np.ndarray,
+                        bout_end_indices: np.ndarray,
+                        min_usv_per_bout: int,
+                        negative_scheme: str,
+                        min_singing_after_negative: float,
+                        time_since_bout_onset_tolerance: float,
+                        max_negatives_per_bout: int | None) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Positive and negative event times for ``'bout_offset'`` mode.
+
+    A positive is the offset of a bout's last call. A negative is an interior
+    call's offset, and the question the two classes pose is: given that he is
+    singing, why does he stop here rather than continue. ``'cross_bout'`` draws
+    the negative from another bout of the same session at the same time since
+    bout onset, so position in the bout is held fixed and the bouts that
+    continue are, by definition, the longer ones. ``'within_bout'`` draws it
+    from the same bout, so bout length and context are shared and only the
+    approach to the end differs, at the price of admitting only bouts long
+    enough to hold such a call.
+
+    Parameters
+    ----------
+    starts : np.ndarray
+        Call start times (s), sorted.
+    stops : np.ndarray
+        Call stop times (s), same order.
+    bout_start_indices : np.ndarray
+        First-call index of every bout (see ``_group_calls_into_bouts``).
+    bout_end_indices : np.ndarray
+        Last-call index of every bout.
+    min_usv_per_bout : int
+        Bouts with fewer calls contribute neither positives nor negatives.
+    negative_scheme : str
+        ``'cross_bout'`` or ``'within_bout'``.
+    min_singing_after_negative : float
+        Seconds the bout must keep singing after a negative's call.
+    time_since_bout_onset_tolerance : float
+        ``'cross_bout'`` only: maximal position mismatch (s) between a positive
+        and its negative.
+    max_negatives_per_bout : int or None
+        ``'cross_bout'`` only: cap on negatives drawn from one bout.
+
+    Returns
+    -------
+    positives, negatives : tuple of np.ndarray
+        Event times (s); equal in length under both schemes.
+    """
+
+    if negative_scheme not in ('cross_bout', 'within_bout'):
+        raise ValueError(f"Unknown negative_scheme: {negative_scheme}. Must be 'cross_bout' or 'within_bout'.")
+    bouts = [(int(i0), int(i1)) for i0, i1 in zip(bout_start_indices, bout_end_indices)
+             if (i1 - i0 + 1) >= min_usv_per_bout]
+    positives: list[float] = []
+    negatives: list[float] = []
+    if negative_scheme == 'within_bout':
+        for i0, i1 in bouts:
+            end_time = stops[i1]
+            eligible = [stops[k] for k in range(i0, i1) if (end_time - stops[k]) >= min_singing_after_negative]
+            if not eligible:
+                continue
+            positives.append(float(end_time))
+            negatives.append(float(max(eligible)))
+        return np.array(positives), np.array(negatives)
+
+    # cross_bout: every interior call with enough singing left is a candidate,
+    # tagged with its position (time since its bout's onset) and its bout.
+    candidate_position: list[float] = []
+    candidate_time: list[float] = []
+    candidate_bout: list[int] = []
+    for b, (i0, i1) in enumerate(bouts):
+        onset = starts[i0]
+        end_time = stops[i1]
+        for k in range(i0, i1):
+            if (end_time - stops[k]) >= min_singing_after_negative:
+                candidate_position.append(float(stops[k] - onset))
+                candidate_time.append(float(stops[k]))
+                candidate_bout.append(b)
+    cand_pos = np.array(candidate_position)
+    cand_time = np.array(candidate_time)
+    cand_bout = np.array(candidate_bout, dtype=int)
+    used = np.zeros(cand_pos.size, dtype=bool)
+    per_bout_use = np.zeros(len(bouts), dtype=int)
+    # Positives in order of position so the nearest-candidate rule is deterministic.
+    ordered = sorted(((float(stops[i1] - starts[i0]), float(stops[i1]), b) for b, (i0, i1) in enumerate(bouts)))
+    for position, end_time, b in ordered:
+        if cand_pos.size == 0:
+            break
+        allowed = (~used) & (cand_bout != b) & (np.abs(cand_pos - position) <= time_since_bout_onset_tolerance)
+        if max_negatives_per_bout is not None:
+            allowed &= per_bout_use[cand_bout] < max_negatives_per_bout
+        options = np.where(allowed)[0]
+        if options.size == 0:
+            continue
+        j = options[np.argmin(np.abs(cand_pos[options] - position))]
+        used[j] = True
+        per_bout_use[cand_bout[j]] += 1
+        positives.append(end_time)
+        negatives.append(float(cand_time[j]))
+    return np.array(positives), np.array(negatives)
+
+
 def find_onset_epochs(root_directories: list = None,
                      mouse_ids_dict: dict = None,
                      camera_fps_dict: dict = None,
@@ -295,17 +528,21 @@ def find_onset_epochs(root_directories: list = None,
                      csv_sep: str = ',',
                      proportion_smoothing_sd: int | float = None,
                      filter_history: int | float = None,
-                     prediction_mode: str = 'bout',
+                     prediction_mode: str = 'bout_onset',
                      usv_bout_time: int | float = None,
                      min_usv_per_bout: int = None,
                      mixture_model_component_index: int = 0,
                      mixture_model_z_score: float = 2.58,
                      mixture_model_params: dict = None,
                      vocal_output_type: str = None,
-                     noise_vocal_categories: list = None,
+                     exclude_noise_usvs: bool = True,
                      category_column: str = 'usv_category',
                      target_category: int = None,
-                     noise_column: str = 'usv_supercategory') -> dict:
+                     target_type: str = 'usv',
+                     negative_scheme: str = None,
+                     min_singing_after_negative: int | float = None,
+                     time_since_bout_onset_tolerance: int | float = None,
+                     max_negatives_per_bout: int = None) -> dict:
     """
     Loads USV information data from a .csv file and samples epochs based on prediction mode.
     (See 'find_usv_categories' for category-based sampling).
@@ -328,15 +565,15 @@ def find_onset_epochs(root_directories: list = None,
         Amount of time (in s) preceding each event.
     prediction_mode : str, optional
         Controls sampling logic:
-        - 'bout': Clean USV bout onsets (clean history + future bout)
+        - 'bout_onset': Clean USV bout onsets (clean history + future bout)
                   vs.
                   Clean silent epochs (clean history + future silence).
         - 'individual': All valid USV onsets vs. Clean silent epochs.
         - 'state': Vocalizing state vs. Non-vocalizing state.
     usv_bout_time : int / float
-        Duration of the "post-onset" window (in s). Used in 'bout' mode logic for NEGATIVE events.
+        Duration of the "post-onset" window (in s). Used in 'bout_onset' mode logic for NEGATIVE events.
     min_usv_per_bout : int
-        Min USVs for a positive 'bout' event. Used in 'bout' mode.
+        Min USVs for a positive 'bout_onset' event. Used in 'bout_onset' mode.
     mixture_model_component_index : int
         mixture-model component index for IBI threshold calculation (default 0).
     mixture_model_z_score : float
@@ -352,29 +589,71 @@ def find_onset_epochs(root_directories: list = None,
         - 'pooled_rate': Aggregate smoothed density of all biological USVs ('usv_rate').
         - 'categories_rate': Individual smoothed density per category ('usv_cat_X').
         - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
-    noise_vocal_categories : list, optional
-        List of USV categories to ignore (e.g., [0, 19] for noise/background).
+    exclude_noise_usvs : bool, optional
+        Whether to drop the segments ``detect_usv_noise`` flagged as holding no
+        vocalization (default True). A summary without the ``noise`` column raises.
     category_column : str, optional
         Name of the per-USV category column in the summary .csv (e.g.
-        'vae_supercategory', 'qlvm_supercategory', 'vae_category',
-        'qlvm_category'). Used both for the per-category continuous predictor
+        'qlvm_supercategory', 'qlvm_category', 'qlvm_dur_category'). Used both for the per-category continuous predictor
         signals and, when `target_category` is set, for the onset-target filter.
+        May be None when neither of those needs it; a `vocal_output_type` of 'categories_rate' /
+        'all_rate', or a `target_category` in 'individual' mode, with a None
+        column or one absent from a session's summary raises ValueError
+        (see `require_usv_category_column`) before any trace is built.
     target_category : int, optional
         If set (and `prediction_mode == 'individual'`), restricts the POSITIVE
         onset events to USVs whose `category_column` value equals this category
-        (e.g. broadband vocalizations = `vae_supercategory` 6). The predictor
+        (e.g. `qlvm_supercategory` 3). The predictor
         vocal traces ('usv_rate'/'usv_count'/'usv_cat_X') and the silent-epoch
         (negative) reference are still computed over ALL of the mouse's USVs, so
         the category choice changes only which onsets count as positive events.
-        Ignored in 'bout' and 'state' modes, because the mixture-model inter-syllable-
+        Ignored in 'bout_onset' and 'state' modes, because the mixture-model inter-syllable-
         interval threshold used for bout grouping is calibrated on the all-USV
         interval distribution and would mis-group a category-sparsified
         sequence; in those modes all categories are pooled as before. If None
         (default), all USV categories are pooled (original behavior).
-    noise_column : str, optional
-        Name of the supercategory column used for global noise filtering. Kept
-        separate from `category_column` so noise removal stays cohort-stable
-        regardless of which experimental category column is chosen.
+    target_type : str, optional
+        Which calls are the POSITIVE onset source, read from the summary's boolean
+        ``squeak`` column (written by the squeak classifier): ``'usv'`` (default)
+        keeps the ultrasonic calls only, ``'squeak'`` the squeaks only, ``'all'``
+        both. Applied before `target_category`, in every mode whose positives are
+        call times ('bout_onset', 'individual', 'bout_offset'), so in 'usv' mode bouts are
+        grouped from ultrasonic calls alone -- a squeak between two calls no longer
+        joins or splits a bout -- and squeak onsets are no longer counted as USV
+        onsets. As with `target_category`, the predictor vocal traces and the
+        silent-epoch (negative) reference still use ALL of the mouse's calls, so a
+        negative window is silent of squeaks too. ``'squeak'`` is accepted in
+        'individual' mode only: bout grouping needs an inter-bout threshold, and
+        the per-sex thresholds are calibrated on ultrasonic-call intervals, not on
+        squeaks. A summary without a ``squeak`` column raises unless ``'all'``.
+    negative_scheme : str, optional
+        ``'bout_offset'`` mode only. ``'cross_bout'``: each positive (the last
+        call's offset of a bout) is paired with an interior call's offset from
+        ANOTHER bout of the same session, at the same time since that bout's
+        onset (within ``time_since_bout_onset_tolerance``), in a bout that kept
+        singing for at least ``min_singing_after_negative`` seconds after it;
+        one negative per positive, nearest in position, each candidate used
+        once, at most ``max_negatives_per_bout`` from any one bout; positives
+        without a partner are dropped so the two groups share the same
+        distribution of time since bout onset. ``'within_bout'``: the negative
+        is the latest interior call of the SAME bout that ended at least
+        ``min_singing_after_negative`` seconds before the bout's end; bouts too
+        short to hold one contribute nothing. Either way the pairing is only
+        the sampling recipe -- the returned groups are pooled downstream.
+    min_singing_after_negative : int or float, optional
+        ``'bout_offset'`` mode only: seconds the bout must keep singing after a
+        negative's call, so the negative sits outside the ending itself.
+    time_since_bout_onset_tolerance : int or float, optional
+        ``'bout_offset'`` / ``'cross_bout'`` only: how far apart, in seconds, the
+        time since bout onset of a positive and its negative may be.
+    max_negatives_per_bout : int or None, optional
+        ``'bout_offset'`` / ``'cross_bout'`` only: cap on negatives drawn from
+        one bout; ``None`` means no cap.
+        ``'bout_offset'`` targets the END of a bout: positives are the offsets
+        of the last call of every bout with at least ``min_usv_per_bout``
+        calls, with no clean-history or clean-future requirement (the
+        inter-call threshold already defines the end), and negatives are
+        interior-call offsets chosen by ``negative_scheme``.
 
     Returns
     -------
@@ -391,6 +670,27 @@ def find_onset_epochs(root_directories: list = None,
             'usv_count': raw binary occupancy trace (0/1) over the full per-mouse USV set.
             'usv_rate': Gaussian-smoothed density trace over the full per-mouse USV set.
     """
+
+    if target_type not in ('usv', 'squeak', 'all'):
+        raise ValueError(f"Unknown target_type: {target_type!r}. Must be 'usv', 'squeak' or 'all'.")
+    if target_type == 'squeak' and prediction_mode != 'individual':
+        raise ValueError(
+            f"target_type 'squeak' is supported in 'individual' mode only, not {prediction_mode!r}: "
+            "bout grouping needs an inter-bout threshold, and the per-sex thresholds come from "
+            "ultrasonic-call intervals."
+        )
+
+    # Labels are needed only by the per-category predictor traces and by the
+    # single-category onset target ('individual' mode); either one without a label
+    # column stops here, before any session is read, instead of silently building
+    # no category traces or falling back to all calls.
+    category_purposes = []
+    if vocal_output_type in CATEGORY_PREDICTOR_TYPES:
+        category_purposes.append(f"vocal_features.usv_predictor_type '{vocal_output_type}'")
+    if target_category is not None and prediction_mode == 'individual':
+        category_purposes.append(f"model_params.onset_target_category {target_category}")
+    for category_purpose in category_purposes:
+        require_usv_category_column(category_column, category_purpose)
 
     # mixture-model parameters (modeling inter-USV interval distributions)
     male_mixture_model_params = mixture_model_params['male']
@@ -409,10 +709,16 @@ def find_onset_epochs(root_directories: list = None,
 
         usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
 
-        has_category = category_column in usv_summary_data.columns
-        has_noise_col = noise_column in usv_summary_data.columns
-        if noise_vocal_categories and has_noise_col:
-            usv_summary_data = usv_summary_data.filter(~pls.col(noise_column).is_in(list(noise_vocal_categories)))
+        for category_purpose in category_purposes:
+            require_usv_category_column(category_column, category_purpose,
+                                        summary_columns=usv_summary_data.columns, source=str(csv_path))
+        if exclude_noise_usvs:
+            usv_summary_data = drop_noise_usvs(usv_summary_data, Path(csv_path).name)[0]
+        if target_type != 'all' and 'squeak' not in usv_summary_data.columns:
+            raise ValueError(
+                f"{Path(csv_path).name} has no 'squeak' column, so target_type {target_type!r} "
+                "cannot be applied; run the squeak classifier on the session, or use 'all'."
+            )
 
         if session_id not in mouse_ids_dict:
             print(f"Warning: No mouse names registered for {session_id}. Skipping.")
@@ -461,15 +767,18 @@ def find_onset_epochs(root_directories: list = None,
             # drives the predictor vocal traces below, and the all-USV frame
             # still drives the silent-epoch (negative) reference, so neither the
             # predictors nor the negatives are affected by the category choice.
-            if target_category is not None and prediction_mode == 'individual':
-                if has_category:
-                    positive_source_df = mouse_usvs_df.filter(pls.col(category_column) == target_category)
-                else:
-                    print(f"Warning: category column '{category_column}' absent for {session_id}; "
-                          f"cannot restrict onsets to category {target_category}. Using all USVs.")
-                    positive_source_df = mouse_usvs_df
+            # The target type is applied first: ultrasonic calls, squeaks, or both.
+            if target_type == 'usv':
+                typed_source_df = mouse_usvs_df.filter(~pls.col('squeak'))
+            elif target_type == 'squeak':
+                typed_source_df = mouse_usvs_df.filter(pls.col('squeak'))
             else:
-                positive_source_df = mouse_usvs_df
+                typed_source_df = mouse_usvs_df
+            if target_category is not None and prediction_mode == 'individual':
+                # The column's presence was checked above, when the summary was read.
+                positive_source_df = typed_source_df.filter(pls.col(category_column) == target_category)
+            else:
+                positive_source_df = typed_source_df
 
             usv_data_dict[session_id][mouse_name]['start'] = np.array(positive_source_df['start'])
             usv_data_dict[session_id][mouse_name]['stop'] = np.array(positive_source_df['stop'])
@@ -521,7 +830,7 @@ def find_onset_epochs(root_directories: list = None,
                         usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_rate'] = usv_frame_rate
 
                 # B. Per-category logic
-                if vocal_output_type in ['categories_rate', 'all_rate'] and has_category and mouse_usvs_df.height > 0:
+                if vocal_output_type in CATEGORY_PREDICTOR_TYPES and mouse_usvs_df.height > 0:
                     unique_cats = mouse_usvs_df[category_column].unique().to_list()
                     for cat_id in unique_cats:
                         try:
@@ -536,8 +845,8 @@ def find_onset_epochs(root_directories: list = None,
 
             session_duration_sec = session_duration_frames / session_fps
 
-            ### Mode 1: 'bout' (both USV and no-USV pre-bout periods must be clean)
-            if prediction_mode == 'bout':
+            ### Mode 1: 'bout_onset' (both USV and no-USV pre-bout periods must be clean)
+            if prediction_mode == 'bout_onset':
 
                 # Get USV events (positive class)
                 starts = usv_data_dict[session_id][mouse_name]['start']
@@ -547,14 +856,7 @@ def find_onset_epochs(root_directories: list = None,
 
                 if len(starts) > 0:
                     # Logic: filter using IBI threshold
-                    if len(starts) > 1:
-                        gaps = starts[1:] - stops[:-1]
-                        break_indices = np.where(gaps >= ibi_threshold)[0]
-                        bout_start_indices = np.concatenate(([0], break_indices + 1))
-                        bout_end_indices = np.concatenate((break_indices, [len(starts) - 1]))
-                    else:
-                        bout_start_indices = np.array([0])
-                        bout_end_indices = np.array([0])
+                    bout_start_indices, bout_end_indices = _group_calls_into_bouts(starts, stops, ibi_threshold)
 
                     for j in range(len(bout_start_indices)):
                         idx_start = bout_start_indices[j]
@@ -635,8 +937,21 @@ def find_onset_epochs(root_directories: list = None,
                     usv_events_positive = np.array([])
                     usv_events_negative = np.array([])
 
+            ### Mode 4: 'bout_offset' (the END of a bout against an interior call, see _bout_offset_events)
+            elif prediction_mode == 'bout_offset':
+                starts = usv_data_dict[session_id][mouse_name]['start']
+                stops = usv_data_dict[session_id][mouse_name]['stop']
+                bout_start_indices, bout_end_indices = _group_calls_into_bouts(starts, stops, ibi_threshold)
+                usv_events_positive, usv_events_negative = _bout_offset_events(
+                    starts=starts, stops=stops,
+                    bout_start_indices=bout_start_indices, bout_end_indices=bout_end_indices,
+                    min_usv_per_bout=min_usv_per_bout, negative_scheme=negative_scheme,
+                    min_singing_after_negative=min_singing_after_negative,
+                    time_since_bout_onset_tolerance=time_since_bout_onset_tolerance,
+                    max_negatives_per_bout=max_negatives_per_bout)
+
             else:
-                raise ValueError(f"Unknown prediction_mode: {prediction_mode}. Must be 'bout', 'individual', or 'state'.")
+                raise ValueError(f"Unknown prediction_mode: {prediction_mode}. Must be 'bout_onset', 'individual', 'state' or 'bout_offset'.")
 
             usv_data_dict[session_id][mouse_name]['positive_events'] = np.sort(usv_events_positive)
             usv_data_dict[session_id][mouse_name]['negative_events'] = np.sort(usv_events_negative)
@@ -654,9 +969,8 @@ def find_usv_categories(root_directories: list = None,
                         filter_history: int | float = 0.0,
                         vocal_output_type: str = None,
                         proportion_smoothing_sd: float = 1.0,
-                        noise_vocal_categories: list = None,
-                        manifold_column_names: list = None,
-                        noise_column: str = 'usv_supercategory') -> dict:
+                        exclude_noise_usvs: bool = True,
+                        manifold_column_names: list = None) -> dict:
     """
     Parses USV data for either one-vs-rest (binary) or multinomial (all-category) analysis,
     as well as extracting continuous spatial targets (acoustic manifold coordinates) for
@@ -664,7 +978,8 @@ def find_usv_categories(root_directories: list = None,
 
     This function applies a consistent "Single Pipeline" filter to the raw data:
     1. Filters by mouse.
-    2. Removes specified noise categories globally.
+    2. Removes the segments the noise classifier flagged (``noise`` column), when
+       ``exclude_noise_usvs`` is True.
     3. Removes "history" (period of filter duration at session start) to ensure model stability.
 
     All outputs (modeling events, continuous signals, category streams, and continuous targets)
@@ -685,8 +1000,16 @@ def find_usv_categories(root_directories: list = None,
     target_category : int, optional
         The integer ID of the USV category to predict (Positive Class).
         If None, the function runs in Multinomial mode and populates 'events_by_category' with all categories.
-    category_column : str, default 'usv_category'
-        The name of the column in the CSV containing the category labels.
+    category_column : str | None, default 'usv_category'
+        The name of the column in the CSV containing the category labels. It is
+        required (a None / empty value, or a column absent from a session's
+        summary, raises ValueError via `require_usv_category_column`) on the
+        categorical paths: no `manifold_column_names` (the multinomial / binomial
+        category models), a `target_category`, or a `vocal_output_type` of
+        'categories_rate' / 'all_rate'. On the continuous manifold path it is
+        optional: None returns the manifold targets with empty
+        'events_by_category' / 'category_streams'; a column that is set must
+        still exist in every summary.
     filter_history : float, optional
         Minimum time (seconds) from the start of the session. Discards USVs before this.
     vocal_output_type : str, optional, default=None
@@ -697,19 +1020,18 @@ def find_usv_categories(root_directories: list = None,
         - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
     proportion_smoothing_sd : float, default 1.0
         Standard deviation for Gaussian smoothing (in frames).
-    noise_vocal_categories : list, optional
-        List of category IDs to exclude from continuous signals, models, and streams.
+    exclude_noise_usvs : bool, optional
+        Whether to drop the segments ``detect_usv_noise`` flagged as holding no
+        vocalization (default True). A summary without the ``noise`` column raises.
     manifold_column_names : list, optional
         Ordered list of column names in the USV summary CSV that encode each USV's
         coordinates on the continuous acoustic manifold. If any of the configured
         columns is missing from the CSV for a given session/mouse, no continuous
         targets are written for that mouse. When None or empty, continuous target
-        extraction is skipped entirely.
-    noise_column : str, default 'usv_supercategory'
-        Name of the supercategory column used for global noise filtering (removing
-        the categories in `noise_vocal_categories`). Kept separate from
-        `category_column` so the cohort-stable noise scheme stays fixed regardless
-        of which experimental-category column the caller varies.
+        extraction is skipped entirely. Calls whose coordinates are null / NaN in
+        any configured column (calls the embedding could not place) are dropped
+        from 'continuous_onsets', 'continuous_targets' and the label arrays, with
+        the number dropped printed per session-mouse pair and in total.
 
     Returns
     -------
@@ -732,7 +1054,26 @@ def find_usv_categories(root_directories: list = None,
                 '<manifold_prefix>_category' column exists in the source CSV.
     """
 
+    # Per-call labels are needed by the categorical paths only: the multinomial /
+    # binomial category models (no manifold columns), a `target_category`, and the
+    # per-category predictor traces. The continuous manifold path reads the torus
+    # coordinates alone, so there a null `category_column` simply means "no
+    # category packets". A categorical path without labels stops here, before any
+    # session is read.
+    category_purposes = []
+    if not manifold_column_names:
+        category_purposes.append("The USV category models (multinomial / binomial)")
+    if target_category is not None:
+        category_purposes.append(f"The binomial target category {target_category}")
+    if vocal_output_type in CATEGORY_PREDICTOR_TYPES:
+        category_purposes.append(f"vocal_features.usv_predictor_type '{vocal_output_type}'")
+    for category_purpose in category_purposes:
+        require_usv_category_column(category_column, category_purpose)
+    use_categories = category_column is not None and category_column != ''
+
     usv_data_dict = {}
+    n_unplaced_total = 0
+    n_unplaced_sessions = 0
 
     for one_root_directory in root_directories:
         sess_root = Path(one_root_directory)
@@ -747,8 +1088,11 @@ def find_usv_categories(root_directories: list = None,
 
         usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
 
-        if category_column not in usv_summary_data.columns:
-            raise ValueError(f"Column '{category_column}' missing in {csv_path}.")
+        # A configured column must exist (an explicit setting that names a missing
+        # column is a configuration error on every path, the manifold one included).
+        if use_categories:
+            require_usv_category_column(category_column, "vocal_features.usv_category_column_name",
+                                        summary_columns=usv_summary_data.columns, source=str(csv_path))
 
         # Strict membership check + direct lookup (no `.get()`
         # default). A session listed in the input directory but not
@@ -781,13 +1125,11 @@ def find_usv_categories(root_directories: list = None,
             # Filter by mouse
             mouse_usvs = usv_summary_data.filter(pls.col('emitter') == mouse_name).sort('start')
 
-            # Filter noise categories (global removal). The noise filter
-            # uses `noise_column` rather than `category_column` so the
-            # cohort-stable noise scheme (typically `usv_supercategory`)
-            # can be combined with any experimental-category column
-            # (`category_column`) the caller wants to vary independently.
-            if noise_vocal_categories and noise_column in mouse_usvs.columns:
-                mouse_usvs = mouse_usvs.filter(~pls.col(noise_column).is_in(list(noise_vocal_categories)))
+            # Drop the segments holding no vocalization (global removal). This is independent of
+            # `category_column`: the noise verdict comes from the classifier, so the experimental
+            # category the caller models can vary without changing which rows are real calls.
+            if exclude_noise_usvs:
+                mouse_usvs = drop_noise_usvs(mouse_usvs, f"{session_id} ({mouse_name})")[0]
 
             # Filter history period (at start of session)
             mouse_usvs = mouse_usvs.filter(pls.col('start') > filter_history)
@@ -803,8 +1145,8 @@ def find_usv_categories(root_directories: list = None,
                 usv_data_dict[session_id][mouse_name]['target_events'] = np.sort(target_usvs['start'].to_numpy())
                 usv_data_dict[session_id][mouse_name]['other_events'] = np.sort(other_usvs['start'].to_numpy())
 
-            # Get data for all categories separately
-            unique_cats = mouse_usvs[category_column].unique().to_list()
+            # Get data for all categories separately (none without a label column)
+            unique_cats = mouse_usvs[category_column].unique().to_list() if use_categories else []
 
             for cat_id in unique_cats:
                 try:
@@ -833,7 +1175,7 @@ def find_usv_categories(root_directories: list = None,
                         )
 
                 # Per-category density
-                if vocal_output_type in ['categories_rate', 'all_rate']:
+                if vocal_output_type in CATEGORY_PREDICTOR_TYPES:
                     for cat_id in unique_cats:
                         try:
                             cat_int = int(cat_id)
@@ -857,16 +1199,32 @@ def find_usv_categories(root_directories: list = None,
             # Extract continuous targets (user-configured acoustic manifold coordinates)
             if manifold_column_names:
                 if all(col in mouse_usvs.columns for col in manifold_column_names):
-                    usv_data_dict[session_id][mouse_name]['continuous_onsets'] = mouse_usvs['start'].to_numpy()
-
-                    manifold_arrays = [mouse_usvs[col].to_numpy() for col in manifold_column_names]
-                    usv_data_dict[session_id][mouse_name]['continuous_targets'] = np.column_stack(manifold_arrays)
+                    # A call the embedding could not place (outside the model's
+                    # duration window, no SAM mask, no condition value) has null
+                    # coordinates; it has no manifold target, so it is dropped here,
+                    # together with its onset and labels, before anything downstream
+                    # (the inverse-density KDE, the regressions, the GLM-HMM) sees a NaN.
+                    # A column CSV inference read as text (all-null) casts to NaN too.
+                    manifold_arrays = [
+                        mouse_usvs[col].cast(pls.Float64, strict=False).fill_null(np.nan).to_numpy()
+                        for col in manifold_column_names
+                    ]
+                    manifold_targets = np.column_stack(manifold_arrays)
+                    placed = np.isfinite(manifold_targets).all(axis=1)
+                    n_unplaced = int(np.count_nonzero(~placed))
+                    if n_unplaced > 0:
+                        print(f"  {session_id} ({mouse_name}): dropped {n_unplaced} of {placed.size} calls with "
+                              f"null/NaN manifold coordinates ({', '.join(manifold_column_names)}).")
+                        n_unplaced_total += n_unplaced
+                        n_unplaced_sessions += 1
+                    usv_data_dict[session_id][mouse_name]['continuous_onsets'] = mouse_usvs['start'].to_numpy()[placed]
+                    usv_data_dict[session_id][mouse_name]['continuous_targets'] = manifold_targets[placed]
 
                     # Per-USV supercategory and category labels. Used by
                     # downstream region-conditioned analyses (CNN saliency,
                     # cluster-circle membership). Derived from the manifold
-                    # prefix: e.g., 'vae1' -> 'vae' -> 'vae_supercategory',
-                    # 'vae_category'. Stored as plain numpy arrays aligned
+                    # prefix: e.g., 'qlvm_dur1' -> 'qlvm_dur' -> 'qlvm_dur_supercategory',
+                    # 'qlvm_dur_category'. Stored as plain numpy arrays aligned
                     # 1:1 with continuous_onsets / continuous_targets above.
                     # Stored only when the columns are present in the source
                     # CSV; absent label arrays signal "this USV summary
@@ -876,12 +1234,16 @@ def find_usv_categories(root_directories: list = None,
                     cat_col = f"{manifold_prefix}_category"
                     if super_col in mouse_usvs.columns:
                         usv_data_dict[session_id][mouse_name]['continuous_supercategory'] = (
-                            mouse_usvs[super_col].to_numpy()
+                            mouse_usvs[super_col].to_numpy()[placed]
                         )
                     if cat_col in mouse_usvs.columns:
                         usv_data_dict[session_id][mouse_name]['continuous_category'] = (
-                            mouse_usvs[cat_col].to_numpy()
+                            mouse_usvs[cat_col].to_numpy()[placed]
                         )
+
+    if manifold_column_names:
+        print(f"Manifold targets: dropped {n_unplaced_total} calls with null/NaN coordinates in total "
+              f"({n_unplaced_sessions} session-mouse pairs affected).")
 
     return usv_data_dict
 
@@ -953,9 +1315,8 @@ def find_variable_length_bouts(root_directories: list = None,
                                filter_history: float = 4.0,
                                proportion_smoothing_sd: float = 1.0,
                                vocal_output_type: str = None,
-                               noise_vocal_categories: list = None,
-                               category_column: str = 'usv_category',
-                               noise_column: str = 'usv_supercategory') -> dict:
+                               exclude_noise_usvs: bool = True,
+                               category_column: str = 'usv_category') -> dict:
     """
     Identifies variable-length vocal bouts and generates continuous vocal density signals
     for regression analysis.
@@ -965,9 +1326,9 @@ def find_variable_length_bouts(root_directories: list = None,
     ensure mechanical noise does not artificially bridge gaps between biological syllables.
 
     Process Outline:
-    1.  Noise Filtering: Immediately removes rows where `usv_category` matches
-        any integer in `noise_vocal_categories`. This prevents noise from acting as a "bridge"
-        that merges distinct bouts and ensures continuous signals represent only biological audio.
+    1.  Noise Filtering: Immediately removes the segments `detect_usv_noise` flagged as holding
+        no vocalization. This prevents noise from acting as a "bridge" that merges distinct bouts
+        and ensures continuous signals represent only biological audio.
     2.  Mixture-model Thresholding: Selects sex-specific mixture-model parameters (from `mixture_model_params`).
         Calculates a dynamic inter-bout interval (IBI) threshold using the log-mean
         and log-sd of the specified component (usually respiratory rhythm) plus a Z-score buffer.
@@ -1015,20 +1376,16 @@ def find_variable_length_bouts(root_directories: list = None,
         - 'pooled_rate': Aggregate smoothed density of all biological USVs ('usv_rate').
         - 'categories_rate': Individual smoothed density per category ('usv_cat_X').
         - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
-    noise_vocal_categories : list, optional
-        List of USV category integers to exclude (e.g., [0, 19]). When `None`,
-        no category-based noise filtering is applied — pass an explicit list
-        if you want noise rows dropped before bout detection.
-    category_column : str, default 'usv_category'
+    exclude_noise_usvs : bool, optional
+        Whether to drop the segments ``detect_usv_noise`` flagged as holding no
+        vocalization (default True). A summary without the ``noise`` column raises.
+    category_column : str | None, default 'usv_category'
         Name of the per-USV experimental-category column in the summary .csv,
         used for the per-category continuous predictor signals ('usv_cat_X')
         when `vocal_output_type` requests them. May vary independently between
-        runs.
-    noise_column : str, default 'usv_supercategory'
-        Name of the supercategory column used for global noise filtering
-        (removing the categories in `noise_vocal_categories`). Kept separate from
-        `category_column` so the cohort-stable noise scheme stays fixed regardless
-        of which experimental-category column the caller varies.
+        runs. Only read by 'categories_rate' / 'all_rate', which raise ValueError
+        (via `require_usv_category_column`) when it is None or absent from a
+        session's summary; the pooled modes accept None.
 
     Returns
     -------
@@ -1039,6 +1396,13 @@ def find_variable_length_bouts(root_directories: list = None,
             'bout_durations': np.array of bout durations (seconds).
             'continuous_vocal_signals': dict containing generated arrays (e.g., 'usv_rate').
     """
+
+    # Per-category traces need a label column; without one they stop here, before
+    # any session is read, instead of silently building no category predictors.
+    category_traces = vocal_output_type in CATEGORY_PREDICTOR_TYPES
+    category_purpose = f"vocal_features.usv_predictor_type '{vocal_output_type}'"
+    if category_traces:
+        require_usv_category_column(category_column, category_purpose)
 
     # mixture-model parameters (for modeling inter-USV interval distributions)
     male_mixture_model_params = mixture_model_params['male']
@@ -1059,8 +1423,9 @@ def find_variable_length_bouts(root_directories: list = None,
         usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
 
         has_mask = 'mask_number' in usv_summary_data.columns
-        has_category = category_column in usv_summary_data.columns
-        has_noise_col = noise_column in usv_summary_data.columns
+        if category_traces:
+            require_usv_category_column(category_column, category_purpose,
+                                        summary_columns=usv_summary_data.columns, source=str(csv_path))
         if not has_mask:
             print(f"Warning: 'mask_number' missing in {session_id}. "
                   f"Complexity defaults to the per-bout syllable count (mask = 1 per USV).")
@@ -1116,10 +1481,10 @@ def find_variable_length_bouts(root_directories: list = None,
             # Filter for mouse and sort by start time
             mouse_usvs = usv_summary_data.filter(pls.col('emitter') == mouse_name).sort('start')
 
-            # Remove noise categories using `noise_column` (cohort-stable),
-            # not `category_column` (experimental, may change between runs).
-            if noise_vocal_categories and has_noise_col:
-                mouse_usvs = mouse_usvs.filter(~pls.col(noise_column).is_in(list(noise_vocal_categories)))
+            # Drop the segments holding no vocalization; independent of `category_column`, which
+            # is experimental and may change between runs.
+            if exclude_noise_usvs:
+                mouse_usvs = drop_noise_usvs(mouse_usvs, f"{session_id} ({mouse_name})")[0]
 
             # Generate continuous vocal signals based on specified output type
             if vocal_output_type in ['pooled_binary', 'pooled_rate', 'categories_rate', 'all_rate']:
@@ -1139,7 +1504,7 @@ def find_variable_length_bouts(root_directories: list = None,
                         )
 
                 # B. Per-category logic
-                if vocal_output_type in ['categories_rate', 'all_rate'] and has_category and mouse_usvs.height > 0:
+                if category_traces and mouse_usvs.height > 0:
                     unique_cats = mouse_usvs[category_column].unique().to_list()
                     for cat_id in unique_cats:
                         try:

@@ -87,11 +87,12 @@ class TestDeriveClusterCenters:
     def test_euclidean_recovers_known_centres_and_drops_noise(self):
         """KDE-mode centres on tight Gaussian blobs should land within a
         small tolerance of the true centres, and label 0 should NOT appear
-        in the returned dict because `drop_label=0` is the default."""
+        in the returned dict when `drop_label=0` is passed."""
 
         Y, labels, true_centres = _make_euclidean_clusters()
         out = derive_cluster_centers_empirically(
             Y, labels,
+            drop_label=0,
             metric='euclidean',
             grid_resolution=300,
         )

@@ -46,7 +46,7 @@ def test_compute_acoustic_features_peak_frequency():
     feats = compute_acoustic_features(specs, np.array([8]), freq_axis, 0.05, 0.95)
     # ``compute_acoustic_features`` returns the spectral descriptors only;
     # ``mask_number`` is injected downstream from the per-USV mask counts.
-    assert set(feats) == set(FEATURE_COLUMNS) - {"mask_number"}
+    assert set(feats) == set(FEATURE_COLUMNS) - {"mask_number", "loudness_db"}
     assert feats["peak_freq_hz"][0] == freq_axis[4]
     assert feats["max_amplitude"][0] == 1.0
     assert np.all(np.isfinite(np.concatenate([feats[c] for c in feats])))
@@ -174,6 +174,9 @@ def test_merge_features_into_summary(tmp_path, mocker):
     # Stale value was replaced, not duplicated into a suffixed column.
     assert "mean_amplitude_right" not in df.columns
     assert df["mean_amplitude"][0] != 9.0
+    # No mask group: no call has a SAM mask, so the absolute loudness stays null
+    # (it is measured over the mask) while the spectral features are still written.
+    assert df["loudness_db"].null_count() == df.height
 
 
 def test_merge_features_preserves_the_usv_id_padding(tmp_path, mocker):
@@ -241,9 +244,17 @@ def test_merge_features_uses_mask_group_when_present(tmp_path, mocker):
         mask_grp.create_dataset("spectrogram_index", data=np.array([0], dtype=np.int64))
 
     mocker.patch("usv_playpen.processing.compute_usv_acoustic_features.smart_wait")
+    measured = {}
+
+    def _loudness(**kwargs):
+        measured.update(kwargs)
+        return np.array([61.5], dtype=np.float32)
+
+    mocker.patch("usv_playpen.processing.compute_usv_acoustic_features.session_image_level_db", side_effect=_loudness)
+    spec_params = {"offset": 0.0}
     USVAcousticFeatureExtractor(
         root_directory=str(root),
-        input_parameter_dict={"compute_usv_acoustic_features": _CFG},
+        input_parameter_dict={"compute_usv_acoustic_features": _CFG, "generate_spectrograms": spec_params},
         message_output=lambda *_a, **_kw: None,
     ).merge_features_into_summary()
 
@@ -251,3 +262,9 @@ def test_merge_features_uses_mask_group_when_present(tmp_path, mocker):
     # The masked region keeps the in-mask pixel (row 4), not the brighter row-10 pixel.
     assert df["peak_freq_hz"][0] == freq_axis[4]
     assert df["max_amplitude"][0] == 1.0
+    # The absolute loudness is measured over the call's SAM mask union, with the
+    # spectrogram generator's settings, and written as loudness_db.
+    np.testing.assert_array_equal(measured["regions"], seg)
+    np.testing.assert_array_equal(measured["starts"], [0.1])
+    assert measured["spec_params"] is spec_params
+    assert df["loudness_db"][0] == pytest.approx(61.5)

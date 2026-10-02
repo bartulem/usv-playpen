@@ -278,13 +278,16 @@ def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
 @click.option('--total-bin-num', 'total_bin_num', type=int, default=None, required=False, help='Total number of bins for 1D tuning curves.')
 @click.option('--n-spatial-bins', 'n_spatial_bins', type=int, default=None, required=False, help='Number of spatial bins.')
 @click.option('--spatial-scale-cm', 'spatial_scale_cm', type=int, default=None, required=False, help='Spatial extent of the arena (in cm).')
-@click.option('--peth-window-seconds', 'peth_window_seconds', nargs=2, type=float, default=None, required=False, help='Pre-USV PETH window [start stop] (in s).')
+@click.option('--peth-window-seconds', 'peth_window_seconds', nargs=2, type=float, default=None, required=False, help='Peri-USV-onset PETH window [start stop] relative to each call onset (in s); default -2 0.5.')
 @click.option('--peth-bin-seconds', 'peth_bin_seconds', type=float, default=None, required=False, help='PETH bin width (in s).')
 @click.option('--bout-quiet-seconds', 'bout_quiet_seconds', type=float, default=None, required=False, help='Inter-bout silence required to define a new bout (in s).')
 @click.option('--n-usv-min-self', 'n_usv_min_self', type=int, default=None, required=False, help='Minimum self-side USV count to compute self plots.')
 @click.option('--n-usv-min-partner', 'n_usv_min_partner', type=int, default=None, required=False, help='Minimum partner-side USV count to compute partner plots.')
 @click.option('--n-usv-min-category', 'n_usv_min_category', type=int, default=None, required=False, help='Minimum per-category USV count to retain that category.')
 @click.option('--include-partner-tuning/--no-include-partner-tuning', 'include_partner_vocalization_tuning_bool', default=None, required=False, help='If set, also compute partner-side vocal tuning when partner threshold is met.')
+@click.option('--exclude-squeaks-self/--keep-squeaks-self', 'exclude_squeaks_self', default=None, required=False, help='Leave the self side\'s squeaks out of its vocal tuning anchors (default: exclude). QLVM category tuning never uses squeaks.')
+@click.option('--exclude-squeaks-partner/--keep-squeaks-partner', 'exclude_squeaks_partner', default=None, required=False, help='Leave the partner side\'s squeaks out of its vocal tuning anchors (default: keep). QLVM category tuning never uses squeaks.')
+@click.option('--excluded-behavioral-features', 'excluded_behavioral_features', multiple=True, type=str, default=None, required=False, help='Behavioral base features (derivatives included) left out of tuning; repeat once per feature (default: nose-nose, allo_yaw-nose, nose-allo_yaw, allo_pitch-nose, nose-allo_pitch).')
 @click.option('--behavioral-min-occupancy-seconds', 'behavioral_min_occupancy_seconds', type=float, default=None, required=False, help='Minimum behavioral occupancy per bin (in s) for that bin to be rendered in the 1D feature line plots; persisted into behavioral_metadata of each cluster pkl.')
 @click.option('--smoothing-sd', 'smoothing_sd', type=float, default=None, required=False, help='Standard deviation (in bins) of the Gaussian smoothing applied to ratemaps and shuffle distributions; 0 disables smoothing.')
 @click.pass_context
@@ -293,7 +296,7 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
     Description
     -----------
     A command-line tool to compute neuronal tuning curves: behavioral
-    (spike-vs-3D-feature ratemaps) and vocal (Q1 pre-USV PETH, Q2 within-USV
+    (spike-vs-3D-feature ratemaps) and vocal (Q1 peri-USV-onset PETH, Q2 within-USV
     continuous-property tuning, Q3a within-USV categorical, Q3b per-category
     PETH). Each subset is produced if its corresponding input is present in
     the session: behavioral runs when the `*_behavioral_features.csv` is
@@ -308,7 +311,7 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
     None
     """
 
-    parameters_lists = ['temporal_offsets', 'peth_window_seconds']
+    parameters_lists = ['temporal_offsets', 'peth_window_seconds', 'excluded_behavioral_features']
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
@@ -357,8 +360,7 @@ def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
 @click.command(name='generate-usv-interval-distributions')
 @click.option('--session-list', 'session_lists', type=click.Path(exists=True, file_okay=True, dir_okay=False), multiple=True, required=False, help='Path to a text file containing session root directories (one per line). Repeatable.')
 @click.option('--output-directory', 'output_directory', type=click.Path(file_okay=False, dir_okay=True), default=None, required=False, help='Directory in which to write the consolidated usv_interval_analysis_<YYYYMMDD>_<HHMMSS>.h5 archive.')
-@click.option('--noise-col-id', 'noise_col_id', type=str, default=None, required=False, help='Name of the noise classification column in the USV summary CSV.')
-@click.option('--noise-categories', 'noise_categories', multiple=True, type=int, default=None, required=False, help='Integer label(s) in noise_col_id that mark a USV as noise.')
+@click.option('--exclude-noise-usvs/--no-exclude-noise-usvs', 'exclude_noise_usvs', default=None, required=False, help='Drop the USV segments detect-usv-noise flagged as holding no vocalization.')
 @click.option('--fit-mixture-model/--no-fit-mixture-model', 'fit_mixture_model', default=None, required=False, help='Whether to run the mixture-model sweep after inter-USV interval extraction.')
 @click.option('--n-components-min', 'n_components_min', type=int, default=None, required=False, help='Minimum number of mixture-model components.')
 @click.option('--n-components-max', 'n_components_max', type=int, default=None, required=False, help='Maximum number of mixture-model components.')
@@ -375,7 +377,7 @@ def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--bootstrap-lrt-B', 'bootstrap_lrt_B', type=int, default=None, required=False, help='Number of bootstrap replicates per pairwise LRT (McLachlan 1987). Defaults to JSON value (1000); reduce to ~100-200 only for fast-iteration debugging.')
 @click.option('--bootstrap-lrt-n-subsample', 'bootstrap_lrt_n_subsample', type=int, default=None, required=False, help='Subsample size used for both observed and bootstrap fits in the LRT, so the LR statistic is on the same N scale. Defaults to JSON value (10000).')
 @click.option('--bootstrap-lrt-alpha', 'bootstrap_lrt_alpha', type=float, default=None, required=False, help='Significance threshold for the step-up LRT decision rule, before any Bonferroni correction. Defaults to JSON value (0.01).')
-@click.option('--bootstrap-lrt-n-init', 'bootstrap_lrt_n_init', type=int, default=None, required=False, help='EM restarts for the bootstrap REFITS, separate from mixture_model_n_init which governs the observed fit. Restarts dominate this test\'s cost and barely move its answer. Defaults to JSON value (1).')
+@click.option('--bootstrap-lrt-n-init', 'bootstrap_lrt_n_init', type=int, default=None, required=False, help='EM restarts for the bootstrap REFITS, separate from mixture_model_n_init which governs the observed fit. Restarts dominate this test\'s cost and barely move its answer. Defaults to JSON value (10).')
 @click.option('--bootstrap-lrt-n-jobs', 'bootstrap_lrt_n_jobs', type=int, default=None, required=False, help='Number of parallel workers for the bootstrap LRT replicates (1 = sequential legacy path).')
 @click.option('--bootstrap-lrt-bonferroni/--no-bootstrap-lrt-bonferroni', 'bootstrap_lrt_bonferroni', default=None, required=False, help='If set, divide alpha by the number of pairwise tests (per key) before applying the step-up rule.')
 @click.pass_context
@@ -384,8 +386,16 @@ def generate_usv_interval_distributions_cli(ctx, **kwargs) -> None:
     Description
     -----------
     A command-line tool to compute inter-vocalization-interval (inter-USV interval)
-    distributions across one or more session lists, and (optionally)
-    sweep a 1D mixture model on the pooled log-inter-USV intervals.
+    distributions across one or more session lists into one HDF5 archive. Per
+    interval pool declared in the JSON (``interval_pools``) it extracts the
+    intervals (each animal's sex read from the session metadata), and on the
+    fitted pools it runs, as the JSON enables them: the tied-scale peak model
+    with its session-corrected peak-count test (``fit_tied_model``), the
+    unconstrained mixture sweep with its session-corrected LRT
+    (``fit_mixture_model``), and the serial-dependence fits
+    (``fit_serial_dependence``). The options below override the JSON for the
+    extraction and the unconstrained sweep; the pools, the tied model and the
+    serial-dependence knobs are set in the JSON only.
 
     Parameters
     ----------
@@ -395,7 +405,7 @@ def generate_usv_interval_distributions_cli(ctx, **kwargs) -> None:
     None
     """
 
-    parameters_lists = ['session_lists', 'noise_categories']
+    parameters_lists = ['session_lists']
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 

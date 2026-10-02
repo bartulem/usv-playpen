@@ -3,8 +3,8 @@
 Makes per-cluster neuronal tuning figures: a single multi-page output
 combining the behavioral feature tuning grid (one page per temporal
 offset) and the vocal pages (Page 1: bout raster + pooled `usv_peth`
-on top, `usv_property_tuning` 4x4 grid below; Page 2:
-`usv_category_tuning` watersheds + `usv_category_peth` grid). Output
+on top, `usv_property_tuning` 5x4 grid below; Page 2:
+`usv_category_tuning` watersheds, one row per QLVM map). Output
 format is configurable via `figures.fig_format` in
 visualizations_settings.json (`png` default project-wide; this module
 falls back to `pdf` if the key is missing). PDF is multi-page in one
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import json
 import math
 import pathlib
 import pickle
@@ -40,12 +41,17 @@ from scipy.stats import gaussian_kde, spearmanr
 from tqdm import tqdm
 
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..analyses.compute_neuronal_tuning_curves import (
-    CONTINUOUS_PROPERTIES,
-    CATEGORICAL_FEATURES,
-)
+from ..analyses.compute_neuronal_tuning_curves import CONTINUOUS_PROPERTIES, behavioral_feature_base
 from ..analyses.decode_experiment_label import extract_information
-from ..os_utils import first_match_or_raise
+from ..os_utils import (
+    QLVM_MAPS,
+    QLVM_MODEL_PACKAGE_ROOT,
+    QLVM_PRODUCTION_MODEL_CELLS,
+    cell_cluster_directory,
+    configure_path,
+    drop_noise_usvs,
+    first_match_or_raise,
+)
 from .plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
@@ -65,26 +71,33 @@ DISPLAY_FACTOR = {
     "freq_bandwidth_hz": 1.0 / 1000.0,
     "mean_amplitude": 1.0,
     "max_amplitude": 1.0,
+    "loudness_db": 1.0,
     "spectral_entropy": 1.0,
     "mask_number": 1.0,
 }
 
-# Section-(b) feature ordering: 2 features per row × 4 rows
+# Section-(b) feature ordering: up to 2 features per row × 5 rows (the last
+# row holds one feature).
 PROPERTY_ROW_ORDER = (
     ("duration", "mean_freq_hz"),
     ("peak_freq_hz", "freq_bandwidth_hz"),
     ("mean_amplitude", "max_amplitude"),
-    ("spectral_entropy", "mask_number"),
+    ("loudness_db", "spectral_entropy"),
+    ("mask_number",),
 )
 
-# Page-2 section (c) layout: each row is one segmentation method (VAE
-# in the first row, QLVM in the second), and each row holds the
+# Behavioral base features computed and saved in the tuning pickle but not drawn
+# on the behavioral pages (matched on the base name, so derivatives go too).
+# TTI-TTI (tail-to-tail distance) is left off the social page.
+PLOT_EXCLUDED_BEHAVIORAL_FEATURES: tuple[str, ...] = ("TTI-TTI",)
+
+# Page-2 section (c) layout: each row is one QLVM map (os_utils.QLVM_MAPS: the
+# regular model, then the four conditional ones), and each row holds the
 # `_category` AND `_supercategory` variants side-by-side, contributing
 # 3 cells (rate / occupancy / strip) each — so 6 cells per row in
 # total, matching the behavioral feature grid's density.
-SECTION_C_ROWS = (
-    ("vae_category", "vae_supercategory"),
-    ("qlvm_category", "qlvm_supercategory"),
+SECTION_C_ROWS = tuple(
+    (f"{qlvm_map}_category", f"{qlvm_map}_supercategory") for qlvm_map in QLVM_MAPS
 )
 
 # Hex palette
@@ -129,7 +142,8 @@ VMI_REGION_TO_GROUP: dict[str, str] = {
 # the triage pickle (`usv_property_self_<property>_excit`). Tolerance
 # is the full-width window (so ±tol/2 around the cluster centre)
 # applied to per-session `peak_bin_value` values during the
-# consistency check; it's set to two upstream bin widths so the
+# consistency check; it's set to two upstream bin widths (amplitudes: 2/36 of
+# their [0, 1] per-call normalized range) so the
 # rule mirrors PETH's "±2 bins" convention. `unit_scale` and
 # `unit_label` are display-only conversions for the x-axis (e.g. Hz
 # → kHz).
@@ -138,30 +152,113 @@ USV_PROPERTY_META: dict[str, dict] = {
     "mean_freq_hz":      {"tol": 5000.0, "unit_scale": 1e-3, "unit_label": "kHz", "display_name": "USV mean freq"},
     "peak_freq_hz":      {"tol": 5000.0, "unit_scale": 1e-3, "unit_label": "kHz", "display_name": "USV peak freq"},
     "freq_bandwidth_hz": {"tol": 5000.0, "unit_scale": 1e-3, "unit_label": "kHz", "display_name": "USV freq bandwidth"},
-    "mean_amplitude":    {"tol": 0.25, "unit_scale": 1.0,  "unit_label": "a.u.","display_name": "USV mean amplitude"},
-    "max_amplitude":     {"tol": 0.80, "unit_scale": 1.0,  "unit_label": "a.u.","display_name": "USV max amplitude"},
+    "mean_amplitude":    {"tol": 0.056, "unit_scale": 1.0, "unit_label": "a.u.","display_name": "USV mean amplitude"},
+    "max_amplitude":     {"tol": 0.056, "unit_scale": 1.0, "unit_label": "a.u.","display_name": "USV max amplitude"},
+    "loudness_db":       {"tol": 4.0,  "unit_scale": 1.0,  "unit_label": "dB",  "display_name": "USV loudness"},
     "spectral_entropy":  {"tol": 0.30, "unit_scale": 1.0,  "unit_label": "",    "display_name": "spectral entropy"},
     "mask_number":       {"tol": 2.0,  "unit_scale": 1.0,  "unit_label": "",    "display_name": "mask number"},
 }
 USV_PROPERTY_ORDER: tuple[str, ...] = tuple(USV_PROPERTY_META.keys())
 
-# Categorical USV-tuning segmentations (the four `cat_feat` axes
-# stored in the triage pickle's `usv_category_self_<segmentation>`
-# modality keys). `n_classes` is the upstream class count for that
-# segmentation, used to bound the per-region bar charts even when
-# no units happen to land in some categories.
-USV_CATEGORY_SEGMENTATIONS: tuple[str, ...] = (
-    "vae_supercategory",
-    "vae_category",
-    "qlvm_supercategory",
-    "qlvm_category",
+# Categorical USV-tuning segmentations (the `cat_feat` axes stored in the
+# triage pickle's `usv_category_self_<segmentation>` modality keys: coarse
+# then fine for every QLVM map). Their class counts are not fixed here but read
+# from the label grids of each map's production model
+# (`QLVM_PACKAGE_SEGMENTATIONS`; 15 fine and 9 coarse clusters for the v3
+# regular model), which bound the
+# per-region bar charts even when no units happen to land in some
+# categories, see `_category_class_count`.
+USV_CATEGORY_SEGMENTATIONS: tuple[str, ...] = tuple(
+    f"{qlvm_map}_{suffix}" for qlvm_map in QLVM_MAPS for suffix in ("supercategory", "category")
 )
-USV_CATEGORY_N_CLASSES: dict[str, int] = {
-    "vae_supercategory": 5,
-    "vae_category":      10,
-    "qlvm_supercategory": 7,
-    "qlvm_category":     12,
+
+# QLVM categorical features -> (map, cluster level) of the production model
+# (os_utils.QLVM_PRODUCTION_MODEL_CELLS[<map>] under
+# os_utils.QLVM_MODEL_PACKAGE_ROOT) whose label_grid.npy labels them: the
+# columns infer-qlvm-latents writes (<map>_category = fine, <map>_supercategory
+# = coarse) are read off exactly these grids, so the section-(c) watersheds and
+# the class counts match the labels units are tuned to.
+QLVM_PACKAGE_SEGMENTATIONS: dict[str, tuple[str, str]] = {
+    f"{qlvm_map}_{suffix}": (qlvm_map, level)
+    for qlvm_map in QLVM_MAPS
+    for suffix, level in (("category", "fine"), ("supercategory", "coarse"))
 }
+
+
+def qlvm_cell_directory(qlvm_map: str) -> pathlib.Path:
+    """
+    Description
+    -----------
+    The QLVM model package cell of one production map -- the cell
+    ``os_utils.QLVM_PRODUCTION_MODEL_CELLS[qlvm_map]`` under
+    ``os_utils.QLVM_MODEL_PACKAGE_ROOT`` (the phase 6 regular cell for
+    ``"qlvm"``, a phase 11 conditional cell otherwise) -- translated to this
+    host's mount by ``configure_path``.
+
+    Parameters
+    ----------
+    qlvm_map (str)
+        One of ``os_utils.QLVM_MAPS``.
+
+    Returns
+    -------
+    cell (pathlib.Path)
+        The cell directory (not checked for existence).
+    """
+
+    return pathlib.Path(configure_path(f"{QLVM_MODEL_PACKAGE_ROOT}/{QLVM_PRODUCTION_MODEL_CELLS[qlvm_map]}"))
+
+
+def load_qlvm_package_segmentation(qlvm_map: str, cell_directory: pathlib.Path) -> dict[str, dict]:
+    """
+    Description
+    -----------
+    Builds the section-(c) segmentation blocks of one QLVM map's categorical
+    features (``<qlvm_map>_category`` / ``<qlvm_map>_supercategory``) from its
+    model package cell's ``label_grid.npy`` of each level
+    (``QLVM_PACKAGE_SEGMENTATIONS``; the cell's ``inference/clusters_<level>/``
+    in v3, ``cluster/<level>/`` in v2 / v2.1, see
+    ``os_utils.cell_cluster_directory``). Each grid is ``(res, res)``, indexed
+    ``[y, x]`` over the unit torus, so the block's ``xx`` / ``yy`` are the pixel
+    centres ``(i + 0.5) / res`` and its ``bounds`` are ``(0, 1, 0, 1)``: drawn with
+    ``origin="lower"``, pixel ``[y, x]`` lands at torus position ``(x, y)``, the
+    pixel ``infer-qlvm-latents`` reads a call's label from.
+
+    Parameters
+    ----------
+    qlvm_map (str)
+        One of ``os_utils.QLVM_MAPS``; selects its two categorical features.
+    cell_directory (pathlib.Path)
+        The map's package cell (e.g. :func:`qlvm_cell_directory`).
+
+    Returns
+    -------
+    segmentation (dict[str, dict])
+        ``cat_feat -> {label_grid, xx, yy, bounds, unique_labels}`` for
+        ``<qlvm_map>_category`` and ``<qlvm_map>_supercategory``.
+
+    Raises
+    ------
+    FileNotFoundError
+        The cell, a cluster folder or a ``label_grid.npy`` is missing.
+    """
+
+    segmentation = {}
+    for cat_feat, (feature_map, level) in QLVM_PACKAGE_SEGMENTATIONS.items():
+        if feature_map != qlvm_map:
+            continue
+        label_grid = np.load(cell_cluster_directory(cell_directory, level) / "label_grid.npy", allow_pickle=False)
+        resolution = label_grid.shape[0]
+        centres = (np.arange(resolution) + 0.5) / resolution
+        xx, yy = np.meshgrid(centres, centres)
+        segmentation[cat_feat] = {
+            "label_grid": label_grid.astype(np.int32),
+            "xx": xx,
+            "yy": yy,
+            "bounds": np.array([0.0, 1.0, 0.0, 1.0]),
+            "unique_labels": np.unique(label_grid).astype(np.int64).tolist(),
+        }
+    return segmentation
 
 # Behavioral tuning-summary bucket definitions.
 #
@@ -234,12 +331,12 @@ BEHAVIORAL_TIER_LABELS: dict[str, str] = {
 
 
 # Page sizes are fixed by the layout invariants of each page (Page 1 has
-# the section-(a) raster + usv_peth on top of the 4×4 usv_property_tuning grid; Page 2 has
-# section-(c) 2×6 above section-(d) flowing 6 cols/row). They scale with
+# the section-(a) raster + usv_peth on top of the 5×4 usv_property_tuning grid; Page 2 has
+# section (c), one 6-col row per QLVM map). They scale with
 # the page dimensions, not with anything user-tunable, so are constants
 # rather than settings.
-VOCAL_PAGE1_FIGSIZE_INCHES = (16, 22)
-VOCAL_PAGE2_FIGSIZE_INCHES = (16, 22)
+VOCAL_PAGE1_FIGSIZE_INCHES = (16, 25.5)
+VOCAL_PAGE2_FIGSIZE_INCHES = (16, 15)
 
 # Section-(c) per-category strip plot scaling: switch to symlog when
 # (max / min) firing-rate dynamic range exceeds the threshold; the
@@ -248,6 +345,49 @@ VOCAL_PAGE2_FIGSIZE_INCHES = (16, 22)
 # preferences.
 VOCAL_STRIP_LOG_RATIO_THRESHOLD = 10.0
 VOCAL_STRIP_SYMLOG_LINTHRESH = 0.5
+
+
+def _category_class_count(
+    segmentation: str,
+    per_group: dict[str, list[dict]],
+    segmentation_grids: dict[str, dict],
+) -> int:
+    """
+    Description
+    -----------
+    Number of category classes to lay out for a segmentation, raised to the
+    largest `best_cat` any unit holds (a fixed bound would silently drop every
+    unit tuned to a higher category). The base count is the largest label of
+    the segmentation's label grid in `segmentation_grids` (its map's
+    production model grids, :func:`load_qlvm_package_segmentation`: e.g. 15
+    fine and 9 coarse clusters for the v3 regular model, labelled 1..k), so its
+    count follows
+    the model the labels come from instead of a hard-coded one. When neither is
+    known (e.g. the package is unreachable), the data alone set the count.
+
+    Parameters
+    ----------
+    segmentation (str)
+        Categorical feature, e.g. ``"qlvm_supercategory"``.
+    per_group (dict[str, list[dict]])
+        Units per region, each with an integer `best_cat`.
+    segmentation_grids (dict[str, dict])
+        Segmentation blocks by categorical feature (as
+        `NeuronalTuningFigureMaker._load_segmentation` returns them), each with
+        `unique_labels`.
+
+    Returns
+    -------
+    n_classes (int)
+        Classes to draw, `1 .. n_classes`.
+    """
+
+    observed = [int(unit["best_cat"]) for units in per_group.values() for unit in units]
+    if segmentation in segmentation_grids and segmentation_grids[segmentation]["unique_labels"]:
+        base = int(max(segmentation_grids[segmentation]["unique_labels"]))
+    else:
+        base = 0
+    return max([base, *observed])
 
 
 def _parse_behavioral_modality_key(modality_key: str) -> tuple[str, str, str] | None:
@@ -358,8 +498,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
     + vocal payload) and emits one multi-page output per cluster: the
     behavioral feature pages (one per temporal offset, per plot-feature
     group) followed by the vocal pages (Page 1: bout raster + pooled
-    `usv_peth` on top, `usv_property_tuning` 4x4 grid below; Page 2:
-    `usv_category_tuning` watersheds + `usv_category_peth` grid). Pkls
+    `usv_peth` on top, `usv_property_tuning` 5x4 grid below; Page 2:
+    `usv_category_tuning` watersheds, one row per QLVM map). Pkls
     with neither behavioral nor vocal payload are skipped silently.
     Output filename is `{cluster_id}_neuronal_tuning.{fig_format}` (or,
     for non-PDF formats, `..._p{N}_{label}.{fig_format}`).
@@ -390,9 +530,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Initialize the per-cluster figure maker. Loads `FeatureZoo`
         feature definitions (vocal boundaries / vocal labels / display
         units), validates and stashes the keyword arguments as attributes,
-        records GUI-vs-CLI context, pins the path of the bundled
-        latent-embedding segmentation file used by section (c), and primes
-        a lazy segmentation cache.
+        records GUI-vs-CLI context, and primes a lazy segmentation cache
+        for the section-(c) QLVM label grids.
 
         Parameters
         ----------
@@ -449,11 +588,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 "somatic_filter must be one of 'somatic', 'non_somatic', "
                 f"'both'; got {self.somatic_filter!r}."
             )
-        self._segmentation_path = (
-            pathlib.Path(__file__).parent.parent
-            / "_config"
-            / "usv_latent_embedding_segmentation.npz"
-        )
         self._segmentation_cache: dict | None = None
         # Memoize the deterministic triage-pickle unpickle and the
         # catalog-CSV `(mouse_id, rec_date, unit_id)` lookup, each keyed
@@ -469,10 +603,16 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Lazy-load the bundled latent-embedding segmentation file
-        (`_config/usv_latent_embedding_segmentation.npz`) used to render the
-        section-(c) categorical watersheds. Returns an empty dict if
-        the file is absent. Cached on first call.
+        Lazy-load the segmentations used to render the section-(c)
+        categorical watersheds and to size the per-category population
+        figures. Every QLVM map's blocks (`<map>_category`,
+        `<map>_supercategory`) come from the fine and coarse `label_grid.npy`
+        of that map's production package cell (:func:`qlvm_cell_directory`,
+        :func:`load_qlvm_package_segmentation`) -- the grids
+        `infer-qlvm-latents` labels calls with. When a map's cell is
+        unreachable, a message names the cell and the error, and that map's
+        panels draw the "segmentation unavailable" placeholder. Cached on
+        first call.
 
         Parameters
         ----------
@@ -482,30 +622,24 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -------
         seg (dict)
             Mapping `cat_feat -> {label_grid, xx, yy, bounds,
-            unique_labels}` for each categorical feature present in
-            the segmentation file.
+            unique_labels}` for each QLVM categorical feature (empty
+            when the package is unreachable).
         """
 
         if self._segmentation_cache is not None:
             return self._segmentation_cache
-        if not self._segmentation_path.exists():
-            self._segmentation_cache = {}
-            return self._segmentation_cache
         out: dict[str, dict] = {}
-        # np.load on a .npz returns a lazy NpzFile that keeps the underlying
-        # zip handle open; use a context manager so it is closed once every
-        # array has been copied out into the cache dict.
-        with np.load(self._segmentation_path, allow_pickle=True) as data:
-            for cat_feat in CATEGORICAL_FEATURES:
-                if f"{cat_feat}__label_grid" not in data.files:
-                    continue
-                out[cat_feat] = {
-                    "label_grid": data[f"{cat_feat}__label_grid"],
-                    "xx": data[f"{cat_feat}__xx"],
-                    "yy": data[f"{cat_feat}__yy"],
-                    "bounds": data[f"{cat_feat}__bounds"],
-                    "unique_labels": data[f"{cat_feat}__unique_labels"].tolist(),
-                }
+        for qlvm_map in QLVM_MAPS:
+            cell_directory = qlvm_cell_directory(qlvm_map)
+            try:
+                out.update(load_qlvm_package_segmentation(qlvm_map, cell_directory))
+            except (FileNotFoundError, OSError, ValueError) as error:
+                message_output = self.message_output if hasattr(self, "message_output") else print
+                message_output(
+                    f"QLVM segmentation unavailable: the label grids of the production {qlvm_map} model could not "
+                    f"be read from {cell_directory} ({error}). The {qlvm_map}_category / {qlvm_map}_supercategory "
+                    f"watersheds are drawn as placeholders and their class counts follow the units' labels only."
+                )
         self._segmentation_cache = out
         return out
 
@@ -727,7 +861,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 recursive=True,
                 label="USV summary CSV",
             )
-            usv_summary_df = pls.read_csv(str(csv_path)).filter(pls.col("vae_supercategory") != 0)
+            # Same rule as the tuning curves these rasters accompany: the segments the noise
+            # classifier flagged are not vocalizations, so they are not drawn.
+            usv_summary_df = drop_noise_usvs(pls.read_csv(str(csv_path)), csv_path.name)[0]
         except (StopIteration, FileNotFoundError):
             pass
 
@@ -3299,7 +3435,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             tol_s: float = 0.100,
             k_min: int = 2,
             require_majority: bool = True,
-            n_bins: int = 40,
+            bin_seconds: float = 0.05,
             out_dir: str | pathlib.Path | None = None,
             fig_format: str | None = None,
     ) -> pathlib.Path:
@@ -3307,14 +3443,20 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Render the per-region distribution of consistent PETH
-        anticipatory response timing for the requested `direction`
-        (excit or suppress). Layout is a 2×7 grid with one
-        column per brain-area group:
+        response timing for the requested `direction` (excit or
+        suppress), before and after USV onset. Layout is a 2×7 grid with
+        one column per brain-area group:
 
           * Top row — histogram of each region's consistent units'
-            median `peak_t` across [−2, 0] s.
-          * Bottom row — scatter of median `peak_t` (x) against
-            median `peak_z` (y) per consistent unit.
+            median `peak_t` (signed, 0 = USV onset) across the PETH window.
+          * Bottom row — scatter of median `peak_t` (x, the same signed
+            axis) against median `peak_z` (y) per consistent unit.
+
+        The x-axis spans the `peth_window_seconds` of
+        `analyses_settings.json` -> `calculate_neuronal_tuning_curves`
+        (by default [-2, +0.5] s), widened to any unit whose peak lies
+        outside it (a pickle computed with another window), so pre- and
+        post-onset peaks are both shown.
 
         Consistency filter is the one agreed during the PETH design
         session: per-unit `peak_t` values across significant excit
@@ -3347,9 +3489,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Whether to also require the in-tolerance subset to
             account for at least half of the unit's sig sessions
             (default True).
-        n_bins (int)
-            Number of histogram bins between -2 and 0 s. Default 40
-            (matches the per-session PETH bin width).
+        bin_seconds (float)
+            Histogram bin width in s. Default 0.05 (the per-session PETH
+            bin width).
         out_dir (str | pathlib.Path | None)
             Override the configured visualizations directory.
         fig_format (str | None)
@@ -3384,18 +3526,22 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             left=0.045, right=0.99,
             top=0.94, bottom=0.13,
         )
-        # Histograms keep a linear x-axis (signed peak_t, USV-onset on
-        # the right). Only the scatter row uses a log axis on
-        # |peak_t| to expand the dense near-onset region — the long
-        # pre-onset tail collapses into few units that are easier to
-        # read on a log scale.
-        LINEAR_XLIM = (-2.0, 0.05)
-        linear_bins = np.linspace(-2.0, 0.0, n_bins + 1)
-        LOG_XLIM_LOW_S = 0.020   # rightmost edge on |peak_t|
-        LOG_XLIM_HIGH_S = 2.10   # leftmost edge on |peak_t|
-        log_ticks = [0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0]
-        log_tick_labels = ["25 ms", "50 ms", "100 ms", "250 ms",
-                            "500 ms", "1 s", "2 s"]
+        # Both rows share one linear, signed time axis (0 = USV onset) over the
+        # PETH window the tuning is computed with, widened to any unit peaking
+        # outside it, so pre- and post-onset peaks both show.
+        with (pathlib.Path(__file__).parent.parent / "_parameter_settings" / "analyses_settings.json").open() as _asf:
+            window_lo, window_hi = (
+                float(edge) for edge in json.load(_asf)["calculate_neuronal_tuning_curves"]["peth_window_seconds"]
+            )
+        all_peaks = [u["median_peak_t"] for region in VMI_REGION_ORDER for u in per_group[region]]
+        if all_peaks:
+            window_lo = min(window_lo, float(np.floor(min(all_peaks) / bin_seconds) * bin_seconds))
+            window_hi = max(window_hi, float(np.ceil(max(all_peaks) / bin_seconds) * bin_seconds))
+        n_hist_bins = max(1, round((window_hi - window_lo) / bin_seconds))
+        linear_bins = np.linspace(window_lo, window_hi, n_hist_bins + 1)
+        time_pad = 0.02 * (window_hi - window_lo)
+        LINEAR_XLIM = (window_lo - time_pad, window_hi + time_pad)
+        time_ticks = np.arange(np.ceil(window_lo / 0.5) * 0.5, window_hi + 1e-9, 0.5)
         peak_z_lo = float("inf")
         peak_z_hi = float("-inf")
         for region in VMI_REGION_ORDER:
@@ -3425,30 +3571,29 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 )
             ax_hist.axvline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
             ax_hist.set_xlim(*LINEAR_XLIM)
-            ax_hist.set_xticks([-2.0, -1.5, -1.0, -0.5, 0.0])
-            ax_hist.set_xlabel("peak_t (s, pre-USV)", fontsize=9)
+            ax_hist.set_xticks(time_ticks)
+            ax_hist.set_xlabel("peak_t (s, relative to USV onset)", fontsize=9)
             ax_hist.set_title(f"{region}  (N={n_units})", fontsize=10)
             ax_hist.tick_params(labelsize=8)
             if col == 0:
                 ax_hist.set_ylabel("unit count", fontsize=9)
 
-            # Bottom row — scatter of |median peak_t| × median peak_z.
+            # Bottom row — scatter of signed median peak_t × median peak_z.
             ax_sc = fig.add_subplot(gs[1, col])
             if n_units:
-                abs_pks = np.array([abs(u["median_peak_t"]) for u in units])
+                pks_signed = np.array([u["median_peak_t"] for u in units])
                 pzs = np.array([u["median_peak_z"] for u in units])
                 ax_sc.scatter(
-                    abs_pks, pzs,
+                    pks_signed, pzs,
                     s=18, c=region_color, alpha=0.90,
                     edgecolors=COLOR_BLACK, linewidths=0.4,
                     rasterized=True,
                 )
-            ax_sc.set_xscale("log")
-            ax_sc.set_xlim(LOG_XLIM_HIGH_S, LOG_XLIM_LOW_S)
-            ax_sc.set_xticks(log_ticks)
-            ax_sc.set_xticklabels(log_tick_labels, fontsize=7, rotation=35, ha="right")
+            ax_sc.axvline(0.0, color=COLOR_BLACK, linewidth=0.5, linestyle=":")
+            ax_sc.set_xlim(*LINEAR_XLIM)
+            ax_sc.set_xticks(time_ticks)
             ax_sc.set_ylim(peak_z_lo, peak_z_hi)
-            ax_sc.set_xlabel("time before USV onset (log)", fontsize=9)
+            ax_sc.set_xlabel("peak_t (s, relative to USV onset)", fontsize=9)
             ax_sc.tick_params(labelsize=8)
             if col == 0:
                 ax_sc.set_ylabel("median peak_z", fontsize=9)
@@ -3461,7 +3606,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             f"±{int(1000*tol_s/2)} ms"
             f"{' AND >50% majority' if require_majority else ''}  ·  "
             f"per-unit anchors = medians across all sig {direction} sessions  ·  "
-            "histogram x = signed peak_t (linear); scatter x = |peak_t| (log, USV on the right)",
+            "x = signed median peak_t (0 = USV onset; negative before, positive after)",
             ha="center", fontsize=9, color=COLOR_GRAY_DASH,
         )
 
@@ -3959,7 +4104,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Absolute path to the `unit_triage_*.pkl` artifact.
         segmentation (str)
             One of `USV_CATEGORY_SEGMENTATIONS` (e.g.
-            `'vae_supercategory'`).
+            `'qlvm_supercategory'`).
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to `unit_catalog.csv`. Defaults to the
             `catalog_path` field embedded in the triage pickle.
@@ -4124,7 +4269,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         region_colors = self._resolve_region_colors()
         density_cmap = self.visualizations_parameter_dict["figures"]["sequential_cmap"]
 
-        n_classes = USV_CATEGORY_N_CLASSES[segmentation]
+        n_classes = _category_class_count(segmentation, per_group, self._load_segmentation())
         class_ids = np.arange(1, n_classes + 1)
 
         fig = plt.figure(figsize=(14.0, 6.4), dpi=self._figure_dpi)
@@ -4268,7 +4413,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             require_majority=require_majority,
         )
         region_colors = self._resolve_region_colors()
-        n_classes = USV_CATEGORY_N_CLASSES[segmentation]
+        n_classes = _category_class_count(segmentation, per_group, self._load_segmentation())
 
         # Marker-size mapping: linear in median peak_signed_z, clipped
         # to a plotting-friendly range so very strong outliers don't
@@ -4456,7 +4601,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Returns
         -------
         out_paths (list[pathlib.Path])
-            8 paths: 4 segmentations × 2 figures each.
+            4 paths: 2 segmentations × 2 figures each.
         """
 
         out_paths: list[pathlib.Path] = []
@@ -5605,7 +5750,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         For each behavioral temporal offset key (`beh_offset=*s`) in the
         per-cluster pkl, render one page per plot-feature group
-        (`individual.<mouse_id>` and `social`). Each page is a small
+        (`individual.<mouse_id>` and `social`); features listed in
+        `PLOT_EXCLUDED_BEHAVIORAL_FEATURES` (e.g. TTI-TTI, derivatives
+        included) stay in the pkl but are not drawn. Each page is a small
         gridspec of (line + occupancy) pairs for 1D features plus
         per-animal 2D spatial ratemap pairs. Smoothing, occupancy
         thresholding, and colorbar placement are handled exactly as the
@@ -5661,6 +5808,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         plot_features: dict[str, list[str]] = {}
         for feature_key in cluster_data[beh_offset_keys[0]]:
+            if behavioral_feature_base(feature_key) in PLOT_EXCLUDED_BEHAVIORAL_FEATURES:
+                continue
             mouse_id = feature_key.split(".")[0]
             if (
                 f"individual.{mouse_id}" not in plot_features
@@ -5968,7 +6117,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Loaded pkl payload with keys usv_peth, usv_property_tuning,
             usv_category_tuning, usv_category_peth, usv_metadata.
         usv_summary_df (pls.DataFrame | None)
-            Filtered (post `vae_supercategory != 0`) USV summary if
+            Noise-filtered USV summary if
             available; required for the bout raster.
         segmentation (dict)
             Loaded latent-embedding segmentation per categorical feature.
@@ -6012,7 +6161,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Render Page 1 of the vocal output for one emitter side: the
         bout raster + pooled `usv_peth` (section a) on top of the
-        4×4 `usv_property_tuning` grid (section b), then commit the
+        5×4 `usv_property_tuning` grid (section b), then commit the
         page via `save_fig`.
 
         Parameters
@@ -6023,7 +6172,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         cluster_data (dict)
             Loaded per-cluster pkl payload.
         usv_summary_df (pls.DataFrame | None)
-            Filtered USV summary (post `vae_supercategory != 0`); used
+            Noise-filtered USV summary; used
             by the bout raster. Pass `None` to skip the raster.
         save_fig (Callable[[Figure, str], None])
             Persists the rendered figure and closes it.
@@ -6037,7 +6186,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         fig = plt.figure(figsize=VOCAL_PAGE1_FIGSIZE_INCHES, tight_layout=False)
         outer = gridspec.GridSpec(
-            nrows=2, ncols=1, height_ratios=[5, 14], hspace=0.30,
+            nrows=2, ncols=1, height_ratios=[5, 17.5], hspace=0.30,
             left=0.06, right=0.97, top=0.96, bottom=0.04,
         )
 
@@ -6053,9 +6202,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             usv_summary_df=usv_summary_df,
         )
 
-        # section (b) — 4x4 grid of square usv_property_tuning cells
+        # section (b) — one row per PROPERTY_ROW_ORDER entry × 4 cols of square
+        # usv_property_tuning cells
         gs_b = gridspec.GridSpecFromSubplotSpec(
-            4, 4, subplot_spec=outer[1, 0], wspace=0.40, hspace=0.45
+            len(PROPERTY_ROW_ORDER), 4, subplot_spec=outer[1, 0], wspace=0.40, hspace=0.45
         )
         self._draw_section_b(
             fig=fig,
@@ -6158,9 +6308,12 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         # Span the full bin-edge range (centres +/- half a bin), not centre-to-centre, so the
         # t=0 onset marker and the window-edge xticks (e.g. -2.0 / 0.0) stay inside the axes.
         peth_half_bin = (bin_centers[1] - bin_centers[0]) / 2.0 if bin_centers.size > 1 else 0.0
-        ax_peth.set_xlim(bin_centers.min() - peth_half_bin, bin_centers.max() + peth_half_bin)
-        # explicit X ticks at 0.25 s spacing so 0 s is always visible
-        peth_xticks = np.arange(-2.0, 0.0001, 0.25)
+        peth_lo, peth_hi = bin_centers.min() - peth_half_bin, bin_centers.max() + peth_half_bin
+        ax_peth.set_xlim(peth_lo, peth_hi)
+        # explicit X ticks at 0.25 s spacing, anchored on 0 s so onset is always a
+        # tick, spanning the whole window (pre-onset and, e.g. for the default
+        # [-2, +0.5] s window, post-onset bins).
+        peth_xticks = np.arange(np.ceil(peth_lo / 0.25) * 0.25, peth_hi + 1e-4, 0.25)
         ax_peth.set_xticks(peth_xticks)
         ax_peth.set_xticklabels([f"{v:g}" for v in peth_xticks])
         ax_peth.set_xlabel("time relative to USV onset (s)", fontsize=12)
@@ -6322,7 +6475,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Draw section (b) of vocal Page 1: a 4×4 grid of
+        Draw section (b) of vocal Page 1: a 5×4 grid of
         (line + occupancy) cell pairs, one row per pair of continuous
         USV properties (per `PROPERTY_ROW_ORDER`). Dispatches to
         `_draw_property_pair` for each cell pair.
@@ -6332,7 +6485,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         fig (matplotlib.figure.Figure)
             Parent figure (used to add subplots).
         gs (matplotlib.gridspec.GridSpecFromSubplotSpec)
-            4×4 gridspec slot for section (b).
+            5×4 gridspec slot for section (b).
         emitter (str)
             Emitter ID keying into `usv_property_tuning`.
         cluster_data (dict)
@@ -6531,7 +6684,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax_occ.tick_params(axis="y", labelsize=11, pad=0.5)
         ax_occ.set_box_aspect(1)
 
-    # Page 2 — sections (c) and (d)
+    # Page 2 — section (c)
 
     def _render_page2(
         self,
@@ -6546,11 +6699,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Render Page 2 of the vocal output for one emitter side: section
         (c) categorical watersheds (`usv_category_tuning` rate / occupancy
-        / strip — 2 rows × 6 cols, paired by VAE / QLVM method) on top
-        of section (d) `usv_category_peth` per-category PETH grid (flat
-        sequential 6 cols / row, all-NaN entries skipped). Outer
-        `height_ratios` adapts to the actual `usv_category_peth` row
-        count so cells stay square in both sections.
+        / strip), one row per QLVM map (`SECTION_C_ROWS`: the regular model
+        then the four conditional ones) × 6 cols (category | supercategory).
+        The per-category PETH (`usv_category_peth`) is still computed and
+        saved in the pickle but not drawn.
 
         Parameters
         ----------
@@ -6572,38 +6724,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         fig = plt.figure(figsize=VOCAL_PAGE2_FIGSIZE_INCHES, tight_layout=False)
 
-        # pre-count section (d) non-empty cells across all four
-        # categorical features so we can size the gridspec to a flat
-        # 6-col flow (same density / spacing as the behavioral grid).
-        d_cols = 6
-        total_d_cells = 0
-        for cf in CATEGORICAL_FEATURES:
-            payload_d = cluster_data["usv_category_peth"][emitter][cf]
-            rate_arr_d = (
-                payload_d["rate_smoothed"]
-                if "rate_smoothed" in payload_d
-                else payload_d["rate"]
-            )
-            for i in range(rate_arr_d.shape[0]):
-                if np.isfinite(rate_arr_d[i]).any():
-                    total_d_cells += 1
-        d_rows = max(1, (total_d_cells + d_cols - 1) // d_cols)
-
-        # outer ratio reflects the row count of each section so the
-        # cell height in (c) and (d) matches (both use 6 cols).
-        outer = gridspec.GridSpec(
-            nrows=2, ncols=1,
-            height_ratios=[len(SECTION_C_ROWS), d_rows],
-            hspace=0.12,
-            left=0.04, right=0.98, top=0.94, bottom=0.05,
-        )
-
-        # section (c): 2 rows × 6 cols. Each row pairs the `_category`
-        # (3 cols) and `_supercategory` (3 cols) variants of one
-        # segmentation method. wspace/hspace match the behavioral grid.
-        gs_c = gridspec.GridSpecFromSubplotSpec(
-            len(SECTION_C_ROWS), 6, subplot_spec=outer[0, 0],
+        # section (c): one row per QLVM map × 6 cols. Each row pairs the
+        # `_category` (3 cols) and `_supercategory` (3 cols) variants of one
+        # map. wspace/hspace match the behavioral grid.
+        gs_c = gridspec.GridSpec(
+            len(SECTION_C_ROWS), 6,
             wspace=0.40, hspace=0.45,
+            left=0.04, right=0.98, top=0.94, bottom=0.05,
         )
         self._draw_section_c(
             fig=fig,
@@ -6613,24 +6740,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             segmentation=segmentation,
         )
 
-        # section (d): flat sequential PETH flow at 6 cols / row,
-        # ordered VAE cat to VAE supercat to QLVM cat to QLVM supercat;
-        # all-NaN entries are skipped so the row stays packed.
-        gs_d = gridspec.GridSpecFromSubplotSpec(
-            d_rows, d_cols, subplot_spec=outer[1, 0],
-            wspace=0.40, hspace=0.45,
-        )
-        self._draw_section_d(
-            fig=fig,
-            gs=gs_d,
-            emitter=emitter,
-            cluster_data=cluster_data,
-            n_cols=d_cols,
-        )
-
         save_fig(fig, page_label)
 
-    # section (c) — categorical 2 rows × 6 cols
+    # section (c) — categorical, one row per QLVM map × 6 cols
 
     def _draw_section_c(
         self,
@@ -6643,7 +6755,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Draw section (c): 2 rows × 6 cols. Each row pairs the
+        Draw section (c): one row per QLVM map × 6 cols. Each row pairs the
         `_category` (3 cols: rate watershed | occupancy watershed |
         strip) and `_supercategory` (3 cols, same structure) variants
         of one segmentation method (`SECTION_C_ROWS`). The rate
@@ -6657,7 +6769,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         fig (matplotlib.figure.Figure)
             Parent figure.
         gs (matplotlib.gridspec.GridSpecFromSubplotSpec)
-            2×6 gridspec slot for section (c).
+            `len(SECTION_C_ROWS)`×6 gridspec slot for section (c).
         emitter (str)
             Emitter ID keying into `usv_category_tuning`.
         cluster_data (dict)
@@ -6716,10 +6828,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 ax_occ = fig.add_subplot(gs[row_idx, col_offset + 1])
                 ax_strip = fig.add_subplot(gs[row_idx, col_offset + 2])
 
-                # build a human-readable method label, e.g. vae_category
-                # to "VAE category", qlvm_supercategory to "QLVM supercategory".
-                method_token, granularity = cat_feat.split("_", 1)
-                method_label = method_token.upper()
+                # build a human-readable method label, e.g. qlvm_category
+                # to "QLVM category", qlvm_dur_supercategory to "QLVM DUR supercategory".
+                map_token, granularity = cat_feat.rsplit("_", 1)
+                method_label = map_token.upper().replace("_", " ")
                 tuning_title = f"{method_label} {granularity} tuning"
 
                 # column N+0: firing rate watershed (configurable cmap)
@@ -6774,7 +6886,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Render a watershed-style imshow of per-category values over the
-        bundled latent-embedding segmentation grid. Pixels with no cluster-side
+        feature's segmentation grid (QLVM package label grid). Pixels with no cluster-side
         category get a hatched fill; per-category 1-NN boundaries are
         contour-drawn in `COLOR_BLACK`. When `annotate_categories=True`,
         each region's category ID is overlaid at its centroid (or a
@@ -6894,10 +7006,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         )
 
         # optionally annotate each category region with its category ID
-        # at the centroid of the category mask. For non-toroidal
-        # embeddings (VAE) the arithmetic mean of (xx, yy) over the mask
-        # lands inside the blob and we use it. For toroidal embeddings
-        # (QLVM) a category can wrap across the embedding boundary, in
+        # at the centroid of the category mask. When the mask does not
+        # wrap, the arithmetic mean of (xx, yy) over the mask lands
+        # inside the blob and we use it. On the QLVM torus a category
+        # can wrap across the embedding boundary, in
         # which case the arithmetic centroid falls in the empty gap
         # between halves; we detect that case (closest pixel to the
         # arithmetic centroid is NOT inside the mask) and fall back to
@@ -7105,165 +7217,3 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             # the two majors we just set.
             ax.tick_params(axis="x", which="minor", labelbottom=False)
         ax.set_box_aspect(1)
-
-    # section (d) — per-category PETH grid (tiny)
-
-    def _draw_section_d(
-        self,
-        fig,
-        gs,
-        emitter: str,
-        cluster_data: dict,
-        n_cols: int,
-    ) -> None:
-        """
-        Description
-        -----------
-        Draw section (d) of vocal Page 2: a flat sequential
-        `usv_category_peth` PETH grid at `n_cols` cols/row. Items flow
-        VAE category to VAE supercategory to QLVM category to
-        QLVM supercategory; each non-NaN per-category PETH gets one
-        cell. Each cell has its x-axis tightened to its own finite
-        data extent (left), with the right edge anchored at t = 0.
-        Two ticks per axis; lines doubled in width for visibility;
-        per-cell title formatted "{METHOD} {cat|supercat} #{N}".
-
-        Parameters
-        ----------
-        fig (matplotlib.figure.Figure)
-            Parent figure.
-        gs (matplotlib.gridspec.GridSpecFromSubplotSpec)
-            (`ceil(total_items/n_cols)`, `n_cols`) gridspec slot.
-        emitter (str)
-            Emitter ID keying into `usv_category_peth`.
-        cluster_data (dict)
-            Per-cluster pkl payload.
-        n_cols (int)
-            Number of columns per row in the flat flow.
-
-        Returns
-        -------
-        None
-        """
-
-        sex = cluster_data["usv_category_peth"][emitter][CATEGORICAL_FEATURES[0]]["sex"]
-        line_color = self._sex_color(sex)
-
-        # build a flat sequential list of (title, rate, p0_5, p99_5,
-        # bin_centers) tuples in the order VAE cat to VAE supercat to
-        # QLVM cat to QLVM supercat, dropping all-NaN entries so the
-        # display row stays packed.
-        items: list[dict] = []
-        for cat_feat in CATEGORICAL_FEATURES:
-            method_token, granularity = cat_feat.split("_", 1)
-            method_label = method_token.upper()
-            short_gran = "supercat" if "super" in granularity else "cat"
-            title_prefix = f"{method_label} {short_gran}"
-
-            payload = cluster_data["usv_category_peth"][emitter][cat_feat]
-            cats = np.asarray(payload["categories"])
-            bin_centers = payload["bin_centers_s"]
-            # smoothed versions are pre-computed in compute; fall back
-            # to raw if smoothing was disabled (smoothing_sd == 0).
-            rate_arr = (
-                payload["rate_smoothed"]
-                if "rate_smoothed" in payload
-                else payload["rate"]
-            )
-            p0_5_arr = (
-                payload["null_p0_5_smoothed"]
-                if "null_p0_5_smoothed" in payload
-                else payload["null_p0_5"]
-            )
-            p99_5_arr = (
-                payload["null_p99_5_smoothed"]
-                if "null_p99_5_smoothed" in payload
-                else payload["null_p99_5"]
-            )
-            for i in range(cats.size):
-                rate = rate_arr[i, :]
-                if not np.isfinite(rate).any():
-                    continue
-                items.append(
-                    {
-                        "title": f"{title_prefix} #{int(cats[i])}",
-                        "rate": rate,
-                        "p0_5": p0_5_arr[i, :],
-                        "p99_5": p99_5_arr[i, :],
-                        "bin_centers": bin_centers,
-                    }
-                )
-
-        for display_idx, item in enumerate(items):
-            row = display_idx // n_cols
-            col = display_idx % n_cols
-            rate = item["rate"]
-            p0_5 = item["p0_5"]
-            p99_5 = item["p99_5"]
-            bin_centers = item["bin_centers"]
-
-            # Defensive non-negative clamp on the shuffle floor (see
-            # property-tuning cell for the same rationale).
-            p0_5 = np.maximum(p0_5, 0.0)
-
-            # tighten x-axis to the finite-rate extent of THIS cell;
-            # 5% margin on the left, with the right side anchored at 0
-            # so the anchor reference always shows up as a tick.
-            finite = np.isfinite(rate)
-            nz = np.where(finite)[0]
-            x_lo_cell = float(bin_centers[nz[0]])
-            x_hi_cell = 0.0
-            cell_range = x_hi_cell - x_lo_cell
-            cell_margin = (
-                0.05 * cell_range if cell_range > 0
-                else max(0.05 * abs(x_lo_cell), 0.05)
-            )
-
-            # Extend the rendered curve / shuffle band by a single
-            # synthetic point at the anchor (t=0) repeating the last
-            # finite value, so the visible data reaches the right axis
-            # bound. Without this the line stops at `bin_centers[-1]`
-            # (half-a-binwidth left of the anchor) and leaves a visual
-            # air gap between the data and the t=0 tick.
-            last_idx = int(nz[-1])
-            bin_centers_ext = np.append(bin_centers, 0.0)
-            rate_ext = np.append(rate, rate[last_idx])
-            p0_5_last = p0_5[last_idx] if np.isfinite(p0_5[last_idx]) else 0.0
-            p99_5_last = p99_5[last_idx] if np.isfinite(p99_5[last_idx]) else 0.0
-            p0_5_ext = np.append(p0_5, p0_5_last)
-            p99_5_ext = np.append(p99_5, p99_5_last)
-
-            ax = fig.add_subplot(gs[row, col])
-            ax.fill_between(
-                bin_centers_ext, p0_5_ext, p99_5_ext,
-                where=np.isfinite(p0_5_ext) & np.isfinite(p99_5_ext),
-                facecolor=COLOR_GRAY_BAND, interpolate=True,
-            )
-            ax.plot(bin_centers_ext, rate_ext, lw=3.2, color=line_color)
-            ax.set_xlim(x_lo_cell - cell_margin, x_hi_cell + cell_margin)
-            ax.set_xticks(
-                ticks=[x_lo_cell, 0.0],
-                labels=[f"{x_lo_cell:.1f}", "0"],
-                fontsize=8,
-            )
-            # y-axis: matplotlib's auto-fit ylim already adds a small
-            # margin from fill_between + plot; floor / ceil to int (with
-            # min clamped at 0) gives the same buffer treatment as the
-            # continuous-feature plots.
-            ty_min, ty_max = ax.get_ylim()
-            y_lo = max(float(np.floor(ty_min)), 0.0)
-            y_hi = float(np.ceil(ty_max))
-            if y_hi <= y_lo:
-                y_hi = y_lo + 1.0
-            ax.set_ylim(y_lo, y_hi)
-            ax.set_yticks(
-                ticks=[y_lo, y_hi],
-                labels=[f"{y_lo:.1f}", f"{y_hi:.1f}"],
-                fontsize=8,
-            )
-            ax.tick_params(axis="x", labelsize=8, length=1.5, pad=2.0)
-            ax.tick_params(axis="y", labelsize=8, length=1.5, pad=0.5)
-            ax.set_xlabel("Pre-USV time (s)", fontsize=10, labelpad=2)
-            ax.set_ylabel("Firing rate (sp/s)", fontsize=10, labelpad=-2)
-            ax.set_title(item["title"], fontsize=11, pad=2)
-            ax.set_box_aspect(1)

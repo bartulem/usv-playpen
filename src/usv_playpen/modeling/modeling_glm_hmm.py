@@ -138,8 +138,12 @@ def _build_session_sequences(raw_data: dict, emission_features: list,
         categorical column for multinomial).
     drop_nan_target (bool)
         When True (categorical target), events whose label is NaN (unlabelled)
-        are dropped from the sequence, together with their design-matrix rows.
-        The manifold position target has no NaNs, so this is False there.
+        are dropped from the sequence, together with their design-matrix rows,
+        and the labels are cast to integers. When False (manifold position
+        target) the extraction stage has already dropped calls without torus
+        coordinates, so ``Y`` should hold no NaN; any row that still does (a
+        pickle built before that drop) is removed here as well, with a printed
+        count, so the emission never fits on a NaN position.
     history_frames (int)
         Number of most-recent history frames to keep per feature (the emission's
         ``n_time_bins``). Each feature's stored window is sliced to its last
@@ -152,6 +156,7 @@ def _build_session_sequences(raw_data: dict, emission_features: list,
         is present for every requested feature and non-empty after any NaN drop.
     """
     sequences = []
+    n_nan_positions_dropped = 0
     for session_id in session_ids:
         if not all(session_id in raw_data[feat] for feat in emission_features):
             continue
@@ -165,14 +170,37 @@ def _build_session_sequences(raw_data: dict, emission_features: list,
         if n_events == 0:
             continue
         x_seq = np.hstack(x_blocks)
-        target_seq = np.asarray(raw_data[emission_features[0]][session_id][target_key])
+        session_entry = raw_data[emission_features[0]][session_id]
+        if target_key not in session_entry:
+            # A categorical target is a label packet the extraction stage writes only
+            # when a label column is configured and the summaries carry it (e.g.
+            # 'supercategory'); a pickle extracted without one has none.
+            error_message = (
+                f"GLM-HMM target '{target_key}' is missing for session {session_id}: QLVM category labels "
+                f"are not available in this modeling input pickle. The multinomial emission needs a label "
+                f"column; use emission_type 'manifold', or re-extract with "
+                f"vocal_features.usv_category_column_name set to an existing label column."
+            )
+            raise ValueError(error_message)
+        target_seq = np.asarray(session_entry[target_key])
         if drop_nan_target:
             keep = ~np.isnan(np.asarray(target_seq, dtype=np.float64))
             if not keep.any():
                 continue
             x_seq = x_seq[keep]
             target_seq = target_seq[keep].astype(np.int64)
+        else:
+            placed = np.isfinite(np.asarray(target_seq, dtype=np.float64)).reshape(n_events, -1).all(axis=1)
+            if not placed.all():
+                n_nan_positions_dropped += int(np.count_nonzero(~placed))
+                if not placed.any():
+                    continue
+                x_seq = x_seq[placed]
+                target_seq = target_seq[placed]
         sequences.append((session_id, x_seq, target_seq))
+    if n_nan_positions_dropped > 0:
+        print(f"GLM-HMM: dropped {n_nan_positions_dropped} events with NaN manifold positions "
+              f"(an input pickle built before unplaced calls were dropped at extraction).")
     return sequences
 
 

@@ -57,6 +57,7 @@ from pathlib import Path
 
 import matplotlib
 import numpy as np
+import polars as pls
 import pytest
 
 matplotlib.use('Agg')
@@ -239,6 +240,26 @@ class TestInitBranches:
         )
         assert rebuilt.feature_boundaries == {'speed': [0.0, 5.0]}
         assert rebuilt.sentinel_attr == 'set_via_kwargs'
+
+    def test_init_bout_offset_mode_takes_its_own_history_window(self, tmp_path):
+        """
+        In ``bout_offset`` mode the history window comes from the block's own
+        ``filter_history``; in every other mode from ``model_params.filter_history``.
+        The shared value stays untouched, so the other targets see no change.
+        """
+
+        pipeline = _pipeline(tmp_path)
+        settings = pipeline.modeling_settings
+        camera_rate = settings['io']['camera_sampling_rate']
+        shared = settings['model_params']['filter_history']
+        settings['bout_offset']['filter_history'] = shared / 2.0
+        settings['model_params']['model_target_vocal_type'] = 'bout_offset'
+        offset_pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
+        assert offset_pipeline.history_frames == int(np.floor(camera_rate * shared / 2.0))
+        assert offset_pipeline.history_seconds == shared / 2.0
+        settings['model_params']['model_target_vocal_type'] = 'bout_onset'
+        onset_pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
+        assert onset_pipeline.history_frames == int(np.floor(camera_rate * shared))
 
     def test_init_missing_history_setting_raises_keyerror(self, tmp_path):
         """
@@ -794,3 +815,77 @@ class TestExtractionGuards:
         assert md['analysis_tag'] == expected_tag
         assert md['analysis_specific']['onset_target_category'] == 1
         assert md['analysis_specific']['usv_category_column_name'] == 'qlvm_supercategory'
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_extraction_squeak_onsets_tag_and_metadata(self, tmp_path):
+        """
+        With ``onset_target_type='squeak'`` in 'individual' mode, the squeak
+        onsets are the positives, the saved input pickle's filename and
+        ``analysis_tag`` carry ``_squeak`` (so a squeak-onset run never shares an
+        artifact name with a USV-onset run), and ``analysis_specific`` records the
+        call type. Every synthetic call is relabelled a squeak, so the squeak
+        target keeps every onset and both sessions survive.
+        """
+
+        session_roots = build_session_tree(
+            base_dir=tmp_path / 'sessions',
+            n_sessions=2,
+            n_frames=3600,
+            camera_fps=CAMERA_FPS,
+            filter_history=FILTER_HISTORY,
+            egocentric_features=['speed'],
+            n_bouts=8,
+            usv_per_bout=3,
+        )
+        for root in session_roots:
+            csv_path = next((Path(root) / 'audio').glob('*_usv_summary.csv'))
+            pls.read_csv(csv_path).with_columns(pls.lit(True).alias('squeak')).write_csv(csv_path)
+        list_file = write_session_list_file(session_roots, tmp_path / 'session_list.txt')
+        save_dir = tmp_path / 'out'
+        save_dir.mkdir(parents=True, exist_ok=True)
+        settings = build_modeling_settings(
+            session_list_file=list_file,
+            save_directory=save_dir,
+            camera_sampling_rate=CAMERA_FPS,
+            filter_history=FILTER_HISTORY,
+            egocentric_features=['speed'],
+        )
+        settings['model_params']['usv_bout_time'] = FILTER_HISTORY
+        settings['model_params']['model_target_vocal_type'] = 'individual'
+        settings['model_params']['onset_target_type'] = 'squeak'
+
+        pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
+        pipeline.extract_and_save_modeling_input_data()
+
+        pkls = list(save_dir.glob('modeling_*.pkl'))
+        assert len(pkls) == 1
+        assert 'individual_squeak' in pkls[0].name
+        with pkls[0].open('rb') as fh:
+            artifact = pickle.load(fh)
+        md = artifact['_input_metadata']
+        assert md['analysis_tag'] == 'individual_squeak'
+        assert md['analysis_specific']['onset_target_type'] == 'squeak'
+
+
+@pytest.mark.parametrize('usv_predictor_type', [None, 'categories_rate'])
+def test_onset_target_category_without_labels_fails_before_loading(tmp_path, mocker, usv_predictor_type):
+    """
+    With no category label column (the shipped ``usv_category_column_name``
+    null, QLVM labels unavailable) the single-category onset target stops with the labels-unavailable
+    error before any session list or behavioral file is read.
+    """
+
+    settings = build_modeling_settings(
+        session_list_file=tmp_path / 'session_list.txt',
+        save_directory=tmp_path,
+        usv_predictor_type=usv_predictor_type,
+        usv_category_column_name=None,
+    )
+    settings['model_params']['model_target_vocal_type'] = 'individual'
+    settings['model_params']['onset_target_category'] = 1
+    prepare = mocker.patch('usv_playpen.modeling.modeling_vocal_onsets.prepare_modeling_sessions')
+    with pytest.raises(ValueError, match='QLVM category labels are not available') as excinfo:
+        VocalOnsetModelingPipeline(modeling_settings_dict=settings).extract_and_save_modeling_input_data()
+    assert 'vocal_features.usv_category_column_name' in str(excinfo.value)
+    prepare.assert_not_called()

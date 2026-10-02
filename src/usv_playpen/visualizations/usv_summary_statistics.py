@@ -24,6 +24,8 @@ from statsmodels.stats.multicomp import pairwise_tukeyhsd
 # analyses<->visualizations near-cycle); re-imported here so this module and its
 # importers keep using them unchanged.
 from ..analyses._usv_io import extract_session_metadata, load_and_filter_usv_data
+from .auxiliary_plot_functions import create_colormap
+from ..os_utils import drop_noise_usvs
 
 
 # Load the project-wide default cmap from `visualizations_settings.json`
@@ -76,8 +78,7 @@ def _figure_rng() -> np.random.Generator:
 
 def extract_category_embedding_data(
     session_roots: list[str],
-    noise_col_id: str,
-    noise_categories: list[int],
+    exclude_noise_usvs: bool,
     usv_category_col: str,
     usv_continuous_cols: tuple[str, str]
 ) -> pls.DataFrame:
@@ -96,17 +97,14 @@ def extract_category_embedding_data(
     ----------
     session_roots : list[str]
         A list of absolute paths pointing to the session directories to be analyzed.
-    noise_col_id : str
-        The name of the column in the CSV that dictates the noise classification.
-    noise_categories : list[int]
-        A list of specific integer values in the noise column that identify a row as
-        noise to be excluded.
+    exclude_noise_usvs : bool
+        Whether to drop the segments ``detect_usv_noise`` flagged as holding no vocalization.
     usv_category_col : str
         The name of the column containing the integer category/cluster ID
-        (e.g., 'usv_supercategory').
+        (e.g., 'qlvm_supercategory').
     usv_continuous_cols : tuple[str, str]
         A tuple of two strings specifying the column names for the 2D embedding
-        coordinates (e.g., ('umap_x', 'umap_y')).
+        coordinates (e.g., ('qlvm1', 'qlvm2')).
 
     Returns
     -------
@@ -132,8 +130,7 @@ def extract_category_embedding_data(
             usv_info = load_and_filter_usv_data(
                 session_root=session_root,
                 frame_rate=metadata['frame_rate'],
-                noise_col_id=noise_col_id,
-                noise_categories=noise_categories
+                exclude_noise_usvs=exclude_noise_usvs
             )
 
             # Ensure the required columns actually exist in this session's CSV
@@ -273,8 +270,7 @@ _CONTINUOUS_ACOUSTIC_FEATURES = (
 
 def build_master_usv_dataframe(
     session_roots: list[str],
-    noise_col_id: str,
-    noise_categories: list[int],
+    exclude_noise_usvs: bool,
     usv_category_col: str,
     distance_suffix: str,
     mf_angle_suffix: str,
@@ -316,11 +312,8 @@ def build_master_usv_dataframe(
     ----------
     session_roots (list[str])
         A list of absolute paths pointing to the session directories to be analyzed.
-    noise_col_id (str)
-        The name of the column in the CSV that dictates the noise classification.
-    noise_categories (list[int])
-        A list of specific integer values in the noise column that identify a row
-        as noise to be excluded.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as holding no vocalization.
     usv_category_col (str)
         The name of the column containing the integer category/cluster ID.
     distance_suffix (str)
@@ -352,7 +345,7 @@ def build_master_usv_dataframe(
         with this schema, so 'distance'/'mf_angle'/'fm_angle' column access does
         not raise.
     total_noise_filtered (int)
-        The total number of rows removed across all sessions based on noise_categories.
+        The total number of noise rows removed across all sessions.
     """
 
     all_usv_rows: list[pls.DataFrame] = []
@@ -386,8 +379,8 @@ def build_master_usv_dataframe(
         # (previously the file was read twice: once here for the count and again
         # inside load_and_filter_usv_data).
         raw_data = pls.read_csv(str(usv_file))
-        usv_clean = raw_data.filter(~pls.col(noise_col_id).is_in(noise_categories))
-        total_noise_filtered += raw_data.height - usv_clean.height
+        usv_clean, n_dropped = drop_noise_usvs(raw_data, usv_file.name) if exclude_noise_usvs else (raw_data, 0)
+        total_noise_filtered += n_dropped
         usv_info = usv_clean.with_columns(
             (pls.col('start') * frame_rate).floor().cast(pls.UInt32).alias('frame_index')
         )
@@ -3147,3 +3140,268 @@ def plot_estrous_category_kde_grid(
     fig.tight_layout()
 
     return fig, axes, {'global_vmax': global_vmax, 'sex_plotted': sex_key, 'n_points': n_points}
+
+
+def plot_session_squeak_time_heatmap(
+    condition_session_lists: dict[str, list[str]],
+    condition_styles: dict[str, dict[str, str]],
+    exclude_noise_usvs: bool,
+    kernel_sigma_s: float,
+    grid_step_s: float,
+    min_vocal_density: float,
+    session_length_s: float,
+    min_session_segments: int,
+    vmax_percent: float,
+    zero_tint: float,
+    nodata_color: str,
+) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes, plt.Axes, plt.Axes], dict[str, Any]]:
+    """
+    Description
+    -----------
+    Plots, one row per session, where in the recording the session's squeaks sit.
+
+    A squeak is a broadband vocalization (3-8 kHz fundamental) that the squeak classifier
+    (``detect_usv_squeaks``, the v3 BBV classifier) flags in a segment of the USV summary. Each
+    session's summary is read from ``<session>/audio/*_usv_summary.csv``; when
+    ``exclude_noise_usvs`` is set, the segments the noise classifier flagged are dropped first,
+    so the rate is squeaks among vocal segments.
+
+    The share is estimated continuously in time rather than in bins, the way a kernel-smoothed
+    firing rate replaces a binned histogram: every segment contributes a Gaussian of width
+    ``kernel_sigma_s`` centred on its start, and on a grid of step ``grid_step_s`` over
+    ``[0, session_length_s)`` the squeak share is
+
+        share(t) = sum_i K(t - t_i) * squeak_i / sum_i K(t - t_i),
+
+    the kernel-weighted fraction of nearby segments that are squeaks. Each row is one session
+    (rows are never smoothed into one another), and a lone squeak is weighed against the calls
+    around it rather than being 1 of 1 in a bin. Where the vocal density ``sum_i K(t - t_i)``
+    is below ``min_vocal_density`` -- no vocalization within roughly two sigma -- the share is
+    undefined (0 / 0, not 0 %) and drawn in ``nodata_color``, white, so a silent stretch reads
+    as empty rather than as "vocalizing, but no squeak", which would understate how much of
+    what the animals do say is squeaks.
+
+    Each condition block is drawn with its own colour ramp (``create_colormap``), from a faint
+    tint of the condition's colour at 0 % (``zero_tint`` of the colour mixed into white) to the
+    condition's colour itself at ``vmax_percent``, so every block reads in its legend colour.
+    The ramp does not start at pure white, so 0 % ("vocalizing, but no squeak") stays
+    distinguishable from a silent stretch (``nodata_color``, white). A
+    colour with an alpha channel (8-digit hex) is first composited onto white, so a translucent
+    legend colour gives the matching opaque ramp. The key on the left is a neutral
+    ramp built the same way in grey -- from the same tint to a grey as light as the drawn
+    condition colours on average -- standing in for every block's ramp.
+
+    Rows are grouped by condition, in the order of ``condition_session_lists``, and sorted
+    within a condition by the session's overall squeak rate, which the right-hand bars show.
+    A strip between the heatmap and the bars colours each row by its condition, the legend sits
+    in the rate panel, and a short colour bar sits at the top left. Every session with at least
+    ``min_session_segments`` (non-noise) segments is drawn, including sessions with no squeak at
+    all, which appear as pale rows with a zero-length bar; the legend counts the rows drawn per
+    condition, and ``stats_dict`` reports how many sessions fell below the segment minimum and
+    how many drawn sessions have no squeak.
+
+    Adapted from the reference standalone ``plot_session_time_heatmap.py`` (BBV corpus figures); it
+    reads the repo's own per-session summaries instead of the reference corpus index.
+
+    Parameters
+    ----------
+    condition_session_lists (dict)
+        Condition name -> list of session-list txt files (one session root per line); the
+        dict's order is the row-block order. A session listed under two conditions raises.
+    condition_styles (dict)
+        Condition name -> ``{'color': hex, 'label': str}`` (``session_condition_styles`` in
+        ``visualizations_settings.json``); must cover every condition drawn.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments flagged as noise before counting.
+    kernel_sigma_s (float)
+        Standard deviation of the Gaussian time kernel, in seconds.
+    grid_step_s (float)
+        Step of the time grid the share is evaluated on, in seconds.
+    min_vocal_density (float)
+        Kernel-summed vocal density (unnormalised Gaussian weights, 1 at a segment's own start)
+        below which the share is left blank.
+    session_length_s (float)
+        Session length drawn on the time axis, in seconds; later segments are clipped.
+    min_session_segments (int)
+        Sessions with fewer (non-noise) segments than this are dropped.
+    vmax_percent (float)
+        Top of the colour scale, in percent; below 100 the colour bar is drawn with an arrow,
+        so values above it are shown as saturated rather than silently flattened.
+    zero_tint (float)
+        Share of each condition's colour in the ramp's 0 % end (0 = white, 1 = the full
+        colour); must be above 0 so 0 % differs from ``nodata_color``.
+    nodata_color (str)
+        Hex colour where no vocalization is near (white, ``#FFFFFF``, draws it as empty).
+
+    Returns
+    -------
+    fig (plt.Figure)
+        The matplotlib Figure object.
+    axes (tuple)
+        ``(ax_colorbar, ax_heatmap, ax_strip, ax_rate)``: the colour bar (an inset in the
+        top of the left-hand column) and then the three panels, left to right.
+    stats_dict (dict)
+        ``'sessions'``: a polars DataFrame with one row per session read (session_id,
+        condition, n_segments, n_squeaks, squeak_rate, n_noise_dropped, drawn), where
+        n_segments counts the segments left after the noise filter; ``'n_drawn'``;
+        ``'n_no_squeak'``, the drawn sessions without any squeak; ``'n_too_few'``; ``'rate_matrix'``, the drawn sessions x grid
+        squeak share in [0, 1] (NaN where the vocal density is below ``min_vocal_density``);
+        and ``'grid_s'``, the grid times in seconds.
+    """
+
+    session_condition: dict[str, str] = {}
+    session_roots: dict[str, str] = {}
+    for condition, list_paths in condition_session_lists.items():
+        for list_path in list_paths:
+            with Path(list_path).open('r') as list_file:
+                for line in list_file:
+                    root = line.strip()
+                    if not root:
+                        continue
+                    session_id = Path(root).name
+                    if session_id in session_condition and session_condition[session_id] != condition:
+                        msg = (f"Session {session_id} is listed under both '{session_condition[session_id]}' "
+                               f"and '{condition}'; each session must belong to one condition.")
+                        raise ValueError(msg)
+                    session_condition[session_id] = condition
+                    session_roots[session_id] = root
+
+    grid_s = np.arange(0.0, session_length_s, grid_step_s) + grid_step_s / 2.0
+    session_rows: list[dict[str, Any]] = []
+    segment_starts: dict[str, np.ndarray] = {}
+    segment_is_squeak: dict[str, np.ndarray] = {}
+    for session_id, root in session_roots.items():
+        summaries = sorted((Path(root) / 'audio').glob('*_usv_summary.csv'))
+        if not summaries:
+            msg = f"No *_usv_summary.csv in {Path(root) / 'audio'}."
+            raise FileNotFoundError(msg)
+        summary = pls.read_csv(str(summaries[0]), columns=['start', 'squeak', 'noise'])
+        n_noise_dropped = 0
+        if exclude_noise_usvs:
+            # One line per session would flood the output over a cohort; the counts are
+            # returned in the sessions table instead.
+            summary, n_noise_dropped = drop_noise_usvs(summary, summaries[0].name,
+                                                       message_output=lambda _message: None)
+        start = summary['start'].to_numpy().astype(float)
+        is_squeak = summary['squeak'].fill_null(False).to_numpy().astype(bool)
+        segment_starts[session_id] = start
+        segment_is_squeak[session_id] = is_squeak
+        n_segments = int(start.size)
+        n_squeaks = int(is_squeak.sum())
+        session_rows.append({
+            'session_id': session_id,
+            'condition': session_condition[session_id],
+            'n_segments': n_segments,
+            'n_squeaks': n_squeaks,
+            'squeak_rate': n_squeaks / n_segments if n_segments else 0.0,
+            'n_noise_dropped': int(n_noise_dropped),
+        })
+
+    # Every session with enough vocal segments is drawn, squeaks or not: a session without any
+    # squeak is a real observation (a pale row), and leaving it out would make the blocks
+    # describe only the sessions that squeaked.
+    sessions = pls.DataFrame(session_rows).with_columns(
+        (pls.col('n_segments') >= min_session_segments).alias('drawn'))
+    condition_rank = {condition: rank for rank, condition in enumerate(condition_session_lists)}
+    drawn = (sessions.filter(pls.col('drawn'))
+             .with_columns(pls.col('condition').replace_strict(condition_rank).alias('condition_rank'))
+             .sort(['condition_rank', 'squeak_rate'], descending=[False, True]))
+    n_drawn = drawn.height
+    rate_matrix = np.full((n_drawn, grid_s.size), np.nan)
+    for row, session_id in enumerate(drawn['session_id'].to_list()):
+        # (grid, segments) Gaussian weights; a 20-minute session on a 1 s grid with a few
+        # thousand segments is a few million entries, well within memory.
+        weights = np.exp(-0.5 * ((grid_s[:, None] - segment_starts[session_id][None, :]) / kernel_sigma_s) ** 2)
+        vocal_density = weights.sum(axis=1)
+        squeak_density = weights @ segment_is_squeak[session_id].astype(float)
+        np.divide(squeak_density, vocal_density, out=rate_matrix[row],
+                  where=vocal_density >= min_vocal_density)
+    n_too_few = int((sessions['n_segments'] < min_session_segments).sum())
+    n_no_squeak = int(((sessions['n_segments'] >= min_session_segments) & (sessions['n_squeaks'] == 0)).sum())
+
+    row_conditions = drawn['condition'].to_list()
+    shown_conditions = [c for c in condition_session_lists if c in set(row_conditions)]
+    # Left to right: colour-bar column, heatmap, condition strip, session rate -- the strip sits
+    # between the heatmap and the bars it colours, and the colour bar reads before the cells it keys.
+    fig, (ax_colorbar_column, ax_heat, ax_strip, ax_rate) = plt.subplots(
+        1, 4, figsize=(9.2, 8.2), gridspec_kw={'width_ratios': [0.08, 1.7, 0.10, 1.0]},
+        layout='constrained')
+
+    strip_cmap = mcolors.ListedColormap([condition_styles[c]['color'] for c in condition_session_lists])
+    ax_strip.imshow(np.array([[condition_rank[c]] for c in row_conditions]), aspect='auto',
+                    origin='upper', extent=(0, 1, n_drawn, 0), interpolation='nearest',
+                    cmap=strip_cmap, vmin=-0.5, vmax=len(condition_session_lists) - 0.5)
+    ax_strip.set(xticks=[], yticks=[])
+
+    # One ramp per condition block: a faint tint of the condition's colour at 0 % to the colour
+    # itself at vmax. create_colormap runs from ``cm_end`` (index 0) to ``cm_start`` (top) in
+    # 0-255 RGB; luminance equalisation is off so the condition colour is kept exactly.
+    def tinted_ramp(name: str, full: np.ndarray) -> mcolors.ListedColormap:
+        """The zero_tint-of-``full`` (0 %) to ``full`` (vmax) ramp for one colour, in RGB 0-1."""
+        tint = zero_tint * full + (1.0 - zero_tint)
+        return create_colormap(input_parameter_dict={
+            'cm_length': 255, 'cm_name': name, 'cm_type': 'sequential',
+            'cm_start': tuple(255.0 * full), 'cm_end': tuple(255.0 * tint),
+            'equalize_luminance': False, 'match_luminance_by': 'max', 'change_saturation': 1,
+            'cm_opacity': 1,
+        })
+
+    block_cmaps: dict[str, mcolors.ListedColormap] = {}
+    full_colors: list[np.ndarray] = []
+    for condition in shown_conditions:
+        red, green, blue, alpha = mcolors.to_rgba(condition_styles[condition]['color'])
+        full = np.array([red, green, blue]) * alpha + (1.0 - alpha)
+        full_colors.append(full)
+        block_cmaps[condition] = tinted_ramp(f'squeak_{condition}', full)
+        block_cmaps[condition].set_bad(nodata_color)
+    block_start = 0
+    for row in range(1, n_drawn + 1):
+        if row == n_drawn or row_conditions[row] != row_conditions[block_start]:
+            ax_heat.imshow(rate_matrix[block_start:row] * 100.0, aspect='auto', origin='upper',
+                           cmap=block_cmaps[row_conditions[block_start]], vmin=0.0, vmax=vmax_percent,
+                           extent=(0, session_length_s / 60.0, row, block_start), interpolation='nearest')
+            block_start = row
+    ax_heat.set(xlim=(0, session_length_s / 60.0), ylim=(n_drawn, 0))
+    # The key stands in for every block's ramp, so it is the same ramp in grey: its top is the
+    # mean relative luminance (Rec. 709 weights) of the drawn condition colours, and its bottom
+    # the same zero_tint, so its light and dark ends look like every block's without the hue.
+    key_level = float(np.mean([np.dot(full, [0.2126, 0.7152, 0.0722]) for full in full_colors]))
+    key = plt.cm.ScalarMappable(norm=mcolors.Normalize(vmin=0.0, vmax=vmax_percent),
+                                cmap=tinted_ramp('squeak_key', np.full(3, key_level)))
+    # A short, thin colour bar in the top quarter of its column, tick labels without tick marks.
+    # The overflow arrow only when the scale is capped below 100 %, where a value can exceed it.
+    ax_colorbar_column.set_axis_off()
+    ax_colorbar = ax_colorbar_column.inset_axes((0.2, 0.68, 0.6, 0.32))
+    colorbar = fig.colorbar(key, cax=ax_colorbar, label="% of nearby vocalizations that are squeaks",
+                            extend='max' if vmax_percent < 100.0 else 'neither')
+    colorbar.ax.yaxis.set_ticks_position('left')
+    colorbar.ax.yaxis.set_label_position('left')
+    colorbar.ax.tick_params(length=0, labelsize=7)
+    colorbar.ax.yaxis.label.set_fontsize(8)
+    colorbar.outline.set_linewidth(0.5)
+    ax_heat.set(xlabel='Session time (min)', yticks=[])
+    for row in range(1, n_drawn):
+        if row_conditions[row] != row_conditions[row - 1]:
+            ax_heat.axhline(row, color='#0B3954', lw=1.0)
+
+    ax_rate.barh(np.arange(n_drawn) + 0.5, drawn['squeak_rate'].to_numpy() * 100.0, 1.0,
+                 color=[condition_styles[c]['color'] for c in row_conditions])
+    ax_rate.set(ylim=(n_drawn, 0), xlabel='Squeak rate (%)', yticks=[])
+    ax_rate.grid(axis='x', alpha=0.22, lw=0.6)
+    ax_rate.tick_params(labelsize=8)
+    # The legend sits in the rate panel, in the order of the condition blocks; its middle-right
+    # is empty, since only the high-rate courtship and male-male rows reach that far.
+    # Anchored by its left edge just inside the panel, and kept out of the constrained layout,
+    # which would otherwise shrink the other panels to make room for it.
+    legend = ax_rate.legend(
+        [plt.Rectangle((0, 0), 1, 1, color=condition_styles[c]['color']) for c in shown_conditions],
+        [f"{condition_styles[c]['label']} ({row_conditions.count(c)} sessions)" for c in shown_conditions],
+        fontsize=10, loc='center left', bbox_to_anchor=(0.0, 0.5), frameon=False, handlelength=1.2)
+    legend.set_in_layout(False)
+
+    fig.suptitle("Squeak distributions and timing within sessions", fontsize=10.5)
+
+    return fig, (ax_colorbar, ax_heat, ax_strip, ax_rate), {
+        'sessions': sessions, 'n_drawn': n_drawn, 'n_no_squeak': n_no_squeak,
+        'n_too_few': n_too_few, 'rate_matrix': rate_matrix, 'grid_s': grid_s,
+    }

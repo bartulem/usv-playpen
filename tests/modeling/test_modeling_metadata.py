@@ -485,7 +485,7 @@ def _full_modeling_settings(model_engine='sklearn',
             'usv_predictor_type': 'rate',
             'usv_predictor_partner_only': True,
             'usv_predictor_smoothing_sd': 0.1,
-            'usv_noise_categories': [0],
+            'exclude_noise_usvs': True,
             # Manifold geometry: drives the geometry-determined continuous
             # inner-CV metric recorded by build_run_metadata (`vm_logscore` on
             # the torus, `dcor_xy` on euclidean).
@@ -606,7 +606,7 @@ def _input_builder_kwargs(modeling_settings, analysis_specific=None,
         'feature_zoo_kept': ['self.speed'],
         'dyadic_engagement_features_used': ['orofacial-sei'],
         'dyadic_pose_symmetric_features_used': True,
-        'noise_vocal_categories_excluded': [0],
+        'noise_usvs_excluded': True,
         'vocal_signal_columns_added': ['usv_rate_partner'],
         'filter_history_seconds': 2.0,
         'filter_history_frames': 300,
@@ -722,7 +722,7 @@ class TestBuildInputMetadata:
         assert md['feature_zoo_kept'] == ['self.speed']
         assert md['dyadic_engagement_features_used'] == ['orofacial-sei']
         assert md['dyadic_pose_symmetric_features_used'] is True
-        assert md['noise_vocal_categories_excluded'] == [0]
+        assert md['noise_usvs_excluded'] is True
         # Vocal-input shape (read from settings).
         assert md['usv_predictor_type'] == 'rate'
         assert md['usv_predictor_partner_only'] is True

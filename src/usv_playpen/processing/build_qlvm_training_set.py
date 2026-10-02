@@ -1,41 +1,95 @@
 """
 @author: bartulem
-Assemble session root directories' USV spectrogram H5 files into a single curated training set
-(``.npz``) for the QLVM vocalization model.
+Build a QLVM training set (``.npz``) of USV spectrograms from a list of session
+root directories, drawn the way the training sets of the QLVM model packages
+(``qlvm_models_latest/v3``) were drawn.
 
-Reads the per-session ``*_spectrograms.h5`` files produced by
-:mod:`generate_spectrograms`, drops over-long spectrograms, optionally
-subsamples, splits into train/val (or keeps one full set), resizes/time-stretches
-every spectrogram to ``target_shape``, and writes ``train_data.npz`` /
-``val_data.npz`` (or ``full_data.npz``) plus a ``metadata.npz`` sidecar.
+This is the in-house port of the builders of those sets
+(``build_masked_usvs.py`` and ``build_unmasked_usvs_floor.py`` in the MMMmB
+repository, together with the session-typing, quota and stratification helpers
+they imported from a local usv-playpen fork). Given the same sessions, inputs
+and seed it selects the same rows, splits them into the same train and validation
+sessions and writes the same spectrograms (see ``docs/Process.rst``). The steps:
 
-This is the in-house, torch-free (``.npz``) port of the external
-``preprocess_monolithic.py`` + ``data_utils`` resize/split logic; the
-:mod:`train_qlvm` trainer reads the ``.npz`` directly (no torch on this side of
-the dataset boundary).
+1. **Pool.** For every session its ``audio/spectrograms/<session>_spectrograms.h5``
+   is read (``durations`` and, unless ``masking_type`` is ``"none"``, the SAM
+   ``mask/<session>/spectrogram_index``, from which each row's mask count is
+   taken), its type is read from the ``Subjects[].sex`` entries of its metadata
+   YAML (:func:`session_type_from_metadata`: ``MF``, ``FF``, ``MM``,
+   ``lone_male``, ...), and the rows its ``*_usv_summary.csv`` flags as squeaks
+   (``exclude_squeaks``; with ``strict_squeak_exclusion`` also every row with
+   at least one run of 3 above-threshold classifier frames, ``squeak_frame_runs
+   >= 1``, the reference squeak index's strict rule) or noise
+   (``exclude_noise``) are marked. A row is
+   eligible when ``0 < duration < length_threshold``, it is not marked, and, with
+   ``require_mask``, it has at least one SAM mask instance
+   (:func:`eligible_rows`).
+2. **Draw.** Sessions are grouped by type; a type missing from
+   ``session_type_targets`` is left out, a type whose target is ``null`` is taken
+   whole, and a type with a numeric target gets that many rows in total, split into
+   per-session quotas by integer capped-even water-filling
+   (:func:`allocate_even_quotas`). Within a session the quota is drawn either
+   uniformly over its eligible rows (``draw_mode`` ``"natural"``: the session's
+   own mask-count distribution) or equally across its mask-count strata
+   (``"uniform"``, strata set by ``mask_count_bin_edges``), in which case the
+   quotas are allocated against each session's uniform headroom
+   (:func:`uniform_sampling_headroom`) rather than its eligible count, so every
+   quota can be met exactly (:func:`select_rows_stratified`,
+   :func:`compute_selected_rows_by_type`).
+3. **Split.** Whole sessions are held out for validation, separately within each
+   type, until the held-out sessions hold ``validation_split`` of that type's
+   rows (:func:`split_sessions_by_type`), so no session straddles the boundary.
+4. **Write.** Each drawn spectrogram (and its SAM mask union, binarized at 0.5
+   after the same resize) is resized to ``target_shape`` (:func:`stretch_specs`),
+   then either masked (``apply_mask``: ``spectrogram * mask``, phase 9) or left
+   unmasked, optionally with a loudness floor baked in (``floor``: per-spectrogram
+   min-max ``(x - min) / (max - min + 1e-8)`` followed by
+   ``clip((x - floor) / (1 - floor), 0, 1)``, phase 6). A row without a SAM
+   instance (possible only without ``require_mask``) keeps an all-ones mask
+   (:func:`build_session_masks`), so masking leaves it unchanged rather than
+   zeroed.
 
-Masking (``masking_type``):
+``full_dataset`` skips the draw and takes every eligible row of every session of a
+listed type (the population the models are embedded in); the train/validation
+pair is still written, and ``full_data.npz`` is written after it.
 
-* ``"sam"`` (default) -- when a session's spectrogram H5 carries a
-  ``mask/<session>`` group (from :mod:`generate_masks`), each kept spectrogram's
-  2D region is the ``np.any`` union of its instance segmentations, resized with
-  the spectrogram and binarized, and the spectrogram is **masked**
-  (``spec *= mask``, background zeroed) -- exactly as the external
-  ``prepare_masked_datasets`` does. A kept USV with no detected mask (or a
-  session with no mask group) falls back to an all-ones mask, so its spectrogram
-  is kept unchanged rather than zeroed. ``masks_len`` is the per-spectrogram
-  instance count.
-* ``"none"`` -- no masking; raw spectrograms with all-zero ``masks``/``masks_len``
-  placeholders (kept so the key set is uniform).
+Each split ``.npz`` is row-aligned on dim 0 = N samples and holds
+``spectrograms`` (N, F, T) float32, ``masks`` (N, F, T) float32 (the binarized
+SAM region; all zero under ``masking_type`` ``"none"``), ``masks_len`` (N,) int64
+(SAM instance count), ``durations`` (N,) int64 (native time bins), ``spec_id``
+(N,) str (``{session}_{row}``), ``session_id`` (N,) str, ``session_type`` (N,)
+str, ``mask_count`` (N,) int64, the scalar ``apply_mask`` that tells
+``train-qlvm`` whether to multiply the masks in, and ``mean_freq_hz``,
+``freq_bandwidth_hz``, ``loudness_db`` and ``spectral_entropy`` (N,) float64,
+copied row for row from the session's USV summary (NaN where it has no value;
+:func:`usv_summary_condition_values`) -- the raw values a conditional
+``train-qlvm`` run conditions on, captured with the rows they belong to so a later
+rewrite of the summary cannot shift them. ``metadata.npz`` records every
+setting, the per-type report (available / target / drawn / per-stratum counts),
+the session types and the train/validation session lists.
 
-Each output ``.npz`` is row-aligned on dim 0 = N samples and holds:
-``spectrograms`` (N, F, T) float32 (mask-applied under ``"sam"``), ``masks``
-(N, F, T) float32 (binarized region; all-zero under ``"none"``), ``masks_len``
-(N,) int64, ``durations`` (N,) int64, and ``spec_id`` (N,) str.
+Session fingerprints. ``spec_id`` is ``{session}_{row}``, a row number in the
+session's spectrogram H5, so it points at the right call only while that file is
+unchanged; a rebuilt H5 renumbers its rows and every consumer joining on
+``spec_id`` silently attaches the wrong calls (session 20251004_201051 of the v2
+package went stale exactly this way). The builder therefore records, for every
+session H5 it reads, the SHA-256 of the file's bytes, its row count and how many of
+its rows entered the set -- in ``metadata.npz`` and in two sidecars laid out like the
+v2 package's baseline: ``SESSION_H5.sha256`` (``sha256sum -c`` format) and
+``SESSION_H5.tsv`` (session, h5_rows, corpus_rows, bytes, sha256, path). A consumer
+compares the hash before joining; the summary CSV is not hashed, because it is
+legitimately rewritten (columns added) while its rows stay aligned.
+
+Squeaks (broadband vocalizations) get their own builder,
+:mod:`build_qlvm_squeak_training_set`, which shares :func:`split_sessions_by_type`,
+:func:`allocate_even_quotas` and :func:`stretch_specs` with this one.
 """
 
 from __future__ import annotations
 
+import hashlib
+import itertools
+import json
 import pathlib
 from collections.abc import Callable
 from datetime import datetime
@@ -43,73 +97,741 @@ from datetime import datetime
 import click
 import h5py
 import numpy as np
+import polars as pls
 from click.core import ParameterSource
 from scipy.interpolate import RegularGridInterpolator
 from scipy.ndimage import zoom
-from sklearn.model_selection import train_test_split
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import load_session_metadata
+
+# Epsilon of the per-spectrogram min-max that precedes the loudness floor; the
+# same one the QLVM data loader and train-qlvm use (qmc_deep_gen data/mouse_data.py).
+FLOOR_MINMAX_EPSILON = 1e-8
+
+# The USV summary columns copied into every split, row for row: the raw per-call
+# values a conditional train-qlvm run conditions on (mean frequency and bandwidth
+# of the SAM-masked call, written by generate-usv-acoustic-features, and the
+# absolute loudness it measures with compute_usv_loudness.session_image_level_db,
+# and the spectral entropy in nats of the call's normalized frequency power profile).
+SUMMARY_CONDITION_COLUMNS = ("mean_freq_hz", "freq_bandwidth_hz", "loudness_db", "spectral_entropy")
 
 
-def compute_selected_indices(
-    durations_by_key: dict[str, np.ndarray],
-    length_threshold: float,
-    dataset_size_constraint: float | None,
-    random_state: int,
-) -> dict[str, np.ndarray]:
+def file_sha256(path: str | pathlib.Path, chunk_bytes: int = 8 * 1024 * 1024) -> str:
     """
     Description
     -----------
-    For each session key, returns the sorted indices of real spectrograms
-    (``0 < duration < length_threshold`` — ``duration == 0`` rows are the
-    all-zero placeholders for invalid USVs and are excluded), optionally
-    subsampled so the total kept count
-    approaches ``dataset_size_constraint`` (an absolute count if ``> 1``, a
-    proportion if in ``(0, 1]``, all data if ``None``). Subsampling applies an
-    equal per-session quota (``target_total // n_sessions``) rather than a
-    proportional one, so the kept set is balanced across sessions, not weighted
-    by session size; sessions with fewer valid spectrograms than the quota keep
-    all of theirs, so the realized total may fall below the target. Lets later
-    phases read only the needed rows from disk.
+    SHA-256 of a file's bytes, read in chunks so a multi-GB spectrogram H5 never
+    has to fit in memory. Identical to ``sha256sum`` on the same file.
 
     Parameters
     ----------
-    durations_by_key (dict[str, np.ndarray])
-        Per-session native spectrogram durations.
-    length_threshold (float)
-        Drop spectrograms whose duration is ``>= threshold``.
-    dataset_size_constraint (float | None)
-        Cap on total kept samples (see above).
-    random_state (int)
-        Seed for reproducible subsampling.
+    path (str | pathlib.Path)
+        The file to hash.
+    chunk_bytes (int)
+        Read size; defaults to 8 MiB.
 
     Returns
     -------
-    selected_indices_by_key (dict[str, np.ndarray])
-        Per-session sorted index arrays.
+    digest (str)
+        The 64-character lowercase hexadecimal digest.
+    """
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(chunk_bytes), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def session_type_from_subject_sexes(subject_sexes: list[str]) -> str:
+    """
+    Description
+    -----------
+    Classifies a session by the sexes of its subjects: two subjects give ``"MF"``
+    (one male, one female), ``"MM"`` or ``"FF"``; one subject gives
+    ``"lone_male"`` or ``"lone_female"``; anything else (three or more subjects,
+    none, or a sex other than ``"male"`` / ``"female"``) gives ``"other"``. These
+    are the session types the QLVM model packages' training sets were balanced
+    over (``MF`` and ``FF`` budgeted, ``MM`` and ``lone_male`` taken whole).
+
+    Parameters
+    ----------
+    subject_sexes (list[str])
+        The ``sex`` entry of every subject, in any order and case.
+
+    Returns
+    -------
+    session_type (str)
+        ``"MF"``, ``"MM"``, ``"FF"``, ``"lone_male"``, ``"lone_female"`` or ``"other"``.
+    """
+
+    sexes = sorted(str(sex).strip().lower() for sex in subject_sexes)
+    if any(sex not in ("male", "female") for sex in sexes):
+        return "other"
+    if sexes == ["female", "male"]:
+        return "MF"
+    if sexes == ["male", "male"]:
+        return "MM"
+    if sexes == ["female", "female"]:
+        return "FF"
+    if sexes == ["male"]:
+        return "lone_male"
+    if sexes == ["female"]:
+        return "lone_female"
+    return "other"
+
+
+def session_type_from_metadata(root_directory: str, message_output: Callable) -> str:
+    """
+    Description
+    -----------
+    Reads a session's type from the ``Subjects[].sex`` entries of its
+    ``*_metadata.yaml`` (:func:`session_type_from_subject_sexes`). A session
+    whose metadata cannot be read, or has no ``Subjects`` or a subject without a
+    ``sex``, is ``"unknown"`` rather than an error, so one defective file does not
+    stop a cohort build; the builder then leaves the session out unless
+    ``"unknown"`` is itself a listed type.
+
+    Parameters
+    ----------
+    root_directory (str)
+        Session root directory holding ``<session>_metadata.yaml``.
+    message_output (Callable)
+        Logging callback.
+
+    Returns
+    -------
+    session_type (str)
+        The session type, or ``"unknown"``.
+    """
+
+    metadata, _ = load_session_metadata(root_directory=root_directory, logger=message_output)
+    if metadata is None or 'Subjects' not in metadata or not metadata['Subjects']:
+        return "unknown"
+    if any(not isinstance(subject, dict) or 'sex' not in subject for subject in metadata['Subjects']):
+        return "unknown"
+    return session_type_from_subject_sexes([subject['sex'] for subject in metadata['Subjects']])
+
+
+def session_mask_counts(h5_file: h5py.File, session_id: str, n_rows: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    Number of SAM mask instances of every row of a session's spectrogram H5,
+    counted from ``mask/<session>/spectrogram_index`` alone (the large
+    ``segmentations`` array is not read). A session without a
+    ``mask/<session>`` group has zero instances on every row. The count equals
+    the ``masks_len`` :func:`build_session_masks` returns for the same row.
+
+    Parameters
+    ----------
+    h5_file (h5py.File)
+        Open per-session spectrogram H5.
+    session_id (str)
+        Session id naming the ``mask/<session>`` group.
+    n_rows (int)
+        Number of spectrogram rows of the session.
+
+    Returns
+    -------
+    mask_counts (np.ndarray)
+        ``(n_rows,)`` int64 instance counts.
+    """
+
+    mask_group_key = f"mask/{session_id}"
+    if mask_group_key not in h5_file:
+        return np.zeros(n_rows, dtype=np.int64)
+    spectrogram_index = h5_file[mask_group_key]["spectrogram_index"][:].astype(np.int64)
+    return np.bincount(spectrogram_index, minlength=n_rows)[:n_rows].astype(np.int64)
+
+
+def mask_count_bins(mask_counts: np.ndarray, bin_edges: list[int]) -> np.ndarray:
+    """
+    Description
+    -----------
+    Assigns each mask count to its stratum. ``bin_edges`` are the inclusive lower
+    bounds of the strata above stratum 0, and the last stratum is open-ended:
+    ``[1, 2, 3, 4, 5]`` gives strata 0 (no mask), 1, 2, 3, 4 and 5+ (five or
+    more), ``[1, 2, 3]`` gives 0, 1, 2 and 3+.
+
+    Parameters
+    ----------
+    mask_counts (np.ndarray)
+        ``(N,)`` mask instance counts.
+    bin_edges (list[int])
+        Strictly increasing stratum lower bounds.
+
+    Returns
+    -------
+    bins (np.ndarray)
+        ``(N,)`` int64 stratum indices in ``0 .. len(bin_edges)``.
+    """
+
+    return np.digitize(np.asarray(mask_counts), np.asarray(bin_edges)).astype(np.int64)
+
+
+def mask_count_bin_labels(bin_edges: list[int]) -> list[str]:
+    """
+    Description
+    -----------
+    Human-readable names of the strata of :func:`mask_count_bins`: ``"0"``,
+    ``"1"``, ..., and ``"<last edge>+"`` for the open top stratum (a stratum
+    spanning more than one count is named ``"<low>-<high>"``).
+
+    Parameters
+    ----------
+    bin_edges (list[int])
+        Strictly increasing stratum lower bounds.
+
+    Returns
+    -------
+    labels (list[str])
+        ``len(bin_edges) + 1`` labels, stratum 0 first.
+    """
+
+    lower_bounds = [0, *[int(edge) for edge in bin_edges]]
+    labels = []
+    for position, low in enumerate(lower_bounds):
+        if position == len(lower_bounds) - 1:
+            labels.append(f"{low}+")
+        elif lower_bounds[position + 1] - low == 1:
+            labels.append(f"{low}")
+        else:
+            labels.append(f"{low}-{lower_bounds[position + 1] - 1}")
+    return labels
+
+
+def eligible_rows(
+    durations: np.ndarray,
+    mask_counts: np.ndarray,
+    excluded: np.ndarray,
+    length_threshold: float,
+    require_mask: bool,
+) -> np.ndarray:
+    """
+    Description
+    -----------
+    The rows of a session that may enter the set: ``0 < duration <
+    length_threshold`` (``duration == 0`` rows are the all-zero placeholders of
+    invalid USVs), not ``excluded`` (squeak / noise rows of the USV summary), and,
+    with ``require_mask``, at least one SAM mask instance.
+
+    Parameters
+    ----------
+    durations (np.ndarray)
+        ``(N,)`` native spectrogram durations (time bins).
+    mask_counts (np.ndarray)
+        ``(N,)`` SAM mask instance counts.
+    excluded (np.ndarray)
+        ``(N,)`` boolean, True for rows to leave out.
+    length_threshold (float)
+        Rows with ``duration >= length_threshold`` are left out.
+    require_mask (bool)
+        Leave out rows without a SAM mask instance.
+
+    Returns
+    -------
+    rows (np.ndarray)
+        Ascending int64 row indices.
+    """
+
+    keep = (durations > 0) & (durations < length_threshold) & ~np.asarray(excluded, dtype=bool)
+    if require_mask:
+        keep &= np.asarray(mask_counts) > 0
+    return np.flatnonzero(keep).astype(np.int64)
+
+
+def uniform_sampling_headroom(bins: np.ndarray) -> int:
+    """
+    Description
+    -----------
+    The largest number of rows a session can supply with its non-empty strata
+    represented exactly equally: ``n_non_empty_strata * min(non-empty stratum
+    size)``. A ``"uniform"`` draw allocates its per-session quotas against this
+    headroom rather than the session's eligible count; allocating against the
+    eligible count would hand some sessions more rows than they can supply
+    equally, and the draw would silently fall back to a best-effort mix.
+
+    Parameters
+    ----------
+    bins (np.ndarray)
+        ``(N,)`` stratum of each eligible row of the session.
+
+    Returns
+    -------
+    headroom (int)
+        The uniform headroom (0 for a session without eligible rows).
+    """
+
+    if bins.size == 0:
+        return 0
+    counts = np.bincount(bins)
+    counts = counts[counts > 0]
+    return int(counts.size * counts.min())
+
+
+def waterfill_level(available: np.ndarray, target: int) -> int:
+    """
+    Description
+    -----------
+    The largest integer level ``L`` whose capped allocation
+    ``sum(min(available, L))`` does not exceed ``target`` (binary search). When
+    ``target`` covers everything available, ``L`` is ``max(available)``.
+
+    Parameters
+    ----------
+    available (np.ndarray)
+        ``(K,)`` non-negative integer capacities.
+    target (int)
+        Total to allocate.
+
+    Returns
+    -------
+    level (int)
+        The water-filling level.
+    """
+
+    available = np.asarray(available, dtype=np.int64)
+    if available.size == 0:
+        return 0
+    low, high = 0, int(available.max())
+    while low < high:
+        middle = (low + high + 1) // 2
+        if int(np.minimum(available, middle).sum()) <= target:
+            low = middle
+        else:
+            high = middle - 1
+    return low
+
+
+def allocate_even_quotas(available: np.ndarray, target: int, random_state: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    Integer capped-even water-filling: every entry gets ``min(available, L)`` at
+    the level ``L`` of :func:`waterfill_level`, and the remainder
+    ``target - sum`` is handed out one unit at a time to the entries with room
+    left (``available > L``), in the order of a permutation of all entries drawn
+    from a fresh ``np.random.default_rng(random_state)``. The quotas therefore sum
+    to ``min(target, sum(available))`` exactly and never exceed ``available``.
+    Callers pass the entries in a fixed order (the builders sort session ids), so
+    the tie-breaks do not depend on the order of the session list.
+
+    Parameters
+    ----------
+    available (np.ndarray)
+        ``(K,)`` non-negative integer capacities.
+    target (int)
+        Total to allocate.
+    random_state (int)
+        Seed of the tie-break permutation.
+
+    Returns
+    -------
+    quotas (np.ndarray)
+        ``(K,)`` int64 quotas.
+    """
+
+    available = np.asarray(available, dtype=np.int64)
+    if target >= int(available.sum()):
+        return available.copy()
+    level = waterfill_level(available, target)
+    quotas = np.minimum(available, level)
+    remainder = int(target - quotas.sum())
+    for position in np.random.default_rng(random_state).permutation(available.size):
+        if remainder == 0:
+            break
+        if available[position] > level:
+            quotas[position] += 1
+            remainder -= 1
+    return quotas
+
+
+def select_rows_stratified(
+    rows: np.ndarray,
+    bins: np.ndarray,
+    n_target: int,
+    rng: np.random.Generator,
+    draw_mode: str,
+) -> np.ndarray:
+    """
+    Description
+    -----------
+    Draws ``n_target`` of a session's eligible rows without replacement. When the
+    quota covers every row, all rows are kept and ``rng`` is not used.
+    ``"natural"`` draws uniformly over the rows (``rng.choice`` over their
+    positions), so the session's own mask-count mix is kept. ``"uniform"``
+    water-fills the quota across the session's non-empty strata (ascending),
+    handing any remainder, one row per stratum, to the strata with rows left in
+    the order of ``rng.permutation`` over those strata, and then draws each
+    stratum's share with ``rng.choice`` (a stratum taken whole uses no draw).
+
+    Parameters
+    ----------
+    rows (np.ndarray)
+        ``(N,)`` ascending eligible row indices of the session.
+    bins (np.ndarray)
+        ``(N,)`` stratum of each of those rows.
+    n_target (int)
+        Rows to draw.
+    rng (np.random.Generator)
+        Generator the draw consumes (shared across the sessions of a build).
+    draw_mode (str)
+        ``"natural"`` or ``"uniform"``.
+
+    Returns
+    -------
+    selected (np.ndarray)
+        Ascending int64 selected row indices.
+    """
+
+    if n_target >= rows.size:
+        return rows.copy()
+    if draw_mode == "natural":
+        return np.sort(rows[rng.choice(rows.size, size=int(n_target), replace=False)])
+    if draw_mode != "uniform":
+        error_message = f"draw_mode must be 'natural' or 'uniform', got {draw_mode!r}."
+        raise ValueError(error_message)
+
+    strata = np.unique(bins)
+    members = [rows[bins == stratum] for stratum in strata]
+    counts = np.array([member.size for member in members], dtype=np.int64)
+    level = waterfill_level(counts, n_target)
+    quotas = np.minimum(counts, level)
+    remainder = int(n_target - quotas.sum())
+    if remainder > 0:
+        for position in rng.permutation(strata.size):
+            if remainder == 0:
+                break
+            if counts[position] > level:
+                quotas[position] += 1
+                remainder -= 1
+    chosen = []
+    for member, quota in zip(members, quotas, strict=True):
+        if quota == 0:
+            continue
+        if quota >= member.size:
+            chosen.append(member)
+        else:
+            chosen.append(member[rng.choice(member.size, size=int(quota), replace=False)])
+    return np.sort(np.concatenate(chosen)).astype(np.int64)
+
+
+def compute_selected_rows_by_type(
+    eligible_by_session: dict[str, np.ndarray],
+    bins_by_session: dict[str, np.ndarray],
+    session_type_by_key: dict[str, str],
+    session_type_targets: dict[str, int | None],
+    draw_mode: str,
+    random_state: int,
+    bin_labels: list[str],
+) -> tuple[dict[str, np.ndarray], dict]:
+    """
+    Description
+    -----------
+    The type-budgeted draw. Types are processed in sorted order; within a type the
+    sessions keep the order of ``eligible_by_session`` (the session list's). A
+    type whose target is ``None`` is taken whole. For a numeric target the
+    per-session quotas are :func:`allocate_even_quotas` of each session's
+    capacity -- its eligible count under ``"natural"``, its
+    :func:`uniform_sampling_headroom` under ``"uniform"`` -- with the sessions in
+    sorted id order, and each session's quota is then drawn with
+    :func:`select_rows_stratified` from one generator,
+    ``np.random.default_rng(random_state)``, shared by every session of every type.
+    This order of operations is what reproduces the QLVM model packages' sets.
+
+    Parameters
+    ----------
+    eligible_by_session (dict[str, np.ndarray])
+        Ascending eligible rows per session, in session-list order; only sessions
+        of a listed type.
+    bins_by_session (dict[str, np.ndarray])
+        Stratum of each eligible row, aligned with ``eligible_by_session``.
+    session_type_by_key (dict[str, str])
+        Type of every session.
+    session_type_targets (dict[str, int | None])
+        Rows per type (``None``: take the type whole).
+    draw_mode (str)
+        ``"natural"`` or ``"uniform"``.
+    random_state (int)
+        Seed of the allocation tie-breaks and of the draw.
+    bin_labels (list[str])
+        Stratum names (:func:`mask_count_bin_labels`) for the report.
+
+    Returns
+    -------
+    selected (dict[str, np.ndarray])
+        Ascending selected rows per session, in the input order.
+    type_report (dict)
+        Per type: ``n_sessions``, ``n_sessions_drawn``, ``available`` (eligible
+        rows), ``capacity`` (the allocation basis summed; the exact-uniform ceiling
+        under ``"uniform"``), ``target`` (``"all"`` for a whole type), ``drawn`` and
+        ``per_bin`` (stratum label -> drawn rows).
+    """
+
+    draw_rng = np.random.default_rng(random_state)
+    selected: dict[str, np.ndarray] = {}
+    type_report: dict = {}
+    session_types_present = sorted({session_type_by_key[key] for key in eligible_by_session})
+    for session_type in session_types_present:
+        sessions = [key for key in eligible_by_session if session_type_by_key[key] == session_type]
+        target = session_type_targets[session_type]
+        if draw_mode == "uniform":
+            capacity = {key: uniform_sampling_headroom(bins_by_session[key]) for key in sessions}
+        else:
+            capacity = {key: int(eligible_by_session[key].size) for key in sessions}
+        if target is None:
+            for key in sessions:
+                selected[key] = eligible_by_session[key].copy()
+        else:
+            sorted_sessions = sorted(sessions)
+            quotas = allocate_even_quotas(
+                np.array([capacity[key] for key in sorted_sessions], dtype=np.int64), int(target), random_state
+            )
+            quota_by_key = dict(zip(sorted_sessions, quotas.tolist(), strict=True))
+            for key in sessions:
+                selected[key] = select_rows_stratified(
+                    eligible_by_session[key], bins_by_session[key], quota_by_key[key], draw_rng, draw_mode
+                )
+        per_bin = np.zeros(len(bin_labels), dtype=np.int64)
+        for key in sessions:
+            chosen_bins = bins_by_session[key][np.isin(eligible_by_session[key], selected[key])]
+            per_bin += np.bincount(chosen_bins, minlength=len(bin_labels))[:len(bin_labels)]
+        type_report[session_type] = {
+            "n_sessions": len(sessions),
+            "n_sessions_drawn": int(sum(selected[key].size > 0 for key in sessions)),
+            "available": int(sum(eligible_by_session[key].size for key in sessions)),
+            "capacity": int(sum(capacity.values())),
+            "target": "all" if target is None else int(target),
+            "drawn": int(sum(selected[key].size for key in sessions)),
+            "per_bin": dict(zip(bin_labels, per_bin.tolist(), strict=True)),
+        }
+    return selected, type_report
+
+
+def split_sessions_by_type(
+    session_ids: list[str],
+    session_type_by_key: dict[str, str],
+    selected_counts: dict[str, int],
+    validation_split: float,
+    random_state: int,
+) -> tuple[list[str], list[str]]:
+    """
+    Description
+    -----------
+    Holds out whole sessions for validation, stratified by type. With one
+    generator ``np.random.default_rng(random_state)``, the types are visited in
+    sorted order; each type's sessions (sorted by id) are permuted and moved into
+    validation one at a time until the moved sessions hold at least
+    ``validation_split`` of that type's selected rows. No session straddles the
+    boundary, and every type contributes about ``validation_split`` of its rows
+    (at least that, by up to one session's rows).
+
+    Parameters
+    ----------
+    session_ids (list[str])
+        Sessions that contributed rows.
+    session_type_by_key (dict[str, str])
+        Type of every session.
+    selected_counts (dict[str, int])
+        Rows each session contributed.
+    validation_split (float)
+        Target validation fraction of each type's rows, in ``(0, 1)``.
+    random_state (int)
+        Seed of the permutations.
+
+    Returns
+    -------
+    train_sessions (list[str])
+        Sorted training sessions.
+    val_sessions (list[str])
+        Sorted validation sessions.
     """
 
     rng = np.random.default_rng(random_state)
-    total_filtered = sum(int(np.sum((d > 0) & (d < length_threshold))) for d in durations_by_key.values())
+    val_sessions: set[str] = set()
+    for session_type in sorted({session_type_by_key[key] for key in session_ids}):
+        keys = sorted(key for key in session_ids if session_type_by_key[key] == session_type)
+        target = validation_split * sum(selected_counts[key] for key in keys)
+        held_out = 0
+        for position in rng.permutation(len(keys)):
+            if held_out >= target:
+                break
+            val_sessions.add(keys[position])
+            held_out += selected_counts[keys[position]]
+    return sorted(set(session_ids) - val_sessions), sorted(val_sessions)
 
-    samples_per_session: int | None = None
-    if dataset_size_constraint is not None and durations_by_key:
-        if dataset_size_constraint > 1:
-            target_total = int(dataset_size_constraint)
-        else:
-            target_total = int(total_filtered * dataset_size_constraint)
-        samples_per_session = target_total // len(durations_by_key)
 
-    selected: dict[str, np.ndarray] = {}
-    for key, durations in durations_by_key.items():
-        valid_indices = np.where((durations > 0) & (durations < length_threshold))[0]
-        if samples_per_session is not None and samples_per_session < len(valid_indices):
-            sampled = rng.choice(len(valid_indices), size=samples_per_session, replace=False)
-            valid_indices = valid_indices[sampled]
-        selected[key] = np.sort(valid_indices)
-    return selected
+def apply_loudness_floor(spectrograms: np.ndarray, floor: float) -> np.ndarray:
+    """
+    Description
+    -----------
+    Bakes an AVA-style loudness floor into spectrograms: each is min-max
+    normalized on its own, ``x = (s - min) / (max - min + 1e-8)``, and then
+    ``clip((x - floor) / (1 - floor), 0, 1)``, so everything below ``floor`` of
+    its range is silenced and the rest is stretched back to ``[0, 1]`` (the
+    phase 6 recipe; a later per-spectrogram min-max, as ``train-qlvm`` applies,
+    leaves the result unchanged).
+
+    Parameters
+    ----------
+    spectrograms (np.ndarray)
+        ``(N, F, T)`` float32 spectrograms.
+    floor (float)
+        Floor in ``[0, 1)``.
+
+    Returns
+    -------
+    floored (np.ndarray)
+        ``(N, F, T)`` float32 spectrograms in ``[0, 1]``.
+    """
+
+    low = spectrograms.min(axis=(1, 2), keepdims=True)
+    high = spectrograms.max(axis=(1, 2), keepdims=True)
+    normalized = (spectrograms - low) / (high - low + FLOOR_MINMAX_EPSILON)
+    return np.clip((normalized - floor) / (1.0 - floor), 0.0, 1.0).astype(np.float32)
+
+
+def usv_summary_exclusions(
+    root_directory: str,
+    n_rows: int,
+    exclude_squeaks: bool,
+    exclude_noise: bool,
+    strict_squeak_exclusion: bool = False,
+) -> np.ndarray:
+    """
+    Description
+    -----------
+    The rows of a session's ``*_usv_summary.csv`` to leave out of a USV training
+    set: squeaks (``squeak`` true, written by ``detect-usv-squeaks``) when
+    ``exclude_squeaks``, and noise (``noise`` true, written by
+    ``detect-usv-noise``) when ``exclude_noise``; a null value counts as false.
+    With ``strict_squeak_exclusion`` (which needs ``exclude_squeaks``) a row is
+    also a squeak when ``squeak_frame_runs >= 1`` (at least one run of 3
+    consecutive above-threshold frames in the classifier's 128-frame window, also
+    written by ``detect-usv-squeaks``; a null counts as 0): the strict rule of the
+    reference squeak index (segment probability >= 0.385 OR ``n_bouts_min3 >=
+    1``), by which the reference USV training sets left broadband calls out.
+    The summary rows are 1:1 with the spectrogram H5 rows, which is checked.
+
+    Parameters
+    ----------
+    root_directory (str)
+        Session root directory.
+    n_rows (int)
+        Row count of the session's spectrogram H5.
+    exclude_squeaks (bool)
+        Leave out squeak rows.
+    exclude_noise (bool)
+        Leave out noise rows.
+    strict_squeak_exclusion (bool)
+        Also leave out rows with ``squeak_frame_runs >= 1`` (the reference squeak
+        index's strict rule); only meaningful with ``exclude_squeaks``.
+
+    Returns
+    -------
+    excluded (np.ndarray)
+        ``(n_rows,)`` boolean.
+
+    Raises
+    ------
+    ValueError
+        The summary's row count differs from the H5's, a needed column is missing
+        (``squeak_frame_runs`` under ``strict_squeak_exclusion``: a summary
+        written before ``detect-usv-squeaks`` recorded it), or
+        ``strict_squeak_exclusion`` is requested without ``exclude_squeaks``.
+    """
+
+    if strict_squeak_exclusion and not exclude_squeaks:
+        error_message = "strict_squeak_exclusion widens the squeak exclusion, so it needs exclude_squeaks."
+        raise ValueError(error_message)
+
+    excluded = np.zeros(n_rows, dtype=bool)
+    if not exclude_squeaks and not exclude_noise:
+        return excluded
+    usv_summary_path = first_match_or_raise(
+        root=pathlib.Path(root_directory) / "audio",
+        pattern="*_usv_summary.csv",
+        recursive=True,
+        label="USV summary CSV",
+    )
+    usv_summary = pls.read_csv(source=str(usv_summary_path), schema_overrides={"usv_id": pls.String})
+    if usv_summary.height != n_rows:
+        error_message = (
+            f"{usv_summary_path} has {usv_summary.height} rows but the session's spectrogram H5 has {n_rows}; "
+            f"the summary flags cannot be joined to the spectrograms by row."
+        )
+        raise ValueError(error_message)
+    for enabled, column, producer in ((exclude_squeaks, "squeak", "detect-usv-squeaks"), (exclude_noise, "noise", "detect-usv-noise")):
+        if not enabled:
+            continue
+        if column not in usv_summary.columns:
+            error_message = f"{usv_summary_path} has no '{column}' column; run {producer} on the session first."
+            raise ValueError(error_message)
+        excluded |= usv_summary[column].cast(pls.Boolean).fill_null(False).to_numpy()
+    if strict_squeak_exclusion:
+        if "squeak_frame_runs" not in usv_summary.columns:
+            error_message = (
+                f"{usv_summary_path} has no 'squeak_frame_runs' column, which strict_squeak_exclusion needs; "
+                f"re-run detect-usv-squeaks on the session (summaries scored before the column existed lack it)."
+            )
+            raise ValueError(error_message)
+        excluded |= usv_summary["squeak_frame_runs"].cast(pls.Int64).fill_null(0).to_numpy() >= 1
+    return excluded
+
+
+def usv_summary_condition_values(root_directory: str, n_rows: int) -> dict[str, np.ndarray]:
+    """
+    Description
+    -----------
+    The raw per-call values a conditional QLVM conditions on, read from the
+    session's ``*_usv_summary.csv`` (rows 1:1 with the spectrogram H5 rows, which
+    is checked): ``mean_freq_hz`` and ``freq_bandwidth_hz`` (the energy-weighted
+    mean frequency and the bandwidth of the call's SAM-masked region) and
+    ``loudness_db`` (the absolute image-level loudness over the same mask region,
+    :func:`compute_usv_loudness.session_image_level_db`) and ``spectral_entropy``
+    (the entropy in nats of the call's normalized frequency power profile), all
+    four written by ``generate-usv-acoustic-features``. A column the summary lacks, a null or NaN
+    value, and every row of a session without a summary are NaN: the values are
+    only needed by a conditional ``train-qlvm`` run, which refuses a training row
+    without one.
+
+    Parameters
+    ----------
+    root_directory (str)
+        Session root directory.
+    n_rows (int)
+        Row count of the session's spectrogram H5.
+
+    Returns
+    -------
+    values (dict[str, np.ndarray])
+        ``SUMMARY_CONDITION_COLUMNS`` name -> ``(n_rows,)`` float64.
+
+    Raises
+    ------
+    ValueError
+        The summary's row count differs from the H5's.
+    """
+
+    values = {column: np.full(n_rows, np.nan) for column in SUMMARY_CONDITION_COLUMNS}
+    summary_paths = sorted((pathlib.Path(root_directory) / "audio").rglob("*_usv_summary.csv"))
+    if not summary_paths:
+        return values
+    usv_summary = pls.read_csv(source=str(summary_paths[0]), schema_overrides={"usv_id": pls.String})
+    if usv_summary.height != n_rows:
+        error_message = (
+            f"{summary_paths[0]} has {usv_summary.height} rows but the session's spectrogram H5 has {n_rows}; "
+            f"the summary values cannot be joined to the spectrograms by row."
+        )
+        raise ValueError(error_message)
+    for column in SUMMARY_CONDITION_COLUMNS:
+        if column in usv_summary.columns:
+            values[column] = usv_summary[column].cast(pls.Float64).fill_null(np.nan).to_numpy()
+    return values
 
 
 def _apply_time_stretching(spec: np.ndarray, duration: int, target_shape: tuple[int, int]) -> np.ndarray:
@@ -297,12 +1019,113 @@ def build_session_masks(
     return masks, masks_len
 
 
+def parse_session_type_targets(value: str) -> dict:
+    """
+    Description
+    -----------
+    Decodes the ``--session-type-targets`` JSON object (session type -> rows,
+    ``null`` to take the type whole), so the settings override stores a
+    dictionary, not a string.
+
+    Parameters
+    ----------
+    value (str)
+        The raw option value, e.g. ``'{"MF": 29000, "FF": 29000, "MM": null, "lone_male": null}'``.
+
+    Returns
+    -------
+    targets (dict)
+        The decoded targets.
+
+    Raises
+    ------
+    click.BadParameter
+        The value is not a JSON object of non-negative integers or nulls.
+    """
+
+    try:
+        targets = json.loads(value)
+    except json.JSONDecodeError as error:
+        error_message = f"--session-type-targets is not valid JSON ({error})."
+        raise click.BadParameter(error_message) from error
+    if not isinstance(targets, dict) or any(
+            not (target is None or (isinstance(target, int) and target >= 0)) for target in targets.values()):
+        error_message = (
+            '--session-type-targets expects a JSON object of session type -> non-negative integer or null, '
+            'e.g. \'{"MF": 29000, "FF": 29000, "MM": null, "lone_male": null}\'.'
+        )
+        raise click.BadParameter(error_message)
+    return targets
+
+
+def parse_optional_float(value: str) -> float | None:
+    """
+    Description
+    -----------
+    Decodes an option that takes a float or ``none`` (``--floor``): ``"none"`` /
+    ``"null"`` become None (written to the settings as JSON null), anything else
+    a float.
+
+    Parameters
+    ----------
+    value (str)
+        The raw option value.
+
+    Returns
+    -------
+    parsed (float | None)
+        The float, or None.
+
+    Raises
+    ------
+    click.BadParameter
+        The value is neither a number nor ``none``.
+    """
+
+    if value.strip().lower() in ("none", "null"):
+        return None
+    try:
+        return float(value)
+    except ValueError as error:
+        error_message = f"expected a number or 'none', got {value!r}."
+        raise click.BadParameter(error_message) from error
+
+
+def parse_int_list(value: str) -> list[int]:
+    """
+    Description
+    -----------
+    Decodes a comma-separated integer-list option (``--mask-count-bin-edges 1,2,3,4,5``).
+
+    Parameters
+    ----------
+    value (str)
+        The raw option value.
+
+    Returns
+    -------
+    parsed (list[int])
+        The integers.
+
+    Raises
+    ------
+    click.BadParameter
+        An item is not an integer.
+    """
+
+    try:
+        return [int(item) for item in value.split(",") if item.strip()]
+    except ValueError as error:
+        error_message = f"expected comma-separated integers, got {value!r}."
+        raise click.BadParameter(error_message) from error
+
+
 class QLVMTrainingSetBuilder:
     """
     Description
     -----------
-    Builds a curated ``.npz`` training set for the QLVM model from a list of
-    session root directories.
+    Builds a QLVM ``.npz`` training set of USV spectrograms from a list of
+    session root directories (see the module docstring).
     """
 
     def __init__(
@@ -311,6 +1134,7 @@ class QLVMTrainingSetBuilder:
         output_directory: str | None = None,
         input_parameter_dict: dict | None = None,
         message_output: Callable | None = None,
+        row_exclusions: dict[str, np.ndarray] | None = None,
     ) -> None:
         """
         Description
@@ -321,14 +1145,21 @@ class QLVMTrainingSetBuilder:
         ----------
         root_directories (list[str])
             Session root directories to combine; each session's
-            ``audio/spectrograms/*_spectrograms.h5`` is located within it.
+            ``audio/spectrograms/<session>_spectrograms.h5`` is read. Their order is
+            the order sessions are drawn in (and written in).
         output_directory (str)
             Directory to write the ``.npz`` outputs + metadata.
         input_parameter_dict (dict)
             Processing settings; the ``build_qlvm_training_set`` block supplies
-            the filtering / split / resize parameters.
+            every parameter.
         message_output (Callable)
             Logging callback; defaults to ``print``.
+        row_exclusions (dict[str, np.ndarray] | None)
+            Python-API only: per session id, a boolean ``(n_rows,)`` array of rows to
+            leave out that REPLACES the ``exclude_squeaks`` / ``exclude_noise`` /
+            ``strict_squeak_exclusion`` flags of the USV summary for that session (e.g. an external squeak
+            index, to rebuild a set whose exclusions came from elsewhere). None (the
+            default) uses the summary flags for every session.
 
         Returns
         -------
@@ -339,17 +1170,23 @@ class QLVMTrainingSetBuilder:
         self.output_directory = output_directory
         self.input_parameter_dict = input_parameter_dict if input_parameter_dict is not None else {}
         self.message_output = message_output if message_output is not None else print
+        self.row_exclusions = row_exclusions
         self.app_context_bool = is_gui_context()
 
     def build(self) -> None:
         """
         Description
         -----------
-        Runs the full pipeline: load durations → select indices (length filter +
-        optional subsample) → load selected specs → combine → train/val split (or
-        full) → resize/time-stretch → write ``.npz`` outputs + ``metadata.npz``.
-        Writes ``train_data.npz`` + ``val_data.npz`` (or ``full_data.npz``) plus a
-        ``metadata.npz`` sidecar to ``output_directory``.
+        Runs the build: reads every session's durations, mask counts, type and
+        summary exclusions (fingerprinting its spectrogram H5), draws the rows
+        (:func:`compute_selected_rows_by_type`, or every eligible row under
+        ``full_dataset``), reads and resizes the drawn spectrograms and masks
+        session by session (with the drawn rows' raw conditioning values from the
+        USV summary, :func:`usv_summary_condition_values`), splits whole sessions into train and validation
+        (:func:`split_sessions_by_type`), masks them or bakes in the floor, and
+        writes ``train_data.npz``, ``val_data.npz`` (then ``full_data.npz`` under
+        ``full_dataset``), ``metadata.npz``, ``SESSION_H5.sha256`` and
+        ``SESSION_H5.tsv`` to ``output_directory``.
 
         Parameters
         ----------
@@ -365,164 +1202,261 @@ class QLVMTrainingSetBuilder:
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         cfg = self.input_parameter_dict['build_qlvm_training_set']
-        length_threshold = cfg['length_threshold']
-        dataset_size_constraint = cfg['dataset_size_constraint']
+        session_type_targets = cfg['session_type_targets']
+        draw_mode = cfg['draw_mode']
+        bin_edges = [int(edge) for edge in cfg['mask_count_bin_edges']]
+        length_threshold = float(cfg['length_threshold'])
+        require_mask = cfg['require_mask']
+        exclude_squeaks = cfg['exclude_squeaks']
+        exclude_noise = cfg['exclude_noise']
+        strict_squeak_exclusion = cfg['strict_squeak_exclusion']
+        masking_type = cfg['masking_type']
+        apply_mask = cfg['apply_mask']
+        floor = None if cfg['floor'] is None else float(cfg['floor'])
         validation_split = cfg['validation_split']
         random_state = cfg['random_state']
         full_dataset = cfg['full_dataset']
         target_shape = tuple(int(v) for v in cfg['target_shape'])
         time_stretch = cfg['time_stretch']
-        masking_type = cfg['masking_type']
 
-        # A train/val split needs validation_split strictly inside (0, 1); the
-        # underlying train_test_split rejects 0.0 / 1.0 with a cryptic error, so
-        # fail fast with a clear pointer to the all-samples path (full_dataset).
-        if not full_dataset and not 0.0 < validation_split < 1.0:
-            error_message = (
-                f"validation_split must be in the open interval (0, 1) for a train/val "
-                f"split, got {validation_split}; set full_dataset=True to write a single "
-                f"full_data.npz with every kept sample instead."
+        problems = []
+        if not 0.0 < validation_split < 1.0:
+            problems.append(f"validation_split must be in the open interval (0, 1), got {validation_split}")
+        if draw_mode not in ("natural", "uniform"):
+            problems.append(f"draw_mode must be 'natural' or 'uniform', got {draw_mode!r}")
+        if masking_type not in ("sam", "none"):
+            problems.append(f"masking_type must be 'sam' or 'none', got {masking_type!r}")
+        if masking_type == "none" and (apply_mask or require_mask or draw_mode == "uniform"):
+            problems.append(
+                "masking_type 'none' reads no SAM masks, so it cannot apply them (apply_mask), require them "
+                "(require_mask) or stratify by their count (draw_mode 'uniform'); use masking_type 'sam'"
             )
+        if floor is not None and apply_mask:
+            problems.append("a loudness floor is baked into unmasked sets only; set apply_mask false or floor null")
+        if floor is not None and not 0.0 <= floor < 1.0:
+            problems.append(f"floor must be in [0, 1), got {floor}")
+        if not bin_edges or any(later <= earlier for earlier, later in itertools.pairwise(bin_edges)) or bin_edges[0] < 1:
+            problems.append(f"mask_count_bin_edges must be strictly increasing integers >= 1, got {bin_edges}")
+        if not session_type_targets:
+            problems.append("session_type_targets is empty; list at least one session type")
+        if strict_squeak_exclusion and not exclude_squeaks:
+            problems.append("strict_squeak_exclusion widens the squeak exclusion, so it needs exclude_squeaks")
+        if problems:
+            error_message = "build_qlvm_training_set settings are inconsistent:\n  " + "\n  ".join(problems)
             raise ValueError(error_message)
 
         output_dir = pathlib.Path(self.output_directory)
         output_dir.mkdir(parents=True, exist_ok=True)
+        bin_labels = mask_count_bin_labels(bin_edges)
 
-        # Resolve each session root to its per-session spectrogram H5
-        # (audio/spectrograms/<session>_spectrograms.h5). The pattern is
-        # session-keyed rather than "*_spectrograms.h5" because a session can
-        # hold other files ending in that suffix (e.g. a sonic-band
-        # "<session>_3_30khz_spectrograms.h5"), which a wildcard may select
-        # ahead of the real one.
-        spectrogram_h5_paths = [
-            str(first_match_or_raise(
+        # Phase 1: per-session metadata. The H5 pattern is session-keyed rather
+        # than "*_spectrograms.h5" because a session can hold other files ending in
+        # that suffix (e.g. a sonic-band "<session>_3_30khz_spectrograms.h5").
+        # Each file is fingerprinted before any row is taken from it (see the
+        # module docstring, "Session fingerprints").
+        sessions: dict[str, dict] = {}
+        skipped_by_type: dict[str, int] = {}
+        excluded_by_type: dict[str, int] = {}
+        for root_directory in self.root_directories:
+            h5_path = str(first_match_or_raise(
                 root=pathlib.Path(root_directory) / "audio" / "spectrograms",
                 pattern=f"{pathlib.Path(root_directory).name}_spectrograms.h5",
                 label="per-session spectrogram H5",
             ))
-            for root_directory in self.root_directories
-        ]
-
-        # Phase 1: cheap per-session durations, keyed by the session id that
-        # names the ``spectrogram/<session>`` group inside each file.
-        durations_by_key: dict[str, np.ndarray] = {}
-        session_by_path: dict[str, str] = {}
-        for h5_path in spectrogram_h5_paths:
+            session_type = session_type_from_metadata(root_directory, self.message_output)
+            if session_type not in session_type_targets:
+                skipped_by_type[session_type] = skipped_by_type.get(session_type, 0) + 1
+                continue
             with h5py.File(h5_path, "r") as h5_file:
                 session_id = next(iter(h5_file["spectrogram"].keys()))
-                session_by_path[h5_path] = session_id
-                durations_by_key[session_id] = h5_file[f"spectrogram/{session_id}"]["durations"][:]
-
-        # Phase 2: length filter + optional subsample.
-        selected = compute_selected_indices(
-            durations_by_key, length_threshold,
-            None if full_dataset else dataset_size_constraint, random_state,
+                durations = h5_file[f"spectrogram/{session_id}"]["durations"][:].astype(np.int64)
+                if masking_type == "sam":
+                    mask_counts = session_mask_counts(h5_file, session_id, durations.size)
+                else:
+                    mask_counts = np.zeros(durations.size, dtype=np.int64)
+            if self.row_exclusions is not None and session_id in self.row_exclusions:
+                excluded = np.asarray(self.row_exclusions[session_id], dtype=bool)
+                if excluded.shape != durations.shape:
+                    error_message = f"row_exclusions[{session_id!r}] has shape {excluded.shape}, the H5 has {durations.size} rows."
+                    raise ValueError(error_message)
+            else:
+                excluded = usv_summary_exclusions(root_directory, durations.size, exclude_squeaks, exclude_noise, strict_squeak_exclusion)
+            rows = eligible_rows(durations, mask_counts, excluded, length_threshold, require_mask)
+            without_exclusion = eligible_rows(durations, mask_counts, np.zeros_like(excluded), length_threshold, require_mask)
+            excluded_by_type[session_type] = excluded_by_type.get(session_type, 0) + int(without_exclusion.size - rows.size)
+            sessions[session_id] = {
+                "root": root_directory,
+                "h5_path": h5_path,
+                "sha256": file_sha256(h5_path),
+                "type": session_type,
+                "durations": durations,
+                "mask_counts": mask_counts,
+                "eligible": rows,
+                "bins": mask_count_bins(mask_counts[rows], bin_edges),
+            }
+        if skipped_by_type:
+            self.message_output(
+                "Left out sessions of types not in session_type_targets: "
+                + ", ".join(f"{session_type}={count}" for session_type, count in sorted(skipped_by_type.items())) + "."
+            )
+        self.message_output(
+            f"{len(sessions)} sessions; eligible rows removed by the summary exclusions: "
+            + (", ".join(f"{session_type}={count:,}" for session_type, count in sorted(excluded_by_type.items())) or "none") + "."
         )
+        if not sessions:
+            self.message_output("No session of a listed type; nothing written.")
+            return
+        session_type_by_key = {session_id: session['type'] for session_id, session in sessions.items()}
 
-        # Phase 3: load selected spectrograms/durations from each session's
-        # ``spectrogram/<session>`` group, concatenate, and build the
-        # globally-unique spec_id. Spectrogram rows are 1:1 with usv_summary.csv,
-        # so the selected row index IS the usv index; the cross-session spec_id is
-        # f"{session_id}_{row_index}" (the per-sample identifier the trainer carries).
-        # Under ``masking_type == "sam"`` the per-row SAM region masks + instance
-        # counts are read from the ``mask/<session>`` group at the same time.
-        specs_list: list[np.ndarray] = []
-        durations_list: list[np.ndarray] = []
-        spec_id_list: list[np.ndarray] = []
-        masks_list: list[np.ndarray] = []
-        masks_len_list: list[np.ndarray] = []
-        for h5_path in spectrogram_h5_paths:
-            session_id = session_by_path[h5_path]
+        # Phase 2: the type-budgeted draw (or every eligible row).
+        eligible_by_session = {session_id: session['eligible'] for session_id, session in sessions.items()}
+        bins_by_session = {session_id: session['bins'] for session_id, session in sessions.items()}
+        if full_dataset:
+            selected, type_report = compute_selected_rows_by_type(
+                eligible_by_session, bins_by_session, session_type_by_key,
+                dict.fromkeys(session_type_targets), draw_mode, random_state, bin_labels,
+            )
+        else:
+            selected, type_report = compute_selected_rows_by_type(
+                eligible_by_session, bins_by_session, session_type_by_key,
+                session_type_targets, draw_mode, random_state, bin_labels,
+            )
+        for session_type, report in type_report.items():
+            shortfall = "" if report['target'] == "all" or report['drawn'] == report['target'] else (
+                f" -- SHORT of the target {report['target']:,}: the {draw_mode} capacity of this type is {report['capacity']:,}"
+            )
+            self.message_output(
+                f"  {session_type}: {report['drawn']:,} rows from {report['n_sessions_drawn']}/{report['n_sessions']} sessions "
+                f"(available {report['available']:,}, target {report['target']}), per stratum {report['per_bin']}{shortfall}."
+            )
+
+        # Phase 3: read and resize the drawn rows session by session (every
+        # transform is per row, so resizing here equals resizing the stacked set).
+        specs_list, masks_list, masks_len_list, durations_list = [], [], [], []
+        spec_id_list, session_list, type_list, count_list = [], [], [], []
+        condition_lists: dict[str, list[np.ndarray]] = {column: [] for column in SUMMARY_CONDITION_COLUMNS}
+        for session_id, session in sessions.items():
             idx = selected[session_id]
             if idx.size == 0:
                 continue
-            with h5py.File(h5_path, "r") as h5_file:
+            summary_values = usv_summary_condition_values(session['root'], session['durations'].size)
+            for column in SUMMARY_CONDITION_COLUMNS:
+                condition_lists[column].append(summary_values[column][idx])
+            with h5py.File(session['h5_path'], "r") as h5_file:
                 session_group = h5_file[f"spectrogram/{session_id}"]
-                specs_list.append(session_group["spectrograms"][idx])
-                durations_list.append(session_group["durations"][idx])
+                native_specs = session_group["spectrograms"][idx]
                 n_freq, n_time = session_group["spectrograms"].shape[1:]
                 if masking_type == "sam":
-                    session_masks, session_masks_len = build_session_masks(
-                        h5_file, session_id, idx, n_freq, n_time
-                    )
-                    masks_list.append(session_masks)
-                    masks_len_list.append(session_masks_len)
+                    native_masks, native_masks_len = build_session_masks(h5_file, session_id, idx, n_freq, n_time)
+            native_durations = session['durations'][idx]
+            specs_list.append(stretch_specs(native_specs, native_durations, target_shape, time_stretch))
+            if masking_type == "sam":
+                resized_masks = stretch_specs(native_masks, native_durations, target_shape, time_stretch)
+                masks_list.append((resized_masks >= 0.5).astype(np.float32))
+                masks_len_list.append(native_masks_len)
+            else:
+                masks_list.append(np.zeros((idx.size, *target_shape), dtype=np.float32))
+                masks_len_list.append(np.zeros(idx.size, dtype=np.int64))
+            durations_list.append(native_durations)
             spec_id_list.append(np.array([f"{session_id}_{int(i)}" for i in idx]))
-
-        if not specs_list:
-            self.message_output("No spectrograms survived filtering; nothing written.")
-            return
+            session_list.append(np.full(idx.size, session_id))
+            type_list.append(np.full(idx.size, session['type']))
+            count_list.append(session['mask_counts'][idx])
 
         all_specs = np.concatenate(specs_list)
+        all_masks = np.concatenate(masks_list)
+        all_masks_len = np.concatenate(masks_len_list)
         all_durations = np.concatenate(durations_list)
         all_spec_ids = np.concatenate(spec_id_list)
-        if masking_type == "sam":
-            all_masks = np.concatenate(masks_list)
-            all_masks_len = np.concatenate(masks_len_list)
-        else:
-            all_masks = np.zeros_like(all_specs, dtype=np.float32)
-            all_masks_len = np.zeros(all_specs.shape[0], dtype=np.int64)
-        n_with_masks = int(np.count_nonzero(all_masks_len > 0))
-        self.message_output(
-            f"masking_type='{masking_type}': {n_with_masks}/{all_specs.shape[0]} kept spectrograms have "
-            f"a detected SAM mask (the rest keep an all-ones mask)."
+        all_sessions = np.concatenate(session_list)
+        all_types = np.concatenate(type_list)
+        all_counts = np.concatenate(count_list)
+        all_condition_values = {column: np.concatenate(condition_lists[column]) for column in SUMMARY_CONDITION_COLUMNS}
+        if apply_mask:
+            all_specs = (all_specs * all_masks).astype(np.float32)
+        elif floor is not None:
+            all_specs = apply_loudness_floor(all_specs, floor)
+        self.message_output(f"Loaded and resized {all_specs.shape[0]:,} spectrograms.")
+
+        # Phase 4: split whole sessions by type, then write.
+        selected_counts = {session_id: int(selected[session_id].size) for session_id in sessions if selected[session_id].size}
+        train_sessions, val_sessions = split_sessions_by_type(
+            list(selected_counts), session_type_by_key, selected_counts, validation_split, random_state
         )
-
-        # Phase 4 (above): combine the per-session selected arrays into single
-        # cross-session arrays (+ zero-mask placeholders under "none") and report
-        # mask coverage.
-        # Phases 5-6: split (or full) + resize + (under "sam") binarize-and-apply + save.
+        is_val = np.isin(all_sessions, val_sessions)
+        splits = [("train_data.npz", np.flatnonzero(~is_val)), ("val_data.npz", np.flatnonzero(is_val))]
         if full_dataset:
-            splits = {"full_data.npz": (all_specs, all_masks, all_masks_len, all_durations, all_spec_ids)}
-        else:
-            (
-                train_specs, val_specs, train_masks, val_masks, train_ml, val_ml,
-                train_dur, val_dur, train_ids, val_ids,
-            ) = train_test_split(
-                all_specs, all_masks, all_masks_len, all_durations, all_spec_ids,
-                test_size=validation_split, random_state=random_state,
-            )
-            splits = {
-                "train_data.npz": (train_specs, train_masks, train_ml, train_dur, train_ids),
-                "val_data.npz": (val_specs, val_masks, val_ml, val_dur, val_ids),
-            }
-
+            splits.append(("full_data.npz", np.arange(all_specs.shape[0])))
         written: dict[str, int] = {}
-        for filename, (split_specs, split_masks, split_ml, split_dur, split_ids) in splits.items():
-            resized = stretch_specs(split_specs, split_dur, target_shape, time_stretch)
-            if masking_type == "sam":
-                # Resize masks with the SAME per-row transform, binarize at 0.5, then
-                # mask the spectrogram (background zeroed) -- mirrors prepare_masked_datasets.
-                resized_masks = (stretch_specs(split_masks, split_dur, target_shape, time_stretch) >= 0.5).astype(np.float32)
-                out_specs = (resized * resized_masks).astype(np.float32)
-                out_masks = resized_masks
-            else:
-                out_specs = resized.astype(np.float32)
-                out_masks = np.zeros_like(resized, dtype=np.float32)
+        for filename, split_rows in splits:
             np.savez(
                 output_dir / filename,
-                spectrograms=out_specs,
-                masks=out_masks,
-                masks_len=split_ml.astype(np.int64),
-                durations=split_dur.astype(np.int64),
-                spec_id=split_ids,
+                spectrograms=all_specs[split_rows],
+                masks=all_masks[split_rows],
+                masks_len=all_masks_len[split_rows].astype(np.int64),
+                durations=all_durations[split_rows].astype(np.int64),
+                spec_id=all_spec_ids[split_rows],
+                session_id=all_sessions[split_rows],
+                session_type=all_types[split_rows],
+                mask_count=all_counts[split_rows].astype(np.int64),
+                apply_mask=np.array(bool(apply_mask)),
+                **{column: all_condition_values[column][split_rows] for column in SUMMARY_CONDITION_COLUMNS},
             )
-            written[filename] = int(resized.shape[0])
-            self.message_output(f"  Wrote {written[filename]} samples -> {output_dir / filename}.")
+            written[filename] = int(split_rows.size)
+            self.message_output(f"  Wrote {written[filename]:,} samples -> {output_dir / filename}.")
 
+        session_ids = list(sessions)
+        h5_rows = [int(sessions[session_id]['durations'].size) for session_id in session_ids]
+        corpus_rows = [int(selected[session_id].size) for session_id in session_ids]
+        h5_bytes = [pathlib.Path(sessions[session_id]['h5_path']).stat().st_size for session_id in session_ids]
+        with (output_dir / "SESSION_H5.sha256").open("w") as sha_file:
+            for session_id in session_ids:
+                sha_file.write(f"{sessions[session_id]['sha256']}  {sessions[session_id]['h5_path']}\n")
+        with (output_dir / "SESSION_H5.tsv").open("w") as tsv_file:
+            tsv_file.write("session\th5_rows\tcorpus_rows\tbytes\tsha256\tpath\n")
+            for session_id, n_rows, n_corpus, n_bytes in zip(session_ids, h5_rows, corpus_rows, h5_bytes, strict=True):
+                tsv_file.write(
+                    f"{session_id}\t{n_rows}\t{n_corpus}\t{n_bytes}\t{sessions[session_id]['sha256']}\t{sessions[session_id]['h5_path']}\n"
+                )
+
+        floor_fields = {} if floor is None else {
+            "floor": floor,
+            "floor_rule": "x = minmax(spectrogram); x = clip((x - floor) / (1 - floor), 0, 1); baked into spectrograms",
+        }
         np.savez(
             output_dir / "metadata.npz",
-            root_directories=np.array(self.root_directories),
-            spectrogram_h5_paths=np.array(spectrogram_h5_paths),
+            root_directories=np.array([sessions[session_id]['root'] for session_id in session_ids]),
+            spectrogram_h5_paths=np.array([sessions[session_id]['h5_path'] for session_id in session_ids]),
+            session_ids=np.array(session_ids),
+            spectrogram_h5_sha256=np.array([sessions[session_id]['sha256'] for session_id in session_ids]),
+            spectrogram_h5_rows=np.array(h5_rows, dtype=np.int64),
+            spectrogram_h5_corpus_rows=np.array(corpus_rows, dtype=np.int64),
             length_threshold=length_threshold,
-            dataset_size_constraint=np.nan if dataset_size_constraint is None else dataset_size_constraint,
             validation_split=validation_split,
             random_state=random_state,
             full_dataset=full_dataset,
             target_shape=np.array(target_shape),
             time_stretch=time_stretch,
             masking_type=masking_type,
-            **{f"n_{name.split('_')[0]}": count for name, count in written.items()},
+            apply_mask=bool(apply_mask),
+            **floor_fields,
+            session_type_targets=json.dumps(session_type_targets),
+            allocation="even",
+            mask_sampling_mode=draw_mode,
+            mask_count_bin_edges=np.array(bin_edges),
+            require_mask=require_mask,
+            split_by_session=True,
+            session_type_by_key=json.dumps(session_type_by_key),
+            type_report=json.dumps(type_report),
+            split_sessions=json.dumps({"train": train_sessions, "validation": val_sessions}),
+            exclude_squeaks=exclude_squeaks,
+            exclude_noise=exclude_noise,
+            strict_squeak_exclusion=strict_squeak_exclusion,
+            row_exclusions_override=self.row_exclusions is not None,
+            excluded_by_type=json.dumps(excluded_by_type),
+            n_train=written["train_data.npz"],
+            n_val=written["val_data.npz"],
+            n_full=written["full_data.npz"] if full_dataset else 0,
         )
 
         self.message_output(
@@ -531,23 +1465,31 @@ class QLVMTrainingSetBuilder:
 
 
 @click.command(name="build-qlvm-training-set")
-@click.option('--root-directories', type=str, required=True, help='Comma-separated string of session root directory paths.')
+@click.option('--root-directories', type=str, required=True, help='Comma-separated string of session root directory paths (the order sessions are drawn in).')
 @click.option('--output-directory', type=click.Path(file_okay=False, dir_okay=True), required=True, help='Directory to write the .npz training set.')
+@click.option('--session-type-targets', 'session_type_targets', type=str, default=None, required=False, help='JSON object of session type -> rows (null takes the type whole), e.g. \'{"MF": 29000, "FF": 29000, "MM": null, "lone_male": null}\'; sessions of unlisted types are left out.')
+@click.option('--draw-mode', 'draw_mode', type=click.Choice(['natural', 'uniform']), default=None, required=False, help='Within-session draw: uniform over rows ("natural") or equal across mask-count strata ("uniform").')
+@click.option('--mask-count-bin-edges', 'mask_count_bin_edges', type=str, default=None, required=False, help='Comma-separated inclusive lower bounds of the mask-count strata above 0, the last open-ended, e.g. 1,2,3,4,5 (strata 0/1/2/3/4/5+).')
 @click.option('--length-threshold', 'length_threshold', type=float, default=None, required=False, help='Drop spectrograms with duration >= threshold (time bins).')
-@click.option('--dataset-size-constraint', 'dataset_size_constraint', type=int, default=None, required=False, help='Optional cap on the total number of kept spectrograms (absolute count if > 1, proportion if in (0, 1]); omit for no cap (null = all data).')
-@click.option('--validation-split', 'validation_split', type=float, default=None, required=False, help='Fraction held out for validation.')
-@click.option('--random-state', 'random_state', type=int, default=None, required=False, help='RNG (random number generator) seed for reproducible subsampling and the train/val split.')
+@click.option('--require-mask/--no-require-mask', 'require_mask', default=None, required=False, help='Leave out calls without a SAM mask instance.')
+@click.option('--exclude-squeaks/--no-exclude-squeaks', 'exclude_squeaks', default=None, required=False, help='Leave out rows the USV summary flags as squeaks (detect-usv-squeaks).')
+@click.option('--strict-squeak-exclusion/--no-strict-squeak-exclusion', 'strict_squeak_exclusion', default=None, required=False, help='With --exclude-squeaks, also leave out rows with squeak_frame_runs >= 1 (the reference squeak index\'s strict rule); needs a summary scored by a detect-usv-squeaks that writes squeak_frame_runs.')
+@click.option('--exclude-noise/--no-exclude-noise', 'exclude_noise', default=None, required=False, help='Leave out rows the USV summary flags as noise (detect-usv-noise).')
+@click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Read SAM masks from the mask/<session> groups ("sam") or none ("none").')
+@click.option('--apply-mask/--no-apply-mask', 'apply_mask', default=None, required=False, help='Multiply the binarized SAM mask into the stored spectrograms (masked set) or keep them unmasked.')
+@click.option('--floor', 'floor', type=str, default=None, required=False, help='Loudness floor baked into unmasked spectrograms after a per-spectrogram min-max (e.g. 0.2), or "none".')
+@click.option('--validation-split', 'validation_split', type=float, default=None, required=False, help='Fraction of each session type\'s rows held out (as whole sessions) for validation.')
+@click.option('--random-state', 'random_state', type=int, default=None, required=False, help='Seed of the quota tie-breaks, the draw and the session split.')
+@click.option('--full-dataset/--no-full-dataset', 'full_dataset', default=None, required=False, help='Take every eligible row (no draw) and also write full_data.npz.')
 @click.option('--target-shape', 'target_shape', nargs=2, type=int, default=None, required=False, help='Output spectrogram (freq, time) shape as two ints, e.g. --target-shape 128 128.')
-@click.option('--full-dataset/--no-full-dataset', 'full_dataset', default=None, required=False, help='Write a single full_data.npz (no train/val split).')
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Time-warp the signal window instead of center-resizing.')
-@click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Apply SAM mask regions from the mask/<session> groups ("sam") or keep raw spectrograms ("none").')
 @click.pass_context
 def build_qlvm_training_set_cli(ctx, root_directories, output_directory, **kwargs) -> None:
     """
     Description
     -----------
-    A command-line tool to assemble a list of session root directories'
-    spectrogram H5 files into a curated ``.npz`` QLVM training set.
+    A command-line tool to build a QLVM USV training set (``.npz``) from a list
+    of session root directories.
 
     Parameters
     ----------
@@ -558,6 +1500,9 @@ def build_qlvm_training_set_cli(ctx, root_directories, output_directory, **kwarg
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
+    for key, parser in (('session_type_targets', parse_session_type_targets), ('mask_count_bin_edges', parse_int_list), ('floor', parse_optional_float)):
+        if key in provided_params:
+            ctx.params[key] = parser(ctx.params[key])
 
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,

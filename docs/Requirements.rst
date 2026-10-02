@@ -282,5 +282,3 @@ touch. Grouped by role:
 
 - ``spike.wav`` — the short spike-sound clip mixed into behavioral videos when the
   spike-sound option is enabled.
-- ``usv_latent_embedding_segmentation.npz`` — the precomputed QLVM (the in-house quasi-Monte Carlo latent variable model) latent-embedding
-  watershed segmentation (the watershed segmentation algorithm) used to render the neuronal-tuning figures.

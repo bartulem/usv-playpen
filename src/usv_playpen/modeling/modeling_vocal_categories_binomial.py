@@ -38,6 +38,7 @@ from sklearn.metrics import roc_auc_score, log_loss, f1_score, recall_score, bal
 from tqdm import tqdm
 
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
+from .load_input_files import require_labels_for_vocal_predictors, require_usv_category_column
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -243,6 +244,13 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             Saves a pickle file containing 'target_feature_arr' and 'other_feature_arr' for each feature.
         """
 
+        # The binomial target is one category against the rest: without a label
+        # column the run stops here, before any session is loaded.
+        require_usv_category_column(self.modeling_settings['vocal_features']['usv_category_column_name'],
+                                    f"The binomial USV category model (target category {target_category})")
+        # Label-dependent vocal predictors fail here, before any session is loaded.
+        require_labels_for_vocal_predictors(self.modeling_settings['vocal_features'])
+
         txt_sessions = prepare_modeling_sessions(self.modeling_settings)
 
         print("Loading behavioral feature data...")
@@ -257,7 +265,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         voc_mode = voc_settings['usv_predictor_type']
         smooth_sd = voc_settings['usv_predictor_smoothing_sd']
         column_name_cats = voc_settings['usv_category_column_name']
-        noise_cats = voc_settings['usv_noise_categories']
+        exclude_noise = voc_settings['exclude_noise_usvs']
         filter_hist = self.modeling_settings['model_params']['filter_history']
 
         print(f"Loading USV data and generating predictors for Category {target_category}...")
@@ -272,8 +280,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             filter_history=filter_hist,
             vocal_output_type=voc_mode,
             proportion_smoothing_sd=smooth_sd,
-            noise_vocal_categories=noise_cats,
-            noise_column=voc_settings['usv_noise_column'],
+            exclude_noise_usvs=exclude_noise,
         )
 
         processed_beh_data = {}
@@ -353,7 +360,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         # hist) live in `_input_metadata`.
         cohort_condition = derive_experimental_condition(self.modeling_settings)
         # Tag carries both the active USV category column (e.g.
-        # `vae_supercategory`) and the specific target category index
+        # `qlvm_supercategory`) and the specific target category index
         # within it, so every downstream filename — modeling input
         # pickle, univariate pkls, model-selection step pkls,
         # consolidated artifact — pins both axes of the choice.
@@ -412,7 +419,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             feature_zoo_kept=feature_zoo_kept_md,
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
             dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
-            noise_vocal_categories_excluded=list(noise_cats),
+            noise_usvs_excluded=exclude_noise,
             vocal_signal_columns_added=vocal_columns_md,
             filter_history_seconds=float(filter_hist),
             filter_history_frames=int(self.history_frames),
@@ -421,7 +428,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             analysis_specific={
                 'target_category': int(target_category),
                 'category_self_exclude': list(category_self_exclude),
-                # Pins the USV category column (e.g. `vae_supercategory`,
+                # Pins the USV category column (e.g. `qlvm_supercategory`,
                 # `qlvm_category`) used to derive the binary target so
                 # the selector can route per-step filenames + the
                 # consolidated artifact through the same tag.

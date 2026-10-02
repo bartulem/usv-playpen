@@ -4,6 +4,7 @@ Test visualizations module.
 """
 
 import pytest
+from usv_playpen import os_utils
 from usv_playpen.visualizations.visualize_data import Visualizer
 
 @pytest.fixture
@@ -272,40 +273,41 @@ def test_gui_visualize_tab_constructs(qtbot, monkeypatch, tmp_path):
     assert hasattr(win, "default_cmap_cb")
     # the USV sequence figure controls (column 3)
     for attr in ("usv_seq_cb", "usv_seq_fig_format_cb", "usv_seq_start_edit",
-                 "usv_seq_duration_edit", "usv_seq_embedding_cb",
+                 "usv_seq_duration_edit", "qlvm_map_cb",
                  "usv_seq_mask_cb", "usv_seq_raw_cb", "usv_seq_boundaries_cb",
                  "usv_seq_boundary_clustering_cb", "usv_seq_mark_cb"):
         assert hasattr(win, attr), f"Visualize tab missing USV-sequence widget: {attr}"
-    # the sequence selectors are seeded from settings
-    assert win.usv_seq_embedding in ("qlvm", "vae")
+    # the one QLVM map selector (shared by every QLVM figure) is seeded from
+    # shared_resources.qlvm_map and lists exactly the production maps
+    assert win.qlvm_map in os_utils.QLVM_MAPS
+    assert win.qlvm_map_cb.currentText() == win.qlvm_map
+    assert [win.qlvm_map_cb.itemText(i) for i in range(win.qlvm_map_cb.count())] == list(os_utils.QLVM_MAPS)
+    assert not hasattr(win, "usv_seq_embedding_cb") and not hasattr(win, "embedding_thumbnails_map_cb")
     win.close()
 
 
 def test_gui_usv_sequence_control_coupling(qtbot, monkeypatch, tmp_path):
-    """Boundaries apply to BOTH embeddings (VAE has category boundaries too); the
-    clustering selector is enabled only when boundaries = Yes."""
+    """Boundaries are always available on the QLVM map; the clustering selector is
+    enabled only when boundaries = Yes."""
     monkeypatch.chdir(tmp_path)
     win = _make_main_window(qtbot)
     win.visualize_one()
 
-    # VAE + boundaries Yes -> boundaries stay enabled (no longer QLVM-only) and the
-    # clustering selector is enabled.
-    win.usv_seq_embedding_cb.setCurrentText("vae")
+    # boundaries Yes -> boundaries stay enabled and the clustering selector is enabled
     win.usv_seq_boundaries_cb.setCurrentText("Yes")
     win._update_usv_seq_enabled_state()
     assert win.usv_seq_boundaries_cb.isEnabled()
     assert win.usv_seq_boundary_clustering_cb.isEnabled()
     assert win.usv_seq_boundary_clustering_label.isEnabled()
 
-    # boundaries No -> clustering selector disabled (either embedding)
+    # boundaries No -> clustering selector disabled
     win.usv_seq_boundaries_cb.setCurrentText("No")
     win._update_usv_seq_enabled_state()
     assert win.usv_seq_boundaries_cb.isEnabled()
     assert not win.usv_seq_boundary_clustering_cb.isEnabled()
     assert not win.usv_seq_boundary_clustering_label.isEnabled()
 
-    # QLVM + boundaries Yes -> clustering selector enabled
-    win.usv_seq_embedding_cb.setCurrentText("qlvm")
+    # boundaries Yes again -> clustering selector enabled
     win.usv_seq_boundaries_cb.setCurrentText("Yes")
     win._update_usv_seq_enabled_state()
     assert win.usv_seq_boundary_clustering_cb.isEnabled()

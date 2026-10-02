@@ -51,6 +51,8 @@ def compute_usv_spectrogram(
     sampling_rate: int,
     spec_params: dict,
     normalize: bool = True,
+    db_ref: float | None = None,
+    top_db: float | None = 80.0,
 ) -> tuple[np.ndarray | None, int]:
     """
     Description
@@ -60,8 +62,10 @@ def compute_usv_spectrogram(
 
     For every channel the power STFT is computed (``librosa.stft`` magnitude
     squared), band-limited to ``[min_freq, max_freq]``, converted to dB
-    (``power_to_db`` with ``ref=max``), resampled along frequency to
-    ``num_freq_bins`` and fixed along time to ``num_time_bins``. The per-channel
+    (``power_to_db`` with ``ref=max`` by default, or a fixed reference when
+    ``db_ref`` is given), resampled along frequency to ``num_freq_bins`` and
+    fixed along time to ``num_time_bins`` (or left at its native length when
+    ``num_time_bins`` is None). The per-channel
     spectrograms are then averaged with weights equal to each channel's audio
     variance (louder/cleaner channels dominate); if every channel has zero
     variance the weights fall back to uniform. The averaged spectrogram is
@@ -77,15 +81,29 @@ def compute_usv_spectrogram(
     spec_params (dict)
         Spectrogram parameters: ``num_freq_bins``, ``num_time_bins``,
         ``nperseg``, ``min_freq``, ``max_freq``, ``hop_length``,
-        ``window``.
+        ``window``. A ``num_time_bins`` of None keeps every native STFT frame
+        (no ``fix_length`` padding or truncation), which the squeak detector
+        needs to see calls longer than the model window.
     normalize (bool)
         Whether to min-max normalize the averaged spectrogram. Defaults to True.
+    db_ref (float | None)
+        Power reference for ``librosa.power_to_db``. None (the default) keeps the
+        per-segment ``ref=np.max`` the QLVM spectrograms were built with, which
+        makes every segment's loudest bin 0 dB. A float (the squeak detector
+        uses 1.0) makes the dB scale absolute, so quiet and loud calls stay
+        distinguishable across segments and sessions.
+    top_db (float | None)
+        Per-array clamp passed to ``librosa.power_to_db``. 80.0 (the default) is
+        librosa's own default and therefore reproduces the existing QLVM
+        spectrograms exactly; it is amplitude-dependent, so an absolute-dB run
+        must pass None.
 
     Returns
     -------
     avg_spectrogram (np.ndarray | None)
-        A ``(num_freq_bins, num_time_bins)`` array, or None if no channel
-        produced a valid spectrogram.
+        A ``(num_freq_bins, num_time_bins)`` array (``(num_freq_bins,
+        original_time_bins)`` when ``num_time_bins`` is None), or None if no
+        channel produced a valid spectrogram.
     original_time_bins (int)
         The native (pre-``fix_length``) STFT time-bin count for the segment;
         this is the USV's ``duration`` in spectrogram frames.
@@ -150,7 +168,11 @@ def compute_usv_spectrogram(
         )
 
         power_spec = power_spec[freq_mask]
-        spec_db = librosa.power_to_db(power_spec, ref=np.max)
+        spec_db = librosa.power_to_db(
+            power_spec,
+            ref=np.max if db_ref is None else float(db_ref),
+            top_db=top_db,
+        )
 
         # Resample along the frequency axis to the target bin count.
         if spec_db.shape[0] != num_freq_bins:
@@ -159,7 +181,7 @@ def compute_usv_spectrogram(
             ).T
 
         original_time_bins = spec_db.shape[1]
-        if spec_db.shape[1] != num_time_bins:
+        if num_time_bins is not None and spec_db.shape[1] != num_time_bins:
             spec_db = librosa.util.fix_length(spec_db, size=num_time_bins, axis=1)
 
         per_channel_specs.append(spec_db)
@@ -178,6 +200,77 @@ def compute_usv_spectrogram(
         avg_spectrogram = avg_spectrogram / (avg_spectrogram.max() + _NORMALIZE_EPS)
 
     return avg_spectrogram, original_time_bins
+
+
+def open_hpss_audio(root: pathlib.Path) -> tuple[np.memmap, int]:
+    """
+    Description
+    -----------
+    Opens a session's concatenated HPSS-filtered audio memmap read-only, parsing
+    its layout from the file name exactly as ``das_inference.summarize_das_findings``
+    does (``..._<sampling rate>_<samples>_<channels>_<dtype>.mmap``).
+
+    Parameters
+    ----------
+    root (pathlib.Path)
+        Session root directory (contains ``audio/hpss_filtered``).
+
+    Returns
+    -------
+    audio (np.memmap)
+        ``(n_samples, n_channels)`` audio.
+    sampling_rate (int)
+        Audio sampling rate in Hz.
+    """
+
+    audio_file_loc = first_match_or_raise(
+        root=root / "audio" / "hpss_filtered",
+        pattern="*.mmap",
+        label="concatenated audio mmap",
+    )
+    name_parts = audio_file_loc.name.split("_")
+    data_type, channel_num, sample_num, sampling_rate = (
+        name_parts[-1][:-5],
+        int(name_parts[-2]),
+        int(name_parts[-3]),
+        int(name_parts[-4]),
+    )
+    audio = np.memmap(filename=audio_file_loc, mode="r", dtype=data_type, shape=(sample_num, channel_num))
+    return audio, sampling_rate
+
+
+def excluded_audio_columns(root_directory: str, logger: Callable = print) -> tuple[list[str], set[int]]:
+    """
+    Description
+    -----------
+    A session's hardware-excluded microphones (per-session metadata record,
+    ``Equipment -> audio_Avisoft -> excluded_channels``; empty for healthy
+    sessions) and their audio memmap columns: 'm_chNN' -> column NN-1 and
+    's_chNN' -> 12 + NN-1, since the master device occupies columns 0-11
+    and the slave device columns 12-23 (the concatenated-audio channel layout,
+    matching das_inference's channel map).
+
+    Parameters
+    ----------
+    root_directory (str)
+        Session root directory.
+    logger (Callable)
+        Logging callback passed to ``read_excluded_audio_channels``. Defaults to ``print``.
+
+    Returns
+    -------
+    excluded_channels (list[str])
+        The excluded channel names.
+    excluded_columns (set[int])
+        Their memmap column indices.
+    """
+
+    excluded_channels = read_excluded_audio_channels(root_directory, logger=logger)
+    excluded_columns = {
+        (12 if channel_name.startswith('s') else 0) + int(channel_name[-2:]) - 1
+        for channel_name in excluded_channels
+    }
+    return excluded_channels, excluded_columns
 
 
 class SpectrogramGenerator:
@@ -348,37 +441,15 @@ class SpectrogramGenerator:
         )
         usv_summary_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
 
-        audio_file_loc = first_match_or_raise(
-            root=root / "audio" / "hpss_filtered",
-            pattern="*.mmap",
-            label="concatenated audio mmap",
-        )
-        audio_file_name = audio_file_loc.name
-        data_type, channel_num, sample_num, audio_sampling_rate = (
-            audio_file_name.split("_")[-1][:-5],
-            int(audio_file_name.split("_")[-2]),
-            int(audio_file_name.split("_")[-3]),
-            int(audio_file_name.split("_")[-4]),
-        )
-        audio_file_data = np.memmap(
-            filename=audio_file_loc,
-            mode="r",
-            dtype=data_type,
-            shape=(sample_num, channel_num),
-        )
+        audio_file_data, audio_sampling_rate = open_hpss_audio(root)
+        sample_num, channel_num = audio_file_data.shape
 
-        # Hardware-excluded microphones for this session (per-session metadata
-        # record, ``Equipment -> audio_Avisoft -> excluded_channels``; empty
-        # for healthy sessions) are dropped from the variance-weighted average
-        # so artifact energy on a compromised channel cannot dominate it.
-        # 'm_chNN'/'s_chNN' -> mmap column: the master device occupies columns
-        # 0-11 and the slave device columns 12-23 (the concatenated-audio
-        # channel layout, matching das_inference's channel map).
-        excluded_channels = read_excluded_audio_channels(self.root_directory, logger=self.message_output)
-        excluded_channel_indices = {
-            (12 if channel_name.startswith('s') else 0) + int(channel_name[-2:]) - 1
-            for channel_name in excluded_channels
-        }
+        # Hardware-excluded microphones for this session are dropped from the
+        # variance-weighted average so artifact energy on a compromised channel
+        # cannot dominate it.
+        excluded_channels, excluded_channel_indices = excluded_audio_columns(
+            self.root_directory, logger=self.message_output
+        )
         eligible_channel_indices = [ch for ch in range(channel_num) if ch not in excluded_channel_indices]
         if excluded_channel_indices:
             self.message_output(

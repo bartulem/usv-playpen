@@ -86,6 +86,33 @@ def test_compute_usv_spectrogram_too_short_returns_none():
     assert n_time == 0
 
 
+def test_compute_usv_spectrogram_defaults_reproduce_the_legacy_qlvm_path():
+    """The new db_ref / top_db keywords default to ref=np.max and librosa's 80 dB clamp,
+    so an unchanged call returns exactly what the explicit legacy arguments return."""
+    rng = np.random.default_rng(2)
+    segment = rng.integers(-8000, 8000, size=(12500, 4), dtype=np.int16).astype(np.float64)
+    default_spec, default_n = compute_usv_spectrogram(segment, 250000, _SPEC_PARAMS, normalize=False)
+    legacy_spec, legacy_n = compute_usv_spectrogram(
+        segment, 250000, _SPEC_PARAMS, normalize=False, db_ref=None, top_db=80.0
+    )
+    np.testing.assert_array_equal(default_spec, legacy_spec)
+    assert default_n == legacy_n
+
+
+def test_compute_usv_spectrogram_absolute_db_and_native_length():
+    """With db_ref=1.0, top_db=None and num_time_bins=None the spectrogram keeps every
+    native frame and its dB scale is absolute: scaling the audio by 10 raises every bin by
+    exactly 20 dB, which the per-segment ref=np.max path would hide."""
+    rng = np.random.default_rng(3)
+    segment = rng.normal(0.0, 0.01, size=(100000, 2))
+    params = {**_SPEC_PARAMS, "num_time_bins": None, "min_freq": 3000.0, "max_freq": 30000.0}
+    quiet, n_time = compute_usv_spectrogram(segment, 250000, params, normalize=False, db_ref=1.0, top_db=None)
+    loud, _ = compute_usv_spectrogram(10.0 * segment, 250000, params, normalize=False, db_ref=1.0, top_db=None)
+    assert n_time == 1 + 100000 // 512
+    assert quiet.shape == (128, n_time)
+    np.testing.assert_allclose(loud - quiet, 20.0, atol=1e-6)
+
+
 def test_generate_session_spectrograms_writes_h5(tmp_path, mocker):
     """End-to-end: a session with N valid USVs writes the consolidated layout
     (top-level ``frequency_bins`` + a ``spectrogram/<session>`` group with

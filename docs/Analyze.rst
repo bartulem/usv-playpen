@@ -131,7 +131,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 
 Compute neuronal tuning curves
 ------------------------------
-Having recorded unit activity, social behavior, and ultrasonic vocalizations (USVs), you might be interested whether individual units encode specific behavioral features and / or vocal properties. To get at this, you can compute session-averaged *tuning curves* capturing the relationship between the firing rate of each unit and (a) each 3D behavioral feature, and (b) USV-anchored quantities — a pooled pre-USV PETH (peri-event time histogram; ``usv_peth``), within-USV firing rate as a function of each continuous acoustic property (``usv_property_tuning`` over duration, mean / peak frequency, bandwidth, amplitude, spectral entropy, mask number), within-USV firing rate as a function of categorical USV labels (``usv_category_tuning`` over VAE (variational autoencoder) / QLVM (in-house quasi-Monte Carlo latent variable model) ``category`` and ``supercategory``), and a per-category time-resolved peri-USV PETH (``usv_category_peth``). Behavioral and vocal payloads are produced together and serialized into a single per-cluster pickle. To trigger this in the GUI, list the root directories of interest, select *Compute neuronal tuning curves*, click *Next* and then *Analyze* (a progress bar will appear in the terminal while the analysis is running):
+Having recorded unit activity, social behavior, and ultrasonic vocalizations (USVs), you might be interested whether individual units encode specific behavioral features and / or vocal properties. To get at this, you can compute session-averaged *tuning curves* capturing the relationship between the firing rate of each unit and (a) each 3D behavioral feature, and (b) USV-anchored quantities — a pooled peri-USV-onset PETH (peri-event time histogram; ``usv_peth``, by default from 2 s before to 0.5 s after each call's onset), within-USV firing rate as a function of each continuous acoustic property (``usv_property_tuning`` over duration, mean / peak frequency, bandwidth, mean / max amplitude (relative to each call's own peak), absolute loudness (``loudness_db``), spectral entropy, mask number), within-USV firing rate as a function of categorical USV labels (``usv_category_tuning`` over the fine and coarse cluster labels of every QLVM (quasi-Monte Carlo latent variable model) map in the summary: ``qlvm_category`` / ``qlvm_supercategory`` of the regular model and ``<map>_category`` / ``<map>_supercategory`` of the four conditional ones), and a per-category time-resolved peri-USV PETH (``usv_category_peth``; saved in the pickle, not plotted). Noise segments are always dropped. Squeaks are dropped from the self side's anchors by default (``exclude_squeaks_self``; ``exclude_squeaks_partner`` for the partner side, off by default) and never enter the QLVM category tuning — the QLVM maps were trained without squeaks, which get their own embedding. Behavioral features listed in ``excluded_behavioral_features`` (by default the nose-anchored dyadic features, whose head-anchored versions are tuned instead) are left out, derivatives included. Behavioral and vocal payloads are produced together and serialized into a single per-cluster pickle. To trigger this in the GUI, list the root directories of interest, select *Compute neuronal tuning curves*, click *Next* and then *Analyze* (a progress bar will appear in the terminal while the analysis is running):
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/analyze_step_2.png
    :align: center
@@ -166,7 +166,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **n_spatial_bins** : number of spatial bins (2D behavioral feature)
 * **spatial_scale_cm** : maximum distance from center of arena to one edge (in cm)
 * **shuffle_seconds_range** : ``[min, max]`` of the uniform circular shift (in s) used to build the null distribution
-* **peth_window_seconds** : ``[start, stop]`` of the pre-USV PETH window (in s)
+* **peth_window_seconds** : ``[start, stop]`` of the PETH window relative to each call's onset (in s); default ``[-2, 0.5]``. Bins before onset honour the two cleanliness rules below; a bin after onset is kept only while it ends before the next USV's onset (any emitter, squeaks included), so the post-onset PETH covers the call itself and the silence after it, never a following call
 * **peth_bin_seconds** : PETH bin width (in s)
 * **bout_quiet_seconds** : inter-bout silence required to define a new bout (in s)
 * **vocal_require_clean_post_anchor** : if ``true``, the time after the USV onset must be free of contaminating USVs to keep the anchor
@@ -177,6 +177,9 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **behavioral_min_occupancy_seconds** : minimum behavioral occupancy per bin (in s) to draw that bin in 1D feature plots; persisted into ``behavioral_metadata``
 * **usv_property_min_occupancy_seconds** : minimum vocal-property occupancy per bin (in s) to keep the rate estimate finite
 * **include_partner_vocalization_tuning_bool** : also compute partner-side vocal tuning when its threshold is met
+* **exclude_squeaks_self** : leave the self side's squeaks (``squeak`` True) out of its anchors (default ``true``). The self side is the emitter with more non-squeak USVs. Squeaks still count as other calls in the overlap checks, and a summary without a ``squeak`` column raises
+* **exclude_squeaks_partner** : the same for the partner side (default ``false``, since the partner is usually the female, who emits the squeaks). Either way, squeaks never enter the QLVM category tuning
+* **excluded_behavioral_features** : behavioral base features left out of the tuning, derivatives (``_1st_der`` / ``_2nd_der``) included (default ``nose-nose``, ``allo_yaw-nose``, ``nose-allo_yaw``, ``allo_pitch-nose``, ``nose-allo_pitch``: their head-anchored versions, ``head-head``, ``allo_yaw-head``, ``head-allo_yaw``, ``allo_pitch-head``, ``head-allo_pitch``, are tuned instead)
 * **smoothing_sd** : standard deviation of the Gaussian kernel (in bins) applied to ratemaps and shuffle distributions; ``0`` disables smoothing
 * **circular_features** : list of behavioral feature suffixes that are wrap-around in nature (e.g. ``allo_yaw``, ``body_dir``); used by the triage helpers to detect divergence runs that span the bin-0 / bin-N boundary
 
@@ -190,7 +193,7 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "n_spatial_bins": 196,
         "spatial_scale_cm": 32,
         "shuffle_seconds_range": [20, 60],
-        "peth_window_seconds": [-2, 0],
+        "peth_window_seconds": [-2, 0.5],
         "peth_bin_seconds": 0.05,
         "bout_quiet_seconds": 2.0,
         "vocal_require_clean_post_anchor": true,
@@ -201,6 +204,9 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "behavioral_min_occupancy_seconds": 1.0,
         "usv_property_min_occupancy_seconds": 0.25,
         "include_partner_vocalization_tuning_bool": false,
+        "exclude_squeaks_self": true,
+        "exclude_squeaks_partner": false,
+        "excluded_behavioral_features": ["nose-nose", "allo_yaw-nose", "nose-allo_yaw", "allo_pitch-nose", "nose-allo_pitch"],
         "smoothing_sd": 1.0,
         "circular_features": ["allo_yaw", "body_dir"]
     }

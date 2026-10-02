@@ -19,6 +19,9 @@ from typing import Any
 import h5py
 import polars as pls
 
+from ..os_utils import drop_noise_usvs
+from ..yaml_utils import load_session_metadata
+
 
 def extract_session_metadata(session_root: str) -> dict[str, Any]:
     """
@@ -63,11 +66,75 @@ def extract_session_metadata(session_root: str) -> dict[str, Any]:
             'tracking_file': tracking_file
         }
 
+
+def extract_animal_sexes(session_root: str, track_names: list[str]) -> dict[str, str]:
+    """
+    Description
+    -----------
+    Reads the sex of every tracked animal from the session's ``*_metadata.yaml``.
+
+    :func:`extract_session_metadata` names the two tracks ``male_id`` and ``female_id`` by
+    their position in the tracking file, which is right for a courtship session (track 0 is
+    always the male there) and wrong for any other pairing: in a female-female session the
+    track it calls ``male_id`` is a female. The sex of an animal is a recorded property of
+    that animal, not of its track slot, and the session metadata records it for every
+    subject in its ``Subjects`` block (``subject_id`` + ``sex``). ``subject_id`` is the
+    same string the tracking file stores as a track name and the USV summary stores as an
+    ``emitter``, so this map is what lets a same-sex session be read at all.
+
+    Names are compared after stripping null bytes and whitespace, because the H5-decoded
+    track names can carry padding that the YAML and CSV strings do not.
+
+    Parameters
+    ----------
+    session_root (str)
+        The session directory holding the ``*_metadata.yaml`` file.
+    track_names (list of str)
+        The animals to resolve, typically ``[metadata['male_id'], metadata['female_id']]``
+        from :func:`extract_session_metadata`.
+
+    Returns
+    -------
+    animal_sex (dict)
+        ``{stripped track name: 'male' | 'female'}`` for every entry of ``track_names``.
+
+    Raises
+    ------
+    FileNotFoundError
+        The session has no readable ``*_metadata.yaml``.
+    ValueError
+        A track name has no subject in the metadata, the subject has no ``sex``, or the
+        recorded sex is neither ``'male'`` nor ``'female'``. None of these is guessed.
+    """
+
+    metadata, metadata_path = load_session_metadata(session_root)
+    if metadata is None:
+        msg = f"No readable *_metadata.yaml in {session_root}; the animals' sexes cannot be resolved."
+        raise FileNotFoundError(msg)
+
+    subject_sex = {str(subject['subject_id']).strip('\x00').strip(): subject['sex']
+                   for subject in metadata['Subjects'] if 'sex' in subject}
+
+    animal_sex: dict[str, str] = {}
+    for name in track_names:
+        stripped = str(name).strip('\x00').strip()
+        if stripped not in subject_sex:
+            msg = (f"Track '{stripped}' has no subject with a recorded sex in {metadata_path}; "
+                   f"subjects with a sex: {sorted(subject_sex)}.")
+            raise ValueError(msg)
+        sex = str(subject_sex[stripped]).strip().lower()
+        if sex not in ('male', 'female'):
+            msg = f"Subject '{stripped}' in {metadata_path} has sex '{subject_sex[stripped]}'; expected male or female."
+            raise ValueError(msg)
+        animal_sex[stripped] = sex
+    return animal_sex
+
+
 def load_and_filter_usv_data(
     session_root: str,
     frame_rate: float,
-    noise_col_id: str,
-    noise_categories: list[int]
+    exclude_noise_usvs: bool,
+    call_type: str | None = None
 ) -> pls.DataFrame:
     """
     Description
@@ -75,9 +142,19 @@ def load_and_filter_usv_data(
     This method loads USV summary CSV data using Polars and appends calculated frame
     indices based on the provided recording frame rate.
 
-    The function filters the entire dataset to remove noise based on the provided
-    noise column and a list of noise categories. The remaining valid vocalizations
-    (male, female, and unassigned) are retained and returned.
+    When ``exclude_noise_usvs`` is set, the segments ``detect_usv_noise`` flagged as holding no
+    vocalization are dropped (:func:`os_utils.drop_noise_usvs`), leaving the valid vocalizations
+    (male, female and unassigned). A session whose summary has no ``noise`` column raises there, so a
+    missing classification can never be mistaken for a clean session.
+
+    ``call_type`` selects among the vocalizations that survive. Dropping noise leaves BOTH
+    ultrasonic calls and squeaks, and the two are different vocalizations: a squeak is a broadband
+    call with a 3-8 kHz fundamental, detected by ``detect_usv_squeaks``, while a USV is ultrasonic.
+    Callers that want one and not the other must say so, because the union is rarely what an
+    analysis means. In the cohort the distinction is large -- 7.6% of the male's segments and 48.0%
+    of the female's are squeaks -- and treating them as one class puts a squeak between two
+    ultrasonic calls, which suppresses the long interval those calls would have formed and
+    contributes two short ones in its place.
 
     Parameters
     ----------
@@ -85,16 +162,18 @@ def load_and_filter_usv_data(
         The absolute path to the session directory.
     frame_rate (float)
         The sampling rate of the video recording used to synchronize USVs with behavioral frames.
-    noise_col_id (str)
-        The name of the column in the CSV that dictates the noise classification.
-    noise_categories (list[int])
-        A list of specific integer values in the noise column that identify a row as noise to be excluded.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments flagged as noise.
+    call_type (str or None)
+        Which vocalizations to keep: ``'usv'`` for ultrasonic calls only (squeaks dropped),
+        ``'squeak'`` for squeaks only, or None to keep both. Defaults to None, which preserves
+        the behaviour of every caller written before the squeak classifier existed.
 
     Returns
     -------
     usv_info (pls.DataFrame)
-        All columns from the USV summary CSV with noise rows removed, plus a newly
-        calculated 'frame_index' column.
+        All columns from the USV summary CSV with noise rows removed, restricted to ``call_type``,
+        plus a newly calculated 'frame_index' column.
     """
 
     session_path = Path(session_root)
@@ -106,22 +185,18 @@ def load_and_filter_usv_data(
 
     usv_info = pls.read_csv(str(usv_file))
 
-    # Remove noise across all categories provided in the list; rows whose noise value is
-    # null are not in noise_categories, so fill_null(True) retains them rather than letting
-    # the three-valued (~null -> null) logic silently drop them via filter()
-    #
-    # A summary written by das-summarize carries no classification column at all --
-    # the acoustic-embedding columns are added later and are dropped whenever the
-    # merge is re-run. Referencing a missing column here raised ColumnNotFoundError
-    # and killed the whole analysis on its first session, so an absent column now
-    # means "no noise labels available, keep every row" and says so once.
-    if noise_col_id not in usv_info.columns:
-        print(f"    no '{noise_col_id}' column in {usv_file.name}: keeping all "
-              f"{usv_info.height} rows unfiltered")
-        usv_info_clean = usv_info
-    else:
-        usv_info_clean = usv_info.filter(
-            pls.col(noise_col_id).is_in(noise_categories).not_().fill_null(True)
+    usv_info_clean = drop_noise_usvs(usv_info, usv_file.name)[0] if exclude_noise_usvs else usv_info
+
+    if call_type is not None:
+        if call_type not in ("usv", "squeak"):
+            msg = f"load_and_filter_usv_data: call_type must be 'usv', 'squeak' or None, got {call_type!r}."
+            raise ValueError(msg)
+        if "squeak" not in usv_info_clean.columns:
+            msg = (f"{usv_file.name} has no 'squeak' column, so call_type={call_type!r} cannot be "
+                   "honoured; run detect_usv_squeaks on this session first.")
+            raise KeyError(msg)
+        usv_info_clean = usv_info_clean.filter(
+            pls.col("squeak") if call_type == "squeak" else ~pls.col("squeak")
         )
 
     return usv_info_clean.with_columns(

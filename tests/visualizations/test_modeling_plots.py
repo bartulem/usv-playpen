@@ -30,6 +30,7 @@ import matplotlib.pyplot as plt
 # would otherwise promote to a collection error.
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", DeprecationWarning)
+    from usv_playpen.visualizations import modeling_plots
     from usv_playpen.visualizations.modeling_plots import (
         _FIGURE_DPI,
         _FIGURE_FORMAT,
@@ -39,10 +40,15 @@ with warnings.catch_warnings():
         DeepResultsVisualizer,
         _classify_predictor_feature,
         _last_bin_of_consecutive_run,
+        _resolve_atlas_decoder_and_arrays,
         _rolling_mean_1d,
         plot_collinearity_audit,
         plot_feature_ranking,
+        _benjamini_hochberg,
+        _reportable_effect,
+        plot_behavioral_response_forest,
         plot_manifold_filter_atlas,
+        plot_matched_divergence,
         plot_manifold_selection_trajectory,
         plot_model_selection_results,
         plot_multinomial_multivariate_filters,
@@ -1462,43 +1468,82 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
     return str(out)
 
 
-def _write_fake_qlvm_artifacts(tmp_path, rng):
+def _fake_decoder_params(rng):
     """
-    Write minimal stand-in QLVM artifacts for ``plot_manifold_filter_atlas`` so
-    the atlas renders without the real ``/mnt`` reference files: a decoder
-    ``.npz`` whose arrays match the frozen QLVM decoder architecture (two Linear
-    layers 4 -> 2048 -> 4096, reshaped to (64, 8, 8), then four ConvTranspose2d
-    blocks 64 -> 32 -> 16 -> 8 -> 1) so ``decode_lattice_atlas`` runs, and an
-    ``arrays_coarse.npz`` carrying a 200 x 200 ``ws_labels_periodic`` watershed
-    with 7 supercategory regions for the boundary overlay.
+    Build stand-in QLVM decoder weights for ``plot_manifold_filter_atlas`` so the
+    atlas renders without the real ``/mnt`` package: arrays matching the frozen
+    QLVM decoder architecture (two Linear layers 4 -> 2048 -> 4096, reshaped to
+    (64, 8, 8), then four ConvTranspose2d blocks 64 -> 32 -> 16 -> 8 -> 1; the
+    legacy-head layout) so ``decode_lattice_atlas`` runs, keyed as
+    ``processing.qlvm_latents.load_decoder_params`` returns them (no
+    ``decoder.`` prefix).
 
     Returns
     -------
-    (str, str)
-        ``(decoder_weights_npz_path, supercategory_arrays_npz_path)``.
+    dict
+        ``"<layer_idx>.weight"`` / ``"<layer_idx>.bias"`` -> float32 array.
     """
 
-    dec = {
-        'decoder.0.weight': rng.standard_normal((2048, 4)).astype(np.float32),
-        'decoder.0.bias': rng.standard_normal((2048,)).astype(np.float32),
-        'decoder.1.weight': rng.standard_normal((4096, 2048)).astype(np.float32),
-        'decoder.1.bias': rng.standard_normal((4096,)).astype(np.float32),
-        'decoder.3.weight': rng.standard_normal((64, 32, 3, 3)).astype(np.float32),
-        'decoder.3.bias': rng.standard_normal((32,)).astype(np.float32),
-        'decoder.5.weight': rng.standard_normal((32, 16, 3, 3)).astype(np.float32),
-        'decoder.5.bias': rng.standard_normal((16,)).astype(np.float32),
-        'decoder.7.weight': rng.standard_normal((16, 8, 3, 3)).astype(np.float32),
-        'decoder.7.bias': rng.standard_normal((8,)).astype(np.float32),
-        'decoder.9.weight': rng.standard_normal((8, 1, 3, 3)).astype(np.float32),
-        'decoder.9.bias': rng.standard_normal((1,)).astype(np.float32),
+    return {
+        '0.weight': rng.standard_normal((2048, 4)).astype(np.float32),
+        '0.bias': rng.standard_normal((2048,)).astype(np.float32),
+        '1.weight': rng.standard_normal((4096, 2048)).astype(np.float32),
+        '1.bias': rng.standard_normal((4096,)).astype(np.float32),
+        '3.weight': rng.standard_normal((64, 32, 3, 3)).astype(np.float32),
+        '3.bias': rng.standard_normal((32,)).astype(np.float32),
+        '5.weight': rng.standard_normal((32, 16, 3, 3)).astype(np.float32),
+        '5.bias': rng.standard_normal((16,)).astype(np.float32),
+        '7.weight': rng.standard_normal((16, 8, 3, 3)).astype(np.float32),
+        '7.bias': rng.standard_normal((8,)).astype(np.float32),
+        '9.weight': rng.standard_normal((8, 1, 3, 3)).astype(np.float32),
+        '9.bias': rng.standard_normal((1,)).astype(np.float32),
     }
-    dec_path = tmp_path / "qmc_decoder_weights.npz"
-    np.savez(dec_path, **dec)
 
-    labels = rng.integers(1, 8, size=(200, 200)).astype(np.int16)
-    arr_path = tmp_path / "arrays_coarse.npz"
-    np.savez(arr_path, ws_labels_periodic=labels)
-    return str(dec_path), str(arr_path)
+
+_FAKE_CELL_MODEL_ID = "v3/phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor"
+
+
+def _fake_model_cell_loader(rng, c_dim: int = 0, loaded: list | None = None):
+    """
+    Build a stand-in for ``processing.qlvm_latents.load_model_cell`` so the atlas's
+    model-cell route runs without the real ``/mnt`` package: it returns the stand-in
+    decoder weights of ``_fake_decoder_params`` (legacy-head layout, which
+    ``decode_lattice_atlas`` runs), a contract with the given ``c_dim``, and the v3
+    regular cell's ``model_id``. Every directory it is called with is appended to
+    ``loaded``.
+
+    Returns
+    -------
+    callable
+        ``model_cell_directory -> model dict``.
+    """
+
+    params = _fake_decoder_params(rng)
+
+    def _load(model_cell_directory):
+        if loaded is not None:
+            loaded.append(model_cell_directory)
+        return {"params": params, "contract": {"c_dim": c_dim}, "model_id": _FAKE_CELL_MODEL_ID}
+
+    return _load
+
+
+def _write_v3_coarse_arrays(path, rng, model_id: str = _FAKE_CELL_MODEL_ID, n_regions: int = 9):
+    """
+    Write a stand-in ``export-qlvm-reference-arrays`` coarse arrays file: a 200 x 200
+    ``ws_labels_periodic`` grid with ``n_regions`` labels and the exporting cell's
+    ``model_id``.
+
+    Returns
+    -------
+    str
+        The written path.
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    labels = rng.integers(1, n_regions + 1, size=(200, 200)).astype(np.int16)
+    np.savez(path, ws_labels_periodic=labels, ws_labels=labels, model_id=np.array(model_id))
+    return str(path)
 
 
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
@@ -1508,18 +1553,19 @@ class TestPlotManifoldFilterAtlas:
     torus-only atlas (decoded vocal-space map + |W(t)| magnitude + per-feature
     affinity filmstrips)."""
 
-    def test_writes_filter_atlas(self, tmp_path):
-        """A torus (4-D sin/cos) final step, with stand-in QLVM decoder and
-        supercategory arrays, emits exactly one ``*_filter_atlas_*`` figure."""
+    def test_writes_filter_atlas(self, tmp_path, monkeypatch):
+        """A torus (4-D sin/cos) final step, with a stand-in QLVM model cell decoder
+        and supercategory arrays, emits exactly one ``*_filter_atlas_*`` figure."""
 
         rng = np.random.default_rng(71)
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
         pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4)
-        dec_path, arr_path = _write_fake_qlvm_artifacts(tmp_path, rng)
+        arr_path = _write_v3_coarse_arrays(tmp_path / "arrays_coarse.npz", rng)
         out_dir = tmp_path / "atlas_out"
         out_dir.mkdir()
         plot_manifold_filter_atlas(
             selection_results_path=pkl,
-            decoder_weights_npz_path=dec_path,
+            decoder_model_cell_directory="/cell",
             supercategory_arrays_npz_path=arr_path,
             n_time_slices=4,
             atlas_grid_n=2,
@@ -1528,6 +1574,78 @@ class TestPlotManifoldFilterAtlas:
         )
         assert len(list(out_dir.glob(
             f"model_selection_manifold_*_filter_atlas_*.{_FIGURE_FORMAT}"))) == 1
+
+    def test_default_decoder_is_settings_model_cell_with_v3_arrays(self, tmp_path, monkeypatch):
+        """With no decoder arguments the atlas decodes with the model package cell
+        named by modeling_settings.json (the v3 regular cell) and draws the coarse
+        arrays os_utils resolves under the visualization spectrograms_dir
+        (<dir>/qlvm_v3/arrays_coarse.npz); one figure is written."""
+
+        rng = np.random.default_rng(75)
+        loaded: list = []
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng, loaded=loaded))
+        resolved_calls: list = []
+        v3_arrays = _write_v3_coarse_arrays(tmp_path / "spectrograms" / "qlvm_v3" / "arrays_coarse.npz", rng)
+
+        def _resolve(spectrograms_dir, embedding, clustering):
+            resolved_calls.append((spectrograms_dir, embedding, clustering))
+            return v3_arrays
+
+        monkeypatch.setattr(modeling_plots, "resolve_embedding_arrays_path", _resolve)
+        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=2, output_dim=4)
+        out_dir = tmp_path / "atlas_cell"
+        out_dir.mkdir()
+        plot_manifold_filter_atlas(
+            selection_results_path=pkl, n_time_slices=3, atlas_grid_n=2,
+            save_plot=True, output_dir=str(out_dir),
+        )
+        assert len(loaded) == 1
+        assert loaded[0].endswith("v3/phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor")
+        assert resolved_calls == [(_VIZ_SETTINGS['shared_resources']['spectrograms_dir'], "qlvm", "coarse")]
+        assert len(list(out_dir.glob(f"*_filter_atlas_*.{_FIGURE_FORMAT}"))) == 1
+
+    def test_default_arrays_path_is_qlvm_v3(self, tmp_path, monkeypatch):
+        """The default coarse arrays of a cell decoder come from the real os_utils
+        convention for the regular map, <spectrograms_dir>/qlvm_v3/qlvm/arrays_coarse.npz
+        (never the old qlvm/ folder)."""
+
+        rng = np.random.default_rng(76)
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
+        real_resolve = modeling_plots.resolve_embedding_arrays_path
+        resolved: list = []
+        stand_in = _write_v3_coarse_arrays(tmp_path / "arrays_coarse.npz", rng)
+
+        def _resolve(spectrograms_dir, qlvm_map, clustering):
+            resolved.append(real_resolve(spectrograms_dir, qlvm_map, clustering))
+            return stand_in
+
+        monkeypatch.setattr(modeling_plots, "resolve_embedding_arrays_path", _resolve)
+        _, arrays_path, model_id = _resolve_atlas_decoder_and_arrays("/cell", None)
+        assert arrays_path == stand_in
+        assert model_id == _FAKE_CELL_MODEL_ID
+        assert resolved[0].replace("\\", "/").endswith("/qlvm_v3/qlvm/arrays_coarse.npz")
+
+    def test_arrays_from_another_model_raise(self, tmp_path, monkeypatch):
+        """Coarse arrays exported from a different cell than the decoder are
+        refused, so boundaries always partition the decoded torus."""
+
+        rng = np.random.default_rng(77)
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
+        other = _write_v3_coarse_arrays(tmp_path / "other" / "arrays_coarse.npz", rng,
+                                        model_id="v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked")
+        with pytest.raises(ValueError, match="hold the clustering of v2/phase9"):
+            _resolve_atlas_decoder_and_arrays(
+                decoder_model_cell_directory="/cell",
+                supercategory_arrays_npz_path=other,
+            )
+
+    def test_conditional_cell_raises(self, monkeypatch):
+        """A conditional cell (c_dim > 0) cannot decode a torus-only atlas."""
+
+        rng = np.random.default_rng(78)
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng, c_dim=1))
+        with pytest.raises(ValueError, match="conditional cell"):
+            _resolve_atlas_decoder_and_arrays("/cell", None)
 
     def test_euclidean_2d_block_is_rejected(self, tmp_path):
         """The atlas is torus-only: a euclidean 2-D weight block prints why and
@@ -2183,3 +2301,182 @@ class TestDeepResultsVisualizerTorus:
             output_dir=str(out_dir),
         )
         assert len(list(out_dir.glob(f"cnn_regional_saliency_region_0_*.{_FIGURE_FORMAT}"))) == 1
+
+
+def _contrast_artifact(tmp_path, n_features: int = 3):
+    """
+    Writes a minimal contrast artifact the forest plotter can consume.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Directory to write into.
+    n_features : int
+        How many response features to fabricate.
+
+    Returns
+    -------
+    path : str
+        Location of the written pickle.
+    """
+
+    features = ['speed', 'ego_yaw', 'back_pitch'][:n_features]
+    likelihoods = {f: ('gaussian' if f == 'back_pitch' else 'lognormal') for f in features}
+    per_feature = {}
+    for position, feature in enumerate(features):
+        term = {'coefficient': -0.05 * (position + 1), 'std_error': 0.01,
+                'z': -5.0, 'p_value': 0.0001 * (position + 1),
+                'ci_low': -0.07, 'ci_high': -0.03}
+        per_feature[feature] = {
+            'window': {'terms': {'vocal': dict(term), 'vocal_x_log_duration': dict(term)}},
+            'variance_explained': {'r_squared_full': 0.4 + 0.1 * position,
+                                   'r_squared_covariates': 0.4 + 0.1 * position - 0.001,
+                                   'vocal_share_percent': 0.05 * (position + 1)},
+        }
+    artifact = {
+        'response_features': features,
+        'response_likelihoods': likelihoods,
+        'per_feature': per_feature,
+        '_input_metadata': {'analysis_specific': {
+            'covariate_summary_seconds': [0.5, 4.0],
+            'target_window_seconds': 0.5,
+        }},
+    }
+    path = tmp_path / 'contrast.pkl'
+    with path.open('wb') as handle:
+        pickle.dump(artifact, handle)
+    return str(path)
+
+
+def _divergence_artifact(tmp_path, n_pairs: int = 40, n_frames: int = 120):
+    """
+    Writes a minimal matched-divergence artifact the plotter can consume.
+
+    Parameters
+    ----------
+    tmp_path : pathlib.Path
+        Directory to write into.
+    n_pairs : int
+        Rows per arm.
+    n_frames : int
+        Frames per stored curve.
+
+    Returns
+    -------
+    path : str
+        Location of the written pickle.
+    """
+
+    generator = np.random.default_rng(0)
+    features = ['speed', 'ego_yaw']
+    artifact = {
+        'features': features,
+        'pairs': {f: {'vocal': generator.normal(size=(n_pairs, n_frames)),
+                      'silence': generator.normal(size=(n_pairs, n_frames))}
+                  for f in features},
+        'pair_sessions': {f: ['s1'] * n_pairs for f in features},
+        'pair_control_counts': {f: np.full(n_pairs, 7) for f in features},
+        'caliper_rejected': {f: 0 for f in features},
+        'anchor_index': n_frames // 2,
+        'pooled_scaling': {f: {'mean': 0.0, 'std': 1.0} for f in features},
+        'parameters': {},
+        'camera_fps': 60.0,
+    }
+    path = tmp_path / 'divergence.pkl'
+    with path.open('wb') as handle:
+        pickle.dump(artifact, handle)
+    return str(path)
+
+
+class TestBenjaminiHochberg:
+    """Correction shared by both behavioural-response figures."""
+
+    def test_nothing_passes_when_every_p_is_large(self):
+        assert not _benjamini_hochberg(np.array([0.4, 0.6, 0.9]), 0.05).any()
+
+    def test_the_step_up_threshold_is_not_a_flat_alpha(self):
+        # The second-smallest p must beat q * 2 / m, not q. At q = 0.01 over four
+        # tests that is 0.005, so 0.008 fails despite being under 0.01.
+        rejected = _benjamini_hochberg(np.array([0.001, 0.008, 0.4, 0.9]), 0.01)
+        assert rejected.tolist() == [True, False, False, False]
+
+    def test_a_looser_rate_admits_more(self):
+        rejected = _benjamini_hochberg(np.array([0.001, 0.008, 0.4, 0.9]), 0.05)
+        assert rejected.tolist() == [True, True, False, False]
+
+
+class TestReportableEffect:
+    """Coefficient placed on the scale it should be read in."""
+
+    def test_a_lognormal_coefficient_becomes_a_percent_change(self):
+        value, low, high, unit = _reportable_effect(
+            {'coefficient': np.log(1.1), 'std_error': 0.0}, 'lognormal', 0.01)
+        assert unit == '% change in median'
+        assert value == pytest.approx(10.0)
+        assert low == pytest.approx(high)
+
+    def test_a_gaussian_coefficient_stays_additive(self):
+        value, _, _, unit = _reportable_effect(
+            {'coefficient': -0.3, 'std_error': 0.1}, 'gaussian', 0.01)
+        assert unit == 'degrees'
+        assert value == pytest.approx(-0.3)
+
+    def test_the_interval_widens_with_a_stricter_alpha(self):
+        _, low_99, _, _ = _reportable_effect(
+            {'coefficient': 0.0, 'std_error': 1.0}, 'gaussian', 0.01)
+        _, low_95, _, _ = _reportable_effect(
+            {'coefficient': 0.0, 'std_error': 1.0}, 'gaussian', 0.05)
+        assert low_99 < low_95
+
+    def test_the_interval_is_rebuilt_not_read_from_the_artifact(self):
+        # The stored bounds are 95%; a figure claiming 99% must not use them.
+        _, low, high, _ = _reportable_effect(
+            {'coefficient': 0.0, 'std_error': 1.0, 'ci_low': -99.0, 'ci_high': 99.0},
+            'gaussian', 0.01)
+        assert low == pytest.approx(-2.5758, abs=1e-3)
+        assert high == pytest.approx(2.5758, abs=1e-3)
+
+
+class TestBehavioralResponseFigures:
+    """Both behavioural-response plotters run end to end on a written artifact."""
+
+    # Every plotter in the module ends on `plt.show()`, which under the Agg
+    # backend warns that the canvas is non-interactive. The suite promotes
+    # warnings to errors, so the call is wrapped rather than the convention
+    # changed for these two functions alone.
+    @staticmethod
+    def _draw(function, **kwargs):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            function(**kwargs)
+        plt.close("all")
+
+    def test_forest_plot_writes_a_file(self, tmp_path):
+        self._draw(plot_behavioral_response_forest,
+                   contrast_results_path=_contrast_artifact(tmp_path),
+                   save_plot=True, output_dir=str(tmp_path))
+        assert list(tmp_path.glob(f'behavioral_response_forest*.{_FIGURE_FORMAT}'))
+
+    def test_forest_plot_does_not_write_when_not_asked(self, tmp_path):
+        self._draw(plot_behavioral_response_forest,
+                   contrast_results_path=_contrast_artifact(tmp_path), save_plot=False)
+        assert not list(tmp_path.glob(f'behavioral_response_forest*.{_FIGURE_FORMAT}'))
+
+    def test_matched_divergence_writes_a_file(self, tmp_path):
+        self._draw(plot_matched_divergence,
+                   divergence_results_path=_divergence_artifact(tmp_path),
+                   display_seconds=(-0.5, 0.5), save_plot=True, output_dir=str(tmp_path))
+        assert list(tmp_path.glob(f'matched_divergence*.{_FIGURE_FORMAT}'))
+
+    def test_matched_divergence_reads_the_frame_rate_from_the_artifact(self, tmp_path):
+        # A plotter that assumed 150 fps would mislabel every timestamp on a
+        # cohort recorded at another rate, so the key must be required.
+        path = _divergence_artifact(tmp_path)
+        with open(path, 'rb') as handle:
+            artifact = pickle.load(handle)
+        del artifact['camera_fps']
+        with open(path, 'wb') as handle:
+            pickle.dump(artifact, handle)
+        with pytest.raises(KeyError):
+            plot_matched_divergence(divergence_results_path=path)
+        plt.close('all')

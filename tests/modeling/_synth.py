@@ -217,7 +217,7 @@ def build_usv_summary_csv(
     -----------
     Writes a synthetic ``*_usv_summary.csv`` under ``<session_root>/audio`` that
     yields a controllable number of valid vocal *bouts* for the target mouse
-    when run through ``find_onset_epochs`` in ``'bout'`` prediction mode.
+    when run through ``find_onset_epochs`` in ``'bout_onset'`` prediction mode.
 
     Construction guarantees, per bout:
       - ``usv_per_bout`` syllables packed tightly (gap << IBI threshold) so they
@@ -257,7 +257,7 @@ def build_usv_summary_csv(
         Syllables packed into each bout.
     category_column (str)
         Name of the integer category column written (default matches the JSON's
-        ``usv_category_column_name`` / ``usv_noise_column``).
+        ``usv_category_column_name``).
     manifold_columns (tuple of str)
         Two column names holding synthetic acoustic-manifold coordinates.
     seed (int)
@@ -312,7 +312,11 @@ def build_usv_summary_csv(
         'emitter': emitters,
         'start': starts,
         'stop': stops,
-        category_column: [1] * n_rows,            # non-noise category (noise == 0)
+        # Every synthetic row is a real vocalization: the noise classifier's verdict is what the
+        # loaders filter on, and a summary without the column now raises rather than passing.
+        'noise': [False] * n_rows,
+        'squeak': [False] * n_rows,
+        category_column: [1] * n_rows,
         f"{category_column.rsplit('_', 1)[0]}_category": [1] * n_rows,
         'mask_number': [2] * n_rows,
         manifold_columns[0]: (rng.standard_normal(n_rows)).round(6).tolist(),
@@ -473,6 +477,7 @@ def build_modeling_settings(
         dyadic_features: list[str] | None = None,
         engagement_features: list[str] | None = None,
         usv_predictor_type=None,
+        usv_category_column_name: str | None = 'qlvm_supercategory',
         split_strategy: str = 'mixed',
         split_num: int = 2,
         test_proportion: float = 0.3,
@@ -496,6 +501,11 @@ def build_modeling_settings(
         set; derivatives off.
       - ``vocal_features.usv_predictor_type`` -> ``None`` by default so no
         vocal predictor columns are generated (keeps the design matrix tiny).
+      - ``vocal_features.usv_category_column_name`` -> ``'qlvm_supercategory'``
+        by default, the label column the synthetic summaries carry, so the
+        categorical pipelines (multinomial, binomial, single-category onsets,
+        per-category predictors) keep their coverage (the shipped JSON has the
+        same value); passing ``None`` exercises the label-free setting.
       - ``hyperparameters.classical.logistic_regression``: a single tiny ``cs``
         value, ``cv=2``, low ``max_iter`` so ``LogisticRegressionCV`` is fast.
       - ``hyperparameters.classical.pygam``: few splines and few iterations so
@@ -528,6 +538,10 @@ def build_modeling_settings(
         Engagement bucket; defaults to ``[]``.
     usv_predictor_type (str or None)
         Vocal predictor mode; ``None`` disables vocal predictor columns.
+    usv_category_column_name (str or None)
+        Category label column the pipelines read; ``'qlvm_supercategory'``
+        (default, as shipped) matches the synthetic summaries, ``None`` is the
+        label-free setting.
     split_strategy (str)
         ``'mixed'`` or ``'session'`` (the two strategies model selection
         supports).
@@ -565,7 +579,7 @@ def build_modeling_settings(
     mp = settings['model_params']
     mp['filter_history'] = filter_history
     mp['model_engine'] = model_engine
-    mp['model_target_vocal_type'] = 'bout'
+    mp['model_target_vocal_type'] = 'bout_onset'
     mp['model_predictor_mouse_index'] = 1
     mp['usv_per_bout_floor'] = 2
 
@@ -597,6 +611,7 @@ def build_modeling_settings(
     kin['smooth_abs_features'] = {}
 
     settings['vocal_features']['usv_predictor_type'] = usv_predictor_type
+    settings['vocal_features']['usv_category_column_name'] = usv_category_column_name
 
     settings['diagnostics']['collinearity_audit'] = False
     settings['diagnostics']['timescale_audit'] = False

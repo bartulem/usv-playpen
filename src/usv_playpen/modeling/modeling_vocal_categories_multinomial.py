@@ -33,6 +33,7 @@ from tqdm import tqdm
 from typing import Any
 
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
+from .load_input_files import require_labels_for_vocal_predictors, require_usv_category_column
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -717,6 +718,13 @@ class MultinomialModelingPipeline(FeatureZoo):
         - 'y': Target vector of shape (n_samples,) containing integer class labels.
         """
 
+        # The multinomial target IS the category label: without a label column the
+        # run stops here, before any session is loaded.
+        require_usv_category_column(self.modeling_settings['vocal_features']['usv_category_column_name'],
+                                    "The multinomial USV category model")
+        # Label-dependent vocal predictors fail here, before any session is loaded.
+        require_labels_for_vocal_predictors(self.modeling_settings['vocal_features'])
+
         txt_sessions = prepare_modeling_sessions(self.modeling_settings)
 
         print("Loading behavioral feature data...")
@@ -731,7 +739,7 @@ class MultinomialModelingPipeline(FeatureZoo):
         voc_mode = voc_settings['usv_predictor_type']
         smooth_sd = voc_settings['usv_predictor_smoothing_sd']
         column_name_cats = voc_settings['usv_category_column_name']
-        noise_cats = voc_settings['usv_noise_categories']
+        exclude_noise = voc_settings['exclude_noise_usvs']
 
         filter_hist = self.modeling_settings['model_params']['filter_history']
         pred_idx = self.modeling_settings['model_params']['model_predictor_mouse_index']
@@ -749,8 +757,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             filter_history=filter_hist,
             vocal_output_type=voc_mode,
             proportion_smoothing_sd=smooth_sd,
-            noise_vocal_categories=noise_cats,
-            noise_column=voc_settings['usv_noise_column'],
+            exclude_noise_usvs=exclude_noise,
         )
 
         # extract multinomial targets (integer USV category labels) across sessions
@@ -858,7 +865,7 @@ class MultinomialModelingPipeline(FeatureZoo):
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
         # Tag carries the active USV category column (e.g.
-        # `vae_supercategory`, `qlvm_category`) so downstream filenames
+        # `qlvm_supercategory`, `qlvm_category`) so downstream filenames
         # at every level — modeling input pickle, univariate pkls,
         # model-selection step pkls, consolidated artifact — make
         # explicit which clustering / cardinality the multinomial
@@ -935,7 +942,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             feature_zoo_kept=feature_zoo_kept_md,
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
             dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
-            noise_vocal_categories_excluded=list(noise_cats),
+            noise_usvs_excluded=exclude_noise,
             vocal_signal_columns_added=vocal_columns_md,
             filter_history_seconds=float(filter_hist),
             filter_history_frames=int(self.history_frames),
@@ -945,12 +952,12 @@ class MultinomialModelingPipeline(FeatureZoo):
                 'categories_kept': sorted(class_counts_md.keys()),
                 'class_counts': class_counts_md,
                 # Auto-derived from the cohort-pooled labels after the
-                # `usv_noise_categories` filter has been applied (see
+                # `exclude_noise_usvs` filter has been applied (see
                 # `find_usv_categories`). Replaces the former hand-set
                 # `vocal_features.usv_category_number` JSON key so that
                 # the splitter's coverage gate stays in lockstep with
                 # whatever combination of `usv_category_column_name` +
-                # `usv_noise_categories` is in force.
+                # `exclude_noise_usvs` is in force.
                 'usv_category_number': len(class_counts_md),
                 'usv_category_column_name': column_name_cats,
             },
@@ -1381,7 +1388,7 @@ class MultinomialModelRunner:
         # it back here so the splitter's cohort/fold coverage gate
         # validates against the same count the extractor observed,
         # independent of whatever `usv_category_column_name` or
-        # `usv_noise_categories` are currently configured.
+        # `exclude_noise_usvs` is currently configured.
         with open(pkl_path, 'rb') as _md_fh:
             _input_md = pickle.load(_md_fh)['_input_metadata']
         n_categories_total = int(_input_md['analysis_specific']['usv_category_number'])
