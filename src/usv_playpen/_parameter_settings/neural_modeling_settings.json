@@ -35,11 +35,11 @@
       "tail_curvature"
     ],
     "dyadic_pose": [
-      "nose-nose",
-      "allo_yaw-nose",
-      "nose-allo_yaw",
-      "allo_pitch-nose",
-      "nose-allo_pitch"
+      "head-head",
+      "allo_yaw-head",
+      "head-allo_yaw",
+      "allo_pitch-head",
+      "head-allo_pitch"
     ],
     "dyadic_engagement": [],
     "dyadic_pose_symmetric": false,
@@ -49,6 +49,8 @@
       "allo_roll",
       "allo_yaw-nose",
       "nose-allo_yaw",
+      "allo_yaw-head",
+      "head-allo_yaw",
       "allo_yaw-TTI",
       "TTI-allo_yaw"
     ],
