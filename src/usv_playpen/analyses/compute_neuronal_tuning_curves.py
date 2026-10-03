@@ -27,9 +27,10 @@ USV, and unscored rows -- per `exclude_squeaks_self` / `exclude_squeaks_partner`
                           absolute loudness_db, spectral entropy, mask
                           number)
   `usv_category_tuning`   per-category within-USV firing rate for every
-                          QLVM map (`<map>_category` and
-                          `<map>_supercategory`; only pure USVs,
-                          `usv & ~squeak`, enter)
+                          QLVM category column (`qlvm_category`, the
+                          content-ridge categories R-1..R-k of the
+                          regular map; only pure USVs, `usv & ~squeak`,
+                          enter)
   `usv_category_peth`     per-category time-resolved peri-USV PETH
                           (computed and saved; not plotted)
 
@@ -57,7 +58,7 @@ from scipy import ndimage, stats
 from tqdm import tqdm
 
 from ..os_utils import (
-    QLVM_MAPS,
+    QLVM_CATEGORY_COLUMNS,
     atomic_output_path,
     call_class_mask,
     drop_noise_usvs,
@@ -78,12 +79,10 @@ CONTINUOUS_PROPERTIES = (
     "mask_number",
 )
 
-# The per-USV cluster labels of every QLVM map (os_utils.QLVM_MAPS: the regular
-# model and the four conditional ones), fine (`<map>_category`) then coarse
-# (`<map>_supercategory`) per map, in map order.
-CATEGORICAL_FEATURES = tuple(
-    f"{qlvm_map}_{suffix}" for qlvm_map in QLVM_MAPS for suffix in ("category", "supercategory")
-)
+# The per-USV QLVM category columns (os_utils.QLVM_CATEGORY_COLUMNS: the regular
+# map's qlvm_category only; the conditional maps carry no category column and there
+# is no coarse level).
+CATEGORICAL_FEATURES = QLVM_CATEGORY_COLUMNS
 
 # Derivative suffixes a behavioral feature column may carry; a column is matched
 # against `excluded_behavioral_features` on its base name with these stripped.
@@ -1915,8 +1914,8 @@ class NeuronalTuning(FeatureZoo):
         per-anchor bookkeeping that is independent of any spike train
         and can therefore be reused across observed + n_shuffles
         iterations and across clusters within a session. When the
-        summary lacks ``qlvm_category`` / ``qlvm_supercategory`` (e.g. a
-        session embedded before ``infer-qlvm-latents`` wrote the labels), a
+        summary lacks ``qlvm_category`` (e.g. a session whose categories
+        ``assign-qlvm-categories`` has not written yet), a
         one-line notice says the QLVM category tuning is skipped; those
         features then yield no categories, as before.
 

@@ -148,8 +148,7 @@ def _build_synthetic_figure_session(
         "emitter":           ["m1"] * n_usvs,
         "usv":               [True] * n_usvs,
         "squeak":            [False] * n_usvs,
-        "qlvm_supercategory": rng.integers(1, 4, size=n_usvs).tolist(),
-        "qlvm_category":     rng.integers(1, 6, size=n_usvs).tolist(),
+        "qlvm_category":     rng.integers(1, 5, size=n_usvs).tolist(),
         "mean_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
         "peak_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
         "freq_bandwidth_hz": rng.uniform(5000, 30000, n_usvs).tolist(),
@@ -2660,22 +2659,18 @@ def test_render_behavioral_pages_returns_early_without_beh_offset():
 
 
 def test_category_class_count_grows_with_the_labels_units_hold():
-    """The QLVM class counts come from the label grids (here v3-like: 15 fine, 9
-    coarse); units tuned to a category above
-    the base count widen the axis instead of dropping out, and with no grid (package
-    unreachable) the units alone set the count."""
-    grids = {
-        "qlvm_category": {"unique_labels": list(range(1, 16))},
-        "qlvm_supercategory": {"unique_labels": list(range(1, 10))},
-    }
+    """The QLVM class count comes from the label grid when there is one (here 15
+    categories); units tuned to a category above the base count widen the axis instead
+    of dropping out, and with no grid (the production cells carry none) the units
+    alone set the count."""
+    grids = {"qlvm_category": {"unique_labels": list(range(1, 16))}}
     per_group = {"PAG": [{"best_cat": 3}, {"best_cat": 12}], "VMH": []}
     assert _category_class_count("qlvm_category", per_group, grids) == 15
     assert _category_class_count("qlvm_category", {"PAG": [{"best_cat": 17}]}, grids) == 17
-    assert _category_class_count("qlvm_supercategory", {"PAG": [{"best_cat": 2}]}, grids) == 9
-    assert _category_class_count("qlvm_supercategory", {"PAG": [{"best_cat": 4}]}, {}) == 4
+    assert _category_class_count("qlvm_category", {"PAG": [{"best_cat": 4}]}, {}) == 4
 
 
-def _fake_qlvm_cell(tmp_path, fine, coarse, relative_cell="phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor"):
+def _fake_qlvm_cell(tmp_path, fine, coarse, relative_cell="cell/masked"):
     """A v3-layout package cell holding only the two cluster levels' label_grid.npy."""
     cell = tmp_path / "v3" / relative_cell
     for level, grid in (("fine", fine), ("coarse", coarse)):
@@ -2684,18 +2679,14 @@ def _fake_qlvm_cell(tmp_path, fine, coarse, relative_cell="phase6_USVs_unmasked_
     return cell
 
 
-def test_qlvm_segmentation_comes_from_each_maps_package_cell(tmp_path, monkeypatch):
-    """Each QLVM map's watersheds and class counts are its production cell's fine
-    (<map>_category) and coarse (<map>_supercategory) label grids, located from the
-    os_utils package root, on the unit torus with pixel [y, x] at (x, y). A map whose
-    cell is missing is left out (placeholder panels) with a message naming it."""
+def test_qlvm_segmentation_comes_from_the_regular_maps_cell(tmp_path, monkeypatch):
+    """The only categorical feature, qlvm_category, takes its watersheds and class count
+    from the regular map's cell fine label grid, located from the os_utils package root,
+    on the unit torus with pixel [y, x] at (x, y); no coarse level and no conditional-map
+    feature is loaded, and nothing is reported."""
     fine = (np.arange(16).reshape(4, 4) % 15 + 1).astype(np.int16)
     coarse = np.array([[1, 2, 3, 4], [5, 6, 7, 8], [9, 9, 1, 2], [3, 4, 5, 6]], dtype=np.int16)
-    _fake_qlvm_cell(tmp_path, fine, coarse)
-    dur_fine = np.array([[1, 2], [3, 4]], dtype=np.int16)
-    dur_coarse = np.array([[1, 1], [2, 2]], dtype=np.int16)
-    _fake_qlvm_cell(tmp_path, dur_fine, dur_coarse,
-                    relative_cell=tuning_figures.QLVM_PRODUCTION_MODEL_CELLS["qlvm_dur"])
+    _fake_qlvm_cell(tmp_path, fine, coarse, relative_cell=tuning_figures.QLVM_PRODUCTION_MODEL_CELLS["qlvm"])
     monkeypatch.setattr(tuning_figures, "QLVM_MODEL_PACKAGE_ROOT", str(tmp_path / "v3"))
     messages = []
     maker = NeuronalTuningFigureMaker(
@@ -2706,24 +2697,17 @@ def test_qlvm_segmentation_comes_from_each_maps_package_cell(tmp_path, monkeypat
 
     segmentation = maker._load_segmentation()
 
+    assert set(segmentation) == {"qlvm_category"}
     np.testing.assert_array_equal(segmentation["qlvm_category"]["label_grid"], fine)
-    np.testing.assert_array_equal(segmentation["qlvm_supercategory"]["label_grid"], coarse)
     assert segmentation["qlvm_category"]["unique_labels"] == list(range(1, 16))
-    assert segmentation["qlvm_supercategory"]["unique_labels"] == list(range(1, 10))
     np.testing.assert_array_equal(segmentation["qlvm_category"]["bounds"], [0.0, 1.0, 0.0, 1.0])
     # Pixel [row=y, col=x] is centred at ((x + 0.5) / res, (y + 0.5) / res).
     assert segmentation["qlvm_category"]["xx"][1, 3] == 3.5 / 4
     assert segmentation["qlvm_category"]["yy"][1, 3] == 1.5 / 4
-    np.testing.assert_array_equal(segmentation["qlvm_dur_category"]["label_grid"], dur_fine)
-    np.testing.assert_array_equal(segmentation["qlvm_dur_supercategory"]["label_grid"], dur_coarse)
-    assert set(segmentation) == {"qlvm_category", "qlvm_supercategory", "qlvm_dur_category", "qlvm_dur_supercategory"}
     assert _category_class_count("qlvm_category", {}, segmentation) == 15
-    assert _category_class_count("qlvm_supercategory", {}, segmentation) == 9
-    assert _category_class_count("qlvm_dur_category", {}, segmentation) == 4
-    # the three maps without a cell each say so
-    assert len(messages) == 3
-    assert all("QLVM segmentation unavailable" in m for m in messages)
-    assert {m.split("production ")[1].split(" model")[0] for m in messages} == {"qlvm_mf", "qlvm_bw", "qlvm_loud"}
+    assert messages == []
+    assert tuning_figures.SECTION_C_ROWS == (("qlvm_category",),)
+    assert tuning_figures.USV_CATEGORY_SEGMENTATIONS == ("qlvm_category",)
 
 
 def test_qlvm_segmentation_unreachable_says_so_and_draws_placeholders(tmp_path, monkeypatch):
@@ -2740,19 +2724,17 @@ def test_qlvm_segmentation_unreachable_says_so_and_draws_placeholders(tmp_path, 
     segmentation = maker._load_segmentation()
 
     assert segmentation == {}
-    assert len(messages) == len(tuning_figures.QLVM_MAPS)
+    assert len(messages) == 1
     assert all("QLVM segmentation unavailable" in m and str(tmp_path / "missing") in m for m in messages)
 
 
 @pytest.mark.skipif(
     not qlvm_cell_directory("qlvm").is_dir(),
-    reason="the production QLVM model package is not mounted on this host",
+    reason="the production QLVM model cells are not mounted on this host",
 )
-def test_production_qlvm_class_counts_are_15_fine_and_9_coarse():
-    """On the production v3 regular cell (read-only), the fine grid holds 15 clusters
-    and the coarse grid 9, labelled 1..k, which sets the tuning-figure class counts."""
-    segmentation = load_qlvm_package_segmentation("qlvm", qlvm_cell_directory("qlvm"))
-    assert segmentation["qlvm_category"]["unique_labels"] == list(range(1, 16))
-    assert segmentation["qlvm_supercategory"]["unique_labels"] == list(range(1, 10))
-    assert _category_class_count("qlvm_category", {}, segmentation) == 15
-    assert _category_class_count("qlvm_supercategory", {}, segmentation) == 9
+def test_production_qlvm_cell_carries_no_label_grid():
+    """The production regular cell (read-only) has no cluster label grid (qlvm_category
+    comes from assign-qlvm-categories), so loading its segmentation fails and the
+    tuning figures fall back to placeholders and data-driven class counts."""
+    with pytest.raises(FileNotFoundError):
+        load_qlvm_package_segmentation("qlvm", qlvm_cell_directory("qlvm"))

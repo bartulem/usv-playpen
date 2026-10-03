@@ -44,7 +44,7 @@ from ..analyses.compute_behavioral_features import FeatureZoo
 from ..analyses.compute_neuronal_tuning_curves import CONTINUOUS_PROPERTIES, behavioral_feature_base
 from ..analyses.decode_experiment_label import extract_information
 from ..os_utils import (
-    QLVM_MAPS,
+    QLVM_CATEGORY_COLUMNS,
     QLVM_MODEL_PACKAGE_ROOT,
     QLVM_PRODUCTION_MODEL_CELLS,
     cell_cluster_directory,
@@ -91,14 +91,12 @@ PROPERTY_ROW_ORDER = (
 # TTI-TTI (tail-to-tail distance) is left off the social page.
 PLOT_EXCLUDED_BEHAVIORAL_FEATURES: tuple[str, ...] = ("TTI-TTI",)
 
-# Page-2 section (c) layout: each row is one QLVM map (os_utils.QLVM_MAPS: the
-# regular model, then the four conditional ones), and each row holds the
-# `_category` AND `_supercategory` variants side-by-side, contributing
-# 3 cells (rate / occupancy / strip) each — so 6 cells per row in
-# total, matching the behavioral feature grid's density.
-SECTION_C_ROWS = tuple(
-    (f"{qlvm_map}_category", f"{qlvm_map}_supercategory") for qlvm_map in QLVM_MAPS
-)
+# Page-2 section (c) layout: one row per QLVM category column
+# (os_utils.QLVM_CATEGORY_COLUMNS: the regular map's qlvm_category only; there is
+# no coarse level and no category column on the conditional maps), each column
+# contributing 3 cells (rate / occupancy / strip) on the 6-column grid that
+# matches the behavioral feature grid's density.
+SECTION_C_ROWS = tuple((category_column,) for category_column in QLVM_CATEGORY_COLUMNS)
 
 # Hex palette
 COLOR_BLACK = "#1F1F1F"
@@ -161,28 +159,21 @@ USV_PROPERTY_META: dict[str, dict] = {
 USV_PROPERTY_ORDER: tuple[str, ...] = tuple(USV_PROPERTY_META.keys())
 
 # Categorical USV-tuning segmentations (the `cat_feat` axes stored in the
-# triage pickle's `usv_category_self_<segmentation>` modality keys: coarse
-# then fine for every QLVM map). Their class counts are not fixed here but read
-# from the label grids of each map's production model
-# (`QLVM_PACKAGE_SEGMENTATIONS`; 15 fine and 9 coarse clusters for the v3
-# regular model), which bound the
-# per-region bar charts even when no units happen to land in some
-# categories, see `_category_class_count`.
-USV_CATEGORY_SEGMENTATIONS: tuple[str, ...] = tuple(
-    f"{qlvm_map}_{suffix}" for qlvm_map in QLVM_MAPS for suffix in ("supercategory", "category")
-)
+# triage pickle's `usv_category_self_<segmentation>` modality keys): the QLVM
+# category columns (os_utils.QLVM_CATEGORY_COLUMNS, qlvm_category only). Their
+# class counts are not fixed here but read from the label grid of the map's cell
+# when it has one (`QLVM_PACKAGE_SEGMENTATIONS`), which bounds the per-region bar
+# charts even when no units happen to land in some categories, see
+# `_category_class_count`; otherwise they follow the units' labels.
+USV_CATEGORY_SEGMENTATIONS: tuple[str, ...] = QLVM_CATEGORY_COLUMNS
 
-# QLVM categorical features -> (map, cluster level) of the production model
+# QLVM categorical features -> (map, cluster level) of the model cell
 # (os_utils.QLVM_PRODUCTION_MODEL_CELLS[<map>] under
-# os_utils.QLVM_MODEL_PACKAGE_ROOT) whose label_grid.npy labels them: the
-# columns infer-qlvm-latents writes (<map>_category = fine, <map>_supercategory
-# = coarse) are read off exactly these grids, so the section-(c) watersheds and
-# the class counts match the labels units are tuned to.
-QLVM_PACKAGE_SEGMENTATIONS: dict[str, tuple[str, str]] = {
-    f"{qlvm_map}_{suffix}": (qlvm_map, level)
-    for qlvm_map in QLVM_MAPS
-    for suffix, level in (("category", "fine"), ("supercategory", "coarse"))
-}
+# os_utils.QLVM_MODEL_PACKAGE_ROOT) whose label_grid.npy draws the section-(c)
+# watersheds. The production cells carry no cluster label grid (qlvm_category comes
+# from assign-qlvm-categories), so with them the watersheds are drawn as
+# placeholders and the class counts follow the units' labels.
+QLVM_PACKAGE_SEGMENTATIONS: dict[str, tuple[str, str]] = {"qlvm_category": ("qlvm", "fine")}
 
 
 def qlvm_cell_directory(qlvm_map: str) -> pathlib.Path:
@@ -191,9 +182,9 @@ def qlvm_cell_directory(qlvm_map: str) -> pathlib.Path:
     -----------
     The QLVM model package cell of one production map -- the cell
     ``os_utils.QLVM_PRODUCTION_MODEL_CELLS[qlvm_map]`` under
-    ``os_utils.QLVM_MODEL_PACKAGE_ROOT`` (the phase 6 regular cell for
-    ``"qlvm"``, a phase 11 conditional cell otherwise) -- translated to this
-    host's mount by ``configure_path``.
+    ``os_utils.QLVM_MODEL_PACKAGE_ROOT`` (the regular cell for ``"qlvm"``, a
+    conditional cell otherwise) -- translated to this host's mount by
+    ``configure_path``.
 
     Parameters
     ----------
@@ -214,8 +205,9 @@ def load_qlvm_package_segmentation(qlvm_map: str, cell_directory: pathlib.Path) 
     Description
     -----------
     Builds the section-(c) segmentation blocks of one QLVM map's categorical
-    features (``<qlvm_map>_category`` / ``<qlvm_map>_supercategory``) from its
-    model package cell's ``label_grid.npy`` of each level
+    features (those of ``QLVM_PACKAGE_SEGMENTATIONS`` on the map, i.e.
+    ``qlvm_category`` for ``"qlvm"``) from its model cell's ``label_grid.npy`` of
+    each level
     (``QLVM_PACKAGE_SEGMENTATIONS``; the cell's ``inference/clusters_<level>/``
     in v3, ``cluster/<level>/`` in v2 / v2.1, see
     ``os_utils.cell_cluster_directory``). Each grid is ``(res, res)``, indexed
@@ -227,15 +219,15 @@ def load_qlvm_package_segmentation(qlvm_map: str, cell_directory: pathlib.Path) 
     Parameters
     ----------
     qlvm_map (str)
-        One of ``os_utils.QLVM_MAPS``; selects its two categorical features.
+        One of ``os_utils.QLVM_MAPS``; selects its categorical features.
     cell_directory (pathlib.Path)
         The map's package cell (e.g. :func:`qlvm_cell_directory`).
 
     Returns
     -------
     segmentation (dict[str, dict])
-        ``cat_feat -> {label_grid, xx, yy, bounds, unique_labels}`` for
-        ``<qlvm_map>_category`` and ``<qlvm_map>_supercategory``.
+        ``cat_feat -> {label_grid, xx, yy, bounds, unique_labels}`` for every
+        categorical feature of the map in ``QLVM_PACKAGE_SEGMENTATIONS``.
 
     Raises
     ------
@@ -358,17 +350,16 @@ def _category_class_count(
     Number of category classes to lay out for a segmentation, raised to the
     largest `best_cat` any unit holds (a fixed bound would silently drop every
     unit tuned to a higher category). The base count is the largest label of
-    the segmentation's label grid in `segmentation_grids` (its map's
-    production model grids, :func:`load_qlvm_package_segmentation`: e.g. 15
-    fine and 9 coarse clusters for the v3 regular model, labelled 1..k), so its
-    count follows
-    the model the labels come from instead of a hard-coded one. When neither is
-    known (e.g. the package is unreachable), the data alone set the count.
+    the segmentation's label grid in `segmentation_grids` (its map's model
+    cell grid, :func:`load_qlvm_package_segmentation`, labelled 1..k), so its
+    count follows the model the labels come from instead of a hard-coded one.
+    When neither is known (e.g. the cell is unreachable or carries no label
+    grid, as the production cells do not), the data alone set the count.
 
     Parameters
     ----------
     segmentation (str)
-        Categorical feature, e.g. ``"qlvm_supercategory"``.
+        Categorical feature, e.g. ``"qlvm_category"``.
     per_group (dict[str, list[dict]])
         Units per region, each with an integer `best_cat`.
     segmentation_grids (dict[str, dict])
@@ -605,14 +596,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Lazy-load the segmentations used to render the section-(c)
         categorical watersheds and to size the per-category population
-        figures. Every QLVM map's blocks (`<map>_category`,
-        `<map>_supercategory`) come from the fine and coarse `label_grid.npy`
-        of that map's production package cell (:func:`qlvm_cell_directory`,
-        :func:`load_qlvm_package_segmentation`) -- the grids
-        `infer-qlvm-latents` labels calls with. When a map's cell is
-        unreachable, a message names the cell and the error, and that map's
-        panels draw the "segmentation unavailable" placeholder. Cached on
-        first call.
+        figures. The blocks of `QLVM_PACKAGE_SEGMENTATIONS` (`qlvm_category`)
+        come from the `label_grid.npy` of the map's model cell
+        (:func:`qlvm_cell_directory`, :func:`load_qlvm_package_segmentation`).
+        When a map's cell is unreachable or carries no label grid (the
+        production cells do not), a message names the cell and the error, and
+        that map's panels draw the "segmentation unavailable" placeholder.
+        Cached on first call.
 
         Parameters
         ----------
@@ -629,16 +619,16 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         if self._segmentation_cache is not None:
             return self._segmentation_cache
         out: dict[str, dict] = {}
-        for qlvm_map in QLVM_MAPS:
+        for qlvm_map in dict.fromkeys(feature_map for feature_map, _level in QLVM_PACKAGE_SEGMENTATIONS.values()):
             cell_directory = qlvm_cell_directory(qlvm_map)
             try:
                 out.update(load_qlvm_package_segmentation(qlvm_map, cell_directory))
             except (FileNotFoundError, OSError, ValueError) as error:
                 message_output = self.message_output if hasattr(self, "message_output") else print
                 message_output(
-                    f"QLVM segmentation unavailable: the label grids of the production {qlvm_map} model could not "
-                    f"be read from {cell_directory} ({error}). The {qlvm_map}_category / {qlvm_map}_supercategory "
-                    f"watersheds are drawn as placeholders and their class counts follow the units' labels only."
+                    f"QLVM segmentation unavailable: the label grids of the {qlvm_map} model could not "
+                    f"be read from {cell_directory} ({error}). Its category watersheds are drawn as placeholders "
+                    f"and their class counts follow the units' labels only."
                 )
         self._segmentation_cache = out
         return out
@@ -4104,7 +4094,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Absolute path to the `unit_triage_*.pkl` artifact.
         segmentation (str)
             One of `USV_CATEGORY_SEGMENTATIONS` (e.g.
-            `'qlvm_supercategory'`).
+            `'qlvm_category'`).
         catalog_csv_path (str | pathlib.Path | None)
             Absolute path to `unit_catalog.csv`. Defaults to the
             `catalog_path` field embedded in the triage pickle.
@@ -6699,8 +6689,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Render Page 2 of the vocal output for one emitter side: section
         (c) categorical watersheds (`usv_category_tuning` rate / occupancy
-        / strip), one row per QLVM map (`SECTION_C_ROWS`: the regular model
-        then the four conditional ones) × 6 cols (category | supercategory).
+        / strip), one row per QLVM category column (`SECTION_C_ROWS`:
+        `qlvm_category`) × 3 of the 6 grid cols.
         The per-category PETH (`usv_category_peth`) is still computed and
         saved in the pickle but not drawn.
 
@@ -6724,9 +6714,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         fig = plt.figure(figsize=VOCAL_PAGE2_FIGSIZE_INCHES, tight_layout=False)
 
-        # section (c): one row per QLVM map × 6 cols. Each row pairs the
-        # `_category` (3 cols) and `_supercategory` (3 cols) variants of one
-        # map. wspace/hspace match the behavioral grid.
+        # section (c): one row per QLVM category column, 3 of 6 cols each.
+        # wspace/hspace match the behavioral grid.
         gs_c = gridspec.GridSpec(
             len(SECTION_C_ROWS), 6,
             wspace=0.40, hspace=0.45,
@@ -6742,7 +6731,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         save_fig(fig, page_label)
 
-    # section (c) — categorical, one row per QLVM map × 6 cols
+    # section (c) — categorical, one row per QLVM category column
 
     def _draw_section_c(
         self,
@@ -6755,10 +6744,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Draw section (c): one row per QLVM map × 6 cols. Each row pairs the
-        `_category` (3 cols: rate watershed | occupancy watershed |
-        strip) and `_supercategory` (3 cols, same structure) variants
-        of one segmentation method (`SECTION_C_ROWS`). The rate
+        Draw section (c): one row per QLVM category column
+        (`SECTION_C_ROWS`), each 3 cols (rate watershed | occupancy
+        watershed | strip) of the 6-col grid. The rate
         watershed uses the configurable `ratemap_cmap`; the occupancy
         watershed uses a per-emitter sequential colormap built from
         the emitter's sex color; the strip plot ranks per-category
@@ -6829,7 +6817,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 ax_strip = fig.add_subplot(gs[row_idx, col_offset + 2])
 
                 # build a human-readable method label, e.g. qlvm_category
-                # to "QLVM category", qlvm_dur_supercategory to "QLVM DUR supercategory".
+                # to "QLVM category".
                 map_token, granularity = cat_feat.rsplit("_", 1)
                 method_label = map_token.upper().replace("_", " ")
                 tuning_title = f"{method_label} {granularity} tuning"

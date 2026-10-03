@@ -1700,12 +1700,8 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
         # two booleans are required.
         "usv": [True] * n_usvs,
         "squeak": [False] * n_usvs,
-        "qlvm_supercategory": rng.integers(1, 4, size=n_usvs).tolist(),
-        "qlvm_category":     rng.integers(1, 6, size=n_usvs).tolist(),
-        # the four conditional QLVM maps' labels (every map is tuned)
-        **{f"{qlvm_map}_{suffix}": rng.integers(1, 4, size=n_usvs).tolist()
-           for qlvm_map in ("qlvm_dur", "qlvm_mf", "qlvm_bw", "qlvm_loud")
-           for suffix in ("category", "supercategory")},
+        # the only QLVM category column (R-1..R-4 of the regular map)
+        "qlvm_category":     rng.integers(1, 5, size=n_usvs).tolist(),
         "mean_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
         "peak_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
         "freq_bandwidth_hz": rng.uniform(5000, 30000, n_usvs).tolist(),
@@ -2004,11 +2000,11 @@ def test_build_vocal_side_precompute_notices_missing_qlvm_labels(synthetic_compu
     assert nt._build_vocal_side_precompute(voc_inputs) is not None
     assert not any("QLVM category tuning skipped" in m for m in messages)
 
-    voc_inputs["usv_df"] = voc_inputs["usv_df"].drop(["qlvm_category", "qlvm_supercategory"])
+    voc_inputs["usv_df"] = voc_inputs["usv_df"].drop(["qlvm_category"])
     assert nt._build_vocal_side_precompute(voc_inputs) is not None
     notices = [m for m in messages if "QLVM category tuning skipped" in m]
     assert len(notices) == 1
-    assert "qlvm_category, qlvm_supercategory" in notices[0]
+    assert "(qlvm_category)" in notices[0]
     assert "labels are unavailable" in notices[0]
 
 
