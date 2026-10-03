@@ -2478,9 +2478,10 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
     plt.show()
     # ... proportions bars, global summary panel (plot_assignment_summary_panel)
 
-The §6 category-embedding panel reads its own knobs from the **Statistics parameters** cell (``embedding_boundary_color``, ``embedding_log_scale_bars``, ``embedding_plot_type``, ``embedding_grid_res``) and first extracts the embedding via ``uss.extract_category_embedding_data`` (``usv_only=True``: pure USVs only) before calling ``uss.plot_category_prevalence_and_embedding``. §7 builds per-animal ``session_count`` / ``total_usvs`` dicts for each sex and passes them to ``uss.plot_animal_participation_stats``.
+The §6 category-embedding panel reads its own knobs from the **Statistics parameters** cell (``embedding_qlvm_map``, ``embedding_boundary_color``, ``embedding_log_scale_bars``, ``embedding_plot_type``, ``embedding_grid_res``) and first extracts the embedding via ``uss.extract_category_embedding_data`` (``usv_only=True``: pure USVs only) before calling ``uss.plot_category_prevalence_and_embedding``. §7 builds per-animal ``session_count`` / ``total_usvs`` dicts for each sex and passes them to ``uss.plot_animal_participation_stats``.
 
-* **embedding_boundary_color** / **embedding_log_scale_bars** — outline color and log/linear scaling of the prevalence bars.
+* **embedding_qlvm_map** — the QLVM map the panel draws (``'qlvm'``, ``'qlvm_dur'`` or ``'qlvm_ent'``; its ``P1`` / ``P2`` become ``usv_continuous_cols``). The prevalence bars count the calls' ``qlvm_category`` on every map; the category boundaries are the QLVM category bundle's label grid (``os_utils.load_qlvm_category_bundle``), drawn only on ``'qlvm'``, the map the bundle is defined on (a conditional map shows no boundaries and says so in the panel titles; boundaries are never estimated from the data).
+* **embedding_boundary_color** / **embedding_log_scale_bars** — category-boundary color and log/linear scaling of the prevalence bars.
 * **embedding_plot_type** — ``"density"`` vs. scatter rendering of the embedding.
 * **embedding_grid_res** — resolution of the density grid.
 
@@ -2700,11 +2701,15 @@ The USV maps show only the segments ``detect-usv-squeaks`` classed as pure USVs 
   the other QLVM figures draw).
 * **Color by** — a categorical label (category, session type, session id, or
   emitter sex) or a continuous metric (point density, or a per-USV acoustic feature), the
-  latter rendered through the project colormap.
-* **Boundaries** — optional category outlines: the ``ws_labels_periodic`` grid of
-  ``<spectrograms_dir>/qlvm_v3/<map>/arrays_fine.npz`` (resolved by
-  ``os_utils.resolve_embedding_arrays_path``) when such arrays exist for the map; otherwise
-  (the production cells carry no clustering) a k-NN estimate from the plotted labels.
+  latter rendered through the project colormap. The category is the calls' ``qlvm_category``
+  on every USV map, the conditional ones included (the categories are defined on the regular
+  map and label the call); the squeak map has none and falls back to density, saying so.
+* **Boundaries** — optional category outlines: the ``label_grid`` of the QLVM category bundle
+  (``os_utils.load_qlvm_category_bundle``, ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``), the
+  partition the summaries' ``qlvm_category`` was assigned from, drawn on the regular map
+  ``qlvm`` only. On a conditional or the squeak map (or with the bundle unreadable) no
+  boundaries are drawn and the chart title says why; boundaries are never estimated from the
+  data.
 * **Examples (spectrograms) plotted** — 5–50, sampled along an Archimedean spiral (centre →
   edge) and laid out as a square grid, each call's width preserving its true duration.
 * **Max points** — caps how many points the scatter draws, keeping the chart under marimo's
