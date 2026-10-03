@@ -110,13 +110,19 @@ def _make_synthetic_session(
     write_noise_column: bool = True,
     cat_col: str = "usv_supercategory",
     n_noise: int = 2,
+    n_squeak: int = 0,
+    n_both: int = 0,
+    write_vocal_flag_columns: bool = True,
 ):
     """Build a session_root containing:
 
     - A 3D-tracking H5 file at <root>/video/<session_id>_points3d_translated_rotated_metric.h5
       with `track_names`, `recording_frame_rate`, `experimental_code`.
     - A USV summary CSV at <root>/audio/<session_id>_usv_summary.csv with
-      `start`, `duration`, `emitter`, the noise column and the category column.
+      `start`, `duration`, `emitter`, the noise column, the category column and
+      the `usv` / `squeak` booleans (pure USVs (true, false) on the calls, `n_squeak` male
+      pure squeaks (false, true) and `n_both` male both rows (true, true) appended before
+      the noise rows, null on noise rows).
     - Optionally a behavioral features CSV at
       <root>/<session_id>_behavioral_features.csv with the standard
       `nose-nose`, `<X>-allo_yaw-nose`, `<X>-nose-allo_yaw` suffix columns.
@@ -144,6 +150,7 @@ def _make_synthetic_session(
     rows_dur = []
     rows_emitter = []
     rows_noise = []
+    rows_class = []
     rows_cat = []
     rows_umap_x = []
     rows_umap_y = []
@@ -154,6 +161,7 @@ def _make_synthetic_session(
         rows_dur.append(0.05)
         rows_emitter.append(male_id)
         rows_noise.append(False)  # a real vocalization
+        rows_class.append("usv")
         rows_cat.append(1)
         rows_umap_x.append(np.random.RandomState(0).rand())
         rows_umap_y.append(np.random.RandomState(1).rand())
@@ -163,6 +171,7 @@ def _make_synthetic_session(
         rows_dur.append(0.05)
         rows_emitter.append(female_id)
         rows_noise.append(False)
+        rows_class.append("usv")
         rows_cat.append(2)
         rows_umap_x.append(0.5)
         rows_umap_y.append(0.5)
@@ -172,15 +181,27 @@ def _make_synthetic_session(
         rows_dur.append(0.05)
         rows_emitter.append("UNKNOWN")
         rows_noise.append(False)
+        rows_class.append("usv")
         rows_cat.append(3)
         rows_umap_x.append(0.7)
         rows_umap_y.append(0.7)
+        t += 0.5
+    for squeak_class in ["squeak"] * n_squeak + ["both"] * n_both:
+        rows_start.append(t)
+        rows_dur.append(0.05)
+        rows_emitter.append(male_id)
+        rows_noise.append(False)
+        rows_class.append(squeak_class)
+        rows_cat.append(4)
+        rows_umap_x.append(0.9)
+        rows_umap_y.append(0.9)
         t += 0.5
     for _ in range(n_noise):
         rows_start.append(t)
         rows_dur.append(0.01)
         rows_emitter.append(male_id)
         rows_noise.append(True)  # flagged by the noise classifier
+        rows_class.append(None)
         rows_cat.append(99)
         rows_umap_x.append(0.0)
         rows_umap_y.append(0.0)
@@ -193,6 +214,9 @@ def _make_synthetic_session(
     }
     if write_noise_column:
         cols["noise"] = rows_noise
+    if write_vocal_flag_columns:
+        cols["usv"] = pls.Series([None if c is None else c in ("usv", "both") for c in rows_class], dtype=pls.Boolean)
+        cols["squeak"] = pls.Series([None if c is None else c in ("squeak", "both") for c in rows_class], dtype=pls.Boolean)
     if include_embedding:
         cols[cat_col] = rows_cat
         cols["umap_x"] = rows_umap_x
@@ -491,6 +515,47 @@ def test_build_master_usv_dataframe_skips_session_without_category_col(tmp_path)
             mf_angle_suffix="allo_yaw-nose",
             fm_angle_suffix="nose-allo_yaw",
         )
+
+
+def test_build_master_usv_dataframe_counts_pure_usvs_only(tmp_path):
+    """With ``usv_only`` (the default) the master frame counts pure USVs only (usv true, squeak
+    false): pure squeaks AND both rows (usv true too) are left out (so every USV count built on
+    it is a USV count), and
+    ``usv_only=False`` keeps every non-noise vocalization."""
+    sess = tmp_path / "20260101_120000"
+    _make_synthetic_session(sess, n_male_calls=4, n_female_calls=3, n_unassigned=1,
+                            n_squeak=2, n_both=1, n_noise=2)
+    common = dict(session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="usv_supercategory",
+                  distance_suffix="nose-nose", mf_angle_suffix="allo_yaw-nose", fm_angle_suffix="nose-allo_yaw")
+    usv_only_df, _bg, n_noise = build_master_usv_dataframe(**common)
+    assert usv_only_df.height == 8 and n_noise == 2
+    assert 4 not in usv_only_df["category"].to_list()
+    every_call_df, _bg, _n = build_master_usv_dataframe(**common, usv_only=False)
+    assert every_call_df.height == 11
+
+
+def test_build_master_usv_dataframe_usv_only_needs_vocal_flags(tmp_path):
+    """A summary without the ``usv`` / ``squeak`` booleans cannot be split into USVs and
+    squeaks, so ``usv_only`` raises a KeyError naming detect-usv-squeaks rather than counting
+    squeaks as USVs."""
+    sess = tmp_path / "20260101_120000"
+    _make_synthetic_session(sess, write_vocal_flag_columns=False)
+    with pytest.raises(KeyError, match="detect-usv-squeaks"):
+        build_master_usv_dataframe(
+            session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="usv_supercategory",
+            distance_suffix="nose-nose", mf_angle_suffix="allo_yaw-nose", fm_angle_suffix="nose-allo_yaw",
+        )
+
+
+def test_extract_category_embedding_data_keeps_pure_usvs_only(tmp_path):
+    """The category embedding keeps pure USVs only by default; pure squeak and both rows
+    (category 4 in the synthetic session) come back with ``usv_only=False``."""
+    sess = tmp_path / "20260101_120000"
+    _make_synthetic_session(sess, n_squeak=1, n_both=1)
+    kwargs = dict(session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="usv_supercategory",
+                  usv_continuous_cols=("umap_x", "umap_y"))
+    assert 4 not in extract_category_embedding_data(**kwargs)["category"].to_list()
+    assert extract_category_embedding_data(**kwargs, usv_only=False)["category"].to_list().count(4) == 2
 
 
 # ===========================================================================
@@ -2299,12 +2364,18 @@ _SQUEAK_STYLES = {
 }
 
 
-def _write_squeak_session(root: Path, starts: list[float], squeak: list[bool], noise: list[bool]) -> None:
-    """Writes ``<root>/audio/<name>_usv_summary.csv`` with the three columns the heatmap reads."""
+def _write_squeak_session(root: Path, starts: list[float], classes: list[str | None], noise: list[bool]) -> None:
+    """Writes ``<root>/audio/<name>_usv_summary.csv`` with the columns the heatmap reads: each
+    class ("usv", "squeak", "both" or None) written as the ``usv`` / ``squeak`` booleans
+    detect-usv-squeaks writes ((true, false), (false, true), (true, true), null on noise rows)."""
 
     (root / "audio").mkdir(parents=True)
-    pls.DataFrame({"start": starts, "squeak": squeak, "noise": noise}).write_csv(
-        str(root / "audio" / f"{root.name}_usv_summary.csv"))
+    pls.DataFrame({
+        "start": starts,
+        "usv": pls.Series([None if c is None else c in ("usv", "both") for c in classes], dtype=pls.Boolean),
+        "squeak": pls.Series([None if c is None else c in ("squeak", "both") for c in classes], dtype=pls.Boolean),
+        "noise": noise,
+    }).write_csv(str(root / "audio" / f"{root.name}_usv_summary.csv"))
 
 
 def _squeak_cohort(tmp_path: Path) -> dict[str, list[str]]:
@@ -2312,18 +2383,19 @@ def _squeak_cohort(tmp_path: Path) -> dict[str, list[str]]:
     Three sessions over two conditions, written to disk with one session-list file per
     condition:
 
-    * ``s_hi`` (courtship): a cluster at 10-13 s of which 2 of 4 segments are squeaks, one
-      plain segment at 90 s, and one noise-flagged squeak at 95 s that the noise filter must
-      remove -- rate 2/5;
-    * ``s_lo`` (courtship): 5 segments at 10-14 s, 1 squeak -- rate 1/5;
-    * ``s_none`` (female_female): 5 segments, no squeak -- drawn as a 0 % row.
+    * ``s_hi`` (courtship): a cluster at 10-13 s of which 2 of 4 segments hold a squeak (a pure
+      squeak at 10 s, a squeak-plus-USV ``both`` segment at 13 s), one USV at 90 s, and one
+      noise segment at 95 s (no class) that the noise filter must remove -- rate 2/5 under
+      ``squeak+both``;
+    * ``s_lo`` (courtship): 5 segments at 10-14 s, 1 pure squeak -- rate 1/5;
+    * ``s_none`` (female_female): 5 USVs, no squeak -- drawn as a 0 % row.
     """
 
     sessions = {
-        "s_hi": ([10.0, 11.0, 12.0, 13.0, 90.0, 95.0], [True, False, False, True, False, True],
+        "s_hi": ([10.0, 11.0, 12.0, 13.0, 90.0, 95.0], ["squeak", "usv", "usv", "both", "usv", None],
                  [False, False, False, False, False, True]),
-        "s_lo": ([10.0, 11.0, 12.0, 13.0, 14.0], [True, False, False, False, False], [False] * 5),
-        "s_none": ([10.0, 11.0, 12.0, 13.0, 14.0], [False] * 5, [False] * 5),
+        "s_lo": ([10.0, 11.0, 12.0, 13.0, 14.0], ["squeak", "usv", "usv", "usv", "usv"], [False] * 5),
+        "s_none": ([10.0, 11.0, 12.0, 13.0, 14.0], ["usv"] * 5, [False] * 5),
     }
     for name, (starts, squeak, noise) in sessions.items():
         _write_squeak_session(tmp_path / name, starts, squeak, noise)
@@ -2334,14 +2406,14 @@ def _squeak_cohort(tmp_path: Path) -> dict[str, list[str]]:
     return {"courtship": [str(courtship_list)], "female_female": [str(female_list)]}
 
 
-def _squeak_heatmap(lists, exclude_noise_usvs, min_session_segments):
+def _squeak_heatmap(lists, exclude_noise_usvs, min_session_segments, squeak_class="squeak+both"):
     """Runs the heatmap on a 180 s axis with a 1 s grid and a 2 s kernel."""
 
     return plot_session_squeak_time_heatmap(
         condition_session_lists=lists, condition_styles=_SQUEAK_STYLES,
         exclude_noise_usvs=exclude_noise_usvs, kernel_sigma_s=2.0, grid_step_s=1.0,
         min_vocal_density=0.5, session_length_s=180.0, min_session_segments=min_session_segments,
-        vmax_percent=100.0, zero_tint=0.12, nodata_color="#FFFFFF")
+        vmax_percent=100.0, zero_tint=0.12, nodata_color="#FFFFFF", squeak_class=squeak_class)
 
 
 def test_plot_session_squeak_time_heatmap_rates_order_and_silence(tmp_path):
@@ -2383,17 +2455,61 @@ def test_plot_session_squeak_time_heatmap_rates_order_and_silence(tmp_path):
 
 
 def test_plot_session_squeak_time_heatmap_keeps_noise_when_asked(tmp_path):
-    """With ``exclude_noise_usvs=False`` the noise-flagged squeak is counted, and sessions below
-    the segment minimum are reported as too few rather than drawn."""
+    """With ``exclude_noise_usvs=False`` the noise segment stays in the denominator but, having
+    no call class, is never a squeak; sessions below the segment minimum are reported as too few
+    rather than drawn."""
 
     fig, _axes, stats = _squeak_heatmap(_squeak_cohort(tmp_path), exclude_noise_usvs=False,
                                         min_session_segments=6)
     try:
         sessions = stats["sessions"].sort("session_id")
-        assert sessions["n_squeaks"].to_list() == [3, 1, 0]
+        assert sessions["n_segments"].to_list() == [6, 5, 5]
+        assert sessions["n_squeaks"].to_list() == [2, 1, 0]
         assert stats["n_drawn"] == 1 and stats["n_too_few"] == 2
     finally:
         plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    ("squeak_class", "expected_squeaks"),
+    [("squeak+both", [2, 1, 0]), ("squeak", [1, 1, 0]), ("both", [1, 0, 0])],
+)
+def test_plot_session_squeak_time_heatmap_class_selector(tmp_path, squeak_class, expected_squeaks):
+    """``squeak_class`` picks which call classes count as squeaks -- pure squeaks, the mixed
+    ``both`` segments, or either -- while every non-noise segment stays in the denominator; the
+    selection is echoed in ``stats_dict``."""
+
+    fig, _axes, stats = _squeak_heatmap(_squeak_cohort(tmp_path), exclude_noise_usvs=True,
+                                        min_session_segments=2, squeak_class=squeak_class)
+    try:
+        sessions = stats["sessions"].sort("session_id")
+        assert sessions["n_squeaks"].to_list() == expected_squeaks
+        assert sessions["n_segments"].to_list() == [5, 5, 5]
+        assert stats["squeak_class"] == squeak_class
+    finally:
+        plt.close(fig)
+
+
+def test_plot_session_squeak_time_heatmap_rejects_unknown_class(tmp_path):
+    """An unknown squeak-class selection is a ValueError naming the valid ones."""
+
+    with pytest.raises(ValueError, match="Unknown squeak class selection"):
+        _squeak_heatmap(_squeak_cohort(tmp_path), exclude_noise_usvs=True, min_session_segments=2,
+                        squeak_class="usv")
+
+
+def test_plot_session_squeak_time_heatmap_needs_vocal_flags(tmp_path):
+    """A summary scored only by the retired binary squeak detector (a ``squeak`` column but no
+    ``usv``) is a KeyError, never a silent all-USV session."""
+
+    root = tmp_path / "s_old"
+    (root / "audio").mkdir(parents=True)
+    pls.DataFrame({"start": [1.0, 2.0], "squeak": [True, False], "noise": [False, False]}).write_csv(
+        str(root / "audio" / f"{root.name}_usv_summary.csv"))
+    session_list = tmp_path / "list.txt"
+    session_list.write_text(f"{root}\n")
+    with pytest.raises(KeyError, match="detect-usv-squeaks"):
+        _squeak_heatmap({"courtship": [str(session_list)]}, exclude_noise_usvs=True, min_session_segments=1)
 
 
 def test_plot_session_squeak_time_heatmap_rejects_session_in_two_conditions(tmp_path):

@@ -309,9 +309,40 @@
   },
   "detect_usv_squeaks": {
     "squeak_model_path": "",
-    "squeak_threshold": 0.385,
     "exclude_metadata_audio_channels": true,
-    "batch_size": 256
+    "batch_size": 64
+  },
+  "train_usv_squeak_model": {
+    "label_sets": [
+      {
+        "name": "r1",
+        "labels_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling/usv_squeak_labels.csv",
+        "sample_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling/usv_squeak_sample.csv"
+      },
+      {
+        "name": "r2",
+        "labels_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling_r2/usv_squeak_labels_r2.csv",
+        "sample_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling_r2/usv_squeak_sample_r2.csv"
+      }
+    ],
+    "label_overrides": [
+      {
+        "name": "r1",
+        "override_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling/usv_squeak_review_labels.csv"
+      }
+    ],
+    "pretrained": true,
+    "span_threshold": 0.6,
+    "exclude_metadata_audio_channels": true,
+    "n_workers": 16,
+    "seeds": [0, 1, 2, 3, 4],
+    "epochs": 40,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "label_smoothing": 0.05,
+    "frame_loss_weight": 1.0,
+    "class_weighted": false
   },
   "infer_qlvm_squeak_latents": {
     "model_cell_directory": "",
@@ -342,6 +373,7 @@
     "require_mask": true,
     "exclude_squeaks": true,
     "strict_squeak_exclusion": false,
+    "reference_squeak_index_path": "",
     "exclude_noise": true,
     "row_exclusion_table": null,
     "masking_type": "sam",

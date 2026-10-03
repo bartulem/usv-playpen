@@ -6,17 +6,16 @@ import pathlib
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import polars as pls
+import seaborn as sns
+import statsmodels.api as sm
 from scipy.interpolate import griddata
 from scipy.ndimage import gaussian_filter1d
-from scipy.stats import pearsonr, gaussian_kde, sem, t
-import seaborn as sns
-
-import statsmodels.api as sm
+from scipy.stats import gaussian_kde, pearsonr, sem, t
 from statsmodels.formula.api import ols
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 
@@ -24,9 +23,8 @@ from statsmodels.stats.multicomp import pairwise_tukeyhsd
 # analyses<->visualizations near-cycle); re-imported here so this module and its
 # importers keep using them unchanged.
 from ..analyses._usv_io import extract_session_metadata, load_and_filter_usv_data
+from ..os_utils import call_class_mask, drop_noise_usvs, squeak_class_selection
 from .auxiliary_plot_functions import create_colormap
-from ..os_utils import drop_noise_usvs
-
 
 # Load the project-wide default cmap from `visualizations_settings.json`
 # at module import. Used as the default for every `cmap=` arg in this
@@ -80,7 +78,8 @@ def extract_category_embedding_data(
     session_roots: list[str],
     exclude_noise_usvs: bool,
     usv_category_col: str,
-    usv_continuous_cols: tuple[str, str]
+    usv_continuous_cols: tuple[str, str],
+    usv_only: bool = True,
 ) -> pls.DataFrame:
     """
     Description
@@ -88,9 +87,12 @@ def extract_category_embedding_data(
     Extracts category labels and continuous embedding coordinates (e.g., UMAP)
     for all non-noise vocalizations across multiple sessions.
 
-    This function first filters out any noise rows, ensures the target category
-    and embedding columns exist in the CSV, and then categorizes each valid
-    USV as 'male', 'female', or 'unassigned' based on the session's metadata.
+    This function first filters out any noise rows, with ``usv_only`` keeps only
+    the segments ``detect_usv_squeaks`` classed as pure USVs (``usv &
+    ~squeak``; squeaks and segments holding both a squeak and a USV are left out,
+    since the USV QLVM maps were trained on USVs only), ensures the target
+    category and embedding columns exist in the CSV, and then categorizes each
+    valid USV as 'male', 'female', or 'unassigned' based on the session's metadata.
     Rows with missing coordinate data are dropped to ensure clean downstream plotting.
 
     Parameters
@@ -105,6 +107,9 @@ def extract_category_embedding_data(
     usv_continuous_cols : tuple[str, str]
         A tuple of two strings specifying the column names for the 2D embedding
         coordinates (e.g., ('qlvm1', 'qlvm2')).
+    usv_only : bool
+        Keep only pure USVs, ``usv & ~squeak`` (default ``True``); a summary
+        without the ``usv`` / ``squeak`` booleans then raises a KeyError naming the session.
 
     Returns
     -------
@@ -132,6 +137,8 @@ def extract_category_embedding_data(
                 frame_rate=metadata['frame_rate'],
                 exclude_noise_usvs=exclude_noise_usvs
             )
+            if usv_only:
+                usv_info = usv_info.filter(call_class_mask(usv_info, ("usv",), session_root))
 
             # Ensure the required columns actually exist in this session's CSV
             req_cols = [usv_category_col, usv_continuous_cols[0], usv_continuous_cols[1]]
@@ -274,7 +281,8 @@ def build_master_usv_dataframe(
     usv_category_col: str,
     distance_suffix: str,
     mf_angle_suffix: str,
-    fm_angle_suffix: str
+    fm_angle_suffix: str,
+    usv_only: bool = True,
 ) -> tuple[pls.DataFrame, pls.DataFrame, int]:
     """
     Description
@@ -285,7 +293,11 @@ def build_master_usv_dataframe(
     comprehensive pass over all session directories.
 
     For each session it reads metadata from the H5 tracking file, loads and
-    noise-filters the USV summary CSV, maps emitters to a 'sex' column, and
+    noise-filters the USV summary CSV, with ``usv_only`` keeps only the segments
+    ``detect_usv_squeaks`` classed as pure USVs (``usv & ~squeak``: squeaks and
+    segments holding both a squeak and a USV are left out, so every count and
+    rate built on this frame is a USV count; the number left out is printed),
+    maps emitters to a 'sex' column, and
     attempts to join in frame-by-frame spatial behavioral features (nose-nose
     distance and relative angles). All data is returned as two tidy Polars
     DataFrames that can be filtered, grouped, and aggregated for any downstream
@@ -325,6 +337,10 @@ def build_master_usv_dataframe(
     fm_angle_suffix (str)
         The string suffix used to identify the female-to-male angle column in the
         behavioral features CSV (e.g., 'nose-allo_yaw').
+    usv_only (bool)
+        Keep only pure USVs, ``usv & ~squeak`` (default ``True``). A summary without
+        the ``usv`` / ``squeak`` booleans (not yet scored by ``detect-usv-squeaks``) then raises a
+        KeyError naming the file, rather than counting its squeaks as USVs.
 
     Returns
     -------
@@ -351,6 +367,7 @@ def build_master_usv_dataframe(
     all_usv_rows: list[pls.DataFrame] = []
     all_bg_rows: list[pls.DataFrame] = []
     total_noise_filtered = 0
+    total_squeak_rows_dropped = 0
     skipped_sessions: collections.Counter[str] = collections.Counter()
 
     for session_root in session_roots:
@@ -381,6 +398,10 @@ def build_master_usv_dataframe(
         raw_data = pls.read_csv(str(usv_file))
         usv_clean, n_dropped = drop_noise_usvs(raw_data, usv_file.name) if exclude_noise_usvs else (raw_data, 0)
         total_noise_filtered += n_dropped
+        if usv_only:
+            n_before_class = usv_clean.height
+            usv_clean = usv_clean.filter(call_class_mask(usv_clean, ("usv",), usv_file.name))
+            total_squeak_rows_dropped += n_before_class - usv_clean.height
         usv_info = usv_clean.with_columns(
             (pls.col('start') * frame_rate).floor().cast(pls.UInt32).alias('frame_index')
         )
@@ -467,6 +488,11 @@ def build_master_usv_dataframe(
         all_usv_rows.append(usv_processed)
 
     # Report skipped sessions once, by reason, rather than dropping them silently.
+    if usv_only:
+        print(
+            f"build_master_usv_dataframe kept pure USVs only (usv true, squeak false): "
+            f"{total_squeak_rows_dropped} squeak / both / unclassed segment(s) left out."
+        )
     if skipped_sessions:
         reason_summary = ', '.join(
             f"{count}x {reason}" for reason, count in skipped_sessions.items()
@@ -3154,17 +3180,24 @@ def plot_session_squeak_time_heatmap(
     vmax_percent: float,
     zero_tint: float,
     nodata_color: str,
+    squeak_class: str = 'squeak+both',
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes, plt.Axes, plt.Axes], dict[str, Any]]:
     """
     Description
     -----------
     Plots, one row per session, where in the recording the session's squeaks sit.
 
-    A squeak is a broadband vocalization (3-8 kHz fundamental) that the squeak classifier
-    (``detect_usv_squeaks``, the v3 BBV classifier) flags in a segment of the USV summary. Each
-    session's summary is read from ``<session>/audio/*_usv_summary.csv``; when
-    ``exclude_noise_usvs`` is set, the segments the noise classifier flagged are dropped first,
-    so the rate is squeaks among vocal segments.
+    A squeak is a broadband vocalization (3-8 kHz fundamental). The call classifier
+    (``detect_usv_squeaks``) gives every segment of the USV summary that is not noise two
+    booleans, ``usv`` and ``squeak``: a pure USV (``usv & ~squeak``), a pure squeak
+    (``squeak & ~usv``) or both in one segment (``usv & squeak``). ``squeak_class`` picks which segments count as squeaks here: ``"squeak"``
+    (pure squeaks), ``"both"`` (the mixed segments) or ``"squeak+both"`` (either; the default,
+    every segment that holds a squeak). Each session's summary is read from
+    ``<session>/audio/*_usv_summary.csv``; when ``exclude_noise_usvs`` is set, the segments the
+    noise classifier flagged are dropped first, so the rate is selected squeaks among vocal
+    segments (every remaining segment, whatever its class, is a vocal segment of the
+    denominator; a segment with a null class -- too short to classify -- counts as a vocal
+    segment that is not a squeak).
 
     The share is estimated continuously in time rather than in bins, the way a kernel-smoothed
     firing rate replaces a binned histogram: every segment contributes a Gaussian of width
@@ -3232,6 +3265,10 @@ def plot_session_squeak_time_heatmap(
         colour); must be above 0 so 0 % differs from ``nodata_color``.
     nodata_color (str)
         Hex colour where no vocalization is near (white, ``#FFFFFF``, draws it as empty).
+    squeak_class (str)
+        Which call classes count as squeaks: ``"squeak"``, ``"both"`` or ``"squeak+both"``
+        (``os_utils.SQUEAK_CLASS_SELECTIONS``); default ``"squeak+both"``. A summary without
+        the ``usv`` / ``squeak`` booleans raises a KeyError naming the file.
 
     Returns
     -------
@@ -3246,9 +3283,15 @@ def plot_session_squeak_time_heatmap(
         n_segments counts the segments left after the noise filter; ``'n_drawn'``;
         ``'n_no_squeak'``, the drawn sessions without any squeak; ``'n_too_few'``; ``'rate_matrix'``, the drawn sessions x grid
         squeak share in [0, 1] (NaN where the vocal density is below ``min_vocal_density``);
-        and ``'grid_s'``, the grid times in seconds.
+        ``'grid_s'``, the grid times in seconds; and ``'squeak_class'``, the selection used.
     """
 
+    squeak_classes = squeak_class_selection(squeak_class)
+    squeak_class_label = {
+        'squeak': 'squeaks',
+        'both': "squeak + USV ('both') segments",
+        'squeak+both': "squeaks (incl. 'both' segments)",
+    }[squeak_class]
     session_condition: dict[str, str] = {}
     session_roots: dict[str, str] = {}
     for condition, list_paths in condition_session_lists.items():
@@ -3275,7 +3318,7 @@ def plot_session_squeak_time_heatmap(
         if not summaries:
             msg = f"No *_usv_summary.csv in {Path(root) / 'audio'}."
             raise FileNotFoundError(msg)
-        summary = pls.read_csv(str(summaries[0]), columns=['start', 'squeak', 'noise'])
+        summary = pls.read_csv(str(summaries[0]))
         n_noise_dropped = 0
         if exclude_noise_usvs:
             # One line per session would flood the output over a cohort; the counts are
@@ -3283,7 +3326,7 @@ def plot_session_squeak_time_heatmap(
             summary, n_noise_dropped = drop_noise_usvs(summary, summaries[0].name,
                                                        message_output=lambda _message: None)
         start = summary['start'].to_numpy().astype(float)
-        is_squeak = summary['squeak'].fill_null(False).to_numpy().astype(bool)
+        is_squeak = call_class_mask(summary, squeak_classes, summaries[0].name).to_numpy().astype(bool)
         segment_starts[session_id] = start
         segment_is_squeak[session_id] = is_squeak
         n_segments = int(start.size)
@@ -3372,7 +3415,7 @@ def plot_session_squeak_time_heatmap(
     # The overflow arrow only when the scale is capped below 100 %, where a value can exceed it.
     ax_colorbar_column.set_axis_off()
     ax_colorbar = ax_colorbar_column.inset_axes((0.2, 0.68, 0.6, 0.32))
-    colorbar = fig.colorbar(key, cax=ax_colorbar, label="% of nearby vocalizations that are squeaks",
+    colorbar = fig.colorbar(key, cax=ax_colorbar, label=f"% of nearby vocalizations that are {squeak_class_label}",
                             extend='max' if vmax_percent < 100.0 else 'neither')
     colorbar.ax.yaxis.set_ticks_position('left')
     colorbar.ax.yaxis.set_label_position('left')
@@ -3399,9 +3442,10 @@ def plot_session_squeak_time_heatmap(
         fontsize=10, loc='center left', bbox_to_anchor=(0.0, 0.5), frameon=False, handlelength=1.2)
     legend.set_in_layout(False)
 
-    fig.suptitle("Squeak distributions and timing within sessions", fontsize=10.5)
+    fig.suptitle(f"Squeak distributions and timing within sessions: {squeak_class_label}", fontsize=10.5)
 
     return fig, (ax_colorbar, ax_heat, ax_strip, ax_rate), {
         'sessions': sessions, 'n_drawn': n_drawn, 'n_no_squeak': n_no_squeak,
         'n_too_few': n_too_few, 'rate_matrix': rate_matrix, 'grid_s': grid_s,
+        'squeak_class': squeak_class,
     }

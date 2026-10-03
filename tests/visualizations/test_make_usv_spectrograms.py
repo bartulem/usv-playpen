@@ -31,16 +31,23 @@ import json
 import os
 import pathlib
 import re
+import types
 
+import altair as alt
 import h5py
+import marimo as mo
 import matplotlib
 
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import polars as pls
 import pytest
+
+from usv_playpen.notebooks import usv_embedding_explorer
+from usv_playpen.os_utils import SQUEAK_CLASS_SELECTIONS, call_class_mask
 
 from usv_playpen.visualizations.make_usv_spectrograms import (
     BANDWIDTH_BIMODAL_SPLIT_KHZ,
@@ -1112,7 +1119,8 @@ def _write_embedding_session(root: pathlib.Path, session_id: str):
             "qlvm_dur2": [0.5, 0.6, 0.7, 0.8],
             "qlvm_dur_category": [1, 2, 1, 2],
             "noise": [True, False, False, False],
-            "squeak": [False, True, False, False],
+            "usv": [None, False, True, True],
+            "squeak": [None, True, False, True],
             "qlvm_squeak1": [None, 0.25, None, None],
             "qlvm_squeak2": [None, 0.75, None, None],
             "qlvm_category": [1, 1, 2, 2],
@@ -1150,8 +1158,12 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     assert "qlvm_mf_category" not in pooled.columns
     assert pooled["qlvm_dur1"].to_list() == [0.2, 0.3, 0.4]
     assert pooled["qlvm_bw1"].null_count() == pooled.height
-    # the squeak flag is carried (the thumbnails' default filter reads it)
-    assert pooled["squeak"].to_list() == [True, False, False]
+    # the usv / squeak booleans are carried as Boolean (the thumbnails' default filter and
+    # the explorer derive the call class from them)
+    assert pooled["usv"].to_list() == [False, True, True]
+    assert pooled["squeak"].to_list() == [True, False, True]
+    assert pooled.schema["usv"] == pls.Boolean and pooled.schema["squeak"] == pls.Boolean
+    assert "call_class" not in pooled.columns
     # the squeak map's coordinates are carried, null off the squeak rows
     assert pooled["qlvm_squeak1"].to_list() == [0.25, None, None]
     assert pooled["qlvm_squeak2"].to_list() == [0.75, None, None]
@@ -1243,6 +1255,30 @@ def test_build_pooled_embeddings_df_rebuild_on_schema_miss(tmp_path):
     )
     assert pooled.height == 3
     assert any("missing columns" in m for m in logs)
+
+
+@pytest.mark.parametrize("old_column", ["call_class", "binary_squeak"])
+def test_build_pooled_embeddings_df_rebuilds_an_old_layout_cache(tmp_path, old_column):
+    """A cache written in an older layout -- with a ``call_class`` string column, or with
+    the retired binary ``squeak`` flag alone -- lacks the ``usv`` boolean and is rebuilt
+    even when its summaries fingerprint still matches; the rebuilt table carries the two
+    booleans and no ``call_class``."""
+    sess = tmp_path / "20230103_000000"
+    _write_embedding_session(sess, "20230103_000000")
+    txt = _write_sessions_txt(tmp_path, [sess])
+    cache = tmp_path / "cache.parquet"
+    build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache), message_output=lambda *_: None)
+    fingerprint_key = "usv_playpen_summaries_fingerprint"
+    metadata = {fingerprint_key: pls.read_parquet_metadata(str(cache))[fingerprint_key]}
+    old_layout = pls.read_parquet(str(cache)).drop("usv")
+    if old_column == "call_class":
+        old_layout = old_layout.drop("squeak").with_columns(pls.lit("usv").alias("call_class"))
+    old_layout.write_parquet(str(cache), metadata=metadata)
+    logs: list[str] = []
+    pooled = build_pooled_embeddings_df(sessions_txt_path=str(txt), cache_path=str(cache), message_output=logs.append)
+    assert any("missing columns" in m and "usv" in m for m in logs)
+    assert {"usv", "squeak"} <= set(pooled.columns)
+    assert "call_class" not in pooled.columns
 
 
 def test_build_pooled_embeddings_df_rebuilds_when_a_summary_changes(tmp_path):
@@ -1521,6 +1557,7 @@ def _make_pooled_df(session_id: str = "sessA", n_per_cat: int = 6) -> pls.DataFr
             "qlvm_dur2": rng.random(n),
             "qlvm_dur_category": cats,
             "qlvm_dur_supercategory": cats,
+            "usv": [True] * n,
             "squeak": [False] * n,
             "sex": (["male", "female"] * n)[:n],
             "duration": rng.random(n) * 0.1,
@@ -1718,11 +1755,17 @@ def test_plot_umap_thumbnails_bad_category_suffix(tmp_path):
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
 def test_plot_umap_thumbnails_excludes_squeaks_by_default(tmp_path):
-    """Squeak rows never become thumbnail picks by default; the count excluded is
-    logged, and exclude_squeaks=False keeps them."""
+    """Only pure USVs (usv true, squeak false) become thumbnail picks by default: pure
+    squeaks and both rows (whose usv is true too) are left out alike, the count is logged,
+    and exclude_squeaks=False keeps them."""
     pooled = _make_pooled_df("sessS", n_per_cat=6)
-    # every category-1 row a squeak: with the default filter only category 2 is left
-    pooled = pooled.with_columns((pls.col("qlvm_supercategory") == 1).alias("squeak"))
+    # the category-1 rows alternate pure squeak (false, true) / both (true, true): with the
+    # default filter only category 2 is left
+    category_one = pls.col("qlvm_supercategory") == 1
+    pooled = pooled.with_columns(
+        pls.when(category_one).then(pls.col("row_index") % 2 == 1).otherwise(pls.lit(True)).alias("usv"),
+        category_one.alias("squeak"),
+    )
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessS", n_usvs=12, n_freq=16, n_time=24)
     logs: list[str] = []
@@ -1731,7 +1774,8 @@ def test_plot_umap_thumbnails_excludes_squeaks_by_default(tmp_path):
         n_samples_per_category=3, pooled_df=pooled, message_output=logs.append, seed=1,
     )
     assert isinstance(fig, plt.Figure)
-    assert any("Excluded 6 squeak(s) of 12 placed calls" in message for message in logs)
+    assert any("Kept the 6 pure USV(s) of 12 placed calls (6 squeak, both or unclassed left out)" in message
+               for message in logs)
     fig_all = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused", consolidated_h5_path=str(h5_path), exclude_squeaks=False,
         n_samples_per_category=3, pooled_df=pooled, message_output=lambda *_: None, seed=1,
@@ -1740,11 +1784,11 @@ def test_plot_umap_thumbnails_excludes_squeaks_by_default(tmp_path):
 
 
 def test_plot_umap_thumbnails_squeak_filter_needs_the_column(tmp_path):
-    """Excluding squeaks from a pooled table without a squeak column raises."""
-    with pytest.raises(KeyError, match="no 'squeak' column"):
+    """Excluding squeaks from a pooled table without the usv / squeak booleans raises."""
+    with pytest.raises(KeyError, match=r"no \['usv', 'squeak'\] columns"):
         plot_embedding_with_category_thumbnails(
             sessions_txt_path="unused", consolidated_h5_path="unused",
-            pooled_df=_make_pooled_df().drop("squeak"), message_output=lambda *_: None,
+            pooled_df=_make_pooled_df().drop("usv"), message_output=lambda *_: None,
         )
 
 
@@ -1757,6 +1801,7 @@ def test_plot_umap_thumbnails_no_categories(tmp_path):
             "qlvm1": [0.1, 0.2],
             "qlvm2": [0.3, 0.4],
             "qlvm_supercategory": [None, None],
+            "usv": [True, True],
             "squeak": [False, False],
         },
         schema_overrides={"qlvm_supercategory": pls.Int64},
@@ -2207,3 +2252,69 @@ def test_render_embedding_thumbnails_qlvm_centres_from_v3_arrays(tmp_path, monke
     assert captured["cluster_centers_npz_path"] == str(pathlib.Path(spec_dir) / "qlvm_v3" / "qlvm" / f"arrays_{level}.npz")
     assert captured["category_col_suffix"] == suffix
     assert "cluster_centers_h5_path" not in captured
+
+
+def _explorer_scatter_rows(qlvm_map: str, squeak_class: str) -> list[int]:
+    """
+    Description
+    -----------
+    Runs the embedding explorer's scatter cell on a five-row pooled table (one
+    row per call class: usv, squeak, both, unclassed, usv; squeak-map
+    coordinates only on the squeak and both rows) with the given map and
+    squeak-class selection, and returns the ``row_index`` of the points it
+    plots.
+
+    Parameters
+    ----------
+    qlvm_map (str)
+        The Map dropdown value (``"qlvm"`` or ``"qlvm_squeak"``).
+    squeak_class (str)
+        The Squeak class dropdown value (a ``SQUEAK_CLASS_SELECTIONS`` key).
+
+    Returns
+    -------
+    rows (list[int])
+        Sorted row indices drawn on the scatter.
+    """
+
+    pooled = pls.DataFrame({
+        "session_id": ["s"] * 5,
+        "row_index": list(range(5)),
+        "qlvm1": [0.1, 0.2, 0.3, 0.4, 0.5],
+        "qlvm2": [0.1, 0.2, 0.3, 0.4, 0.5],
+        "qlvm_squeak1": [None, 0.2, 0.3, None, None],
+        "qlvm_squeak2": [None, 0.2, 0.3, None, None],
+        "usv": [True, False, True, None, True],
+        "squeak": [False, True, True, None, False],
+    })
+
+    def control(value: object) -> types.SimpleNamespace:
+        """A stand-in for a marimo UI element: only ``.value`` is read."""
+        return types.SimpleNamespace(value=value)
+
+    _output, definitions = usv_embedding_explorer._scatter_chart.run(
+        CHART_DATA_WIDTH_PX=100, CHART_HEIGHT_PX=100, SQUEAK_CLASS_SELECTIONS=SQUEAK_CLASS_SELECTIONS,
+        alt=alt, boundary_dropdown=control("none"), call_class_mask=call_class_mask,
+        color_dropdown=control("none"), global_cmap="viridis", knn_boundary_grid=_knn_boundary_grid,
+        map_dropdown=control(qlvm_map), max_points_slider=control(1000), mo=mo, np=np, pd=pd, plt=plt,
+        pooled_df=pooled, qlvm_arrays_paths={}, sessions_select=control([]), sex_colors={},
+        squeak_class_dropdown=control(squeak_class),
+    )
+    return sorted(definitions["chart_data"]["row_index"].tolist())
+
+
+@pytest.mark.parametrize("squeak_class", list(SQUEAK_CLASS_SELECTIONS))
+def test_explorer_usv_maps_show_pure_usvs_only(squeak_class):
+    """A USV map draws only pure USVs (usv & ~squeak) -- never a pure squeak, a both segment
+    (although its usv is true) or an unclassed row -- whatever the squeak-class control says."""
+    assert _explorer_scatter_rows("qlvm", squeak_class) == [0, 4]
+
+
+@pytest.mark.parametrize(
+    ("squeak_class", "expected_rows"),
+    [("squeak+both", [1, 2]), ("squeak", [1]), ("both", [2])],
+)
+def test_explorer_squeak_map_class_filter(squeak_class, expected_rows):
+    """The squeak map draws the squeak-bearing classes the squeak-class control selects:
+    squeak + both (the default), squeak only, or both only."""
+    assert _explorer_scatter_rows("qlvm_squeak", squeak_class) == expected_rows

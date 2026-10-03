@@ -35,7 +35,6 @@ import re
 import subprocess
 import sys
 import tempfile
-
 from collections.abc import Callable
 from datetime import datetime
 
@@ -56,6 +55,8 @@ from sklearn.neighbors import KNeighborsClassifier
 from ..os_utils import (
     NOISE_COLUMN,
     QLVM_MAPS,
+    VOCAL_FLAG_COLUMNS,
+    call_class_mask,
     configure_path,
     drop_noise_usvs,
     first_match_or_raise,
@@ -2288,18 +2289,20 @@ EMBEDDING_FEATURE_COLS = (
     "max_amplitude",
     "spectral_entropy",
 )
-# Per-USV squeak flag (written by detect_usv_squeaks into usv_summary.csv): True
-# when the segment holds a squeak (broadband vocalization). Carried in the pooled
-# embeddings DataFrame so the embedding figures can leave squeaks out.
-SQUEAK_COLUMN = "squeak"
+# Per-USV vocal-class booleans (``usv`` and ``squeak``, written by detect_usv_squeaks
+# into usv_summary.csv): a pure USV is usv & ~squeak, a pure squeak squeak & ~usv, and a
+# segment holding both has both true; null on noise and unscorable rows. Carried in the
+# pooled embeddings DataFrame so the embedding figures and the explorer can keep the USV
+# maps to pure USVs and filter the squeak map by class (os_utils.call_class_mask). A cache
+# written before the columns existed lacks ``usv`` and is rebuilt (both are required).
 
 # Extra per-USV columns pulled into the pooled embeddings DataFrame.
 # They power the auxiliary scatters (sex, duration), the acoustic-feature
 # color-by metrics in ``plot_embedding_with_category_thumbnails`` / the embedding
-# explorer, and the squeak filter. The cache file is invalidated automatically
+# explorer, and the call-class filters. The cache file is invalidated automatically
 # when these columns are missing -- see schema-check logic in
 # ``build_pooled_embeddings_df``.
-EMBEDDING_EXTRA_COLS = ("emitter", "duration", SQUEAK_COLUMN) + EMBEDDING_FEATURE_COLS
+EMBEDDING_EXTRA_COLS = ("emitter", "duration", *VOCAL_FLAG_COLUMNS) + EMBEDDING_FEATURE_COLS
 
 
 def _pooled_summaries_fingerprint(
@@ -2435,7 +2438,8 @@ def build_pooled_embeddings_df(
             emitter (Utf8)
             sex (Utf8)
             duration (Float64)
-            squeak (Boolean; null where a summary has no squeak column)
+            usv, squeak (Boolean; the vocal-class booleans, null on unscorable
+                rows and where a summary has no such columns)
             mean_freq_hz, peak_freq_hz, freq_bandwidth_hz,
             mean_amplitude, max_amplitude, spectral_entropy (Float64)
         Columns missing from individual sessions become nulls in the
@@ -2449,7 +2453,7 @@ def build_pooled_embeddings_df(
     # disk is missing any of these (older cache), trigger a rebuild
     # transparently so the caller doesn't have to flip ``rebuild_cache``
     # every time the schema is extended.
-    required_extra_cols = {"emitter", "sex", "duration", SQUEAK_COLUMN} | set(EMBEDDING_FEATURE_COLS)
+    required_extra_cols = {"emitter", "sex", "duration", *VOCAL_FLAG_COLUMNS} | set(EMBEDDING_FEATURE_COLS)
     required_cols = (
         {"session_id", "row_index"}
         | (set(EMBEDDING_ALL_COLS) - set(EMBEDDING_OPTIONAL_LABEL_COLS))
@@ -2580,12 +2584,12 @@ def build_pooled_embeddings_df(
         keep_cols = ["session_id", "row_index"] + [
             c for c in EMBEDDING_ALL_COLS if c in df.columns
         ]
-        if SQUEAK_COLUMN in df.columns:
-            # CSV inference reads the squeak flag as Boolean, or as String /
-            # Null in a session whose column is empty; coerce so every session
-            # frame concatenates.
-            df = df.with_columns(pls.col(SQUEAK_COLUMN).cast(pls.Boolean, strict=False))
-        for c in ("emitter", "sex", "duration", SQUEAK_COLUMN) + EMBEDDING_FEATURE_COLS:
+        for flag in VOCAL_FLAG_COLUMNS:
+            if flag in df.columns:
+                # CSV inference reads a flag as Boolean, or as Null in a session whose
+                # column is empty; coerce so every session frame concatenates.
+                df = df.with_columns(pls.col(flag).cast(pls.Utf8).str.to_lowercase().eq("true").alias(flag))
+        for c in ("emitter", "sex", "duration", *VOCAL_FLAG_COLUMNS) + EMBEDDING_FEATURE_COLS:
             if c in df.columns:
                 keep_cols.append(c)
         frames.append(df.select(keep_cols))
@@ -2613,7 +2617,8 @@ def build_pooled_embeddings_df(
     # keeps it stable.
     fill_dtypes = {c: pls.Float64 for c in ("duration",) + EMBEDDING_FEATURE_COLS}
     fill_dtypes["sex"] = pls.Utf8
-    fill_dtypes[SQUEAK_COLUMN] = pls.Boolean
+    for flag in VOCAL_FLAG_COLUMNS:
+        fill_dtypes[flag] = pls.Boolean
     # A map's coordinates absent from every session's summary (e.g. a conditional
     # map a cohort was never embedded with) would otherwise be dropped from the pooled frame
     # while the cache validator above still requires it, so a written cache would
@@ -3254,12 +3259,13 @@ def plot_embedding_with_category_thumbnails(
         ``build_pooled_embeddings_df`` (only used when ``pooled_df`` is
         ``None``).
     exclude_squeaks (bool)
-        Leave out the segments ``detect_usv_squeaks`` flagged as squeaks
-        (``squeak`` True) from the scatter, the auxiliary maps and the
-        thumbnail picks; default ``True``. The QLVM models were trained
-        without squeaks, so these calls sit wherever the decoder places
-        them. Rows with a null flag (no squeak column in their summary)
-        are kept; a pooled table without the column raises.
+        Keep only the segments ``detect_usv_squeaks`` classed as pure USVs
+        (``usv & ~squeak``) in the scatter, the auxiliary maps and the
+        thumbnail picks, leaving out pure squeaks, segments holding both a
+        squeak and a USV, and rows with null booleans (unscorable segments);
+        default ``True``. The USV QLVM models were trained on USVs only, so
+        squeak-bearing calls sit wherever the decoder places them. A pooled
+        table without ``usv`` / ``squeak`` raises.
     scatter_max_points (int)
         Optional cap on points rendered in the scatter (random sample
         using the ``seed`` argument); the per-category sampling still draws from
@@ -3327,16 +3333,19 @@ def plot_embedding_with_category_thumbnails(
 
     df_clean = pooled_df.drop_nulls(subset=[x_col, y_col, cat_col])
     if exclude_squeaks:
-        if SQUEAK_COLUMN not in df_clean.columns:
+        if any(flag not in df_clean.columns for flag in VOCAL_FLAG_COLUMNS):
             msg = (
-                f"The pooled embeddings table has no '{SQUEAK_COLUMN}' column, so squeaks cannot be "
+                f"The pooled embeddings table has no {list(VOCAL_FLAG_COLUMNS)} columns, so squeaks cannot be "
                 f"excluded; rebuild the embeddings cache from summaries detect-usv-squeaks has run on, "
                 f"or pass exclude_squeaks=False."
             )
             raise KeyError(msg)
         n_before = df_clean.height
-        df_clean = df_clean.filter(~pls.col(SQUEAK_COLUMN).fill_null(False))
-        message_output(f"Excluded {n_before - df_clean.height} squeak(s) of {n_before} placed calls.")
+        df_clean = df_clean.filter(call_class_mask(df_clean, ("usv",), "the pooled embeddings table"))
+        message_output(
+            f"Kept the {df_clean.height} pure USV(s) of {n_before} placed calls "
+            f"({n_before - df_clean.height} squeak, both or unclassed left out)."
+        )
     categories = sorted(set(df_clean[cat_col].to_list()))
     if not categories:
         msg = "No categories found in pooled_df."

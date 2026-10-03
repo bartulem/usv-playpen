@@ -37,9 +37,10 @@ average across channels and no ``top_db`` clamp (``ref=1.0``). The audio window 
 the training inputs were built, and the spectrogram is then cropped back to the segment's own frames: the
 model sees the segment only. Values are mapped by the fixed affine ``(clip(x, -100, 50) + 25) / 75``.
 
-Run it after ``das_summarize`` (re-summarizing rewrites the CSV with its base columns only) and, by
-convention, before ``detect_usv_squeaks``, so the summary reads ``emitter``, the two noise columns, then
-the squeak block.
+Run it after ``das_summarize`` (re-summarizing rewrites the CSV with its base columns only) and before
+``detect_usv_squeaks``, which classifies only the segments this step does not flag as noise (and so
+needs the ``noise`` column); the summary then reads ``emitter``, the two noise columns, then the
+call-class block.
 
 The module also trains the ensemble (``train-noise-model``, :class:`USVNoiseModelTrainer`): from a labels
 CSV it builds every labelled segment's input with the same function scoring uses
@@ -75,14 +76,17 @@ from ..os_utils import (
     order_usv_summary_columns,
 )
 from ..time_utils import is_gui_context, smart_wait
-
-# The per-channel hpss wav lister (metadata-excluded channels dropped, rate and length checked) is
-# shared with the squeak step, which introduced it; both steps read exactly the same files.
-from .detect_usv_squeaks import squeak_wav_channels
+from ..yaml_utils import read_excluded_audio_channels
 from .generate_spectrograms import compute_usv_spectrogram
 
 # Columns written into the USV summary CSV.
 NOISE_COLUMNS = ("noise", "noise_probability")
+
+# The unfiltered per-channel HPSS wavs every audio classifier of the pipeline reads (the noise
+# model here, the call-class model and the squeak QLVM embedding of detect_usv_squeaks, and the
+# squeak spectrogram store); ``audio/hpss_filtered`` is high-passed above 30 kHz and carries no
+# squeak energy, so it is never used.
+HPSS_WAV_GLOB = "*_cropped_to_video_hpss.wav"
 
 # Input contract of the trained noise models.
 NOISE_SAMPLING_RATE = 250000
@@ -133,6 +137,66 @@ NOISE_AUG_FREQ_MASK_ROWS = 10
 NOISE_LABEL_COLUMNS = ("sample_id", "session_dir", "start", "stop", "chs_count", "noise")
 # Keys the detector reads from a bundle's ``decision`` block, so a trained bundle must carry them.
 NOISE_DECISION_KEYS = ("exclude_at_or_above", "noise_at_or_above", "held_out_precision", "held_out_recall", "real_calls_excluded_per_10000")
+
+
+def squeak_wav_channels(
+    session_root: pathlib.Path,
+    exclude_metadata_audio_channels: bool,
+    message_output: Callable,
+) -> list[pathlib.Path]:
+    """
+    Description
+    -----------
+    Lists the session's unfiltered per-channel HPSS wavs (``audio/hpss/*_cropped_to_video_hpss.wav``),
+    optionally dropping the channels the session metadata marks as hardware-excluded
+    (``Equipment -> audio_Avisoft -> excluded_channels``, names such as ``m_ch02`` / ``s_ch11``), and
+    checks that every remaining channel shares the 250 kHz sampling rate and one common length. Every
+    audio classifier of the pipeline averages over exactly this list: the noise model (this module), the
+    call-class model and the squeak QLVM embedding (:mod:`detect_usv_squeaks`) and the squeak spectrogram
+    store. It lives here, in the module every one of them imports, so no import cycle forms (the
+    call-class model reuses this module's network, input construction and padding).
+
+    Parameters
+    ----------
+    session_root (pathlib.Path)
+        Session root directory.
+    exclude_metadata_audio_channels (bool)
+        Whether to drop metadata-excluded channels from the average.
+    message_output (Callable)
+        Logging callback.
+
+    Returns
+    -------
+    wav_paths (list[pathlib.Path])
+        Sorted wav paths that enter the average.
+
+    Raises
+    ------
+    FileNotFoundError
+        The session has no HPSS wavs.
+    ValueError
+        The kept channels disagree in length or are not sampled at 250 kHz.
+    """
+
+    wav_paths = sorted((session_root / "audio" / "hpss").glob(HPSS_WAV_GLOB))
+    if not wav_paths:
+        error_message = f"No {HPSS_WAV_GLOB} files under {session_root / 'audio' / 'hpss'}."
+        raise FileNotFoundError(error_message)
+    if exclude_metadata_audio_channels:
+        excluded_channels = set(read_excluded_audio_channels(str(session_root), logger=message_output))
+        if excluded_channels:
+            message_output(f"Excluding audio channel(s) {sorted(excluded_channels)} from the spectrogram average per session metadata.")
+        wav_paths = [
+            wav_path for wav_path in wav_paths
+            if f"{wav_path.name.split('_')[0]}_{wav_path.name.split('_')[2]}" not in excluded_channels
+        ]
+    infos = [sf.info(str(wav_path)) for wav_path in wav_paths]
+    sampling_rates = {info.samplerate for info in infos}
+    lengths = {info.frames for info in infos}
+    if sampling_rates != {NOISE_SAMPLING_RATE} or len(lengths) != 1:
+        error_message = f"HPSS wav channels disagree or have the wrong rate in {session_root}: rates={sampling_rates}, lengths={lengths}."
+        raise ValueError(error_message)
+    return wav_paths
 
 
 def _conv_block(in_channels: int, out_channels: int, pool: tuple[int, int] | None) -> nn.Sequential:

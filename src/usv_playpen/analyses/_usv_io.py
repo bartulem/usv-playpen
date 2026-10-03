@@ -19,7 +19,7 @@ from typing import Any
 import h5py
 import polars as pls
 
-from ..os_utils import drop_noise_usvs
+from ..os_utils import call_class_mask, drop_noise_usvs
 from ..yaml_utils import load_session_metadata
 
 
@@ -147,14 +147,18 @@ def load_and_filter_usv_data(
     (male, female and unassigned). A session whose summary has no ``noise`` column raises there, so a
     missing classification can never be mistaken for a clean session.
 
-    ``call_type`` selects among the vocalizations that survive. Dropping noise leaves BOTH
-    ultrasonic calls and squeaks, and the two are different vocalizations: a squeak is a broadband
-    call with a 3-8 kHz fundamental, detected by ``detect_usv_squeaks``, while a USV is ultrasonic.
-    Callers that want one and not the other must say so, because the union is rarely what an
-    analysis means. In the cohort the distinction is large -- 7.6% of the male's segments and 48.0%
-    of the female's are squeaks -- and treating them as one class puts a squeak between two
-    ultrasonic calls, which suppresses the long interval those calls would have formed and
-    contributes two short ones in its place.
+    ``call_type`` selects among the vocalizations that survive. Dropping noise leaves ultrasonic
+    calls AND squeaks, and the two are different vocalizations: a squeak is a broadband call with a
+    3-8 kHz fundamental, while a USV is ultrasonic. ``detect_usv_squeaks`` writes two booleans for
+    every non-noise segment, ``usv`` and ``squeak``: a pure USV is ``usv & ~squeak``, a pure squeak
+    ``squeak & ~usv``, and a segment holding both has both true. Callers that want
+    one kind and not the other must say so, because the union is rarely what an analysis means. In
+    the cohort the distinction is large -- with the earlier binary squeak detector, 7.6% of the
+    male's segments and 48.0% of the female's were squeaks -- and treating them as one class puts a
+    squeak between two ultrasonic calls, which suppresses the long interval those calls would have
+    formed and contributes two short ones in its place. A segment holding both is neither a clean
+    USV nor a clean squeak, so it belongs to neither ``'usv'`` nor ``'squeak'`` and is removed from
+    both sequences; null booleans (a segment too short to score) are likewise in neither.
 
     Parameters
     ----------
@@ -165,9 +169,11 @@ def load_and_filter_usv_data(
     exclude_noise_usvs (bool)
         Whether to drop the segments flagged as noise.
     call_type (str or None)
-        Which vocalizations to keep: ``'usv'`` for ultrasonic calls only (squeaks dropped),
-        ``'squeak'`` for squeaks only, or None to keep both. Defaults to None, which preserves
-        the behaviour of every caller written before the squeak classifier existed.
+        Which vocalizations to keep: ``'usv'`` for pure USVs only (``usv & ~squeak``),
+        ``'squeak'`` for pure squeaks only (``squeak & ~usv``; segments holding both and null
+        booleans are in neither), or None to keep every row that survives the noise filter.
+        Defaults to None, which preserves the behaviour of every caller written before the call
+        classifier existed.
 
     Returns
     -------
@@ -191,13 +197,7 @@ def load_and_filter_usv_data(
         if call_type not in ("usv", "squeak"):
             msg = f"load_and_filter_usv_data: call_type must be 'usv', 'squeak' or None, got {call_type!r}."
             raise ValueError(msg)
-        if "squeak" not in usv_info_clean.columns:
-            msg = (f"{usv_file.name} has no 'squeak' column, so call_type={call_type!r} cannot be "
-                   "honoured; run detect_usv_squeaks on this session first.")
-            raise KeyError(msg)
-        usv_info_clean = usv_info_clean.filter(
-            pls.col("squeak") if call_type == "squeak" else ~pls.col("squeak")
-        )
+        usv_info_clean = usv_info_clean.filter(call_class_mask(usv_info_clean, (call_type,), usv_file.name))
 
     return usv_info_clean.with_columns(
         (pls.col("start") * frame_rate).floor().cast(pls.UInt32).alias("frame_index")

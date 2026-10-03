@@ -561,6 +561,9 @@ def test_usv_summary_column_order_is_the_agreed_layout():
     assert len(set(os_utils.USV_SUMMARY_COLUMN_ORDER)) == len(os_utils.USV_SUMMARY_COLUMN_ORDER)
     assert not set(os_utils.USV_SUMMARY_OBSOLETE_COLUMNS) & set(os_utils.USV_SUMMARY_COLUMN_ORDER)
     assert os_utils.QLVM_SUMMARY_MAP_PREFIXES == ("qlvm", "qlvm_dur", "qlvm_ent")
+    assert {"squeak_probability", "squeak_frame_runs", "call_class", "squeak_spans", "n_squeaks"} <= set(
+        os_utils.USV_SUMMARY_OBSOLETE_COLUMNS
+    )
 
 
 def test_obsolete_usv_summary_columns_picks_listed_and_confidence_columns():
@@ -590,21 +593,21 @@ def test_tidy_usv_summary_columns_drops_obsolete_and_reorders():
         "qlvm_dur_supercategory": [1, 2], "qlvm_mf1": [0.0, 0.0], "qlvm_mf2": [0.0, 0.0],
         "qlvm_mf_category": [1, 1], "qlvm_bw1": [0.0, 0.0], "qlvm_loud_supercategory": [2, 2],
         "qlvm_category_agreement": [0.9, 0.5], "qlvm_category_uncertain": [False, True],
-        "qlvm_squeak1": [None, 0.2], "qlvm_squeak2": [None, 0.3],
+        "qlvm_squeak1": [None, 0.2], "qlvm_squeak2": [None, 0.3], "custom": [1, 2],
     })
     tidied, report = os_utils.tidy_usv_summary_columns(table)
     assert tidied.columns == [
         "usv_id", "start", "stop", "duration", "noise", "emitter", "peak_amp_ch", "mean_freq_hz",
         "qlvm1", "qlvm2", "qlvm_category", "qlvm_dur1", "qlvm_dur2", "qlvm_squeak1", "qlvm_squeak2",
-        "squeak_probability",
+        "custom",
     ]
     assert tidied.equals(table.select(tidied.columns))
     assert report["dropped"] == [
-        "qlvm_supercategory", "qlvm_dur_category", "qlvm_dur_supercategory", "qlvm_mf1", "qlvm_mf2",
+        "squeak_probability", "qlvm_supercategory", "qlvm_dur_category", "qlvm_dur_supercategory", "qlvm_mf1", "qlvm_mf2",
         "qlvm_mf_category", "qlvm_bw1", "qlvm_loud_supercategory", "qlvm_category_agreement",
         "qlvm_category_uncertain",
     ]
-    assert report["unknown"] == ["squeak_probability"]
+    assert report["unknown"] == ["custom"]
     assert report["columns_before"] == table.columns
     assert report["columns_after"] == tidied.columns
     assert report["changed"] is True
@@ -658,7 +661,7 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     assert settings["infer_qlvm_squeak_latents"]["model_cell_directory"] == (
         "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm/natural_session_N11000_nomask"
     )
-    assert settings["detect_usv_squeaks"]["squeak_model_path"] == f"{root}/squeak/mil_absdb_final.pt"
+    assert settings["detect_usv_squeaks"]["squeak_model_path"] == f"{root}/squeak/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt"
     assert settings["detect_usv_noise"]["noise_model_path"] == f"{root}/noise/noise_timemil_ens5_n4680_20260926.pt"
 
 
@@ -883,3 +886,34 @@ def test_rebase_experimenter_in_paths_is_idempotent():
     already = {"p": "/mnt/falkner/Annegret/EPHYS"}
     out = os_utils.rebase_experimenter_in_paths(already, experimenter_list=["Bartul"], exp_id="Annegret")
     assert out == already
+
+
+# call classes
+
+
+def test_call_class_mask_derives_classes_from_the_two_booleans():
+    """Classes come from both booleans, never from usv alone: pure USV = usv & ~squeak, pure squeak =
+    squeak & ~usv, both = usv & squeak; null rows (noise) are in no class; the flags may arrive as
+    Boolean, as text, or as an all-null column; an unknown class or a summary without the booleans
+    raises."""
+    table = pls.DataFrame(
+        {"usv": [True, None, True, False, True], "squeak": [False, None, True, True, False]},
+        schema={"usv": pls.Boolean, "squeak": pls.Boolean},
+    )
+    assert os_utils.call_class_mask(table, ["usv"], "s").to_list() == [True, False, False, False, True]
+    assert os_utils.pure_usv_mask(table, "s").to_list() == [True, False, False, False, True]
+    assert os_utils.pure_squeak_mask(table, "s").to_list() == [False, False, False, True, False]
+    assert os_utils.both_mask(table, "s").to_list() == [False, False, True, False, False]
+    assert os_utils.squeak_bearing_mask(table, "s").to_list() == [False, False, True, True, False]
+    assert os_utils.call_class_mask(table, os_utils.squeak_class_selection("squeak+both"), "s").to_list() == [False, False, True, True, False]
+    assert os_utils.call_class_mask(table, os_utils.squeak_class_selection("both"), "s").to_list() == [False, False, True, False, False]
+    as_text = table.with_columns(pls.col("usv").cast(pls.String), pls.col("squeak").cast(pls.String))
+    assert os_utils.pure_usv_mask(as_text, "s").to_list() == [True, False, False, False, True]
+    all_null = pls.DataFrame({"usv": [None, None], "squeak": [None, None]})
+    assert os_utils.call_class_mask(all_null, ["usv", "squeak", "both"], "s").to_list() == [False, False]
+    with pytest.raises(ValueError, match="unknown call class"):
+        os_utils.call_class_mask(table, ["squeaks"], "s")
+    with pytest.raises(KeyError, match="detect-usv-squeaks"):
+        os_utils.call_class_mask(pls.DataFrame({"squeak": [True]}), ["usv"], "old_summary.csv")
+    with pytest.raises(ValueError, match="squeak class selection"):
+        os_utils.squeak_class_selection("usv")

@@ -146,6 +146,7 @@ def _build_synthetic_figure_session(
         "stop":              stops.tolist(),
         "duration":          durations.tolist(),
         "emitter":           ["m1"] * n_usvs,
+        "usv":               [True] * n_usvs,
         "squeak":            [False] * n_usvs,
         "qlvm_supercategory": rng.integers(1, 4, size=n_usvs).tolist(),
         "qlvm_category":     rng.integers(1, 6, size=n_usvs).tolist(),

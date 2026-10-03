@@ -138,7 +138,7 @@ cross-validation and held-out-test settings live in their own
 * **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout_onset'`` mode: a candidate silent-epoch onset is kept only if no USV (from any source) starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
 * **usv_per_bout_floor** — the minimum number of USVs a positive bout must contain (``'bout_onset'`` mode).
 * **onset_target_category** — restrict positive onsets to a single USV category (``'individual'`` mode only); ``null`` pools all categories (see the single-category note under :ref:`Modeling input data <modeling-extract>`).
-* **onset_target_type** — which vocal segments are the positive onsets, from the summary's ``squeak`` column (written by the squeak classifier): ``'usv'`` (default) only segments without a squeak, ``'squeak'`` only squeak segments (``'individual'`` mode only), ``'all'`` every segment, without filtering on ``squeak``. Noise segments are removed first in every case when ``vocal_features.exclude_noise_usvs`` is ``true``. Applied in every onset mode (``'bout_onset'``, ``'individual'``, ``'bout_offset'``) before ``onset_target_category``; any value other than ``'usv'`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``).
+* **onset_target_type** — which vocal segments are the positive onsets, from the summary's ``usv`` / ``squeak`` booleans (written by ``detect-usv-squeaks``): ``'usv'`` (default) only pure USVs (``usv`` true and ``squeak`` false), ``'squeak'`` only pure squeaks (``squeak`` true and ``usv`` false; ``'individual'`` mode only), ``'all'`` every segment, without filtering on the booleans. A segment holding both (both booleans true) and an unscored segment (null booleans) are in neither ``'usv'`` nor ``'squeak'``. Noise segments are removed first in every case when ``vocal_features.exclude_noise_usvs`` is ``true``. Applied in every onset mode (``'bout_onset'``, ``'individual'``, ``'bout_offset'``) before ``onset_target_category``; any value other than ``'usv'`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``).
 
 **model_validation** — the held-out test set and cross-validation splitting.
 
@@ -565,16 +565,18 @@ pipeline:
    targeting squeak category 6. Squeaks are available in ``'individual'`` mode
    only, since bout grouping needs an inter-bout threshold and the per-sex
    thresholds are derived from ultrasonic-call intervals; asking for them in a
-   bout mode raises. A summary without a ``squeak`` column raises unless the
+   bout mode raises. A summary without the ``usv`` / ``squeak`` columns raises unless the
    target type is ``'all'``.
 
    A USV and a squeak can fall in the same segment: DAS was trained to detect
-   both, so a segment the squeak classifier flags may also hold a USV, and
-   nothing in the summary tells which ones do. Under ``'usv'`` such a segment is
+   both, and the call classifier marks such a segment with ``usv`` and ``squeak``
+   both true. It belongs to
+   neither single target type: under ``'usv'`` and under ``'squeak'`` it is
    dropped whole, so USVs that overlap a squeak are **not** positive onsets —
-   the price of keeping squeak onsets out of the USV target. ``'all'`` keeps
-   them, together with the pure squeak onsets; comparing the two runs shows
-   whether the overlap matters for a given question.
+   the price of keeping squeak onsets out of the USV target — and neither are
+   squeaks that overlap a USV. ``'all'`` keeps them, together with the pure USV
+   and squeak onsets; comparing the runs shows whether the overlap matters for a
+   given question.
 
    Within that target type, when overall vocal output is too sparse for
    bout-onset modeling but one category is plentiful, you can restrict the

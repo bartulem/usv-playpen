@@ -29,11 +29,15 @@ Architecture
   pooled (and cached to a per-selection parquet) by ``build_pooled_embeddings_df``.
 - An altair scatter of the chosen QLVM map's torus (the regular model or one of
   the four conditional ones, ``os_utils.QLVM_MAPS``; the Map dropdown starts at
-  ``shared_resources.qlvm_map``; the USV maps never show segments flagged as
-  squeaks, so the USV and squeak maps never overlap; or the "Squeaks" map, ``qlvm_squeak1`` /
-  ``qlvm_squeak2`` from ``infer-qlvm-squeak-latents``, which holds squeak rows
-  only and has no categories, so there a category colouring falls back to
-  density and boundaries are skipped, with a note in the chart title), colored by a categorical label (category /
+  ``shared_resources.qlvm_map``; the USV maps show only the segments
+  ``detect-usv-squeaks`` classed as pure USVs (``usv & ~squeak``); or the
+  "Squeaks" map, ``qlvm_squeak1`` / ``qlvm_squeak2`` from
+  ``infer-qlvm-squeak-latents``, which holds the squeak-bearing classes only,
+  filtered by the "Squeak class" dropdown to pure squeaks
+  (``squeak & ~usv``), segments holding both a squeak and a USV (``usv & squeak``), or the two
+  together (the default), and has no categories, so there a category colouring
+  falls back to density and boundaries are skipped, with a note in the chart
+  title; the USV and squeak maps therefore never overlap), colored by a categorical label (category /
   supercategory / session type / session id / emitter sex) OR a continuous metric
   through the colormap (density, duration, frequencies, amplitudes, spectral
   entropy), with an ``alt.selection_interval`` brush. Optional category-boundary
@@ -66,6 +70,7 @@ use and OS-resolved via ``os_utils.resolve_experimenter_path`` (set the
 ``EXPERIMENTER_ID`` env var to override the host config's experimenter), so the
 app follows whoever launches it and resolves correctly on macOS / Linux.
 """
+from __future__ import annotations
 
 import marimo
 
@@ -93,14 +98,20 @@ def _imports():
 
     from usv_playpen.os_utils import (
         QLVM_MAPS,
+        SQUEAK_CLASS_SELECTIONS,
+        call_class_mask,
         resolve_consolidated_h5_path,
         resolve_embedding_arrays_path,
         resolve_experimenter_path,
         resolve_squeak_spectrogram_store_path,
     )
-    from usv_playpen.processing.build_squeak_spectrogram_store import squeak_store_thumbnail
+    from usv_playpen.processing.build_squeak_spectrogram_store import (
+        squeak_store_thumbnail,
+    )
     from usv_playpen.visualizations.make_usv_spectrograms import (
         _knn_boundary_grid as knn_boundary_grid,
+    )
+    from usv_playpen.visualizations.make_usv_spectrograms import (
         build_pooled_embeddings_df,
     )
 
@@ -108,9 +119,11 @@ def _imports():
         BytesIO,
         Path,
         QLVM_MAPS,
+        SQUEAK_CLASS_SELECTIONS,
         alt,
         base64,
         build_pooled_embeddings_df,
+        call_class_mask,
         h5py,
         hashlib,
         json,
@@ -267,7 +280,7 @@ def _settings(
 
 
 @app.cell
-def _widgets(available_lists, default_qlvm_map, mo):
+def _widgets(SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
     # Session-list picker: a multiselect dropdown (pick one / some / all),
     # FIXED WIDTH so it never widens, capped height with overflow so extra chips
     # SCROLL inside the box rather than growing the layout. .style() returns a
@@ -377,6 +390,23 @@ def _widgets(available_lists, default_qlvm_map, mo):
         value=True,
         label="Apply mask",
     )
+    # Which squeak-bearing call classes the Squeaks map shows: pure squeaks
+    # (squeak & ~usv), segments holding a squeak and a USV (usv & squeak), or
+    # both kinds together (the default). {display label -> selection name of
+    # os_utils.SQUEAK_CLASS_SELECTIONS}; .value returns the selection name. The
+    # USV maps ignore it: they always show pure USVs only.
+    _squeak_class_labels = {
+        "squeak + both": "squeak+both",
+        "squeak only": "squeak",
+        "both only": "both",
+    }
+    if set(_squeak_class_labels.values()) != set(SQUEAK_CLASS_SELECTIONS):
+        raise ValueError("The explorer's squeak-class options must match os_utils.SQUEAK_CLASS_SELECTIONS.")
+    squeak_class_dropdown = mo.ui.dropdown(
+        options=_squeak_class_labels,
+        value="squeak + both",
+        label="Squeak class",
+    )
     # One control per row (label left, input right). `session_row` (the list picker
     # + Load) and the Sessions filter from `_session_filter` are stacked on top of
     # `other_controls` by `_explorer`, which owns the final layout.
@@ -388,6 +418,7 @@ def _widgets(available_lists, default_qlvm_map, mo):
             n_samples_slider,
             max_points_slider,
             apply_mask_checkbox,
+            squeak_class_dropdown,
         ],
         align="start",
         gap=0.4,
@@ -405,6 +436,7 @@ def _widgets(available_lists, default_qlvm_map, mo):
         n_samples_slider,
         other_controls,
         session_row,
+        squeak_class_dropdown,
     )
 
 
@@ -552,8 +584,10 @@ def _load_pooled_df(
 def _scatter_chart(
     CHART_DATA_WIDTH_PX,
     CHART_HEIGHT_PX,
+    SQUEAK_CLASS_SELECTIONS,
     alt,
     boundary_dropdown,
+    call_class_mask,
     color_dropdown,
     global_cmap,
     knn_boundary_grid,
@@ -567,6 +601,7 @@ def _scatter_chart(
     qlvm_arrays_paths,
     sessions_select,
     sex_colors,
+    squeak_class_dropdown,
 ):
     # Inner function so the no-data case can early-return None (a marimo cell
     # body can't `return`). pooled_df is None until a list is picked. This cell
@@ -597,13 +632,14 @@ def _scatter_chart(
         squeak_fallback = squeak_map and (
             color_dropdown.value in ("category", "supercategory") or boundary_dropdown.value != "none"
         )
-        # No overlap between the USV maps and the squeak map: a USV map never
-        # shows a segment detect-usv-squeaks flagged as a squeak (the package
-        # also embedded squeaks on the USV tori), and the squeak map holds only
-        # squeaks (its coordinates exist on squeak rows only). A null flag
-        # (a summary without squeak columns) counts as not a squeak.
-        _is_squeak = pooled["squeak"].fill_null(False)
-        pooled = pooled.filter(_is_squeak if squeak_map else ~_is_squeak)
+        # No overlap between the USV maps and the squeak map: a USV map shows only
+        # the segments detect-usv-squeaks classed as pure USVs (usv & ~squeak;
+        # squeak-bearing rows and unclassed rows never), and the squeak map
+        # shows the squeak-bearing classes the "Squeak class" dropdown selects
+        # (squeak, both, or both kinds). A pooled table without the usv / squeak
+        # booleans (older summaries) raises with a message naming the missing columns.
+        _classes = SQUEAK_CLASS_SELECTIONS[squeak_class_dropdown.value] if squeak_map else ("usv",)
+        pooled = pooled.filter(call_class_mask(pooled, _classes, "the pooled embeddings table"))
         if pooled.height == 0:
             return None, None, None, None
 

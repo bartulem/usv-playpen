@@ -141,6 +141,7 @@ generate-usv-acoustic-features = "usv_playpen.processing.compute_usv_acoustic_fe
 detect-usv-noise = "usv_playpen.processing.detect_usv_noise:detect_usv_noise_cli"
 train-noise-model = "usv_playpen.processing.detect_usv_noise:train_noise_model_cli"
 detect-usv-squeaks = "usv_playpen.processing.detect_usv_squeaks:detect_usv_squeaks_cli"
+train-usv-squeak-model = "usv_playpen.processing.detect_usv_squeaks:train_usv_squeak_model_cli"
 infer-qlvm-squeak-latents = "usv_playpen.processing.detect_usv_squeaks:infer_qlvm_squeak_latents_cli"
 build-qlvm-training-set = "usv_playpen.processing.build_qlvm_training_set:build_qlvm_training_set_cli"
 build-qlvm-squeak-training-set = "usv_playpen.processing.build_qlvm_squeak_training_set:build_qlvm_squeak_training_set_cli"

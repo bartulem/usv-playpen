@@ -7,9 +7,10 @@ headroom, capped-even water-filling, the natural / uniform within-session draw,
 the type-budgeted draw, the type-stratified session split, the loudness floor and
 the resize), and end-to-end builds on synthetic sessions (per-session spectrogram
 H5 with a SAM mask group, a metadata YAML with the subjects' sexes and a USV
-summary with squeak flags): the masked and the unmasked-floor twin of one draw,
-the squeak exclusion, the left-out session types, full_dataset, the settings
-checks and the per-session H5 fingerprints.
+summary with the ``usv`` / ``squeak`` booleans): the masked and the unmasked-floor
+twin of one draw, the squeak exclusion (pure squeaks and segments holding both out,
+pure USVs in), the reference squeak index's strict rule, the left-out session types,
+full_dataset, the settings checks and the per-session H5 fingerprints.
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ from usv_playpen.processing.build_qlvm_training_set import (
     parse_optional_float,
     parse_optional_path,
     parse_session_type_targets,
+    read_reference_squeak_index,
+    reference_strict_squeak_rows,
     select_rows_stratified,
     session_mask_counts,
     session_type_from_subject_sexes,
@@ -55,6 +58,7 @@ _CFG = {
     "require_mask": True,
     "exclude_squeaks": True,
     "strict_squeak_exclusion": False,
+    "reference_squeak_index_path": "",
     "exclude_noise": False,
     "row_exclusion_table": None,
     "masking_type": "sam",
@@ -240,14 +244,16 @@ def test_simple_resize_preserves_full_signal_on_time_upsampling():
     assert out.sum() == pytest.approx(n_f * target_t, rel=0.02)
 
 
-def _write_session(tmp_path, session_id, session_type, n=8, n_f=16, n_t=20, squeak_rows=(), with_summary=True):
+def _write_session(tmp_path, session_id, session_type, n=8, n_f=16, n_t=20, squeak_rows=(), both_rows=(), with_summary=True):
     """
     Create a synthetic session root: ``audio/spectrograms/<session>_spectrograms.h5``
     (a ``spectrogram/<session>`` group with random spectrograms and durations of 12
     bins, and a ``mask/<session>`` group giving row i ``1 + i % 3`` mask instances
     except row 0, which has none), ``<session>_metadata.yaml`` with the subjects'
     sexes of ``session_type``, and ``audio/<session>_usv_summary.csv`` whose
-    ``squeak`` column flags ``squeak_rows``. Returns the session root.
+    ``(usv, squeak)`` booleans are ``(false, true)`` (pure squeak) on ``squeak_rows``,
+    ``(true, true)`` (both) on ``both_rows`` and ``(true, false)`` (pure USV)
+    elsewhere. Returns the session root.
     """
     rng = np.random.default_rng(abs(hash(session_id)) % (2**32))
     root = tmp_path / session_id
@@ -275,7 +281,8 @@ def _write_session(tmp_path, session_id, session_type, n=8, n_f=16, n_t=20, sque
             "usv_id": [f"{i:06d}" for i in range(n)],
             "start": np.arange(n, dtype=np.float64),
             "stop": np.arange(n, dtype=np.float64) + 0.05,
-            "squeak": [i in squeak_rows for i in range(n)],
+            "usv": [i not in squeak_rows for i in range(n)],
+            "squeak": [i in squeak_rows or i in both_rows for i in range(n)],
         }).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")
     return root
 
@@ -294,10 +301,10 @@ def _build(tmp_path, roots, cfg, name="out", **kwargs):
 
 @pytest.fixture
 def cohort(tmp_path, mocker):
-    """Two MF, two FF, one MM and one lone_male session; one MF session has squeaks."""
+    """Two MF, two FF, one MM and one lone_male session; one MF session has a squeak (row 1) and a both (row 2)."""
     mocker.patch("usv_playpen.processing.build_qlvm_training_set.smart_wait")
     return [
-        _write_session(tmp_path, "20230101_100000", "MF", squeak_rows=(1, 2)),
+        _write_session(tmp_path, "20230101_100000", "MF", squeak_rows=(1,), both_rows=(2,)),
         _write_session(tmp_path, "20230101_110000", "MF"),
         _write_session(tmp_path, "20230101_120000", "FF"),
         _write_session(tmp_path, "20230101_130000", "FF"),
@@ -355,13 +362,25 @@ def test_build_row_exclusions_override_the_summary(tmp_path, cohort):
     assert bool(np.load(out_dir / "metadata.npz")["row_exclusions_override"])
 
 
-def _add_frame_runs(root, runs):
+def _write_reference_index(tmp_path, roots, flagged=None, missing_session=None):
     """
-    Add a ``squeak_frame_runs`` column (the per-row run counts ``runs``) to the
-    session's ``*_usv_summary.csv``, as detect-usv-squeaks writes it.
+    Write a synthetic reference squeak index CSV (the columns the strict rule reads
+    plus one it ignores): every row of every session in ``roots`` (except
+    ``missing_session``), with ``is_bbv`` / ``n_bouts_min3`` taken from
+    ``flagged`` (session id -> {row: (is_bbv, n_bouts_min3)}), False / 0 elsewhere.
+    Returns the CSV path.
     """
-    summary = root / "audio" / f"{root.name}_usv_summary.csv"
-    pls.read_csv(summary).with_columns(pls.Series("squeak_frame_runs", runs, dtype=pls.Int64)).write_csv(summary)
+    flagged = {} if flagged is None else flagged
+    rows = []
+    for root in roots:
+        if root.name == missing_session:
+            continue
+        for row in range(8):
+            is_bbv, n_bouts = flagged.get(root.name, {}).get(row, (False, 0))
+            rows.append({"session_id": root.name, "seg_index": row, "p_bbv": 0.1, "is_bbv": is_bbv, "n_bouts_min3": n_bouts})
+    path = tmp_path / "bbv_segment_index.csv"
+    pls.DataFrame(rows).write_csv(path)
+    return path
 
 
 def test_build_copies_the_summary_condition_columns_row_for_row(tmp_path, cohort):
@@ -403,32 +422,74 @@ def test_build_copies_the_summary_condition_columns_row_for_row(tmp_path, cohort
                     np.testing.assert_array_equal(split[column][n_row], expected)
 
 
-def test_build_strict_squeak_exclusion_adds_frame_run_rows(tmp_path, cohort):
+def test_build_exclude_squeaks_keeps_usv_rows_only(tmp_path, cohort):
+    """exclude_squeaks leaves out pure squeaks (squeak true, usv false) and segments
+    holding both (usv and squeak true) alike -- usv true alone does not admit a row --
+    so only pure USVs are drawn; without it both come back, and null booleans (noise
+    or unscorable) do not mark a squeak."""
+    summary = cohort[1] / "audio" / f"{cohort[1].name}_usv_summary.csv"
+    pls.read_csv(summary).with_columns(
+        pls.Series("usv", [True, True, True, None, True, True, True, True], dtype=pls.Boolean),
+        pls.Series("squeak", [False, False, False, None, False, False, False, False], dtype=pls.Boolean),
+    ).write_csv(summary)
+    kept_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True}, "usv_only")
+    all_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True, "exclude_squeaks": False}, "all")
+    kept_ids = np.load(kept_dir / "full_data.npz")["spec_id"].tolist()
+    all_ids = np.load(all_dir / "full_data.npz")["spec_id"].tolist()
+    assert "20230101_100000_1" not in kept_ids and "20230101_100000_2" not in kept_ids
+    assert "20230101_110000_3" in kept_ids
+    assert sorted(set(all_ids) - set(kept_ids)) == ["20230101_100000_1", "20230101_100000_2"]
+
+
+def test_build_exclude_squeaks_needs_vocal_flags(tmp_path, cohort):
+    """A summary without the usv boolean (never scored by detect-usv-squeaks, or scored only by the
+    retired binary detector, whose summaries carry a squeak column alone) stops a build that
+    excludes squeaks."""
+    summary = cohort[0] / "audio" / f"{cohort[0].name}_usv_summary.csv"
+    pls.read_csv(summary).drop("usv").write_csv(summary)
+    with pytest.raises(ValueError, match="usv"):
+        _build(tmp_path, cohort, _CFG)
+
+
+def test_read_reference_squeak_index_applies_the_strict_rule(tmp_path, cohort):
+    """The strict rule marks a row when is_bbv is true OR n_bouts_min3 >= 1; rows the
+    index does not list are not marked; a missing session or an out-of-range row raises."""
+    path = _write_reference_index(tmp_path, cohort, {"20230101_100000": {3: (True, 0), 4: (False, 2), 5: (False, 0)}})
+    index = read_reference_squeak_index(str(path))
+    squeak = reference_strict_squeak_rows(index, "20230101_100000", 8)
+    assert np.flatnonzero(squeak).tolist() == [3, 4]
+    assert not reference_strict_squeak_rows(index, "20230101_110000", 10).any()
+    with pytest.raises(ValueError, match="not in the reference squeak index"):
+        reference_strict_squeak_rows(index, "20990101_000000", 8)
+    with pytest.raises(ValueError, match="does not describe"):
+        reference_strict_squeak_rows(index, "20230101_100000", 5)
+
+
+def test_build_strict_squeak_exclusion_reads_the_reference_index(tmp_path, cohort):
     """
-    strict_squeak_exclusion leaves out rows with squeak_frame_runs >= 1 on top of
-    the squeak rows (the reference squeak index's strict rule); by default those
-    rows stay in, and a null run count counts as 0.
+    strict_squeak_exclusion takes the squeak rows from the reference squeak index's
+    strict rule (is_bbv OR n_bouts_min3 >= 1) INSTEAD of the summary's squeak flag: the
+    index's rows go, the squeak-bearing rows the index does not flag come back.
     """
-    for root in cohort:
-        _add_frame_runs(root, [0] * 8)
-    _add_frame_runs(cohort[0], [0, 0, 1, 2, 0, None, 0, 0])
+    path = _write_reference_index(tmp_path, cohort, {"20230101_100000": {3: (True, 0), 4: (False, 1)}})
     default_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True}, "default")
-    strict_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True, "strict_squeak_exclusion": True}, "strict")
-    default_ids = np.load(default_dir / "full_data.npz")["spec_id"].tolist()
-    strict_ids = np.load(strict_dir / "full_data.npz")["spec_id"].tolist()
-    assert "20230101_100000_3" in default_ids
-    assert "20230101_100000_3" not in strict_ids
-    assert "20230101_100000_5" in strict_ids
-    assert not any(i in strict_ids for i in ("20230101_100000_1", "20230101_100000_2"))
-    assert sorted(set(default_ids) - set(strict_ids)) == ["20230101_100000_3"]
-    assert bool(np.load(strict_dir / "metadata.npz")["strict_squeak_exclusion"])
+    strict_cfg = {**_CFG, "full_dataset": True, "strict_squeak_exclusion": True, "reference_squeak_index_path": str(path)}
+    strict_dir = _build(tmp_path, cohort, strict_cfg, "strict")
+    default_ids = set(np.load(default_dir / "full_data.npz")["spec_id"].tolist())
+    strict_ids = set(np.load(strict_dir / "full_data.npz")["spec_id"].tolist())
+    assert sorted(default_ids - strict_ids) == ["20230101_100000_3", "20230101_100000_4"]
+    assert sorted(strict_ids - default_ids) == ["20230101_100000_1", "20230101_100000_2"]
+    meta = np.load(strict_dir / "metadata.npz")
+    assert bool(meta["strict_squeak_exclusion"])
+    assert str(meta["reference_squeak_index_path"]) == str(path)
     assert not bool(np.load(default_dir / "metadata.npz")["strict_squeak_exclusion"])
 
 
-def test_build_strict_squeak_exclusion_needs_the_frame_run_column(tmp_path, cohort):
-    """A summary without squeak_frame_runs (scored before the column existed) stops a strict build."""
-    with pytest.raises(ValueError, match="squeak_frame_runs"):
-        _build(tmp_path, cohort, {**_CFG, "strict_squeak_exclusion": True})
+def test_build_strict_squeak_exclusion_needs_every_session_in_the_index(tmp_path, cohort):
+    """A session the reference index does not list has unknown strict exclusions and stops the build."""
+    path = _write_reference_index(tmp_path, cohort, missing_session="20230101_120000")
+    with pytest.raises(ValueError, match="20230101_120000 is not in the reference squeak index"):
+        _build(tmp_path, cohort, {**_CFG, "strict_squeak_exclusion": True, "reference_squeak_index_path": str(path)})
 
 
 def test_load_row_exclusion_table_and_path_parser(tmp_path):
@@ -491,7 +552,8 @@ def test_build_full_dataset_writes_every_eligible_row(tmp_path, cohort):
     ({"masking_type": "none"}, "masking_type 'none'"),
     ({"apply_mask": True}, "loudness floor"),
     ({"mask_count_bin_edges": [2, 1]}, "mask_count_bin_edges"),
-    ({"exclude_squeaks": False, "strict_squeak_exclusion": True}, "strict_squeak_exclusion"),
+    ({"exclude_squeaks": False, "strict_squeak_exclusion": True, "reference_squeak_index_path": "x.csv"}, "needs exclude_squeaks"),
+    ({"strict_squeak_exclusion": True}, "reference_squeak_index_path is empty"),
 ])
 def test_build_rejects_inconsistent_settings(tmp_path, cohort, override, message):
     """Inconsistent settings stop the build before anything is read."""
