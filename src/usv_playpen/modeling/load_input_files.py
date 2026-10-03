@@ -20,7 +20,6 @@ Key Capabilities:
 from __future__ import annotations
 
 import pickle
-import re
 from pathlib import Path
 
 import h5py
@@ -29,7 +28,7 @@ import polars as pls
 from astropy.convolution import Gaussian1DKernel, convolve
 from scipy.stats import invgauss, norm
 
-from ..os_utils import VOCAL_FLAG_COLUMNS, call_class_mask, drop_noise_usvs
+from ..os_utils import QLVM_CATEGORY_COLUMN, VOCAL_FLAG_COLUMNS, call_class_mask, drop_noise_usvs
 
 
 def load_behavioral_feature_data(behavior_file_paths: list = None,
@@ -1053,8 +1052,12 @@ def find_usv_categories(root_directories: list = None,
             'continuous_targets': np.array of shape (N, D) stacking the configured
                 manifold columns in the order given by `manifold_column_names`.
             'continuous_category': np.array of per-USV category labels, aligned 1:1
-                with 'continuous_onsets'. Present only when the
-                '<manifold_prefix>_category' column exists in the source CSV.
+                with 'continuous_onsets': the regular map's QLVM category
+                (os_utils.QLVM_CATEGORY_COLUMN, 'qlvm_category') whatever map the
+                manifold columns come from, because the categories are defined on
+                the regular map only and label each call, not a map. Present only
+                when that column exists in the source CSV (a summary whose
+                categories assign-qlvm-categories has not written yet has none).
     """
 
     # Per-call labels are needed by the categorical paths only: the multinomial /
@@ -1225,20 +1228,20 @@ def find_usv_categories(root_directories: list = None,
 
                     # Per-USV category labels, the acoustic regions of
                     # downstream region-conditioned analyses (torus macro
-                    # score, CNN saliency, cluster-circle membership). Derived
-                    # from the manifold prefix: e.g., 'qlvm1' -> 'qlvm' ->
-                    # 'qlvm_category' (R-1..R-k). Only the regular map carries
-                    # a category column, so a conditional map ('qlvm_dur',
-                    # 'qlvm_ent') gets none. Stored as a plain numpy array
+                    # score, equal-region reweighting, model selection, CNN
+                    # saliency, GLM-HMM targets). The label is the regular
+                    # map's qlvm_category (R-1..R-k) for EVERY map -- qlvm,
+                    # qlvm_dur and qlvm_ent alike: the categories are defined
+                    # on the regular map only (os_utils.QLVM_CATEGORY_MAP) and
+                    # are a property of the call, so a conditional map's calls
+                    # carry the same labels. Stored as a plain numpy array
                     # aligned 1:1 with continuous_onsets / continuous_targets
                     # above, only when the column is present in the source CSV;
                     # an absent label array signals "this USV summary carries
-                    # no category for this map."
-                    manifold_prefix = re.sub(r'\d+$', '', manifold_column_names[0])
-                    cat_col = f"{manifold_prefix}_category"
-                    if cat_col in mouse_usvs.columns:
+                    # no categories yet" (assign-qlvm-categories not run).
+                    if QLVM_CATEGORY_COLUMN in mouse_usvs.columns:
                         usv_data_dict[session_id][mouse_name]['continuous_category'] = (
-                            mouse_usvs[cat_col].to_numpy()[placed]
+                            mouse_usvs[QLVM_CATEGORY_COLUMN].to_numpy()[placed]
                         )
 
     if manifold_column_names:

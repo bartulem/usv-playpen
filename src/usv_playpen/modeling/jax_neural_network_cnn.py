@@ -1035,8 +1035,9 @@ class NeuralContinuousCNNRunner:
             w_list.append(w_sess)
             groups_list.append(np.full(len(Y_sess), sess))
 
-            # Optional per-USV category labels (the QLVM category of the
-            # manifold's map). Persisted by the extract-pipeline when the
+            # Optional per-USV category labels (the regular map's
+            # qlvm_category, whatever map the manifold target is drawn
+            # from). Persisted by the extract-pipeline when the
             # source USV CSV carried them; absent otherwise, in which case
             # the saliency phase raises a clear "re-extract" message.
             if 'category' in sess_dict:

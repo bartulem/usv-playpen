@@ -929,12 +929,11 @@ class ContinuousModelingPipeline(FeatureZoo):
             if onsets is None or targets is None:
                 continue
 
-            # Per-USV category labels (the `<prefix>_category` column, i.e.
-            # qlvm_category for the regular map) aligned 1:1 with
-            # onsets/targets. Surfaced by `find_usv_categories` when the
-            # column exists in the source USV CSV (the manifold prefix tells
-            # the loader which column to read). Absent label arrays signal
-            # "this USV summary carries no category for this map"; downstream
+            # Per-USV category labels (the regular map's qlvm_category, the
+            # label of every map's calls, conditional maps included) aligned
+            # 1:1 with onsets/targets. Surfaced by `find_usv_categories` when
+            # the column exists in the source USV CSV. Absent label arrays
+            # signal "this USV summary carries no categories yet"; downstream
             # region-conditional analyses (e.g. CNN saliency cluster filters)
             # raise a clear error in that case rather than silently passing.
             sess_targ_pkt = usv_data_dict[sess_id][targ_name]
@@ -1212,7 +1211,7 @@ class ContinuousModelingPipeline(FeatureZoo):
                 # Labels carry through to every feature's per-session
                 # entry for symmetry with X/Y/w (the CNN runner reads them
                 # from `features[0]` just as it does Y/w). Absent when the
-                # source CSV carries no category for the map — downstream
+                # source CSV carries no qlvm_category yet — downstream
                 # consumers handle that case explicitly.
                 session_entry = {
                     'X': X_arr,
@@ -1454,7 +1453,7 @@ class ContinuousModelRunner:
                 w_sess = raw_data[feat][sess_id]['w']
                 # Per-event acoustic-region label (the QLVM category, packet key
                 # 'category'), row-aligned to Y; NaN when the source pickle carried
-                # no labels (e.g. a map without a category column),
+                # no labels (summaries without qlvm_category),
                 # which makes the torus von Mises macro score fall back to the
                 # pooled form and the equal-region reweighting fall back to
                 # uniform. Read via `in` (not `.get`) per the strict-lookup style.

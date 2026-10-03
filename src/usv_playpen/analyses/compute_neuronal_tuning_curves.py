@@ -80,8 +80,8 @@ CONTINUOUS_PROPERTIES = (
 )
 
 # The per-USV QLVM category columns (os_utils.QLVM_CATEGORY_COLUMNS: the regular
-# map's qlvm_category only; the conditional maps carry no category column and there
-# is no coarse level).
+# map's qlvm_category only, the category label of every call whatever map it is
+# drawn on; there is no coarse level and no category column of the conditional maps).
 CATEGORICAL_FEATURES = QLVM_CATEGORY_COLUMNS
 
 # Derivative suffixes a behavioral feature column may carry; a column is matched

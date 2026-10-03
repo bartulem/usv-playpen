@@ -917,10 +917,14 @@ class TestFindUsvCategories:
         assert set(male['events_by_category'].keys()) == {5, 8}
 
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
-    def test_continuous_targets_from_manifold_columns(self, tmp_path):
-        """When ``manifold_column_names`` are present, continuous onsets,
-        stacked targets and the derived ``<prefix>_category`` label array are
-        written; a retired ``<prefix>_supercategory`` column is not read."""
+    @pytest.mark.parametrize("prefix", ["qlvm", "qlvm_dur", "qlvm_ent"])
+    def test_continuous_targets_from_manifold_columns(self, tmp_path, prefix):
+        """When ``manifold_column_names`` are present, continuous onsets, stacked
+        targets and the region label array are written. The label is the regular
+        map's ``qlvm_category`` for EVERY map, the conditional ones included (the
+        categories are defined on the regular map and label the call); a
+        ``<prefix>_category`` / ``<prefix>_supercategory`` column of the manifold's
+        own prefix is never read."""
 
         rows = {
             'emitter': ['male', 'male'],
@@ -928,23 +932,45 @@ class TestFindUsvCategories:
             'stop': [2.05, 3.05],
             'usv_category': [1, 2],
             'usv_supercategory': [1, 1],
-            'vae1': [0.1, 0.2],
-            'vae2': [0.3, 0.4],
-            'vae_supercategory': [10, 11],
-            'vae_category': [20, 21],
+            f'{prefix}1': [0.1, 0.2],
+            f'{prefix}2': [0.3, 0.4],
+            'qlvm_category': [3, 4],
         }
+        if prefix != 'qlvm':
+            rows[f'{prefix}_category'] = [20, 21]
+            rows[f'{prefix}_supercategory'] = [10, 11]
         out = find_usv_categories(target_category=None, filter_history=1.0,
                                   vocal_output_type='all_rate',
                                   proportion_smoothing_sd=2.0,
-                                  manifold_column_names=['vae1', 'vae2'],
+                                  manifold_column_names=[f'{prefix}1', f'{prefix}2'],
                                   **self._kwargs(tmp_path, rows))
         male = out['sess_D']['male']
         np.testing.assert_allclose(male['continuous_onsets'], [2.0, 3.0])
         assert male['continuous_targets'].shape == (2, 2)
         assert 'continuous_supercategory' not in male
-        np.testing.assert_allclose(male['continuous_category'], [20, 21])
+        np.testing.assert_allclose(male['continuous_category'], [3, 4])
         assert 'usv_rate' in male['continuous_vocal_signals']
         assert 'usv_cat_1' in male['continuous_vocal_signals']
+
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_continuous_targets_without_qlvm_category_carry_no_labels(self, tmp_path):
+        """A summary whose categories were not assigned yet (no ``qlvm_category``)
+        yields manifold targets without a region label array."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [2.0, 3.0],
+            'stop': [2.05, 3.05],
+            'usv_category': [1, 2],
+            'qlvm_dur1': [0.1, 0.2],
+            'qlvm_dur2': [0.3, 0.4],
+        }
+        out = find_usv_categories(target_category=None, filter_history=1.0,
+                                  manifold_column_names=['qlvm_dur1', 'qlvm_dur2'],
+                                  **self._kwargs(tmp_path, rows))
+        male = out['sess_D']['male']
+        assert male['continuous_targets'].shape == (2, 2)
+        assert 'continuous_category' not in male
 
     def test_missing_category_column_raises(self, tmp_path):
         """A CSV lacking ``category_column`` raises the labels-unavailable
