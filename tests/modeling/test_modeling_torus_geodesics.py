@@ -17,6 +17,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from usv_playpen import os_utils
 from usv_playpen.modeling.manifold_metric import _geodesic_distance_matrix
 from usv_playpen.modeling.modeling_torus_geodesics import (
     _snap_to_grid,
@@ -278,15 +279,20 @@ class TestModelCellDecoder:
             make_qlvm_decode_fn_from_model_cell(str(cell))
 
     def test_source_resolution(self):
-        """The settings block resolves to its model package cell, or to nothing when
-        decoder_model_cell_directory is empty; the retired npz source is gone, so the
-        legacy decoder_weights_npz_path key a user's older settings may still carry
-        is ignored."""
+        """With pullback_metric on, the decoder is the production regular cell from
+        the os_utils constants (no settings path the experimenter re-keying could
+        rewrite); off, there is no pullback decoder. A path key a user's older
+        settings may still carry (decoder_model_cell_directory, the retired
+        decoder_weights_npz_path) is ignored, and a block without pullback_metric
+        is a settings error."""
 
-        assert resolve_geodesic_decoder_source({'decoder_model_cell_directory': '/c'}) == ('model_cell', '/c')
-        assert resolve_geodesic_decoder_source({'decoder_model_cell_directory': ''}) is None
+        production = f"{os_utils.QLVM_MODEL_PACKAGE_ROOT}/{os_utils.QLVM_PRODUCTION_MODEL_CELLS['qlvm']}"
+        assert resolve_geodesic_decoder_source({'pullback_metric': True}) == ('model_cell', production)
+        assert resolve_geodesic_decoder_source({'pullback_metric': False}) is None
         assert resolve_geodesic_decoder_source(
-            {'decoder_weights_npz_path': '/w.npz', 'decoder_model_cell_directory': ''}) is None
+            {'pullback_metric': True, 'decoder_model_cell_directory': '/elsewhere'}) == ('model_cell', production)
+        with pytest.raises(KeyError):
+            resolve_geodesic_decoder_source({'decoder_model_cell_directory': '/c'})
 
     def test_source_builder_uses_the_cell(self, tmp_path):
         """Building from a model-cell source gives the cell's decoder; any other

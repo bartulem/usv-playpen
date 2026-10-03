@@ -1521,7 +1521,7 @@ class ContinuousModelRunner:
 
         Torus-only. Any failure mode -- the metric is not `'torus'`, the
         `usv_manifold_geodesic_metrics` block is absent or its `compute` flag is
-        False, or the decoder `.npz` is missing/unreadable -- degrades the
+        False, or the production regular cell's decoder is unreadable -- degrades the
         affected column(s) to `NaN` and never aborts the run (the pullback column
         alone degrades when only the decoder is unavailable).
 
@@ -1558,7 +1558,8 @@ class ContinuousModelRunner:
             _geo_cfg = _vf_settings['usv_manifold_geodesic_metrics']
             if _geo_cfg['compute']:
                 # Resolved outside the soft-failure block: a settings block without
-                # decoder_model_cell_directory is a settings error, not a NaN column.
+                # pullback_metric is a settings error, not a NaN column. The decoder
+                # is the production regular cell (os_utils constants), never a path.
                 _geo_decoder_source = resolve_geodesic_decoder_source(_geo_cfg)
                 try:
                     _geo_decode_fn = None

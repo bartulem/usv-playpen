@@ -54,6 +54,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 from scipy.stats import gaussian_kde
 
+from ..os_utils import QLVM_REGULAR_MAP, qlvm_production_cell_directory
 from ..processing.qlvm_latents import load_model_cell
 from ..processing.qlvm_model import decoder_forward, torus_basis_forward
 from .manifold_metric import _geodesic_distance_matrix, signed_diff
@@ -439,28 +440,36 @@ def resolve_geodesic_decoder_source(geodesic_settings: dict) -> tuple[str, str] 
     """
     Description
     -----------
-    Reads which decoder the pullback geodesic metric uses from the
-    ``vocal_features.usv_manifold_geodesic_metrics`` block: the QLVM model
-    package cell ``decoder_model_cell_directory`` (the only decoder source; the
-    legacy in-house decoder ``.npz`` is retired). An empty directory means no
-    pullback metric (``pullback_geodesic_mae`` is NaN). This is read before any
-    geometry is built, so a configuration error is not swallowed by the
+    Reads whether the pullback geodesic metric is computed from the
+    ``vocal_features.usv_manifold_geodesic_metrics`` block and, when it is, which
+    decoder defines it. The decoder is not a setting: it is always the production
+    regular cell, ``os_utils.qlvm_production_cell_directory("qlvm")``
+    (``QLVM_PRODUCTION_MODEL_CELLS['qlvm']`` under ``QLVM_MODEL_PACKAGE_ROOT``,
+    ``.../masked_clean/cell/masked``), the unconditional model the ``qlvm1`` /
+    ``qlvm2`` coordinates come from. Taking it from the code constants keeps the
+    GUI / CLI experimenter re-keying of settings paths from ever pointing the
+    metric at another experimenter's folder (where no cell exists) or at a cell
+    whose torus the coordinates do not live on. ``pullback_metric`` (bool) is the
+    only switch: false means no pullback metric (``pullback_geodesic_mae`` is NaN),
+    the density-ratio geodesic is unaffected. This is read before any geometry is
+    built, so a configuration error (a missing key) is not swallowed by the
     geometry's soft-failure handling.
 
     Parameters
     ----------
     geodesic_settings (dict)
-        The ``usv_manifold_geodesic_metrics`` settings block.
+        The ``usv_manifold_geodesic_metrics`` settings block; its
+        ``pullback_metric`` flag is read.
 
     Returns
     -------
     source (tuple[str, str] | None)
-        ``('model_cell', <directory>)``, or None when no decoder is configured.
+        ``('model_cell', <production regular cell, canonical form>)``, or None
+        when ``pullback_metric`` is false.
     """
 
-    cell_directory = geodesic_settings['decoder_model_cell_directory']
-    if cell_directory:
-        return 'model_cell', cell_directory
+    if geodesic_settings['pullback_metric']:
+        return 'model_cell', qlvm_production_cell_directory(QLVM_REGULAR_MAP)
     return None
 
 
