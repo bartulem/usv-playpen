@@ -223,6 +223,194 @@
     "apply_mask": true,
     "accent_color": "#00FFFF"
   },
+  "vocal_pose_figures": {
+    "window": {
+      "end_time": 23.5,
+      "history_seconds": 2.0,
+      "trail_end_seconds": 1.0
+    },
+    "spectrogram": {
+      "microphone": "peak",
+      "n_fft": 256,
+      "hop_fraction": 4,
+      "freq_range_khz": [
+        30.0,
+        110.0
+      ],
+      "freq_ticks_khz": [
+        40.0,
+        70.0,
+        100.0
+      ],
+      "db_floor": "adaptive",
+      "adaptive_floor_above_median_db": 12.0,
+      "ceiling_percentile": 99.9,
+      "gamma": 0.8,
+      "male_deep": 0.4,
+      "female_deep": 1.0,
+      "ramp_split": 0.5,
+      "call_pad_seconds": 0.005
+    },
+    "camera": {
+      "azimuth": "male_side",
+      "elevation": 45.0,
+      "top_sex": "male"
+    },
+    "trail": {
+      "strongest": 0.6,
+      "fade_seconds": 0.1,
+      "floor": 0.05,
+      "taper_fraction": 0.5
+    },
+    "skeleton": {
+      "line_width": 4.5,
+      "node_size": 56.0,
+      "body_opacity": 0.4,
+      "trail_body_opacity": 0.0,
+      "reference_half_extent_m": 0.175,
+      "margin_m": 0.02,
+      "z_margin_m": 0.01,
+      "history_point": "Head"
+    },
+    "scale_mark": {
+      "length_cm": 2.0,
+      "labels": [
+        "X",
+        "Y",
+        "Z"
+      ],
+      "signs": [
+        1,
+        -1,
+        1
+      ],
+      "turn_degrees": 90.0,
+      "gap_cm": 4.0,
+      "line_width": 2.5,
+      "label_gap_fraction": 0.028,
+      "label_separation_degrees": 35.0,
+      "caption_gap_factor": 1.7,
+      "font_size": 6,
+      "color": "#000000"
+    },
+    "surfaces": {
+      "enabled": false,
+      "color": "#EEEEEE",
+      "junction_color": "#000000",
+      "junction_width": 3.0,
+      "wall_height_m": 0.6,
+      "content_tolerance": 14.0,
+      "pad_inches": 0.3
+    },
+    "layout": {
+      "figure_width_inches": 6.0,
+      "top_block_inches": 1.85,
+      "spectrogram_left": 0.13,
+      "spectrogram_width": 0.6,
+      "spectrogram_top_inches": 0.1,
+      "spectrogram_height_inches": 1.25,
+      "bar_gap_inches": 0.05,
+      "bar_height_inches": 0.1,
+      "bar_samples": 2048,
+      "bar_label_offset": 0.6,
+      "frequency_label": "Frequency (kHz)",
+      "time_label": "Time prior to frame (s)",
+      "tick_font_size": 8,
+      "label_font_size": 9,
+      "tick_pad": 3,
+      "ink_color": "#202020",
+      "background_color": "#FFFFFF",
+      "content_threshold": 250,
+      "pose_pad_inches": 0.05,
+      "crop_edge_pixels": 8,
+      "svg_pad_inches": 0.1,
+      "box_zoom": 1.25,
+      "fit_shrink": 0.93,
+      "max_fit_passes": 8,
+      "align_pose": true,
+      "color_key": true,
+      "key_position": "pose",
+      "key_swatch_inches": 0.24,
+      "key_wide_inches": 0.6,
+      "key_spacing_inches": 0.12,
+      "key_gap_inches": 0.4,
+      "key_clear_inches": 0.07
+    },
+    "output": {
+      "dpi": 300,
+      "save_svg": false
+    },
+    "video": {
+      "duration_seconds": 4.0,
+      "speed": 0.5,
+      "follow_seconds": 0.25,
+      "degrees_per_second": 0.0,
+      "inches": 6.0,
+      "dpi": 300,
+      "crop_edge_pixels": 12,
+      "workers": 0,
+      "codec": "libx264",
+      "pixel_format": "yuv420p",
+      "crf": 18,
+      "encode_timeout_seconds": 3600,
+      "trail": {
+        "trail_seconds": 0.25,
+        "strongest": 0.85,
+        "fade_seconds": 0.05,
+        "floor": 0.15
+      },
+      "skeleton": {
+        "line_width": 3.5,
+        "node_size": 56.0,
+        "body_opacity": 0.4,
+        "trail_body_opacity": 0.0,
+        "margin_m": 0.02,
+        "z_margin_m": 0.01,
+        "history_point": "Head"
+      },
+      "spectrogram": {
+        "enabled": true,
+        "layout": "inset",
+        "reach_seconds": 0.1,
+        "sharp_seconds": 0.025,
+        "fade_seconds": 0.02,
+        "floor": 0.15,
+        "height_fraction": 0.5,
+        "inset_max_width": 0.5,
+        "inset_margin_pixels": 0,
+        "inset_gap_pixels": 20,
+        "inset_shift": 1.0,
+        "inset_corner": "auto",
+        "corner_preference": 0.8,
+        "panel_left_pixels": 150,
+        "panel_right_pixels": 6,
+        "panel_edge_pixels": 22,
+        "panel_full_text_pixels": 290
+      }
+    },
+    "candidates": {
+      "window_seconds": 2.0,
+      "step_seconds": 0.25,
+      "n_shown": 12,
+      "max_gap_cm": 5.0,
+      "sheet_width_inches": 11.0,
+      "row_height_inches": 1.55,
+      "sheet_dpi": 200,
+      "sheet_margins": {
+        "left": 0.055,
+        "right": 0.995,
+        "top": 0.975,
+        "bottom": 0.01,
+        "hspace": 0.42
+      }
+    },
+    "view_picker": {
+      "n_trail": 60,
+      "strongest": 0.6,
+      "fade_seconds": 0.1,
+      "floor": 0.12
+    }
+  },
   "embedding_thumbnails": {
     "category_col_suffix": "supercategory",
     "exclude_squeaks": true,

@@ -619,3 +619,229 @@ Annotations / layout:
         "scatter_max_points": 200000,
         "fig_size": [16, 12]
     }
+
+Render vocal-pose figures
+-------------------------
+The ``usv_playpen.visualizations.make_vocal_pose_figures`` module renders one session's **vocal-pose still** and the matching **video**: what the animals were doing while the male sang. It is **notebook-driven** (the ``usv_general_analyses.ipynb`` *Vocal-pose figures* cells, see :doc:`Notebooks`), not exposed in the GUI, so it has no ``visualize_booleans`` switch; it reads the session's 3D tracks (``*_points3d_translated_rotated_metric.h5``), ``*_usv_summary.csv`` and ``audio/cropped_to_video`` wavs, takes the animal colours from the ``male_colors`` / ``female_colors`` / ``unassigned_colors`` palette and the arena from ``make_behavioral_videos.arena_directory``.
+
+**The still** (``VocalPoseStillMaker.make_vocal_pose_still``) stacks two panels. On top is the spectrogram of one microphone over the window ending at ``window.end_time`` (``"peak"`` picks the microphone most of the window's calls peak on), every time column coloured by the emitter of the call covering it — white to the male's colour, white to the female's, white to the unassigned colour outside any listed call — with each emitter's USVs and squeaks scaled to their own loudest sound (a squeak is tens of dB louder than a USV) and a shared floor so silence stays white; the male ramp continues past his colour to a darker shade of the same hue (``male_deep``) so narrowband USVs stand out on white. Beneath it a time bar whose strength follows the fade of the pose trails. Below are both animals at the frame, drawn with the shared mouse renderer (``plot_mouse_data``) in one colour each with see-through bodies, over one silhouette per camera frame of their preceding movement that fades with age and ends after ``window.trail_end_seconds``; the skeleton's line widths scale with the panel's zoom so the animals look the same in every figure. The camera stands on the male's side of the pair when ``camera.azimuth`` is ``"male_side"`` (it looks along the line from the female's body centre to the male's, so he is nearest the viewer); a number read off the view picker fixes it instead. Optional: a scale mark of three perpendicular arms of ``scale_mark.length_cm`` beside the male, the arena floor and nearest wall as grey surfaces with a black junction line (``surfaces``), a two-swatch colour key (``layout.color_key``) and, with ``layout.align_pose``, the whole tracking panel moved left so its right edge sits under the spectrogram's. The PNG is cropped to its content; ``output.save_svg`` also writes an SVG with live text (Helvetica Light), vector current poses and the trail, spectrogram and bar as embedded images.
+
+**The video** (``VocalPoseVideoMaker.make_vocal_pose_video``) plays the ``video.duration_seconds`` before the same frame at ``video.speed`` (0.5 = half speed, every camera frame kept) with a ``video.trail.trail_seconds`` fading trail behind each animal, the camera fixed at the still's view, following the pair (``video.follow_seconds`` ≥ 0 centres the smoothed middle of their outline in every frame) or turning at ``video.degrees_per_second`` into the still's view on the last frame, and a scrolling spectrogram with the present fixed at its centre, ``reach_seconds`` visible on each side and sharp only within ``sharp_seconds`` — as an inset in a corner no animal ever enters (``layout`` ``"inset"``; the lower right when free, slid left by ``inset_shift`` of the free room) or a strip below the animals (``"below"``). Frames render in ``workers`` processes (0 = all cores but one) and are encoded by ffmpeg.
+
+**Choosing a window** — ``find_vocal_pose_windows`` ranks the session's windows of ``candidates.window_seconds`` in which every call is a non-noise, non-squeak USV of the male, no call is cut by an edge, no noise detection falls inside and the animals stay within ``candidates.max_gap_cm`` (the smallest distance between any body keypoints of the two, tails excluded) on every frame; the score sums the z-scores of the vocal fraction, the duration-weighted bandwidth and the mean call duration. ``plot_vocal_pose_window_candidates`` stacks the spectrograms of the best ``n_shown`` non-overlapping windows. **Choosing a camera** — ``vocal_pose_view_picker_html`` writes a page on which the frame turns by dragging (or two sliders), with presets for the male-side, heads-down, tails-down and top views, reporting the azimuth and elevation in the figure's convention.
+
+Both outputs land in ``figures.save_directory`` as ``vocal_pose_<session>_<start>-<end>s`` (plus a ``_YYYYMMDD_HHMMSS`` stamp when ``figures.timestamp_in_name`` is set):
+
+.. parsed-literal::
+
+    ├── ...  (the ``figures.save_directory`` output folder)
+    │   ├── **vocal_pose_20250516_122134_21.50-23.50s.png**
+    │   ├── **vocal_pose_20250516_122134_21.50-23.50s.svg**
+    │   ├── **vocal_pose_20250516_122134_19.50-23.50s.mp4**
+    │   ...
+
+Every tunable lives in the ``vocal_pose_figures`` block of */usv-playpen/_parameter_settings/visualizations_settings.json*. The keys a run normally changes:
+
+* **window.end_time** : the frame shown, in seconds from video start; **window.history_seconds** the spectrogram / time-bar span before it; **window.trail_end_seconds** the age at which the trail has faded to nothing (0 keeps it for the whole window).
+* **spectrogram.microphone** : ``"peak"`` or a device-channel name such as ``"s04"``; **spectrogram.freq_range_khz** / **freq_ticks_khz** the band shown and its labels; **db_floor** ``"adaptive"`` (``adaptive_floor_above_median_db`` above the band's median power) or a dB value; **n_fft** / **hop_fraction** the STFT (a shorter window widens narrowband sweeps); **male_deep** / **female_deep** / **ramp_split** the darker end of each ramp; **ceiling_percentile** / **gamma** / **call_pad_seconds** the loudness scaling.
+* **camera.azimuth** : ``"male_side"`` or degrees; **camera.elevation** degrees above the floor (90 is straight down); **camera.top_sex** the animal drawn last, on top where they overlap.
+* **trail** : ``strongest`` (colour strength just behind the present), ``fade_seconds`` (time constant), ``floor`` (strength old silhouettes settle to), ``taper_fraction`` (the last fraction of the trail over which it tapers to nothing).
+* **skeleton** : ``line_width`` / ``node_size`` at the reference zoom (``reference_half_extent_m``), ``body_opacity`` / ``trail_body_opacity`` of the filled bodies, ``margin_m`` / ``z_margin_m`` around the trail, ``history_point``.
+* **scale_mark** : ``length_cm`` (0 = none), ``labels``, ``signs`` (−1 reverses an arm), ``turn_degrees`` (turns the two floor arms about the vertical), ``gap_cm`` from the male, ``line_width``, label and caption placement, ``font_size``, ``color``.
+* **surfaces** : ``enabled``, ``color``, ``junction_color`` / ``junction_width``, ``wall_height_m``, ``content_tolerance`` (what counts as drawn against the surface colour when cropping), ``pad_inches``.
+* **layout** : figure width, the spectrogram's left / width / height, the bar, fonts and ink, ``content_threshold`` / ``crop_edge_pixels`` / ``svg_pad_inches`` for the crops, ``box_zoom`` / ``fit_shrink`` / ``max_fit_passes`` (the pose box is shrunk until nothing is cut off), ``align_pose``, ``color_key`` / ``key_position`` (``"pose"`` = wide swatches beside the animals, ``"spectrogram"`` = squares to its right) and the swatch sizes.
+* **output** : ``dpi`` and ``save_svg``.
+* **video** : ``duration_seconds``, ``speed``, ``follow_seconds`` (−1 = fixed camera), ``degrees_per_second``, render ``inches`` / ``dpi`` / ``crop_edge_pixels`` / ``workers``, the ffmpeg ``codec`` / ``pixel_format`` / ``crf`` / ``encode_timeout_seconds``, its own ``trail`` and ``skeleton`` sub-blocks, and ``spectrogram`` (``enabled``, ``layout``, ``reach_seconds``, ``sharp_seconds``, ``fade_seconds``, ``floor``, the inset's size, corner and shift, and the panel text room).
+* **candidates** : ``window_seconds``, ``step_seconds``, ``n_shown``, ``max_gap_cm`` and the candidate sheet's size.
+* **view_picker** : how many trail silhouettes the page draws and their fade.
+
+.. code-block:: json
+
+        "vocal_pose_figures": {
+            "window": {
+                "end_time": 23.5,
+                "history_seconds": 2.0,
+                "trail_end_seconds": 1.0
+            },
+            "spectrogram": {
+                "microphone": "peak",
+                "n_fft": 256,
+                "hop_fraction": 4,
+                "freq_range_khz": [
+                    30.0,
+                    110.0
+                ],
+                "freq_ticks_khz": [
+                    40.0,
+                    70.0,
+                    100.0
+                ],
+                "db_floor": "adaptive",
+                "adaptive_floor_above_median_db": 12.0,
+                "ceiling_percentile": 99.9,
+                "gamma": 0.8,
+                "male_deep": 0.4,
+                "female_deep": 1.0,
+                "ramp_split": 0.5,
+                "call_pad_seconds": 0.005
+            },
+            "camera": {
+                "azimuth": "male_side",
+                "elevation": 45.0,
+                "top_sex": "male"
+            },
+            "trail": {
+                "strongest": 0.6,
+                "fade_seconds": 0.1,
+                "floor": 0.05,
+                "taper_fraction": 0.5
+            },
+            "skeleton": {
+                "line_width": 4.5,
+                "node_size": 56.0,
+                "body_opacity": 0.4,
+                "trail_body_opacity": 0.0,
+                "reference_half_extent_m": 0.175,
+                "margin_m": 0.02,
+                "z_margin_m": 0.01,
+                "history_point": "Head"
+            },
+            "scale_mark": {
+                "length_cm": 2.0,
+                "labels": [
+                    "X",
+                    "Y",
+                    "Z"
+                ],
+                "signs": [
+                    1,
+                    -1,
+                    1
+                ],
+                "turn_degrees": 90.0,
+                "gap_cm": 4.0,
+                "line_width": 2.5,
+                "label_gap_fraction": 0.028,
+                "label_separation_degrees": 35.0,
+                "caption_gap_factor": 1.7,
+                "font_size": 6,
+                "color": "#000000"
+            },
+            "surfaces": {
+                "enabled": false,
+                "color": "#EEEEEE",
+                "junction_color": "#000000",
+                "junction_width": 3.0,
+                "wall_height_m": 0.6,
+                "content_tolerance": 14.0,
+                "pad_inches": 0.3
+            },
+            "layout": {
+                "figure_width_inches": 6.0,
+                "top_block_inches": 1.85,
+                "spectrogram_left": 0.13,
+                "spectrogram_width": 0.6,
+                "spectrogram_top_inches": 0.1,
+                "spectrogram_height_inches": 1.25,
+                "bar_gap_inches": 0.05,
+                "bar_height_inches": 0.1,
+                "bar_samples": 2048,
+                "bar_label_offset": 0.6,
+                "frequency_label": "Frequency (kHz)",
+                "time_label": "Time prior to frame (s)",
+                "tick_font_size": 8,
+                "label_font_size": 9,
+                "tick_pad": 3,
+                "ink_color": "#202020",
+                "background_color": "#FFFFFF",
+                "content_threshold": 250,
+                "pose_pad_inches": 0.05,
+                "crop_edge_pixels": 8,
+                "svg_pad_inches": 0.1,
+                "box_zoom": 1.25,
+                "fit_shrink": 0.93,
+                "max_fit_passes": 8,
+                "align_pose": true,
+                "color_key": true,
+                "key_position": "pose",
+                "key_swatch_inches": 0.24,
+                "key_wide_inches": 0.6,
+                "key_spacing_inches": 0.12,
+                "key_gap_inches": 0.4,
+                "key_clear_inches": 0.07
+            },
+            "output": {
+                "dpi": 300,
+                "save_svg": false
+            },
+            "video": {
+                "duration_seconds": 4.0,
+                "speed": 0.5,
+                "follow_seconds": 0.25,
+                "degrees_per_second": 0.0,
+                "inches": 6.0,
+                "dpi": 300,
+                "crop_edge_pixels": 12,
+                "workers": 0,
+                "codec": "libx264",
+                "pixel_format": "yuv420p",
+                "crf": 18,
+                "encode_timeout_seconds": 3600,
+                "trail": {
+                    "trail_seconds": 0.25,
+                    "strongest": 0.85,
+                    "fade_seconds": 0.05,
+                    "floor": 0.15
+                },
+                "skeleton": {
+                    "line_width": 3.5,
+                    "node_size": 56.0,
+                    "body_opacity": 0.4,
+                    "trail_body_opacity": 0.0,
+                    "margin_m": 0.02,
+                    "z_margin_m": 0.01,
+                    "history_point": "Head"
+                },
+                "spectrogram": {
+                    "enabled": true,
+                    "layout": "inset",
+                    "reach_seconds": 0.1,
+                    "sharp_seconds": 0.025,
+                    "fade_seconds": 0.02,
+                    "floor": 0.15,
+                    "height_fraction": 0.5,
+                    "inset_max_width": 0.5,
+                    "inset_margin_pixels": 0,
+                    "inset_gap_pixels": 20,
+                    "inset_shift": 1.0,
+                    "inset_corner": "auto",
+                    "corner_preference": 0.8,
+                    "panel_left_pixels": 150,
+                    "panel_right_pixels": 6,
+                    "panel_edge_pixels": 22,
+                    "panel_full_text_pixels": 290
+                }
+            },
+            "candidates": {
+                "window_seconds": 2.0,
+                "step_seconds": 0.25,
+                "n_shown": 12,
+                "max_gap_cm": 5.0,
+                "sheet_width_inches": 11.0,
+                "row_height_inches": 1.55,
+                "sheet_dpi": 200,
+                "sheet_margins": {
+                    "left": 0.055,
+                    "right": 0.995,
+                    "top": 0.975,
+                    "bottom": 0.01,
+                    "hspace": 0.42
+                }
+            },
+            "view_picker": {
+                "n_trail": 60,
+                "strongest": 0.6,
+                "fade_seconds": 0.1,
+                "floor": 0.12
+            }
+        }

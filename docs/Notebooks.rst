@@ -2092,7 +2092,7 @@ USV general analyses
 
 **usv_general_analyses.ipynb** is the single home for the descriptive / cross-session USV analyses — the non-neural, non-modeling views of a set of recording sessions' ultrasonic vocalizations (USVs). It runs *after* the processing pipeline has produced, per session, a concatenated multi-channel ``*_int16.mmap`` audio file, a ``*_usv_summary.csv`` (per-USV start / stop / duration / category / emitter), and the 3D translated / rotated / metric tracks; the spectrogram views also read the consolidated SAM2 + spectrogram HDF5 store.
 
-It has two parts: **Individual USV views** — render the spectrogram(s) of one session (single-channel / all-channel / stitched), driven from ``make_usv_spectrograms``; and **Cross-session summaries** — pooled acoustic-property histograms, per-session-type USV counts, and per-session timelines (also from ``make_usv_spectrograms``), followed by the full behavioral summary-statistics suite from ``usv_summary_statistics`` (assignment, participation, rate / fatigue, proximity, estrous-stage, and spatial-distribution figures).
+It has two parts: **Individual USV views** — render the spectrogram(s) of one session (single-channel / all-channel / stitched), driven from ``make_usv_spectrograms``, and the vocal-pose still and video of one window of a session, from ``make_vocal_pose_figures``; and **Cross-session summaries** — pooled acoustic-property histograms, per-session-type USV counts, and per-session timelines (also from ``make_usv_spectrograms``), followed by the full behavioral summary-statistics suite from ``usv_summary_statistics`` (assignment, participation, rate / fatigue, proximity, estrous-stage, and spatial-distribution figures).
 
 Parameters follow a **hybrid layout**: each spectrogram figure defines its own knobs at the top of its cell (the cells are independent of one another), while the statistics suite is driven by one shared **Statistics parameters** cell plus a **Statistics setup** cell that builds the master per-USV dataframe every statistics section consumes. Paths are written ``/mnt/...`` and wrapped in ``configure_path()`` so they resolve on macOS too.
 
@@ -2125,7 +2125,7 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 
     apply_plot_style()
 
-**Individual USV views.** The first part renders the spectrogram(s) of a single session. Its one figure cell carries its own parameters at the top (the per-figure half of the hybrid layout) and builds the per-sex colormaps it needs inline.
+**Individual USV views.** The first part renders the spectrogram(s) of a single session and its vocal-pose figures. Each figure cell carries its own parameters at the top (the per-figure half of the hybrid layout); the spectrogram cell builds the per-sex colormaps it needs inline.
 
 **1. Spectrogram plotter.** ``USVSpectrogramPlotter`` renders one session's USV spectrograms in the mode set by ``vis_settings['make_usv_spectrograms']['mode']``: ``"single"`` (one channel, optional stacked raw waveform, dB scale), ``"all"`` (every channel vertically stacked, dB scale), or ``"stitched"`` (a session-timeline spectrogram assembled from the pre-computed ``[0, 1]``-normalized per-USV spectrograms in the consolidated HDF5 store, placed at their on-session start times with linear normalized amplitude and a fixed ``[0, 1]`` colorbar). The cell defines its own two knobs, loads ``visualizations_settings.json`` into ``vis_settings``, builds one sequential per-sex (base-color → white) colormap, resolves the ``cmap_override`` from the string choice, and runs the plotter.
 
@@ -2178,6 +2178,58 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 
 * **spectrogram_session_root** — a session directory holding a ``*_int16.mmap*`` audio file (and, for stitched mode, a ``*_usv_summary.csv`` 1:1 with the consolidated h5 entries). All other spectrogram knobs (mode, channel, ``time_window``, ``freq_limits``, ``nfft``, colorbar, save) live in the ``make_usv_spectrograms`` block of ``visualizations_settings.json``; override them on ``vis_settings``.
 * **spectrogram_cmap_choice** — ``'female'`` / ``'male'`` selects the matching per-sex colormap; ``None`` falls back to the project-wide ``vis_settings['figures']['sequential_cmap']``.
+
+**1b. Vocal-pose figures.** Four cells, run in order, render one session's vocal-pose still and video from ``make_vocal_pose_figures`` (described under :doc:`Visualize`): what the animals were doing while the male sang. Every knob lives in the ``vocal_pose_figures`` block of ``visualizations_settings.json``; the cells only set the session, the window and the camera on ``vis_settings``. First, ``find_vocal_pose_windows`` ranks the session's windows that hold only the male's USVs with the animals close together and ``plot_vocal_pose_window_candidates`` stacks their spectrograms for choosing by eye:
+
+.. code-block:: python
+
+    vocal_pose_session_root = configure_path("/mnt/falkner/Jinrun/Data/20250516_122134")
+
+    with open(
+        Path.cwd().parent / "_parameter_settings" / "visualizations_settings.json", "r"
+    ) as vis_settings_file:
+        vis_settings = json.load(vis_settings_file)
+
+    vocal_pose_windows = find_vocal_pose_windows(vocal_pose_session_root, vis_settings)
+    display(vocal_pose_windows.head(12))
+    plot_vocal_pose_window_candidates(vocal_pose_session_root, vocal_pose_windows, vis_settings)
+    plt.show()
+
+Second, the view picker: ``vocal_pose_view_picker_html`` draws the frame at the chosen window's end on a page that turns when dragged (or with two sliders), with presets for the male-side, heads-down, tails-down and top views, and reports the azimuth and elevation in the figure's convention:
+
+.. code-block:: python
+
+    vis_settings["vocal_pose_figures"]["window"]["end_time"] = 23.5
+    vis_settings["vocal_pose_figures"]["window"]["history_seconds"] = 2.0
+
+    display(HTML(vocal_pose_view_picker_html(vocal_pose_session_root, vis_settings)))
+
+Third, the still — the emitter-coloured spectrogram of the window above both animals' pose at its last frame with their fading trails, written as PNG (and SVG) to ``figures.save_directory`` and shown inline; ``camera.azimuth`` takes the number read off the picker or ``"male_side"`` for the automatic camera on the male's side of the pair:
+
+.. code-block:: python
+
+    vis_settings["vocal_pose_figures"]["camera"]["azimuth"] = -100.0
+    vis_settings["vocal_pose_figures"]["camera"]["elevation"] = 41.0
+    vis_settings["vocal_pose_figures"]["output"]["save_svg"] = True
+
+    vocal_pose_paths = VocalPoseStillMaker(
+        root_directory=vocal_pose_session_root, visualizations_parameter_dict=vis_settings
+    ).make_vocal_pose_still()
+    display(HTML(vocal_pose_image_html(vocal_pose_paths["png"])))
+
+Fourth, the video, which ends on the still's frame and camera — the window played at ``video.speed`` with a short fading trail behind each animal, a fixed, following or turning camera, and a scrolling spectrogram sharp only around the present — written as MP4 next to the still and shown inline:
+
+.. code-block:: python
+
+    vis_settings["vocal_pose_figures"]["video"]["duration_seconds"] = 4.0
+
+    vocal_pose_video_path = VocalPoseVideoMaker(
+        root_directory=vocal_pose_session_root, visualizations_parameter_dict=vis_settings
+    ).make_vocal_pose_video()
+    display(Video(str(vocal_pose_video_path), embed=True))
+
+* **vocal_pose_session_root** — a session directory holding the 3D tracks, the ``*_usv_summary.csv`` and the ``audio/cropped_to_video`` wavs.
+* **window.end_time / history_seconds** — the frame shown and the span before it; **camera.azimuth / elevation** — the view; everything else (trail fade, skeleton widths, scale mark, surfaces, colour key, spectrogram band and scaling, video speed and camera) stays in the settings block.
 
 **Cross-session summaries.** The second part pools many sessions. Its three ``make_usv_spectrograms`` helper figures each carry their own parameters (still the per-figure half of the hybrid layout); all three share the same noise filter, ``exclude_noise_usvs = True``.
 

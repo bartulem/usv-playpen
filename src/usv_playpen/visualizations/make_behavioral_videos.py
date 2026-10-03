@@ -2,6 +2,7 @@
 @author: bartulem
 Makes behavioral videos from 3D tracked points.
 """
+from __future__ import annotations
 
 import json
 import os
@@ -19,7 +20,7 @@ import librosa.display
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
-from matplotlib.animation import FuncAnimation, FFMpegWriter
+from matplotlib.animation import FFMpegWriter, FuncAnimation
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from numba import njit
 from scipy.io import wavfile
@@ -27,10 +28,10 @@ from scipy.io import wavfile
 from ..analyses.decode_experiment_label import extract_information
 from ..analyses.generate_audio_files import AudioGenerator
 from ..os_utils import first_match_or_raise
-from .plot_style import apply_plot_style
 from ..time_utils import is_gui_context, smart_wait
-from .auxiliary_plot_functions import create_colormap, choose_animal_colors
+from .auxiliary_plot_functions import choose_animal_colors, create_colormap
 from .figure_io import save_figure
+from .plot_style import apply_plot_style
 
 apply_plot_style()
 
@@ -345,6 +346,52 @@ def find_region_by_channel(cluster_id: str,
     if return_only_area:
         return 'other'
     return 'other', _resolve_brain_area_color('other', brain_color_scheme)
+
+
+# The mouse skeleton drawn by plot_mouse_data: the node pairs joined by lines and the node rings filled as body
+# polygons, shared with the vocal-pose figures (make_vocal_pose_figures).
+MOUSE_NODE_CONNECTIONS = ('TTI-Haunch_left', 'TTI-Haunch_right', 'Shoulder_left-Haunch_left',
+                          'Shoulder_right-Haunch_right', 'Nose-Ear_L', 'Nose-Ear_R',
+                          'Head-Shoulder_left', 'Head-Shoulder_right',
+                          'TailTip-Tail_2', 'Tail_2-Tail_1', 'Tail_1-Tail_0', 'Tail_0-TTI',
+                          'TTI-Trunk', 'Trunk-Haunch_left', 'Trunk-Haunch_right',
+                          'Trunk-Neck', 'Shoulder_left-Neck', 'Shoulder_right-Neck',
+                          'Nose-Head', 'Ear_L-Head', 'Ear_R-Head', 'Head-Neck')
+
+MOUSE_NODE_POLYGONS = ('Nose-Ear_L-Head', 'Nose-Ear_R-Head', 'TTI-Haunch_left-Trunk', 'TTI-Haunch_right-Trunk',
+                       'Shoulder_left-Neck-Head', 'Shoulder_right-Neck-Head',
+                       'Haunch_left-Trunk-Neck-Shoulder_left', 'Haunch_right-Trunk-Neck-Shoulder_right')
+
+
+def load_arena_tracks(arena_directory: str) -> tuple[pathlib.Path, np.ndarray, list[str]]:
+    """
+    Description
+    -----------
+    Loads the arena's 3D points (corners and microphones) from the arena session's
+    translated/rotated metric points3d file.
+
+    Parameters
+    ----------
+    arena_directory (str)
+        The arena session directory (``make_behavioral_videos.arena_directory``).
+
+    Returns
+    -------
+    arena_file_directory, arena_tracks, arena_node_names (tuple[pathlib.Path, np.ndarray, list[str]])
+        The directory holding the file, the (1, 1, nodes, 3) point array, and the node names.
+    """
+
+    h5_file_arena = first_match_or_raise(
+        root=pathlib.Path(arena_directory) / 'video',
+        pattern='*_points3d_translated_rotated_metric.h5',
+        recursive=True,
+        label="arena points3d .h5",
+    )
+    with h5py.File(name=h5_file_arena, mode='r') as h5_file_arena_obj:
+        arena_tracks = np.array(h5_file_arena_obj['tracks'])
+        arena_node_names = [item.decode('utf-8') for item in h5_file_arena_obj['node_names']]
+
+    return h5_file_arena.parent, arena_tracks, arena_node_names
 
 
 def load_audio_data(root_directory: str) -> tuple[np.ndarray, int]:
@@ -913,51 +960,46 @@ def plot_behavioral_features(plot_axes: plt.Axes,
             elif feature_name.split('.')[0] == mouse_track_names[1]:
                 feature_color = animal_colors[1]
                 x_axis_feature_color = animal_colors[1]
-            else:
-                if '-sei' not in feature_name.split('.')[1]:
-                    if plot_theme == 'dark':
-                        feature_color = '#FFFFFF'
-                        x_axis_feature_color = '#FFFFFF'
-                    else:
-                        feature_color = '#202020'
-                        x_axis_feature_color = '#202020'
-                else:
-                    if feature_name.split('.')[0].split('-')[0] == mouse_track_names[0]:
-                        feature_color = animal_colors[0]
-                        x_axis_feature_color = animal_colors[0]
-                    else:
-                        feature_color = animal_colors[1]
-                        x_axis_feature_color = animal_colors[1]
-        else:
-            if feature_name.split('.')[0] == mouse_track_names[0]:
-                if feature_name.split('.')[1] in special_features:
-                    feature_color = animal_colors[0]
-                    x_axis_feature_color = animal_colors[0]
-                else:
-                    feature_color = f"{animal_colors[0]}33"
-                    x_axis_feature_color = animal_colors[0]
-            elif feature_name.split('.')[0] == mouse_track_names[1]:
-                if feature_name.split('.')[1] in special_features:
-                    feature_color = animal_colors[1]
-                    x_axis_feature_color = animal_colors[1]
-                else:
-                    feature_color = f"{animal_colors[1]}33"
-                    x_axis_feature_color = animal_colors[1]
-            else:
+            elif '-sei' not in feature_name.split('.')[1]:
                 if plot_theme == 'dark':
-                    if feature_name.split('.')[1] in special_features:
-                        feature_color = '#FFFFFF'
-                        x_axis_feature_color = '#FFFFFF'
-                    else:
-                        feature_color = '#FFFFFF33'
-                        x_axis_feature_color = '#FFFFFF'
+                    feature_color = '#FFFFFF'
+                    x_axis_feature_color = '#FFFFFF'
                 else:
-                    if feature_name.split('.')[1] in special_features:
-                        feature_color = '#202020'
-                        x_axis_feature_color = '#202020'
-                    else:
-                        feature_color = '#00000033'
-                        x_axis_feature_color = '#202020'
+                    feature_color = '#202020'
+                    x_axis_feature_color = '#202020'
+            elif feature_name.split('.')[0].split('-')[0] == mouse_track_names[0]:
+                feature_color = animal_colors[0]
+                x_axis_feature_color = animal_colors[0]
+            else:
+                feature_color = animal_colors[1]
+                x_axis_feature_color = animal_colors[1]
+        elif feature_name.split('.')[0] == mouse_track_names[0]:
+            if feature_name.split('.')[1] in special_features:
+                feature_color = animal_colors[0]
+                x_axis_feature_color = animal_colors[0]
+            else:
+                feature_color = f"{animal_colors[0]}33"
+                x_axis_feature_color = animal_colors[0]
+        elif feature_name.split('.')[0] == mouse_track_names[1]:
+            if feature_name.split('.')[1] in special_features:
+                feature_color = animal_colors[1]
+                x_axis_feature_color = animal_colors[1]
+            else:
+                feature_color = f"{animal_colors[1]}33"
+                x_axis_feature_color = animal_colors[1]
+        elif plot_theme == 'dark':
+            if feature_name.split('.')[1] in special_features:
+                feature_color = '#FFFFFF'
+                x_axis_feature_color = '#FFFFFF'
+            else:
+                feature_color = '#FFFFFF33'
+                x_axis_feature_color = '#FFFFFF'
+        elif feature_name.split('.')[1] in special_features:
+            feature_color = '#202020'
+            x_axis_feature_color = '#202020'
+        else:
+            feature_color = '#00000033'
+            x_axis_feature_color = '#202020'
 
         plot_axes[ax_num] = figure_object.add_axes([beh_features_fig_position[0],
                                                     beh_features_fig_position[1] - (feature_idx * 0.042),
@@ -1364,17 +1406,9 @@ class Create3DVideo:
 
         self.brain_area_color_scheme = dict(self.visualizations_parameter_dict['brain_area_colors'])
 
-        self.node_connections = ['TTI-Haunch_left', 'TTI-Haunch_right', 'Shoulder_left-Haunch_left',
-                                 'Shoulder_right-Haunch_right', 'Nose-Ear_L', 'Nose-Ear_R',
-                                 'Head-Shoulder_left', 'Head-Shoulder_right',
-                                 'TailTip-Tail_2', 'Tail_2-Tail_1', 'Tail_1-Tail_0', 'Tail_0-TTI',
-                                 'TTI-Trunk', 'Trunk-Haunch_left', 'Trunk-Haunch_right',
-                                 'Trunk-Neck', 'Shoulder_left-Neck', 'Shoulder_right-Neck',
-                                 'Nose-Head', 'Ear_L-Head', 'Ear_R-Head', 'Head-Neck']
+        self.node_connections = list(MOUSE_NODE_CONNECTIONS)
 
-        self.node_polygons = ['Nose-Ear_L-Head', 'Nose-Ear_R-Head', 'TTI-Haunch_left-Trunk', 'TTI-Haunch_right-Trunk',
-                              'Shoulder_left-Neck-Head', 'Shoulder_right-Neck-Head',
-                              'Haunch_left-Trunk-Neck-Shoulder_left', 'Haunch_right-Trunk-Neck-Shoulder_right']
+        self.node_polygons = list(MOUSE_NODE_POLYGONS)
 
         self.arena_node_connections = ['North-ch_9', 'North-ch_10', 'North-ch_11', 'North-ch_12', 'North-ch_13', 'North-ch_14',
                                        'East-ch_3', 'East-ch_4', 'East-ch_5', 'East-ch_6', 'East-ch_7', 'East-ch_8',
@@ -1456,12 +1490,7 @@ class Create3DVideo:
             Numpy arrays containing 3D tracked point data for arena and animals.
         """
 
-        h5_file_arena = first_match_or_raise(
-            root=pathlib.Path(self.arena_directory) / 'video',
-            pattern='*_points3d_translated_rotated_metric.h5',
-            recursive=True,
-            label="arena points3d .h5",
-        )
+        arena_file_directory, arena_tracks, arena_node_names = load_arena_tracks(self.arena_directory)
         h5_file_mouse = first_match_or_raise(
             root=pathlib.Path(self.root_directory) / 'video',
             pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
@@ -1470,9 +1499,6 @@ class Create3DVideo:
         )
 
         # load HDF5 file
-        with h5py.File(name=h5_file_arena, mode='r') as h5_file_arena_obj:
-            arena_tracks = np.array(h5_file_arena_obj['tracks'])
-            arena_node_names = [item.decode('utf-8') for item in h5_file_arena_obj['node_names']]
         with h5py.File(name=h5_file_mouse, mode='r') as h5_file_mouse_obj:
             mouse_tracks = np.array(h5_file_mouse_obj['tracks'])
             mouse_track_names = [item.decode('utf-8') for item in h5_file_mouse_obj['track_names']]
@@ -1492,15 +1518,14 @@ class Create3DVideo:
                 speaker_track_name = h5_file_speaker_obj['track_names'][0].decode('utf-8')
                 speaker_node_name = h5_file_speaker_obj['node_names'][0].decode('utf-8')
 
-            return (h5_file_arena.parent, arena_tracks, arena_node_names,
+            return (arena_file_directory, arena_tracks, arena_node_names,
                     h5_file_mouse.parent, mouse_tracks, mouse_track_names, mouse_node_names,
                     mouse_experimental_code, empirical_camera_sr,
                     speaker_tracks, speaker_track_name, speaker_node_name)
 
-        else:
-            return (h5_file_arena.parent, arena_tracks, arena_node_names,
-                    h5_file_mouse.parent, mouse_tracks, mouse_track_names, mouse_node_names,
-                    mouse_experimental_code, empirical_camera_sr)
+        return (arena_file_directory, arena_tracks, arena_node_names,
+                h5_file_mouse.parent, mouse_tracks, mouse_track_names, mouse_node_names,
+                mouse_experimental_code, empirical_camera_sr)
 
     def visualize_in_video(self) -> None:
         """
@@ -1642,7 +1667,6 @@ class Create3DVideo:
                         pattern='neuropixels_sites_to_anatomy_converter.json',
                         label="neuropixels-to-anatomy converter JSON",
                     ),
-                    'r',
                 ) as anatomy_converter_json:
                     neuropixels_sites_to_anatomy_converter = json.load(anatomy_converter_json)
 
@@ -2419,40 +2443,39 @@ class Create3DVideo:
                         if mux_return_code != 0:
                             self.message_output(f"WARNING: ffmpeg mux of pitch-shifted audio failed (return code {mux_return_code}).")
 
-            else:
-                if self.visualizations_parameter_dict['make_behavioral_videos']['save_fig']:
-                    video_fig_specs = self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']
-                    # bbox_inches=None (NOT 'tight'): the static frame is a single
-                    # frame of the same composite as the video, so it must use the
-                    # identical fixed [0,1] canvas. Tight-cropping here would hide
-                    # any panel that overflows the frame edge, making the preview
-                    # disagree with the video (where overflow is clipped). Saving
-                    # the full frame keeps the preview truthful — tune once, match
-                    # both.
-                    fig_loc = save_figure(
-                        fig,
-                        stem=f"{session_id}_3D_{frame_start}fr_{name_addition}",
-                        viz_settings=self.visualizations_parameter_dict,
-                        override_dir=putative_save_directory,
-                        override_format=video_fig_specs['fig_format'],
-                        override_dpi=_VIDEO_DPI,
-                        bbox_inches=None,
-                        **frame_savefig_kwargs,
-                    )
+            elif self.visualizations_parameter_dict['make_behavioral_videos']['save_fig']:
+                video_fig_specs = self.visualizations_parameter_dict['make_behavioral_videos']['general_figure_specs']
+                # bbox_inches=None (NOT 'tight'): the static frame is a single
+                # frame of the same composite as the video, so it must use the
+                # identical fixed [0,1] canvas. Tight-cropping here would hide
+                # any panel that overflows the frame edge, making the preview
+                # disagree with the video (where overflow is clipped). Saving
+                # the full frame keeps the preview truthful — tune once, match
+                # both.
+                fig_loc = save_figure(
+                    fig,
+                    stem=f"{session_id}_3D_{frame_start}fr_{name_addition}",
+                    viz_settings=self.visualizations_parameter_dict,
+                    override_dir=putative_save_directory,
+                    override_format=video_fig_specs['fig_format'],
+                    override_dpi=_VIDEO_DPI,
+                    bbox_inches=None,
+                    **frame_savefig_kwargs,
+                )
 
-                    # open image in default viewer if display available
-                    os_type = platform.system()
-                    if os_type == 'Windows':
-                        if 'WT_SESSION' in os.environ or 'USERNAME' in os.environ:
-                            os.startfile(str(fig_loc.resolve()))
-                    elif os_type == 'Darwin':
-                        if 'DISPLAY' in os.environ:
-                            subprocess.run(args=['open', str(fig_loc.resolve())], check=True)
-                    elif os_type == 'Linux':
-                        if 'DISPLAY' in os.environ:
-                            subprocess.run(args=['xdg-open', str(fig_loc.resolve())], check=True)
-                    else:
-                        self.message_output("Unsupported operating system for opening image.")
+                # open image in default viewer if display available
+                os_type = platform.system()
+                if os_type == 'Windows':
+                    if 'WT_SESSION' in os.environ or 'USERNAME' in os.environ:
+                        os.startfile(str(fig_loc.resolve()))
+                elif os_type == 'Darwin':
+                    if 'DISPLAY' in os.environ:
+                        subprocess.run(args=['open', str(fig_loc.resolve())], check=True)
+                elif os_type == 'Linux':
+                    if 'DISPLAY' in os.environ:
+                        subprocess.run(args=['xdg-open', str(fig_loc.resolve())], check=True)
+                else:
+                    self.message_output("Unsupported operating system for opening image.")
 
             # Close the figure for BOTH branches (video + static): pyplot keeps
             # figures in its registry until closed, so a per-session run would
