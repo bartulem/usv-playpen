@@ -15,9 +15,9 @@ ReLU), the input normalization (min-max, and the loudness floor of floor-trained
 cells) and the duration window, its Fibonacci embedding lattice is rebuilt, and
 its fine and coarse ``label_grid.npy`` (``inference/clusters_<level>/`` in v3,
 ``cluster/<level>/`` in v2 / v2.1) supply the cluster labels. Each call is
-labelled by **spatial lookup into those fixed, torus-periodic grids** -- NOT a
-per-session re-watershed -- so clusters are comparable across every session
-embedded into the same torus.
+labelled (when its prefix asks for labels, see below) by **spatial lookup into
+those fixed, torus-periodic grids** -- NOT a per-session re-watershed -- so
+clusters are comparable across every session embedded into the same torus.
 Conditional cells take one conditioning value per call: phase 10 cells
 (``qlvm_models_latest/v2``, duration or mean frequency) decode it at the frozen
 corpus bin mean, phase 11 cells (``qlvm_models_latest/v3``, duration, mean
@@ -28,19 +28,30 @@ says (:func:`frozen_condition_values`); a phase 11 recipe cell trained by
 scaled by its training split's range) is decoded on its grid the same way.
 
 The session is placed on the torus of every listed cell and each prefix ``P``
-gets the float columns ``P1`` / ``P2`` and integer cluster labels read off the
-cell's ``label_grid.npy`` at the pixel of those coordinates
-(:func:`label_grid_lookup`, labels ``1..k`` with 1 the largest cluster, nulls where
-the call was not placed; the grids label every pixel from 1, so there is no
-background / noise label 0). Which levels a prefix writes is the
-``model_cell_label_levels`` setting (prefix -> levels among ``"fine"`` and
-``"coarse"``); its default ``{}`` writes both levels for every prefix:
-``qlvm_category`` (fine) and ``qlvm_supercategory`` (coarse) for the regular
-model's prefix ``"qlvm"``, ``P_category`` and ``P_supercategory`` for every other
-prefix, e.g. ``qlvm_dur_category`` / ``qlvm_dur_supercategory``
-(:func:`model_cell_label_columns`). No model-provenance column is written; the
-legacy ``qlvm_model`` column that summaries embedded by the retired single-model
-run still carry is dropped.
+gets the float columns ``P1`` / ``P2`` (nulls where the call was not placed). By
+default that is all: the summary's category column of the regular map,
+``qlvm_category``, holds the content-ridge categories ``assign-qlvm-categories``
+writes after this step (:mod:`qlvm_categories`), and the canonical layout
+(``os_utils.USV_SUMMARY_COLUMN_ORDER``) has no coarse level and no category
+column on the conditional maps. A prefix can still be asked for the package's own
+cluster labels with the ``model_cell_label_levels`` setting (prefix -> levels among
+``"fine"`` and ``"coarse"``; ``qlvm_category`` / ``qlvm_supercategory`` for the
+regular model's prefix ``"qlvm"``, ``P_category`` / ``P_supercategory`` for every
+other prefix, :func:`model_cell_label_columns`): integer labels read off the
+cell's ``label_grid.npy`` at the pixel of the coordinates
+(:func:`label_grid_lookup`, labels ``1..k`` with 1 the largest cluster; the grids
+label every pixel from 1, so there is no background / noise label 0); a cell
+without the grid of a level asked of it is refused. Re-embedding a prefix drops
+every earlier coordinate, label and category confidence column of it
+(``P_category``, ``P_supercategory``, ``P_category_agreement``,
+``P_category_uncertain``), since labels read off the old coordinates no longer
+hold. No model-provenance column is written; the legacy ``qlvm_model`` column that
+summaries embedded by the retired single-model run still carry is dropped.
+
+``tidy-usv-summary-columns`` (:func:`tidy_usv_summary_columns_cli`) migrates an
+existing summary to the canonical layout: it drops the obsolete columns
+(``os_utils.USV_SUMMARY_OBSOLETE_COLUMNS`` and every category agreement /
+uncertain column) and reorders the rest, with a dry-run mode that only reports.
 
 Fidelity: the session spectrograms are preprocessed with the SAME resize /
 time-stretch used to build the training set (:func:`stretch_specs`), so they are
@@ -65,6 +76,7 @@ import functools
 import json
 import pathlib
 import pickle
+import shutil
 import zipfile
 from collections.abc import Callable, Iterable
 from datetime import datetime
@@ -79,7 +91,9 @@ from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
+    CATEGORY_CONFIDENCE_SUFFIXES,
     QLVM_PRODUCTION_MODEL_CELLS,
+    QLVM_SUMMARY_MAP_PREFIXES,
     USV_SUMMARY_COLUMN_ORDER,
     atomic_output_path,
     cell_cluster_directory,
@@ -87,6 +101,7 @@ from ..os_utils import (
     derive_spectrogram_model_paths,
     first_match_or_raise,
     order_usv_summary_columns,
+    tidy_usv_summary_columns,
 )
 from ..processing.build_qlvm_training_set import (
     build_session_masks,
@@ -784,11 +799,12 @@ def validate_model_cells(model_cells: Iterable[tuple[str, str]]) -> dict[str, st
     must be a non-empty Python identifier (letters, digits and underscores, not
     starting with a digit), may be listed only once, and ``P1`` / ``P2`` must not
     be any other column of the USV summary (``USV_SUMMARY_COLUMN_ORDER``; the
-    torus-coordinate and label columns of the production prefixes of
+    torus-coordinate and label columns of the summary's QLVM map prefixes
+    ``os_utils.QLVM_SUMMARY_MAP_PREFIXES`` and of the production prefixes of
     ``os_utils.QLVM_PRODUCTION_MODEL_CELLS`` -- ``qlvm1`` / ``qlvm2``,
-    ``qlvm_category`` / ``qlvm_supercategory``, ``qlvm_dur1`` / ``qlvm_dur2``,
-    ``qlvm_dur_category``, ... -- are allowed, since writing them is what a run is
-    for; see :func:`model_cell_reserved_columns`). Each cell directory must be a
+    ``qlvm_category``, ``qlvm_dur1`` / ``qlvm_dur2``, ``qlvm_ent1`` /
+    ``qlvm_ent2``, ... -- are allowed, since writing them is what a run is for;
+    see :func:`model_cell_reserved_columns`). Each cell directory must be a
     non-empty string. Every problem is collected and raised together. The label
     columns a prefix writes are checked separately
     (:func:`model_cell_label_columns`).
@@ -860,11 +876,15 @@ def default_model_cell_label_levels(prefix: str) -> list[str]:
     Description
     -----------
     The label levels a ``model_cells`` prefix writes when
-    ``infer_qlvm_latents.model_cell_label_levels`` does not list it: both levels
-    (``["fine", "coarse"]``) for every prefix -- ``qlvm_category`` and
-    ``qlvm_supercategory`` for the regular model's prefix ``"qlvm"``,
-    ``P_category`` and ``P_supercategory`` for every other prefix ``P`` (every
-    v3 package cell ships a fine and a coarse clustering).
+    ``infer_qlvm_latents.model_cell_label_levels`` does not list it: none, for
+    every prefix, so a run writes the coordinates ``P1`` / ``P2`` only. The
+    summary's one category column, ``qlvm_category`` of the regular map, holds
+    the content-ridge categories ``assign-qlvm-categories`` writes after this step;
+    the canonical layout (``os_utils.USV_SUMMARY_COLUMN_ORDER``) has no coarse
+    level (``*_supercategory``) and no category column on the conditional maps,
+    and a cell that was never clustered has no ``label_grid.npy`` to read labels
+    from. A prefix that should still get the package's own cluster labels lists
+    its levels in the setting explicitly.
 
     Parameters
     ----------
@@ -874,9 +894,9 @@ def default_model_cell_label_levels(prefix: str) -> list[str]:
     Returns
     -------
     levels (list[str])
-        The default levels, in column order.
+        The default levels (an empty list).
     """
-    return list(LABEL_LEVELS)
+    return []
 
 
 def model_cell_reserved_columns() -> set[str]:
@@ -886,10 +906,11 @@ def model_cell_reserved_columns() -> set[str]:
     The USV summary columns a ``model_cells`` run may never write: every column
     of ``USV_SUMMARY_COLUMN_ORDER`` except the torus-coordinate columns
     (``P1`` / ``P2``) and the label columns of both levels
-    (:func:`model_cell_label_column`) of the production prefixes of
-    ``os_utils.QLVM_PRODUCTION_MODEL_CELLS`` -- writing those is what a run is for.
-    Every other summary column (DAS event, acoustic features, ...) must stay
-    untouched.
+    (:func:`model_cell_label_column`) of the summary's QLVM map prefixes
+    (``os_utils.QLVM_SUMMARY_MAP_PREFIXES``: ``qlvm``, ``qlvm_dur``, ``qlvm_ent``)
+    and of the production prefixes of ``os_utils.QLVM_PRODUCTION_MODEL_CELLS`` --
+    writing those is what a run is for. Every other summary column (DAS event,
+    acoustic features, the squeak torus coordinates, ...) must stay untouched.
 
     Parameters
     ----------
@@ -899,11 +920,41 @@ def model_cell_reserved_columns() -> set[str]:
     reserved (set[str])
         The reserved column names.
     """
-    writable = {f"{prefix}{axis}" for prefix in QLVM_PRODUCTION_MODEL_CELLS for axis in (1, 2)}
-    writable |= {
-        model_cell_label_column(prefix, level) for prefix in QLVM_PRODUCTION_MODEL_CELLS for level in LABEL_LEVELS
-    }
+    prefixes = (*QLVM_SUMMARY_MAP_PREFIXES, *QLVM_PRODUCTION_MODEL_CELLS)
+    writable = {f"{prefix}{axis}" for prefix in prefixes for axis in (1, 2)}
+    writable |= {model_cell_label_column(prefix, level) for prefix in prefixes for level in LABEL_LEVELS}
     return set(USV_SUMMARY_COLUMN_ORDER) - writable
+
+
+def model_cell_stale_columns(prefix: str) -> list[str]:
+    """
+    Description
+    -----------
+    The summary columns that describe a ``model_cells`` prefix's placement, and so
+    go stale when the prefix is embedded again: its coordinates ``P1`` / ``P2``,
+    its label columns of both levels (:func:`model_cell_label_column`, whichever
+    levels this run writes) and the per-call category confidence columns an
+    earlier ``assign-qlvm-categories`` wrote for it (the category column name plus
+    each suffix of ``os_utils.CATEGORY_CONFIDENCE_SUFFIXES`` minus its leading
+    ``_category``, e.g. ``qlvm_category_agreement``, ``qlvm_category_uncertain``).
+    A category assigned from the old coordinates no longer holds for the new
+    ones, so ``assign-qlvm-categories`` must run again after a re-embedding.
+
+    Parameters
+    ----------
+    prefix (str)
+        The column prefix (a key of ``infer_qlvm_latents.model_cells``).
+
+    Returns
+    -------
+    stale (list[str])
+        The column names, coordinates first.
+    """
+    category_column = model_cell_label_column(prefix, "fine")
+    stale = [f"{prefix}{axis}" for axis in (1, 2)]
+    stale += [model_cell_label_column(prefix, level) for level in LABEL_LEVELS]
+    stale += [f"{category_column}{suffix.removeprefix('_category')}" for suffix in CATEGORY_CONFIDENCE_SUFFIXES]
+    return stale
 
 
 def model_cell_label_columns(model_cells: dict[str, str], label_levels: object) -> dict[str, dict[str, str]]:
@@ -914,9 +965,10 @@ def model_cell_label_columns(model_cells: dict[str, str], label_levels: object) 
     from the ``infer_qlvm_latents.model_cell_label_levels`` setting (prefix ->
     list of levels among ``"fine"`` and ``"coarse"``). A prefix the setting does
     not list takes :func:`default_model_cell_label_levels` (so the shipped ``{}``
-    gives ``qlvm_category`` + ``qlvm_supercategory`` for ``"qlvm"`` and
-    ``P_category`` + ``P_supercategory`` for every other prefix ``P``); an empty list writes no label
-    column for that prefix. Column names follow :func:`model_cell_label_column`.
+    writes no label column for any prefix); a listed prefix writes the levels
+    listed for it, an empty list none. Column names follow
+    :func:`model_cell_label_column` (``qlvm_category`` / ``qlvm_supercategory``
+    for ``"qlvm"``, ``P_category`` / ``P_supercategory`` for every other prefix ``P``).
 
     The setting is validated and every problem is raised together: it must be an
     object; each key must be a prefix of ``model_cells``; each value a list of
@@ -1326,12 +1378,12 @@ class QLVMLatentInference:
         calls with no value get nulls. The summary is rewritten atomically.
 
         Each prefix ``P`` gets the float columns ``P1`` / ``P2`` plus the cluster
-        labels of its ``model_cell_label_levels`` (by default ``qlvm_category`` and
-        ``qlvm_supercategory`` for ``"qlvm"``, ``P_category`` and
-        ``P_supercategory`` for every other prefix); no model column is written, and
-        the legacy ``qlvm_model`` column (written by the retired single-model run)
-        and the earlier coordinate and label columns of the listed prefixes are
-        removed first (see :meth:`_merge_model_cells`). An empty ``model_cells``
+        labels of the levels ``model_cell_label_levels`` lists for it (by default
+        none: the regular map's ``qlvm_category`` comes from
+        ``assign-qlvm-categories``); no model column is written, and the legacy
+        ``qlvm_model`` column (written by the retired single-model run) and the
+        earlier coordinate, label and category confidence columns of the listed
+        prefixes are removed first (see :meth:`_merge_model_cells`). An empty ``model_cells``
         raises ValueError before anything is read: model package cells are the
         only models this module embeds with.
 
@@ -1414,9 +1466,10 @@ class QLVMLatentInference:
         float columns ``P1`` / ``P2`` and the integer cluster-label columns of the
         prefix's label levels into the summary (nulls where a call was not placed).
         The levels come from ``model_cell_label_levels``
-        (:func:`model_cell_label_columns`; by default ``qlvm_category`` (fine) and
-        ``qlvm_supercategory`` (coarse) for prefix ``"qlvm"``, ``P_category``
-        (fine) and ``P_supercategory`` (coarse) for every other prefix). Every label is the cell's
+        (:func:`model_cell_label_columns`; by default none, so only the
+        coordinates are written; a listed level gives ``qlvm_category`` (fine) /
+        ``qlvm_supercategory`` (coarse) for prefix ``"qlvm"``, ``P_category`` /
+        ``P_supercategory`` for every other prefix). Every label is the cell's
         ``label_grid.npy`` of that level at the pixel of the call's written
         coordinates (:func:`label_grid_lookup`): ``1..k``, 1 the largest cluster,
         as the package numbers them. The settings are validated, and every cell
@@ -1437,9 +1490,12 @@ class QLVMLatentInference:
 
         No model-provenance column is written; the legacy ``qlvm_model`` column
         (which summaries embedded by the retired single-model run still carry)
-        and every earlier ``P1`` / ``P2`` and label column of the listed prefixes
-        (both levels, whichever this run writes) are dropped before the merge. The summary is
-        rewritten atomically.
+        and every earlier coordinate, label and category confidence column of the
+        listed prefixes (:func:`model_cell_stale_columns`: ``P1`` / ``P2``, both
+        label levels whichever this run writes, ``P_category_agreement`` and
+        ``P_category_uncertain``) are dropped before the merge, so a re-embedded
+        prefix never keeps categories read off its old coordinates. The summary is
+        rewritten atomically and in canonical column order.
 
         Parameters
         ----------
@@ -1534,11 +1590,11 @@ class QLVMLatentInference:
 
         # Provenance of these models is kept outside the summary, so the legacy
         # qlvm_model column (written by the retired single-model run; older summaries
-        # may still carry it) goes, together with this run's own earlier coordinate
-        # and label columns (both levels, whichever this run writes) of every listed prefix.
+        # may still carry it) goes, together with every earlier coordinate, label and
+        # category confidence column of every listed prefix (model_cell_stale_columns):
+        # labels read off the old coordinates do not hold for the new ones.
         stale = ["qlvm_model"]
-        stale += [f"{prefix}{axis}" for prefix in models for axis in (1, 2)]
-        stale += [model_cell_label_column(prefix, level) for prefix in models for level in LABEL_LEVELS]
+        stale += [column for prefix in models for column in model_cell_stale_columns(prefix)]
         merged = usv_df.drop([column for column in stale if column in usv_df.columns]).with_row_index(name="_usv_row")
         for frame in coordinate_frames:
             merged = merged.join(frame, on="_usv_row", how="left")
@@ -1770,6 +1826,104 @@ class QLVMLatentInference:
         return usv_indices, coords
 
 
+def tidy_session_usv_summary(
+    root_directory: str,
+    dry_run: bool,
+    backup_directory: str | None,
+    message_output: Callable = print,
+) -> dict:
+    """
+    Description
+    -----------
+    Migrates one session's ``*_usv_summary.csv`` to the canonical layout
+    (:func:`os_utils.tidy_usv_summary_columns`): drops the obsolete columns
+    (``os_utils.USV_SUMMARY_OBSOLETE_COLUMNS`` -- ``qlvm_supercategory``, the
+    duration map's labels, the retired ``qlvm_mf`` / ``qlvm_bw`` / ``qlvm_loud``
+    maps, the legacy ``qlvm_model`` -- and every ``*_category_agreement`` /
+    ``*_category_uncertain`` column) and puts the rest in
+    ``os_utils.USV_SUMMARY_COLUMN_ORDER``, any column that order does not list
+    kept last in its existing order. No column is created and no row is touched.
+
+    Every column is read and written as text, so the value of every kept cell is
+    written back exactly as it was read (no float re-formatting, no type
+    inference). A summary already in the canonical layout is left untouched (not
+    rewritten). With ``dry_run`` only the report is produced and logged; nothing
+    is written. Otherwise, when ``backup_directory`` is given, the original file
+    is first copied to ``<backup_directory>/<session>/<file name>`` (an existing
+    backup there is never overwritten: the call raises instead, so a second run
+    cannot replace the original with an already-tidied copy), and the summary is
+    then rewritten atomically.
+
+    Parameters
+    ----------
+    root_directory (str)
+        Session root directory (contains the ``audio`` tree).
+    dry_run (bool)
+        Report what would change without writing anything.
+    backup_directory (str | None)
+        Directory to copy the original summary into before it is rewritten; None
+        writes no backup.
+    message_output (Callable)
+        Logging callback; defaults to ``print``.
+
+    Returns
+    -------
+    report (dict)
+        :func:`os_utils.tidy_usv_summary_columns`'s report (``dropped``,
+        ``unknown``, ``columns_before``, ``columns_after``, ``changed``) plus
+        ``summary_path`` (str), ``n_rows`` (int), ``written`` (bool, True when the
+        file was rewritten) and ``backup_path`` (str, or None when no backup was
+        written).
+    """
+
+    root = pathlib.Path(root_directory)
+    usv_summary_loc = first_match_or_raise(
+        root=root / "audio",
+        pattern="*_usv_summary.csv",
+        recursive=True,
+        label="USV summary CSV",
+    )
+    usv_df = pls.read_csv(source=str(usv_summary_loc), infer_schema=False)
+    tidied, report = tidy_usv_summary_columns(usv_df)
+    report['summary_path'] = str(usv_summary_loc)
+    report['n_rows'] = usv_df.height
+    report['written'] = False
+    report['backup_path'] = None
+
+    mode = "DRY RUN, " if dry_run else ""
+    if not report['changed']:
+        message_output(f"{root.name}: {mode}{usv_summary_loc.name} is already in the canonical layout; left untouched.")
+        return report
+    moved = report['columns_after'] != [column for column in report['columns_before'] if column not in report['dropped']]
+    dropped_note = str(report['dropped']) if report['dropped'] else "no column"
+    unknown_note = f"; not in the canonical order, kept last: {report['unknown']}" if report['unknown'] else ""
+    message_output(
+        f"{root.name}: {mode}{usv_summary_loc.name} ({usv_df.height} rows): "
+        f"{'would drop' if dry_run else 'dropping'} {dropped_note}; "
+        f"column order {'changes' if moved else 'unchanged'}{unknown_note}."
+    )
+    message_output(f"    {'would be' if dry_run else 'now'}: {', '.join(report['columns_after'])}")
+    if dry_run:
+        return report
+
+    if backup_directory is not None:
+        backup_path = pathlib.Path(backup_directory) / root.name / usv_summary_loc.name
+        if backup_path.exists():
+            error_message = (
+                f"{backup_path} already exists; refusing to overwrite a backup (it may hold the original summary). "
+                f"Move it away or pick another backup directory."
+            )
+            raise FileExistsError(error_message)
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(usv_summary_loc, backup_path)
+        report['backup_path'] = str(backup_path)
+        message_output(f"    original copied to {backup_path}.")
+    with atomic_output_path(usv_summary_loc) as tmp_summary_path:
+        tidied.write_csv(file=str(tmp_summary_path))
+    report['written'] = True
+    return report
+
+
 def export_model_cell_arrays(
     model_cell_directory: str,
     output_directory: str,
@@ -1902,8 +2056,8 @@ def export_qlvm_reference_arrays_cli(model_cell_directory, output_directory) -> 
 
 @click.command(name="infer-qlvm-latents")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--model-cell', 'model_cells', type=(str, str), multiple=True, default=None, required=False, help='A column prefix and a QLVM model package cell (e.g. --model-cell qlvm_dur .../qlvm_models_latest/v3/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor); repeat once per model. When given, these pairs replace the model_cells setting: the session is placed on the torus of every listed cell and <prefix>1/<prefix>2 plus the cluster-label columns of each prefix (see --model-cell-labels) are written. Without it, the model_cells setting is used (by default the production cells).')
-@click.option('--model-cell-labels', 'model_cell_label_levels', type=(str, str), multiple=True, default=None, required=False, help='A model_cells column prefix and the comma-separated cluster-label levels it writes, among fine and coarse (e.g. --model-cell-labels qlvm_dur fine,coarse writes qlvm_dur_category and qlvm_dur_supercategory; an empty string writes none); repeat once per prefix. When given, these pairs replace the model_cell_label_levels setting; prefixes not listed keep the default (fine and coarse: qlvm_category, qlvm_supercategory for qlvm; P_category, P_supercategory for every other prefix P).')
+@click.option('--model-cell', 'model_cells', type=(str, str), multiple=True, default=None, required=False, help='A column prefix and a QLVM model package cell (e.g. --model-cell qlvm_dur .../qlvm_models_latest/v3/phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor); repeat once per model. When given, these pairs replace the model_cells setting: the session is placed on the torus of every listed cell and <prefix>1/<prefix>2 plus the cluster-label columns asked of each prefix (see --model-cell-labels; none by default) are written, and earlier coordinate, label and category columns of each listed prefix are removed. Without it, the model_cells setting is used (by default the production cells).')
+@click.option('--model-cell-labels', 'model_cell_label_levels', type=(str, str), multiple=True, default=None, required=False, help='A model_cells column prefix and the comma-separated cluster-label levels it writes, among fine and coarse (e.g. --model-cell-labels qlvm_dur fine,coarse writes qlvm_dur_category and qlvm_dur_supercategory; an empty string writes none); repeat once per prefix. When given, these pairs replace the model_cell_label_levels setting; prefixes not listed keep the default (no label column: the coordinates only; qlvm_category of the regular map comes from assign-qlvm-categories).')
 @click.option('--prefer-package-values/--no-prefer-package-values', 'prefer_package_values', default=None, required=False, help='With model cells: take a corpus session\'s coordinates from the package\'s own embedding when its spectrogram H5 is unchanged since the package (SHA-256, row count, durations and mask counts verified), else infer them; --no-prefer-package-values infers every session.')
 @click.option('--latent-dim', 'latent_dim', type=int, default=None, required=False, help='Dimensionality of the toroidal latent space; must equal every model cell\'s training contract.')
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.')
@@ -1954,3 +2108,60 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
         input_parameter_dict=processing_settings_dict,
         message_output=print,
     ).infer_and_merge()
+
+
+@click.command(name="tidy-usv-summary-columns")
+@click.option('--root-directory', 'root_directories', type=click.Path(exists=True, file_okay=False, dir_okay=True), multiple=True, required=False, help='Session root directory path; repeat once per session.')
+@click.option('--sessions-file', 'sessions_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Text file with one session root directory per line (blank lines and lines starting with # are skipped); added to the --root-directory sessions.')
+@click.option('--dry-run', 'dry_run', is_flag=True, default=False, help='Only report, per session, which columns would be dropped and the resulting column order; nothing is written.')
+@click.option('--backup-directory', 'backup_directory', type=click.Path(file_okay=False, dir_okay=True), default=None, required=False, help='Copy each original summary to <backup-directory>/<session>/<file name> before rewriting it (an existing backup is never overwritten; that session fails instead).')
+def tidy_usv_summary_columns_cli(root_directories, sessions_file, dry_run, backup_directory) -> None:
+    """
+    Description
+    -----------
+    A command-line tool to migrate existing USV summary CSVs to the canonical
+    column layout (``os_utils.USV_SUMMARY_COLUMN_ORDER``): drops the obsolete
+    columns (``os_utils.USV_SUMMARY_OBSOLETE_COLUMNS`` and every
+    ``*_category_agreement`` / ``*_category_uncertain`` column) and reorders the
+    rest (:func:`tidy_session_usv_summary`). Every session is attempted; the
+    sessions that failed are listed at the end and make the command exit with an
+    error.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    sessions = list(root_directories)
+    if sessions_file is not None:
+        lines = pathlib.Path(sessions_file).read_text().splitlines()
+        sessions += [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+    if not sessions:
+        error_message = "tidy-usv-summary-columns needs at least one session (--root-directory or --sessions-file)."
+        raise click.UsageError(error_message)
+
+    n_changed = 0
+    failed = []
+    for session in sessions:
+        try:
+            report = tidy_session_usv_summary(
+                root_directory=session,
+                dry_run=dry_run,
+                backup_directory=backup_directory,
+                message_output=print,
+            )
+        except (OSError, pls.exceptions.PolarsError) as error:
+            failed.append(f"{session}: {error}")
+            print(f"{session}: FAILED -- {error}")
+            continue
+        n_changed += int(report['changed'])
+    print(
+        f"{len(sessions)} session(s): {n_changed} {'would change' if dry_run else 'changed'}, "
+        f"{len(sessions) - n_changed - len(failed)} already canonical, {len(failed)} failed."
+    )
+    if failed:
+        error_message = "tidy-usv-summary-columns failed for:\n  " + "\n  ".join(failed)
+        raise click.ClickException(error_message)

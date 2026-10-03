@@ -208,7 +208,8 @@ def test_load_noise_model_reports_a_missing_bundle(tmp_path):
 def test_detect_and_merge_writes_the_noise_columns_before_the_squeak_block(tmp_path, mocker):
     """
     The merge replaces stale noise columns, keeps every other column and the usv_id zero-padding, and
-    leaves the summary in the canonical order: emitter, the noise block, then the squeak block.
+    leaves the summary in the canonical order: the DAS event, the noise block, the squeak block, then
+    emitter and the DAS channel statistics.
     """
     root = _build_session(tmp_path)
     summary_path = root / "audio" / f"{SESSION_ID}_usv_summary.csv"
@@ -235,7 +236,7 @@ def test_detect_and_merge_writes_the_noise_columns_before_the_squeak_block(tmp_p
     ).detect_and_merge()
 
     written = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
-    assert written.columns == ["usv_id", "start", "stop", "duration", "chs_count", "emitter", *noise.NOISE_COLUMNS, "squeak", "mean_freq_hz"]
+    assert written.columns == ["usv_id", "start", "stop", "duration", *noise.NOISE_COLUMNS, "squeak", "emitter", "chs_count", "mean_freq_hz"]
     assert written["usv_id"].to_list() == ["0000", "0001", "0002"]
     assert written["noise"].to_list() == [True, True, True]
     assert written["noise_probability"].null_count() == 0

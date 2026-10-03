@@ -349,10 +349,12 @@ def test_squeak_wav_channels_honours_metadata_exclusion(tmp_path):
 def test_detect_and_merge_writes_the_four_columns(tmp_path, mocker):
     """
     The merge replaces any existing squeak columns (squeak_frame_runs included),
-    keeps every other column and the usv_id zero-padding, places the squeak block
-    and squeak_frame_runs between emitter and the acoustic features (the
-    canonical summary order), writes True / False and an integer run count in
-    every row and leaves the probability and timing empty on non-squeak rows.
+    keeps every other column and the usv_id zero-padding, places the canonical
+    squeak columns (squeak, squeak_start, squeak_end) between the DAS event and
+    emitter and the binary detector's squeak_probability and squeak_frame_runs
+    (not in the canonical layout) after every canonical column, writes True /
+    False and an integer run count in every row and leaves the probability and
+    timing empty on non-squeak rows.
     """
     root = _build_session(tmp_path)
     summary_path = root / "audio" / f"{SESSION_ID}_usv_summary.csv"
@@ -380,7 +382,8 @@ def test_detect_and_merge_writes_the_four_columns(tmp_path, mocker):
 
     written = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
     assert written.columns == [
-        "usv_id", "start", "stop", "duration", "emitter", *squeaks.SQUEAK_COLUMNS, squeaks.SQUEAK_FRAME_RUNS_COLUMN, "mean_freq_hz",
+        "usv_id", "start", "stop", "duration", "squeak", "squeak_start", "squeak_end", "emitter", "mean_freq_hz",
+        "squeak_probability", squeaks.SQUEAK_FRAME_RUNS_COLUMN,
     ]
     assert written[squeaks.SQUEAK_FRAME_RUNS_COLUMN].to_list() == [1, 1, 0]
     assert written["mean_freq_hz"].to_list() == [40000.0, 40000.0, 40000.0]
@@ -581,7 +584,8 @@ def test_embed_and_merge_writes_the_two_squeak_torus_columns(tmp_path, mocker):
     """
     The embedded squeaks get their coordinates, every other row nulls, stale
     squeak coordinates are replaced, the other columns are kept and the two
-    columns follow the canonical order (after every other known column).
+    columns follow the canonical order (after every other canonical column; a
+    column the canonical layout does not list, here squeak_probability, comes last).
     """
     root = _build_squeak_embedding_session(tmp_path)
     summary_path = root / "audio" / f"{SESSION_ID}_usv_summary.csv"
@@ -609,7 +613,7 @@ def test_embed_and_merge_writes_the_two_squeak_torus_columns(tmp_path, mocker):
     assert embed.call_args.args[1].shape == (2, 1, 128, 128)
     assert embed.call_args.args[3:] == (7, 3)
     written = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
-    assert written.columns[-2:] == list(squeaks.SQUEAK_QLVM_COLUMNS)
+    assert written.columns[-3:] == [*squeaks.SQUEAK_QLVM_COLUMNS, "squeak_probability"]
     assert written["mean_freq_hz"].to_list() == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
     assert written["qlvm_squeak1"].null_count() == 5
     assert written["qlvm_squeak1"].is_null().to_list() == [False, True, False, True, True, True, True]

@@ -204,9 +204,11 @@ def test_assign_categories_follows_the_pixel_rule_and_threshold():
 
 
 def test_assigner_merges_category_columns_into_the_summary(tmp_path):
-    """The session's calls with P1 / P2 get P_category, P_category_agreement and
-    P_category_uncertain; calls without coordinates get nulls; earlier columns of those
-    names are replaced and every other column is kept."""
+    """The session's calls with P1 / P2 get P_category and nothing else: calls without
+    coordinates get a null, an earlier P_category is replaced, earlier
+    P_category_agreement / P_category_uncertain columns are removed (the agreement stays
+    computable from the bundle), every other column is kept, and the summary comes out in
+    canonical order."""
     out_dir = _build(tmp_path)
     root = tmp_path / "20240101_100000"
     (root / "audio").mkdir(parents=True)
@@ -224,12 +226,30 @@ def test_assigner_merges_category_columns_into_the_summary(tmp_path):
         message_output=lambda *_a, **_kw: None,
     ).assign_and_merge()
     df = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
-    assert df.columns == ["usv_id", "start", "qlvm_m1", "qlvm_m2", "qlvm_m_category", "qlvm_m_category_agreement", "qlvm_m_category_uncertain"]
+    assert df.columns == ["usv_id", "start", "qlvm_m1", "qlvm_m2", "qlvm_m_category"]
     bundle = qc.load_category_bundle(str(out_dir))
     expected = qc.assign_categories(np.array([[0.1, 0.5], [0.9, 0.5]]), bundle)
     assert df["qlvm_m_category"].to_list() == [int(expected["category"][0]), None, int(expected["category"][1])]
-    assert df["qlvm_m_category_agreement"][1] is None
-    assert df["qlvm_m_category_uncertain"][1] is None
+
+    # The regular map's prefix, with the confidence columns an earlier version wrote and
+    # columns out of canonical order: only qlvm_category is written, in canonical place.
+    pls.DataFrame({
+        "usv_id": ["0000", "0001", "0002"],
+        "qlvm1": [0.1, None, 0.9],
+        "qlvm2": [0.5, None, 0.5],
+        "qlvm_category_agreement": [0.1, 0.1, 0.1],
+        "qlvm_category_uncertain": [True, True, True],
+        "start": [0.1, 0.2, 0.3],
+        "qlvm_squeak1": [None, 0.3, None],
+    }).write_csv(summary_path)
+    qc.QLVMCategoryAssigner(
+        root_directory=str(root),
+        input_parameter_dict={"assign_qlvm_categories": {"category_directory": str(out_dir), "coordinate_prefix": "qlvm"}},
+        message_output=lambda *_a, **_kw: None,
+    ).assign_and_merge()
+    df = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+    assert df.columns == ["usv_id", "start", "qlvm1", "qlvm2", "qlvm_category", "qlvm_squeak1"]
+    assert df["qlvm_category"].to_list() == [int(expected["category"][0]), None, int(expected["category"][1])]
     with pytest.raises(ValueError, match="needs a category_directory"):
         qc.QLVMCategoryAssigner(
             root_directory=str(root),

@@ -18,7 +18,11 @@ import polars as pls
 import pytest
 
 from usv_playpen import os_utils
-from usv_playpen.processing.qlvm_latents import model_cell_label_columns, validate_model_cells
+from usv_playpen.processing.qlvm_latents import (
+    model_cell_label_columns,
+    model_cell_reserved_columns,
+    validate_model_cells,
+)
 
 
 @pytest.fixture
@@ -524,45 +528,95 @@ def test_resolve_consolidated_h5_picks_newest_and_skips_other_h5(tmp_path):
 
 def test_order_usv_summary_columns_puts_known_columns_in_canonical_order():
     """Known columns follow USV_SUMMARY_COLUMN_ORDER whatever order they arrive in; unknown
-    columns keep their relative order after them; values are untouched."""
+    columns keep their relative order after them; values are untouched; absent canonical
+    columns are not created."""
     table = pls.DataFrame({
         "custom_b": [1], "mean_freq_hz": [2.0], "usv_id": ["000000"], "squeak": [True],
         "start": [0.1], "custom_a": [3], "emitter": [None], "stop": [0.2], "qlvm1": [0.5],
-        "squeak_end": [0.19],
+        "squeak_end": [0.19], "chs_count": [3.0], "noise": [False],
     })
     ordered = os_utils.order_usv_summary_columns(table)
     assert ordered.columns == [
-        "usv_id", "start", "stop", "emitter", "squeak", "squeak_end", "mean_freq_hz", "qlvm1",
-        "custom_b", "custom_a",
+        "usv_id", "start", "stop", "noise", "squeak", "squeak_end", "emitter", "chs_count", "mean_freq_hz",
+        "qlvm1", "custom_b", "custom_a",
     ]
     assert ordered.equals(table.select(ordered.columns))
 
 
-def test_usv_summary_column_order_places_squeaks_between_emitter_and_features():
-    """The agreed layout: DAS event -> emitter -> squeak block -> acoustic features -> QLVM,
-    where the QLVM block is the production torus coordinates and labels (phase 6 regular
-    model with its fine and coarse labels, then the duration / mean-frequency / bandwidth /
-    loudness conditional models, each with its fine and coarse labels, and last the squeak
-    torus coordinates of infer-qlvm-squeak-latents) and the legacy column qlvm_model of the
-    retired single-model run is not listed."""
-    order = list(os_utils.USV_SUMMARY_COLUMN_ORDER)
-    assert order[-22:] == [
-        "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
-        "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category", "qlvm_dur_supercategory",
-        "qlvm_mf1", "qlvm_mf2", "qlvm_mf_category", "qlvm_mf_supercategory",
-        "qlvm_bw1", "qlvm_bw2", "qlvm_bw_category", "qlvm_bw_supercategory",
-        "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category", "qlvm_loud_supercategory",
+def test_usv_summary_column_order_is_the_agreed_layout():
+    """The agreed layout, in full: DAS event -> noise and vocal-class block -> emitter and DAS
+    channel statistics -> acoustic features -> the regular QLVM map with its category -> the
+    duration and spectral-entropy conditional maps (coordinates only) -> the squeak torus.
+    No obsolete column is canonical."""
+    assert list(os_utils.USV_SUMMARY_COLUMN_ORDER) == [
+        "usv_id", "start", "stop", "duration",
+        "noise", "noise_probability", "usv", "squeak", "p_usv", "p_squeak", "p_both", "squeak_start", "squeak_end",
+        "emitter", "peak_amp_ch", "mean_amp_ch", "chs_count", "chs_detected",
+        "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "loudness_db",
+        "spectral_entropy", "mask_number",
+        "qlvm1", "qlvm2", "qlvm_category",
+        "qlvm_dur1", "qlvm_dur2", "qlvm_ent1", "qlvm_ent2",
         "qlvm_squeak1", "qlvm_squeak2",
     ]
-    assert "qlvm_model" not in order
-    assert order[order.index("squeak"):order.index("squeak") + 5] == [
-        "squeak", "squeak_probability", "squeak_start", "squeak_end", "squeak_frame_runs",
+    assert len(set(os_utils.USV_SUMMARY_COLUMN_ORDER)) == len(os_utils.USV_SUMMARY_COLUMN_ORDER)
+    assert not set(os_utils.USV_SUMMARY_OBSOLETE_COLUMNS) & set(os_utils.USV_SUMMARY_COLUMN_ORDER)
+    assert os_utils.QLVM_SUMMARY_MAP_PREFIXES == ("qlvm", "qlvm_dur", "qlvm_ent")
+
+
+def test_obsolete_usv_summary_columns_picks_listed_and_confidence_columns():
+    """The listed obsolete columns and every *_category_agreement / *_category_uncertain column
+    are picked, in the given order; canonical and unknown columns are not."""
+    columns = [
+        "usv_id", "qlvm_supercategory", "qlvm_category", "qlvm_dur_category", "qlvm_mf1", "custom",
+        "qlvm_x_category_uncertain", "qlvm_category_agreement", "qlvm_loud_supercategory", "qlvm_model",
+        "qlvm_ent1",
     ]
-    assert order.index("emitter") + 1 == order.index("noise")
-    assert order[order.index("noise"):order.index("noise") + 2] == ["noise", "noise_probability"]
-    assert order.index("noise_probability") + 1 == order.index("squeak")
-    assert order.index("squeak_frame_runs") + 1 == order.index("mean_freq_hz")
-    assert order.index("mask_number") < order.index("qlvm1")
+    assert os_utils.obsolete_usv_summary_columns(columns) == [
+        "qlvm_supercategory", "qlvm_dur_category", "qlvm_mf1", "qlvm_x_category_uncertain",
+        "qlvm_category_agreement", "qlvm_loud_supercategory", "qlvm_model",
+    ]
+
+
+def test_tidy_usv_summary_columns_drops_obsolete_and_reorders():
+    """An old-layout summary loses every obsolete column, the rest comes out in canonical
+    order with unknown columns last, the values of kept columns are unchanged, and the report
+    says what changed."""
+    table = pls.DataFrame({
+        "usv_id": ["000000", "000001"], "start": [0.1, 1.0], "stop": [0.2, 1.1], "duration": [0.1, 0.1],
+        "peak_amp_ch": [3.0, 4.0], "emitter": ["m", None], "noise": [False, True],
+        "squeak_probability": [0.1, None], "mean_freq_hz": [50000.0, 60000.0],
+        "qlvm1": [0.1, 0.2], "qlvm2": [0.3, 0.4], "qlvm_category": [1, 2], "qlvm_supercategory": [1, 1],
+        "qlvm_dur1": [0.5, 0.6], "qlvm_dur2": [0.7, 0.8], "qlvm_dur_category": [3, 4],
+        "qlvm_dur_supercategory": [1, 2], "qlvm_mf1": [0.0, 0.0], "qlvm_mf2": [0.0, 0.0],
+        "qlvm_mf_category": [1, 1], "qlvm_bw1": [0.0, 0.0], "qlvm_loud_supercategory": [2, 2],
+        "qlvm_category_agreement": [0.9, 0.5], "qlvm_category_uncertain": [False, True],
+        "qlvm_squeak1": [None, 0.2], "qlvm_squeak2": [None, 0.3],
+    })
+    tidied, report = os_utils.tidy_usv_summary_columns(table)
+    assert tidied.columns == [
+        "usv_id", "start", "stop", "duration", "noise", "emitter", "peak_amp_ch", "mean_freq_hz",
+        "qlvm1", "qlvm2", "qlvm_category", "qlvm_dur1", "qlvm_dur2", "qlvm_squeak1", "qlvm_squeak2",
+        "squeak_probability",
+    ]
+    assert tidied.equals(table.select(tidied.columns))
+    assert report["dropped"] == [
+        "qlvm_supercategory", "qlvm_dur_category", "qlvm_dur_supercategory", "qlvm_mf1", "qlvm_mf2",
+        "qlvm_mf_category", "qlvm_bw1", "qlvm_loud_supercategory", "qlvm_category_agreement",
+        "qlvm_category_uncertain",
+    ]
+    assert report["unknown"] == ["squeak_probability"]
+    assert report["columns_before"] == table.columns
+    assert report["columns_after"] == tidied.columns
+    assert report["changed"] is True
+
+
+def test_tidy_usv_summary_columns_leaves_a_canonical_summary_alone():
+    """A summary already in the canonical layout comes back identical and unchanged."""
+    table = pls.DataFrame({"usv_id": ["000000"], "start": [0.1], "stop": [0.2], "qlvm1": [0.5], "qlvm2": [0.6]})
+    tidied, report = os_utils.tidy_usv_summary_columns(table)
+    assert tidied.equals(table)
+    assert report["dropped"] == []
+    assert report["changed"] is False
 
 
 # derive_spectrogram_model_paths
@@ -655,10 +709,10 @@ def test_derive_spectrogram_model_paths_keeps_configured_qlvm_models(configured)
 
 def test_derived_qlvm_model_cells_pass_model_cell_validation():
     """The derived production prefixes, with the shipped (empty) label-level setting, write
-    exactly the canonical coordinate and label columns, so the model_cells validator and the
-    label-level resolver (which forbid overwriting other summary columns) accept them. The
-    squeak torus coordinates (written by infer-qlvm-squeak-latents, not by a model_cells run)
-    are the only canonical qlvm columns they leave alone."""
+    their coordinates only, which the model_cells validator and the label-level resolver
+    (which forbid overwriting other summary columns) accept. Every canonical map coordinate
+    column (qlvm, qlvm_dur, qlvm_ent) is writable by a model_cells run, and so is the regular
+    map's qlvm_category; the squeak torus coordinates are not."""
     settings = {
         "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
         "generate_masks": {"sam2_model_dir": "", "sam2_model_path": "", "yolo_weights": ""},
@@ -669,9 +723,12 @@ def test_derived_qlvm_model_cells_pass_model_cell_validation():
     }
     os_utils.derive_spectrogram_model_paths(settings)
     validated = validate_model_cells(settings["infer_qlvm_latents"]["model_cells"].items())
-    written = {f"{prefix}{axis}" for prefix in validated for axis in (1, 2)}
-    written |= {column for columns in model_cell_label_columns(validated, {}).values() for column in columns.values()}
-    assert written == {c for c in os_utils.USV_SUMMARY_COLUMN_ORDER if c.startswith("qlvm")} - {"qlvm_squeak1", "qlvm_squeak2"}
+    assert all(columns == {} for columns in model_cell_label_columns(validated, {}).values())
+    reserved = model_cell_reserved_columns()
+    canonical_qlvm = {c for c in os_utils.USV_SUMMARY_COLUMN_ORDER if c.startswith("qlvm")}
+    assert canonical_qlvm - reserved == canonical_qlvm - {"qlvm_squeak1", "qlvm_squeak2"}
+    assert {"qlvm_squeak1", "qlvm_squeak2"} <= reserved
+    validate_model_cells([(prefix, "/cell") for prefix in os_utils.QLVM_SUMMARY_MAP_PREFIXES])
 
 
 def test_derive_spectrogram_model_paths_noop_when_root_absent():

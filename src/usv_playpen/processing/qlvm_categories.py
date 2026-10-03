@@ -61,10 +61,14 @@ corpus calls' categories) and ``build_config.json`` (the settings and inputs).
 The assignment (:class:`QLVMCategoryAssigner`, ``assign-qlvm-categories``) reads
 such a directory and labels the calls of one session from their torus
 coordinates ``<P>1`` / ``<P>2`` in its ``*_usv_summary.csv``, with the same pixel
-rule (:func:`qlvm_latents.label_grid_lookup`), writing ``<P>_category`` (int),
-``<P>_category_agreement`` (float) and ``<P>_category_uncertain`` (bool); calls
-without coordinates get nulls. Run it after ``infer-qlvm-latents``, which drops
-the ``<P>_category`` column of every prefix it embeds.
+rule (:func:`qlvm_latents.label_grid_lookup`), writing ``<P>_category`` (int,
+``1..k`` for ``R-1`` ... ``R-k``) only; calls without coordinates get nulls. The
+per-call agreement and uncertain flag do not go into the summary: they stay
+computable from the category directory and the call's coordinates
+(:func:`assign_categories` on :func:`load_category_bundle`), and any
+``<P>_category_agreement`` / ``<P>_category_uncertain`` column an earlier version
+wrote is removed. Run it after ``infer-qlvm-latents``, which drops the
+``<P>_category`` column (and those confidence columns) of every prefix it embeds.
 """
 
 from __future__ import annotations
@@ -87,6 +91,7 @@ from skimage.segmentation import watershed
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
+    CATEGORY_CONFIDENCE_SUFFIXES,
     atomic_output_path,
     configure_path,
     first_match_or_raise,
@@ -1057,10 +1062,13 @@ class QLVMCategoryAssigner:
         Reads the category directory (``category_directory``) and the session's
         USV summary, labels every call that has both ``<P>1`` and ``<P>2``
         (``P`` = ``coordinate_prefix``; :func:`assign_categories`) and writes
-        ``<P>_category`` (``1..k``), ``<P>_category_agreement`` and
-        ``<P>_category_uncertain`` into the summary (nulls for calls without
-        coordinates), replacing earlier columns of those names. The summary is
-        rewritten atomically.
+        ``<P>_category`` (``1..k``) into the summary (null for calls without
+        coordinates), replacing an earlier column of that name. The per-call
+        agreement and uncertain flag are computed (the log counts the uncertain
+        calls) but not written; an earlier ``<P>_category_agreement`` /
+        ``<P>_category_uncertain`` column is removed. The summary is rewritten
+        atomically, in canonical column order
+        (:func:`os_utils.order_usv_summary_columns`).
 
         Parameters
         ----------
@@ -1099,18 +1107,19 @@ class QLVMCategoryAssigner:
         coordinates = usv_df.select([f"{prefix}1", f"{prefix}2"]).cast(pls.Float64).fill_null(np.nan).to_numpy()
         labels = assign_categories(coordinates, bundle)
         placed = labels['placed']
+        category_column = f"{prefix}_category"
         new_columns = pls.DataFrame({
             "_placed": placed,
-            f"{prefix}_category": labels['category'],
-            f"{prefix}_category_agreement": labels['agreement'],
-            f"{prefix}_category_uncertain": labels['uncertain'],
+            category_column: labels['category'],
         })
-        column_names = [name for name in new_columns.columns if name != "_placed"]
-        # Calls without coordinates get nulls in all three columns.
-        new_columns = new_columns.select([
-            pls.when(pls.col("_placed")).then(pls.col(name)).otherwise(None).alias(name) for name in column_names
-        ])
-        merged = usv_df.drop([column for column in column_names if column in usv_df.columns]).hstack(new_columns)
+        # Calls without coordinates get a null category.
+        new_columns = new_columns.select(
+            pls.when(pls.col("_placed")).then(pls.col(category_column)).otherwise(None).alias(category_column)
+        )
+        # The category column is replaced; the confidence columns an earlier version
+        # wrote are removed (the agreement and uncertain flag stay outside the summary).
+        replaced = [category_column, *(f"{prefix}{suffix}" for suffix in CATEGORY_CONFIDENCE_SUFFIXES)]
+        merged = usv_df.drop([column for column in replaced if column in usv_df.columns]).hstack(new_columns)
         merged = order_usv_summary_columns(merged)
         with atomic_output_path(usv_summary_loc) as tmp_summary_path:
             merged.write_csv(file=str(tmp_summary_path))
@@ -1118,8 +1127,7 @@ class QLVMCategoryAssigner:
         self.message_output(
             f"{int(placed.sum())} of {usv_df.height} USVs labelled with {cfg['category_directory']} "
             f"({', '.join(f'R-{index + 1}: {int(count)}' for index, count in enumerate(counts))}; "
-            f"{int(labels['uncertain'].sum())} uncertain) into {prefix}_category, {prefix}_category_agreement and "
-            f"{prefix}_category_uncertain of {usv_summary_loc.name}."
+            f"{int(labels['uncertain'].sum())} uncertain, not written) into {category_column} of {usv_summary_loc.name}."
         )
         self.message_output(
             f"QLVM category assignment ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
@@ -1184,7 +1192,7 @@ def build_qlvm_categories_cli(ctx, positions_file, properties_file, output_direc
 @click.command(name="assign-qlvm-categories")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--category-directory', 'category_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='A build-qlvm-categories output directory.')
-@click.option('--coordinate-prefix', 'coordinate_prefix', type=str, default=None, required=False, help='Prefix P of the summary columns P1 / P2 holding the torus coordinates of the map the categories were built on (the infer-qlvm-latents --model-cell prefix); P_category, P_category_agreement and P_category_uncertain are written.')
+@click.option('--coordinate-prefix', 'coordinate_prefix', type=str, default=None, required=False, help='Prefix P of the summary columns P1 / P2 holding the torus coordinates of the map the categories were built on (the infer-qlvm-latents --model-cell prefix); P_category is written (earlier P_category_agreement / P_category_uncertain columns are removed).')
 @click.pass_context
 def assign_qlvm_categories_cli(ctx, root_directory, **kwargs) -> None:
     """

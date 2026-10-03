@@ -23,6 +23,7 @@ import jax.numpy as jnp
 import numpy as np
 import polars as pls
 import pytest
+from click.testing import CliRunner
 
 from usv_playpen.processing import qlvm_latents as ql
 from usv_playpen.processing.build_qlvm_training_set import build_session_masks, file_sha256, stretch_specs
@@ -208,7 +209,9 @@ def test_infer_and_merge_honors_target_shape(tmp_path, mocker):
 def test_infer_and_merge_idempotent_preserves_other_columns(tmp_path, mocker):
     """Re-running inference rewrites only the qlvm_* columns: unrelated columns
     survive, the row count is unchanged, and the qlvm columns are refreshed (not
-    duplicated or left stale)."""
+    duplicated or left stale). With the shipped (empty) label-level setting only the
+    coordinates are written, and every earlier category / supercategory / category
+    confidence column of the re-embedded prefix is removed."""
     rng = np.random.default_rng(2)
     grid = rng.integers(1, 8, size=(8, 8)).astype(np.int16)
     root, session_id, cfg = _make_inference_session(tmp_path, rng)
@@ -217,7 +220,13 @@ def test_infer_and_merge_idempotent_preserves_other_columns(tmp_path, mocker):
 
     # Add an unrelated column the merge must leave intact.
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
-    df0 = pls.read_csv(summary_path).with_columns(pls.Series("quality", [0.11, 0.22, 0.33]))
+    df0 = pls.read_csv(summary_path).with_columns(
+        pls.Series("quality", [0.11, 0.22, 0.33]),
+        pls.Series("qlvm_category", [1, 2, 3]),
+        pls.Series("qlvm_supercategory", [1, 1, 1]),
+        pls.Series("qlvm_category_agreement", [0.9, 0.9, 0.9]),
+        pls.Series("qlvm_category_uncertain", [False, False, False]),
+    )
     df0.write_csv(summary_path)
 
     mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
@@ -233,9 +242,11 @@ def test_infer_and_merge_idempotent_preserves_other_columns(tmp_path, mocker):
     assert df.height == 3
     # the unrelated column is untouched, and each qlvm column appears exactly once.
     assert df["quality"].to_list() == [0.11, 0.22, 0.33]
-    for column in ("qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory"):
+    for column in ("qlvm1", "qlvm2"):
         assert df.columns.count(column) == 1
-    assert "qlvm_model" not in df.columns
+    for column in ("qlvm_model", "qlvm_category", "qlvm_supercategory", "qlvm_category_agreement", "qlvm_category_uncertain"):
+        assert column not in df.columns
+    assert df.columns == ["usv_id", "start", "stop", "qlvm1", "qlvm2", "quality"]
     # the embedded rows still carry latents after the re-run.
     assert df["qlvm1"][0] is not None
     assert df["qlvm1"][1] is None
@@ -465,8 +476,8 @@ def _phase11_bins(name, c_min, c_max, step):
 def test_infer_and_merge_with_a_model_package_cell(tmp_path, mocker):
     """A model_cells cell's ReLU checkpoint, contract, Fibonacci lattice and label grids
     are used: calls outside its duration window are null, inputs are min-maxed and
-    floored, labels come from label_grid.npy (fine -> qlvm_category, coarse ->
-    qlvm_supercategory), and no qlvm_model column is written."""
+    floored, labels asked for explicitly come from label_grid.npy (fine -> qlvm_category,
+    coarse -> qlvm_supercategory), and no qlvm_model column is written."""
     rng = np.random.default_rng(13)
     res = 8
     fine_grid = rng.integers(101, 117, size=(res, res)).astype(np.int16)
@@ -475,6 +486,7 @@ def test_infer_and_merge_with_a_model_package_cell(tmp_path, mocker):
     _set_session_durations(root, session_id, [128, 0, 64])  # row 0 is outside the cell's window (100)
     cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=fine_grid, coarse_grid=coarse_grid)
     cfg["model_cells"] = {"qlvm": str(cell)}
+    cfg["model_cell_label_levels"] = {"qlvm": ["fine", "coarse"]}
 
     captured = {}
     real_embed = ql.embed_data
@@ -1108,18 +1120,21 @@ def _run_model_cells(root, cfg, mocker):
 
 
 def test_model_cells_write_prefixed_coordinates_and_labels(tmp_path, mocker):
-    """With model_cells and the shipped (empty) model_cell_label_levels, every listed cell
-    places the session and each prefix gets exactly its coordinates <prefix>1/<prefix>2
-    plus its default labels, both levels -- qlvm_category (fine) and qlvm_supercategory
+    """With model_cells and model_cell_label_levels asking both levels of every prefix,
+    every listed cell places the session and each prefix gets exactly its coordinates
+    <prefix>1/<prefix>2 plus its labels -- qlvm_category (fine) and qlvm_supercategory
     (coarse) for 'qlvm', qlvm_x_category and qlvm_x_supercategory for 'qlvm_x' -- each the
     cell's grid of that level at the pixel of the written coordinates, null where the call
-    was not placed. No model column is written; stale label, model and coordinate columns
-    of the listed prefixes are replaced; other columns stay."""
+    was not placed. No model column is written; stale label, category confidence, model
+    and coordinate columns of the listed prefixes are replaced or removed; other columns
+    stay, after the canonical ones."""
     rng = np.random.default_rng(30)
     root, session_id, cfg = _model_cells_session(tmp_path, rng)
+    cfg["model_cell_label_levels"] = {"qlvm": ["fine", "coarse"], "qlvm_x": ["fine", "coarse"]}
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
     pls.read_csv(summary_path).with_columns(
         quality=pls.Series([0.11, 0.22, 0.33]),
+        qlvm_category_agreement=pls.Series([0.5, None, 0.5]),
         qlvm_category=pls.Series([3, None, 4]),
         qlvm_supercategory=pls.Series([1, None, 2]),
         qlvm_model=pls.Series(["old", None, "old"]),
@@ -1137,8 +1152,8 @@ def test_model_cells_write_prefixed_coordinates_and_labels(tmp_path, mocker):
 
     df = pls.read_csv(summary_path)
     assert df.columns == [
-        "usv_id", "start", "stop", "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
-        "quality", "qlvm_x1", "qlvm_x2", "qlvm_x_category", "qlvm_x_supercategory",
+        "usv_id", "start", "stop", "qlvm1", "qlvm2", "qlvm_category",
+        "quality", "qlvm_supercategory", "qlvm_x1", "qlvm_x2", "qlvm_x_category", "qlvm_x_supercategory",
     ]
     for column in ("qlvm1", "qlvm2", "qlvm_x1", "qlvm_x2"):
         assert df[column].dtype == pls.Float64
@@ -1225,6 +1240,7 @@ def test_model_cells_take_package_values_when_the_session_is_verified(tmp_path, 
     are read: v2 / v2.1 (flat) and v3 (config/, inference/, corpus/)."""
     rng = np.random.default_rng(31)
     root, session_id, cfg = _model_cells_session(tmp_path, rng)
+    cfg["model_cell_label_levels"] = {"qlvm": ["fine", "coarse"], "qlvm_x": ["fine", "coarse"]}
     expected = _write_fake_package(tmp_path, root, session_id, cfg, rng)
     if layout == "v3":
         _to_v3_layout(tmp_path / "pkg")
@@ -1367,16 +1383,26 @@ def test_model_cells_refuse_invalid_prefixes_before_writing(tmp_path, mocker):
 
 def test_model_cell_label_column_names_follow_the_rule():
     """Prefix 'qlvm' keeps qlvm_category (fine) / qlvm_supercategory (coarse); every other
-    prefix P gets P_category / P_supercategory. The default is both levels for every
-    prefix."""
+    prefix P gets P_category / P_supercategory. The default is no level for any prefix
+    (coordinates only; the regular map's category comes from assign-qlvm-categories), and
+    the stale columns of a prefix are its coordinates, both label levels and the category
+    confidence columns."""
     assert ql.model_cell_label_column("qlvm", "fine") == "qlvm_category"
     assert ql.model_cell_label_column("qlvm", "coarse") == "qlvm_supercategory"
     assert ql.model_cell_label_column("qlvm_dur", "fine") == "qlvm_dur_category"
     assert ql.model_cell_label_column("qlvm_loud", "coarse") == "qlvm_loud_supercategory"
-    assert ql.model_cell_label_columns({"qlvm": "/a", "qlvm_mf": "/b"}, {}) == {
+    assert ql.model_cell_label_columns({"qlvm": "/a", "qlvm_mf": "/b"}, {}) == {"qlvm": {}, "qlvm_mf": {}}
+    assert ql.model_cell_label_columns({"qlvm": "/a", "qlvm_mf": "/b"}, {"qlvm": ["fine", "coarse"], "qlvm_mf": ["fine", "coarse"]}) == {
         "qlvm": {"fine": "qlvm_category", "coarse": "qlvm_supercategory"},
         "qlvm_mf": {"fine": "qlvm_mf_category", "coarse": "qlvm_mf_supercategory"},
     }
+    assert ql.model_cell_stale_columns("qlvm") == [
+        "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_category_agreement", "qlvm_category_uncertain",
+    ]
+    assert ql.model_cell_stale_columns("qlvm_ent") == [
+        "qlvm_ent1", "qlvm_ent2", "qlvm_ent_category", "qlvm_ent_supercategory",
+        "qlvm_ent_category_agreement", "qlvm_ent_category_uncertain",
+    ]
     # Levels come out in the fine, coarse order whatever order the setting lists them in.
     assert list(ql.model_cell_label_columns({"qlvm_bw": "/a"}, {"qlvm_bw": ["coarse", "fine"]})["qlvm_bw"]) == [
         "fine", "coarse",
@@ -1443,12 +1469,16 @@ def test_model_cells_refuse_invalid_label_levels_before_writing(tmp_path, mocker
 
 
 def test_model_cell_label_columns_refuse_to_overwrite_summary_columns(mocker):
-    """A label column may not be another summary column; the production label columns
-    (qlvm_category, qlvm_supercategory, qlvm_dur_category, ...) are in the canonical column
-    order and are allowed, and so are the production prefixes' coordinates."""
+    """A label column may not be another summary column; the label columns of the
+    summary map prefixes and the production prefixes (qlvm_category, ...) are allowed, and
+    so are their coordinates (qlvm_ent1 / qlvm_ent2 included)."""
     mocker.patch.object(ql, "USV_SUMMARY_COLUMN_ORDER", (*ql.USV_SUMMARY_COLUMN_ORDER, "peak_category"))
     with pytest.raises(ValueError, match=r"prefix 'peak': label column\(s\) \['peak_category'\] would overwrite"):
-        ql.model_cell_label_columns({"peak": "/cell"}, {})
+        ql.model_cell_label_columns({"peak": "/cell"}, {"peak": ["fine"]})
+    summary_maps = dict.fromkeys(ql.QLVM_SUMMARY_MAP_PREFIXES, "/cell")
+    assert ql.validate_model_cells(summary_maps.items()) == summary_maps
+    with pytest.raises(ValueError, match=r"prefix 'qlvm_squeak' would overwrite"):
+        ql.validate_model_cells([("qlvm_squeak", "/cell")])
     production = {prefix: "/cell" for prefix in ql.QLVM_PRODUCTION_MODEL_CELLS}
     assert ql.validate_model_cells(production.items()) == production
     both = {prefix: ["fine", "coarse"] for prefix in production}
@@ -1503,8 +1533,9 @@ def test_infer_and_merge_sam_inputs_equal_the_masked_training_inputs(tmp_path, m
 
 def test_model_cells_embed_an_unclustered_cell_without_labels(tmp_path, mocker):
     """A cell train-qlvm wrote has no cluster folders: it loads with None label grids,
-    embeds with an empty label-level list (coordinates only), and a run that asks it for
-    a label level stops before the summary is touched, naming the prefix and level."""
+    embeds with the shipped (empty) label-level setting (coordinates only, no category or
+    supercategory column), and a run that asks it for a label level stops before the
+    summary is touched, naming the prefix and level."""
     rng = np.random.default_rng(42)
     grid = np.ones((8, 8), dtype=np.int16)
     root, session_id, cfg = _make_inference_session(tmp_path, rng)
@@ -1520,16 +1551,115 @@ def test_model_cells_embed_an_unclustered_cell_without_labels(tmp_path, mocker):
     before = summary_path.read_bytes()
 
     cfg["model_cells"] = {"qlvm_new": str(cell)}
+    cfg["model_cell_label_levels"] = {"qlvm_new": ["fine", "coarse"]}
     with pytest.raises(ValueError, match=r"qlvm_new: fine .*\n.*qlvm_new: coarse"):
         ql.QLVMLatentInference(
             root_directory=str(root), input_parameter_dict={"infer_qlvm_latents": cfg}, message_output=lambda *_a, **_kw: None,
         ).infer_and_merge()
     assert summary_path.read_bytes() == before
 
-    cfg["model_cell_label_levels"] = {"qlvm_new": []}
+    cfg["model_cell_label_levels"] = {}
     ql.QLVMLatentInference(
         root_directory=str(root), input_parameter_dict={"infer_qlvm_latents": cfg}, message_output=lambda *_a, **_kw: None,
     ).infer_and_merge()
     df = pls.read_csv(summary_path)
     assert df.columns == ["usv_id", "start", "stop", "qlvm_new1", "qlvm_new2"]
     assert df["qlvm_new1"].to_list() == [0.25, None, 0.25]
+
+
+def _old_layout_session(tmp_path, name="20250101_120000"):
+    """A session folder whose summary has the pre-canonical layout: obsolete QLVM
+    columns, the category confidence columns and columns out of canonical order,
+    with values that a type-inferring rewrite would re-format (trailing zeros,
+    zero-padded ids, an empty field)."""
+    root = tmp_path / name
+    (root / "audio").mkdir(parents=True)
+    summary_path = root / "audio" / f"{name}_usv_summary.csv"
+    summary_path.write_text(
+        "usv_id,start,stop,duration,peak_amp_ch,emitter,noise,qlvm1,qlvm2,qlvm_category,qlvm_supercategory,"
+        "qlvm_mf1,qlvm_mf2,qlvm_category_agreement,qlvm_category_uncertain,custom\n"
+        "000000,0.10,0.2000,0.1,3.0,m1,false,0.25,0.50,2,1,0.1,0.2,0.75,false,a\n"
+        "000001,1.00,1.1000,0.1,4.0,,true,,,,,,,,,b\n"
+    )
+    return root, summary_path
+
+
+def test_tidy_session_usv_summary_dry_run_reports_without_writing(tmp_path):
+    """A dry run reports the columns it would drop and the new order, and leaves the file
+    byte-for-byte untouched."""
+    root, summary_path = _old_layout_session(tmp_path)
+    before = summary_path.read_bytes()
+    messages = []
+    report = ql.tidy_session_usv_summary(str(root), dry_run=True, backup_directory=None, message_output=messages.append)
+    assert summary_path.read_bytes() == before
+    assert report["written"] is False
+    assert report["changed"] is True
+    assert report["dropped"] == ["qlvm_supercategory", "qlvm_mf1", "qlvm_mf2", "qlvm_category_agreement", "qlvm_category_uncertain"]
+    assert report["columns_after"] == [
+        "usv_id", "start", "stop", "duration", "noise", "emitter", "peak_amp_ch", "qlvm1", "qlvm2", "qlvm_category", "custom",
+    ]
+    assert any("would drop" in message for message in messages)
+
+
+def test_tidy_session_usv_summary_rewrites_with_a_backup_and_keeps_values_verbatim(tmp_path):
+    """The rewrite drops the obsolete columns, reorders the rest, keeps every kept value as
+    the text it was (no re-formatting), backs the original up, refuses to overwrite that
+    backup on a second run, and leaves an already-canonical summary untouched."""
+    root, summary_path = _old_layout_session(tmp_path)
+    original = summary_path.read_text()
+    backups = tmp_path / "backups"
+    report = ql.tidy_session_usv_summary(str(root), dry_run=False, backup_directory=str(backups), message_output=lambda *_a: None)
+    assert report["written"] is True
+    assert (backups / root.name / summary_path.name).read_text() == original
+    assert summary_path.read_text() == (
+        "usv_id,start,stop,duration,noise,emitter,peak_amp_ch,qlvm1,qlvm2,qlvm_category,custom\n"
+        "000000,0.10,0.2000,0.1,false,m1,3.0,0.25,0.50,2,a\n"
+        "000001,1.00,1.1000,0.1,true,,4.0,,,,b\n"
+    )
+    tidied = summary_path.read_bytes()
+    # A canonical summary is left alone (no backup is attempted for it).
+    report = ql.tidy_session_usv_summary(str(root), dry_run=False, backup_directory=str(backups), message_output=lambda *_a: None)
+    assert report["written"] is False
+    assert report["backup_path"] is None
+    # A summary that needs a rewrite while a backup already sits there is refused, untouched.
+    summary_path.write_text(original)
+    with pytest.raises(FileExistsError, match="refusing to overwrite a backup"):
+        ql.tidy_session_usv_summary(str(root), dry_run=False, backup_directory=str(backups), message_output=lambda *_a: None)
+    assert summary_path.read_text() == original
+    summary_path.write_bytes(tidied)
+    report = ql.tidy_session_usv_summary(str(root), dry_run=False, backup_directory=None, message_output=lambda *_a: None)
+    assert report["changed"] is False
+    assert report["written"] is False
+    assert summary_path.read_bytes() == tidied
+
+
+def test_tidy_usv_summary_columns_cli_runs_every_session(tmp_path):
+    """The command takes sessions from --root-directory and --sessions-file, honours
+    --dry-run, rewrites otherwise, and exits with an error listing a session that failed
+    while still processing the others."""
+    first, first_path = _old_layout_session(tmp_path, "20250101_120000")
+    second, second_path = _old_layout_session(tmp_path, "20250102_120000")
+    broken = tmp_path / "20250103_120000"
+    (broken / "audio").mkdir(parents=True)
+    sessions_file = tmp_path / "sessions.txt"
+    sessions_file.write_text(f"# sessions\n{second}\n\n")
+    runner = CliRunner()
+
+    before = (first_path.read_bytes(), second_path.read_bytes())
+    result = runner.invoke(ql.tidy_usv_summary_columns_cli, ["--root-directory", str(first), "--sessions-file", str(sessions_file), "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "2 session(s): 2 would change" in result.output
+    assert (first_path.read_bytes(), second_path.read_bytes()) == before
+
+    result = runner.invoke(ql.tidy_usv_summary_columns_cli, [
+        "--root-directory", str(first), "--root-directory", str(broken), "--sessions-file", str(sessions_file),
+    ])
+    assert result.exit_code != 0
+    assert str(broken) in result.output
+    for path in (first_path, second_path):
+        assert pls.read_csv(path).columns[-1] == "custom"
+        assert "qlvm_supercategory" not in pls.read_csv(path).columns
+
+    result = runner.invoke(ql.tidy_usv_summary_columns_cli, [])
+    assert result.exit_code != 0
+    assert "needs at least one session" in result.output

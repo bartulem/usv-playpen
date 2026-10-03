@@ -1089,36 +1089,67 @@ def wait_for_subprocesses(
     return status
 
 
-# Canonical column order of a session's ``*_usv_summary.csv``: the DAS event
-# (written by das_summarize), the call-level labels (emitter from vocal assignment,
-# the squeak columns and squeak_frame_runs from detect_usv_squeaks), the acoustic descriptors
-# (compute_usv_acoustic_features, including the absolute loudness_db) and the QLVM torus coordinates and cluster labels of
-# the production models (infer_qlvm_latents with model_cells: the phase 6 regular
-# model's qlvm1/qlvm2 with its fine and coarse labels qlvm_category /
-# qlvm_supercategory, then the duration, mean-frequency, bandwidth and loudness
-# conditional models, each with its fine and coarse labels P_category /
-# P_supercategory), and last the squeak torus coordinates qlvm_squeak1/qlvm_squeak2
-# (infer_qlvm_squeak_latents; kept with the other torus coordinates rather than with
-# the squeak columns, and reserved, so no model_cells prefix can write them). The
-# legacy column qlvm_model (written by the retired single-model run) is not listed:
-# production summaries do not carry it, and infer_qlvm_latents drops it from older
-# summaries it rewrites.
-# Steps that re-append their own columns reorder to this before writing, so a
-# column's position no longer depends on which step ran last.
+# Canonical column order of a session's ``*_usv_summary.csv`` -- the single source of
+# truth every step that writes the summary reorders to (order_usv_summary_columns), so
+# a column's position never depends on which step ran last. Six blocks:
+#   1. the DAS event: usv_id, start, stop, duration (das_summarize);
+#   2. the call-level class labels: noise / noise_probability (detect_usv_noise), then
+#      the vocal-class block of detect_usv_squeaks -- the usv / squeak booleans, the
+#      three class probabilities p_usv / p_squeak / p_both and the squeak extent
+#      squeak_start / squeak_end;
+#   3. the emitter (vocal assignment) and the DAS channel statistics peak_amp_ch,
+#      mean_amp_ch, chs_count, chs_detected (das_summarize);
+#   4. the acoustic descriptors (compute_usv_acoustic_features, including the absolute
+#      loudness_db, the spectral_entropy and the SAM mask_number);
+#   5. the QLVM maps (infer_qlvm_latents): the regular map qlvm1 / qlvm2 with its
+#      content-ridge category qlvm_category (assign_qlvm_categories; 1..k meaning
+#      R-1..R-k), then the duration and spectral-entropy conditional maps qlvm_dur1 /
+#      qlvm_dur2 and qlvm_ent1 / qlvm_ent2 (coordinates only);
+#   6. the squeak torus coordinates qlvm_squeak1 / qlvm_squeak2
+#      (infer_qlvm_squeak_latents; reserved, so no model_cells prefix can write them).
+# A column a session does not carry yet is simply absent; a column not listed here
+# (an obsolete one, or a new one not yet placed) is kept after the listed ones, in its
+# existing order, so a reorder never loses data. USV_SUMMARY_OBSOLETE_COLUMNS lists the
+# columns tidy_usv_summary_columns removes from older summaries.
 USV_SUMMARY_COLUMN_ORDER = (
-    "usv_id", "start", "stop", "duration", "peak_amp_ch", "mean_amp_ch", "chs_count", "chs_detected",
-    "emitter",
-    "noise", "noise_probability",
-    "squeak", "squeak_probability", "squeak_start", "squeak_end", "squeak_frame_runs",
+    "usv_id", "start", "stop", "duration",
+    "noise", "noise_probability", "usv", "squeak", "p_usv", "p_squeak", "p_both", "squeak_start", "squeak_end",
+    "emitter", "peak_amp_ch", "mean_amp_ch", "chs_count", "chs_detected",
     "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "loudness_db",
     "spectral_entropy", "mask_number",
-    "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
-    "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category", "qlvm_dur_supercategory",
+    "qlvm1", "qlvm2", "qlvm_category",
+    "qlvm_dur1", "qlvm_dur2", "qlvm_ent1", "qlvm_ent2",
+    "qlvm_squeak1", "qlvm_squeak2",
+)
+
+# The column prefixes of the QLVM maps the summary holds (block 5 above): the regular
+# map ``qlvm`` and its duration (``qlvm_dur``) and spectral-entropy (``qlvm_ent``)
+# conditional maps. infer_qlvm_latents may write ``<prefix>1`` / ``<prefix>2`` of these
+# prefixes (and of the QLVM_PRODUCTION_MODEL_CELLS prefixes); every other canonical
+# column is reserved for the step that owns it.
+QLVM_SUMMARY_MAP_PREFIXES = ("qlvm", "qlvm_dur", "qlvm_ent")
+
+# Columns older summaries carry that the canonical layout no longer has, removed by
+# tidy_usv_summary_columns (the tidy-usv-summary-columns command): the coarse cluster
+# level of the regular map (qlvm_supercategory), the cluster labels of the duration
+# map (conditional maps carry no category columns), the retired mean-frequency,
+# bandwidth and loudness conditional maps with their labels, the legacy provenance
+# column qlvm_model of the retired single-model run, and the per-call category
+# agreement / uncertain flag of the regular map (kept outside the summary).
+USV_SUMMARY_OBSOLETE_COLUMNS = (
+    "qlvm_supercategory",
+    "qlvm_dur_category", "qlvm_dur_supercategory",
     "qlvm_mf1", "qlvm_mf2", "qlvm_mf_category", "qlvm_mf_supercategory",
     "qlvm_bw1", "qlvm_bw2", "qlvm_bw_category", "qlvm_bw_supercategory",
     "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category", "qlvm_loud_supercategory",
-    "qlvm_squeak1", "qlvm_squeak2",
+    "qlvm_model",
+    "qlvm_category_agreement", "qlvm_category_uncertain",
 )
+
+# Suffixes of the per-call category agreement / uncertain columns an earlier
+# assign_qlvm_categories wrote for a prefix P (P_category_agreement,
+# P_category_uncertain); they never belong in the summary, whatever the prefix.
+CATEGORY_CONFIDENCE_SUFFIXES = ("_category_agreement", "_category_uncertain")
 
 
 # Column `detect_usv_noise` writes: True when the segment holds no vocalization at all.
@@ -1194,6 +1225,77 @@ def order_usv_summary_columns(usv_summary: Any) -> Any:
     canonical = [column for column in USV_SUMMARY_COLUMN_ORDER if column in present]
     extra = [column for column in usv_summary.columns if column not in USV_SUMMARY_COLUMN_ORDER]
     return usv_summary.select(canonical + extra)
+
+
+def obsolete_usv_summary_columns(columns: Iterable[str]) -> list[str]:
+    """
+    Description
+    -----------
+    Picks, from a USV summary's column names, the columns the canonical layout no
+    longer has: every name in ``USV_SUMMARY_OBSOLETE_COLUMNS`` and every per-call
+    category confidence column (a name ending in one of
+    ``CATEGORY_CONFIDENCE_SUFFIXES``, e.g. ``qlvm_category_agreement``). A
+    canonical column (``USV_SUMMARY_COLUMN_ORDER``) is never picked.
+
+    Parameters
+    ----------
+    columns (Iterable[str])
+        The summary's column names, in file order.
+
+    Returns
+    -------
+    obsolete (list[str])
+        The obsolete column names, in the order given.
+    """
+
+    obsolete = []
+    for column in columns:
+        if column in USV_SUMMARY_COLUMN_ORDER:
+            continue
+        if column in USV_SUMMARY_OBSOLETE_COLUMNS or column.endswith(CATEGORY_CONFIDENCE_SUFFIXES):
+            obsolete.append(column)
+    return obsolete
+
+
+def tidy_usv_summary_columns(usv_summary: Any) -> tuple[Any, dict]:
+    """
+    Description
+    -----------
+    Brings an existing USV summary table to the canonical layout: drops its
+    obsolete columns (:func:`obsolete_usv_summary_columns`) and reorders the rest
+    with :func:`order_usv_summary_columns` (canonical columns first, any other
+    column after them in its existing order). No row or value of a kept column is
+    touched, and no column is created. Used by the ``tidy-usv-summary-columns``
+    command to migrate summaries written before the layout was fixed.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table.
+
+    Returns
+    -------
+    tidied (polars.DataFrame)
+        The table without its obsolete columns, in canonical column order.
+    report (dict)
+        What the tidy changes: ``dropped`` (list of the removed columns),
+        ``unknown`` (list of the kept columns the canonical order does not list,
+        which end up last), ``columns_before`` / ``columns_after`` (lists of the
+        column names) and ``changed`` (bool, True when the columns or their order
+        differ).
+    """
+
+    dropped = obsolete_usv_summary_columns(usv_summary.columns)
+    tidied = order_usv_summary_columns(usv_summary.drop(dropped))
+    unknown = [column for column in tidied.columns if column not in USV_SUMMARY_COLUMN_ORDER]
+    report = {
+        'dropped': dropped,
+        'unknown': unknown,
+        'columns_before': list(usv_summary.columns),
+        'columns_after': list(tidied.columns),
+        'changed': list(usv_summary.columns) != list(tidied.columns),
+    }
+    return tidied, report
 
 
 def first_match_or_raise(

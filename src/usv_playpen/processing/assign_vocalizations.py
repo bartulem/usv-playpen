@@ -16,7 +16,7 @@ import numpy as np
 import polars as pls
 from tqdm import tqdm
 
-from ..os_utils import configure_path, first_match_or_raise
+from ..os_utils import atomic_output_path, configure_path, first_match_or_raise, order_usv_summary_columns
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import load_session_metadata, save_session_metadata
 from .assign_vocalizations_utils import (
@@ -370,7 +370,10 @@ class Vocalocator:
             emitter_expression.alias('emitter')
         )
 
-        usv_summary_df.write_csv(file=usv_summary_file_path, separator=',', include_header=True)
+        # usv_summary.csv holds every other per-USV column too: publish atomically, in
+        # the canonical column order (os_utils.USV_SUMMARY_COLUMN_ORDER).
+        with atomic_output_path(usv_summary_file_path) as tmp_summary_path:
+            order_usv_summary_columns(usv_summary_df).write_csv(file=str(tmp_summary_path), separator=',', include_header=True)
 
         # load metadata
         metadata, metadata_path = load_session_metadata(
@@ -504,7 +507,10 @@ class Vocalocator:
             emitter_expression.alias('emitter')
         )
 
-        usv_summary_df.write_csv(file=usv_summary_file_path, separator=',', include_header=True)
+        # usv_summary.csv holds every other per-USV column too: publish atomically, in
+        # the canonical column order (os_utils.USV_SUMMARY_COLUMN_ORDER).
+        with atomic_output_path(usv_summary_file_path) as tmp_summary_path:
+            order_usv_summary_columns(usv_summary_df).write_csv(file=str(tmp_summary_path), separator=',', include_header=True)
 
         # load metadata
         metadata, metadata_path = load_session_metadata(
