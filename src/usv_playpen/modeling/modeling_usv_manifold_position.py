@@ -929,18 +929,15 @@ class ContinuousModelingPipeline(FeatureZoo):
             if onsets is None or targets is None:
                 continue
 
-            # Per-USV cluster labels (supercategory + category) aligned 1:1
-            # with onsets/targets. Surfaced by `find_usv_categories` when the
-            # corresponding columns exist in the source USV CSV (the manifold
-            # prefix tells the loader which columns to read). Absent label
-            # arrays signal "this USV summary predates labelling"; downstream
+            # Per-USV category labels (the `<prefix>_category` column, i.e.
+            # qlvm_category for the regular map) aligned 1:1 with
+            # onsets/targets. Surfaced by `find_usv_categories` when the
+            # column exists in the source USV CSV (the manifold prefix tells
+            # the loader which column to read). Absent label arrays signal
+            # "this USV summary carries no category for this map"; downstream
             # region-conditional analyses (e.g. CNN saliency cluster filters)
             # raise a clear error in that case rather than silently passing.
             sess_targ_pkt = usv_data_dict[sess_id][targ_name]
-            if 'continuous_supercategory' in sess_targ_pkt:
-                super_labels_all = sess_targ_pkt['continuous_supercategory']
-            else:
-                super_labels_all = None
             if 'continuous_category' in sess_targ_pkt:
                 cat_labels_all = sess_targ_pkt['continuous_category']
             else:
@@ -951,7 +948,6 @@ class ContinuousModelingPipeline(FeatureZoo):
 
             valid_onsets = []
             valid_targets = []
-            valid_super = []
             valid_cat = []
 
             frame_indices = np.round(onsets * fps).astype(int)
@@ -959,8 +955,6 @@ class ContinuousModelingPipeline(FeatureZoo):
                 if self.history_frames <= f_idx <= max_frame_idx:
                     valid_onsets.append(f_idx)
                     valid_targets.append(targets[i])
-                    if super_labels_all is not None:
-                        valid_super.append(super_labels_all[i])
                     if cat_labels_all is not None:
                         valid_cat.append(cat_labels_all[i])
 
@@ -972,8 +966,6 @@ class ContinuousModelingPipeline(FeatureZoo):
                     'onsets': valid_onsets_arr,
                     'targets': valid_targets_arr,
                 }
-                if valid_super:
-                    packet['supercategory'] = np.asarray(valid_super, dtype=np.float32)
                 if valid_cat:
                     packet['category'] = np.asarray(valid_cat, dtype=np.float32)
                 continuous_targets_dict[sess_id] = packet
@@ -1061,7 +1053,7 @@ class ContinuousModelingPipeline(FeatureZoo):
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
         # Tag carries the USV category column the UMAP target derives
-        # from (e.g. `qlvm_supercategory`, `qlvm_category`) so every
+        # from (e.g. `qlvm_category`) so every
         # downstream filename — modeling input pickle, univariate pkls,
         # model-selection step pkls, consolidated artifact — makes the
         # source clustering explicit.
@@ -1144,8 +1136,8 @@ class ContinuousModelingPipeline(FeatureZoo):
                 'usv_manifold_column_names': list(manifold_cols),
                 'manifold_metric': str(voc_settings['usv_manifold_metric']),
                 'manifold_period': float(voc_settings['usv_manifold_period']),
-                # Pins the USV category column (e.g. `qlvm_supercategory`,
-                # `qlvm_category`) the manifold targets were derived
+                # Pins the USV category column (e.g. `qlvm_category`)
+                # the manifold targets were derived
                 # from so the selector can route per-step filenames +
                 # the consolidated artifact through the same tag.
                 'usv_category_column_name': column_name_cats,
@@ -1220,15 +1212,13 @@ class ContinuousModelingPipeline(FeatureZoo):
                 # Labels carry through to every feature's per-session
                 # entry for symmetry with X/Y/w (the CNN runner reads them
                 # from `features[0]` just as it does Y/w). Absent when the
-                # source CSV predates supercategory/category labelling —
-                # downstream consumers handle that case explicitly.
+                # source CSV carries no category for the map — downstream
+                # consumers handle that case explicitly.
                 session_entry = {
                     'X': X_arr,
                     'Y': Y_targets,
                     'w': weights,
                 }
-                if 'supercategory' in data_packet:
-                    session_entry['supercategory'] = data_packet['supercategory']
                 if 'category' in data_packet:
                     session_entry['category'] = data_packet['category']
                 final_data[feat_key][sess_id] = session_entry
@@ -1462,13 +1452,14 @@ class ContinuousModelRunner:
                 X_sess = raw_data[feat][sess_id]['X']
                 Y_sess = raw_data[feat][sess_id]['Y']
                 w_sess = raw_data[feat][sess_id]['w']
-                # Per-event acoustic-region label (supercategory), row-aligned to
-                # Y; NaN when the source pickle carried no labels (legacy pickle),
+                # Per-event acoustic-region label (the QLVM category, packet key
+                # 'category'), row-aligned to Y; NaN when the source pickle carried
+                # no labels (e.g. a map without a category column),
                 # which makes the torus von Mises macro score fall back to the
                 # pooled form and the equal-region reweighting fall back to
                 # uniform. Read via `in` (not `.get`) per the strict-lookup style.
-                if 'supercategory' in raw_data[feat][sess_id]:
-                    region_sess = np.asarray(raw_data[feat][sess_id]['supercategory'], dtype=np.float32)
+                if 'category' in raw_data[feat][sess_id]:
+                    region_sess = np.asarray(raw_data[feat][sess_id]['category'], dtype=np.float32)
                 else:
                     region_sess = np.full(len(Y_sess), np.nan, dtype=np.float32)
 

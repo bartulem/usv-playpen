@@ -1577,7 +1577,7 @@ class TestPlotManifoldFilterAtlas:
 
     def test_default_decoder_is_settings_model_cell_with_v3_arrays(self, tmp_path, monkeypatch):
         """With no decoder arguments the atlas decodes with the model package cell
-        named by modeling_settings.json (the v3 regular cell) and draws the coarse
+        named by modeling_settings.json (the production regular cell) and draws the coarse
         arrays os_utils resolves under the visualization spectrograms_dir
         (<dir>/qlvm_v3/arrays_coarse.npz); one figure is written."""
 
@@ -1600,7 +1600,7 @@ class TestPlotManifoldFilterAtlas:
             save_plot=True, output_dir=str(out_dir),
         )
         assert len(loaded) == 1
-        assert loaded[0].endswith("v3/phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor")
+        assert loaded[0].endswith("qlvm_time_stretch/masked_clean/cell/masked")
         assert resolved_calls == [(_VIZ_SETTINGS['shared_resources']['spectrograms_dir'], "qlvm", "coarse")]
         assert len(list(out_dir.glob(f"*_filter_atlas_*.{_FIGURE_FORMAT}"))) == 1
 

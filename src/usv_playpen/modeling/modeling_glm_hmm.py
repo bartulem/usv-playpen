@@ -5,7 +5,7 @@ Pipeline for fitting a GLM-HMM over latent vocal states and selecting the number
 of states.
 
 Consumes the same continuous-manifold modeling input pickle the acoustic-manifold
-selection uses (``D[feature][session] = {'X', 'Y', 'w', 'supercategory'}``, rows
+selection uses (``D[feature][session] = {'X', 'Y', 'w', 'category'}``, rows
 already in temporal USV-onset order) and turns each session into one observation
 sequence: the emission design matrix ``X`` is the horizontal stack of the
 configured behavioural features' history windows, and the target is the shared
@@ -121,7 +121,7 @@ def _build_session_sequences(raw_data: dict, emission_features: list,
     BIC state penalty) in check. The target is read from ``target_key`` of the
     first feature's session entry (identical across features): ``'Y'`` (2-D
     position) for the manifold emission, the categorical label column (e.g.
-    ``'supercategory'``) for the multinomial. Rows are already in temporal
+    ``'category'``, the QLVM category) for the multinomial. Rows are already in temporal
     USV-onset order in the input pickle, so no re-sort is needed.
 
     Parameters
@@ -174,7 +174,7 @@ def _build_session_sequences(raw_data: dict, emission_features: list,
         if target_key not in session_entry:
             # A categorical target is a label packet the extraction stage writes only
             # when a label column is configured and the summaries carry it (e.g.
-            # 'supercategory'); a pickle extracted without one has none.
+            # 'category'); a pickle extracted without one has none.
             error_message = (
                 f"GLM-HMM target '{target_key}' is missing for session {session_id}: QLVM category labels "
                 f"are not available in this modeling input pickle. The multinomial emission needs a label "
@@ -383,7 +383,7 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
     # Emission-type-specific target column and per-state emission factory. The
     # manifold emission predicts the 2-D position 'Y' (no NaNs); the multinomial
     # emission predicts a categorical label column (configured `multinomial_target`,
-    # e.g. 'supercategory'), dropping events whose label is NaN.
+    # e.g. 'category'), dropping events whose label is NaN.
     if emission_type == 'manifold':
         target_key = 'Y'
         drop_nan_target = False

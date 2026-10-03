@@ -399,8 +399,8 @@ def make_qlvm_decode_fn_from_model_cell(model_cell_directory: str):
     Loads the decoder of one QLVM model package cell and returns its decode
     function, so the pullback metric is computed with the same decoder whose
     torus the ``qlvm1`` / ``qlvm2`` coordinates live on (for the production
-    summaries: the v3 phase 6 regular cell
-    ``phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor``). The
+    summaries: the regular cell ``os_utils.QLVM_PRODUCTION_MODEL_CELLS['qlvm']``
+    under ``os_utils.QLVM_MODEL_PACKAGE_ROOT``, ``.../masked_clean/cell/masked``). The
     cell is read by :func:`processing.qlvm_latents.load_model_cell` (its
     ``checkpoint.tar`` without torch, plus its training contract), and the
     weights go through :func:`make_qlvm_decode_fn`, whose
@@ -429,7 +429,7 @@ def make_qlvm_decode_fn_from_model_cell(model_cell_directory: str):
         error_message = (
             f"make_qlvm_decode_fn_from_model_cell: {model['model_id']} is a conditional cell "
             f"(c_dim {model['contract']['c_dim']}, condition {model['contract']['condition']!r}); the "
-            f"pullback metric needs an unconditional decoder, e.g. the phase 6 regular cell."
+            f"pullback metric needs an unconditional decoder, e.g. the production regular cell."
         )
         raise ValueError(error_message)
     return make_qlvm_decode_fn(model['params'])

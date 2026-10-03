@@ -87,10 +87,10 @@ def require_usv_category_column(category_column: str | None,
     -----------
     Fails clearly when a category-dependent analysis has no USV category label
     column to read. The usv_summary.csv files written by ``infer-qlvm-latents``
-    carry the QLVM cluster labels of the regular model (``qlvm_category`` /
-    ``qlvm_supercategory``, the shipped ``vocal_features.usv_category_column_name``
-    being ``qlvm_supercategory``), but a summary embedded before the labels
-    were written, or a setting of ``null``, leaves a path without them. Every
+    carry the QLVM category of the regular model (``qlvm_category``, written by
+    ``assign-qlvm-categories``; the shipped ``vocal_features.usv_category_column_name``),
+    but a summary whose categories were not assigned yet, or a setting of ``null``,
+    leaves a path without them. Every
     path that needs labels (per-category vocal predictors, the multinomial and
     binomial category models, the single-category onset target) calls this
     first, so the run stops with a message naming the setting instead of
@@ -122,7 +122,7 @@ def require_usv_category_column(category_column: str | None,
             f"QLVM category labels are not available; set vocal_features.usv_category_column_name to an "
             f"existing label column. {purpose} needs a per-USV category label, and the setting is "
             f"{category_column!r}. Point the setting at a label column the usv_summary.csv files carry "
-            f"(e.g. 'qlvm_supercategory' or 'qlvm_category', written by infer-qlvm-latents) or use a "
+            f"(e.g. 'qlvm_category', written by assign-qlvm-categories) or use a "
             f"label-free alternative (e.g. usv_predictor_type 'pooled_rate')."
         )
         raise ValueError(error_message)
@@ -595,7 +595,7 @@ def find_onset_epochs(root_directories: list = None,
         vocalization (default True). A summary without the ``noise`` column raises.
     category_column : str, optional
         Name of the per-USV category column in the summary .csv (e.g.
-        'qlvm_supercategory', 'qlvm_category', 'qlvm_dur_category'). Used both for the per-category continuous predictor
+        'qlvm_category'). Used both for the per-category continuous predictor
         signals and, when `target_category` is set, for the onset-target filter.
         May be None when neither of those needs it; a `vocal_output_type` of 'categories_rate' /
         'all_rate', or a `target_category` in 'individual' mode, with a None
@@ -604,7 +604,7 @@ def find_onset_epochs(root_directories: list = None,
     target_category : int, optional
         If set (and `prediction_mode == 'individual'`), restricts the POSITIVE
         onset events to USVs whose `category_column` value equals this category
-        (e.g. `qlvm_supercategory` 3). The predictor
+        (e.g. `qlvm_category` 3). The predictor
         vocal traces ('usv_rate'/'usv_count'/'usv_cat_X') and the silent-epoch
         (negative) reference are still computed over ALL of the mouse's USVs, so
         the category choice changes only which onsets count as positive events.
@@ -1052,9 +1052,6 @@ def find_usv_categories(root_directories: list = None,
             'continuous_onsets': np.array of start times for valid USVs (used for continuous models).
             'continuous_targets': np.array of shape (N, D) stacking the configured
                 manifold columns in the order given by `manifold_column_names`.
-            'continuous_supercategory': np.array of per-USV supercategory labels,
-                aligned 1:1 with 'continuous_onsets'. Present only when the
-                '<manifold_prefix>_supercategory' column exists in the source CSV.
             'continuous_category': np.array of per-USV category labels, aligned 1:1
                 with 'continuous_onsets'. Present only when the
                 '<manifold_prefix>_category' column exists in the source CSV.
@@ -1226,22 +1223,19 @@ def find_usv_categories(root_directories: list = None,
                     usv_data_dict[session_id][mouse_name]['continuous_onsets'] = mouse_usvs['start'].to_numpy()[placed]
                     usv_data_dict[session_id][mouse_name]['continuous_targets'] = manifold_targets[placed]
 
-                    # Per-USV supercategory and category labels. Used by
-                    # downstream region-conditioned analyses (CNN saliency,
-                    # cluster-circle membership). Derived from the manifold
-                    # prefix: e.g., 'qlvm_dur1' -> 'qlvm_dur' -> 'qlvm_dur_supercategory',
-                    # 'qlvm_dur_category'. Stored as plain numpy arrays aligned
-                    # 1:1 with continuous_onsets / continuous_targets above.
-                    # Stored only when the columns are present in the source
-                    # CSV; absent label arrays signal "this USV summary
-                    # predates supercategory/category labelling."
+                    # Per-USV category labels, the acoustic regions of
+                    # downstream region-conditioned analyses (torus macro
+                    # score, CNN saliency, cluster-circle membership). Derived
+                    # from the manifold prefix: e.g., 'qlvm1' -> 'qlvm' ->
+                    # 'qlvm_category' (R-1..R-k). Only the regular map carries
+                    # a category column, so a conditional map ('qlvm_dur',
+                    # 'qlvm_ent') gets none. Stored as a plain numpy array
+                    # aligned 1:1 with continuous_onsets / continuous_targets
+                    # above, only when the column is present in the source CSV;
+                    # an absent label array signals "this USV summary carries
+                    # no category for this map."
                     manifold_prefix = re.sub(r'\d+$', '', manifold_column_names[0])
-                    super_col = f"{manifold_prefix}_supercategory"
                     cat_col = f"{manifold_prefix}_category"
-                    if super_col in mouse_usvs.columns:
-                        usv_data_dict[session_id][mouse_name]['continuous_supercategory'] = (
-                            mouse_usvs[super_col].to_numpy()[placed]
-                        )
                     if cat_col in mouse_usvs.columns:
                         usv_data_dict[session_id][mouse_name]['continuous_category'] = (
                             mouse_usvs[cat_col].to_numpy()[placed]

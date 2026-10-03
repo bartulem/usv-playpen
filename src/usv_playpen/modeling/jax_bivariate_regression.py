@@ -941,7 +941,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             Ignored by the unweighted metrics.
         region_labels : np.ndarray, optional
             Length-`n_samples` per-event acoustic-region labels (e.g.
-            supercategory) used for the torus macro von Mises `dcor_xy`; `None`
+            QLVM category) used for the torus macro von Mises `dcor_xy`; `None`
             (default) yields the pooled single-region score. Ignored on
             Euclidean.
         min_region_events : int, optional

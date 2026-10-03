@@ -2008,9 +2008,9 @@ class InputDrivenManifoldGLMHMM:
         map ~ -3.626). Each event's predicted torus position is the Viterbi-decoded
         state's angular regressor ``mu_state(x)`` wrapped back into ``[0, period)``; a
         single global concentration is fit from the residuals and the per-point log-
-        density is macro-averaged over the supercategory regions (equal weight per
+        density is macro-averaged over the acoustic regions (QLVM categories; equal weight per
         region). Predictions are unweighted -- any fit reweighting only shaped ``W_emit``,
-        not this score. With no labelled event at all (no supercategory labels, e.g.
+        not this score. With no labelled event at all (no category labels, e.g.
         a pickle extracted without a label column) the score is the pooled one, and
         :func:`macro_von_mises_logscore` prints (once per process) that it fell back.
 
@@ -2019,7 +2019,7 @@ class InputDrivenManifoldGLMHMM:
         sequences (list)
             ``(X, y)`` / ``(X, y, w)`` tuples (any ``w`` is ignored for scoring).
         region_labels (list)
-            Per-sequence ``(T,)`` supercategory labels aligned to each sequence's events
+            Per-sequence ``(T,)`` QLVM category labels aligned to each sequence's events
             (NaN marks an unlabelled event).
         min_region_events (int)
             Minimum labelled events for a region to enter the macro average.

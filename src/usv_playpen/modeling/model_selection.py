@@ -249,7 +249,7 @@ def _fold_paired_margin_bootstrap(
     random_state (int)
         Seed for the deterministic fold bootstrap.
     event_to_region (np.ndarray)
-        Per-event acoustic-region (supercategory) label, aligned to the same
+        Per-event acoustic-region (QLVM category) label, aligned to the same
         full-event index space as each fold's ``test_indices``. Required for the
         torus macro von Mises score; pass ``None`` to score with the pooled
         (label-free) von Mises log-likelihood (the coarse pre-screen path, which
@@ -1887,7 +1887,7 @@ def vocal_category_model_selection(
 
     # Pin which USV category column generated the binary target so the
     # per-step prefix (and downstream consolidation) carries the choice
-    # forward in the filename — e.g. `qlvm_supercategory`, `qlvm_category`.
+    # forward in the filename — e.g. `qlvm_category`.
     _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
     # `target_category` is the human-readable `category_<idx>` (kept for
     # metadata + console output); strip the redundant prefix when
@@ -3856,8 +3856,7 @@ def multinomial_vocal_category_model_selection(
     target_condition = cond_match.group(1) if cond_match else "unknown"
     # Pin which USV category column generated the multinomial labels so
     # the per-step prefix (and downstream consolidation) carries the
-    # choice forward in the filename — e.g. `qlvm_supercategory`,
-    # `qlvm_category`.
+    # choice forward in the filename — e.g. `qlvm_category`.
     _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
     prefix = f"model_selection_multinomial_{_column_name_cats}_{target_condition}_{split_strategy}_step_"
 
@@ -5097,11 +5096,11 @@ def continuous_vocal_manifold_model_selection(
             X_s = raw_data[feat][sess_id]['X']
             y_s = raw_data[feat][sess_id]['Y']
             w_s = raw_data[feat][sess_id]['w']
-            # Per-event acoustic-region (supercategory) labels, row-aligned to Y;
-            # NaN when a pickle carried no labels (torus score then degrades to
-            # the pooled form, reweighting to uniform).
-            if 'supercategory' in raw_data[feat][sess_id]:
-                region_s = np.asarray(raw_data[feat][sess_id]['supercategory'], dtype=np.float32)
+            # Per-event acoustic-region labels (the QLVM category, packet key
+            # 'category'), row-aligned to Y; NaN when a pickle carried no labels
+            # (torus score then degrades to the pooled form, reweighting to uniform).
+            if 'category' in raw_data[feat][sess_id]:
+                region_s = np.asarray(raw_data[feat][sess_id]['category'], dtype=np.float32)
             else:
                 region_s = np.full(len(y_s), np.nan, dtype=np.float32)
 
@@ -5330,7 +5329,7 @@ def continuous_vocal_manifold_model_selection(
     target_condition = cond_match.group(1) if cond_match else "unknown"
 
     # Pin which USV category column the manifold targets were derived
-    # from (e.g. `qlvm_supercategory`, `qlvm_category`) so the per-step
+    # from (e.g. `qlvm_category`) so the per-step
     # prefix (and downstream consolidation) carries the choice forward
     # in the filename.
     # Without a label column (null setting) the segment names the embedding

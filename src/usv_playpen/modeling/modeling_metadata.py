@@ -435,8 +435,8 @@ def build_input_metadata(modeling_settings: dict,
         The `kinematic_features.dyadic_pose_symmetric` flag that was
         active during extraction.
     noise_usvs_excluded : bool
-        mixture-model-supercategory codes stripped at load time
-        (`vocal_features.exclude_noise_usvs`).
+        Whether the segments `detect-usv-noise` flagged as noise were
+        dropped at load time (`vocal_features.exclude_noise_usvs`).
     vocal_signal_columns_added : list of str
         Vocal-history column names injected into the per-session DFs by
         `build_vocal_signal_columns`. Empty when `usv_predictor_type`

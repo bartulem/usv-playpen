@@ -919,8 +919,8 @@ class TestFindUsvCategories:
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     def test_continuous_targets_from_manifold_columns(self, tmp_path):
         """When ``manifold_column_names`` are present, continuous onsets,
-        stacked targets and the derived super/category label arrays are
-        written."""
+        stacked targets and the derived ``<prefix>_category`` label array are
+        written; a retired ``<prefix>_supercategory`` column is not read."""
 
         rows = {
             'emitter': ['male', 'male'],
@@ -941,7 +941,7 @@ class TestFindUsvCategories:
         male = out['sess_D']['male']
         np.testing.assert_allclose(male['continuous_onsets'], [2.0, 3.0])
         assert male['continuous_targets'].shape == (2, 2)
-        np.testing.assert_allclose(male['continuous_supercategory'], [10, 11])
+        assert 'continuous_supercategory' not in male
         np.testing.assert_allclose(male['continuous_category'], [20, 21])
         assert 'usv_rate' in male['continuous_vocal_signals']
         assert 'usv_cat_1' in male['continuous_vocal_signals']
@@ -972,7 +972,7 @@ class TestFindUsvCategories:
 
     def test_manifold_path_without_category_column(self, tmp_path):
         """On the continuous manifold path a null category column is allowed: the
-        manifold targets are returned, with no category / supercategory packets
+        manifold targets are returned, with no category packet
         and no category events."""
 
         rows = {
@@ -1018,7 +1018,7 @@ class TestFindUsvCategories:
             'stop': [2.05, 3.05, 4.05, 5.05],
             'qlvm1': [0.1, None, 0.3, 0.4],
             'qlvm2': [0.5, 0.6, None, 0.8],
-            'qlvm_supercategory': [1, 2, 3, 4],
+            'qlvm_category': [1, 2, 3, 4],
         }
         out = find_usv_categories(target_category=None, filter_history=1.0,
                                   category_column=None, manifold_column_names=['qlvm1', 'qlvm2'],
@@ -1027,7 +1027,7 @@ class TestFindUsvCategories:
         np.testing.assert_allclose(male['continuous_onsets'], [2.0, 5.0])
         np.testing.assert_allclose(male['continuous_targets'], [[0.1, 0.5], [0.4, 0.8]])
         assert np.isfinite(male['continuous_targets']).all()
-        np.testing.assert_allclose(male['continuous_supercategory'], [1, 4])
+        np.testing.assert_allclose(male['continuous_category'], [1, 4])
         printed = capsys.readouterr().out
         assert 'sess_D (male): dropped 2 of 4 calls with null/NaN manifold coordinates' in printed
         assert 'dropped 2 calls with null/NaN coordinates in total' in printed
@@ -1550,17 +1550,17 @@ class TestCategoryLabelRequirement:
         else:
             require_labels_for_vocal_predictors(voc)
 
-    def test_shipped_vocal_defaults_use_the_qlvm_supercategory(self):
-        """The usv_summary.csv files carry the QLVM labels (qlvm_category /
-        qlvm_supercategory of the v3 regular model), so the shipped settings build the
-        per-category rate predictors over qlvm_supercategory, and the settings-level
+    def test_shipped_vocal_defaults_use_the_qlvm_category(self):
+        """The usv_summary.csv files carry the QLVM category (qlvm_category, R-1..R-k of
+        the regular map), so the shipped settings build the per-category rate
+        predictors over qlvm_category, and the settings-level
         label check passes on them; the check (and its error) still guards a summary
         that genuinely lacks the column."""
 
         with open(_SETTINGS_JSON, 'r') as fh:
             voc = json.load(fh)['vocal_features']
         assert voc['usv_predictor_type'] == 'categories_rate'
-        assert voc['usv_category_column_name'] == 'qlvm_supercategory'
+        assert voc['usv_category_column_name'] == 'qlvm_category'
         require_labels_for_vocal_predictors(voc)
         with pytest.raises(ValueError, match='absent from s.csv'):
             require_usv_category_column(voc['usv_category_column_name'], 'x', summary_columns=['qlvm1'], source='s.csv')

@@ -16,7 +16,7 @@ the analysis notebook drives it:
 Coverage targets inside the runner:
 
 * ``load_multivariate_data_blocks`` — reads the session-nested
-  ``{feature: {session: {X, Y, w, supercategory, category}}}`` manifold
+  ``{feature: {session: {X, Y, w, category}}}`` manifold
   pickle, strips the reserved ``_input_metadata`` block, truncates every
   per-event window to ``history_frames``, stacks the per-feature 2-D
   matrices into the ``(N, F, T)`` tensor, and surfaces the per-USV cluster
@@ -101,7 +101,7 @@ HISTORY_FRAMES = int(np.floor(CAMERA_FPS * FILTER_HISTORY))  # 36
 N_SESSIONS = 2
 N_PER_SESSION = 24
 FEATURE_NAMES = ['self.speed', 'other.speed']
-# Two non-noise supercategory labels (plus the noise label 0) so the saliency
+# Two non-noise category labels (plus the noise label 0) so the saliency
 # pre-flight resolves >= 2 cluster centres and the alpha-gap radius rule fires.
 SUPERCATEGORIES = (1, 2)
 
@@ -217,7 +217,7 @@ def _build_cnn_input_pickle(
                   'X': np.ndarray (n_per_session, history_frames),
                   'Y': np.ndarray (n_per_session, 2),
                   'w': np.ndarray (n_per_session,),
-                  'supercategory': np.ndarray (n_per_session,)  # optional
+                  'category': np.ndarray (n_per_session,)  # optional
                   'category':      np.ndarray (n_per_session,)  # optional
               }, ...
           }, ...,
@@ -229,7 +229,7 @@ def _build_cnn_input_pickle(
     asserted to beat the controls (one epoch on a tiny cloud is not expected
     to). Within a session the same ``Y`` / ``w`` are shared across features
     (the intra-session alignment invariant the loader relies on). The
-    per-USV ``supercategory`` / ``category`` labels are split across two
+    per-USV ``category`` labels are split across two
     non-noise classes plus the noise label ``0`` so the saliency pre-flight
     finds >= 2 cluster centres; at least one USV per non-noise class is
     placed near that class's manifold centroid so the Phase-3 dual filter can
@@ -248,7 +248,7 @@ def _build_cnn_input_pickle(
     n_per_session (int)
         Number of vocal events per session.
     with_labels (bool)
-        When True, attach ``supercategory`` / ``category`` arrays so the
+        When True, attach ``category`` arrays so the
         saliency phase can run; when False omit them (legacy-pickle path).
     seed (int)
         Base seed for the per-cell RNG.
@@ -272,7 +272,7 @@ def _build_cnn_input_pickle(
     for sess in session_ids:
         signal_X = artifact[feature_names[0]][sess]['X']
         base = signal_X.mean(axis=1)
-        # Two well-separated manifold lobes (one per non-noise supercategory)
+        # Two well-separated manifold lobes (one per non-noise category)
         # so derive_cluster_centers_empirically resolves two distinct centres.
         labels = np.where(
             np.arange(n_per_session) % 2 == 0, SUPERCATEGORIES[0], SUPERCATEGORIES[1]
@@ -290,14 +290,13 @@ def _build_cnn_input_pickle(
             artifact[feature][sess]['Y'] = Y
             artifact[feature][sess]['w'] = w
             if with_labels:
-                artifact[feature][sess]['supercategory'] = labels.copy()
                 artifact[feature][sess]['category'] = labels.copy()
 
     artifact['_input_metadata'] = {
         'analysis_type': 'continuous',
-        'analysis_tag': 'manifold_qlvm_supercategory',
+        'analysis_tag': 'manifold_qlvm_category',
         'analysis_specific': {
-            'usv_category_column_name': 'qlvm_supercategory',
+            'usv_category_column_name': 'qlvm_category',
             'manifold_metric': 'euclidean',
             'manifold_period': 1.0,
         },
@@ -338,8 +337,8 @@ class TestLoadMultivariateDataBlocks:
         ``_input_metadata`` key, sorts the feature list, truncates every
         per-event window to ``history_frames``, stacks the per-feature 2-D
         matrices into a single ``(N, F, T)`` float32 tensor, and surfaces the
-        per-USV ``supercategory`` / ``category`` cluster labels (present on
-        every session) aligned to the pooled ``Y``.
+        per-USV ``category`` labels (present on every session) aligned to the
+        pooled ``Y``; there is no ``supercategory`` key any more.
         """
 
         save_dir = tmp_path / 'out'
@@ -364,13 +363,13 @@ class TestLoadMultivariateDataBlocks:
         assert block['groups'].shape == (n_total,)
         assert len(np.unique(block['groups'])) == N_SESSIONS
         # Per-USV labels surfaced because every session carried them.
-        assert block['supercategory'].shape == (n_total,)
+        assert 'supercategory' not in block
         assert block['category'].shape == (n_total,)
         assert str(block['source_pkl_path']) == str(input_pkl)
 
     def test_load_omits_labels_for_legacy_pickle(self, tmp_path):
         """
-        A pickle built without per-USV ``supercategory`` / ``category``
+        A pickle built without per-USV ``category``
         arrays (the legacy contract) loads cleanly; the loader simply omits
         those keys from the returned block so the saliency phase can later
         raise its explicit "re-extract" guidance.
@@ -464,7 +463,7 @@ class TestRunCnnTrainingFull:
         assert 'saliency_maps' in deep
         assert len(deep['saliency_maps']) >= 1
         for cname, sal in deep['saliency_maps'].items():
-            assert cname.startswith('supercategory_')
+            assert cname.startswith('category_')
             assert sal['contrastive_saliency'].ndim == 3
             assert 'centroid' in sal and 'radius' in sal
         assert 'cluster_geometry' in deep
@@ -504,16 +503,16 @@ class TestRunCnnTrainingFull:
         assert set(deep['feature_importance']['means'].keys()) == set(FEATURE_NAMES)
 
     def test_shipped_default_enables_saliency(self):
-        """Every saliency segmentation is label-based; the usv_summary.csv files carry
-        the QLVM labels (qlvm_category / qlvm_supercategory), so the shipped settings
-        run the saliency phase, segmented by supercategory. A modeling pickle without
+        """The saliency segmentation is label-based; the usv_summary.csv files carry
+        the QLVM category (qlvm_category), so the shipped settings run the saliency
+        phase, segmented by category (the only level). A modeling pickle without
         the requested labels still stops in the saliency pre-flight check."""
 
         with open(_SETTINGS_JSON, 'r') as fh:
             shipped = json.load(fh)
         saliency = shipped['hyperparameters']['deep_learning']['cnn_continuous']['saliency']
         assert saliency['enable'] is True
-        assert saliency['segmentation'] == 'supercategory'
+        assert saliency['segmentation'] == 'category'
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_run_cnn_training_restrict_to_fold(self, tmp_path):
@@ -566,7 +565,7 @@ class TestRunCnnTrainingConfigVariants:
           - ``loss_function='mse'`` -> the standard-MSE residual branch.
           - ``weight_decay_exclude_output_head=False`` -> the un-masked AdamW.
           - ``saliency.segmentation='category'`` -> the category-label saliency
-            branch (instead of supercategory).
+            branch (the only segmentation).
           - a source-pickle basename containing ``female`` -> the ``female``
             sex-modifier filename tag.
         The run still produces a complete deep-storage pickle.
@@ -638,7 +637,7 @@ class TestRunCnnTrainingTorus:
             artifact = pickle.load(fh)
         rng = np.random.default_rng(7)
         for sess in artifact[FEATURE_NAMES[0]]:
-            labels = artifact[FEATURE_NAMES[0]][sess]['supercategory']
+            labels = artifact[FEATURE_NAMES[0]][sess]['category']
             base_xy = np.where(labels[:, None] == SUPERCATEGORIES[0], 2.0, 7.0)
             Y = (base_xy + 0.3 * rng.standard_normal((len(labels), 2))) % period
             for feature in FEATURE_NAMES:
@@ -691,7 +690,7 @@ class TestSaliencyPreflightGuards:
         with pytest.raises(ValueError, match="saliency.segmentation"):
             runner.run_cnn_training(data_blocks=data_blocks)
 
-    @pytest.mark.parametrize('segmentation', ['supercategory', 'category'])
+    @pytest.mark.parametrize('segmentation', ['category'])
     def test_preflight_missing_labels(self, tmp_path, segmentation):
         """``saliency.enable=True`` on a pickle that does not carry the requested
         per-USV labels (a legacy pickle, or any pickle while QLVM labels are
@@ -741,8 +740,7 @@ class TestSaliencyPreflightGuards:
             artifact = pickle.load(fh)
         for feature in FEATURE_NAMES:
             for sess in artifact[feature]:
-                n = artifact[feature][sess]['supercategory'].shape[0]
-                artifact[feature][sess]['supercategory'] = np.full(n, SUPERCATEGORIES[0], dtype=np.int64)
+                n = artifact[feature][sess]['category'].shape[0]
                 artifact[feature][sess]['category'] = np.full(n, SUPERCATEGORIES[0], dtype=np.int64)
         with save_path.open('wb') as fh:
             pickle.dump(artifact, fh)

@@ -1013,7 +1013,7 @@ class NeuralContinuousCNNRunner:
         num_frames = self.history_frames
 
         X_seq_list, Y_list, w_list, groups_list = [], [], [], []
-        super_list, cat_list = [], []
+        cat_list = []
         sessions = sorted(list(raw_data[features[0]].keys()))
 
         for sess in sessions:
@@ -1035,13 +1035,10 @@ class NeuralContinuousCNNRunner:
             w_list.append(w_sess)
             groups_list.append(np.full(len(Y_sess), sess))
 
-            # Optional per-USV cluster labels (supercategory + category).
-            # Persisted by the extract-pipeline when the source USV CSV
-            # carried them; absent on legacy pickles built before that
-            # change shipped, in which case the saliency phase will raise
-            # a clear "re-extract with the updated pipeline" message.
-            if 'supercategory' in sess_dict:
-                super_list.append(sess_dict['supercategory'])
+            # Optional per-USV category labels (the QLVM category of the
+            # manifold's map). Persisted by the extract-pipeline when the
+            # source USV CSV carried them; absent otherwise, in which case
+            # the saliency phase raises a clear "re-extract" message.
             if 'category' in sess_dict:
                 cat_list.append(sess_dict['category'])
 
@@ -1064,8 +1061,6 @@ class NeuralContinuousCNNRunner:
         }
         # Surface labels only when every session provided them — partial
         # coverage would corrupt the alignment to Y / X_seq.
-        if super_list and len(super_list) == len(sessions):
-            block['supercategory'] = np.concatenate(super_list)
         if cat_list and len(cat_list) == len(sessions):
             block['category'] = np.concatenate(cat_list)
         return block
@@ -1380,12 +1375,12 @@ class NeuralContinuousCNNRunner:
                 f"{_held_positions.size} event(s) excluded from CV; scored once after Phase 1."
             )
 
-        # Per-USV cluster labels surfaced by the modeling pickle when it
-        # carries them (the extract pipeline persists supercategory and
-        # category alongside X/Y/w for every USV). The saliency phase
-        # below consumes whichever the user selected via
-        # `settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['segmentation']`.
-        cluster_labels_super = data_blocks['supercategory'] if 'supercategory' in data_blocks else None
+        # Per-USV category labels surfaced by the modeling pickle when it
+        # carries them (the extract pipeline persists the QLVM category
+        # alongside X/Y/w for every USV). The saliency phase below segments
+        # by them when
+        # `settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['segmentation']`
+        # is 'category', the only segmentation (there is no coarse level).
         cluster_labels_cat = data_blocks['category'] if 'category' in data_blocks else None
 
         # Pre-flight: if Phase 3 (saliency) is enabled, validate the
@@ -1398,15 +1393,12 @@ class NeuralContinuousCNNRunner:
         saliency_cfg = self.hp['saliency']
         if saliency_cfg['enable']:
             preflight_seg = saliency_cfg['segmentation']
-            if preflight_seg not in ('supercategory', 'category'):
+            if preflight_seg != 'category':
                 raise ValueError(
-                    f"saliency.segmentation must be 'supercategory' or 'category'; "
-                    f"got {preflight_seg!r}"
+                    f"saliency.segmentation must be 'category' (the QLVM category; there is no "
+                    f"coarse level); got {preflight_seg!r}"
                 )
-            preflight_labels = (
-                cluster_labels_super if preflight_seg == 'supercategory'
-                else cluster_labels_cat
-            )
+            preflight_labels = cluster_labels_cat
             if preflight_labels is None:
                 raise RuntimeError(
                     f"saliency.enable=true and saliency.segmentation="
@@ -2060,14 +2052,12 @@ class NeuralContinuousCNNRunner:
             print("  [skip] saliency.enable=False; leaving saliency_maps empty")
         else:
             segmentation = saliency_cfg['segmentation']
-            if segmentation == 'supercategory':
-                labels_all = cluster_labels_super
-            elif segmentation == 'category':
+            if segmentation == 'category':
                 labels_all = cluster_labels_cat
             else:
                 raise ValueError(
-                    f"saliency.segmentation must be 'supercategory' or 'category'; "
-                    f"got {segmentation!r}"
+                    f"saliency.segmentation must be 'category' (the QLVM category; there is no "
+                    f"coarse level); got {segmentation!r}"
                 )
 
             if labels_all is None:
