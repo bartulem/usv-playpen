@@ -368,24 +368,30 @@ def rebase_experimenter_in_paths(obj: object = None,
     return obj
 
 
-# The QLVM model package the production usv_summary.csv columns come from (the
-# v3 package; read-only). A module constant rather than a processing_settings.json
-# key: the GUI and the CLI re-key every experimenter name in those settings to the
-# active experimenter (`rebase_experimenter_in_paths`), which would rewrite this
-# path under another experimenter's directory to the active one's, where no
-# package exists.
-QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3"
+# The folder holding the production QLVM model cells the usv_summary.csv torus
+# columns come from (read-only). A module constant rather than a
+# processing_settings.json key: the GUI and the CLI re-key every experimenter name
+# in those settings to the active experimenter (`rebase_experimenter_in_paths`),
+# which would rewrite this path under another experimenter's directory to the
+# active one's, where no cell exists. The cells do not live under
+# `spectrograms_root`, so they are not derived from it either (see
+# `derive_spectrogram_model_paths`). The folder is not a full model package: it has
+# no SESSION_H5_BASELINE.tsv, MANIFEST.sha256 or corpus embedding, so
+# infer-qlvm-latents always infers (the package route needs the baseline).
+QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
 
-# The production embedding: column prefix -> cell of the package above. The
-# unconditional phase 6 regular model gives qlvm1/qlvm2; the four phase 11
-# tail-bin conditional models give qlvm_dur1/2, qlvm_mf1/2, qlvm_bw1/2 and
-# qlvm_loud1/2. Every cell is the natural_5strata_N29000 design, unmasked, floored.
+# The production embedding: column prefix -> cell under the folder above. The
+# unconditional regular model gives qlvm1/qlvm2; the duration and spectral-entropy
+# conditional models give qlvm_dur1/2 and qlvm_ent1/2. Every cell was trained on
+# SAM-masked, time-stretched 128 x 128 spectrograms (training_contract.json:
+# masking_type "sam", time_stretch true, length_threshold 128, no floor) and
+# carries no cluster label grid: the regular map's category column qlvm_category
+# is written by assign-qlvm-categories from a build-qlvm-categories directory, and
+# the conditional maps carry coordinates only.
 QLVM_PRODUCTION_MODEL_CELLS = {
-    "qlvm": "phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor",
-    "qlvm_dur": "phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor",
-    "qlvm_mf": "phase11_cond_mean_freq_floor/natural_5strata_N29000_unmasked_floor",
-    "qlvm_bw": "phase11_cond_bandwidth_floor/natural_5strata_N29000_unmasked_floor",
-    "qlvm_loud": "phase11_cond_loudness_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm": "cell/masked",
+    "qlvm_dur": "conditionals/cell/duration",
+    "qlvm_ent": "conditionals/cell/spectral_entropy",
 }
 
 # The production squeak (broadband vocalization) embedding: the phase 3 BBV package
@@ -396,32 +402,37 @@ QLVM_SQUEAK_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlv
 QLVM_SQUEAK_PRODUCTION_CELL = "natural_session_N11000_nomask"
 
 # The spectrogram preprocessing every production cell was trained with (their
-# training_contract.json `masking_type`): raw, unmasked spectrograms.
-QLVM_PRODUCTION_MASKING_TYPE = "none"
+# training_contract.json `masking_type` and `time_stretch`): SAM-masked
+# spectrograms, time-stretched to the target shape.
+QLVM_PRODUCTION_MASKING_TYPE = "sam"
+QLVM_PRODUCTION_TIME_STRETCH = True
 
-# The QLVM maps a visualization can draw, one per production model: the column
-# prefix of QLVM_PRODUCTION_MODEL_CELLS. A map `P` places calls at `P1`/`P2` and
-# labels them `P_category` (fine) / `P_supercategory` (coarse); the visualizations
-# pick one with `shared_resources.qlvm_map` in visualizations_settings.json.
+# The QLVM maps a visualization or analysis can use, one per production model: the
+# column prefix of QLVM_PRODUCTION_MODEL_CELLS. A map `P` places calls at `P1`/`P2`;
+# the visualizations pick one with `shared_resources.qlvm_map` in
+# visualizations_settings.json.
 QLVM_MAPS = tuple(QLVM_PRODUCTION_MODEL_CELLS)
+
+# The categorical QLVM label columns of the summary. Only the regular map has one,
+# qlvm_category: the content-ridge categories of assign-qlvm-categories (1..k
+# meaning R-1..R-k; 4 in production). There is no coarse level and no category
+# column on the conditional maps.
+QLVM_CATEGORY_COLUMNS = ("qlvm_category",)
 
 # The folder under the spectrograms base directory (`shared_resources.spectrograms_dir`)
 # holding the QLVM reference arrays the visualizations draw, one subfolder per map
 # (`<map>/arrays_fine.npz` / `<map>/arrays_coarse.npz`: label grids, cluster
-# centres, corpus coordinates, density heatmap). Each subfolder is its production
-# cell's clustering (QLVM_PRODUCTION_MODEL_CELLS[<map>] under
-# QLVM_MODEL_PACKAGE_ROOT), written by `export-qlvm-reference-arrays`
-# (processing.qlvm_latents.export_model_cell_arrays), so a map sits on the same torus
-# and carries the same fine / coarse labels as its `<map>1`/`<map>2`,
-# `<map>_category` and `<map>_supercategory` summary columns (15 / 9 clusters for
-# the regular map). The folder is versioned by name: the old in-house model's
-# arrays lived in `<dir>/qlvm/`.
+# centres, corpus coordinates, density heatmap), written by
+# `export-qlvm-reference-arrays` (processing.qlvm_latents.export_model_cell_arrays)
+# from a clustered cell. The production cells carry no clustering, so these arrays
+# are not produced for them by that command; a folder exported from the earlier v3
+# cells holds another torus. The folder is versioned by name: the old in-house
+# model's arrays lived in `<dir>/qlvm/`.
 QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME = "qlvm_v3"
 
 # File name of the cohort pooled-embeddings parquet cache under
-# `<spectrograms_dir>/embeddings/`. Versioned by the QLVM model its qlvm1/qlvm2 and
-# qlvm_category / qlvm_supercategory columns come from, so the cache built from the
-# v3 summaries never overwrites the one pooled from the old model's summaries.
+# `<spectrograms_dir>/embeddings/`. Its summaries fingerprint makes a cache pooled
+# from older summaries rebuild when the summaries change.
 POOLED_EMBEDDINGS_CACHE_NAME = "pooled_embeddings_qlvmv3.parquet"
 
 
@@ -490,22 +501,24 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     its ``arrays_{fine,coarse}.npz`` watershed grids) would re-embed sessions on
     a different torus and write its own ``qlvm_category`` / ``qlvm_supercategory``,
     and ``infer-qlvm-latents`` no longer reads such a decoder at all (model
-    package cells are its only models). Instead, when ``infer_qlvm_latents``
-    names no model (``model_cells`` empty), ``infer_qlvm_latents.model_cells``
-    is filled with the production
-    mapping ``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``
-    (prefixes ``qlvm``, ``qlvm_dur``, ``qlvm_mf``, ``qlvm_bw``, ``qlvm_loud``),
-    and ``infer_qlvm_latents.masking_type`` is set to the cells' trained
-    ``QLVM_PRODUCTION_MASKING_TYPE`` (``"none"``). The masking type is part of
-    the derived model, not a separate choice: ``infer-qlvm-latents`` checks it
-    against each cell's training contract and refuses to embed on a mismatch
-    (the shipped default is already ``"none"``; this keeps a derived run correct
-    when a user's settings still say ``"sam"``). An
-    explicitly configured ``model_cells`` is left entirely alone,
-    ``masking_type`` included. ``infer_qlvm_latents.model_cell_label_levels`` is
-    never touched: its shipped ``{}`` already gives the production label columns
-    (``qlvm_category`` and ``qlvm_supercategory`` for ``qlvm``, ``P_category`` and
-    ``P_supercategory`` for every other prefix ``P``). Likewise an empty
+    package cells are its only models). The production cells do not live under
+    ``spectrograms_root`` at all: they are the module constants
+    ``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``. When
+    ``infer_qlvm_latents`` names no model (``model_cells`` empty),
+    ``infer_qlvm_latents.model_cells`` is filled with that mapping (prefixes
+    ``qlvm``, ``qlvm_dur``, ``qlvm_ent``), ``infer_qlvm_latents.masking_type`` is
+    set to the cells' trained ``QLVM_PRODUCTION_MASKING_TYPE`` (``"sam"``) and
+    ``infer_qlvm_latents.time_stretch`` to their ``QLVM_PRODUCTION_TIME_STRETCH``
+    (true). Both are part of the derived model, not separate choices:
+    ``infer-qlvm-latents`` checks them against each cell's training contract and
+    refuses to embed on a mismatch (the shipped defaults already match; this keeps
+    a derived run correct when a user's settings still carry the earlier
+    ``"none"`` / false). An explicitly configured ``model_cells`` is left entirely
+    alone, ``masking_type`` and ``time_stretch`` included.
+    ``infer_qlvm_latents.model_cell_label_levels`` is never touched: its shipped
+    ``{}`` writes coordinates only, which is the production layout (the production
+    cells carry no label grids; ``qlvm_category`` comes from
+    ``assign-qlvm-categories``). Likewise an empty
     ``infer_qlvm_squeak_latents.model_cell_directory`` is filled with the
     production squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under
     ``QLVM_SQUEAK_PACKAGE_ROOT`` (the phase 3 BBV ``natural_session`` cell); an
@@ -552,6 +565,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
             prefix: f'{QLVM_MODEL_PACKAGE_ROOT}/{cell}' for prefix, cell in QLVM_PRODUCTION_MODEL_CELLS.items()
         }
         qlvm_cfg['masking_type'] = QLVM_PRODUCTION_MASKING_TYPE
+        qlvm_cfg['time_stretch'] = QLVM_PRODUCTION_TIME_STRETCH
     squeak_qlvm_cfg = settings['infer_qlvm_squeak_latents']
     if not squeak_qlvm_cfg['model_cell_directory']:
         squeak_qlvm_cfg['model_cell_directory'] = f'{QLVM_SQUEAK_PACKAGE_ROOT}/{QLVM_SQUEAK_PRODUCTION_CELL}'

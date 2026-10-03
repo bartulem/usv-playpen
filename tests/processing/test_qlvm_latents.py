@@ -1486,8 +1486,9 @@ def test_model_cell_label_columns_refuse_to_overwrite_summary_columns(mocker):
     production = {prefix: "/cell" for prefix in ql.QLVM_PRODUCTION_MODEL_CELLS}
     assert ql.validate_model_cells(production.items()) == production
     both = {prefix: ["fine", "coarse"] for prefix in production}
-    assert ql.model_cell_label_columns(production, both)["qlvm_loud"] == {
-        "fine": "qlvm_loud_category", "coarse": "qlvm_loud_supercategory",
+    assert list(production) == ["qlvm", "qlvm_dur", "qlvm_ent"]
+    assert ql.model_cell_label_columns(production, both)["qlvm_ent"] == {
+        "fine": "qlvm_ent_category", "coarse": "qlvm_ent_supercategory",
     }
 
 
