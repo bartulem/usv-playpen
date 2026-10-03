@@ -284,8 +284,9 @@ def test_full_pipeline_writes_pdf_with_behavioral_and_vocal_pages(tmp_path, qlvm
       * the cluster pkl carries both `beh_offset=*` and `usv_*` keys
         (catches a regression where compute/figure key names drift apart)
       * exactly one PDF exists for the single cluster
-      * the PDF has >= 2 pages (behavioral + vocal), catching the
-        historical "zero-page PdfPages" silent failure
+      * the PDF has >= 2 pages (behavioral + one vocal page per
+        emitter), catching the historical "zero-page PdfPages" silent
+        failure
 
     Parameters
     ----------
@@ -2492,8 +2493,10 @@ def test_per_cluster_pipeline_png_writes_per_page_files(tmp_path, qlvm_category_
     so the dispatcher takes the non-PDF branch of `_open_save_target`:
     each rendered page is written as its own
     `<cluster>_neuronal_tuning_p{N}_{label}.png` file (rather than one
-    multi-page PDF). Asserts several per-page PNGs land on disk and that
-    no combined PDF is produced.
+    multi-page PDF). Asserts several per-page PNGs land on disk, that each
+    emitter has exactly one vocal page (`vocal_<sex>`: section (c), the
+    single QLVM category row, sits on the vocal page instead of a page of
+    its own) and that no combined PDF is produced.
 
     Parameters
     ----------
@@ -2531,6 +2534,11 @@ def test_per_cluster_pipeline_png_writes_per_page_files(tmp_path, qlvm_category_
         f"expected >= 2 per-page PNGs (behavioral + vocal pages), got "
         f"{[p.name for p in per_page]}"
     )
+    vocal_pages = [p.name for p in per_page if "_vocal_" in p.name]
+    assert vocal_pages, f"no vocal page among {[p.name for p in per_page]}"
+    assert not any("_vocal_a_" in name or "_vocal_b_" in name for name in vocal_pages), vocal_pages
+    vocal_labels = [name.split("_vocal_", 1)[1] for name in vocal_pages]
+    assert len(vocal_labels) == len(set(vocal_labels)), f"an emitter has more than one vocal page: {vocal_pages}"
     assert not list(tuning_dir.glob("*_neuronal_tuning.pdf")), (
         "a combined PDF was written despite fig_format='png' — the non-PDF "
         "branch of _open_save_target did not take"
@@ -2717,3 +2725,17 @@ def test_qlvm_segmentation_unreadable_bundle_raises(tmp_path, monkeypatch):
         maker._load_segmentation()
     with pytest.raises(FileNotFoundError):
         load_qlvm_category_segmentation()
+
+
+def test_vocal_page_layout_puts_section_c_on_the_vocal_page():
+    """Section (c) is a single row, so it shares the vocal page with sections (a) and
+    (b) instead of a page of its own: three outer rows, the last one as tall as one
+    section-(b) row, and the a/b gap of the two-section page kept."""
+    assert len(tuning_figures.SECTION_C_ROWS) == 1
+    heights = tuning_figures.VOCAL_SECTION_HEIGHT_RATIOS
+    assert len(heights) == 3 and heights[:2] == (5.0, 17.5)
+    n_rows = len(tuning_figures.PROPERTY_ROW_ORDER)
+    assert heights[2] * (n_rows + 0.45 * (n_rows - 1)) == pytest.approx(17.5)
+    assert tuning_figures.VOCAL_SECTION_HSPACE * sum(heights) / 3 == pytest.approx(3.375)
+    assert not hasattr(tuning_figures, "VOCAL_PAGE2_FIGSIZE_INCHES")
+    assert not hasattr(NeuronalTuningFigureMaker, "_render_page2")

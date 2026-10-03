@@ -2,9 +2,9 @@
 @author: bartulem
 Makes per-cluster neuronal tuning figures: a single multi-page output
 combining the behavioral feature tuning grid (one page per temporal
-offset) and the vocal pages (Page 1: bout raster + pooled `usv_peth`
-on top, `usv_property_tuning` 5x4 grid below; Page 2:
-`usv_category_tuning` watersheds, one row per QLVM map). Output
+offset) and one vocal page per emitter (bout raster + pooled `usv_peth`
+on top, the `usv_property_tuning` 5x4 grid in the middle and the
+`usv_category_tuning` row of the QLVM category at the bottom). Output
 format is configurable via `figures.fig_format` in
 visualizations_settings.json (`png` default project-wide; this module
 falls back to `pdf` if the key is missing). PDF is multi-page in one
@@ -89,11 +89,11 @@ PROPERTY_ROW_ORDER = (
 # TTI-TTI (tail-to-tail distance) is left off the social page.
 PLOT_EXCLUDED_BEHAVIORAL_FEATURES: tuple[str, ...] = ("TTI-TTI",)
 
-# Page-2 section (c) layout: one row per QLVM category column
+# Section (c) layout: one row per QLVM category column
 # (os_utils.QLVM_CATEGORY_COLUMNS: the regular map's qlvm_category only; there is
-# no coarse level and no category column on the conditional maps), each column
-# contributing 3 cells (rate / occupancy / strip) on the 6-column grid that
-# matches the behavioral feature grid's density.
+# no coarse level and no category column of the conditional maps), each column
+# contributing 3 cells (rate / occupancy / strip) of the vocal page's 4-column
+# grid, the grid of section (b) above it, so its cells are section (b)'s size.
 SECTION_C_ROWS = tuple((category_column,) for category_column in QLVM_CATEGORY_COLUMNS)
 
 # Hex palette
@@ -285,13 +285,19 @@ BEHAVIORAL_TIER_LABELS: dict[str, str] = {
 }
 
 
-# Page sizes are fixed by the layout invariants of each page (Page 1 has
-# the section-(a) raster + usv_peth on top of the 5×4 usv_property_tuning grid; Page 2 has
-# section (c), one 6-col row per QLVM map). They scale with
-# the page dimensions, not with anything user-tunable, so are constants
-# rather than settings.
-VOCAL_PAGE1_FIGSIZE_INCHES = (16, 25.5)
-VOCAL_PAGE2_FIGSIZE_INCHES = (16, 15)
+# The vocal page's size and vertical layout are fixed by its layout invariants
+# (the section-(a) raster + usv_peth on top, the 5x4 usv_property_tuning grid of
+# section (b) below it, and the section-(c) category row at the bottom, which sits
+# on the same page so no page carries a lone row). They scale with the page
+# dimensions, not with anything user-tunable, so are constants rather than
+# settings. Section (c) is one row of the 4-column section-(b) grid, as tall as one
+# section-(b) row (the 17.5 units of section (b) hold 5 rows and 4 gaps of 0.45 row
+# heights), and the outer gaps keep the section-(a) / section-(b) spacing of the
+# two-section page (3.375 units).
+VOCAL_SECTION_B_ROW_HEIGHT = 17.5 / (len(PROPERTY_ROW_ORDER) + 0.45 * (len(PROPERTY_ROW_ORDER) - 1))
+VOCAL_SECTION_HEIGHT_RATIOS = (5.0, 17.5, VOCAL_SECTION_B_ROW_HEIGHT * len(SECTION_C_ROWS))
+VOCAL_SECTION_HSPACE = 3.375 / (sum(VOCAL_SECTION_HEIGHT_RATIOS) / len(VOCAL_SECTION_HEIGHT_RATIOS))
+VOCAL_PAGE_FIGSIZE_INCHES = (16, 30.7)
 
 # Section-(c) per-category strip plot scaling: switch to symlog when
 # (max / min) firing-rate dynamic range exceeds the threshold; the
@@ -451,9 +457,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
     cluster's `*_tuning_curves_data.pkl` (carrying the unified behavioral
     + vocal payload) and emits one multi-page output per cluster: the
     behavioral feature pages (one per temporal offset, per plot-feature
-    group) followed by the vocal pages (Page 1: bout raster + pooled
-    `usv_peth` on top, `usv_property_tuning` 5x4 grid below; Page 2:
-    `usv_category_tuning` watersheds, one row per QLVM map). Pkls
+    group) followed by one vocal page per emitter (bout raster + pooled
+    `usv_peth` on top, the `usv_property_tuning` 5x4 grid in the middle,
+    the `usv_category_tuning` row of the QLVM category at the bottom). Pkls
     with neither behavioral nor vocal payload are skipped silently.
     Output filename is `{cluster_id}_neuronal_tuning.{fig_format}` (or,
     for non-PDF formats, `..._p{N}_{label}.{fig_format}`).
@@ -6045,9 +6051,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        For each emitter present in the pkl, render Page 1 (sections a +
-        b) and Page 2 (sections c + d) via the supplied `save_fig`
-        callable.
+        For each emitter present in the pkl, render its vocal page
+        (sections a, b and c) via the supplied `save_fig` callable.
 
         Parameters
         ----------
@@ -6069,38 +6074,39 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
         for emitter in cluster_data["usv_peth"]:
             sex_label = cluster_data["usv_peth"][emitter]["sex"]
-            self._render_page1(
+            self._render_vocal_page(
                 emitter=emitter,
                 cluster_data=cluster_data,
                 usv_summary_df=usv_summary_df,
-                save_fig=save_fig,
-                page_label=f"vocal_a_{sex_label}",
-            )
-            self._render_page2(
-                emitter=emitter,
-                cluster_data=cluster_data,
                 segmentation=segmentation,
                 save_fig=save_fig,
-                page_label=f"vocal_b_{sex_label}",
+                page_label=f"vocal_{sex_label}",
             )
 
-    # Page 1 — sections (a) and (b)
+    # Vocal page — sections (a), (b) and (c)
 
-    def _render_page1(
+    def _render_vocal_page(
         self,
         emitter: str,
         cluster_data: dict,
         usv_summary_df,
+        segmentation: dict,
         save_fig,
         page_label: str,
     ) -> None:
         """
         Description
         -----------
-        Render Page 1 of the vocal output for one emitter side: the
-        bout raster + pooled `usv_peth` (section a) on top of the
-        5×4 `usv_property_tuning` grid (section b), then commit the
-        page via `save_fig`.
+        Render the vocal page for one emitter side: the bout raster +
+        pooled `usv_peth` (section a) on top of the 5×4
+        `usv_property_tuning` grid (section b), with the categorical
+        `usv_category_tuning` row (section c: rate / occupancy watersheds
+        and the strip, one row per QLVM category column, `SECTION_C_ROWS`)
+        at the bottom on section (b)'s 4-column grid, then commit the page
+        via `save_fig`. Section (c) sits on this page because it is a
+        single row: a page of its own would carry a lone figure row. The
+        per-category PETH (`usv_category_peth`) is still computed and saved
+        in the pickle but not drawn.
 
         Parameters
         ----------
@@ -6112,6 +6118,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         usv_summary_df (pls.DataFrame | None)
             Noise-filtered USV summary; used
             by the bout raster. Pass `None` to skip the raster.
+        segmentation (dict)
+            Loaded latent-embedding segmentation per categorical feature.
         save_fig (Callable[[Figure, str], None])
             Persists the rendered figure and closes it.
         page_label (str)
@@ -6122,10 +6130,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         None
         """
 
-        fig = plt.figure(figsize=VOCAL_PAGE1_FIGSIZE_INCHES, tight_layout=False)
+        fig = plt.figure(figsize=VOCAL_PAGE_FIGSIZE_INCHES, tight_layout=False)
         outer = gridspec.GridSpec(
-            nrows=2, ncols=1, height_ratios=[5, 17.5], hspace=0.30,
-            left=0.06, right=0.97, top=0.96, bottom=0.04,
+            nrows=3, ncols=1, height_ratios=list(VOCAL_SECTION_HEIGHT_RATIOS), hspace=VOCAL_SECTION_HSPACE,
+            left=0.06, right=0.97, top=0.97, bottom=0.03,
         )
 
         # section (a)
@@ -6152,6 +6160,19 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             cluster_data=cluster_data,
         )
 
+        # section (c) — one row per QLVM category column on section (b)'s
+        # 4-column grid (3 of its cells per category column)
+        gs_c = gridspec.GridSpecFromSubplotSpec(
+            len(SECTION_C_ROWS), 4, subplot_spec=outer[2, 0], wspace=0.40, hspace=0.45
+        )
+        self._draw_section_c(
+            fig=fig,
+            gs=gs_c,
+            emitter=emitter,
+            cluster_data=cluster_data,
+            segmentation=segmentation,
+        )
+
         save_fig(fig, page_label)
 
     # section (a) — raster + PETH
@@ -6167,7 +6188,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Draw section (a) of vocal Page 1: bout raster on the left axes
+        Draw section (a) of the vocal page: bout raster on the left axes
         (per-bout spike raster + per-USV color bars), pooled `usv_peth`
         on the right axes (peri-USV PETH with shuffle band and
         observed line).
@@ -6413,7 +6434,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Draw section (b) of vocal Page 1: a 5×4 grid of
+        Draw section (b) of the vocal page: a 5×4 grid of
         (line + occupancy) cell pairs, one row per pair of continuous
         USV properties (per `PROPERTY_ROW_ORDER`). Dispatches to
         `_draw_property_pair` for each cell pair.
@@ -6622,63 +6643,6 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax_occ.tick_params(axis="y", labelsize=11, pad=0.5)
         ax_occ.set_box_aspect(1)
 
-    # Page 2 — section (c)
-
-    def _render_page2(
-        self,
-        emitter: str,
-        cluster_data: dict,
-        segmentation: dict,
-        save_fig,
-        page_label: str,
-    ) -> None:
-        """
-        Description
-        -----------
-        Render Page 2 of the vocal output for one emitter side: section
-        (c) categorical watersheds (`usv_category_tuning` rate / occupancy
-        / strip), one row per QLVM category column (`SECTION_C_ROWS`:
-        `qlvm_category`) × 3 of the 6 grid cols.
-        The per-category PETH (`usv_category_peth`) is still computed and
-        saved in the pickle but not drawn.
-
-        Parameters
-        ----------
-        emitter (str)
-            Emitter ID keying into the vocal payloads.
-        cluster_data (dict)
-            Per-cluster pkl payload.
-        segmentation (dict)
-            Loaded latent-embedding segmentation per categorical feature.
-        save_fig (Callable[[Figure, str], None])
-            Persists the rendered figure and closes it.
-        page_label (str)
-            Short label embedded in non-PDF per-page filenames.
-
-        Returns
-        -------
-        None
-        """
-
-        fig = plt.figure(figsize=VOCAL_PAGE2_FIGSIZE_INCHES, tight_layout=False)
-
-        # section (c): one row per QLVM category column, 3 of 6 cols each.
-        # wspace/hspace match the behavioral grid.
-        gs_c = gridspec.GridSpec(
-            len(SECTION_C_ROWS), 6,
-            wspace=0.40, hspace=0.45,
-            left=0.04, right=0.98, top=0.94, bottom=0.05,
-        )
-        self._draw_section_c(
-            fig=fig,
-            gs=gs_c,
-            emitter=emitter,
-            cluster_data=cluster_data,
-            segmentation=segmentation,
-        )
-
-        save_fig(fig, page_label)
-
     # section (c) — categorical, one row per QLVM category column
 
     def _draw_section_c(
@@ -6694,7 +6658,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Draw section (c): one row per QLVM category column
         (`SECTION_C_ROWS`), each 3 cols (rate watershed | occupancy
-        watershed | strip) of the 6-col grid. The rate
+        watershed | strip) of the vocal page's 4-col grid. The rate
         watershed uses the configurable `ratemap_cmap`; the occupancy
         watershed uses a per-emitter sequential colormap built from
         the emitter's sex color; the strip plot ranks per-category
@@ -6705,7 +6669,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         fig (matplotlib.figure.Figure)
             Parent figure.
         gs (matplotlib.gridspec.GridSpecFromSubplotSpec)
-            `len(SECTION_C_ROWS)`×6 gridspec slot for section (c).
+            `len(SECTION_C_ROWS)`×4 gridspec slot for section (c).
         emitter (str)
             Emitter ID keying into `usv_category_tuning`.
         cluster_data (dict)

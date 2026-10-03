@@ -309,9 +309,10 @@ def generate_rm_figures_cli(ctx, root_directory, **kwargs) -> None:
     -----------
     A command-line tool to render the per-cluster combined neuronal tuning
     figures. Each output bundles the behavioral feature pages (one per
-    temporal offset, per plot-feature group) and the vocal pages (Page 1
-    raster + Q1 peri-onset PETH + Q2 grid; Page 2 Q3-within watersheds, one
-    row per QLVM map; the per-category PETH stays in the pkl, not drawn). Behavioral and vocal sections are emitted only when the
+    temporal offset, per plot-feature group) and one vocal page per emitter
+    (raster + Q1 peri-onset PETH, the Q2 grid, and the Q3-within row of the
+    QLVM category's watersheds at the bottom; the per-category PETH stays in
+    the pkl, not drawn). Behavioral and vocal sections are emitted only when the
     cluster pkl carries the corresponding payload; pkls with neither are
     skipped silently.
 
