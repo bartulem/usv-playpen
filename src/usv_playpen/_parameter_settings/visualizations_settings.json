@@ -233,15 +233,8 @@
       "microphone": "peak",
       "n_fft": 256,
       "hop_fraction": 4,
-      "freq_range_khz": [
-        30.0,
-        110.0
-      ],
-      "freq_ticks_khz": [
-        40.0,
-        70.0,
-        100.0
-      ],
+      "freq_range_khz": [30.0, 110.0],
+      "freq_ticks_khz": [40.0, 70.0, 100.0],
       "db_floor": "adaptive",
       "adaptive_floor_above_median_db": 12.0,
       "ceiling_percentile": 99.9,
@@ -274,16 +267,8 @@
     },
     "scale_mark": {
       "length_cm": 2.0,
-      "labels": [
-        "X",
-        "Y",
-        "Z"
-      ],
-      "signs": [
-        1,
-        -1,
-        1
-      ],
+      "labels": ["X", "Y", "Z"],
+      "signs": [1, -1, 1],
       "turn_degrees": 90.0,
       "gap_cm": 4.0,
       "line_width": 2.5,

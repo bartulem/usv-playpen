@@ -2192,7 +2192,9 @@ Parameters follow a **hybrid layout**: each spectrogram figure defines its own k
 
     vocal_pose_windows = find_vocal_pose_windows(vocal_pose_session_root, vis_settings)
     display(vocal_pose_windows.head(12))
-    plot_vocal_pose_window_candidates(vocal_pose_session_root, vocal_pose_windows, vis_settings)
+    plot_vocal_pose_window_candidates(
+        vocal_pose_session_root, vocal_pose_windows, vis_settings
+    )
     plt.show()
 
 Second, the view picker: ``vocal_pose_view_picker_html`` draws the frame at the chosen window's end on a page that turns when dragged (or with two sliders), with presets for the male-side, heads-down, tails-down and top views, and reports the azimuth and elevation in the figure's convention:
