@@ -736,8 +736,8 @@ euclidean: ``r2_spatial``, ``mahalanobis_mae``, ``pearson_x/y``,
 **7. CNN pipeline.** A non-linear baseline (1-D ResNet) for the continuous manifold-position
 regression. Load the multivariate feature blocks into the ``(N, F, T)`` tensor the
 network expects, train, then render one of five diagnostic visualisation modes
-over the saved predictions. The input pickle must carry per-USV ``supercategory``
-labels (the pre-flight check inside ``run_cnn_training`` fails fast if missing).
+over the saved predictions. The input pickle must carry per-USV ``category``
+labels (the QLVM category; the pre-flight check inside ``run_cnn_training`` fails fast if missing).
 
 .. code-block:: python
 
@@ -1166,10 +1166,13 @@ so they resolve on macOS (``/Volumes/falkner``) too.
 .. code-block:: python
 
     # Segmentation configuration
-    CATEGORY_COLUMN = "qlvm_supercategory"
-    GROUP_A_IDS = [4, 7, 8]
+    # content-ridge categories R-1..R-4 of the regular map
+    CATEGORY_COLUMN = "qlvm_category"
+    # Ids follow the category directory's category_nomenclature.json (R-1 simple, R-2 mixed,
+    # R-3 complex, R-4 wide-band two-mask in the shipped build settings); check them there.
+    GROUP_A_IDS = [3]
     GROUP_A_LABEL = "complex"
-    GROUP_B_IDS = [1, 6]
+    GROUP_B_IDS = [1]
     GROUP_B_LABEL = "simple"
 
     # Unit-filter configuration (cluster_group + somatic + brain area)
@@ -2325,10 +2328,10 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
     # Data source
     sessions_list_path = "/mnt/falkner/Bartul/modeling/input_files/behavioral_courtship_intact_partners_sessions_list.txt"
 
-    # QLVM label level: 'qlvm_supercategory' (coarse) or 'qlvm_category' (fine). Drives the
+    # QLVM category column: 'qlvm_category' (R-1..R-k of the regular map; the only level). Drives the
     # per-USV category basis used throughout the notebook; the section-6 embedding always
     # plots the regular-model torus coordinates (qlvm1, qlvm2). Noise is its own column.
-    usv_category_col = "qlvm_supercategory"
+    usv_category_col = "qlvm_category"
     exclude_noise_usvs = True
 
     # Behavioral-feature column suffixes
@@ -2379,7 +2382,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
     jointplot_hist_color = "#A0A0A0"
 
 * **sessions_list_path** — the ``.txt`` file listing one session root per line; its name also derives ``session_type``, the prefix on every saved figure.
-* **usv_category_col** — the per-USV category basis: ``"qlvm_supercategory"`` (the regular model's 9 coarse clusters) or ``"qlvm_category"`` (its 15 fine clusters). The section-6 embedding panel plots ``qlvm1`` / ``qlvm2`` (``usv_continuous_cols``, set in the Setup cell).
+* **usv_category_col** — the per-USV category basis: ``"qlvm_category"``, the content-ridge categories R-1 … R-k of the regular map (``assign-qlvm-categories``; the summary's only category column). The section-6 embedding panel plots ``qlvm1`` / ``qlvm2`` (``usv_continuous_cols``, set in the Setup cell).
 * **exclude_noise_usvs** — whether the USV segments ``detect-usv-noise`` flagged as holding no vocalization are dropped during extraction. A session whose summary lacks the ``noise`` column raises rather than contributing unfiltered detections.
 * **distance_suffix** / **mf_angle_suffix** / **fm_angle_suffix** — which behavioral-feature columns become ``distance`` / ``mf_angle`` / ``fm_angle``.
 * **save_fig_bool** — when ``True``, every cell writes its figures to disk via ``save_figure``; when ``False`` figures are only shown inline.
@@ -2659,21 +2662,22 @@ reveals that USV's identity and acoustics.
 
 **Embedding maps.**
 
-Every map is the toroidal (doughnut-shaped) surface of one QLVM (quasi-Monte Carlo latent
-variable model) of the v3 package (``os_utils.QLVM_MAPS``), with its coordinates ``P1`` /
-``P2`` and fine (``P_category``) and coarse (``P_supercategory``) cluster labels from the
-summaries:
+Every map is the toroidal (doughnut-shaped) surface of one production QLVM (quasi-Monte
+Carlo latent variable model; ``os_utils.QLVM_MAPS``), with its coordinates ``P1`` / ``P2``
+from the summaries:
 
-* **QLVM** (``qlvm``) — the regular (phase 6) model: 15 fine / 9 coarse clusters.
-* **QLVM | duration**, **| mean freq**, **| bandwidth**, **| loudness** (``qlvm_dur``,
-  ``qlvm_mf``, ``qlvm_bw``, ``qlvm_loud``) — the phase 11 conditional models, whose maps
-  are what is left once that acoustic variable is removed.
+* **QLVM** (``qlvm``) — the regular model, with its categories ``qlvm_category`` (R-1 … R-k,
+  written by ``assign-qlvm-categories``).
+* **QLVM | duration**, **| spectral entropy** (``qlvm_dur``, ``qlvm_ent``) — the conditional
+  models, whose maps are what is left once that acoustic variable is removed. They carry no
+  categories, so on them a **Color by** category falls back to density and **Boundaries**
+  are skipped (the chart title says so).
 * **Squeaks** (``qlvm_squeak``) — the squeak (broadband vocalization) map: the phase 3 BBV
   model's coordinates ``qlvm_squeak1`` / ``qlvm_squeak2``, written by
   ``infer-qlvm-squeak-latents`` on the squeak-bearing rows only (``squeak`` true: pure squeaks
   and segments holding both; noise rows have null booleans), so every other row is left off this map. The
-  **Squeak class** control filters it further. It has positions only — no fine / coarse clusters —
-  so on it a **Color by** category / supercategory falls back to density and **Boundaries** are skipped (the chart title says so); the controls stay available.
+  **Squeak class** control filters it further. It has positions only — no categories —
+  so on it a **Color by** category falls back to density and **Boundaries** are skipped (the chart title says so); the controls stay available.
   Its example spectrograms come from the squeak spectrogram store (the newest
   ``<spectrograms_dir>/squeak_spectrograms_*.h5``, built once by
   ``build-squeak-spectrogram-store``; see :doc:`Process`): 2-125 kHz on a log frequency
@@ -2692,17 +2696,15 @@ The USV maps show only the segments ``detect-usv-squeaks`` classed as pure USVs 
   ``~/.usv_playpen_cache`` — only when **Load** is clicked.
 * **Sessions** — narrows the loaded pool to individual sessions. Empty (the default) shows
   every session; pick one or more to isolate them.
-* **Map** — one of the five QLVM maps or the squeak map; it starts on ``shared_resources.qlvm_map`` (the map
+* **Map** — one of the three QLVM maps or the squeak map; it starts on ``shared_resources.qlvm_map`` (the map
   the other QLVM figures draw).
-* **Color by** — a categorical label (fine / coarse category, session type, session id, or
+* **Color by** — a categorical label (category, session type, session id, or
   emitter sex) or a continuous metric (point density, or a per-USV acoustic feature), the
   latter rendered through the project colormap.
-* **Boundaries** — optional cluster outlines for the chosen categorical label: the map's
-  v3 cell label grid (``ws_labels_periodic`` of
-  ``<spectrograms_dir>/qlvm_v3/<map>/arrays_fine.npz`` for category, ``arrays_coarse.npz``
-  for supercategory, resolved by ``os_utils.resolve_embedding_arrays_path``), the exact
-  partition the labels were read from; when those arrays are missing, a k-NN estimate from
-  the plotted labels.
+* **Boundaries** — optional category outlines: the ``ws_labels_periodic`` grid of
+  ``<spectrograms_dir>/qlvm_v3/<map>/arrays_fine.npz`` (resolved by
+  ``os_utils.resolve_embedding_arrays_path``) when such arrays exist for the map; otherwise
+  (the production cells carry no clustering) a k-NN estimate from the plotted labels.
 * **Examples (spectrograms) plotted** — 5–50, sampled along an Archimedean spiral (centre →
   edge) and laid out as a square grid, each call's width preserving its true duration.
 * **Max points** — caps how many points the scatter draws, keeping the chart under marimo's

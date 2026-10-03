@@ -27,26 +27,25 @@ Architecture
   color/sample tweak never rebuilds the pooled DataFrame.
 - Pick one or more session lists; their per-session ``usv_summary.csv`` rows are
   pooled (and cached to a per-selection parquet) by ``build_pooled_embeddings_df``.
-- An altair scatter of the chosen QLVM map's torus (the regular model or one of
-  the four conditional ones, ``os_utils.QLVM_MAPS``; the Map dropdown starts at
+- An altair scatter of the chosen QLVM map's torus (the regular model or the
+  duration / spectral-entropy conditional ones, ``os_utils.QLVM_MAPS``; the Map dropdown starts at
   ``shared_resources.qlvm_map``; the USV maps show only the segments
   ``detect-usv-squeaks`` classed as pure USVs (``usv & ~squeak``); or the
   "Squeaks" map, ``qlvm_squeak1`` / ``qlvm_squeak2`` from
   ``infer-qlvm-squeak-latents``, which holds the squeak-bearing classes only,
   filtered by the "Squeak class" dropdown to pure squeaks
   (``squeak & ~usv``), segments holding both a squeak and a USV (``usv & squeak``), or the two
-  together (the default), and has no categories, so there a category colouring
-  falls back to density and boundaries are skipped, with a note in the chart
-  title; the USV and squeak maps therefore never overlap), colored by a categorical label (category /
-  supercategory / session type / session id / emitter sex) OR a continuous metric
-  through the colormap (density, duration, frequencies, amplitudes, spectral
-  entropy), with an ``alt.selection_interval`` brush. Optional category-boundary
-  contours overlay the scatter: the map's v3 cell's own label grid (15 fine / 9
-  coarse clusters for the regular map, the ``ws_labels_periodic`` of
-  ``<spectrograms_dir>/qlvm_v3/<map>/arrays_{fine,coarse}.npz`` resolved by
-  ``os_utils.resolve_embedding_arrays_path``, the same partition that wrote the
-  ``<map>_category`` / ``<map>_supercategory`` summary columns); when those
-  arrays are missing, a k-NN boundary estimated from the labels. The spec inlines session_id / row_index / x / y / color per
+  together (the default); the USV and squeak maps therefore never overlap),
+  colored by a categorical label (category / session type / session id / emitter
+  sex) OR a continuous metric through the colormap (density, duration,
+  frequencies, amplitudes, spectral entropy), with an ``alt.selection_interval``
+  brush. Only the regular map has a category column (``qlvm_category``, R-1..R-k);
+  on a map without one (the conditional maps and the squeak map) a category
+  colouring falls back to density and boundaries are skipped, with a note in the
+  chart title. Optional category-boundary contours overlay the scatter: the
+  ``ws_labels_periodic`` grid of ``<spectrograms_dir>/qlvm_v3/<map>/arrays_fine.npz``
+  (resolved by ``os_utils.resolve_embedding_arrays_path``) when such arrays exist
+  for the map; otherwise a k-NN boundary estimated from the labels. The spec inlines session_id / row_index / x / y / color per
   point (~200 bytes each), so the max_points ceiling is bounded by marimo's
   ``output_max_bytes`` (raised to 200 MB in pyproject.toml).
 - Brushing samples spectrograms from the selection along an Archimedean spiral
@@ -217,20 +216,18 @@ def _settings(
     if default_qlvm_map not in QLVM_MAPS:
         default_qlvm_map = "qlvm"
 
-    # QLVM reference arrays of each map's v3 cell under `spectrograms_dir`
-    # (<dir>/qlvm_v3/<map>/arrays_{fine,coarse}.npz, os_utils convention), keyed by
-    # (map, Boundaries dropdown value): "category" -> fine (15 clusters for the
-    # regular map), "supercategory" -> coarse (9). Their `ws_labels_periodic` grids
-    # are the exact partition the <map>_category / <map>_supercategory columns were
-    # read from, so the map draws them instead of a k-NN estimate. Missing arrays
-    # -> no entry (k-NN fallback).
+    # QLVM reference arrays of a map under `spectrograms_dir`
+    # (<dir>/qlvm_v3/<map>/arrays_fine.npz, os_utils convention), keyed by
+    # (map, Boundaries dropdown value "category"). Their `ws_labels_periodic` grid
+    # is drawn instead of a k-NN estimate only when it is the partition the map's
+    # category column was read from; the production cells carry no clustering, so
+    # usually there is no entry (k-NN fallback).
     try:
         _spec_dir = resolve_experimenter_path(_viz["shared_resources"]["spectrograms_dir"])
         qlvm_arrays_paths = {
-            (_map, _choice): resolve_embedding_arrays_path(_spec_dir, _map, _level)
+            (_map, "category"): resolve_embedding_arrays_path(_spec_dir, _map, "fine")
             for _map in QLVM_MAPS
-            for _choice, _level in (("category", "fine"), ("supercategory", "coarse"))
-            if Path(resolve_embedding_arrays_path(_spec_dir, _map, _level)).is_file()
+            if Path(resolve_embedding_arrays_path(_spec_dir, _map, "fine")).is_file()
         }
     except KeyError:
         qlvm_arrays_paths = {}
@@ -327,9 +324,7 @@ def _widgets(SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
     _map_labels = {
         "QLVM": "qlvm",
         "QLVM | duration": "qlvm_dur",
-        "QLVM | mean freq": "qlvm_mf",
-        "QLVM | bandwidth": "qlvm_bw",
-        "QLVM | loudness": "qlvm_loud",
+        "QLVM | spectral entropy": "qlvm_ent",
         "Squeaks": "qlvm_squeak",
     }
     map_dropdown = mo.ui.dropdown(
@@ -337,7 +332,7 @@ def _widgets(SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
         value=next(_label for _label, _map in _map_labels.items() if _map == default_qlvm_map),
         label="Map",
     )
-    # Color by a CATEGORICAL label (category / supercategory) OR a CONTINUOUS
+    # Color by a CATEGORICAL label (the QLVM category) OR a CONTINUOUS
     # quantity rendered through the colormap (point density, or any per-USV
     # acoustic feature). Boundaries (below) are an independent, optional overlay.
     # {display label (no underscores, with units) -> internal value}. .value
@@ -345,8 +340,7 @@ def _widgets(SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
     color_dropdown = mo.ui.dropdown(
         options={
             "none": "none",
-            "category (fine)": "category",
-            "supercategory (coarse)": "supercategory",
+            "category": "category",
             "session type": "session_type",
             "session (id)": "session",
             "emitter (sex)": "emitter",
@@ -359,14 +353,13 @@ def _widgets(SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
             "max amplitude (a.u.)": "max_amplitude",
             "spectral entropy (nats)": "spectral_entropy",
         },
-        value="supercategory (coarse)",
+        value="category",
         label="Color by",
     )
-    # Boundaries draw the cluster outlines for the chosen categorical label
-    # (category = fine, supercategory = coarse) as contour lines over the
+    # Boundaries draw the category outlines as contour lines over the
     # scatter -- the discrete structure, without recoloring every point.
     boundary_dropdown = mo.ui.dropdown(
-        options=["none", "category", "supercategory"],
+        options=["none", "category"],
         value="none",
         label="Boundaries",
     )
@@ -623,14 +616,16 @@ def _scatter_chart(
         map_prefix = map_dropdown.value
         # A QLVM map P places calls at P1/P2 on the unit torus.
         x_col, y_col = f"{map_prefix}1", f"{map_prefix}2"
-        # The squeak map ships positions only (no fine / coarse clustering), so
-        # category colouring falls back to density and boundaries are skipped
-        # there. A fallback rather than mo.stop: stopping this cell would also
-        # hide the controls (_explorer draws them from this cell's outputs), so
-        # the dropdowns could not be changed back.
+        # Only a map with a <map>_category column (the regular map's
+        # qlvm_category) has categories; on the others (the conditional maps and
+        # the squeak map, which ship positions only) category colouring falls back
+        # to density and boundaries are skipped. A fallback rather than mo.stop:
+        # stopping this cell would also hide the controls (_explorer draws them
+        # from this cell's outputs), so the dropdowns could not be changed back.
         squeak_map = map_prefix == "qlvm_squeak"
-        squeak_fallback = squeak_map and (
-            color_dropdown.value in ("category", "supercategory") or boundary_dropdown.value != "none"
+        no_categories = f"{map_prefix}_category" not in pooled.columns
+        category_fallback = no_categories and (
+            color_dropdown.value == "category" or boundary_dropdown.value != "none"
         )
         # No overlap between the USV maps and the squeak map: a USV map shows only
         # the segments detect-usv-squeaks classed as pure USVs (usv & ~squeak;
@@ -643,13 +638,13 @@ def _scatter_chart(
         if pooled.height == 0:
             return None, None, None, None
 
-        # Color source: category/supercategory/session_type categorical; emitter
+        # Color source: category/session_type categorical; emitter
         # colors the derived sex column; density is computed below from the 2D
         # positions; the rest are continuous acoustic-feature columns.
         color_metric = color_dropdown.value
-        if squeak_map and color_metric in ("category", "supercategory"):
+        if no_categories and color_metric == "category":
             color_metric = "density"
-        if color_metric in ("category", "supercategory"):
+        if color_metric == "category":
             color_col, color_kind = f"{map_prefix}_{color_metric}", "categorical"
         elif color_metric == "session_type":
             color_col, color_kind = "session_type", "categorical"
@@ -665,7 +660,7 @@ def _scatter_chart(
             color_col, color_kind = color_metric, "continuous"
 
         # Boundaries use the map-specific categorical label column (overlay).
-        boundary_choice = "none" if squeak_map else boundary_dropdown.value
+        boundary_choice = "none" if no_categories else boundary_dropdown.value
         boundary_col = (
             None if boundary_choice == "none" else f"{map_prefix}_{boundary_choice}"
         )
@@ -919,10 +914,10 @@ def _scatter_chart(
             height=CHART_HEIGHT_PX,
             background="#FFFFFF",
             padding=0,
-            # Say why the squeak map ignored a category colouring / boundaries
-            # (no title otherwise, so the other maps keep their layout).
-            **({"title": "Squeaks have no categories: coloured by density, no boundaries"}
-               if squeak_fallback else {}),
+            # Say why a map without categories ignored a category colouring /
+            # boundaries (no title otherwise, so the other maps keep their layout).
+            **({"title": "This map has no categories: coloured by density, no boundaries"}
+               if category_fallback else {}),
         ).configure_legend(
             labelFontSize=15, symbolSize=450, rowPadding=10,
             gradientThickness=30, gradientLength=CHART_HEIGHT_PX,

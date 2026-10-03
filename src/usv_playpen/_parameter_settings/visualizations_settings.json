@@ -397,7 +397,7 @@
     }
   },
   "embedding_thumbnails": {
-    "category_col_suffix": "supercategory",
+    "category_col_suffix": "category",
     "exclude_squeaks": true,
     "n_samples_per_category": 8,
     "tile_orientation": "vertical",

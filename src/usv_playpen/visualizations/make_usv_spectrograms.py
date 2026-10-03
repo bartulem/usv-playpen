@@ -54,6 +54,7 @@ from sklearn.neighbors import KNeighborsClassifier
 
 from ..os_utils import (
     NOISE_COLUMN,
+    QLVM_CATEGORY_COLUMNS,
     QLVM_MAPS,
     VOCAL_FLAG_COLUMNS,
     call_class_mask,
@@ -2258,18 +2259,16 @@ def plot_session_usv_timeline(
 # Embedding columns expected in each session's USV summary CSV: the torus
 # coordinates of every QLVM map (os_utils.QLVM_MAPS; map P at P1/P2), the squeak
 # map's coordinates (qlvm_squeak1/qlvm_squeak2, written by infer-qlvm-squeak-latents
-# on squeak rows only; the squeak map has no category labels) and each USV map's
-# fine (P_category) and coarse (P_supercategory) integer labels.
+# on squeak rows only; the squeak map has no category labels) and the QLVM category
+# columns (os_utils.QLVM_CATEGORY_COLUMNS: the regular map's qlvm_category only).
 SQUEAK_EMBEDDING_COORD_COLS = ("qlvm_squeak1", "qlvm_squeak2")
 EMBEDDING_COORD_COLS = (
     tuple(f"{qlvm_map}{axis}" for qlvm_map in QLVM_MAPS for axis in (1, 2)) + SQUEAK_EMBEDDING_COORD_COLS
 )
-EMBEDDING_LABEL_COLS = tuple(
-    f"{qlvm_map}_{suffix}" for qlvm_map in QLVM_MAPS for suffix in ("category", "supercategory")
-)
+EMBEDDING_LABEL_COLS = QLVM_CATEGORY_COLUMNS
 EMBEDDING_ALL_COLS = EMBEDDING_COORD_COLS + EMBEDDING_LABEL_COLS
 # Label columns carried when a summary has them but never required or null-filled:
-# summaries embedded before infer-qlvm-latents wrote a map's cluster labels hold
+# summaries whose categories assign-qlvm-categories has not written yet hold
 # torus coordinates only, so requiring them would make a cache of such summaries fail
 # its own check, and null-filling them would present an all-null label as if it existed.
 EMBEDDING_OPTIONAL_LABEL_COLS = EMBEDDING_LABEL_COLS
@@ -2376,10 +2375,9 @@ def build_pooled_embeddings_df(
     DataFrame is the master table consumed by the marimo embedding
     explorer notebook: it carries the torus coordinate columns of every
     QLVM map (``EMBEDDING_COORD_COLS``: ``qlvm1/2``, ``qlvm_dur1/2``,
-    ``qlvm_mf1/2``, ``qlvm_bw1/2``, ``qlvm_loud1/2``, plus the squeak map's
-    ``qlvm_squeak1/2``), the USV maps' fine / coarse
-    label columns (``EMBEDDING_LABEL_COLS``, e.g. ``qlvm_category``,
-    ``qlvm_dur_supercategory``), and — critically — a ``(session_id,
+    ``qlvm_ent1/2``, plus the squeak map's ``qlvm_squeak1/2``), the QLVM
+    category column (``EMBEDDING_LABEL_COLS``: ``qlvm_category``), and —
+    critically — a ``(session_id,
     row_index)`` pair per row that keys directly back into the
     consolidated spectrogram h5 at
     ``/spectrogram/<session_id>/spectrograms[row_index]`` (and the
@@ -2399,8 +2397,8 @@ def build_pooled_embeddings_df(
     rebuilt (then overwritten). Nothing is deleted.
 
     The label columns are optional: kept when the summaries carry them,
-    never required and never null-filled (summaries embedded before
-    ``infer-qlvm-latents`` wrote a map's labels hold its coordinates
+    never required and never null-filled (summaries whose categories
+    ``assign-qlvm-categories`` has not written yet hold the coordinates
     only).
 
     Parameters
@@ -2433,8 +2431,7 @@ def build_pooled_embeddings_df(
             <map>1, <map>2 (Float64) for every map in QLVM_MAPS
             qlvm_squeak1, qlvm_squeak2 (Float64; null off squeak rows and
                 where a summary has no squeak embedding)
-            <map>_category, <map>_supercategory (Int64; only when some
-                summary carries them)
+            qlvm_category (Int64; only when some summary carries it)
             emitter (Utf8)
             sex (Utf8)
             duration (Float64)
@@ -3075,7 +3072,7 @@ def plot_embedding_with_category_thumbnails(
     sessions_txt_path: str,
     consolidated_h5_path: str,
     qlvm_map: str = "qlvm",
-    category_col_suffix: str = "supercategory",
+    category_col_suffix: str = "category",
     n_samples_per_category: int = 8,
     apply_mask: bool = True,
     mask_excluded_categories: tuple[int, ...] | int | None = (),
@@ -3158,12 +3155,12 @@ def plot_embedding_with_category_thumbnails(
         Path to the consolidated SAM2 + spectrogram HDF5 store.
     qlvm_map (str)
         One of ``os_utils.QLVM_MAPS`` - selects which QLVM map to plot
-        (``"qlvm"`` the regular model; ``"qlvm_dur"``, ``"qlvm_mf"``,
-        ``"qlvm_bw"``, ``"qlvm_loud"`` the conditional ones): its
-        coordinates ``<qlvm_map>1/2`` and labels
-        ``<qlvm_map>_<category_col_suffix>``.
+        (``"qlvm"`` the regular model; ``"qlvm_dur"`` and ``"qlvm_ent"`` the
+        conditional ones): its coordinates ``<qlvm_map>1/2`` and labels
+        ``<qlvm_map>_<category_col_suffix>``. Only the regular map has a
+        category column (``qlvm_category``), so a conditional map raises.
     category_col_suffix (str)
-        ``"category"`` or ``"supercategory"`` - selects which
+        ``"category"`` (the only level; there is no coarse level) - the
         categorical label to color and group by.
     n_samples_per_category (int)
         How many spectrograms to display per category row.
@@ -3187,16 +3184,15 @@ def plot_embedding_with_category_thumbnails(
     cluster_centers_npz_path (str | None)
         Reference arrays ``.npz`` whose ``centers`` array (``(K, 2)``,
         ``(peak_x, peak_y)``, row ``i`` = label ``i + 1``) gives the
-        cluster centres; second priority. This is the map's v3 cell
-        ``<spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_fine.npz``
-        (``category_col_suffix="category"``; 15 centres for the regular
-        map) or ``arrays_coarse.npz`` (``"supercategory"``; 9 centres),
-        resolved by ``os_utils.resolve_embedding_arrays_path`` and written
-        by ``export-qlvm-reference-arrays``; the caller must pass the map
-        and level that match ``qlvm_map`` / ``category_col_suffix``. Every category label in the
-        pooled table must lie in ``1..K``, otherwise ValueError: the
-        centres and the labels come from different clusterings (e.g. the
-        old model's 12 / 7 arrays against the v3 15 / 9 labels).
+        cluster centres; second priority. This is a map's
+        ``<spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_fine.npz``, resolved
+        by ``os_utils.resolve_embedding_arrays_path`` and written by
+        ``export-qlvm-reference-arrays`` from a clustered cell (the
+        production cells carry no clustering); the caller must pass arrays
+        of the clustering ``qlvm_map`` / ``category_col_suffix`` label.
+        Every category label in the pooled table must lie in ``1..K``,
+        otherwise ValueError: the centres and the labels come from
+        different clusterings.
     cluster_centers_json_path (str | None)
         A QLVM provenance JSON whose ``cluster_centers`` list (row ``i``
         = label ``i + 1``) gives the centres; lowest priority.
@@ -3312,15 +3308,21 @@ def plot_embedding_with_category_thumbnails(
     if qlvm_map not in QLVM_MAPS:
         msg = f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}."
         raise ValueError(msg)
-    if category_col_suffix not in ("category", "supercategory"):
+    if category_col_suffix != "category":
         msg = (
-            f"category_col_suffix must be 'category' or 'supercategory', "
+            f"category_col_suffix must be 'category' (there is no coarse level), "
             f"got {category_col_suffix!r}."
         )
         raise ValueError(msg)
 
     x_col, y_col = f"{qlvm_map}1", f"{qlvm_map}2"
     cat_col = f"{qlvm_map}_{category_col_suffix}"
+    if cat_col not in QLVM_CATEGORY_COLUMNS:
+        msg = (
+            f"qlvm_map {qlvm_map!r} has no category column ({cat_col}); only "
+            f"{list(QLVM_CATEGORY_COLUMNS)} exist, so plot the regular map ('qlvm')."
+        )
+        raise ValueError(msg)
 
     if pooled_df is None:
         pooled_df = build_pooled_embeddings_df(
@@ -3367,9 +3369,8 @@ def plot_embedding_with_category_thumbnails(
     #   1. ``cluster_centers_xy`` dict (caller-supplied, highest).
     #   2. ``cluster_centers_npz_path`` -> a reference arrays ``.npz``
     #      (``export-qlvm-reference-arrays``) whose ``centers (K, 2)``
-    #      are the cluster peaks of the level the caller picked to match
-    #      ``category_col_suffix`` (fine -> ``category``, coarse ->
-    #      ``supercategory``).
+    #      are the cluster peaks of the clustering ``category_col_suffix``
+    #      labels (the fine level).
     #   3. ``cluster_centers_json_path`` -> a single QLVM provenance
     #      JSON's ``cluster_centers`` list.
     # Center index ``i`` always maps to label ``i + 1`` (verified
@@ -4015,18 +4016,15 @@ def render_embedding_thumbnails_for_cohort(
         combined_sessions_txt = combined_file.name
 
     # Cluster-center provenance for the QLVM cluster-ID labels / spiral centers:
-    # the `centers` (cluster peaks) of the chosen map's v3 reference arrays,
-    # <spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_{fine,coarse}.npz, at the level
-    # matching the colored label (category -> fine; supercategory -> coarse; 15 / 9
-    # for the regular map). The same peaks sit in the consolidated store's
-    # qlvm_models/<qlvm_map>/clusters_<level>; the arrays are the one source, shared
-    # with the sequence map and the torus video. When they are missing the centers
-    # fall back to the data-derived medoids/centroids.
+    # the `centers` (cluster peaks) of the chosen map's reference arrays,
+    # <spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_fine.npz (the fine level the
+    # category label uses), shared with the sequence map and the torus video. The
+    # production cells carry no clustering, so these arrays usually do not exist and
+    # the centers fall back to the data-derived medoids/centroids.
     qlvm_map = visualizations_parameter_dict["shared_resources"]["qlvm_map"]
     cluster_centers_npz_path = None
-    centers_level = "fine" if cfg["category_col_suffix"] == "category" else "coarse"
     centers_candidate = resolve_embedding_arrays_path(
-        visualizations_parameter_dict["shared_resources"]["spectrograms_dir"], qlvm_map, centers_level
+        visualizations_parameter_dict["shared_resources"]["spectrograms_dir"], qlvm_map, "fine"
     )
     if pathlib.Path(centers_candidate).is_file():
         cluster_centers_npz_path = centers_candidate

@@ -1151,13 +1151,14 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     )
     assert cache.exists()
     assert pooled.height == 3  # the row the noise classifier flagged is dropped
-    # every map's coordinates (null-filled where a map is missing) and only the label
-    # columns the summaries carry (labels are optional, never null-filled)
+    # every map's coordinates (null-filled where a map is missing) and the one category
+    # column (optional, never null-filled); retired label columns a summary still carries
+    # (qlvm_supercategory, qlvm_dur_category) are not pooled
     assert set(EMBEDDING_COORD_COLS).issubset(pooled.columns)
-    assert {"qlvm_category", "qlvm_supercategory", "qlvm_dur_category"}.issubset(pooled.columns)
-    assert "qlvm_mf_category" not in pooled.columns
+    assert "qlvm_category" in pooled.columns
+    assert not {"qlvm_supercategory", "qlvm_dur_category"} & set(pooled.columns)
     assert pooled["qlvm_dur1"].to_list() == [0.2, 0.3, 0.4]
-    assert pooled["qlvm_bw1"].null_count() == pooled.height
+    assert pooled["qlvm_ent1"].null_count() == pooled.height
     # the usv / squeak booleans are carried as Boolean (the thumbnails' default filter and
     # the explorer derive the call class from them)
     assert pooled["usv"].to_list() == [False, True, True]
@@ -1552,11 +1553,8 @@ def _make_pooled_df(session_id: str = "sessA", n_per_cat: int = 6) -> pls.DataFr
             "qlvm1": 0.4 * rng.random(n) + 0.5 * (np.array(cats, dtype=float) - 1.0),
             "qlvm2": 0.4 * rng.random(n) + 0.5 * (np.array(cats, dtype=float) - 1.0),
             "qlvm_category": cats,
-            "qlvm_supercategory": cats,
             "qlvm_dur1": rng.random(n),
             "qlvm_dur2": rng.random(n),
-            "qlvm_dur_category": cats,
-            "qlvm_dur_supercategory": cats,
             "usv": [True] * n,
             "squeak": [False] * n,
             "sex": (["male", "female"] * n)[:n],
@@ -1590,23 +1588,17 @@ def test_plot_umap_thumbnails_random(tmp_path):
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
-def test_plot_umap_thumbnails_conditional_map_columns(tmp_path):
-    """qlvm_map='qlvm_dur' reads the duration-conditional map's qlvm_dur1/qlvm_dur2
-    coordinates and qlvm_dur_<suffix> labels, and names its axes after the map."""
-    pooled = _make_pooled_df("sessQ", n_per_cat=6)
-    h5_path = tmp_path / "store.h5"
-    _write_consolidated_h5(h5_path, "sessQ", n_usvs=12, n_freq=16, n_time=24)
-    fig = plot_embedding_with_category_thumbnails(
-        sessions_txt_path="unused",
-        consolidated_h5_path=str(h5_path),
-        qlvm_map="qlvm_dur",
-        n_samples_per_category=4,
-        pooled_df=pooled,
-        message_output=lambda *_: None,
-        seed=42,
-    )
-    assert isinstance(fig, plt.Figure)
-    assert any(axis.get_xlabel() == "QLVM DUR DIM 1" for axis in fig.axes)
+def test_plot_umap_thumbnails_conditional_map_has_no_categories(tmp_path):
+    """qlvm_map='qlvm_dur' names a map without a category column (only the regular map
+    carries qlvm_category), so the figure refuses it before any rendering."""
+    with pytest.raises(ValueError, match="has no category column"):
+        plot_embedding_with_category_thumbnails(
+            sessions_txt_path="unused",
+            consolidated_h5_path="unused",
+            qlvm_map="qlvm_dur",
+            pooled_df=_make_pooled_df("sessQ", n_per_cat=6),
+            message_output=lambda *_: None,
+        )
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
@@ -1620,7 +1612,7 @@ def test_plot_umap_thumbnails_spiral_unstretched(tmp_path):
     fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
-        category_col_suffix="supercategory",
+        category_col_suffix="category",
         n_samples_per_category=4,
         sampling_method="spiral",
         draw_spiral_overlay=True,
@@ -1684,18 +1676,18 @@ def test_plot_umap_thumbnails_json_provenance_centers(tmp_path):
 def test_plot_umap_thumbnails_reference_arrays_centers(tmp_path):
     """The QLVM cluster-ID labels sit at the reference arrays' ``centers`` (row i =
     label i + 1, the v3 export layout) and the labels drawn are the pooled table's
-    qlvm_supercategory values."""
+    qlvm_category values."""
     pooled = _make_pooled_df("sessE", n_per_cat=5)
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessE", n_usvs=10, n_freq=16, n_time=18)
-    arrays = tmp_path / "qlvm_v3" / "arrays_coarse.npz"
+    arrays = tmp_path / "qlvm_v3" / "arrays_fine.npz"
     arrays.parent.mkdir()
     np.savez(arrays, centers=np.array([[0.25, 0.75], [0.6, 0.1]], dtype=np.float32))
     fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         qlvm_map="qlvm",
-        category_col_suffix="supercategory",
+        category_col_suffix="category",
         n_samples_per_category=3,
         sampling_method="spiral",
         cluster_centers_npz_path=str(arrays),
@@ -1713,14 +1705,14 @@ def test_plot_umap_thumbnails_reference_arrays_centers(tmp_path):
 def test_plot_umap_thumbnails_reference_arrays_label_mismatch_raises(tmp_path):
     """Labels outside ``1..K`` of the arrays' K centres mean the centres and the
     labels come from different clusterings (e.g. old arrays against v3 labels): raise."""
-    arrays = tmp_path / "arrays_coarse.npz"
+    arrays = tmp_path / "arrays_fine.npz"
     np.savez(arrays, centers=np.array([[0.25, 0.75]], dtype=np.float32))
     with pytest.raises(ValueError, match="different clusterings"):
         plot_embedding_with_category_thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path="unused",
             qlvm_map="qlvm",
-            category_col_suffix="supercategory",
+            category_col_suffix="category",
             cluster_centers_npz_path=str(arrays),
             pooled_df=_make_pooled_df(),
             message_output=lambda *_: None,
@@ -1761,7 +1753,7 @@ def test_plot_umap_thumbnails_excludes_squeaks_by_default(tmp_path):
     pooled = _make_pooled_df("sessS", n_per_cat=6)
     # the category-1 rows alternate pure squeak (false, true) / both (true, true): with the
     # default filter only category 2 is left
-    category_one = pls.col("qlvm_supercategory") == 1
+    category_one = pls.col("qlvm_category") == 1
     pooled = pooled.with_columns(
         pls.when(category_one).then(pls.col("row_index") % 2 == 1).otherwise(pls.lit(True)).alias("usv"),
         category_one.alias("squeak"),
@@ -1800,11 +1792,11 @@ def test_plot_umap_thumbnails_no_categories(tmp_path):
             "row_index": [0, 1],
             "qlvm1": [0.1, 0.2],
             "qlvm2": [0.3, 0.4],
-            "qlvm_supercategory": [None, None],
+            "qlvm_category": [None, None],
             "usv": [True, True],
             "squeak": [False, False],
         },
-        schema_overrides={"qlvm_supercategory": pls.Int64},
+        schema_overrides={"qlvm_category": pls.Int64},
     )
     with pytest.raises(RuntimeError, match="No categories found"):
         plot_embedding_with_category_thumbnails(
@@ -2204,12 +2196,11 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
 
 
 
-@pytest.mark.parametrize("suffix, level", [("category", "fine"), ("supercategory", "coarse")])
+@pytest.mark.parametrize("suffix, level", [("category", "fine")])
 def test_render_embedding_thumbnails_qlvm_centres_from_v3_arrays(tmp_path, monkeypatch, suffix, level):
-    """The cluster centres come from the shared map's v3 reference arrays at
-    <spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_<level>.npz, the level matching the colored
-    label (category -> fine, supercategory -> coarse); a legacy qlvm_clusters_*.h5
-    beside the store is ignored."""
+    """The cluster centres come from the shared map's reference arrays at
+    <spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_fine.npz (the category label's level;
+    there is no coarse level); a legacy qlvm_clusters_*.h5 beside the store is ignored."""
     input_dir = tmp_path / "input_files"
     input_dir.mkdir()
     (input_dir / "a_sessions_list.txt").write_text("/root/sessA\n")

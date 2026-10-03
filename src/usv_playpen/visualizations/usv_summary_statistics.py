@@ -103,7 +103,7 @@ def extract_category_embedding_data(
         Whether to drop the segments ``detect_usv_noise`` flagged as holding no vocalization.
     usv_category_col : str
         The name of the column containing the integer category/cluster ID
-        (e.g., 'qlvm_supercategory').
+        (e.g., 'qlvm_category').
     usv_continuous_cols : tuple[str, str]
         A tuple of two strings specifying the column names for the 2D embedding
         coordinates (e.g., ('qlvm1', 'qlvm2')).

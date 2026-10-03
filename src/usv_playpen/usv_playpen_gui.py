@@ -4910,7 +4910,7 @@ class USVPlaypenWindow(QMainWindow):
         # One QLVM map for every QLVM figure below (torus video, USV sequence,
         # embedding thumbnails) and the embedding explorer's starting map:
         # shared_resources.qlvm_map, one of os_utils.QLVM_MAPS (the regular model
-        # 'qlvm' or a conditional one, 'qlvm_dur' / 'qlvm_mf' / 'qlvm_bw' / 'qlvm_loud').
+        # 'qlvm' or a conditional one, 'qlvm_dur' / 'qlvm_ent').
         qlvm_map_label = QLabel('QLVM map (all QLVM figures):', self.VisualizationsSettings)
         qlvm_map_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         qlvm_map_label.move(vis_col_three_x1, 40)
@@ -5081,13 +5081,13 @@ class USVPlaypenWindow(QMainWindow):
         embedding_thumbnails_category_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         embedding_thumbnails_category_label.move(vis_col_three_x1, 460)
         self.embedding_thumbnails_category_cb = QComboBox(self.VisualizationsSettings)
-        # Displayed as coarse/fine (consistent with the other clustering selectors)
-        # but stored as the category column suffix the figure reads: coarse ->
-        # supercategory, fine -> category.
-        self.embedding_thumbnails_category_cb.addItems(['coarse', 'fine'])
-        self.embedding_thumbnails_category_cb.setCurrentText('coarse' if _emb_cfg['category_col_suffix'] == 'supercategory' else 'fine')
+        # The category column suffix the figure reads. The summary has one category
+        # level (qlvm_category; there is no coarse level), shown as 'fine' for
+        # consistency with the other clustering selectors.
+        self.embedding_thumbnails_category_cb.addItems(['fine'])
+        self.embedding_thumbnails_category_cb.setCurrentText('fine')
         self.embedding_thumbnails_category_cb.setStyleSheet('QComboBox { width: 57px; }')
-        self.embedding_thumbnails_category_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_category', choices=['supercategory', 'category']))
+        self.embedding_thumbnails_category_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_category', choices=['category']))
         self.embedding_thumbnails_category_cb.move(vis_col_three_x2, 460)
 
         self.embedding_thumbnails_samples_label = QLabel(f"Thumbnails per category {_emb_cfg['n_samples_per_category']}:", self.VisualizationsSettings)
