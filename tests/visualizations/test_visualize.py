@@ -275,7 +275,7 @@ def test_gui_visualize_tab_constructs(qtbot, monkeypatch, tmp_path):
     for attr in ("usv_seq_cb", "usv_seq_fig_format_cb", "usv_seq_start_edit",
                  "usv_seq_duration_edit", "qlvm_map_cb",
                  "usv_seq_mask_cb", "usv_seq_raw_cb", "usv_seq_boundaries_cb",
-                 "usv_seq_boundary_clustering_cb", "usv_seq_mark_cb"):
+                 "usv_seq_mark_cb"):
         assert hasattr(win, attr), f"Visualize tab missing USV-sequence widget: {attr}"
     # the one QLVM map selector (shared by every QLVM figure) is seeded from
     # shared_resources.qlvm_map and lists exactly the production maps
@@ -286,32 +286,20 @@ def test_gui_visualize_tab_constructs(qtbot, monkeypatch, tmp_path):
     win.close()
 
 
-def test_gui_usv_sequence_control_coupling(qtbot, monkeypatch, tmp_path):
-    """Boundaries are always available on the QLVM map; the clustering selector is
-    enabled only when boundaries = Yes."""
+def test_gui_has_no_coarse_fine_boundary_selectors(qtbot, monkeypatch, tmp_path):
+    """The QLVM category grid has one level (the category bundle), so neither the torus
+    video nor the USV sequence figure offers a coarse / fine boundary selector, and the
+    saved settings carry no such key; the sequence boundaries toggle stays."""
     monkeypatch.chdir(tmp_path)
     win = _make_main_window(qtbot)
     win.visualize_one()
 
-    # boundaries Yes -> boundaries stay enabled and the clustering selector is enabled
-    win.usv_seq_boundaries_cb.setCurrentText("Yes")
-    win._update_usv_seq_enabled_state()
+    for attr in ("qlvm_clustering_cb", "usv_seq_boundary_clustering_cb", "usv_seq_boundary_clustering_label"):
+        assert not hasattr(win, attr), attr
+    assert not hasattr(win, "_update_usv_seq_enabled_state")
     assert win.usv_seq_boundaries_cb.isEnabled()
-    assert win.usv_seq_boundary_clustering_cb.isEnabled()
-    assert win.usv_seq_boundary_clustering_label.isEnabled()
-
-    # boundaries No -> clustering selector disabled
-    win.usv_seq_boundaries_cb.setCurrentText("No")
-    win._update_usv_seq_enabled_state()
-    assert win.usv_seq_boundaries_cb.isEnabled()
-    assert not win.usv_seq_boundary_clustering_cb.isEnabled()
-    assert not win.usv_seq_boundary_clustering_label.isEnabled()
-
-    # boundaries Yes again -> clustering selector enabled
-    win.usv_seq_boundaries_cb.setCurrentText("Yes")
-    win._update_usv_seq_enabled_state()
-    assert win.usv_seq_boundary_clustering_cb.isEnabled()
-    assert win.usv_seq_boundary_clustering_label.isEnabled()
+    assert "clustering" not in win.visualizations_input_dict["qlvm_torus_traversal_video"]
+    assert "boundary_clustering" not in win.visualizations_input_dict["make_usv_spectrograms"]["sequence"]
     win.close()
 
 

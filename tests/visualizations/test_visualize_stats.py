@@ -21,6 +21,9 @@ import pytest
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.contour
+
+from usv_playpen import os_utils
 
 from usv_playpen.visualizations.usv_summary_statistics import (
     extract_session_metadata,
@@ -1503,10 +1506,10 @@ def _embedding_frame() -> pls.DataFrame:
     Description
     -----------
     Build a synthetic `extract_category_embedding_data`-style frame for
-    `plot_category_prevalence_and_embedding`: `dim1` / `dim2` (spread 2D
-    embedding coords), `category` (>= 2 ids so the territorial-boundary
-    contour has levels), and `sex` (each of male / female / unassigned
-    given > 3 points so every per-sex KDE branch runs).
+    `plot_category_prevalence_and_embedding`: `dim1` / `dim2` (torus
+    coordinates in [0, 1)), `category` (qlvm_category ids 1..3), and `sex`
+    (each of male / female / unassigned given > 3 points so every per-sex KDE
+    branch runs).
 
     Parameters
     ----------
@@ -1522,8 +1525,8 @@ def _embedding_frame() -> pls.DataFrame:
     sexes = (["male"] * per_sex) + (["female"] * per_sex) + (["unassigned"] * per_sex)
     n = len(sexes)
     return pls.DataFrame({
-        "dim1":     rng.normal(0.0, 1.0, n),
-        "dim2":     rng.normal(0.0, 1.0, n),
+        "dim1":     rng.random(n),
+        "dim2":     rng.random(n),
         "category": rng.integers(1, 4, n),
         "sex":      sexes,
     })
@@ -1609,19 +1612,22 @@ def test_plot_category_local_fatigue_heatmap_empty_sex_and_no_smoothing():
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
 @pytest.mark.parametrize("plot_type", ["density", "scatter"])
-def test_plot_category_prevalence_and_embedding(plot_type):
+def test_plot_category_prevalence_and_embedding(plot_type, qlvm_category_bundle):
     """
     Description
     -----------
     `plot_category_prevalence_and_embedding` must render the 4x2 grid
     (per-assignment prevalence bars + embedding maps, plus the global
-    summary row) for both the density and scatter rendering modes, with
-    global territorial boundaries overlaid. Asserts the 4x2 axes grid.
+    summary row) for both the density and scatter rendering modes. On the
+    regular map every embedding panel carries the category bundle's
+    boundaries (one contour set over the bundle's grid) and no note.
 
     Parameters
     ----------
     plot_type (str)
         Embedding rendering mode under test.
+    qlvm_category_bundle (pathlib.Path)
+        The synthetic category bundle the boundaries are read from.
 
     Returns
     -------
@@ -1632,49 +1638,43 @@ def test_plot_category_prevalence_and_embedding(plot_type):
     fig, axes = plot_category_prevalence_and_embedding(
         df_embedding,
         male_color=_HEX_MALE, female_color=_HEX_FEMALE,
-        unassigned_color=_HEX_UNASSIGNED,
+        unassigned_color=_HEX_UNASSIGNED, qlvm_map="qlvm",
         plot_type=plot_type, log_scale_bars=True, grid_res=25,
     )
     assert axes.shape == (4, 2)
+    for ax_emb in axes[:, 1]:
+        contours = [child for child in ax_emb.get_children() if isinstance(child, matplotlib.contour.ContourSet)]
+        assert len(contours) == 1
+        assert "no boundaries" not in ax_emb.get_title()
     plt.close(fig)
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
-def test_plot_category_prevalence_and_embedding_non_contiguous_category_ids():
-    """Territorial boundaries must render for NON-CONTIGUOUS category IDs (e.g.
-    {0, 5, 11}). The boundary contour interpolates ordinal CODES so the integer
-    `arange(N+1)-0.5` levels still land between adjacent categories; the old
-    raw-value interpolation tied the levels to the category count, so boundaries
-    between non-contiguous IDs were mis-placed or omitted. Exercises that path."""
-    rng = np.random.default_rng(7)
-    per_cat = 25
-    # Three well-separated clusters with non-contiguous category IDs.
-    centers = {0: (-4.0, -4.0), 5: (0.0, 4.0), 11: (4.0, -4.0)}
-    dim1, dim2, cats, sexes = [], [], [], []
-    for cat, (cx, cy) in centers.items():
-        dim1.extend(rng.normal(cx, 0.4, per_cat))
-        dim2.extend(rng.normal(cy, 0.4, per_cat))
-        cats.extend([cat] * per_cat)
-        sexes.extend((["male"] * 9) + (["female"] * 9) + (["unassigned"] * 7))
-    df_embedding = pls.DataFrame(
-        {"dim1": dim1, "dim2": dim2, "category": cats, "sex": sexes}
-    )
+def test_plot_category_prevalence_and_embedding_conditional_map_has_no_boundaries(tmp_path, monkeypatch):
+    """On a conditional map the bundle does not partition the torus the calls sit on:
+    no boundaries are drawn (and the bundle is not even read), the embedding titles say
+    so, and the prevalence bars still count the calls' categories."""
+    monkeypatch.setattr(os_utils, "QLVM_CATEGORY_BUNDLE_DIRECTORY", str(tmp_path / "unused"))
     fig, axes = plot_category_prevalence_and_embedding(
-        df_embedding,
+        _embedding_frame(),
         male_color=_HEX_MALE, female_color=_HEX_FEMALE,
-        unassigned_color=_HEX_UNASSIGNED,
-        plot_type="density", log_scale_bars=True, grid_res=25,
+        unassigned_color=_HEX_UNASSIGNED, qlvm_map="qlvm_dur",
+        plot_type="scatter", log_scale_bars=False, grid_res=25,
     )
-    assert axes.shape == (4, 2)
+    for ax_emb in axes[:, 1]:
+        assert not any(isinstance(child, matplotlib.contour.ContourSet) for child in ax_emb.get_children())
+        assert "no boundaries" in ax_emb.get_title()
+    assert len(axes[0, 0].patches) > 0
     plt.close(fig)
 
 
-def test_plot_category_prevalence_and_embedding_bad_plot_type_raises():
+def test_plot_category_prevalence_and_embedding_bad_arguments_raise():
     """
     Description
     -----------
-    An unsupported `plot_type` must raise ValueError before any rendering.
+    An unsupported `plot_type` or a `qlvm_map` outside os_utils.QLVM_MAPS must
+    raise ValueError before any rendering.
 
     Parameters
     ----------
@@ -1686,8 +1686,12 @@ def test_plot_category_prevalence_and_embedding_bad_plot_type_raises():
 
     with pytest.raises(ValueError, match="plot_type must be"):
         plot_category_prevalence_and_embedding(
-            _embedding_frame(), _HEX_MALE, _HEX_FEMALE, _HEX_UNASSIGNED,
+            _embedding_frame(), _HEX_MALE, _HEX_FEMALE, _HEX_UNASSIGNED, "qlvm",
             plot_type="banana",
+        )
+    with pytest.raises(ValueError, match="qlvm_map must be one of"):
+        plot_category_prevalence_and_embedding(
+            _embedding_frame(), _HEX_MALE, _HEX_FEMALE, _HEX_UNASSIGNED, "vae",
         )
 
 

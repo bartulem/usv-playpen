@@ -13,7 +13,6 @@ import pandas as pd
 import polars as pls
 import seaborn as sns
 import statsmodels.api as sm
-from scipy.interpolate import griddata
 from scipy.ndimage import gaussian_filter1d
 from scipy.stats import gaussian_kde, pearsonr, sem, t
 from statsmodels.formula.api import ols
@@ -23,7 +22,14 @@ from statsmodels.stats.multicomp import pairwise_tukeyhsd
 # analyses<->visualizations near-cycle); re-imported here so this module and its
 # importers keep using them unchanged.
 from ..analyses._usv_io import extract_session_metadata, load_and_filter_usv_data
-from ..os_utils import call_class_mask, drop_noise_usvs, squeak_class_selection
+from ..os_utils import (
+    QLVM_CATEGORY_MAP,
+    QLVM_MAPS,
+    call_class_mask,
+    drop_noise_usvs,
+    load_qlvm_category_bundle,
+    squeak_class_selection,
+)
 from .auxiliary_plot_functions import create_colormap
 
 # Load the project-wide default cmap from `visualizations_settings.json`
@@ -2145,6 +2151,7 @@ def plot_category_prevalence_and_embedding(
     male_color: str,
     female_color: str,
     unassigned_color: str,
+    qlvm_map: str,
     plot_type: str = 'density',
     boundary_color: str = '#00FF00',
     log_scale_bars: bool = False,
@@ -2161,8 +2168,14 @@ def plot_category_prevalence_and_embedding(
     each USV category. The right column visualizes the 2D embedding space using either
     a density heatmap ('imshow' with white_base_cmap) OR a scatter plot.
 
-    Global territorial boundaries are calculated using nearest-neighbor interpolation
-    across ALL valid USVs and are overlaid prominently on top of every embedding plot.
+    The category boundaries are the QLVM category bundle's label grid
+    (``os_utils.load_qlvm_category_bundle``, the partition the summaries'
+    ``qlvm_category`` was assigned from), overlaid on top of every embedding plot
+    when the embedding is the map the bundle is defined on (the regular map
+    ``qlvm``). On a conditional map (``qlvm_dur``, ``qlvm_ent``) the bundle does
+    not partition the torus the calls sit on, so no boundaries are drawn and the
+    embedding titles say so; the bars still count the calls' ``qlvm_category``.
+    Boundaries are never estimated from the data.
 
     Parameters
     ----------
@@ -2174,15 +2187,19 @@ def plot_category_prevalence_and_embedding(
         Hex color string used for the female bar chart and scatter plot.
     unassigned_color : str
         Hex color string used for the unassigned bar chart and scatter plot.
+    qlvm_map : str
+        The QLVM map whose coordinates ``dim1`` / ``dim2`` hold (one of
+        ``os_utils.QLVM_MAPS``, e.g. ``'qlvm'`` for ``qlvm1`` / ``qlvm2``);
+        boundaries are drawn only for ``os_utils.QLVM_CATEGORY_MAP``.
     plot_type : str, default 'density'
         Visual style for the embedding space. Must be 'density' or 'scatter'.
     boundary_color : str, default '#00FF00'
-        Hex color for the territorial boundary lines overlaid on the embedding.
+        Hex color for the category boundary lines overlaid on the embedding.
     log_scale_bars : bool, default False
         If True, applies a base-10 logarithmic scale to the y-axis of the raw count bar charts.
     grid_res : int, default 300
-        The resolution of the internal meshgrid. Higher values produce smoother
-        global boundary lines and KDE maps, but increase computation time.
+        The resolution of the meshgrid the density (KDE) maps are evaluated
+        on. Higher values produce smoother maps but increase computation time.
 
     Returns
     -------
@@ -2195,14 +2212,25 @@ def plot_category_prevalence_and_embedding(
     if plot_type not in ['density', 'scatter']:
         error_msg = "plot_type must be either 'density' or 'scatter'."
         raise ValueError(error_msg)
+    if qlvm_map not in QLVM_MAPS:
+        error_msg = f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}."
+        raise ValueError(error_msg)
 
     df_pd = df_embedding.to_pandas()
 
-    # 1. Prepare global boundaries (griddata over all valid USVs)
-    print("Computing global acoustic territorial boundaries...")
+    # 1. Category boundaries: the category bundle's label grid on the map it is
+    # defined on; none on a conditional map (the bundle does not partition it).
+    if qlvm_map == QLVM_CATEGORY_MAP:
+        category_bundle = load_qlvm_category_bundle()
+        boundary_axis = category_bundle['axis']
+        boundary_grid = category_bundle['label_grid']
+        boundary_levels = np.arange(1.5, len(category_bundle['names']) + 0.5, 1.0)
+        boundary_note = ''
+    else:
+        boundary_grid = None
+        boundary_note = f' - no boundaries ({QLVM_CATEGORY_MAP} map categories)'
     dim1_all = df_pd['dim1'].to_numpy()
     dim2_all = df_pd['dim2'].to_numpy()
-    cats_all = df_pd['category'].to_numpy()
 
     x_min, x_max = dim1_all.min(), dim1_all.max()
     y_min, y_max = dim2_all.min(), dim2_all.max()
@@ -2216,17 +2244,6 @@ def plot_category_prevalence_and_embedding(
         np.linspace(x_min, x_max, grid_res),
         np.linspace(y_min, y_max, grid_res)
     )
-
-    # Interpolate boundaries based on nearest neighbor category. Interpolate the
-    # ordinal CODES (0..N-1), not the raw category values: the contour levels below
-    # are `np.arange(len(unique_cats)+1) - 0.5`, tied to the category COUNT, so they
-    # only land on the boundaries between adjacent categories when the codes are
-    # contiguous. Raw IDs can be non-contiguous (e.g. {0, 2, 5, 11}), which would
-    # place the level lines off the actual boundaries (wrong/missing). `Z` is used
-    # only by the two ax.contour() calls below, so the remap is safe.
-    unique_cats = np.unique(cats_all)
-    cat_codes = np.searchsorted(unique_cats, cats_all)
-    Z = griddata((dim1_all, dim2_all), cat_codes, (xx, yy), method='nearest')
 
     # Build a custom "white-base" gradient by taking the project-wide
     # default colormap (`figures.sequential_cmap`) and pre-pending a smooth ramp
@@ -2284,13 +2301,14 @@ def plot_category_prevalence_and_embedding(
                     alpha=0.7, edgecolors='none', zorder=2
                 )
 
-        # Draw global background boundaries ON TOP
-        ax_emb.contour(
-            xx, yy, Z, levels=np.arange(len(unique_cats)+1)-0.5,
-            colors=boundary_color, linewidths=2.5, zorder=10
-        )
+        # Draw the category boundaries ON TOP (regular map only)
+        if boundary_grid is not None:
+            ax_emb.contour(
+                boundary_axis, boundary_axis, boundary_grid, levels=boundary_levels,
+                colors=boundary_color, linewidths=2.5, zorder=10
+            )
 
-        ax_emb.set_title(f"{title_prefix} Embedding Space ({plot_type.capitalize()})", fontsize=12)
+        ax_emb.set_title(f"{title_prefix} Embedding Space ({plot_type.capitalize()}){boundary_note}", fontsize=12)
         ax_emb.set_xlim(x_min, x_max)
         ax_emb.set_ylim(y_min, y_max)
         ax_emb.set_xticks([])
@@ -2356,13 +2374,14 @@ def plot_category_prevalence_and_embedding(
                 alpha=0.7, edgecolors='none', zorder=2
             )
 
-    # Global boundaries on top
-    ax_sum_emb.contour(
-        xx, yy, Z, levels=np.arange(len(unique_cats)+1)-0.5,
-        colors=boundary_color, linewidths=2.5, zorder=10
-    )
+    # Category boundaries on top (regular map only)
+    if boundary_grid is not None:
+        ax_sum_emb.contour(
+            boundary_axis, boundary_axis, boundary_grid, levels=boundary_levels,
+            colors=boundary_color, linewidths=2.5, zorder=10
+        )
 
-    ax_sum_emb.set_title(f"Global Summary Embedding Space ({plot_type.capitalize()})", fontsize=12)
+    ax_sum_emb.set_title(f"Global Summary Embedding Space ({plot_type.capitalize()}){boundary_note}", fontsize=12)
     ax_sum_emb.set_xlim(x_min, x_max)
     ax_sum_emb.set_ylim(y_min, y_max)
     ax_sum_emb.set_xticks([])

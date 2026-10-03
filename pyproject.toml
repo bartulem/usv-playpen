@@ -161,7 +161,6 @@ generate-naturalistic-usv-playback = "usv_playpen.analyses.analyze_data:generate
 generate-rm = "usv_playpen.analyses.analyze_data:generate_rm_files_cli"
 generate-usv-interval-distributions = "usv_playpen.analyses.analyze_data:generate_usv_interval_distributions_cli"
 infer-qlvm-latents = "usv_playpen.processing.qlvm_latents:infer_qlvm_latents_cli"
-export-qlvm-reference-arrays = "usv_playpen.processing.qlvm_latents:export_qlvm_reference_arrays_cli"
 tidy-usv-summary-columns = "usv_playpen.processing.qlvm_latents:tidy_usv_summary_columns_cli"
 build-qlvm-categories = "usv_playpen.processing.qlvm_categories:build_qlvm_categories_cli"
 assign-qlvm-categories = "usv_playpen.processing.qlvm_categories:assign_qlvm_categories_cli"

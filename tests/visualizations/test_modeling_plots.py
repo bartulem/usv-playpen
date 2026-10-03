@@ -25,6 +25,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from usv_playpen import os_utils
+
 # modeling_plots pulls in the modeling stack (optax-backed), whose import
 # emits a one-time JAX DeprecationWarning that `filterwarnings = ["error"]`
 # would otherwise promote to a collection error.
@@ -40,7 +42,7 @@ with warnings.catch_warnings():
         DeepResultsVisualizer,
         _classify_predictor_feature,
         _last_bin_of_consecutive_run,
-        _resolve_atlas_decoder_and_arrays,
+        _resolve_atlas_decoder_and_categories,
         _rolling_mean_1d,
         plot_collinearity_audit,
         plot_feature_ranking,
@@ -1500,17 +1502,17 @@ def _fake_decoder_params(rng):
     }
 
 
-_FAKE_CELL_MODEL_ID = "v3/phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor"
+_FAKE_CELL_MODEL_ID = "masked_clean/cell/masked"
 
 
-def _fake_model_cell_loader(rng, c_dim: int = 0, loaded: list | None = None):
+def _fake_model_cell_loader(rng, c_dim: int = 0, loaded: list | None = None, model_id: str = _FAKE_CELL_MODEL_ID):
     """
     Build a stand-in for ``processing.qlvm_latents.load_model_cell`` so the atlas's
-    model-cell route runs without the real ``/mnt`` package: it returns the stand-in
-    decoder weights of ``_fake_decoder_params`` (legacy-head layout, which
-    ``decode_lattice_atlas`` runs), a contract with the given ``c_dim``, and the v3
-    regular cell's ``model_id``. Every directory it is called with is appended to
-    ``loaded``.
+    decoder runs without the real ``/mnt`` package: it returns the stand-in decoder
+    weights of ``_fake_decoder_params`` (legacy-head layout, which
+    ``decode_lattice_atlas`` runs), a contract with the given ``c_dim``, and
+    ``model_id`` (by default the production regular cell's). Every directory it is
+    called with is appended to ``loaded``.
 
     Returns
     -------
@@ -1523,27 +1525,9 @@ def _fake_model_cell_loader(rng, c_dim: int = 0, loaded: list | None = None):
     def _load(model_cell_directory):
         if loaded is not None:
             loaded.append(model_cell_directory)
-        return {"params": params, "contract": {"c_dim": c_dim}, "model_id": _FAKE_CELL_MODEL_ID}
+        return {"params": params, "contract": {"c_dim": c_dim}, "model_id": model_id}
 
     return _load
-
-
-def _write_v3_coarse_arrays(path, rng, model_id: str = _FAKE_CELL_MODEL_ID, n_regions: int = 9):
-    """
-    Write a stand-in ``export-qlvm-reference-arrays`` coarse arrays file: a 200 x 200
-    ``ws_labels_periodic`` grid with ``n_regions`` labels and the exporting cell's
-    ``model_id``.
-
-    Returns
-    -------
-    str
-        The written path.
-    """
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    labels = rng.integers(1, n_regions + 1, size=(200, 200)).astype(np.int16)
-    np.savez(path, ws_labels_periodic=labels, ws_labels=labels, model_id=np.array(model_id))
-    return str(path)
 
 
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
@@ -1553,91 +1537,61 @@ class TestPlotManifoldFilterAtlas:
     torus-only atlas (decoded vocal-space map + |W(t)| magnitude + per-feature
     affinity filmstrips)."""
 
-    def test_writes_filter_atlas(self, tmp_path, monkeypatch):
-        """A torus (4-D sin/cos) final step, with a stand-in QLVM model cell decoder
-        and supercategory arrays, emits exactly one ``*_filter_atlas_*`` figure."""
+    def test_writes_filter_atlas(self, tmp_path, monkeypatch, qlvm_category_bundle):
+        """A torus (4-D sin/cos) final step, with a stand-in decoder and the category
+        bundle, emits exactly one ``*_filter_atlas_*`` figure; the decoder is the
+        production regular cell from the os_utils constants (no argument names it)."""
 
         rng = np.random.default_rng(71)
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
+        loaded: list = []
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng, loaded=loaded))
         pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4)
-        arr_path = _write_v3_coarse_arrays(tmp_path / "arrays_coarse.npz", rng)
         out_dir = tmp_path / "atlas_out"
         out_dir.mkdir()
         plot_manifold_filter_atlas(
             selection_results_path=pkl,
-            decoder_model_cell_directory="/cell",
-            supercategory_arrays_npz_path=arr_path,
             n_time_slices=4,
             atlas_grid_n=2,
             save_plot=True,
             output_dir=str(out_dir),
         )
+        assert loaded == [os_utils.qlvm_production_cell_directory("qlvm")]
         assert len(list(out_dir.glob(
             f"model_selection_manifold_*_filter_atlas_*.{_FIGURE_FORMAT}"))) == 1
 
-    def test_default_decoder_is_settings_model_cell_with_v3_arrays(self, tmp_path, monkeypatch):
-        """With no decoder arguments the atlas decodes with the model package cell
-        named by modeling_settings.json (the production regular cell) and draws the coarse
-        arrays os_utils resolves under the visualization spectrograms_dir
-        (<dir>/qlvm_v3/arrays_coarse.npz); one figure is written."""
+    def test_decoder_and_categories_come_from_the_constants(self, monkeypatch, qlvm_category_bundle):
+        """The resolver takes no paths: the decoder is the production regular cell
+        (never a settings path the experimenter re-keying rewrites) and the category
+        grid is the bundle's, whose identity is recorded."""
 
         rng = np.random.default_rng(75)
         loaded: list = []
         monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng, loaded=loaded))
-        resolved_calls: list = []
-        v3_arrays = _write_v3_coarse_arrays(tmp_path / "spectrograms" / "qlvm_v3" / "arrays_coarse.npz", rng)
-
-        def _resolve(spectrograms_dir, embedding, clustering):
-            resolved_calls.append((spectrograms_dir, embedding, clustering))
-            return v3_arrays
-
-        monkeypatch.setattr(modeling_plots, "resolve_embedding_arrays_path", _resolve)
-        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=2, output_dim=4)
-        out_dir = tmp_path / "atlas_cell"
-        out_dir.mkdir()
-        plot_manifold_filter_atlas(
-            selection_results_path=pkl, n_time_slices=3, atlas_grid_n=2,
-            save_plot=True, output_dir=str(out_dir),
-        )
-        assert len(loaded) == 1
+        _, bundle, model_id = _resolve_atlas_decoder_and_categories()
         assert loaded[0].endswith("qlvm_time_stretch/masked_clean/cell/masked")
-        assert resolved_calls == [(_VIZ_SETTINGS['shared_resources']['spectrograms_dir'], "qlvm", "coarse")]
-        assert len(list(out_dir.glob(f"*_filter_atlas_*.{_FIGURE_FORMAT}"))) == 1
+        assert model_id == bundle["model_id"] == _FAKE_CELL_MODEL_ID
+        assert bundle["directory"] == str(qlvm_category_bundle)
+        assert sorted(np.unique(bundle["label_grid"]).tolist()) == [1, 2, 3, 4]
+        assert "built 2026-10-03T12:00:00" in bundle["identity"]
 
-    def test_default_arrays_path_is_qlvm_v3(self, tmp_path, monkeypatch):
-        """The default coarse arrays of a cell decoder come from the real os_utils
-        convention for the regular map, <spectrograms_dir>/qlvm_v3/qlvm/arrays_coarse.npz
-        (never the old qlvm/ folder)."""
-
-        rng = np.random.default_rng(76)
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
-        real_resolve = modeling_plots.resolve_embedding_arrays_path
-        resolved: list = []
-        stand_in = _write_v3_coarse_arrays(tmp_path / "arrays_coarse.npz", rng)
-
-        def _resolve(spectrograms_dir, qlvm_map, clustering):
-            resolved.append(real_resolve(spectrograms_dir, qlvm_map, clustering))
-            return stand_in
-
-        monkeypatch.setattr(modeling_plots, "resolve_embedding_arrays_path", _resolve)
-        _, arrays_path, model_id = _resolve_atlas_decoder_and_arrays("/cell", None)
-        assert arrays_path == stand_in
-        assert model_id == _FAKE_CELL_MODEL_ID
-        assert resolved[0].replace("\\", "/").endswith("/qlvm_v3/qlvm/arrays_coarse.npz")
-
-    def test_arrays_from_another_model_raise(self, tmp_path, monkeypatch):
-        """Coarse arrays exported from a different cell than the decoder are
+    def test_decoder_of_another_cell_raises(self, monkeypatch, qlvm_category_bundle):
+        """A decoder whose cell is not the one the category bundle is defined on is
         refused, so boundaries always partition the decoded torus."""
 
         rng = np.random.default_rng(77)
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(
+            rng, model_id="v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked"))
+        with pytest.raises(ValueError, match="partitions the torus of masked_clean/cell/masked"):
+            _resolve_atlas_decoder_and_categories()
+
+    def test_unreadable_bundle_raises(self, tmp_path, monkeypatch):
+        """Without a readable category bundle the atlas stops (no placeholder grid)."""
+
+        rng = np.random.default_rng(79)
         monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
-        other = _write_v3_coarse_arrays(tmp_path / "other" / "arrays_coarse.npz", rng,
-                                        model_id="v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked")
-        with pytest.raises(ValueError, match="hold the clustering of v2/phase9"):
-            _resolve_atlas_decoder_and_arrays(
-                decoder_model_cell_directory="/cell",
-                supercategory_arrays_npz_path=other,
-            )
+        monkeypatch.setattr(os_utils, "QLVM_CATEGORY_BUNDLE_DIRECTORY", str(tmp_path / "missing"))
+        with pytest.raises(FileNotFoundError, match="missing"):
+            _resolve_atlas_decoder_and_categories()
 
     def test_conditional_cell_raises(self, monkeypatch):
         """A conditional cell (c_dim > 0) cannot decode a torus-only atlas."""
@@ -1645,12 +1599,12 @@ class TestPlotManifoldFilterAtlas:
         rng = np.random.default_rng(78)
         monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng, c_dim=1))
         with pytest.raises(ValueError, match="conditional cell"):
-            _resolve_atlas_decoder_and_arrays("/cell", None)
+            _resolve_atlas_decoder_and_categories()
 
     def test_euclidean_2d_block_is_rejected(self, tmp_path):
         """The atlas is torus-only: a euclidean 2-D weight block prints why and
         emits NO file. The guard returns before any QLVM artifact is touched, so
-        no decoder / arrays paths are needed."""
+        no decoder / bundle is needed."""
 
         rng = np.random.default_rng(74)
         pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=2, output_dim=2)

@@ -39,13 +39,18 @@ Architecture
   colored by a categorical label (category / session type / session id / emitter
   sex) OR a continuous metric through the colormap (density, duration,
   frequencies, amplitudes, spectral entropy), with an ``alt.selection_interval``
-  brush. Only the regular map has a category column (``qlvm_category``, R-1..R-k);
-  on a map without one (the conditional maps and the squeak map) a category
-  colouring falls back to density and boundaries are skipped, with a note in the
-  chart title. Optional category-boundary contours overlay the scatter: the
-  ``ws_labels_periodic`` grid of ``<spectrograms_dir>/qlvm_v3/<map>/arrays_fine.npz``
-  (resolved by ``os_utils.resolve_embedding_arrays_path``) when such arrays exist
-  for the map; otherwise a k-NN boundary estimated from the labels. The spec inlines session_id / row_index / x / y / color per
+  brush. The category colouring is the calls' ``qlvm_category`` (R-1..R-k) on
+  every USV map, the conditional ones included (the categories are defined on the
+  regular map and label the call; ``os_utils.QLVM_CATEGORY_COLUMN``); the squeak
+  map holds no USVs with categories, so there a category colouring falls back to
+  density, with a note in the chart title. Optional category-boundary contours
+  overlay the scatter of the regular map only: the ``label_grid`` of the QLVM
+  category bundle (``os_utils.load_qlvm_category_bundle``,
+  ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``), the partition the summaries'
+  ``qlvm_category`` was assigned from. A conditional map draws no boundaries (the
+  bundle partitions the regular map's torus only) and the squeak map none either,
+  each with a note in the chart title; boundaries are never estimated from the
+  data. The spec inlines session_id / row_index / x / y / color per
   point (~200 bytes each), so the max_points ceiling is bounded by marimo's
   ``output_max_bytes`` (raised to 200 MB in pyproject.toml).
 - Brushing samples spectrograms from the selection along an Archimedean spiral
@@ -96,19 +101,18 @@ def _imports():
     alt.data_transformers.disable_max_rows()
 
     from usv_playpen.os_utils import (
+        QLVM_CATEGORY_COLUMN,
+        QLVM_CATEGORY_MAP,
         QLVM_MAPS,
         SQUEAK_CLASS_SELECTIONS,
         call_class_mask,
+        load_qlvm_category_bundle,
         resolve_consolidated_h5_path,
-        resolve_embedding_arrays_path,
         resolve_experimenter_path,
         resolve_squeak_spectrogram_store_path,
     )
     from usv_playpen.processing.build_squeak_spectrogram_store import (
         squeak_store_thumbnail,
-    )
-    from usv_playpen.visualizations.make_usv_spectrograms import (
-        _knn_boundary_grid as knn_boundary_grid,
     )
     from usv_playpen.visualizations.make_usv_spectrograms import (
         build_pooled_embeddings_df,
@@ -117,6 +121,8 @@ def _imports():
     return (
         BytesIO,
         Path,
+        QLVM_CATEGORY_COLUMN,
+        QLVM_CATEGORY_MAP,
         QLVM_MAPS,
         SQUEAK_CLASS_SELECTIONS,
         alt,
@@ -126,14 +132,13 @@ def _imports():
         h5py,
         hashlib,
         json,
-        knn_boundary_grid,
+        load_qlvm_category_bundle,
         mo,
         np,
         pd,
         pls,
         plt,
         resolve_consolidated_h5_path,
-        resolve_embedding_arrays_path,
         resolve_experimenter_path,
         resolve_squeak_spectrogram_store_path,
         squeak_store_thumbnail,
@@ -145,8 +150,8 @@ def _settings(
     Path,
     QLVM_MAPS,
     json,
+    load_qlvm_category_bundle,
     resolve_consolidated_h5_path,
-    resolve_embedding_arrays_path,
     resolve_experimenter_path,
     resolve_squeak_spectrogram_store_path,
 ):
@@ -216,21 +221,18 @@ def _settings(
     if default_qlvm_map not in QLVM_MAPS:
         default_qlvm_map = "qlvm"
 
-    # QLVM reference arrays of a map under `spectrograms_dir`
-    # (<dir>/qlvm_v3/<map>/arrays_fine.npz, os_utils convention), keyed by
-    # (map, Boundaries dropdown value "category"). Their `ws_labels_periodic` grid
-    # is drawn instead of a k-NN estimate only when it is the partition the map's
-    # category column was read from; the production cells carry no clustering, so
-    # usually there is no entry (k-NN fallback).
+    # The QLVM category grid: the label_grid of the category bundle
+    # (os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY), the partition the summaries'
+    # qlvm_category was assigned from, on the regular map's torus. Read once; when
+    # the bundle is unreadable the boundaries are off and the chart title says why
+    # (never a grid estimated from the data).
     try:
-        _spec_dir = resolve_experimenter_path(_viz["shared_resources"]["spectrograms_dir"])
-        qlvm_arrays_paths = {
-            (_map, "category"): resolve_embedding_arrays_path(_spec_dir, _map, "fine")
-            for _map in QLVM_MAPS
-            if Path(resolve_embedding_arrays_path(_spec_dir, _map, "fine")).is_file()
-        }
-    except KeyError:
-        qlvm_arrays_paths = {}
+        category_grid = load_qlvm_category_bundle()["label_grid"]
+        category_grid_note = None
+    except (FileNotFoundError, OSError, ValueError) as _bundle_error:
+        category_grid = None
+        category_grid_note = f"QLVM category bundle unreadable ({_bundle_error}): no boundaries"
+
     if _input_dir is not None and Path(_input_dir).is_dir():
         available_lists = {
             p.name: str(p)
@@ -266,11 +268,12 @@ def _settings(
         CHART_HEIGHT_PX,
         SQUEAK_DYNAMIC_RANGE_DB,
         available_lists,
+        category_grid,
+        category_grid_note,
         consolidated_h5_path,
         default_qlvm_map,
         global_cmap,
         list_to_sessions,
-        qlvm_arrays_paths,
         sex_colors,
         squeak_store_path,
     )
@@ -577,13 +580,16 @@ def _load_pooled_df(
 def _scatter_chart(
     CHART_DATA_WIDTH_PX,
     CHART_HEIGHT_PX,
+    QLVM_CATEGORY_COLUMN,
+    QLVM_CATEGORY_MAP,
     SQUEAK_CLASS_SELECTIONS,
     alt,
     boundary_dropdown,
     call_class_mask,
+    category_grid,
+    category_grid_note,
     color_dropdown,
     global_cmap,
-    knn_boundary_grid,
     map_dropdown,
     max_points_slider,
     mo,
@@ -591,7 +597,6 @@ def _scatter_chart(
     pd,
     plt,
     pooled_df,
-    qlvm_arrays_paths,
     sessions_select,
     sex_colors,
     squeak_class_dropdown,
@@ -616,17 +621,26 @@ def _scatter_chart(
         map_prefix = map_dropdown.value
         # A QLVM map P places calls at P1/P2 on the unit torus.
         x_col, y_col = f"{map_prefix}1", f"{map_prefix}2"
-        # Only a map with a <map>_category column (the regular map's
-        # qlvm_category) has categories; on the others (the conditional maps and
-        # the squeak map, which ship positions only) category colouring falls back
-        # to density and boundaries are skipped. A fallback rather than mo.stop:
-        # stopping this cell would also hide the controls (_explorer draws them
-        # from this cell's outputs), so the dropdowns could not be changed back.
+        # Every USV map colours by the calls' qlvm_category (the regular map's
+        # categories label the call, conditional maps included); the squeak map
+        # holds the squeak-bearing classes, which carry no USV category, so a
+        # category colouring falls back to density there. Boundaries are the
+        # category bundle's grid and are drawn on the regular map only: on any
+        # other map (the bundle does not partition its torus) or with the bundle
+        # unreadable they are off, and the chart title says which. A note rather
+        # than mo.stop: stopping this cell would also hide the controls
+        # (_explorer draws them from this cell's outputs), so the dropdowns could
+        # not be changed back.
         squeak_map = map_prefix == "qlvm_squeak"
-        no_categories = f"{map_prefix}_category" not in pooled.columns
-        category_fallback = no_categories and (
-            color_dropdown.value == "category" or boundary_dropdown.value != "none"
-        )
+        no_categories = squeak_map or QLVM_CATEGORY_COLUMN not in pooled.columns
+        chart_notes = []
+        if no_categories and color_dropdown.value == "category":
+            chart_notes.append("no QLVM categories on this map: coloured by density")
+        if boundary_dropdown.value != "none":
+            if map_prefix != QLVM_CATEGORY_MAP:
+                chart_notes.append(f"categories are defined on the {QLVM_CATEGORY_MAP} map: no boundaries here")
+            elif category_grid is None:
+                chart_notes.append(category_grid_note)
         # No overlap between the USV maps and the squeak map: a USV map shows only
         # the segments detect-usv-squeaks classed as pure USVs (usv & ~squeak;
         # squeak-bearing rows and unclassed rows never), and the squeak map
@@ -645,7 +659,7 @@ def _scatter_chart(
         if no_categories and color_metric == "category":
             color_metric = "density"
         if color_metric == "category":
-            color_col, color_kind = f"{map_prefix}_{color_metric}", "categorical"
+            color_col, color_kind = QLVM_CATEGORY_COLUMN, "categorical"
         elif color_metric == "session_type":
             color_col, color_kind = "session_type", "categorical"
         elif color_metric == "session":
@@ -659,10 +673,9 @@ def _scatter_chart(
         else:
             color_col, color_kind = color_metric, "continuous"
 
-        # Boundaries use the map-specific categorical label column (overlay).
-        boundary_choice = "none" if no_categories else boundary_dropdown.value
-        boundary_col = (
-            None if boundary_choice == "none" else f"{map_prefix}_{boundary_choice}"
+        # Boundaries: the category bundle's grid, on the regular map only.
+        draw_boundaries = (
+            boundary_dropdown.value != "none" and map_prefix == QLVM_CATEGORY_MAP and category_grid is not None
         )
 
         keep = ["session_id", "row_index", x_col, y_col]
@@ -670,8 +683,6 @@ def _scatter_chart(
         # already in keep (likewise a color/boundary column could repeat).
         if color_col is not None and color_col not in keep:
             keep.append(color_col)
-        if boundary_col is not None and boundary_col not in keep:
-            keep.append(boundary_col)
 
         # Extra columns carried only to populate the hover tooltip. Guarded so an
         # older cache lacking them neither trips the missing-col check below nor
@@ -724,8 +735,9 @@ def _scatter_chart(
 
         # Color setup: categorical -> fixed palette, emitter -> settings sex
         # colors, density / acoustic feature -> project colormap (quantitative).
-        # 20 distinct colours so the 15 QLVM fine categories (and the 9 coarse
-        # ones) each get their own colour instead of cycling.
+        # 20 distinct colours so categorical labels with many levels (session
+        # ids, session types, the QLVM categories) get their own colour instead
+        # of cycling.
         PALETTE = (
             "#4C78A8", "#F58518", "#E45756", "#72B7B2", "#54A24B", "#EECA3B",
             "#B279A2", "#FF9DA6", "#9D755D", "#BAB0AC", "#1F77B4", "#FF7F0E",
@@ -831,34 +843,15 @@ def _scatter_chart(
         )
         scatter = scatter.add_params(brush)
 
-        # Boundary overlay: the map's v3 cell label grid (ws_labels_periodic of the
-        # reference arrays, indexed [y, x] over the unit square), else (arrays
-        # missing) a KNN-predicted category grid (density-masked); either way
+        # Boundary overlay: the category bundle's label grid (indexed [y, x] over
+        # the unit square, pixel centres at (i + 0.5) / res), regular map only;
         # one 0.5 contour per category -> one line per seg.
         layers = [scatter]
         grid_labels = None
-        if (map_prefix, boundary_choice) in qlvm_arrays_paths:
-            with np.load(qlvm_arrays_paths[(map_prefix, boundary_choice)]) as _arrays:
-                _grid = _arrays["ws_labels_periodic"].astype(float)
-            _axis = (np.arange(_grid.shape[0]) + 0.5) / _grid.shape[0]
+        if draw_boundaries:
+            _axis = (np.arange(category_grid.shape[0]) + 0.5) / category_grid.shape[0]
             grid_xx, grid_yy = np.meshgrid(_axis, _axis)
-            grid_labels = np.where(_grid > 0, _grid, np.nan)
-        elif boundary_col is not None and chart_pd.shape[0] >= 5:
-            bx_pts = chart_pd[x_col].to_numpy()
-            by_pts = chart_pd[y_col].to_numpy()
-            labels = chart_pd[boundary_col].to_numpy()
-            x_lo, x_hi, y_lo, y_hi = 0.0, 1.0, 0.0, 1.0
-            # Adapt grid resolution to point count, and keep the density mask
-            # LOOSE (low min-count, strong smoothing) so the predicted-label
-            # field stays connected -- a tight mask NaNs out lean cells and
-            # fragments the contours into broken arcs. More neighbours also
-            # smooths the k-NN boundary.
-            grid_res = int(np.clip(np.sqrt(chart_pd.shape[0]) * 1.5, 80, 240))
-            grid_xx, grid_yy, grid_labels = knn_boundary_grid(
-                bx_pts, by_pts, labels, x_lo, x_hi, y_lo, y_hi,
-                n_neighbors=25, grid_resolution=grid_res,
-                density_smoothing_sigma=3.5, density_min_count=0.04,
-            )
+            grid_labels = category_grid.astype(float)
         if grid_labels is not None and not np.all(np.isnan(grid_labels)):
             # Outline EACH category's region as the 0.5 contour of its own
             # binary mask, rather than contouring the integer label grid at
@@ -914,10 +907,9 @@ def _scatter_chart(
             height=CHART_HEIGHT_PX,
             background="#FFFFFF",
             padding=0,
-            # Say why a map without categories ignored a category colouring /
-            # boundaries (no title otherwise, so the other maps keep their layout).
-            **({"title": "This map has no categories: coloured by density, no boundaries"}
-               if category_fallback else {}),
+            # Say why a category colouring / the boundaries were not drawn (no
+            # title otherwise, so the other maps keep their layout).
+            **({"title": "; ".join(chart_notes)} if chart_notes else {}),
         ).configure_legend(
             labelFontSize=15, symbolSize=450, rowPadding=10,
             gradientThickness=30, gradientLength=CHART_HEIGHT_PX,

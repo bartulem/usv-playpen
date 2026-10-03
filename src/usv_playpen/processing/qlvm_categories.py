@@ -69,6 +69,11 @@ computable from the category directory and the call's coordinates
 ``<P>_category_agreement`` / ``<P>_category_uncertain`` column an earlier version
 wrote is removed. Run it after ``infer-qlvm-latents``, which drops the
 ``<P>_category`` column (and those confidence columns) of every prefix it embeds.
+With an empty ``category_directory`` / ``coordinate_prefix`` it labels with the
+production bundle, ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``, on the regular map
+``qlvm`` (``os_utils.derive_spectrogram_model_paths``): the bundle every QLVM
+figure loads its category grid from (``os_utils.load_qlvm_category_bundle``), so
+the summaries' ``qlvm_category`` and the drawn boundaries are one partition.
 """
 
 from __future__ import annotations
@@ -92,20 +97,26 @@ from skimage.segmentation import watershed
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
     CATEGORY_CONFIDENCE_SUFFIXES,
+    QLVM_CATEGORY_BUILD_CONFIG_NAME,
+    QLVM_CATEGORY_CALL_LABELS_NAME,
+    QLVM_CATEGORY_GRIDS_NAME,
+    QLVM_CATEGORY_NOMENCLATURE_NAME,
     atomic_output_path,
-    configure_path,
+    derive_spectrogram_model_paths,
     first_match_or_raise,
     order_usv_summary_columns,
+    read_qlvm_category_bundle,
 )
 from ..time_utils import is_gui_context, smart_wait
 from .build_qlvm_training_set import file_sha256
 from .qlvm_latents import label_grid_lookup
 
-# Files a category directory holds.
-CATEGORY_GRIDS_NAME = "category_grids.npz"
-CATEGORY_NOMENCLATURE_NAME = "category_nomenclature.json"
-CATEGORY_CALL_LABELS_NAME = "category_call_labels.csv"
-CATEGORY_BUILD_CONFIG_NAME = "build_config.json"
+# Files a category directory holds (named once, in os_utils, where every reader of
+# a bundle finds them too).
+CATEGORY_GRIDS_NAME = QLVM_CATEGORY_GRIDS_NAME
+CATEGORY_NOMENCLATURE_NAME = QLVM_CATEGORY_NOMENCLATURE_NAME
+CATEGORY_CALL_LABELS_NAME = QLVM_CATEGORY_CALL_LABELS_NAME
+CATEGORY_BUILD_CONFIG_NAME = QLVM_CATEGORY_BUILD_CONFIG_NAME
 
 # The columns a positions table and a properties table must carry besides the properties.
 POSITION_COLUMNS = ("spec_id", "x", "y")
@@ -685,7 +696,10 @@ def load_category_bundle(category_directory: str) -> dict:
     """
     Description
     -----------
-    Loads a category directory written by :class:`QLVMCategoryBuilder`.
+    Loads a category directory written by :class:`QLVMCategoryBuilder`, through
+    the one bundle reader every figure uses too,
+    :func:`os_utils.read_qlvm_category_bundle` (which checks that the grids are
+    square, share one shape and hold exactly the nomenclature's labels ``1..k``).
 
     Parameters
     ----------
@@ -695,22 +709,16 @@ def load_category_bundle(category_directory: str) -> dict:
     Returns
     -------
     bundle (dict)
-        ``label_grid`` (``(res, res)`` int, ``1..k``), ``agreement``
-        (``(res, res)`` float), ``nomenclature`` (dict, the JSON) and
-        ``uncertain_agreement`` (float).
+        :func:`os_utils.read_qlvm_category_bundle`'s dictionary (``label_grid``
+        (``(res, res)`` int, ``1..k``), ``agreement`` (``(res, res)`` float),
+        ``nomenclature`` (dict, the JSON), ``build_config``, ``density``,
+        ``centers``, ...), plus ``uncertain_agreement`` (float, the
+        nomenclature's threshold).
     """
 
-    directory = pathlib.Path(configure_path(category_directory))
-    with np.load(directory / CATEGORY_GRIDS_NAME, allow_pickle=False) as grids:
-        label_grid = grids['label_grid'].astype(np.int64)
-        agreement = grids['agreement'].astype(np.float64)
-    with (directory / CATEGORY_NOMENCLATURE_NAME).open() as handle:
-        nomenclature = json.load(handle)
-    if label_grid.shape != agreement.shape or label_grid.shape[0] != label_grid.shape[1]:
-        error_message = f"{directory}: label_grid {label_grid.shape} and agreement {agreement.shape} must be the same square grid."
-        raise ValueError(error_message)
-    return {'label_grid': label_grid, 'agreement': agreement, 'nomenclature': nomenclature,
-            'uncertain_agreement': float(nomenclature['uncertain_agreement'])}
+    bundle = read_qlvm_category_bundle(category_directory)
+    bundle['uncertain_agreement'] = float(bundle['nomenclature']['uncertain_agreement'])
+    return bundle
 
 
 def assign_categories(coordinates: np.ndarray, bundle: dict) -> dict[str, np.ndarray]:
@@ -1083,6 +1091,9 @@ class QLVMCategoryAssigner:
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
+        # An empty category directory / coordinate prefix is the production bundle
+        # (os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY) on the map it is defined on (qlvm).
+        derive_spectrogram_model_paths(self.input_parameter_dict)
         cfg = self.input_parameter_dict['assign_qlvm_categories']
         prefix = cfg['coordinate_prefix']
         if not cfg['category_directory'] or not isinstance(prefix, str) or not prefix.isidentifier():
@@ -1191,8 +1202,8 @@ def build_qlvm_categories_cli(ctx, positions_file, properties_file, output_direc
 
 @click.command(name="assign-qlvm-categories")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--category-directory', 'category_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='A build-qlvm-categories output directory.')
-@click.option('--coordinate-prefix', 'coordinate_prefix', type=str, default=None, required=False, help='Prefix P of the summary columns P1 / P2 holding the torus coordinates of the map the categories were built on (the infer-qlvm-latents --model-cell prefix); P_category is written (earlier P_category_agreement / P_category_uncertain columns are removed).')
+@click.option('--category-directory', 'category_directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='A build-qlvm-categories output directory; when neither this nor the category_directory setting names one, the production bundle (os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY, the categories every QLVM figure draws).')
+@click.option('--coordinate-prefix', 'coordinate_prefix', type=str, default=None, required=False, help='Prefix P of the summary columns P1 / P2 holding the torus coordinates of the map the categories were built on (the infer-qlvm-latents --model-cell prefix; qlvm, the regular map the production bundle is defined on, when neither this nor the setting names one); P_category is written (earlier P_category_agreement / P_category_uncertain columns are removed).')
 @click.pass_context
 def assign_qlvm_categories_cli(ctx, root_directory, **kwargs) -> None:
     """

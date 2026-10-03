@@ -16,11 +16,18 @@ coordinates AND the spectrograms both come from the consolidated H5 (per-session
 ``qlvm/<key>/<qlvm_map>`` -- the torus coordinates of the production v3 cell of
 the QLVM map chosen by ``shared_resources.qlvm_map``, e.g. ``qlvm1`` / ``qlvm2``
 for the regular map, written by ``consolidate-spectrogram-store`` -- and
-``spectrogram/<key>/spectrograms``), pooled into one ordered array. The ``.npz``
-arrays file (``<spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_{coarse,fine}.npz``,
-the same cell's clustering exported by ``export-qlvm-reference-arrays``; see
-``os_utils.resolve_embedding_arrays_path``) is used only for the ``heatmap``
-background, ``ws_labels_periodic`` contours, and cluster ``centers``.
+``spectrogram/<key>/spectrograms``), pooled into one ordered array. The QLVM
+category bundle (``os_utils.load_qlvm_category_bundle``,
+``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``) supplies the rest: its smoothed
+corpus ``density`` is the heatmap background, its ``label_grid`` (R-1..R-k) the
+contours, and its category label positions (``centers``) the peaks the walks
+start from. The bundle partitions the regular map's torus only, so the video
+renders the regular map (``shared_resources.qlvm_map`` must be ``qlvm``), and the
+store's ``qlvm/<key>/qlvm`` coordinates must come from the production regular
+cell the bundle is defined on (``qlvm_models/qlvm`` provenance attrs of the store,
+checked before rendering): a store of another cell (e.g. the v3 archive written by
+the current ``consolidate-spectrogram-store``) places the calls on another torus,
+and the bundle's regions would mislabel them, so it is refused.
 
 Layout:
   left  = [0,1]^2 latent map (heatmap + watershed contours, no axes/ticks) with a
@@ -32,12 +39,12 @@ Layout:
           SAM2-masked and centred with equal padding on both sides.
 
 Phases (each preceded by a full-figure white title card):
-  * Part 1 -- Cluster peaks. For each cluster the right ring shows the peak
+  * Part 1 -- Category peaks. For each category the right ring shows the peak
     (center tile) surrounded by its ``m`` nearest samples in up to three
     concentric rings; the active cluster is outlined in a thick pulsating
     accent-colored contour with an accent-colored dot at its centre.
   * Part 2 -- Peak-to-peak walks (up to 5). Shortest torus path + small smooth
-    jitter between random cluster peaks; the right 5x15 grid fills row-major.
+    jitter between random category peaks; the right 5x15 grid fills row-major.
   * Part 3 -- Boundary crossings (5). Curved walks that wrap edges/corners; the
     right 5x15 grid uses columns = trajectory positions, rows = nearest
     neighbours.
@@ -62,7 +69,14 @@ from click.core import ParameterSource
 from sklearn.neighbors import NearestNeighbors
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import configure_path, resolve_consolidated_h5_path, resolve_embedding_arrays_path
+from ..os_utils import (
+    QLVM_CATEGORY_MAP,
+    configure_path,
+    load_qlvm_category_bundle,
+    qlvm_cell_model_id,
+    qlvm_production_cell_directory,
+    resolve_consolidated_h5_path,
+)
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import create_colormap
 from .plot_style import apply_plot_style
@@ -237,6 +251,54 @@ def _set_contour_style(cs, lw, alpha):
 # Phase-list construction (pure: builds the ordered animation script)
 
 
+def check_store_map_provenance(h5, qlvm_map: str) -> str:
+    """
+    Description
+    -----------
+    Checks that the consolidated store's coordinates of ``qlvm_map`` come from
+    the production cell the category bundle is defined on, so the bundle's
+    regions describe the torus the pooled calls sit on. The store records each
+    model's package root and cell (``qlvm_models/<map>`` attrs ``package_root`` /
+    ``cell``, written by ``consolidate-spectrogram-store``); their
+    ``<package>/<phase>/<cell>`` identifier (``os_utils.qlvm_cell_model_id``)
+    must equal the production cell's.
+
+    Parameters
+    ----------
+    h5 (h5py.File)
+        The open consolidated store.
+    qlvm_map (str)
+        The map whose coordinates are pooled.
+
+    Returns
+    -------
+    store_model_id (str)
+        The identifier of the store's cell (equal to the production one).
+
+    Raises
+    ------
+    ValueError
+        The store records no model for ``qlvm_map``, or another cell.
+    """
+    expected = qlvm_cell_model_id(qlvm_production_cell_directory(qlvm_map))
+    if "qlvm_models" not in h5 or qlvm_map not in h5["qlvm_models"]:
+        error_message = (
+            f"The consolidated store records no qlvm_models/{qlvm_map} provenance, so it cannot be shown to hold "
+            f"the coordinates of {expected}, the cell the QLVM category bundle is defined on."
+        )
+        raise ValueError(error_message)
+    attrs = h5["qlvm_models"][qlvm_map].attrs
+    store_model_id = qlvm_cell_model_id(f"{attrs['package_root']}/{attrs['cell']}")
+    if store_model_id != expected:
+        error_message = (
+            f"The consolidated store's {qlvm_map} coordinates come from {store_model_id}, but the QLVM category "
+            f"bundle partitions the torus of {expected}; its regions would mislabel these calls. Render the video "
+            f"from a store of the production cells."
+        )
+        raise ValueError(error_message)
+    return store_model_id
+
+
 def build_phases(centers, K, peaks_only, title_card_frames, cluster_hold_frames,
                  peak_traverse_frames, boundary_traverse_frames,
                  peak_jitter_sigma, boundary_curve_amplitude, rng):
@@ -251,7 +313,7 @@ def build_phases(centers, K, peaks_only, title_card_frames, cluster_hold_frames,
 
     phases.append({
         'name': 'title_card', 'part': 1,
-        'title': 'QLVM clusters walkthrough' if peaks_only else 'Part 1 - Cluster Peaks',
+        'title': 'QLVM categories walkthrough' if peaks_only else 'Part 1 - Category Peaks',
         'subtitle': 'Peak and nearest samples in three concentric rings',
         'duration': title_card_frames,
     })
@@ -262,7 +324,7 @@ def build_phases(centers, K, peaks_only, title_card_frames, cluster_hold_frames,
         phases.append({
             'name': 'title_card', 'part': 2,
             'title': 'Part 2 - Peak-to-Peak Walks',
-            'subtitle': 'Shortest torus path between random cluster peaks',
+            'subtitle': 'Shortest torus path between random category peaks',
             'duration': title_card_frames,
         })
         n_peak_pairs = min(5, K * (K - 1))
@@ -339,9 +401,9 @@ class QLVMTorusTraversalVideo:
     """
     Description
     -----------
-    Builds the two-panel QLVM torus-traversal animation (cluster peaks +
-    peak-to-peak / boundary walks) from the QLVM arrays + the consolidated
-    spectrogram H5.
+    Builds the two-panel QLVM torus-traversal animation (category peaks +
+    peak-to-peak / boundary walks) from the QLVM category bundle + the
+    consolidated spectrogram H5.
     """
 
     def __init__(
@@ -379,8 +441,11 @@ class QLVMTorusTraversalVideo:
         """
         Description
         -----------
-        Loads the QLVM arrays + pools per-USV latent coords / spectrograms from
-        the consolidated H5, builds the phase script, and renders the two-panel
+        Loads the QLVM category bundle + pools per-USV latent coords /
+        spectrograms from the consolidated H5 (after checking the store's
+        coordinates come from the cell the bundle is defined on, see
+        :func:`check_store_map_provenance`), builds the phase script, and
+        renders the two-panel
         animation, writing a video file to ``output_path`` (``.gif`` via Pillow,
         otherwise ``.mp4`` via FFmpeg).
 
@@ -401,9 +466,13 @@ class QLVMTorusTraversalVideo:
 
         cfg = self.input_parameter_dict['qlvm_torus_traversal_video']
         shared = self.input_parameter_dict['shared_resources']
-        clustering = cfg['clustering']
         qlvm_map = shared['qlvm_map']
-        arrays_path = resolve_embedding_arrays_path(shared['spectrograms_dir'], qlvm_map, clustering)
+        if qlvm_map != QLVM_CATEGORY_MAP:
+            raise ValueError(
+                f"qlvm-torus-traversal-video draws the QLVM category bundle's regions, which are defined on the "
+                f"{QLVM_CATEGORY_MAP!r} map only; shared_resources.qlvm_map is {qlvm_map!r}. Set it to "
+                f"{QLVM_CATEGORY_MAP!r} to render the video."
+            )
         fps = cfg['fps']
         dpi = cfg['dpi']
         m = cfg['m']
@@ -434,12 +503,13 @@ class QLVMTorusTraversalVideo:
             'change_saturation': 1, 'cm_opacity': 1,
         })
 
-        # Arrays supply ONLY the heatmap background, label-grid contours, and
-        # cluster centers (the map's v3 cell; coarse = 9 / fine = 15 for the regular map).
-        arrays = np.load(configure_path(arrays_path))
-        heatmap = arrays['heatmap']
-        ws_labels = arrays['ws_labels_periodic']
-        centers = arrays['centers']
+        # The category bundle supplies ONLY the heatmap background (its smoothed
+        # corpus density), the label-grid contours (R-1..R-k) and the category
+        # centers (label positions) of the regular map.
+        bundle = load_qlvm_category_bundle()
+        heatmap = bundle['density']
+        ws_labels = bundle['label_grid']
+        centers = bundle['centers']
         res = heatmap.shape[0]
         K = len(centers)
 
@@ -454,8 +524,10 @@ class QLVMTorusTraversalVideo:
 
         with h5py.File(resolve_consolidated_h5_path(shared['spectrograms_dir']), "r") as h5:
             # Per-USV latent coords + (session, row) come from the H5's
-            # qlvm/<session>/<qlvm_map> datasets; spectrograms are read from the
-            # same store on demand.
+            # qlvm/<session>/<qlvm_map> datasets, which must be the production
+            # regular cell's (the torus the bundle partitions); spectrograms are
+            # read from the same store on demand.
+            check_store_map_provenance(h5, qlvm_map)
             pooled_coords, pooled_index = pool_latents_from_h5(h5, qlvm_map)
             n_samples = pooled_coords.shape[0]
             if n_samples == 0:
@@ -464,7 +536,7 @@ class QLVMTorusTraversalVideo:
                     f"build the store with consolidate-spectrogram-store so every session "
                     f"carries the {qlvm_map!r} map's latent coords before rendering."
                 )
-            self.message_output(f"Pooled {n_samples} {qlvm_map} latents, {K} clusters ({clustering}).")
+            self.message_output(f"Pooled {n_samples} {qlvm_map} latents, {K} categories ({bundle['identity']}).")
 
             # Spectrogram colormap, read from the shared `figures.sequential_cmap` so it
             # matches the rest of the repo rather than a module-level hard-coded
@@ -762,7 +834,7 @@ class QLVMTorusTraversalVideo:
                             render_ring_slot(s, int(nn_idx[s]), title_str='', border=_C_GRAY, border_w=0.5)
                         else:
                             render_ring_slot(s, None, '', _C_LIGHTGRAY, 0.3)
-                    sup.set_text(f'Cluster {ci + 1} / {K}  -  peak + {m} nearest samples')
+                    sup.set_text(f'{bundle["names"][ci]} ({ci + 1} / {K})  -  peak + {m} nearest samples')
                     title.set_text('')
 
                 elif ph['name'] == 'traversal':
@@ -908,7 +980,6 @@ class QLVMTorusTraversalVideo:
 
 @click.command(name="qlvm-torus-traversal-video")
 @click.option('--output-path', type=str, default=None, required=False, help='Output .mp4 / .gif path (default: figures.save_directory + timestamp).')
-@click.option('--clustering', 'clustering', type=str, default=None, required=False, help='coarse / fine.')
 @click.option('--fps', 'fps', type=int, default=None, required=False, help='Video frames per second.')
 @click.pass_context
 def qlvm_torus_traversal_video_cli(ctx, output_path, **kwargs) -> None:

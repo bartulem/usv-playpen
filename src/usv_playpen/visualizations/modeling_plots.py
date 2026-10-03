@@ -45,7 +45,6 @@ import warnings
 from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-import matplotlib.patheffects as mpe
 import matplotlib.transforms as mtransforms
 from matplotlib.collections import LineCollection
 from matplotlib.transforms import offset_copy
@@ -68,11 +67,16 @@ from scipy.ndimage import gaussian_filter1d
 
 from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.manifold_metric import pairwise_distance
-from ..modeling.modeling_torus_geodesics import resolve_geodesic_decoder_source
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..processing.qlvm_latents import load_model_cell
 from ..processing.qlvm_model import decode_lattice_atlas
-from ..os_utils import configure_path, resolve_embedding_arrays_path
+from ..os_utils import (
+    QLVM_CATEGORY_MAP,
+    configure_path,
+    load_qlvm_category_bundle,
+    qlvm_cell_model_id,
+    qlvm_production_cell_directory,
+)
 from .plot_style import apply_plot_style
 
 
@@ -4026,95 +4030,65 @@ def _extract_manifold_final_bivariate_weights(selection_results_path,
     return mean_weights, features, n_time_bins, selection_metadata, is_magnitude
 
 
-def _resolve_atlas_decoder_and_arrays(
-        decoder_model_cell_directory: str | None,
-        supercategory_arrays_npz_path: str | None,
-) -> tuple[dict, str, str]:
+def _resolve_atlas_decoder_and_categories() -> tuple[dict, dict, str]:
     """
     Description
     -----------
     Resolves what ``plot_manifold_filter_atlas`` decodes its vocal-space atlas
-    with and which supercategory label grid it draws over it.
+    with and which category grid it draws over it. Both come from the code
+    constants, never from settings paths the GUI / CLI experimenter re-keying
+    rewrites:
 
-    * **Decoder.** An explicit ``decoder_model_cell_directory`` (a QLVM model
-      package cell, the only decoder source; the legacy in-house decoder ``.npz``
-      is retired) wins. Without it, the cell is read from
-      ``modeling_settings.json`` -> ``vocal_features.usv_manifold_geodesic_metrics`` by
-      ``resolve_geodesic_decoder_source`` (the shipped setting names the v3
-      regular cell, the model of the ``qlvm1`` / ``qlvm2`` summary columns); no
-      configured cell raises ValueError. The cell is loaded by
-      ``processing.qlvm_latents.load_model_cell`` and must be unconditional
-      (``c_dim`` 0): a conditional decoder needs one condition value per call, so
-      its decode is not a function of the torus position alone.
-    * **Supercategory arrays.** An explicit ``supercategory_arrays_npz_path``
-      wins. Otherwise the regular map's v3 coarse reference arrays are taken by
-      convention, ``os_utils.resolve_embedding_arrays_path(<spectrograms_dir>,
-      "qlvm", "coarse")`` with ``spectrograms_dir`` from
-      ``visualizations_settings.json`` -> ``shared_resources`` (i.e.
-      ``<spectrograms_dir>/qlvm_v3/qlvm/arrays_coarse.npz``; the regular map
-      because the decoder must be unconditional, see above). When the arrays
-      record a ``model_id`` (every ``export-qlvm-reference-arrays`` export does),
-      it must name the decoder's cell, otherwise ValueError: boundaries from one
-      model over an atlas decoded by another would mislabel every region.
+    * **Decoder.** The production cell of the map the category bundle is defined
+      on, the regular map: ``os_utils.qlvm_production_cell_directory("qlvm")``
+      (``.../masked_clean/cell/masked``, the model of the ``qlvm1`` / ``qlvm2``
+      summary columns), loaded by ``processing.qlvm_latents.load_model_cell``. It
+      must be unconditional (``c_dim`` 0): a conditional decoder needs one
+      condition value per call, so its decode is not a function of the torus
+      position alone.
+    * **Categories.** The category bundle, ``os_utils.load_qlvm_category_bundle``
+      (``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``, written by
+      ``build-qlvm-categories``): its ``label_grid`` (``1..k``, R-1..R-k, indexed
+      ``[y, x]``) is the partition the summaries' ``qlvm_category`` was assigned
+      from. The bundle records no model cell itself, so its identity is the map it
+      is defined on (``os_utils.QLVM_CATEGORY_MAP``) and its ``build_config.json``
+      (build time, positions file SHA-256, call count; ``bundle['identity']``,
+      printed with the decoder for the figure's record). The decoder's
+      ``model_id`` must equal the bundle's (``bundle['model_id']``, the cell of the
+      bundle's map), otherwise ValueError: boundaries of one torus over an atlas
+      decoded on another would mislabel every region.
 
     Parameters
     ----------
-    decoder_model_cell_directory (str | None)
-        QLVM model package cell, or None for the one ``modeling_settings.json``
-        names.
-    supercategory_arrays_npz_path (str | None)
-        Coarse reference arrays ``.npz`` (``ws_labels_periodic``), or None for
-        the default described above.
+    None
 
     Returns
     -------
     decoder_params (dict)
         Decoder weights for ``processing.qlvm_model.decode_lattice_atlas``.
-    supercategory_arrays_npz_path (str)
-        The OS-resolved coarse arrays path.
+    bundle (dict)
+        The category bundle (``os_utils.read_qlvm_category_bundle``).
     decoder_model_id (str)
         ``<package>/<phase>/<cell>`` of the decoder's cell (for messages and
         tests).
     """
 
-    if decoder_model_cell_directory is not None:
-        decoder_source = ('model_cell', decoder_model_cell_directory)
-    else:
-        with (_PKG_ROOT / "_parameter_settings" / "modeling_settings.json").open() as _msf:
-            _ms = json.load(_msf)
-        decoder_source = resolve_geodesic_decoder_source(
-            _ms['vocal_features']['usv_manifold_geodesic_metrics'])
-        if decoder_source is None:
-            raise ValueError(
-                "plot_manifold_filter_atlas: modeling_settings.json names no QLVM decoder "
-                "(usv_manifold_geodesic_metrics.decoder_model_cell_directory is empty); pass "
-                "decoder_model_cell_directory."
-            )
-
-    model = load_model_cell(decoder_source[1])
+    model = load_model_cell(qlvm_production_cell_directory(QLVM_CATEGORY_MAP))
     if model['contract']['c_dim'] != 0:
         raise ValueError(
             f"plot_manifold_filter_atlas: {model['model_id']} is a conditional cell "
             f"(c_dim {model['contract']['c_dim']}); the atlas needs an unconditional decoder, "
-            f"e.g. the phase 6 regular cell."
+            f"the production regular cell."
         )
-    decoder_params = model['params']
-    decoder_model_id = model['model_id']
-    if supercategory_arrays_npz_path is None:
-        with (_PKG_ROOT / "_parameter_settings" / "visualizations_settings.json").open() as _vsf:
-            _vs = json.load(_vsf)
-        supercategory_arrays_npz_path = resolve_embedding_arrays_path(
-            _vs['shared_resources']['spectrograms_dir'], "qlvm", "coarse")
-    supercategory_arrays_npz_path = configure_path(str(supercategory_arrays_npz_path))
-    with np.load(supercategory_arrays_npz_path) as _arrays:
-        arrays_model_id = str(_arrays['model_id']) if 'model_id' in _arrays.files else None
-    if arrays_model_id is not None and arrays_model_id != decoder_model_id:
+    decoder_model_id = qlvm_cell_model_id(model['model_id'])
+    bundle = load_qlvm_category_bundle()
+    if bundle['model_id'] != decoder_model_id:
         raise ValueError(
-            f"plot_manifold_filter_atlas: the supercategory arrays {supercategory_arrays_npz_path} "
-            f"hold the clustering of {arrays_model_id}, but the atlas decoder is {decoder_model_id}; "
-            f"export that cell's arrays (export-qlvm-reference-arrays) or pass matching paths."
+            f"plot_manifold_filter_atlas: the category bundle {bundle['identity']} partitions the torus of "
+            f"{bundle['model_id']} (map {bundle['map']!r}), but the atlas decoder is {decoder_model_id}."
         )
-    return decoder_params, supercategory_arrays_npz_path, decoder_model_id
+    print(f"plot_manifold_filter_atlas: decoder {decoder_model_id}; categories {bundle['identity']}.")
+    return model['params'], bundle, decoder_model_id
 
 
 def plot_manifold_filter_atlas(
@@ -4124,8 +4098,6 @@ def plot_manifold_filter_atlas(
         display_bins: int = 25,
         smooth_sigma: float = 3.0,
         atlas_grid_n: int = 10,
-        decoder_model_cell_directory: str = None,
-        supercategory_arrays_npz_path: str = None,
         save_plot: bool = False,
         output_dir: str = None,
         feature_label_overrides: dict = None,
@@ -4139,14 +4111,15 @@ def plot_manifold_filter_atlas(
     ------
     * **Top-left -- vocal-space atlas.** A tiled ``atlas_grid_n`` x
       ``atlas_grid_n`` grid of torus positions is decoded through the frozen
-      QLVM decoder (``decode_lattice_atlas``; by default the v3 regular cell's
+      QLVM decoder (``decode_lattice_atlas``; the production regular cell's
       decoder, the torus the ``qlvm1`` / ``qlvm2`` coordinates live on) into
       canonical USV spectrograms,
       each drawn as a small ``figures.sequential_cmap`` (inferno) image on a black
       background at its torus location and **normalised to its own peak** so the
       contour shape reads at every position regardless of absolute intensity.
-      The supercategory regions (the 9 coarse clusters of the v3 regular cell)
-      are overlaid as thin white boundaries. This is
+      The QLVM categories (R-1..R-k of the category bundle,
+      ``os_utils.load_qlvm_category_bundle``) are overlaid as thin white
+      boundaries. This is
       the "what vocalization lives where" key for the two field panels.
     * **Bottom-left -- filter magnitude.** One ``|W(t)|`` line per selected
       feature (the L2 norm across the 4 torus output coordinates), averaged into
@@ -4160,7 +4133,7 @@ def plot_manifold_filter_atlas(
       overlap so only the ``t = 0`` plane shows in full; earlier slices recede as
       faded slivers. A **single shared** colour scale (``figures.diverging_cmap``,
       rounded up to a clean 0.1) is honest about relative strength across
-      features -- weak features render pale. The white supercategory boundaries
+      features -- weak features render pale. The white category boundaries
       are repeated (depth-faded) on every plane.
     * **Colour scale (top-right).** A small colourbar for the affinity fields,
       ticked only at ``-vmax / 0 / +vmax`` and labelled "vocal region affinity
@@ -4191,29 +4164,6 @@ def plot_manifold_filter_atlas(
     atlas_grid_n : int, default 10
         Tiling density of the vocal-space atlas (``atlas_grid_n ** 2`` decoded
         USVs across the torus).
-    decoder_model_cell_directory : str, optional
-        QLVM model package cell whose decoder draws the atlas (its
-        ``checkpoint.tar`` + training contract, read by
-        ``processing.qlvm_latents.load_model_cell``; only unconditional cells,
-        ``c_dim`` 0, since a conditional decoder is not a function of the torus
-        position alone). ``None`` (default) reads the decoder cell from ``modeling_settings.json`` ->
-        ``vocal_features.usv_manifold_geodesic_metrics`` via
-        ``resolve_geodesic_decoder_source`` -- the shipped
-        ``decoder_model_cell_directory`` is the v3 regular cell
-        ``phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor``, the
-        model the ``qlvm1`` / ``qlvm2`` summary columns come from. Routed through
-        ``configure_path``.
-    supercategory_arrays_npz_path : str, optional
-        Path to the ``.npz`` holding the coarse supercategory label grid
-        (``ws_labels_periodic``, indexed ``[dim2, dim1]``). ``None`` (default)
-        resolves the v3 coarse reference arrays by convention,
-        ``os_utils.resolve_embedding_arrays_path(<visualizations_settings.json
-        shared_resources.spectrograms_dir>, "qlvm", "coarse")`` ->
-        ``<spectrograms_dir>/qlvm_v3/qlvm/arrays_coarse.npz`` (written by
-        ``export-qlvm-reference-arrays``), and raises ValueError when those arrays
-        record (``model_id``) a different cell than the decoder, so the boundaries
-        always partition the torus the atlas is decoded on. Routed through
-        ``configure_path``.
     save_plot : bool, default False
         If True, writes the figure (format / timestamp per the shared figure
         settings).
@@ -4224,6 +4174,12 @@ def plot_manifold_filter_atlas(
         ``{raw_feature_name: display_label}`` overrides; unmapped names fall back
         to ``FeatureZoo.resolve_feature_label`` with the cohort sexes from the
         artifact metadata.
+
+    Notes
+    -----
+    The decoder and the category grid are not arguments: both come from the code
+    constants (``_resolve_atlas_decoder_and_categories``), the production regular
+    cell and the category bundle, and must describe one torus.
 
     Returns
     -------
@@ -4258,14 +4214,9 @@ def plot_manifold_filter_atlas(
         history_window_sec = (float(_im['filter_history_seconds'])
                               if 'filter_history_seconds' in _im else 4.0)
 
-    # Resolve the QLVM decoder and the supercategory arrays: the decoder's model
-    # package cell from the argument or, when it is not given, from
-    # modeling_settings.json; the arrays from the argument, else the v3 coarse
-    # reference arrays by os_utils convention.
-    decoder_params, supercategory_arrays_npz_path, _ = _resolve_atlas_decoder_and_arrays(
-        decoder_model_cell_directory=decoder_model_cell_directory,
-        supercategory_arrays_npz_path=supercategory_arrays_npz_path,
-    )
+    # Resolve the QLVM decoder (the production regular cell) and the category
+    # grid (the category bundle) from the code constants; they must share a torus.
+    decoder_params, category_bundle, _ = _resolve_atlas_decoder_and_categories()
 
     # Feature colours: self / partner by cohort, dyadic social; features sharing a
     # category are separated by OPACITY only (mirrors the trajectory plotter).
@@ -4296,15 +4247,12 @@ def plot_manifold_filter_atlas(
         _n = _counts[_c]
         alphas.append(1.0 if _n == 1 else 1.0 - 0.55 * (_k / (_n - 1)))
 
-    # Supercategory partition (coarse label grid; 9 regions for the v3 regular
-    # cell) on the torus. The grid
+    # Category partition (the bundle's label grid, R-1..R-k) on the torus. The grid
     # is indexed [dim2, dim1], so contour(X=dim1, Y=dim2, lab) is already oriented
     # to match the field panels' (dim1 = x, dim2 = y) convention.
-    with np.load(supercategory_arrays_npz_path) as _arrays:
-        lab = _arrays['ws_labels_periodic']
-    n_super = int(lab.max())
-    g_lab = lab.shape[0]
-    axg = (np.arange(g_lab) + 0.5) / g_lab
+    lab = category_bundle['label_grid']
+    n_categories = len(category_bundle['names'])
+    axg = category_bundle['axis']
 
     # Field-evaluation grid for e(theta) . W. The (cos, sin, cos, sin) basis
     # matches SmoothTorusManifoldRegression._encode.
@@ -4368,7 +4316,7 @@ def plot_manifold_filter_atlas(
                         extent=[_ax0 - _half, _ax0 + _half, _ay0 - _half, _ay0 + _half],
                         cmap=_GLOBAL_CMAP, vmin=0.0, vmax=_vm, aspect='auto',
                         interpolation='bilinear', zorder=2)
-    for _kk in range(1, n_super + 1):
+    for _kk in range(1, n_categories + 1):
         ax_atlas.contour(axg, axg, (lab == _kk).astype(float), levels=[0.5],
                          colors='#FFFFFF', linewidths=0.4, zorder=3)
     ax_atlas.set_xlim(0, 1)
@@ -4419,7 +4367,7 @@ def plot_manifold_filter_atlas(
             if is_front:
                 im_ref = im
             _xp, _yp = x0 + axg * side, y_base + axg * side
-            for _kk in range(1, n_super + 1):
+            for _kk in range(1, n_categories + 1):
                 ax_film.contour(_xp, _yp, (lab == _kk).astype(float), levels=[0.5],
                                 colors=_gray(t_norm),
                                 linewidths=(0.55 if is_front else 0.45 - 0.30 * t_norm),

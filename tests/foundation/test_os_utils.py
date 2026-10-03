@@ -14,6 +14,7 @@ import os
 import pathlib
 import time
 
+import numpy as np
 import polars as pls
 import pytest
 
@@ -23,6 +24,7 @@ from usv_playpen.processing.qlvm_latents import (
     model_cell_reserved_columns,
     validate_model_cells,
 )
+from tests.conftest import write_qlvm_category_bundle
 
 
 @pytest.fixture
@@ -496,22 +498,68 @@ def test_newest_match_raises_when_empty(tmp_path):
         os_utils.newest_match_or_raise(tmp_path, "*.bin", label="newest")
 
 
-# resolve_embedding_arrays_path / resolve_consolidated_h5_path
+# QLVM category bundle / production cells / resolve_consolidated_h5_path
 
-def test_resolve_embedding_arrays_path_conventions(tmp_path):
-    """Each QLVM map's arrays resolve under its own subfolder of the versioned qlvm_v3
-    folder (the map's v3 cell export), never the old model's qlvm/ folder; a map outside
-    QLVM_MAPS (e.g. the retired 'vae') raises."""
-    base = tmp_path / "spectrograms"
-    assert os_utils.QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME == "qlvm_v3"
+def test_qlvm_category_constants_and_production_cells():
+    """The category bundle is one constant on the regular map, its column is the one
+    category column of every map, the qlvm_v3 reference-arrays convention is gone, and
+    the production cells resolve from the package root (a map outside QLVM_MAPS raises)."""
     assert os_utils.QLVM_MAPS == ("qlvm", "qlvm_dur", "qlvm_ent")
+    assert os_utils.QLVM_REGULAR_MAP == os_utils.QLVM_CATEGORY_MAP == "qlvm"
+    assert os_utils.QLVM_CATEGORY_COLUMN == "qlvm_category"
     assert os_utils.QLVM_CATEGORY_COLUMNS == ("qlvm_category",)
-    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "coarse") == str(base / "qlvm_v3" / "qlvm" / "arrays_coarse.npz")
-    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "fine") == str(base / "qlvm_v3" / "qlvm" / "arrays_fine.npz")
-    assert os_utils.resolve_embedding_arrays_path(str(base), "qlvm_ent", "fine") == str(base / "qlvm_v3" / "qlvm_ent" / "arrays_fine.npz")
-    assert not os_utils.resolve_embedding_arrays_path(str(base), "qlvm", "fine").replace("\\", "/").startswith(str(base / "qlvm") + "/")
+    assert os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY == (
+        "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/regions/clustering_clean/category_bundle"
+    )
+    assert not hasattr(os_utils, "resolve_embedding_arrays_path")
+    assert not hasattr(os_utils, "QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME")
+    package = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
+    assert os_utils.qlvm_production_cell_directory("qlvm") == f"{package}/cell/masked"
+    assert os_utils.qlvm_production_cell_directory("qlvm_ent") == f"{package}/conditionals/cell/spectral_entropy"
     with pytest.raises(ValueError, match="qlvm_map must be one of"):
-        os_utils.resolve_embedding_arrays_path(str(base), "vae", "coarse")
+        os_utils.qlvm_production_cell_directory("vae")
+    assert os_utils.qlvm_cell_model_id(f"{package}/cell/masked") == "masked_clean/cell/masked"
+    assert os_utils.qlvm_cell_model_id("F:\\Bartul\\x\\masked_clean\\cell\\masked") == "masked_clean/cell/masked"
+
+
+def test_load_qlvm_category_bundle_reads_the_one_bundle(qlvm_category_bundle):
+    """load_qlvm_category_bundle reads the bundle the module constant names: the label grid
+    (1..k, [y, x]), density, pixel-centre axis, label positions as centres, names, the map
+    and production cell it partitions, and a provenance line from build_config.json."""
+    bundle = os_utils.load_qlvm_category_bundle()
+    res = bundle["resolution"]
+    assert bundle["directory"] == str(qlvm_category_bundle)
+    assert bundle["label_grid"].shape == (res, res) and bundle["label_grid"].dtype == np.int64
+    assert sorted(np.unique(bundle["label_grid"]).tolist()) == [1, 2, 3, 4]
+    assert bundle["label_grid"][0, -1] == 2 and bundle["label_grid"][-1, 0] == 3  # [y, x]
+    assert bundle["density"].shape == (res, res)
+    np.testing.assert_allclose(bundle["axis"], (np.arange(res) + 0.5) / res)
+    np.testing.assert_allclose(bundle["centers"], [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]])
+    assert bundle["names"] == ["R-1", "R-2", "R-3", "R-4"]
+    assert bundle["map"] == "qlvm"
+    assert bundle["model_id"] == "masked_clean/cell/masked"
+    assert "built 2026-10-03T12:00:00" in bundle["identity"] and "0123456789ab" in bundle["identity"]
+
+
+def test_read_qlvm_category_bundle_refuses_a_malformed_bundle(tmp_path):
+    """A missing file names the bundle; a grid whose labels are not the nomenclature's
+    1..k, or grids of different shapes, are refused."""
+    with pytest.raises(FileNotFoundError, match="category_grids.npz"):
+        os_utils.read_qlvm_category_bundle(str(tmp_path / "empty"))
+    directory = write_qlvm_category_bundle(tmp_path / "bad_labels")
+    with np.load(directory / "category_grids.npz") as grids:
+        arrays = {key: grids[key] for key in grids.files}
+    arrays["label_grid"] = np.where(arrays["label_grid"] == 4, 5, arrays["label_grid"]).astype(np.int16)
+    np.savez_compressed(directory / "category_grids.npz", **arrays)
+    with pytest.raises(ValueError, match="not 1..4"):
+        os_utils.read_qlvm_category_bundle(str(directory))
+    directory = write_qlvm_category_bundle(tmp_path / "bad_shape")
+    with np.load(directory / "category_grids.npz") as grids:
+        arrays = {key: grids[key] for key in grids.files}
+    arrays["density"] = arrays["density"][:-1]
+    np.savez_compressed(directory / "category_grids.npz", **arrays)
+    with pytest.raises(ValueError, match="must have the label grid's"):
+        os_utils.read_qlvm_category_bundle(str(directory))
 
 
 def test_resolve_consolidated_h5_picks_newest_and_skips_other_h5(tmp_path):
@@ -634,6 +682,7 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
         },
         "infer_qlvm_latents": {"model_cells": {}, "masking_type": "none"},
         "infer_qlvm_squeak_latents": {"model_cell_directory": ""},
+        "assign_qlvm_categories": {"category_directory": "", "coordinate_prefix": ""},
         "detect_usv_squeaks": {"squeak_model_path": ""},
         "detect_usv_noise": {"noise_model_path": ""},
     }
@@ -664,6 +713,11 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     )
     assert settings["detect_usv_squeaks"]["squeak_model_path"] == f"{root}/squeak/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt"
     assert settings["detect_usv_noise"]["noise_model_path"] == f"{root}/noise/noise_timemil_ens5_n4680_20260926.pt"
+    # assign-qlvm-categories labels with the category bundle every figure draws, on the regular map
+    assert settings["assign_qlvm_categories"] == {
+        "category_directory": os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY,
+        "coordinate_prefix": "qlvm",
+    }
 
 
 def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
@@ -675,6 +729,7 @@ def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
         },
         "infer_qlvm_latents": {"model_cells": {"qlvm_x": "/custom/cell"}, "masking_type": "none", "time_stretch": False},
         "infer_qlvm_squeak_latents": {"model_cell_directory": "/custom/squeak_cell"},
+        "assign_qlvm_categories": {"category_directory": "/custom/bundle", "coordinate_prefix": "qlvm_x"},
         "detect_usv_squeaks": {"squeak_model_path": "/custom/squeak.pt"},
         "detect_usv_noise": {"noise_model_path": ""},
     }
@@ -690,6 +745,7 @@ def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
     assert settings["infer_qlvm_latents"]["masking_type"] == "none"
     assert settings["infer_qlvm_latents"]["time_stretch"] is False
     assert settings["infer_qlvm_squeak_latents"]["model_cell_directory"] == "/custom/squeak_cell"
+    assert settings["assign_qlvm_categories"] == {"category_directory": "/custom/bundle", "coordinate_prefix": "qlvm_x"}
 
 
 @pytest.mark.parametrize("configured", [
@@ -704,6 +760,7 @@ def test_derive_spectrogram_model_paths_keeps_configured_qlvm_models(configured)
         "generate_masks": {"sam2_model_dir": "", "sam2_model_path": "", "yolo_weights": ""},
         "infer_qlvm_latents": {"model_cells": dict(configured), "masking_type": "sam"},
         "infer_qlvm_squeak_latents": {"model_cell_directory": ""},
+        "assign_qlvm_categories": {"category_directory": "", "coordinate_prefix": ""},
         "detect_usv_squeaks": {"squeak_model_path": ""},
         "detect_usv_noise": {"noise_model_path": ""},
     }
@@ -723,6 +780,7 @@ def test_derived_qlvm_model_cells_pass_model_cell_validation():
         "generate_masks": {"sam2_model_dir": "", "sam2_model_path": "", "yolo_weights": ""},
         "infer_qlvm_latents": {"model_cells": {}, "masking_type": "sam"},
         "infer_qlvm_squeak_latents": {"model_cell_directory": ""},
+        "assign_qlvm_categories": {"category_directory": "", "coordinate_prefix": ""},
         "detect_usv_squeaks": {"squeak_model_path": ""},
         "detect_usv_noise": {"noise_model_path": ""},
     }

@@ -16,6 +16,7 @@ import time as _time
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any, Optional
 
+import numpy as np
 import toml
 
 # The lab CUP shares are defined ONCE, in the ``lab_shares`` / ``file_server``
@@ -413,27 +414,255 @@ QLVM_PRODUCTION_TIME_STRETCH = True
 # visualizations_settings.json.
 QLVM_MAPS = tuple(QLVM_PRODUCTION_MODEL_CELLS)
 
-# The categorical QLVM label columns of the summary. Only the regular map has one,
-# qlvm_category: the content-ridge categories of assign-qlvm-categories (1..k
-# meaning R-1..R-k; 4 in production). There is no coarse level and no category
-# column on the conditional maps.
-QLVM_CATEGORY_COLUMNS = ("qlvm_category",)
+# The regular (unconditional) QLVM map: the only map whose decoder is a function of
+# the torus position alone (the geodesic pullback metric and the manifold filter
+# atlas decode with its cell) and the map the category bundle is defined on.
+QLVM_REGULAR_MAP = "qlvm"
 
-# The folder under the spectrograms base directory (`shared_resources.spectrograms_dir`)
-# holding the QLVM reference arrays the visualizations draw, one subfolder per map
-# (`<map>/arrays_fine.npz` / `<map>/arrays_coarse.npz`: label grids, cluster
-# centres, corpus coordinates, density heatmap), written by
-# `export-qlvm-reference-arrays` (processing.qlvm_latents.export_model_cell_arrays)
-# from a clustered cell. The production cells carry no clustering, so these arrays
-# are not produced for them by that command; a folder exported from the earlier v3
-# cells holds another torus. The folder is versioned by name: the old in-house
-# model's arrays lived in `<dir>/qlvm/`.
-QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME = "qlvm_v3"
+# The QLVM category bundle: the content-ridge categories of the regular map, written
+# once by build-qlvm-categories (processing.qlvm_categories) from the regular map's
+# corpus embedding (read-only). It holds `category_grids.npz` (the periodic label
+# grid of the categories, 1..k meaning R-1..R-k, indexed [y, x] over the unit torus,
+# plus the per-pixel bootstrap agreement, the full-data reference grid, the
+# content-change field, the watershed basins and the smoothed call density),
+# `category_nomenclature.json` (names, descriptions, call counts and shares, label
+# positions), `category_call_labels.csv` and `build_config.json` (the settings and
+# inputs of the build). It is the ONE source of category geometry: every consumer
+# that draws category boundaries, places category centres or reads region arrays
+# (the neuronal tuning watersheds, the sequence figure, the embedding thumbnails and
+# explorer, the torus-traversal video, the manifold filter atlas, the category
+# embedding panel) loads it through `load_qlvm_category_bundle`, and
+# assign-qlvm-categories labels the summaries with it by default
+# (`derive_spectrogram_model_paths`). A module constant rather than a settings path
+# for the reason given at QLVM_MODEL_PACKAGE_ROOT: the GUI and the CLI re-key every
+# experimenter folder in the settings to the active experimenter.
+QLVM_CATEGORY_BUNDLE_DIRECTORY = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/regions/clustering_clean/category_bundle"
+
+# The files of a category bundle (build-qlvm-categories writes them, every reader
+# finds them by these names).
+QLVM_CATEGORY_GRIDS_NAME = "category_grids.npz"
+QLVM_CATEGORY_NOMENCLATURE_NAME = "category_nomenclature.json"
+QLVM_CATEGORY_CALL_LABELS_NAME = "category_call_labels.csv"
+QLVM_CATEGORY_BUILD_CONFIG_NAME = "build_config.json"
+
+# The QLVM map the category bundle is defined on: the regular map. Its grid is a
+# partition of THAT torus only, so it draws boundaries / centres on the regular map
+# alone; a conditional map (qlvm_dur, qlvm_ent) places the same calls elsewhere, so
+# a figure of a conditional map draws no category boundaries and shows each call's
+# category through its qlvm_category label instead.
+QLVM_CATEGORY_MAP = QLVM_REGULAR_MAP
+
+# The one categorical QLVM label column of the summary, qlvm_category: the
+# category-bundle category of each call's position on the regular map (1..k meaning
+# R-1..R-k; 4 in production), written by assign-qlvm-categories. There is no coarse
+# level and no category column of the conditional maps: an analysis of ANY map
+# (qlvm, qlvm_dur, qlvm_ent) that needs a per-call region / category label reads
+# this column.
+QLVM_CATEGORY_COLUMN = f"{QLVM_CATEGORY_MAP}_category"
+QLVM_CATEGORY_COLUMNS = (QLVM_CATEGORY_COLUMN,)
 
 # File name of the cohort pooled-embeddings parquet cache under
 # `<spectrograms_dir>/embeddings/`. Its summaries fingerprint makes a cache pooled
 # from older summaries rebuild when the summaries change.
 POOLED_EMBEDDINGS_CACHE_NAME = "pooled_embeddings_qlvmv3.parquet"
+
+
+def qlvm_production_cell_directory(qlvm_map: str) -> str:
+    """
+    Description
+    -----------
+    The production QLVM model package cell of one map, in its canonical
+    ``/mnt/falkner`` form: ``QLVM_PRODUCTION_MODEL_CELLS[qlvm_map]`` under
+    ``QLVM_MODEL_PACKAGE_ROOT`` (``.../masked_clean/cell/masked`` for the regular
+    map). Every reader of a production cell that is not
+    ``infer-qlvm-latents`` (the torus geodesic pullback metric, the manifold filter
+    atlas decoder, the torus-traversal video's provenance check) takes it from here,
+    so no settings path the experimenter re-keying rewrites can point them at
+    another cell. Callers translate it to the host mount with ``configure_path``.
+
+    Parameters
+    ----------
+    qlvm_map (str)
+        One of ``QLVM_MAPS``.
+
+    Returns
+    -------
+    cell_directory (str)
+        The canonical cell path (not checked for existence).
+
+    Raises
+    ------
+    ValueError
+        ``qlvm_map`` is not one of ``QLVM_MAPS``.
+    """
+
+    if qlvm_map not in QLVM_MAPS:
+        error_message = f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}."
+        raise ValueError(error_message)
+    return f"{QLVM_MODEL_PACKAGE_ROOT}/{QLVM_PRODUCTION_MODEL_CELLS[qlvm_map]}"
+
+
+def qlvm_cell_model_id(cell_directory: str | pathlib.Path) -> str:
+    """
+    Description
+    -----------
+    The identifier of a QLVM model package cell: the last three components of its
+    path (``<package>/<phase>/<cell>``; ``masked_clean/cell/masked`` for the
+    production regular cell), the ``model_id`` that
+    ``processing.qlvm_latents.load_model_cell`` reports for the same directory.
+    Mount-independent, so a cell read on one host compares equal to the same cell
+    named in canonical form.
+
+    Parameters
+    ----------
+    cell_directory (str | pathlib.Path)
+        The cell directory, canonical or host-translated.
+
+    Returns
+    -------
+    model_id (str)
+        ``"<package>/<phase>/<cell>"``.
+    """
+
+    return "/".join(pathlib.PurePosixPath(str(cell_directory).replace("\\", "/")).parts[-3:])
+
+
+def read_qlvm_category_bundle(category_directory: str | pathlib.Path) -> dict:
+    """
+    Description
+    -----------
+    Reads and checks a category bundle written by ``build-qlvm-categories``
+    (``processing.qlvm_categories.QLVMCategoryBuilder``): ``category_grids.npz``,
+    ``category_nomenclature.json`` and ``build_config.json``. The checks keep a
+    malformed or mismatched bundle from being drawn silently: the label grid must
+    be square and hold exactly the labels ``1..k`` of the nomenclature's ``k``
+    categories (``grid_label`` ``1..k`` in order), and the agreement and density
+    grids must have its shape. Light (NumPy and JSON only), so figures and
+    notebooks can read it without the JAX stack ``processing.qlvm_categories``
+    imports.
+
+    Parameters
+    ----------
+    category_directory (str | pathlib.Path)
+        The bundle directory (canonical or host form; run through
+        ``configure_path``).
+
+    Returns
+    -------
+    bundle (dict)
+        * ``directory`` (str) -- the host-resolved bundle directory;
+        * ``label_grid`` (``(res, res)`` int64, ``1..k``, indexed ``[y, x]``:
+          pixel ``[y, x]`` covers torus positions
+          ``[x / res, (x + 1) / res) x [y / res, (y + 1) / res)``, the pixel
+          rule assign-qlvm-categories labels a call with);
+        * ``agreement`` (``(res, res)`` float64) -- the consensus share of every
+          pixel's category over the session resamples;
+        * ``density`` (``(res, res)`` float64) -- the smoothed corpus call count
+          per pixel (the regular map's density landscape);
+        * ``resolution`` (int);
+        * ``axis`` (``(res,)`` float64) -- the pixel centres ``(i + 0.5) / res``,
+          the ``X`` / ``Y`` of a contour over the grid;
+        * ``centers`` (``(k, 2)`` float64) -- each category's label position
+          ``(label_x, label_y)`` (the pixel farthest from its boundary on the
+          torus), row ``i`` for category ``i + 1``;
+        * ``names`` / ``descriptions`` (list[str]) -- ``R-1`` ... ``R-k`` and their
+          short descriptions;
+        * ``nomenclature`` / ``build_config`` (dict) -- the two JSON files;
+        * ``map`` (str) -- ``QLVM_CATEGORY_MAP``, the map the grid partitions;
+        * ``model_id`` (str) -- that map's production cell
+          (:func:`qlvm_cell_model_id` of :func:`qlvm_production_cell_directory`);
+        * ``identity`` (str) -- a one-line provenance of the bundle (directory,
+          build time, positions file SHA-256 and call count from
+          ``build_config.json``), for logs and figure records.
+
+    Raises
+    ------
+    FileNotFoundError
+        A bundle file is missing.
+    ValueError
+        The grids or the nomenclature fail the checks above.
+    """
+
+    directory = pathlib.Path(configure_path(str(category_directory)))
+    for name in (QLVM_CATEGORY_GRIDS_NAME, QLVM_CATEGORY_NOMENCLATURE_NAME, QLVM_CATEGORY_BUILD_CONFIG_NAME):
+        if not (directory / name).is_file():
+            error_message = (
+                f"QLVM category bundle {directory} has no {name}; point os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY at a "
+                f"build-qlvm-categories output directory."
+            )
+            raise FileNotFoundError(error_message)
+    with np.load(directory / QLVM_CATEGORY_GRIDS_NAME, allow_pickle=False) as grids:
+        label_grid = grids['label_grid'].astype(np.int64)
+        agreement = grids['agreement'].astype(np.float64)
+        density = grids['density'].astype(np.float64)
+    with (directory / QLVM_CATEGORY_NOMENCLATURE_NAME).open() as handle:
+        nomenclature = json.load(handle)
+    with (directory / QLVM_CATEGORY_BUILD_CONFIG_NAME).open() as handle:
+        build_config = json.load(handle)
+    resolution = label_grid.shape[0]
+    if label_grid.ndim != 2 or label_grid.shape[1] != resolution:
+        error_message = f"{directory}: label_grid {label_grid.shape} must be a square grid."
+        raise ValueError(error_message)
+    if agreement.shape != label_grid.shape or density.shape != label_grid.shape:
+        error_message = (
+            f"{directory}: agreement {agreement.shape} and density {density.shape} must have the label grid's "
+            f"shape {label_grid.shape}."
+        )
+        raise ValueError(error_message)
+    categories = nomenclature['categories']
+    n_categories = int(nomenclature['n_categories'])
+    grid_labels = [int(category['grid_label']) for category in categories]
+    if grid_labels != list(range(1, n_categories + 1)):
+        error_message = f"{directory}: the nomenclature's grid labels {grid_labels} are not 1..{n_categories}."
+        raise ValueError(error_message)
+    present = np.unique(label_grid).tolist()
+    if present != list(range(1, n_categories + 1)):
+        error_message = f"{directory}: the label grid holds the labels {present}, not 1..{n_categories}."
+        raise ValueError(error_message)
+    built = build_config['built']
+    positions_sha = build_config['positions_file_sha256']
+    return {
+        'directory': str(directory),
+        'label_grid': label_grid,
+        'agreement': agreement,
+        'density': density,
+        'resolution': resolution,
+        'axis': (np.arange(resolution) + 0.5) / resolution,
+        'centers': np.array([[float(category['label_x']), float(category['label_y'])] for category in categories]),
+        'names': [str(category['name']) for category in categories],
+        'descriptions': [str(category['description']) for category in categories],
+        'nomenclature': nomenclature,
+        'build_config': build_config,
+        'map': QLVM_CATEGORY_MAP,
+        'model_id': qlvm_cell_model_id(qlvm_production_cell_directory(QLVM_CATEGORY_MAP)),
+        'identity': (
+            f"{directory} (built {built}, positions sha256 {positions_sha[:12]}, "
+            f"{int(build_config['n_calls'])} calls, {n_categories} categories)"
+        ),
+    }
+
+
+def load_qlvm_category_bundle() -> dict:
+    """
+    Description
+    -----------
+    Loads THE category bundle, ``QLVM_CATEGORY_BUNDLE_DIRECTORY``, with
+    :func:`read_qlvm_category_bundle`. The one entry point every category-grid
+    consumer goes through, so they all draw the partition the summaries'
+    ``qlvm_category`` column was assigned from. The directory is read from the
+    module attribute at call time.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    bundle (dict)
+        See :func:`read_qlvm_category_bundle`.
+    """
+
+    return read_qlvm_category_bundle(QLVM_CATEGORY_BUNDLE_DIRECTORY)
 
 
 def cell_cluster_directory(cell: pathlib.Path, level: str) -> pathlib.Path:
@@ -443,8 +672,8 @@ def cell_cluster_directory(cell: pathlib.Path, level: str) -> pathlib.Path:
     Locates one cluster level of a QLVM model package cell in either package layout:
     ``inference/clusters_<level>/`` (v3) or ``cluster/<level>/`` (v2 / v2.1). Kept
     here, free of the JAX stack ``processing.qlvm_latents`` imports, so light
-    readers of a cell's ``label_grid.npy`` (e.g. the neuronal tuning figures) can
-    find it too.
+    readers of a cell's ``label_grid.npy`` (e.g. ``consolidate-spectrogram-store``)
+    can find it too.
 
     Parameters
     ----------
@@ -522,7 +751,13 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     ``infer_qlvm_squeak_latents.model_cell_directory`` is filled with the
     production squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under
     ``QLVM_SQUEAK_PACKAGE_ROOT`` (the phase 3 BBV ``natural_session`` cell); an
-    explicitly configured squeak cell is left alone.
+    explicitly configured squeak cell is left alone. An empty
+    ``assign_qlvm_categories.category_directory`` is filled with the category
+    bundle ``QLVM_CATEGORY_BUNDLE_DIRECTORY`` and an empty
+    ``assign_qlvm_categories.coordinate_prefix`` with the map it is defined on,
+    ``QLVM_CATEGORY_MAP`` (``qlvm``), so the summaries' ``qlvm_category`` is
+    assigned from the same bundle every figure draws; an explicitly configured
+    directory or prefix is left alone.
 
     Parameters
     ----------
@@ -531,8 +766,8 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         absent or empty the dictionary is returned unchanged (legacy settings
         files that set the granular ``generate_masks`` paths and
         ``infer_qlvm_latents.model_cells`` directly keep working); otherwise the ``generate_masks``,
-        ``infer_qlvm_latents``, ``infer_qlvm_squeak_latents``, ``detect_usv_squeaks``
-        and ``detect_usv_noise`` blocks must exist.
+        ``infer_qlvm_latents``, ``infer_qlvm_squeak_latents``, ``assign_qlvm_categories``,
+        ``detect_usv_squeaks`` and ``detect_usv_noise`` blocks must exist.
 
     Returns
     -------
@@ -561,14 +796,17 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
             settings[block][key] = derived_path
     qlvm_cfg = settings['infer_qlvm_latents']
     if not qlvm_cfg['model_cells']:
-        qlvm_cfg['model_cells'] = {
-            prefix: f'{QLVM_MODEL_PACKAGE_ROOT}/{cell}' for prefix, cell in QLVM_PRODUCTION_MODEL_CELLS.items()
-        }
+        qlvm_cfg['model_cells'] = {prefix: qlvm_production_cell_directory(prefix) for prefix in QLVM_PRODUCTION_MODEL_CELLS}
         qlvm_cfg['masking_type'] = QLVM_PRODUCTION_MASKING_TYPE
         qlvm_cfg['time_stretch'] = QLVM_PRODUCTION_TIME_STRETCH
     squeak_qlvm_cfg = settings['infer_qlvm_squeak_latents']
     if not squeak_qlvm_cfg['model_cell_directory']:
         squeak_qlvm_cfg['model_cell_directory'] = f'{QLVM_SQUEAK_PACKAGE_ROOT}/{QLVM_SQUEAK_PRODUCTION_CELL}'
+    category_cfg = settings['assign_qlvm_categories']
+    if not category_cfg['category_directory']:
+        category_cfg['category_directory'] = QLVM_CATEGORY_BUNDLE_DIRECTORY
+    if not category_cfg['coordinate_prefix']:
+        category_cfg['coordinate_prefix'] = QLVM_CATEGORY_MAP
     return settings
 
 
@@ -1683,55 +1921,12 @@ def newest_match_or_raise(
 # Embedding-landscape resolution. The visualization layer reads its precomputed
 # cohort artifacts from a single base directory (``shared_resources.spectrograms_dir``)
 # by convention, rather than from several hard-coded file paths:
-#   <dir>/qlvm_v3/<map>/arrays_{coarse,fine}.npz  QLVM torus density + label grids +
-#                                             centres of one map (QLVM_MAPS;
-#                                             QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME)
 #   <dir>/spectrograms_*.h5                   consolidated spectrogram/mask/latent store
 #   <dir>/squeak_spectrograms_*.h5            2-125 kHz log-frequency squeak spectrogram store
 #   <dir>/embeddings/pooled_embeddings_qlvmv3.parquet  pooled cohort embeddings cache
 #                                             (POOLED_EMBEDDINGS_CACHE_NAME)
-def resolve_embedding_arrays_path(spectrograms_dir: str, qlvm_map: str, clustering: str) -> str:
-    """
-    Description
-    -----------
-    Build the path to a precomputed embedding-landscape ``.npz`` under the
-    spectrograms base directory, by convention --
-    ``<dir>/<QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME>/<qlvm_map>/arrays_{coarse,fine}.npz``
-    (``<dir>/qlvm_v3/qlvm/...`` for the regular map: the production v3 cell's
-    clustering of that map, exported by ``export-qlvm-reference-arrays``; the old
-    in-house model's ``<dir>/qlvm/`` arrays are not read). This is a pure path
-    builder (run through ``configure_path``); whether the file exists is the
-    caller's concern (the sequence figure falls back to a bare panel, the torus
-    video requires it).
-
-    Parameters
-    ----------
-    spectrograms_dir (str)
-        Base directory where the ``qlvm_v3`` subdirectory branches off.
-    qlvm_map (str)
-        One of ``QLVM_MAPS`` (e.g. ``"qlvm"`` for the regular model,
-        ``"qlvm_dur"`` for the duration-conditional one).
-    clustering (str)
-        ``"fine"`` selects the fine map; anything else selects the coarse map.
-
-    Returns
-    -------
-    path (str)
-        The OS-resolved ``.npz`` path (not checked for existence).
-
-    Raises
-    ------
-    ValueError
-        If ``qlvm_map`` is not one of ``QLVM_MAPS``.
-    """
-
-    if qlvm_map not in QLVM_MAPS:
-        raise ValueError(f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}.")
-    base = pathlib.Path(configure_path(spectrograms_dir))
-    tag = "fine" if clustering == "fine" else "coarse"
-    return str(base / QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME / qlvm_map / f"arrays_{tag}.npz")
-
-
+# The QLVM category geometry (label grid, density, centres) is not under it: it is
+# the category bundle, QLVM_CATEGORY_BUNDLE_DIRECTORY (load_qlvm_category_bundle).
 def resolve_consolidated_h5_path(spectrograms_dir: str) -> str:
     """
     Description

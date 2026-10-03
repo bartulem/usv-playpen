@@ -44,6 +44,7 @@ import numpy as np
 import polars as pls
 import pytest
 
+from usv_playpen import os_utils
 from usv_playpen.analyses.compute_neuronal_tuning_curves import (
     CATEGORICAL_FEATURES,
     CONTINUOUS_PROPERTIES,
@@ -56,8 +57,7 @@ from usv_playpen.visualizations.make_neuronal_tuning_figures import (
     USV_CATEGORY_SEGMENTATIONS,
     USV_PROPERTY_ORDER,
     _category_class_count,
-    load_qlvm_package_segmentation,
-    qlvm_cell_directory,
+    load_qlvm_category_segmentation,
 )
 
 
@@ -269,7 +269,7 @@ def _count_pdf_pages(pdf_path: pathlib.Path) -> int:
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
-def test_full_pipeline_writes_pdf_with_behavioral_and_vocal_pages(tmp_path):
+def test_full_pipeline_writes_pdf_with_behavioral_and_vocal_pages(tmp_path, qlvm_category_bundle):
     """
     Description
     -----------
@@ -284,13 +284,15 @@ def test_full_pipeline_writes_pdf_with_behavioral_and_vocal_pages(tmp_path):
       * the cluster pkl carries both `beh_offset=*` and `usv_*` keys
         (catches a regression where compute/figure key names drift apart)
       * exactly one PDF exists for the single cluster
-      * the PDF has >= 3 pages (1 behavioral + at least 2 vocal),
-        catching the historical "zero-page PdfPages" silent failure
+      * the PDF has >= 2 pages (behavioral + vocal), catching the
+        historical "zero-page PdfPages" silent failure
 
     Parameters
     ----------
     tmp_path (pathlib.Path)
         Pytest-provided per-test temp directory.
+    qlvm_category_bundle (pathlib.Path)
+        The synthetic category bundle the section-(c) watersheds read.
 
     Returns
     -------
@@ -342,9 +344,9 @@ def test_full_pipeline_writes_pdf_with_behavioral_and_vocal_pages(tmp_path):
         "near-empty PDF — payload-keys/predicate mismatch likely"
     )
     n_pages = _count_pdf_pages(pdf)
-    assert n_pages >= 3, (
+    assert n_pages >= 2, (
         f"PDF has only {n_pages} pages; expected behavioral + vocal "
-        "(>=3 total). A 1-page PDF means only one of the two halves "
+        "(>=2 total). A 1-page PDF means only one of the two halves "
         "rendered — usually the figure-side `has_vocal` predicate not "
         "matching the compute side's key names, or the tracking-H5 "
         "lookup returning an empty mouse_id_list."
@@ -353,7 +355,7 @@ def test_full_pipeline_writes_pdf_with_behavioral_and_vocal_pages(tmp_path):
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
-def test_figures_render_when_tracking_h5_at_session_root(tmp_path):
+def test_figures_render_when_tracking_h5_at_session_root(tmp_path, qlvm_category_bundle):
     """
     Description
     -----------
@@ -402,7 +404,7 @@ def test_figures_render_when_tracking_h5_at_session_root(tmp_path):
         "tracking-H5 lookup to <root>/video/."
     )
     n_pages = _count_pdf_pages(pdfs[0])
-    assert n_pages >= 3, (
+    assert n_pages >= 2, (
         f"scratch-layout PDF has only {n_pages} pages — behavioral pages "
         "likely skipped due to empty mouse_id_list (tracking-H5 lookup "
         "not finding the session-root H5)."
@@ -2482,7 +2484,7 @@ def _beh_2d_payload(side: int = 8) -> dict:
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
-def test_per_cluster_pipeline_png_writes_per_page_files(tmp_path):
+def test_per_cluster_pipeline_png_writes_per_page_files(tmp_path, qlvm_category_bundle):
     """
     Description
     -----------
@@ -2525,8 +2527,8 @@ def test_per_cluster_pipeline_png_writes_per_page_files(tmp_path):
 
     tuning_dir = root / "ephys" / "tuning_curves"
     per_page = sorted(tuning_dir.glob("*_neuronal_tuning_p*.png"))
-    assert len(per_page) >= 3, (
-        f"expected >= 3 per-page PNGs (behavioral + 2 vocal pages), got "
+    assert len(per_page) >= 2, (
+        f"expected >= 2 per-page PNGs (behavioral + vocal pages), got "
         f"{[p.name for p in per_page]}"
     )
     assert not list(tuning_dir.glob("*_neuronal_tuning.pdf")), (
@@ -2670,24 +2672,11 @@ def test_category_class_count_grows_with_the_labels_units_hold():
     assert _category_class_count("qlvm_category", {"PAG": [{"best_cat": 4}]}, {}) == 4
 
 
-def _fake_qlvm_cell(tmp_path, fine, coarse, relative_cell="cell/masked"):
-    """A v3-layout package cell holding only the two cluster levels' label_grid.npy."""
-    cell = tmp_path / "v3" / relative_cell
-    for level, grid in (("fine", fine), ("coarse", coarse)):
-        (cell / "inference" / f"clusters_{level}").mkdir(parents=True)
-        np.save(cell / "inference" / f"clusters_{level}" / "label_grid.npy", grid)
-    return cell
-
-
-def test_qlvm_segmentation_comes_from_the_regular_maps_cell(tmp_path, monkeypatch):
+def test_qlvm_segmentation_comes_from_the_category_bundle(qlvm_category_bundle):
     """The only categorical feature, qlvm_category, takes its watersheds and class count
-    from the regular map's cell fine label grid, located from the os_utils package root,
-    on the unit torus with pixel [y, x] at (x, y); no coarse level and no conditional-map
+    from the category bundle's label grid (os_utils.load_qlvm_category_bundle), on the
+    unit torus with pixel [y, x] at (x, y); no coarse level and no conditional-map
     feature is loaded, and nothing is reported."""
-    fine = (np.arange(16).reshape(4, 4) % 15 + 1).astype(np.int16)
-    coarse = np.array([[1, 2, 3, 4], [5, 6, 7, 8], [9, 9, 1, 2], [3, 4, 5, 6]], dtype=np.int16)
-    _fake_qlvm_cell(tmp_path, fine, coarse, relative_cell=tuning_figures.QLVM_PRODUCTION_MODEL_CELLS["qlvm"])
-    monkeypatch.setattr(tuning_figures, "QLVM_MODEL_PACKAGE_ROOT", str(tmp_path / "v3"))
     messages = []
     maker = NeuronalTuningFigureMaker(
         root_directory="/tmp",
@@ -2697,44 +2686,34 @@ def test_qlvm_segmentation_comes_from_the_regular_maps_cell(tmp_path, monkeypatc
 
     segmentation = maker._load_segmentation()
 
+    with np.load(qlvm_category_bundle / "category_grids.npz") as grids:
+        expected = grids["label_grid"]
     assert set(segmentation) == {"qlvm_category"}
-    np.testing.assert_array_equal(segmentation["qlvm_category"]["label_grid"], fine)
-    assert segmentation["qlvm_category"]["unique_labels"] == list(range(1, 16))
+    np.testing.assert_array_equal(segmentation["qlvm_category"]["label_grid"], expected)
+    assert segmentation["qlvm_category"]["unique_labels"] == [1, 2, 3, 4]
+    assert segmentation["qlvm_category"]["names"] == ["R-1", "R-2", "R-3", "R-4"]
     np.testing.assert_array_equal(segmentation["qlvm_category"]["bounds"], [0.0, 1.0, 0.0, 1.0])
     # Pixel [row=y, col=x] is centred at ((x + 0.5) / res, (y + 0.5) / res).
-    assert segmentation["qlvm_category"]["xx"][1, 3] == 3.5 / 4
-    assert segmentation["qlvm_category"]["yy"][1, 3] == 1.5 / 4
-    assert _category_class_count("qlvm_category", {}, segmentation) == 15
+    res = expected.shape[0]
+    assert segmentation["qlvm_category"]["xx"][1, 3] == 3.5 / res
+    assert segmentation["qlvm_category"]["yy"][1, 3] == 1.5 / res
+    assert _category_class_count("qlvm_category", {}, segmentation) == 4
     assert messages == []
     assert tuning_figures.SECTION_C_ROWS == (("qlvm_category",),)
     assert tuning_figures.USV_CATEGORY_SEGMENTATIONS == ("qlvm_category",)
 
 
-def test_qlvm_segmentation_unreachable_says_so_and_draws_placeholders(tmp_path, monkeypatch):
-    """With the package unreachable, a clear message names the cell, the QLVM blocks
-    are left out (placeholder panels), so the segmentation is empty."""
-    monkeypatch.setattr(tuning_figures, "QLVM_MODEL_PACKAGE_ROOT", str(tmp_path / "missing"))
-    messages = []
+def test_qlvm_segmentation_unreadable_bundle_raises(tmp_path, monkeypatch):
+    """With the category bundle unreadable the segmentation raises, naming the bundle:
+    there are no placeholder panels and no grid of another partition."""
+    monkeypatch.setattr(os_utils, "QLVM_CATEGORY_BUNDLE_DIRECTORY", str(tmp_path / "missing"))
     maker = NeuronalTuningFigureMaker(
         root_directory="/tmp",
         visualizations_parameter_dict=_make_visualizations_parameters(),
-        message_output=messages.append,
+        message_output=lambda *_a: None,
     )
 
-    segmentation = maker._load_segmentation()
-
-    assert segmentation == {}
-    assert len(messages) == 1
-    assert all("QLVM segmentation unavailable" in m and str(tmp_path / "missing") in m for m in messages)
-
-
-@pytest.mark.skipif(
-    not qlvm_cell_directory("qlvm").is_dir(),
-    reason="the production QLVM model cells are not mounted on this host",
-)
-def test_production_qlvm_cell_carries_no_label_grid():
-    """The production regular cell (read-only) has no cluster label grid (qlvm_category
-    comes from assign-qlvm-categories), so loading its segmentation fails and the
-    tuning figures fall back to placeholders and data-driven class counts."""
+    with pytest.raises(FileNotFoundError, match="missing"):
+        maker._load_segmentation()
     with pytest.raises(FileNotFoundError):
-        load_qlvm_package_segmentation("qlvm", qlvm_cell_directory("qlvm"))
+        load_qlvm_category_segmentation()

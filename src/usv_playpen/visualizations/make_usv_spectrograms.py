@@ -50,19 +50,20 @@ from matplotlib.collections import LineCollection
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from scipy.ndimage import gaussian_filter1d, zoom
 from scipy.signal.windows import tukey
-from sklearn.neighbors import KNeighborsClassifier
 
 from ..os_utils import (
     NOISE_COLUMN,
+    QLVM_CATEGORY_COLUMN,
     QLVM_CATEGORY_COLUMNS,
+    QLVM_CATEGORY_MAP,
     QLVM_MAPS,
     VOCAL_FLAG_COLUMNS,
     call_class_mask,
     configure_path,
     drop_noise_usvs,
     first_match_or_raise,
+    load_qlvm_category_bundle,
     resolve_consolidated_h5_path,
-    resolve_embedding_arrays_path,
     resolve_pooled_embeddings_cache,
 )
 from ..time_utils import is_gui_context, smart_wait
@@ -1146,25 +1147,32 @@ class USVSpectrogramPlotter:
         self._save_figure(fig, "stitched", file_basename)
         return fig
 
-    def _draw_embedding_left_map(self, ax: plt.Axes, arrays_npz_path: str, draw_boundaries: bool = True) -> None:
+    def _draw_embedding_left_map(self, ax: plt.Axes, qlvm_map: str, draw_boundaries: bool = True) -> None:
         """
         Description
         -----------
-        Draw a precomputed cohort QLVM landscape on ``ax``: the density
-        ``heatmap`` (gray_r) over the unit torus square and — when
-        ``draw_boundaries`` is True — the black category lines (the same arrays
-        ``.npz`` the torus-traversal video reads). The boundaries are a
-        uniform-thickness neighbour-difference mask, NOT ``ax.contour`` on the
-        label field: contour stacks several iso-lines wherever neighbouring region
-        labels differ by more than one, which renders as uneven line thickness.
+        Draw the cohort QLVM landscape of ``qlvm_map`` on ``ax``. On the map the
+        category bundle is defined on (``os_utils.QLVM_CATEGORY_MAP``, the regular
+        map ``qlvm``) it is the bundle's (``os_utils.load_qlvm_category_bundle``)
+        smoothed corpus ``density`` (gray_r) over the unit torus square and --
+        when ``draw_boundaries`` is True -- the black boundaries of its category
+        ``label_grid`` (R-1..R-k, the partition the summaries' ``qlvm_category``
+        was assigned from). The boundaries are a uniform-thickness
+        neighbour-difference mask, NOT ``ax.contour`` on the label field: contour
+        stacks several iso-lines wherever neighbouring region labels differ by
+        more than one, which renders as uneven line thickness. A conditional map
+        (``qlvm_dur``, ``qlvm_ent``) places the calls elsewhere, so the bundle's
+        grid and density do not describe it: its panel is a bare unit square with
+        a note saying the category boundaries are defined on the regular map (the
+        calls themselves are still drawn by the caller). No other source of
+        density or boundaries is used.
 
         Parameters
         ----------
         ax (plt.Axes)
             Axes to draw the embedding / boundaries on.
-        arrays_npz_path (str)
-            Path to the cohort arrays ``.npz`` — keys ``heatmap`` and
-            ``ws_labels_periodic`` (the map's fine or coarse label grid).
+        qlvm_map (str)
+            The map drawn (one of ``os_utils.QLVM_MAPS``).
         draw_boundaries (bool)
             Whether to overlay the black category lines; defaults to True.
 
@@ -1173,28 +1181,34 @@ class USVSpectrogramPlotter:
         None
         """
 
-        arrays = np.load(configure_path(arrays_npz_path))
-        heatmap = arrays["heatmap"]
         extent = (0.0, 1.0, 0.0, 1.0)
-        nonzero = heatmap[heatmap > 0]
-        vmax = float(np.percentile(nonzero, 95)) if nonzero.size else None
-        ax.imshow(
-            heatmap, origin="lower", extent=extent,
-            cmap=_SEQ_EMBEDDING_CMAP, vmin=0, vmax=vmax, aspect="equal",
-        )
-        if draw_boundaries:
-            labels = arrays["ws_labels_periodic"]
-            # A pixel is a boundary iff it differs from any 4-neighbour -> a single
-            # uniform-thickness line everywhere, regardless of label difference.
-            boundary = np.zeros(labels.shape, dtype=bool)
-            boundary[:-1, :] |= labels[:-1, :] != labels[1:, :]
-            boundary[1:, :] |= labels[:-1, :] != labels[1:, :]
-            boundary[:, :-1] |= labels[:, :-1] != labels[:, 1:]
-            boundary[:, 1:] |= labels[:, :-1] != labels[:, 1:]
+        if qlvm_map == QLVM_CATEGORY_MAP:
+            bundle = load_qlvm_category_bundle()
+            heatmap = bundle["density"]
+            nonzero = heatmap[heatmap > 0]
+            vmax = float(np.percentile(nonzero, 95)) if nonzero.size else None
             ax.imshow(
-                np.where(boundary, 1.0, np.nan), origin="lower", extent=extent,
-                cmap=mcolors.ListedColormap(["#000000"]), vmin=0, vmax=1,
-                interpolation="nearest", aspect="equal", zorder=2,
+                heatmap, origin="lower", extent=extent,
+                cmap=_SEQ_EMBEDDING_CMAP, vmin=0, vmax=vmax, aspect="equal",
+            )
+            if draw_boundaries:
+                labels = bundle["label_grid"]
+                # A pixel is a boundary iff it differs from any 4-neighbour -> a single
+                # uniform-thickness line everywhere, regardless of label difference.
+                boundary = np.zeros(labels.shape, dtype=bool)
+                boundary[:-1, :] |= labels[:-1, :] != labels[1:, :]
+                boundary[1:, :] |= labels[:-1, :] != labels[1:, :]
+                boundary[:, :-1] |= labels[:, :-1] != labels[:, 1:]
+                boundary[:, 1:] |= labels[:, :-1] != labels[:, 1:]
+                ax.imshow(
+                    np.where(boundary, 1.0, np.nan), origin="lower", extent=extent,
+                    cmap=mcolors.ListedColormap(["#000000"]), vmin=0, vmax=1,
+                    interpolation="nearest", aspect="equal", zorder=2,
+                )
+        else:
+            ax.set_title(
+                f"{qlvm_map}: QLVM categories are defined on the {QLVM_CATEGORY_MAP} map (no boundaries)",
+                fontsize=7, color="#444444",
             )
         ax.set_xlim(extent[0], extent[1])
         ax.set_ylim(extent[2], extent[3])
@@ -1209,8 +1223,11 @@ class USVSpectrogramPlotter:
         Render a per-session "USV sequence" figure for the shared analysis window
         ``time_window`` (``[start, end]`` seconds; the GUI sets it from a start +
         duration pair). LEFT:
-        the QLVM torus of ``shared_resources.qlvm_map`` (a periodic [0, 1] density
-        heatmap with black category boundaries) -- where the window's USVs
+        the QLVM torus of ``shared_resources.qlvm_map`` (on the regular map, the
+        category bundle's periodic [0, 1] density heatmap with its black category
+        boundaries; on a conditional map a bare square, since the categories are
+        defined on the regular map, see ``_draw_embedding_left_map``) -- where the
+        window's USVs
         are colored by emitter (male / female / unassigned), sized by call
         duration, numbered ``1..n`` in time order, and joined by a connecting line
         whose color is a white -> male time gradient and whose per-segment width
@@ -1295,20 +1312,12 @@ class USVSpectrogramPlotter:
         outer = gridspec.GridSpec(1, 2, width_ratios=[1.0, 1.4], figure=fig)
         ax_left = fig.add_subplot(outer[0, 0])
 
-        # # # # LEFT: precomputed cohort embedding landscape (density + category
-        # boundaries), resolved by convention from the shared spectrograms dir --
-        # <dir>/qlvm_v3/<qlvm_map>/arrays_{coarse,fine}.npz (the map's v3 cell);
-        # boundary_clustering picks coarse/fine. If the npz is not present (e.g. the
-        # arrays were never exported) fall back to bare axes, but still strip ticks so
-        # the panel never shows ticks/ticklabels.
-        arrays_path = resolve_embedding_arrays_path(
-            shared["spectrograms_dir"], qlvm_map, seq_cfg["boundary_clustering"]
-        )
-        if pathlib.Path(arrays_path).exists():
-            self._draw_embedding_left_map(ax_left, arrays_path, draw_boundaries=bool(seq_cfg["draw_boundaries"]))
-        else:
-            ax_left.set_xticks([])
-            ax_left.set_yticks([])
+        # # # # LEFT: the cohort landscape of the map: on the regular map the
+        # category bundle's density + category boundaries (os_utils
+        # QLVM_CATEGORY_BUNDLE_DIRECTORY, the partition the summaries' qlvm_category
+        # comes from); on a conditional map a bare square with a note (the bundle
+        # partitions the regular map's torus only).
+        self._draw_embedding_left_map(ax_left, qlvm_map, draw_boundaries=bool(seq_cfg["draw_boundaries"]))
 
         # Window USVs: emitter-colored points sized by duration, numbered 1..n in
         # time order (number INSIDE the point, black), connected by a time-gradient
@@ -2680,8 +2689,8 @@ def _pick_spiral_with_grid(
     r_max (float)
         Maximum spiral radius. Original uses ``dists_c.max()``.
     labels_grid (np.ndarray | None)
-        ``(res_y, res_x)`` array of predicted category labels from a
-        k-NN fit on (x, y) → category. ``None`` disables the filter.
+        ``(res_y, res_x)`` category label grid (the category bundle's
+        ``label_grid`` on the regular map). ``None`` disables the filter.
     xx, yy (np.ndarray | None)
         ``(res_x,)`` and ``(res_y,)`` axis ticks corresponding to
         ``labels_grid`` columns and rows respectively.
@@ -2938,7 +2947,7 @@ def _pick_category_samples(
 
     if method == "spiral":
         # ``spiral`` is special-cased in the plotting function so it
-        # can use the k-NN label grid as a watershed analog. If we
+        # can use the category bundle's label grid as a filter. If we
         # got here, the caller didn't route through that path -- fall
         # back to a centroid-rooted spiral with no grid filter (less
         # geometrically clean but still functional).
@@ -2979,95 +2988,6 @@ def _pick_category_samples(
     raise ValueError(msg)
 
 
-def _knn_boundary_grid(
-    x: np.ndarray,
-    y: np.ndarray,
-    labels: np.ndarray,
-    x_lo: float,
-    x_hi: float,
-    y_lo: float,
-    y_hi: float,
-    n_neighbors: int = 15,
-    grid_resolution: int = 200,
-    density_smoothing_sigma: float = 2.5,
-    density_min_count: float = 0.2,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Description
-    -----------
-    Fit a k-nearest-neighbor classifier on the scatter points and
-    predict integer category labels on a regular 2D grid covering
-    ``[x_lo, x_hi] x [y_lo, y_hi]``. The grid is then **masked by
-    point density** (a Gaussian-smoothed 2D histogram of the same
-    points): cells whose smoothed count is below
-    ``density_min_count`` are set to NaN, so when the result is fed
-    to ``ax.contour`` the contour algorithm skips empty map regions
-    and the boundaries appear only where data actually lives. The
-    boundaries themselves still follow point density via k-NN, not
-    centroid Voronoi geometry.
-
-    Parameters
-    ----------
-    x (np.ndarray)
-        1-D array of scatter-point x-coordinates.
-    y (np.ndarray)
-        1-D array of scatter-point y-coordinates.
-    labels (np.ndarray)
-        1-D array of integer category labels aligned to ``x`` / ``y``.
-    x_lo (float)
-        Lower x-bound of the grid extent.
-    x_hi (float)
-        Upper x-bound of the grid extent.
-    y_lo (float)
-        Lower y-bound of the grid extent.
-    y_hi (float)
-        Upper y-bound of the grid extent.
-    n_neighbors (int)
-        Number of neighbors for the k-NN classifier (clamped to the
-        number of points); defaults to 15.
-    grid_resolution (int)
-        Number of grid samples per axis; defaults to 200.
-    density_smoothing_sigma (float)
-        Gaussian sigma (in grid cells) used to smooth the 2D point-density
-        histogram before masking; defaults to 2.5.
-    density_min_count (float)
-        Smoothed-density threshold below which grid cells are set to NaN
-        (and thus skipped by ``ax.contour``); defaults to 0.2.
-
-    Returns
-    -------
-    xx, yy (np.ndarray)
-        ``(grid_resolution,)`` axis ticks (suitable for the ``X`` and
-        ``Y`` arguments of ``ax.contour``).
-    grid_labels (np.ndarray)
-        ``(grid_resolution, grid_resolution)`` FLOAT array of
-        predicted category labels (NaN where data density is too
-        low), rows indexed by ``y``, columns by ``x``.
-    """
-
-    k = max(1, min(int(n_neighbors), x.size))
-    clf = KNeighborsClassifier(n_neighbors=k, weights="uniform")
-    clf.fit(np.stack([x, y], axis=1), labels)
-    xx = np.linspace(x_lo, x_hi, grid_resolution)
-    yy = np.linspace(y_lo, y_hi, grid_resolution)
-    xg, yg = np.meshgrid(xx, yy)
-    grid_pred = clf.predict(np.stack([xg.ravel(), yg.ravel()], axis=1))
-    grid_labels = grid_pred.reshape(grid_resolution, grid_resolution).astype(float)
-
-    # Density mask: 2D histogram of points, smoothed slightly so
-    # marginally-dense regions don't fragment. Cells below
-    # ``density_min_count`` become NaN -> contour skips them.
-    x_edges = np.linspace(x_lo, x_hi, grid_resolution + 1)
-    y_edges = np.linspace(y_lo, y_hi, grid_resolution + 1)
-    counts, _, _ = np.histogram2d(x, y, bins=[x_edges, y_edges])
-    counts = counts.T  # match (row=y, col=x) orientation of grid_labels
-    if density_smoothing_sigma > 0:
-        counts = gaussian_filter1d(counts, sigma=density_smoothing_sigma, axis=0)
-        counts = gaussian_filter1d(counts, sigma=density_smoothing_sigma, axis=1)
-    grid_labels[counts < density_min_count] = np.nan
-    return xx, yy, grid_labels
-
-
 def plot_embedding_with_category_thumbnails(
     sessions_txt_path: str,
     consolidated_h5_path: str,
@@ -3079,7 +2999,6 @@ def plot_embedding_with_category_thumbnails(
     category_colors: dict | None = None,
     sampling_method: str = "random",
     cluster_centers_xy: dict | None = None,
-    cluster_centers_npz_path: str | None = None,
     cluster_centers_json_path: str | None = None,
     draw_spiral_overlay: bool = False,
     spiral_show_only_for: int | None = None,
@@ -3090,10 +3009,6 @@ def plot_embedding_with_category_thumbnails(
     spiral_n_turns: int = 4,
     spiral_random_phase: bool = True,
     draw_cluster_boundaries: bool = True,
-    knn_boundary_neighbors: int = 15,
-    knn_boundary_resolution: int = 200,
-    knn_boundary_density_min_count: float = 0.2,
-    knn_boundary_density_smoothing_sigma: float = 2.5,
     annotate_picks_on_scatter: bool = True,
     pick_number_fontsize: float = 11.0,
     annotate_cluster_ids: bool = False,
@@ -3156,12 +3071,18 @@ def plot_embedding_with_category_thumbnails(
     qlvm_map (str)
         One of ``os_utils.QLVM_MAPS`` - selects which QLVM map to plot
         (``"qlvm"`` the regular model; ``"qlvm_dur"`` and ``"qlvm_ent"`` the
-        conditional ones): its coordinates ``<qlvm_map>1/2`` and labels
-        ``<qlvm_map>_<category_col_suffix>``. Only the regular map has a
-        category column (``qlvm_category``), so a conditional map raises.
+        conditional ones): its coordinates ``<qlvm_map>1/2``. The calls are
+        coloured and grouped by ``qlvm_category`` on EVERY map
+        (``os_utils.QLVM_CATEGORY_COLUMN``; the categories are defined on the
+        regular map and label the call). The category boundaries and centres
+        come from the category bundle (``os_utils.load_qlvm_category_bundle``)
+        and are drawn on the regular map only; on a conditional map there are
+        no boundaries (the colours show each call's category), the spiral
+        sampler walks without a boundary filter, and the centres are the
+        per-category means of that map's calls.
     category_col_suffix (str)
-        ``"category"`` (the only level; there is no coarse level) - the
-        categorical label to color and group by.
+        ``"category"`` (the only level; there is no coarse level) - names the
+        categorical label to color and group by, ``qlvm_category``.
     n_samples_per_category (int)
         How many spectrograms to display per category row.
     apply_mask (bool)
@@ -3181,21 +3102,16 @@ def plot_embedding_with_category_thumbnails(
     cluster_centers_xy (dict | None)
         Explicit ``{label: (x, y)}`` cluster centres in the map's
         coordinates; highest priority of the centre sources.
-    cluster_centers_npz_path (str | None)
-        Reference arrays ``.npz`` whose ``centers`` array (``(K, 2)``,
-        ``(peak_x, peak_y)``, row ``i`` = label ``i + 1``) gives the
-        cluster centres; second priority. This is a map's
-        ``<spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_fine.npz``, resolved
-        by ``os_utils.resolve_embedding_arrays_path`` and written by
-        ``export-qlvm-reference-arrays`` from a clustered cell (the
-        production cells carry no clustering); the caller must pass arrays
-        of the clustering ``qlvm_map`` / ``category_col_suffix`` label.
-        Every category label in the pooled table must lie in ``1..K``,
-        otherwise ValueError: the centres and the labels come from
-        different clusterings.
     cluster_centers_json_path (str | None)
         A QLVM provenance JSON whose ``cluster_centers`` list (row ``i``
-        = label ``i + 1``) gives the centres; lowest priority.
+        = label ``i + 1``) gives the centres; second priority. Without
+        either, the regular map takes the category bundle's label
+        positions (``centers``, row ``i`` = category ``i + 1``; every
+        pooled ``qlvm_category`` must lie in ``1..k``, otherwise
+        ValueError: the labels and the bundle are different partitions).
+    draw_cluster_boundaries (bool)
+        Overlay the category bundle's boundaries on the regular map's
+        scatter (never on a conditional map).
     annotate_picks_on_scatter (bool)
         If ``True``, overlay the integer pick index (1..N) on each
         sampled point in the main scatter so the row of spectrograms
@@ -3205,12 +3121,11 @@ def plot_embedding_with_category_thumbnails(
     annotate_cluster_ids (bool)
         If ``True``, draw the integer cluster ID at the (resolved)
         center of each category on the main scatter. Centers are
-        taken from ``cluster_centers_xy`` /
-        ``cluster_centers_npz_path`` / ``cluster_centers_json_path``
-        when supplied (same priority chain as the spiral overlay);
-        otherwise the per-category mean of the displayed scatter
-        points is used as a fallback so the label still lands inside
-        its cluster.
+        taken from ``cluster_centers_xy`` / ``cluster_centers_json_path``
+        when supplied, else the category bundle on the regular map
+        (same priority chain as the spiral overlay); on a conditional
+        map without explicit centres, the per-category mean of the
+        displayed scatter points.
     cluster_id_fontsize (float)
         Font size used for the cluster-ID labels when
         ``annotate_cluster_ids`` is ``True``.
@@ -3316,13 +3231,16 @@ def plot_embedding_with_category_thumbnails(
         raise ValueError(msg)
 
     x_col, y_col = f"{qlvm_map}1", f"{qlvm_map}2"
-    cat_col = f"{qlvm_map}_{category_col_suffix}"
-    if cat_col not in QLVM_CATEGORY_COLUMNS:
-        msg = (
-            f"qlvm_map {qlvm_map!r} has no category column ({cat_col}); only "
-            f"{list(QLVM_CATEGORY_COLUMNS)} exist, so plot the regular map ('qlvm')."
+    # Every map's calls are grouped by the regular map's categories (the only
+    # category column); the bundle's grid draws on the regular map alone.
+    cat_col = QLVM_CATEGORY_COLUMN
+    on_category_map = qlvm_map == QLVM_CATEGORY_MAP
+    category_bundle = load_qlvm_category_bundle() if on_category_map else None
+    if not on_category_map:
+        message_output(
+            f"{qlvm_map}: the QLVM categories are defined on the {QLVM_CATEGORY_MAP} map, so this map's calls are "
+            f"coloured by their {cat_col} with no category boundaries, and category centres are the calls' means."
         )
-        raise ValueError(msg)
 
     if pooled_df is None:
         pooled_df = build_pooled_embeddings_df(
@@ -3367,33 +3285,17 @@ def plot_embedding_with_category_thumbnails(
     # Resolve explicit cluster centers (used by the spiral sampler).
     # Priority order:
     #   1. ``cluster_centers_xy`` dict (caller-supplied, highest).
-    #   2. ``cluster_centers_npz_path`` -> a reference arrays ``.npz``
-    #      (``export-qlvm-reference-arrays``) whose ``centers (K, 2)``
-    #      are the cluster peaks of the clustering ``category_col_suffix``
-    #      labels (the fine level).
-    #   3. ``cluster_centers_json_path`` -> a single QLVM provenance
+    #   2. ``cluster_centers_json_path`` -> a single QLVM provenance
     #      JSON's ``cluster_centers`` list.
-    # Center index ``i`` always maps to label ``i + 1`` (verified
-    # against ``dataset_stats.cluster_sizes_standard`` key naming).
+    #   3. On the regular map, the category bundle's label positions
+    #      (``centers (k, 2)``, the pixel of each category farthest from
+    #      its boundary on the torus).
+    # Center index ``i`` always maps to label ``i + 1``.
     cluster_centers_resolved: dict[int, tuple[float, float]] = {}
     if cluster_centers_xy is not None:
         cluster_centers_resolved = {
             int(k): (float(v[0]), float(v[1])) for k, v in cluster_centers_xy.items()
         }
-    elif cluster_centers_npz_path is not None:
-        with np.load(configure_path(cluster_centers_npz_path)) as _cc_npz:
-            centers_arr = _cc_npz["centers"]
-        foreign_labels = sorted(int(c) for c in categories if not 1 <= int(c) <= centers_arr.shape[0])
-        if foreign_labels:
-            msg = (
-                f"{cat_col} labels {foreign_labels} fall outside the {centers_arr.shape[0]} cluster "
-                f"centres of {cluster_centers_npz_path!r}: the centres and the labels come from "
-                f"different clusterings (or the arrays level does not match "
-                f"category_col_suffix={category_col_suffix!r})."
-            )
-            raise ValueError(msg)
-        for i, c in enumerate(centers_arr):
-            cluster_centers_resolved[i + 1] = (float(c[0]), float(c[1]))
     elif cluster_centers_json_path is not None:
         with open(configure_path(cluster_centers_json_path)) as _f:
             _prov = json.load(_f)
@@ -3402,6 +3304,18 @@ def plot_embedding_with_category_thumbnails(
         # ``cluster_centers`` list, so a missing key should surface
         # loudly rather than silently resolving zero centers.
         for i, c in enumerate(_prov["cluster_centers"]):
+            cluster_centers_resolved[i + 1] = (float(c[0]), float(c[1]))
+    elif category_bundle is not None:
+        centers_arr = category_bundle["centers"]
+        foreign_labels = sorted(int(c) for c in categories if not 1 <= int(c) <= centers_arr.shape[0])
+        if foreign_labels:
+            msg = (
+                f"{cat_col} labels {foreign_labels} fall outside the {centers_arr.shape[0]} categories of the "
+                f"category bundle {category_bundle['identity']}: the summaries' categories and the bundle are "
+                f"different partitions (re-run assign-qlvm-categories with this bundle)."
+            )
+            raise ValueError(msg)
+        for i, c in enumerate(centers_arr):
             cluster_centers_resolved[i + 1] = (float(c[0]), float(c[1]))
 
     # Downsample for the scatter visualisation BEFORE picks so the
@@ -3425,29 +3339,15 @@ def plot_embedding_with_category_thumbnails(
     x_pad = 0.03 * (x_hi - x_lo or 1.0)
     y_pad = 0.03 * (y_hi - y_lo or 1.0)
 
-    # Cluster boundaries via a k-NN classifier on (x, y) -> category,
-    # predicted on a 200x200 grid AND masked by point density so the
-    # contour algorithm skips empty map regions and the boundary lines
-    # appear only where data actually lives.
+    # Category boundaries: the category bundle's label grid on the regular map
+    # (the partition the summaries' qlvm_category was assigned from; xx / yy are
+    # its pixel centres, rows indexed by y); none on a conditional map, whose
+    # calls the grid does not describe. The spiral sampler uses the same grid.
     boundary_xx = boundary_yy = boundary_labels = None
-    if (
-        (draw_cluster_boundaries or sampling_method == "spiral")
-        and np.unique(cat_all).size >= 2
-    ):
-        boundary_xx, boundary_yy, boundary_labels = _knn_boundary_grid(
-            x_all, y_all, cat_all,
-            x_lo=x_lo, x_hi=x_hi, y_lo=y_lo, y_hi=y_hi,
-            n_neighbors=knn_boundary_neighbors,
-            grid_resolution=knn_boundary_resolution,
-            density_smoothing_sigma=knn_boundary_density_smoothing_sigma,
-            density_min_count=knn_boundary_density_min_count,
-        )
-        if np.all(np.isnan(boundary_labels)):
-            boundary_labels = None
-        else:
-            label_lo = float(np.nanmin(boundary_labels))
-            label_hi = float(np.nanmax(boundary_labels))
-            contour_levels = np.arange(label_lo + 0.5, label_hi + 0.5, 1.0)
+    if category_bundle is not None:
+        boundary_xx = boundary_yy = category_bundle["axis"]
+        boundary_labels = category_bundle["label_grid"].astype(float)
+        contour_levels = np.arange(1.5, len(category_bundle["names"]) + 0.5, 1.0)
 
     picks_per_category: dict[int, pls.DataFrame] = {}
     # When ``sampling_method == 'spiral'`` we also record the spiral
@@ -3599,10 +3499,9 @@ def plot_embedding_with_category_thumbnails(
     # Overlay the integer cluster ID at the centre of each category
     # so the scatter doubles as a legend. Centres come from the
     # already-resolved ``cluster_centers_resolved`` map (caller-
-    # supplied xy / reference-arrays npz / json, in that priority); when none was
-    # provided we fall back to the per-category mean of the points
-    # actually plotted on the scatter so the label still lands
-    # inside its cluster.
+    # supplied xy / json, else the category bundle on the regular map);
+    # on a conditional map without explicit centres they are the
+    # per-category means of the points plotted on its scatter.
     if annotate_cluster_ids:
         if cluster_centers_resolved:
             cluster_id_centres = {
@@ -4015,24 +3914,11 @@ def render_embedding_thumbnails_for_cohort(
         combined_file.write("\n".join(roots))
         combined_sessions_txt = combined_file.name
 
-    # Cluster-center provenance for the QLVM cluster-ID labels / spiral centers:
-    # the `centers` (cluster peaks) of the chosen map's reference arrays,
-    # <spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_fine.npz (the fine level the
-    # category label uses), shared with the sequence map and the torus video. The
-    # production cells carry no clustering, so these arrays usually do not exist and
-    # the centers fall back to the data-derived medoids/centroids.
+    # The category boundaries and the cluster-ID / spiral centres come from the
+    # category bundle (os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY) inside
+    # plot_embedding_with_category_thumbnails, on the regular map only; a
+    # conditional map shows its calls coloured by qlvm_category without boundaries.
     qlvm_map = visualizations_parameter_dict["shared_resources"]["qlvm_map"]
-    cluster_centers_npz_path = None
-    centers_candidate = resolve_embedding_arrays_path(
-        visualizations_parameter_dict["shared_resources"]["spectrograms_dir"], qlvm_map, "fine"
-    )
-    if pathlib.Path(centers_candidate).is_file():
-        cluster_centers_npz_path = centers_candidate
-    else:
-        log(
-            f"[embedding-thumbnails] no QLVM reference arrays at {centers_candidate} "
-            f"(export-qlvm-reference-arrays writes them); cluster centres fall back to the data."
-        )
 
     # Pooled-embeddings cache resolved by convention from the spectrograms dir
     # (<dir>/embeddings/pooled_embeddings_qlvmv3.parquet, precomputed once on a fast mount);
@@ -4062,7 +3948,6 @@ def render_embedding_thumbnails_for_cohort(
             mask_excluded_categories=tuple(cfg["mask_excluded_categories"]),
             category_colors=cfg["category_colors"],
             sampling_method=cfg["sampling_method"],
-            cluster_centers_npz_path=cluster_centers_npz_path,
             draw_spiral_overlay=cfg["draw_spiral_overlay"],
             spiral_show_only_for=cfg["spiral_show_only_for"],
             spiral_color=cfg["spiral_color"],
@@ -4072,10 +3957,6 @@ def render_embedding_thumbnails_for_cohort(
             spiral_n_turns=cfg["spiral_n_turns"],
             spiral_random_phase=cfg["spiral_random_phase"],
             draw_cluster_boundaries=cfg["draw_cluster_boundaries"],
-            knn_boundary_neighbors=cfg["knn_boundary_neighbors"],
-            knn_boundary_resolution=cfg["knn_boundary_resolution"],
-            knn_boundary_density_min_count=cfg["knn_boundary_density_min_count"],
-            knn_boundary_density_smoothing_sigma=cfg["knn_boundary_density_smoothing_sigma"],
             annotate_picks_on_scatter=cfg["annotate_picks_on_scatter"],
             pick_number_fontsize=cfg["pick_number_fontsize"],
             annotate_cluster_ids=cfg["annotate_cluster_ids"],

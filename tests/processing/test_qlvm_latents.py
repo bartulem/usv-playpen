@@ -860,49 +860,6 @@ def test_infer_and_merge_spectral_entropy_reads_the_summary_and_snaps_to_the_gri
         _run_capturing_c(root, cfg, mocker)
 
 
-def test_export_model_cell_arrays_writes_the_reference_layout(tmp_path):
-    """The visualizations read arrays_{fine,coarse}.npz: a package cell exported to
-    that layout must carry its grid, its peaks in label order, its calls with their
-    labels, and an aggregated-posterior heatmap holding all the posterior mass."""
-    rng = np.random.default_rng(15)
-    res, n_calls, fib_m = 8, 30, 8
-    cell = tmp_path / "pkg" / "phase_x" / "cell_x"
-    for level in ("fine", "coarse"):
-        (cell / "cluster" / level).mkdir(parents=True)
-    (cell / "training_contract.json").write_text(json.dumps({"embedding_fib_m": fib_m}))
-    angles = rng.uniform(0.0, 2 * np.pi, size=(n_calls, 2))
-    torus_weighted = np.concatenate([np.cos(angles), np.sin(angles)], axis=1).astype(np.float32)
-    aggregated = rng.random(21) * 3.0                                 # fib(8) = 21 lattice points
-    np.savez(cell / "posterior_cache.npz", torus_weighted=torus_weighted, aggregated=aggregated)
-    coords = (angles / (2 * np.pi)).astype(np.float32)
-    grids = {"fine": rng.integers(1, 5, size=(res, res)).astype(np.int16), "coarse": rng.integers(1, 3, size=(res, res)).astype(np.int16)}
-    for level, grid in grids.items():
-        np.save(cell / "cluster" / level / "label_grid.npy", grid)
-        pixel_y = np.clip((coords[:, 1] * res).astype(int), 0, res - 1)
-        pixel_x = np.clip((coords[:, 0] * res).astype(int), 0, res - 1)
-        pls.DataFrame({"spec_id": [f"s_{i}" for i in range(n_calls)], "label": grid[pixel_y, pixel_x].astype(np.int64)}).write_csv(
-            cell / "cluster" / level / "cluster_labels.csv"
-        )
-        k = int(grid.max())
-        pls.DataFrame({"label": list(range(k, 0, -1)), "peak_x": [0.1 * label for label in range(k, 0, -1)],
-                       "peak_y": [0.05 * label for label in range(k, 0, -1)]}).write_csv(cell / "cluster" / level / "clusters.csv")
-
-    written = ql.export_model_cell_arrays(str(cell), str(tmp_path / "out"), message_output=lambda *_a: None)
-
-    assert [path.name for path in written] == ["arrays_fine.npz", "arrays_coarse.npz"]
-    for level, grid in grids.items():
-        with np.load(tmp_path / "out" / f"arrays_{level}.npz", allow_pickle=False) as arrays:
-            np.testing.assert_array_equal(arrays["ws_labels_periodic"], grid)
-            np.testing.assert_array_equal(arrays["ws_labels"], grid)
-            k = int(grid.max())
-            np.testing.assert_allclose(arrays["centers"], [[0.1 * label, 0.05 * label] for label in range(1, k + 1)], rtol=1e-6)
-            np.testing.assert_allclose(arrays["latent_coords"], coords, atol=1e-5)
-            np.testing.assert_array_equal(ql.label_grid_lookup(arrays["latent_coords"], grid), arrays["sample_ws_periodic"])
-            assert arrays["heatmap"].shape == (res, res)
-            assert arrays["heatmap"].sum() == pytest.approx(aggregated.sum(), rel=1e-5)
-            assert str(arrays["model_id"]) == "pkg/phase_x/cell_x"
-
-
 def test_infer_and_merge_model_cell_refuses_wrong_masking(tmp_path, mocker):
     """A masked package decoder must not be fed unmasked spectrograms: the settings'
     masking_type is checked against the cell's contract before anything runs, and the

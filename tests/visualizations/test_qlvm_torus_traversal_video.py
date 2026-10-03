@@ -3,9 +3,11 @@
 Tests for visualizations/qlvm_torus_traversal_video.
 
 Covers the torus embedding helper, pooling per-USV latent coords from the
-consolidated H5 (`spectrogram/<key>/qlvm_dim`), the phase-script builder, a small
+consolidated H5 (`qlvm/<key>/<map>`), the phase-script builder, the store
+provenance check against the cell the QLVM category bundle is defined on, a small
 end-to-end three-part render to a temporary GIF (Pillow writer, no FFmpeg) that
-sources coords + spectrograms from the H5, and CLI routing.
+sources coords + spectrograms from the H5 and the landscape from the category
+bundle, and CLI routing.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from click.testing import CliRunner
 from usv_playpen.visualizations.qlvm_torus_traversal_video import (
     QLVMTorusTraversalVideo,
     build_phases,
+    check_store_map_provenance,
     pool_latents_from_h5,
     qlvm_torus_traversal_video_cli,
     torus_forward,
@@ -67,8 +70,8 @@ def test_build_phases_structure():
 
 def _tiny_cfg(spectrograms_dir, peaks_only=False, qlvm_map="qlvm"):
     """A small render input dict (the qlvm block + the shared_resources block)
-    that exercises all phases quickly at low dpi. The QLVM arrays + the
-    consolidated store are resolved from ``spectrograms_dir``."""
+    that exercises all phases quickly at low dpi. The consolidated store is
+    resolved from ``spectrograms_dir``; the landscape is the category bundle."""
     return {
         "shared_resources": {
             "spectrograms_dir": str(spectrograms_dir),
@@ -78,7 +81,6 @@ def _tiny_cfg(spectrograms_dir, peaks_only=False, qlvm_map="qlvm"):
             "sequential_cmap": "inferno",
         },
         "qlvm_torus_traversal_video": {
-            "clustering": "coarse",
             "fps": 4, "dpi": 30, "m": 4,
             "cluster_hold_frames": 2, "peak_traverse_frames": 4,
             "boundary_traverse_frames": 4, "title_card_frames": 1,
@@ -91,21 +93,18 @@ def _tiny_cfg(spectrograms_dir, peaks_only=False, qlvm_map="qlvm"):
     }
 
 
-def _write_inputs(tmp_path, n=12, res=8, n_f=16, n_t=16):
-    """Build a shared spectrograms dir: <dir>/qlvm_v3/qlvm/arrays_{coarse,fine}.npz
-    (heatmap/ws/centers) + <dir>/spectrograms_<key>.h5 carrying per-session
-    spectrograms AND qlvm/<key>/qlvm coords. Returns str(<dir>)."""
+_PRODUCTION_PACKAGE = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
+
+
+def _write_inputs(tmp_path, n=12, n_f=16, n_t=16, package_root=_PRODUCTION_PACKAGE, cell="cell/masked"):
+    """Build a shared spectrograms dir holding <dir>/spectrograms_<key>.h5 with
+    per-session spectrograms, qlvm/<key>/qlvm coords and the qlvm_models/qlvm
+    provenance attrs (package_root / cell, the production regular cell by default).
+    Returns str(<dir>)."""
     rng = np.random.default_rng(0)
     session_key = "20250907_190610"
     spec_dir = tmp_path / "spectrograms"
-    (spec_dir / "qlvm_v3" / "qlvm").mkdir(parents=True, exist_ok=True)
-    for tag in ("coarse", "fine"):
-        np.savez(
-            spec_dir / "qlvm_v3" / "qlvm" / f"arrays_{tag}.npz",
-            heatmap=rng.random((res, res)).astype(np.float32),
-            ws_labels_periodic=rng.integers(0, 3, size=(res, res)).astype(np.int16),
-            centers=np.array([[0.25, 0.25], [0.7, 0.7]], dtype=np.float32),
-        )
+    spec_dir.mkdir(parents=True, exist_ok=True)
     h5_path = spec_dir / f"spectrograms_{session_key}.h5"
     with h5py.File(h5_path, "w") as h5:
         h5.create_dataset(f"spectrogram/{session_key}/spectrograms",
@@ -119,41 +118,89 @@ def _write_inputs(tmp_path, n=12, res=8, n_f=16, n_t=16):
                           data=(rng.random((n, n_f, n_t)) > 0.5))
         h5.create_dataset(f"mask/{session_key}/spectrogram_index",
                           data=np.arange(n, dtype=np.int64))
+        model_group = h5.create_group("qlvm_models/qlvm")
+        model_group.attrs["package_root"] = package_root
+        model_group.attrs["cell"] = cell
     return str(spec_dir)
 
 
-def test_make_video_writes_gif(tmp_path):
-    """End-to-end three-part render to a small GIF (coords + specs from H5)."""
+def test_make_video_writes_gif(tmp_path, qlvm_category_bundle):
+    """End-to-end three-part render to a small GIF (coords + specs from H5, the
+    density / boundaries / category peaks from the category bundle)."""
     spec_dir = _write_inputs(tmp_path)
     out = tmp_path / "traversal.gif"
+    messages = []
     QLVMTorusTraversalVideo(
         output_path=str(out),
         input_parameter_dict=_tiny_cfg(spec_dir),
-        message_output=lambda *_a, **_kw: None,
+        message_output=messages.append,
     ).make_video()
     assert out.is_file()
     assert out.stat().st_size > 0
+    assert any("4 categories" in message and str(qlvm_category_bundle) in message for message in messages)
 
 
-def test_make_video_errors_without_map_coordinates(tmp_path):
-    """If the H5 has no coordinates of the chosen map, render fails with a clear,
+def test_make_video_refuses_a_conditional_map(tmp_path, qlvm_category_bundle):
+    """The bundle's regions are defined on the regular map only, so a conditional
+    shared qlvm_map is refused before anything is read, naming the map."""
+    spec_dir = _write_inputs(tmp_path)
+    with pytest.raises(ValueError, match="'qlvm_dur'"):
+        QLVMTorusTraversalVideo(
+            output_path=str(tmp_path / "x.gif"),
+            input_parameter_dict=_tiny_cfg(spec_dir, qlvm_map="qlvm_dur"),
+            message_output=lambda *_a, **_kw: None,
+        ).make_video()
+
+
+def test_make_video_refuses_a_store_of_another_cell(tmp_path, qlvm_category_bundle):
+    """A store whose qlvm coordinates come from another cell (e.g. the v3 archive)
+    places the calls on another torus than the bundle partitions: refused."""
+    spec_dir = _write_inputs(
+        tmp_path,
+        package_root="/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3",
+        cell="phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor",
+    )
+    with pytest.raises(ValueError, match="mislabel"):
+        QLVMTorusTraversalVideo(
+            output_path=str(tmp_path / "x.gif"),
+            input_parameter_dict=_tiny_cfg(spec_dir),
+            message_output=lambda *_a, **_kw: None,
+        ).make_video()
+
+
+def test_check_store_map_provenance(tmp_path):
+    """The store must record the production regular cell for the map; a store without
+    provenance cannot be shown to match and is refused."""
+    h5_path = tmp_path / "store.h5"
+    with h5py.File(h5_path, "w") as h5:
+        group = h5.create_group("qlvm_models/qlvm")
+        group.attrs["package_root"] = "/Volumes/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
+        group.attrs["cell"] = "cell/masked"
+    with h5py.File(h5_path, "r") as h5:
+        assert check_store_map_provenance(h5, "qlvm") == "masked_clean/cell/masked"
+    with h5py.File(tmp_path / "bare.h5", "w") as h5:
+        h5.create_dataset("qlvm/s/qlvm", data=np.zeros((2, 2)))
+    with h5py.File(tmp_path / "bare.h5", "r") as h5, pytest.raises(ValueError, match="no qlvm_models/qlvm"):
+        check_store_map_provenance(h5, "qlvm")
+
+
+def test_make_video_errors_without_map_coordinates(tmp_path, qlvm_category_bundle):
+    """If the H5 has no coordinates of the regular map, render fails with a clear,
     actionable error naming the map."""
     rng = np.random.default_rng(1)
     spec_dir = tmp_path / "spectrograms"
-    (spec_dir / "qlvm_v3" / "qlvm_bw").mkdir(parents=True, exist_ok=True)
-    for tag in ("coarse", "fine"):
-        np.savez(spec_dir / "qlvm_v3" / "qlvm_bw" / f"arrays_{tag}.npz",
-                 heatmap=rng.random((8, 8)).astype(np.float32),
-                 ws_labels_periodic=rng.integers(0, 3, size=(8, 8)).astype(np.int16),
-                 centers=np.array([[0.25, 0.25], [0.7, 0.7]], dtype=np.float32))
+    spec_dir.mkdir()
     with h5py.File(spec_dir / "spectrograms_20250907_190610.h5", "w") as h5:
         h5.create_dataset("spectrogram/20250907_190610/spectrograms",
                           data=rng.random((5, 16, 16)).astype(np.float32))
-        h5.create_dataset("qlvm/20250907_190610/qlvm", data=rng.random((5, 2)))
-    with pytest.raises(ValueError, match="qlvm_bw"):
+        h5.create_dataset("qlvm/20250907_190610/qlvm_dur", data=rng.random((5, 2)))
+        model_group = h5.create_group("qlvm_models/qlvm")
+        model_group.attrs["package_root"] = _PRODUCTION_PACKAGE
+        model_group.attrs["cell"] = "cell/masked"
+    with pytest.raises(ValueError, match="qlvm/<session>/qlvm"):
         QLVMTorusTraversalVideo(
             output_path=str(tmp_path / "x.gif"),
-            input_parameter_dict=_tiny_cfg(spec_dir, qlvm_map="qlvm_bw"),
+            input_parameter_dict=_tiny_cfg(spec_dir),
             message_output=lambda *_a, **_kw: None,
         ).make_video()
 

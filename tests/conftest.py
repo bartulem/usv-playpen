@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sys
 import warnings
 from pathlib import Path
+
+import numpy as np
+import pytest
+
+from usv_playpen import os_utils
 
 # If running under WSL
 # Ensure Qt uses a headless platform during tests (no X server required).
@@ -122,3 +128,101 @@ def pytest_collection_modifyitems(config, items):
         else:
             other_items.append(item)
     items[:] = other_items + integrity_items
+
+
+def write_qlvm_category_bundle(directory: Path, resolution: int = 20) -> Path:
+    """
+    Description
+    -----------
+    Writes a small synthetic QLVM category bundle in the build-qlvm-categories
+    layout (``category_grids.npz``, ``category_nomenclature.json``,
+    ``build_config.json``): four quadrant categories R-1..R-4 on a periodic
+    ``resolution`` x ``resolution`` grid indexed ``[y, x]`` (R-1 bottom-left,
+    R-2 bottom-right, R-3 top-left, R-4 top-right), full agreement, a density that
+    grows along x, and label positions at the quadrant centres.
+
+    Parameters
+    ----------
+    directory (Path)
+        Directory to write into (created if missing).
+    resolution (int)
+        Pixels per side; even.
+
+    Returns
+    -------
+    directory (Path)
+        The bundle directory.
+    """
+
+    directory.mkdir(parents=True, exist_ok=True)
+    half = resolution // 2
+    label_grid = np.ones((resolution, resolution), dtype=np.int16)
+    label_grid[:half, half:] = 2
+    label_grid[half:, :half] = 3
+    label_grid[half:, half:] = 4
+    density = np.tile(np.linspace(0.5, 2.0, resolution), (resolution, 1))
+    np.savez_compressed(
+        directory / "category_grids.npz",
+        label_grid=label_grid,
+        agreement=np.ones((resolution, resolution)),
+        reference_grid=label_grid.copy(),
+        content_change=np.zeros((resolution, resolution)),
+        basins=label_grid.astype(np.int32),
+        density=density,
+    )
+    centres = {1: (0.25, 0.25), 2: (0.75, 0.25), 3: (0.25, 0.75), 4: (0.75, 0.75)}
+    descriptions = ["simple", "mixed", "complex", "wide-band two-mask"]
+    nomenclature = {
+        "grid_resolution": resolution,
+        "n_categories": 4,
+        "uncertain_agreement": 0.6,
+        "n_votes": 10,
+        "n_calls": 400,
+        "categories": [
+            {"grid_label": label, "name": f"R-{label}", "description": descriptions[label - 1], "n_calls": 100,
+             "share": 0.25, "uncertain_share": 0.0, "label_x": centres[label][0], "label_y": centres[label][1]}
+            for label in range(1, 5)
+        ],
+    }
+    (directory / "category_nomenclature.json").write_text(json.dumps(nomenclature))
+    build_config = {
+        "build_qlvm_categories": {"grid_resolution": resolution, "n_categories": 4},
+        "positions_file": "/synthetic/positions.csv",
+        "positions_file_sha256": "0123456789abcdef" * 4,
+        "properties_file": "/synthetic/properties.npz",
+        "n_calls": 400,
+        "n_sessions": 4,
+        "n_basins": 4,
+        "n_votes": 10,
+        "built": "2026-10-03T12:00:00",
+    }
+    (directory / "build_config.json").write_text(json.dumps(build_config))
+    return directory
+
+
+@pytest.fixture
+def qlvm_category_bundle(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    A synthetic QLVM category bundle (:func:`write_qlvm_category_bundle`) that
+    ``os_utils.load_qlvm_category_bundle`` -- the one loader every category-grid
+    consumer goes through -- reads for the duration of the test, instead of the
+    production bundle ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``.
+
+    Parameters
+    ----------
+    tmp_path (Path)
+        Pytest's per-test directory.
+    monkeypatch (pytest.MonkeyPatch)
+        Pytest's monkeypatch fixture.
+
+    Returns
+    -------
+    directory (Path)
+        The bundle directory.
+    """
+
+    directory = write_qlvm_category_bundle(tmp_path / "category_bundle")
+    monkeypatch.setattr(os_utils, "QLVM_CATEGORY_BUNDLE_DIRECTORY", str(directory))
+    return directory

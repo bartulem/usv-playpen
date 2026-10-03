@@ -15,6 +15,7 @@ import polars as pls
 import pytest
 from click.testing import CliRunner
 
+from usv_playpen import os_utils
 from usv_playpen.processing import qlvm_categories as qc
 
 # A small grid and few resamples keep the synthetic builds fast.
@@ -262,6 +263,35 @@ def test_assigner_merges_category_columns_into_the_summary(tmp_path):
             input_parameter_dict={"assign_qlvm_categories": {"category_directory": str(out_dir), "coordinate_prefix": "qlvm_z"}},
             message_output=lambda *_a, **_kw: None,
         ).assign_and_merge()
+
+
+def test_assigner_defaults_to_the_production_bundle_on_the_regular_map(tmp_path, monkeypatch):
+    """With a spectrograms_root and an empty category_directory / coordinate_prefix, the
+    assigner labels with os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY on the regular map (qlvm):
+    the bundle every QLVM figure loads, so the summaries' qlvm_category and the drawn
+    boundaries are one partition."""
+    out_dir = _build(tmp_path)
+    monkeypatch.setattr(os_utils, "QLVM_CATEGORY_BUNDLE_DIRECTORY", str(out_dir))
+    root = tmp_path / "20240101_100000"
+    (root / "audio").mkdir(parents=True)
+    summary_path = root / "audio" / "20240101_100000_usv_summary.csv"
+    pls.DataFrame({"usv_id": ["0000", "0001"], "start": [0.1, 0.2], "qlvm1": [0.1, 0.9], "qlvm2": [0.5, 0.5]}).write_csv(summary_path)
+    settings = {
+        "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
+        "generate_masks": {"sam2_model_dir": "x", "sam2_model_path": "x", "yolo_weights": "x"},
+        "infer_qlvm_latents": {"model_cells": {"qlvm": "/c"}},
+        "infer_qlvm_squeak_latents": {"model_cell_directory": "/s"},
+        "detect_usv_squeaks": {"squeak_model_path": "x"},
+        "detect_usv_noise": {"noise_model_path": "x"},
+        "assign_qlvm_categories": {"category_directory": "", "coordinate_prefix": ""},
+    }
+    qc.QLVMCategoryAssigner(
+        root_directory=str(root), input_parameter_dict=settings, message_output=lambda *_a, **_kw: None,
+    ).assign_and_merge()
+    assert settings["assign_qlvm_categories"] == {"category_directory": str(out_dir), "coordinate_prefix": "qlvm"}
+    expected = qc.assign_categories(np.array([[0.1, 0.5], [0.9, 0.5]]), qc.load_category_bundle(str(out_dir)))
+    df = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+    assert df["qlvm_category"].to_list() == expected["category"].tolist()
 
 
 def test_category_clis_route_their_settings(tmp_path, mocker):

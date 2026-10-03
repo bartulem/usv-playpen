@@ -41,11 +41,13 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+import matplotlib.contour
 import numpy as np
 import pandas as pd
 import polars as pls
 import pytest
 
+from usv_playpen import os_utils
 from usv_playpen.notebooks import usv_embedding_explorer
 from usv_playpen.os_utils import SQUEAK_CLASS_SELECTIONS, call_class_mask
 
@@ -59,7 +61,6 @@ from usv_playpen.visualizations.make_usv_spectrograms import (
     USV_TIMELINE_UNASSIGNED_COLOR,
     USVSpectrogramPlotter,
     _count_usvs_per_session,
-    _knn_boundary_grid,
     _medoid_xy,
     _pick_category_samples,
     _pick_spiral_with_grid,
@@ -137,7 +138,7 @@ def _base_settings(
     time_window (tuple of float)
         Analysis window in seconds ([start, end]; end 0 -> full file).
     spectrograms_dir (str)
-        Base dir holding the qlvm_v3/<map>/ arrays npz and spectrograms_*.h5
+        Base dir holding spectrograms_*.h5
         (stitched / sequence modes resolve their inputs from it).
     apply_mask (bool)
         Master SAM2 mask toggle (stitched mode).
@@ -1502,23 +1503,31 @@ def test_pick_category_samples_spiral_degenerate():
     assert out.max() < 10
 
 
-def test_knn_boundary_grid_shapes():
-    """The k-NN boundary grid returns axis ticks and a float label grid
-    with NaNs in low-density cells."""
-    rng = np.random.default_rng(5)
-    x = np.concatenate([rng.normal(0, 0.2, 50), rng.normal(2, 0.2, 50)])
-    y = np.concatenate([rng.normal(0, 0.2, 50), rng.normal(2, 0.2, 50)])
-    labels = np.array([1] * 50 + [2] * 50)
-    xx, yy, grid = _knn_boundary_grid(
-        x, y, labels, x_lo=-1, x_hi=3, y_lo=-1, y_hi=3,
-        n_neighbors=5, grid_resolution=40,
-    )
-    assert xx.shape == (40,) and yy.shape == (40,)
-    assert grid.shape == (40, 40)
-    assert np.isnan(grid).any()  # empty corners masked out
-
-
 # ---- plot_embedding_with_category_thumbnails -----------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_category_bundle(qlvm_category_bundle):
+    """
+    Description
+    -----------
+    Every test of this module reads the synthetic QLVM category bundle (four
+    quadrant categories, label positions at the quadrant centres) instead of the
+    production bundle, so the category boundaries / centres / density they draw are
+    known and the tests run without the lab share.
+
+    Parameters
+    ----------
+    qlvm_category_bundle (pathlib.Path)
+        The conftest fixture's bundle directory.
+
+    Returns
+    -------
+    directory (pathlib.Path)
+        The bundle directory.
+    """
+
+    return qlvm_category_bundle
 
 
 def _make_pooled_df(session_id: str = "sessA", n_per_cat: int = 6) -> pls.DataFrame:
@@ -1588,17 +1597,34 @@ def test_plot_umap_thumbnails_random(tmp_path):
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
-def test_plot_umap_thumbnails_conditional_map_has_no_categories(tmp_path):
-    """qlvm_map='qlvm_dur' names a map without a category column (only the regular map
-    carries qlvm_category), so the figure refuses it before any rendering."""
-    with pytest.raises(ValueError, match="has no category column"):
-        plot_embedding_with_category_thumbnails(
-            sessions_txt_path="unused",
-            consolidated_h5_path="unused",
-            qlvm_map="qlvm_dur",
-            pooled_df=_make_pooled_df("sessQ", n_per_cat=6),
-            message_output=lambda *_: None,
-        )
+def test_plot_umap_thumbnails_conditional_map_colours_by_qlvm_category(tmp_path):
+    """qlvm_map='qlvm_dur' groups and colours its calls by the regular map's
+    qlvm_category (the only category column) and draws no category boundaries (the
+    bundle partitions the regular map's torus only), saying so; the category-ID labels
+    sit at the calls' means on that map, not at the bundle's label positions."""
+    pooled = _make_pooled_df("sessQ", n_per_cat=6)
+    h5_path = tmp_path / "store.h5"
+    _write_consolidated_h5(h5_path, "sessQ", n_usvs=12, n_freq=16, n_time=24)
+    messages = []
+    fig = plot_embedding_with_category_thumbnails(
+        sessions_txt_path="unused",
+        consolidated_h5_path=str(h5_path),
+        qlvm_map="qlvm_dur",
+        n_samples_per_category=3,
+        sampling_method="spiral",
+        annotate_cluster_ids=True,
+        draw_cluster_boundaries=True,
+        pooled_df=pooled,
+        message_output=messages.append,
+    )
+    assert any("defined on the qlvm map" in message for message in messages)
+    scatter_ax = fig.axes[0]
+    assert scatter_ax.get_xlabel() == "QLVM DUR DIM 1"
+    assert not any(isinstance(child, matplotlib.contour.ContourSet) for child in scatter_ax.get_children())
+    placed = {text.get_text(): tuple(text.get_position()) for text in scatter_ax.texts if text.get_text() in ("1", "2")}
+    for label in (1, 2):
+        rows = pooled.filter(pls.col("qlvm_category") == label)
+        assert placed[str(label)] == pytest.approx((rows["qlvm_dur1"].mean(), rows["qlvm_dur2"].mean()))
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
@@ -1673,16 +1699,13 @@ def test_plot_umap_thumbnails_json_provenance_centers(tmp_path):
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
-def test_plot_umap_thumbnails_reference_arrays_centers(tmp_path):
-    """The QLVM cluster-ID labels sit at the reference arrays' ``centers`` (row i =
-    label i + 1, the v3 export layout) and the labels drawn are the pooled table's
-    qlvm_category values."""
+def test_plot_umap_thumbnails_bundle_centers_and_boundaries(tmp_path):
+    """On the regular map the QLVM category-ID labels sit at the category bundle's label
+    positions (row i = category i + 1) and its label grid is drawn as the boundaries;
+    the labels drawn are the pooled table's qlvm_category values."""
     pooled = _make_pooled_df("sessE", n_per_cat=5)
     h5_path = tmp_path / "store.h5"
     _write_consolidated_h5(h5_path, "sessE", n_usvs=10, n_freq=16, n_time=18)
-    arrays = tmp_path / "qlvm_v3" / "arrays_fine.npz"
-    arrays.parent.mkdir()
-    np.savez(arrays, centers=np.array([[0.25, 0.75], [0.6, 0.1]], dtype=np.float32))
     fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
@@ -1690,8 +1713,8 @@ def test_plot_umap_thumbnails_reference_arrays_centers(tmp_path):
         category_col_suffix="category",
         n_samples_per_category=3,
         sampling_method="spiral",
-        cluster_centers_npz_path=str(arrays),
         annotate_cluster_ids=True,
+        draw_cluster_boundaries=True,
         pooled_df=pooled,
         message_output=lambda *_: None,
     )
@@ -1699,22 +1722,21 @@ def test_plot_umap_thumbnails_reference_arrays_centers(tmp_path):
         (text.get_text(), tuple(round(float(v), 4) for v in text.get_position()))
         for axis in fig.axes for text in axis.texts if text.get_text() in ("1", "2")
     }
-    assert {("1", (0.25, 0.75)), ("2", (0.6, 0.1))} <= placed
+    assert {("1", (0.25, 0.25)), ("2", (0.75, 0.25))} <= placed
+    assert any(isinstance(child, matplotlib.contour.ContourSet) for child in fig.axes[0].get_children())
 
 
-def test_plot_umap_thumbnails_reference_arrays_label_mismatch_raises(tmp_path):
-    """Labels outside ``1..K`` of the arrays' K centres mean the centres and the
-    labels come from different clusterings (e.g. old arrays against v3 labels): raise."""
-    arrays = tmp_path / "arrays_fine.npz"
-    np.savez(arrays, centers=np.array([[0.25, 0.75]], dtype=np.float32))
-    with pytest.raises(ValueError, match="different clusterings"):
+def test_plot_umap_thumbnails_bundle_label_mismatch_raises(tmp_path):
+    """A pooled qlvm_category outside the bundle's 1..k means the summaries were labelled
+    with another partition than the bundle drawn: raise."""
+    pooled = _make_pooled_df().with_columns(pls.lit(7).alias("qlvm_category"))
+    with pytest.raises(ValueError, match="different partitions"):
         plot_embedding_with_category_thumbnails(
             sessions_txt_path="unused",
             consolidated_h5_path="unused",
             qlvm_map="qlvm",
             category_col_suffix="category",
-            cluster_centers_npz_path=str(arrays),
-            pooled_df=_make_pooled_df(),
+            pooled_df=pooled,
             message_output=lambda *_: None,
         )
 
@@ -1832,19 +1854,6 @@ def test_bandwidth_split_constant_is_khz():
 # ---- plot_sequence (per-session embedding + continuous spectrogram) -------
 
 
-def _write_arrays_npz(path: pathlib.Path, res: int = 8, n_clusters: int = 2) -> pathlib.Path:
-    """Write a tiny QLVM analysis arrays .npz (heatmap / ws_labels_periodic /
-    centers) sufficient for the sequence figure's QLVM background."""
-    rng = np.random.default_rng(0)
-    np.savez(
-        path,
-        heatmap=rng.random((res, res)).astype(np.float32),
-        ws_labels_periodic=rng.integers(0, n_clusters + 1, size=(res, res)).astype(np.int16),
-        centers=rng.random((n_clusters, 2)).astype(np.float32),
-    )
-    return path
-
-
 def _write_spectrograms_dir(
     base: pathlib.Path,
     session_key: str,
@@ -1853,24 +1862,16 @@ def _write_spectrograms_dir(
     n_freq: int = 16,
     n_time: int = 32,
     with_mask: bool = True,
-    with_qlvm: bool = False,
-    qlvm_maps: tuple = ("qlvm",),
 ) -> str:
     """Lay out a ``shared_resources.spectrograms_dir`` the way the readers resolve
-    it: the consolidated store ``<base>/spectrograms_<key>.h5`` plus, optionally
-    (``with_qlvm``), ``<base>/qlvm_v3/<map>/arrays_{coarse,fine}.npz`` for every map
-    in ``qlvm_maps``. Returns ``str(base)``."""
+    it: the consolidated store ``<base>/spectrograms_<key>.h5``. The QLVM category
+    grid is not under it (it is the category bundle). Returns ``str(base)``."""
     base = pathlib.Path(base)
     base.mkdir(parents=True, exist_ok=True)
     _write_consolidated_h5(
         base / f"spectrograms_{session_key}.h5", session_key,
         n_usvs=n_usvs, n_freq=n_freq, n_time=n_time, with_mask=with_mask,
     )
-    if with_qlvm:
-        for qlvm_map in qlvm_maps:
-            (base / "qlvm_v3" / qlvm_map).mkdir(parents=True, exist_ok=True)
-            _write_arrays_npz(base / "qlvm_v3" / qlvm_map / "arrays_coarse.npz")
-            _write_arrays_npz(base / "qlvm_v3" / qlvm_map / "arrays_fine.npz")
     return str(base)
 
 
@@ -1914,8 +1915,9 @@ def _seq_settings(
 ) -> dict:
     """Build a sequence-mode settings dict: a make_usv_spectrograms block (with a
     `sequence` sub-dict), ``shared_resources.qlvm_map`` and the emitter color
-    palettes. The map's arrays npz and the consolidated store are resolved from
-    ``spectrograms_dir`` (build it with ``_write_spectrograms_dir``)."""
+    palettes. The consolidated store is resolved from ``spectrograms_dir`` (build
+    it with ``_write_spectrograms_dir``); the regular map's landscape is the
+    category bundle."""
     settings = _base_settings(
         mode="sequence",
         save_dir=str(save_dir),
@@ -1931,7 +1933,6 @@ def _seq_settings(
     settings["shared_resources"]["qlvm_map"] = qlvm_map
     settings["make_usv_spectrograms"]["sequence"] = {
         "draw_boundaries": True,
-        "boundary_clustering": "coarse",
         "annotate_right": True,
         "mark_usv_segments": True,
     }
@@ -1951,7 +1952,6 @@ def test_plot_sequence_writes_figure(tmp_path, qlvm_map):
     root = _write_sequence_session(tmp_path, session_id)
     spec_dir = _write_spectrograms_dir(
         tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
-        with_qlvm=True, qlvm_maps=("qlvm", "qlvm_dur"),
     )
     save_dir = tmp_path / "out"
     settings = _seq_settings(spec_dir, save_dir, qlvm_map=qlvm_map)
@@ -1965,13 +1965,13 @@ def test_plot_sequence_writes_figure(tmp_path, qlvm_map):
 
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
 def test_plot_sequence_maps_draw_their_cohort_density(tmp_path):
-    """Every QLVM map draws its own precomputed cohort density heatmap (an image) on
-    the torus [0,1] square with no ticks, read from qlvm_v3/<map>/."""
+    """The regular map draws the category bundle's density heatmap and boundary mask
+    (two images) and a conditional map a bare square with a note (the bundle
+    partitions the regular map only), both on the torus [0,1] square with no ticks."""
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id)
     spec_dir = _write_spectrograms_dir(
         tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
-        with_qlvm=True, qlvm_maps=("qlvm", "qlvm_dur"),
     )
     save_dir = tmp_path / "out"
     for qlvm_map in ("qlvm", "qlvm_dur"):
@@ -1980,7 +1980,12 @@ def test_plot_sequence_maps_draw_their_cohort_density(tmp_path):
             visualizations_parameter_dict=_seq_settings(spec_dir, save_dir, qlvm_map=qlvm_map),
         ).plot_sequence()
         ax = fig.axes[0]
-        assert len(ax.images) >= 1
+        if qlvm_map == "qlvm":
+            assert len(ax.images) == 2
+            np.testing.assert_allclose(ax.images[0].get_array(), os_utils.load_qlvm_category_bundle()["density"])
+        else:
+            assert len(ax.images) == 0
+            assert "defined on the qlvm map" in ax.get_title()
         assert ax.get_xlim() == (0.0, 1.0)
         assert len(ax.get_xticks()) == 0
         assert len(ax.get_yticks()) == 0
@@ -1993,7 +1998,7 @@ def test_plot_sequence_raw_audio_uses_loudest_channel(tmp_path):
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id)  # peak_amp_ch mode = 1
     spec_dir = _write_spectrograms_dir(
-        tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32, with_qlvm=True,
+        tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
     )
     settings = _seq_settings(spec_dir, tmp_path / "out", qlvm_map="qlvm", plot_raw_audio=True)
     settings["make_usv_spectrograms"]["channel_of_interest"] = 0  # differs from loudest (1)
@@ -2020,7 +2025,7 @@ def test_plot_sequence_draws_connecting_line(tmp_path):
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id)  # 4 window USVs, all with coords
     spec_dir = _write_spectrograms_dir(
-        tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32, with_qlvm=True,
+        tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
     )
     settings = _seq_settings(spec_dir, tmp_path / "out", qlvm_map="qlvm")
     settings["make_usv_spectrograms"]["time_window"] = [0.0, 0.006]
@@ -2059,7 +2064,6 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
     )
     spec_dir = _write_spectrograms_dir(
         tmp_path / "spectrograms", session_id, n_usvs=2, n_freq=16, n_time=32,
-        with_qlvm=True, qlvm_maps=("qlvm", "qlvm_dur"),
     )
 
     def _n_subsegments(qlvm_map: str) -> int:
@@ -2086,7 +2090,6 @@ def test_plot_sequence_map_missing_coords_raises(tmp_path):
     root = _write_sequence_session(tmp_path, session_id, with_dur=False)
     spec_dir = _write_spectrograms_dir(
         tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
-        with_qlvm=True, qlvm_maps=("qlvm", "qlvm_dur"),
     )
     settings = _seq_settings(spec_dir, tmp_path / "out", qlvm_map="qlvm_dur")
     with pytest.raises(ValueError, match="qlvm_dur"):
@@ -2142,9 +2145,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
             "n_samples_per_category": 6, "tile_orientation": "vertical",
             "apply_mask": False, "mask_excluded_categories": [], "category_colors": None,
             "sampling_method": "random",
-            "draw_cluster_boundaries": True, "knn_boundary_neighbors": 9,
-            "knn_boundary_resolution": 200, "knn_boundary_density_min_count": 0.05,
-            "knn_boundary_density_smoothing_sigma": 3.0,
+            "draw_cluster_boundaries": True,
             "draw_spiral_overlay": False, "spiral_show_only_for": None,
             "spiral_color": "#000000", "spiral_linewidth": 1.0,
             "spiral_radius_scale": 0.1, "spiral_radius_abs": 0.1,
@@ -2181,9 +2182,10 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert captured["draw_spiral_overlay"] is False
     assert captured["unstretched_specs"] is True
     assert captured["annotate_cluster_ids"] is True
-    assert captured["knn_boundary_resolution"] == 200
-    # no qlvm_v3/qlvm_dur/ arrays under spectrograms_dir -> centres fall back to the data
-    assert captured["cluster_centers_npz_path"] is None
+    # boundaries and centres come from the category bundle inside the figure, so
+    # neither a k-NN knob nor a centres path is forwarded
+    assert not any(key.startswith("knn_") for key in captured)
+    assert "cluster_centers_npz_path" not in captured
     # the pooled-embeddings cache is resolved by convention under spectrograms_dir
     assert captured["embeddings_cache_path"] == str(
         pathlib.Path(spec_dir) / "embeddings" / "pooled_embeddings_qlvmv3.parquet"
@@ -2194,55 +2196,6 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     out_name = pathlib.Path(captured["output_path"]).name
     assert re.fullmatch(r"embedding_thumbnails_qlvm_dur_category_\d{8}_\d{6}\.png", out_name)
 
-
-
-@pytest.mark.parametrize("suffix, level", [("category", "fine")])
-def test_render_embedding_thumbnails_qlvm_centres_from_v3_arrays(tmp_path, monkeypatch, suffix, level):
-    """The cluster centres come from the shared map's reference arrays at
-    <spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_fine.npz (the category label's level;
-    there is no coarse level); a legacy qlvm_clusters_*.h5 beside the store is ignored."""
-    input_dir = tmp_path / "input_files"
-    input_dir.mkdir()
-    (input_dir / "a_sessions_list.txt").write_text("/root/sessA\n")
-    spec_dir = _write_spectrograms_dir(tmp_path / "spectrograms", "sessZ", n_usvs=2, with_qlvm=True)
-    (pathlib.Path(spec_dir) / "qlvm_clusters_20260506.h5").write_bytes(b"legacy")
-    captured = {}
-
-    def _stub(**kwargs):
-        captured.update(kwargs)
-        return plt.figure()
-
-    monkeypatch.setattr(
-        "usv_playpen.visualizations.make_usv_spectrograms.plot_embedding_with_category_thumbnails",
-        _stub,
-    )
-    monkeypatch.setattr("usv_playpen.visualizations.make_usv_spectrograms.is_gui_context", lambda: False)
-    viz = {
-        "figures": {"save_directory": str(tmp_path / "figs"), "fig_format": "png", "dpi": 100, "seed": 1, "timestamp_in_name": False},
-        "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir),
-                             "qlvm_map": "qlvm"},
-        "embedding_thumbnails": {
-            "category_col_suffix": suffix, "exclude_squeaks": True,
-            "n_samples_per_category": 2, "tile_orientation": "vertical",
-            "apply_mask": False, "mask_excluded_categories": [], "category_colors": None,
-            "sampling_method": "spiral",
-            "draw_cluster_boundaries": True, "knn_boundary_neighbors": 9,
-            "knn_boundary_resolution": 50, "knn_boundary_density_min_count": 0.05,
-            "knn_boundary_density_smoothing_sigma": 3.0,
-            "draw_spiral_overlay": False, "spiral_show_only_for": None,
-            "spiral_color": "#000000", "spiral_linewidth": 1.0,
-            "spiral_radius_scale": 0.1, "spiral_radius_abs": 0.1,
-            "spiral_n_turns": 3, "spiral_random_phase": True,
-            "annotate_picks_on_scatter": False, "pick_number_fontsize": 9,
-            "annotate_cluster_ids": True, "cluster_id_fontsize": 20,
-            "thumbnail_hspace": 0.03, "thumbnail_wspace": 0.04, "unstretched_specs": True,
-            "scatter_max_points": 1000, "fig_size": [10, 8],
-        },
-    }
-    render_embedding_thumbnails_for_cohort(viz, message_output=lambda *_a, **_kw: None)
-    assert captured["cluster_centers_npz_path"] == str(pathlib.Path(spec_dir) / "qlvm_v3" / "qlvm" / f"arrays_{level}.npz")
-    assert captured["category_col_suffix"] == suffix
-    assert "cluster_centers_h5_path" not in captured
 
 
 def _explorer_scatter_rows(qlvm_map: str, squeak_class: str) -> list[int]:
@@ -2286,9 +2239,10 @@ def _explorer_scatter_rows(qlvm_map: str, squeak_class: str) -> list[int]:
     _output, definitions = usv_embedding_explorer._scatter_chart.run(
         CHART_DATA_WIDTH_PX=100, CHART_HEIGHT_PX=100, SQUEAK_CLASS_SELECTIONS=SQUEAK_CLASS_SELECTIONS,
         alt=alt, boundary_dropdown=control("none"), call_class_mask=call_class_mask,
-        color_dropdown=control("none"), global_cmap="viridis", knn_boundary_grid=_knn_boundary_grid,
+        category_grid=None, category_grid_note=None, QLVM_CATEGORY_COLUMN="qlvm_category", QLVM_CATEGORY_MAP="qlvm",
+        color_dropdown=control("none"), global_cmap="viridis",
         map_dropdown=control(qlvm_map), max_points_slider=control(1000), mo=mo, np=np, pd=pd, plt=plt,
-        pooled_df=pooled, qlvm_arrays_paths={}, sessions_select=control([]), sex_colors={},
+        pooled_df=pooled, sessions_select=control([]), sex_colors={},
         squeak_class_dropdown=control(squeak_class),
     )
     return sorted(definitions["chart_data"]["row_index"].tolist())
@@ -2309,3 +2263,45 @@ def test_explorer_squeak_map_class_filter(squeak_class, expected_rows):
     """The squeak map draws the squeak-bearing classes the squeak-class control selects:
     squeak + both (the default), squeak only, or both only."""
     assert _explorer_scatter_rows("qlvm_squeak", squeak_class) == expected_rows
+
+
+@pytest.mark.parametrize("qlvm_map", ["qlvm", "qlvm_dur"])
+def test_explorer_colours_by_qlvm_category_and_draws_bundle_boundaries_on_the_regular_map(qlvm_map):
+    """Every USV map colours by the calls' qlvm_category (conditional maps included);
+    the boundaries are the category bundle's grid on the regular map only: there they
+    add the haloed boundary layers, on a conditional map none are drawn and the chart
+    title says the categories are defined on the regular map."""
+    pooled = pls.DataFrame({
+        "session_id": ["s"] * 4,
+        "row_index": list(range(4)),
+        "qlvm1": [0.1, 0.6, 0.2, 0.7],
+        "qlvm2": [0.1, 0.2, 0.6, 0.7],
+        "qlvm_dur1": [0.3, 0.4, 0.5, 0.6],
+        "qlvm_dur2": [0.3, 0.4, 0.5, 0.6],
+        "qlvm_category": [1, 2, 3, 4],
+        "usv": [True] * 4,
+        "squeak": [False] * 4,
+    })
+
+    def control(value: object) -> types.SimpleNamespace:
+        """A stand-in for a marimo UI element: only ``.value`` is read."""
+        return types.SimpleNamespace(value=value)
+
+    grid = os_utils.load_qlvm_category_bundle()["label_grid"]
+    _output, definitions = usv_embedding_explorer._scatter_chart.run(
+        CHART_DATA_WIDTH_PX=100, CHART_HEIGHT_PX=100, SQUEAK_CLASS_SELECTIONS=SQUEAK_CLASS_SELECTIONS,
+        alt=alt, boundary_dropdown=control("category"), call_class_mask=call_class_mask,
+        category_grid=grid, category_grid_note=None, QLVM_CATEGORY_COLUMN="qlvm_category", QLVM_CATEGORY_MAP="qlvm",
+        color_dropdown=control("category"), global_cmap="viridis",
+        map_dropdown=control(qlvm_map), max_points_slider=control(1000), mo=mo, np=np, pd=pd, plt=plt,
+        pooled_df=pooled, sessions_select=control([]), sex_colors={},
+        squeak_class_dropdown=control("squeak+both"),
+    )
+    assert sorted(definitions["chart_data"]["qlvm_category"].tolist()) == [1, 2, 3, 4]
+    chart = definitions["chart_widget"]._chart
+    if qlvm_map == "qlvm":
+        assert isinstance(chart, alt.LayerChart) and len(chart.layer) == 3
+        assert chart.title is alt.Undefined
+    else:
+        assert not isinstance(chart, alt.LayerChart)
+        assert "defined on the qlvm map" in chart.title

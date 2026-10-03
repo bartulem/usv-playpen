@@ -108,7 +108,6 @@
     "auto_open_figure": true,
     "sequence": {
       "draw_boundaries": true,
-      "boundary_clustering": "coarse",
       "annotate_right": false,
       "mark_usv_segments": true
     }
@@ -204,7 +203,6 @@
     }
   },
   "qlvm_torus_traversal_video": {
-    "clustering": "coarse",
     "fps": 20,
     "dpi": 100,
     "m": 36,
@@ -406,10 +404,6 @@
     "category_colors": null,
     "sampling_method": "spiral",
     "draw_cluster_boundaries": true,
-    "knn_boundary_neighbors": 15,
-    "knn_boundary_resolution": 200,
-    "knn_boundary_density_min_count": 0.05,
-    "knn_boundary_density_smoothing_sigma": 3.0,
     "draw_spiral_overlay": false,
     "spiral_show_only_for": null,
     "spiral_color": "#000000",
