@@ -343,6 +343,7 @@
     "exclude_squeaks": true,
     "strict_squeak_exclusion": false,
     "exclude_noise": true,
+    "row_exclusion_table": null,
     "masking_type": "sam",
     "apply_mask": false,
     "floor": 0.2,
@@ -412,5 +413,36 @@
     "length_threshold": null,
     "lattice_batch_size": 4096,
     "data_batch_size": 8192
+  },
+  "build_qlvm_categories": {
+    "properties": [
+      "mask_count",
+      "durations",
+      "freq_bandwidth_hz",
+      "spectral_entropy",
+      "mean_freq_hz",
+      "loudness_db"
+    ],
+    "grid_resolution": 200,
+    "field_sigma": 8.0,
+    "change_span": 8,
+    "marker_sigma": 1.5,
+    "marker_distance": 5,
+    "size_floor": 0.05,
+    "n_categories": 4,
+    "n_bootstraps": 200,
+    "bootstrap_seed": 7,
+    "uncertain_agreement": 0.6,
+    "category_descriptions": [
+      "simple",
+      "mixed",
+      "complex",
+      "wide-band two-mask"
+    ],
+    "n_jobs": 20
+  },
+  "assign_qlvm_categories": {
+    "category_directory": "",
+    "coordinate_prefix": ""
   }
 }

@@ -15,6 +15,7 @@ import json
 import pathlib
 import shutil
 import pickle
+import warnings
 import zipfile
 
 import h5py
@@ -24,7 +25,12 @@ import polars as pls
 import pytest
 
 from usv_playpen.processing import qlvm_latents as ql
-from usv_playpen.processing.build_qlvm_training_set import file_sha256
+from usv_playpen.processing.build_qlvm_training_set import build_session_masks, file_sha256, stretch_specs
+
+# train_qlvm pulls optax -> a one-time JAX DeprecationWarning at import.
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)
+    from usv_playpen.processing.train_qlvm import prepare_split
 
 
 def test_label_grid_lookup_is_the_package_pixel_rule_at_the_edges():
@@ -1449,3 +1455,81 @@ def test_model_cell_label_columns_refuse_to_overwrite_summary_columns(mocker):
     assert ql.model_cell_label_columns(production, both)["qlvm_loud"] == {
         "fine": "qlvm_loud_category", "coarse": "qlvm_loud_supercategory",
     }
+
+
+def test_infer_and_merge_sam_inputs_equal_the_masked_training_inputs(tmp_path, mocker):
+    """A masked cell is fed exactly what train-qlvm fed it: the call and its SAM mask
+    union resized separately (here time-stretched), the resized mask binarized at 0.5
+    and multiplied in (build-qlvm-training-set with apply_mask), then each spectrogram
+    min-maxed and the binarized mask multiplied in again (train_qlvm.prepare_split).
+    The mask edge (row 50, column 40 of a 64-bin call) does not fall on the resized
+    grid, so masking the native spectrogram before the resize would differ there."""
+    rng = np.random.default_rng(41)
+    grid = np.ones((8, 8), dtype=np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng, with_masks=False)
+    region = np.zeros((128, 128), dtype=bool)
+    region[10:50, 5:40] = True
+    _write_session_masks(root, session_id, {0: region, 2: region})
+    cell = _make_model_cell(tmp_path, rng, masking_type="sam", floor=None, fine_grid=grid, coarse_grid=grid,
+                            contract_overrides={"time_stretch": True})
+    cfg.update(masking_type="sam", time_stretch=True, model_cells={"qlvm_masked": str(cell)},
+               model_cell_label_levels={"qlvm_masked": []})
+    captured = {}
+
+    def _fake_embed(lattice, data, params, *_block_sizes):
+        captured["data"] = np.asarray(data)
+        return np.full((data.shape[0], 2), 0.5, dtype=np.float64)
+
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    mocker.patch("usv_playpen.processing.qlvm_latents.embed_data", side_effect=_fake_embed)
+    ql.QLVMLatentInference(
+        root_directory=str(root), input_parameter_dict={"infer_qlvm_latents": cfg}, message_output=lambda *_a, **_kw: None,
+    ).infer_and_merge()
+
+    rows = np.array([0, 2])
+    with h5py.File(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5", "r") as h5_file:
+        native = h5_file[f"spectrogram/{session_id}/spectrograms"][rows]
+        durations = h5_file[f"spectrogram/{session_id}/durations"][rows]
+        native_masks, _counts = build_session_masks(h5_file, session_id, rows, 128, 128)
+    stored_masks = (stretch_specs(native_masks, durations, (128, 128), True) >= 0.5).astype(np.float32)
+    stored = (stretch_specs(native, durations, (128, 128), True) * stored_masks).astype(np.float32)
+    expected = prepare_split(stored, stored_masks)
+    np.testing.assert_array_equal(captured["data"][:, 0], expected)
+    pre_masked = ql.normalize_model_inputs(
+        stretch_specs(native * native_masks, durations, (128, 128), True), json.loads((cell / "training_contract.json").read_text())
+    )
+    assert not np.array_equal(pre_masked, expected), "the test must tell the two orders apart"
+
+
+def test_model_cells_embed_an_unclustered_cell_without_labels(tmp_path, mocker):
+    """A cell train-qlvm wrote has no cluster folders: it loads with None label grids,
+    embeds with an empty label-level list (coordinates only), and a run that asks it for
+    a label level stops before the summary is touched, naming the prefix and level."""
+    rng = np.random.default_rng(42)
+    grid = np.ones((8, 8), dtype=np.int16)
+    root, session_id, cfg = _make_inference_session(tmp_path, rng)
+    cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=None, fine_grid=grid, coarse_grid=grid)
+    shutil.rmtree(cell / "cluster")
+    model = ql.load_model_cell(str(cell))
+    assert model["fine_grid"] is None
+    assert model["coarse_grid"] is None
+    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
+    mocker.patch("usv_playpen.processing.qlvm_latents.embed_data",
+                 side_effect=lambda lattice, data, *_rest: np.full((data.shape[0], 2), 0.25, dtype=np.float64))
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    before = summary_path.read_bytes()
+
+    cfg["model_cells"] = {"qlvm_new": str(cell)}
+    with pytest.raises(ValueError, match=r"qlvm_new: fine .*\n.*qlvm_new: coarse"):
+        ql.QLVMLatentInference(
+            root_directory=str(root), input_parameter_dict={"infer_qlvm_latents": cfg}, message_output=lambda *_a, **_kw: None,
+        ).infer_and_merge()
+    assert summary_path.read_bytes() == before
+
+    cfg["model_cell_label_levels"] = {"qlvm_new": []}
+    ql.QLVMLatentInference(
+        root_directory=str(root), input_parameter_dict={"infer_qlvm_latents": cfg}, message_output=lambda *_a, **_kw: None,
+    ).infer_and_merge()
+    df = pls.read_csv(summary_path)
+    assert df.columns == ["usv_id", "start", "stop", "qlvm_new1", "qlvm_new2"]
+    assert df["qlvm_new1"].to_list() == [0.25, None, 0.25]
