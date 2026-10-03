@@ -51,7 +51,9 @@ settings against), ``config/run_config.json`` (the run's settings and data) and
 ``metrics/val_diagnostics.npz`` (per-epoch training loss, the validation losses
 and the validation subset). Clustering the trained torus into
 ``inference/clusters_<level>/label_grid.npy`` is a separate, later step; until
-it exists the cell cannot be passed to ``infer-qlvm-latents``.
+it exists ``infer-qlvm-latents`` writes the cell's coordinates only (its prefix
+must ask for no label level), and ``build-qlvm-categories`` /
+``assign-qlvm-categories`` can label them with content-ridge categories instead.
 
 With ``conditional`` null the decoder takes no conditioning input (``c_dim``
 0). With ``conditional`` one of ``duration``, ``mean_freq``, ``bandwidth``,

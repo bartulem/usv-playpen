@@ -20,6 +20,7 @@ import pytest
 from click.testing import CliRunner
 
 from usv_playpen.processing.qlvm_latents import infer_qlvm_latents_cli
+from usv_playpen.processing.qlvm_categories import assign_qlvm_categories_cli, build_qlvm_categories_cli
 from usv_playpen.processing.build_qlvm_squeak_training_set import build_qlvm_squeak_training_set_cli
 from usv_playpen.processing.build_squeak_spectrogram_store import build_squeak_spectrogram_store_cli
 from usv_playpen.processing.build_qlvm_training_set import build_qlvm_training_set_cli
@@ -101,9 +102,25 @@ def test_build_qlvm_training_set_cli_decodes_structured_options(runner, mocker, 
     result = runner.invoke(build_qlvm_training_set_cli, [
         "--root-directories", "/a/sess1", "--output-directory", str(tmp_path / "out"),
         "--session-type-targets", '{"MF": 10, "MM": null}', "--mask-count-bin-edges", "1,2,3", "--floor", "none",
+        "--row-exclusion-table", "none",
     ])
     assert result.exit_code == 0, result.output
-    assert seen == {"session_type_targets": {"MF": 10, "MM": None}, "mask_count_bin_edges": [1, 2, 3], "floor": None}
+    assert seen == {"session_type_targets": {"MF": 10, "MM": None}, "mask_count_bin_edges": [1, 2, 3], "floor": None,
+                    "row_exclusion_table": None}
+    seen.clear()
+    result = runner.invoke(build_qlvm_training_set_cli, [
+        "--root-directories", "/a/sess1", "--output-directory", str(tmp_path / "out"), "--row-exclusion-table", "/x/rows.csv",
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen == {"row_exclusion_table": "/x/rows.csv"}
+
+
+def test_build_qlvm_categories_cli_exposes_every_settings_key():
+    """Every key of the build_qlvm_categories block has a --flag (the command takes
+    file arguments, so it is checked here rather than in the parametrized guard)."""
+    option_dests = {p.name for p in build_qlvm_categories_cli.params if isinstance(p, click.Option)}
+    missing = set(_PROCESSING_SETTINGS["build_qlvm_categories"]) - option_dests
+    assert not missing, f"build_qlvm_categories: settings keys with no CLI flag: {sorted(missing)}"
 
 
 def test_infer_qlvm_latents_cli_routes(runner, mocker, tmp_path):
@@ -265,6 +282,7 @@ _PIPELINE_CLIS = [
     (build_squeak_spectrogram_store_cli, "usv_playpen.processing.build_squeak_spectrogram_store", "SqueakSpectrogramStoreBuilder", "build_squeak_spectrogram_store", ["--root-directories", "/a,/b"]),
     (train_qlvm_cli, "usv_playpen.processing.train_qlvm", "QLVMTrainer", "train_qlvm", ["--dataset-directory", "{d}", "--output-directory", "{o}"]),
     (infer_qlvm_latents_cli, "usv_playpen.processing.qlvm_latents", "QLVMLatentInference", "infer_qlvm_latents", ["--root-directory", "{d}"]),
+    (assign_qlvm_categories_cli, "usv_playpen.processing.qlvm_categories", "QLVMCategoryAssigner", "assign_qlvm_categories", ["--root-directory", "{d}"]),
     (export_yolo_dataset_cli, "usv_playpen.processing.export_yolo_dataset", "YOLODatasetExporter", "export_yolo_dataset", ["--root-directories", "/a,/b", "--output-directory", "{o}"]),
     (train_masks_cli, "usv_playpen.processing.train_masks", "MaskDetectorTrainer", "train_masks", ["--dataset-directory", "{d}", "--output-directory", "{o}"]),
 ]

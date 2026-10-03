@@ -30,10 +30,12 @@ from usv_playpen.processing.build_qlvm_training_set import (
     compute_selected_rows_by_type,
     eligible_rows,
     file_sha256,
+    load_row_exclusion_table,
     mask_count_bin_labels,
     mask_count_bins,
     parse_int_list,
     parse_optional_float,
+    parse_optional_path,
     parse_session_type_targets,
     select_rows_stratified,
     session_mask_counts,
@@ -54,6 +56,7 @@ _CFG = {
     "exclude_squeaks": True,
     "strict_squeak_exclusion": False,
     "exclude_noise": False,
+    "row_exclusion_table": None,
     "masking_type": "sam",
     "apply_mask": False,
     "floor": 0.2,
@@ -426,6 +429,50 @@ def test_build_strict_squeak_exclusion_needs_the_frame_run_column(tmp_path, coho
     """A summary without squeak_frame_runs (scored before the column existed) stops a strict build."""
     with pytest.raises(ValueError, match="squeak_frame_runs"):
         _build(tmp_path, cohort, {**_CFG, "strict_squeak_exclusion": True})
+
+
+def test_load_row_exclusion_table_and_path_parser(tmp_path):
+    """The table groups its rows by session (sorted, unique); a missing column or a
+    row that is not a non-negative integer stops it; 'none' / 'null' / '' parse to None."""
+    table = tmp_path / "rows.csv"
+    table.write_text("session_id,row,note\n20230101_100000,5,a\n20230101_100000,3,b\n20230101_100000,5,c\n20230101_110000,0,d\n")
+    rows = load_row_exclusion_table(str(table))
+    assert set(rows) == {"20230101_100000", "20230101_110000"}
+    np.testing.assert_array_equal(rows["20230101_100000"], [3, 5])
+    np.testing.assert_array_equal(rows["20230101_110000"], [0])
+    (tmp_path / "bad.csv").write_text("session_id,row\n20230101_100000,-1\n")
+    with pytest.raises(ValueError, match="non-negative integer"):
+        load_row_exclusion_table(str(tmp_path / "bad.csv"))
+    (tmp_path / "nocol.csv").write_text("session_id,index\n20230101_100000,1\n")
+    with pytest.raises(ValueError, match=r"\['row'\]"):
+        load_row_exclusion_table(str(tmp_path / "nocol.csv"))
+    assert parse_optional_path("none") is None
+    assert parse_optional_path("NULL") is None
+    assert parse_optional_path(" ") is None
+    assert parse_optional_path(" /a/b.csv ") == "/a/b.csv"
+
+
+def test_build_row_exclusion_table_adds_rows_to_the_summary_flags(tmp_path, cohort):
+    """Rows the table lists are left out on top of the summary's squeak rows (a full
+    build loses exactly them), the metadata records the table, its hash and the rows it
+    added, and a row past the end of a session's H5 stops the build."""
+    table = tmp_path / "rows.csv"
+    table.write_text("session_id,row\n20230101_110000,4\n20230101_120000,2\n20230101_120000,7\n20230101_100000,1\n")
+    plain_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True}, "plain")
+    table_dir = _build(tmp_path, cohort, {**_CFG, "full_dataset": True, "row_exclusion_table": str(table)}, "table")
+    plain_ids = set(np.load(plain_dir / "full_data.npz")["spec_id"].tolist())
+    table_ids = set(np.load(table_dir / "full_data.npz")["spec_id"].tolist())
+    assert sorted(plain_ids - table_ids) == ["20230101_110000_4", "20230101_120000_2", "20230101_120000_7"]
+    assert table_ids <= plain_ids
+    meta = np.load(table_dir / "metadata.npz")
+    assert str(meta["row_exclusion_table"]) == str(table)
+    assert str(meta["row_exclusion_table_sha256"]) == file_sha256(table)
+    # 20230101_100000 row 1 was already a summary squeak row, so the table adds 3.
+    assert int(meta["row_exclusion_table_rows_added"]) == 3
+    assert str(np.load(plain_dir / "metadata.npz")["row_exclusion_table"]) == ""
+    table.write_text("session_id,row\n20230101_110000,8\n")
+    with pytest.raises(ValueError, match="names row 8 of 20230101_110000"):
+        _build(tmp_path, cohort, {**_CFG, "row_exclusion_table": str(table)}, "too_long")
 
 
 def test_build_full_dataset_writes_every_eligible_row(tmp_path, cohort):

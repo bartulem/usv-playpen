@@ -44,7 +44,12 @@ run still carry is dropped.
 
 Fidelity: the session spectrograms are preprocessed with the SAME resize /
 time-stretch used to build the training set (:func:`stretch_specs`), so they are
-in-distribution for the decoder.
+in-distribution for the decoder. A masked cell (``masking_type`` ``"sam"``) gets
+exactly what a masked training set fed it: call and SAM mask union resized
+separately, the resized mask binarized at 0.5 and multiplied in, then a min-max
+and the binarized mask once more (``build-qlvm-training-set --apply-mask`` and
+``train_qlvm.prepare_split``). A cell that has not been clustered (no
+``label_grid.npy``) embeds too when its prefix asks for no label level.
 
 Per model, a corpus session whose spectrogram H5 is verifiably the one the
 package was built from (``SESSION_H5_BASELINE.tsv`` SHA-256, row count, and the
@@ -389,8 +394,12 @@ def load_model_cell(model_cell_directory: str) -> dict:
     the decoder weights from its torch ``checkpoint.tar`` (read without torch), its
     ``training_contract.json``, the Fibonacci lattice the package embedded its
     corpus on (``embedding_fib_m`` of the contract), and the ``label_grid.npy`` of
-    its ``cluster/fine`` and ``cluster/coarse`` levels (the grids its per-call
-    labels were read from, indexed ``[y, x]`` like the reference ``arrays.npz``).
+    its fine and coarse cluster levels (``inference/clusters_<level>/`` in v3,
+    ``cluster/<level>/`` in v2 / v2.1; the grids its per-call labels were read
+    from, indexed ``[y, x]`` like the reference ``arrays.npz``). A level the cell
+    has no cluster folder for (every cell ``train-qlvm`` writes, until it is
+    clustered) gets ``None``: such a cell still embeds, and only asking it for that
+    label level stops a run.
 
     Parameters
     ----------
@@ -403,8 +412,9 @@ def load_model_cell(model_cell_directory: str) -> dict:
     model (dict)
         ``params`` (decoder weights), ``contract`` (dict), ``lattice``
         (``(fib(m), 2)``), ``fine_grid`` and ``coarse_grid`` (``(res, res)`` label
-        grids), and ``model_id`` (``<package>/<phase>/<cell>``, the last three path
-        components).
+        grids, or None for a level the cell has not been clustered at),
+        ``condition_bins`` (dict, or None for an unconditional cell) and
+        ``model_id`` (``<package>/<phase>/<cell>``, the last three path components).
     """
     cell = pathlib.Path(configure_path(model_cell_directory))
     with cell_file(cell, "training_contract.json").open() as contract_file:
@@ -433,6 +443,14 @@ def load_model_cell(model_cell_directory: str) -> dict:
                 f"decode_grid + train_c_min/train_c_max and a decode of 'grid' or 'exact'."
             )
             raise ValueError(error_message)
+    # A cell train-qlvm wrote has no clustering until one is added; its grids are None,
+    # and a run that asks it for a label level stops (see _merge_model_cells).
+    label_grids = {}
+    for level in LABEL_LEVELS:
+        try:
+            label_grids[level] = np.load(cell_cluster_directory(cell, level) / "label_grid.npy", allow_pickle=False)
+        except FileNotFoundError:
+            label_grids[level] = None
     return {
         "params": load_decoder_params(str(cell / "checkpoint.tar")),
         "contract": contract,
@@ -440,8 +458,8 @@ def load_model_cell(model_cell_directory: str) -> dict:
         # exact lattice, cast to float32 by JAX, lands up to ~1e-3 off it and moves 8% of
         # calls by more than 1e-3; measured on 9,390 calls of 6 corpus sessions).
         "lattice": gen_fib_basis_float32(contract["embedding_fib_m"]),
-        "fine_grid": np.load(cell_cluster_directory(cell, "fine") / "label_grid.npy", allow_pickle=False),
-        "coarse_grid": np.load(cell_cluster_directory(cell, "coarse") / "label_grid.npy", allow_pickle=False),
+        "fine_grid": label_grids["fine"],
+        "coarse_grid": label_grids["coarse"],
         "condition_bins": condition_bins,
         "model_id": "/".join(cell.parts[-3:]),
     }
@@ -1442,10 +1460,22 @@ class QLVMLatentInference:
         label_columns = model_cell_label_columns(model_cells, cfg['model_cell_label_levels'])
 
         models = {}
+        unclustered = []
         for prefix, cell_directory in model_cells.items():
             model = load_model_cell(cell_directory)
             model['length_threshold'] = enforce_training_contract(model['contract'], cfg, model['params'])
             models[prefix] = model
+            unclustered += [
+                f"{prefix}: {level} ({cell_directory})" for level in label_columns[prefix] if model[f"{level}_grid"] is None
+            ]
+        if unclustered:
+            error_message = (
+                "infer_qlvm_latents: these model cells have no label_grid.npy for the label levels asked of them "
+                "(the cell was never clustered):\n  " + "\n  ".join(unclustered) + "\nWrite only their coordinates "
+                "with an empty level list for the prefix (model_cell_label_levels, or --model-cell-labels PREFIX \"\")."
+            )
+            raise ValueError(error_message)
+        for prefix, model in models.items():
             self.message_output(
                 f"{prefix}1/{prefix}2: model package cell {model['model_id']} ({decoder_head(model['params'])} head, "
                 f"{model['lattice'].shape[0]}-point Fibonacci lattice)."
@@ -1684,14 +1714,22 @@ class QLVMLatentInference:
             )
             masks = masks[has_value] if masks is not None else None
 
-        if cfg['masking_type'] == 'sam':
-            specs = specs * masks
-
         # Preprocess identically to the training set (same resize/time-stretch), then
         # normalize the way the decoder's contract says it was fed.
         target_shape = tuple(int(v) for v in cfg['target_shape'])
         resized = stretch_specs(specs, durations, target_shape, cfg['time_stretch'])
-        data = jnp.asarray(normalize_model_inputs(resized, contract)[:, None, :, :])
+        if cfg['masking_type'] == 'sam':
+            # A masked set (build-qlvm-training-set with apply_mask) resizes the call and
+            # its SAM mask union separately, binarizes the resized mask at 0.5 and
+            # multiplies it in; train-qlvm then min-maxes each spectrogram and multiplies
+            # the binarized mask in again (train_qlvm.prepare_split). Masking the native
+            # spectrogram before the resize instead lets the interpolation smear signal
+            # across the mask edge, which the decoder never saw.
+            binary_masks = (stretch_specs(masks, durations, target_shape, cfg['time_stretch']) >= 0.5).astype(np.float32)
+            inputs = normalize_model_inputs(resized * binary_masks, contract) * binary_masks
+        else:
+            inputs = normalize_model_inputs(resized, contract)
+        data = jnp.asarray(inputs[:, None, :, :])
 
         # A conditional package decoder is decoded at the value its cell's rule gives
         # each call's own condition value (frozen_condition_values).
@@ -1699,9 +1737,9 @@ class QLVMLatentInference:
         if condition is not None:
             masked_resized = None
             if condition['name'] == 'mean_freq':
-                masked_resized = resized if cfg['masking_type'] == 'sam' else stretch_specs(
-                    specs * masks, durations, target_shape, cfg['time_stretch']
-                )
+                # The mean frequency is defined on the native call masked by its SAM
+                # mask union, then resized (the definition the packages were built with).
+                masked_resized = stretch_specs(specs * masks, durations, target_shape, cfg['time_stretch'])
             own_values = compute_condition_values(condition, durations, masked_resized, raw_values)
             decode = condition['decode'] if 'decode' in condition else None
             condition_values = frozen_condition_values(own_values, condition_bins, decode)
@@ -1869,7 +1907,7 @@ def export_qlvm_reference_arrays_cli(model_cell_directory, output_directory) -> 
 @click.option('--prefer-package-values/--no-prefer-package-values', 'prefer_package_values', default=None, required=False, help='With model cells: take a corpus session\'s coordinates from the package\'s own embedding when its spectrogram H5 is unchanged since the package (SHA-256, row count, durations and mask counts verified), else infer them; --no-prefer-package-values infers every session.')
 @click.option('--latent-dim', 'latent_dim', type=int, default=None, required=False, help='Dimensionality of the toroidal latent space; must equal every model cell\'s training contract.')
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing) instead of a plain resize.')
-@click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Embed raw spectrograms ("none", the default; the production phase 6 and 11 cells) or apply SAM mask regions before embedding ("sam", phase 9 cells); must match every cell\'s training contract. With "sam", a session without a mask group raises.')
+@click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Embed raw spectrograms ("none", the default; the production phase 6 and 11 cells) or apply SAM mask regions as a masked training set did ("sam", phase 9 cells and masked train-qlvm cells); must match every cell\'s training contract. With "sam", a session without a mask group raises.')
 @click.option('--target-shape', 'target_shape', nargs=2, type=int, default=None, required=False, help='Output spectrogram (freq, time) shape as two ints, matching the training preprocessing, e.g. --target-shape 128 128.')
 @click.option('--length-threshold', 'length_threshold', type=float, default=None, required=False, help='Embed only USVs with duration below this (time bins); when set, must equal every model cell\'s training contract. Unset in the settings (null), each cell\'s contract sets it.')
 @click.option('--lattice-batch-size', 'lattice_batch_size', type=int, default=None, required=False, help='Lattice points decoded and scored per block; lower it to cut memory on large lattices.')
