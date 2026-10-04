@@ -1898,6 +1898,9 @@ def _write_sequence_session(
         "peak_amp_ch": [1.0, 1.0, 0.0, 2.0],
         "qlvm1": [0.2, 0.4, 0.6, 0.8],
         "qlvm2": [0.3, 0.5, 0.7, 0.2],
+        # every call a pure USV, so exclude_squeaks keeps all four
+        "usv": [True, True, True, True],
+        "squeak": [False, False, False, False],
     }
     if with_dur:
         rows["qlvm_duration1"] = [0.1, 0.3, 0.5, 0.7]
@@ -1918,12 +1921,14 @@ def _seq_settings(
     qlvm_map: str = "qlvm",
     plot_raw_audio: bool = False,
     apply_mask: bool = True,
+    exclude_squeaks: bool = True,
 ) -> dict:
     """Build a sequence-mode settings dict: a make_usv_spectrograms block (with a
-    `sequence` sub-dict), ``shared_resources.qlvm_map`` and the emitter color
-    palettes. The consolidated store is resolved from ``spectrograms_dir`` (build
-    it with ``_write_spectrograms_dir``); the regular map's landscape is the
-    category bundle."""
+    `sequence` sub-dict, whose ``exclude_squeaks`` is the argument of that name),
+    ``shared_resources.qlvm_map`` and the emitter color palettes. The consolidated
+    store is resolved from ``spectrograms_dir`` (build it with
+    ``_write_spectrograms_dir``); the regular map's landscape is the category
+    bundle."""
     settings = _base_settings(
         mode="sequence",
         save_dir=str(save_dir),
@@ -1941,6 +1946,7 @@ def _seq_settings(
         "draw_boundaries": True,
         "annotate_right": True,
         "mark_usv_segments": True,
+        "exclude_squeaks": exclude_squeaks,
     }
     settings["male_colors"] = ["#9AC0CD", "#8CA252"]
     settings["female_colors"] = ["#FF6347", "#B851B4"]
@@ -2062,6 +2068,7 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
         "emitter": ["male_x", "male_x"],
         "qlvm1": [0.95, 0.05], "qlvm2": [0.5, 0.5],  # opposite x-edges -> wraps
         "qlvm_duration1": [0.45, 0.55], "qlvm_duration2": [0.5, 0.5],  # no seam crossing
+        "usv": [True, True], "squeak": [False, False],
     }
     _write_usv_summary_csv(root / "audio", rows, name=f"{session_id}_usv_summary.csv")
     _write_tracking_h5(
@@ -2102,6 +2109,72 @@ def test_plot_sequence_map_missing_coords_raises(tmp_path):
         USVSpectrogramPlotter(
             root_directory=str(root), visualizations_parameter_dict=settings
         ).plot_sequence()
+
+
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+@pytest.mark.parametrize(("exclude_squeaks", "expected_numbers"), [(True, ["1", "2"]), (False, ["1", "2", "3"])])
+def test_plot_sequence_drops_noise_and_optionally_squeaks(tmp_path, exclude_squeaks, expected_numbers):
+    """The sequence always drops the noise segments and, with ``exclude_squeaks``,
+    the squeak-bearing ones too: of four window calls (pure USV, noise, pure squeak,
+    pure USV) the map numbers two calls with the flag on and three with it off, and
+    the stitched spectrogram still renders (the store rows are looked up by the
+    pre-filter row index)."""
+    from matplotlib.collections import PathCollection
+
+    session_id = "20230101_120000"
+    root = tmp_path / session_id
+    _write_audio_memmap(root, channel_num=3)
+    rows = {
+        "start": [0.0005, 0.0015, 0.0030, 0.0045],
+        "stop": [0.0010, 0.0020, 0.0035, 0.0050],
+        "emitter": ["male_x", "female_y", "male_x", "female_y"],
+        "qlvm1": [0.2, 0.4, 0.6, 0.8],
+        "qlvm2": [0.3, 0.5, 0.7, 0.2],
+        "noise": [False, True, False, False],
+        "usv": [True, None, False, True],
+        "squeak": [False, None, True, False],
+    }
+    _write_usv_summary_csv(root / "audio", rows, name=f"{session_id}_usv_summary.csv")
+    _write_tracking_h5(
+        root / "video", track_names=("male_x", "female_y"),
+        name=f"{session_id}_points3d_translated_rotated_metric.h5",
+    )
+    spec_dir = _write_spectrograms_dir(
+        tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
+    )
+    settings = _seq_settings(spec_dir, tmp_path / "out", qlvm_map="qlvm", exclude_squeaks=exclude_squeaks)
+    fig = USVSpectrogramPlotter(
+        root_directory=str(root), visualizations_parameter_dict=settings
+    ).plot_sequence()
+    ax_left = fig.axes[0]
+    assert [t.get_text() for t in ax_left.texts] == expected_numbers
+    assert sum(isinstance(c, PathCollection) for c in ax_left.collections) == len(expected_numbers)
+    # the noise call (qlvm1 = 0.4) is never placed on the map
+    placed_x = [float(c.get_offsets()[0][0]) for c in ax_left.collections if isinstance(c, PathCollection)]
+    assert 0.4 not in placed_x
+    assert (0.6 in placed_x) is (not exclude_squeaks)
+
+
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+def test_plot_sequence_exclude_squeaks_requires_vocal_flags(tmp_path):
+    """With ``exclude_squeaks`` on, a summary without the usv / squeak booleans raises
+    instead of silently keeping every call."""
+    session_id = "20230101_120000"
+    root = tmp_path / session_id
+    _write_audio_memmap(root, channel_num=3)
+    _write_usv_summary_csv(
+        root / "audio",
+        {"start": [0.001], "stop": [0.002], "emitter": ["male_x"], "qlvm1": [0.2], "qlvm2": [0.3]},
+        name=f"{session_id}_usv_summary.csv",
+    )
+    _write_tracking_h5(
+        root / "video", track_names=("male_x", "female_y"),
+        name=f"{session_id}_points3d_translated_rotated_metric.h5",
+    )
+    spec_dir = _write_spectrograms_dir(tmp_path / "spectrograms", session_id, n_usvs=1, n_freq=16, n_time=32)
+    settings = _seq_settings(spec_dir, tmp_path / "out", qlvm_map="qlvm", exclude_squeaks=True)
+    with pytest.raises(KeyError, match="usv"):
+        USVSpectrogramPlotter(root_directory=str(root), visualizations_parameter_dict=settings).plot_sequence()
 
 
 # ---- render_embedding_thumbnails_for_cohort (cohort driver) ---------------

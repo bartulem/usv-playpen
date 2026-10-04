@@ -109,7 +109,8 @@
     "sequence": {
       "draw_boundaries": true,
       "annotate_right": false,
-      "mark_usv_segments": true
+      "mark_usv_segments": true,
+      "exclude_squeaks": true
     }
   },
   "make_behavioral_videos": {
@@ -395,7 +396,6 @@
     }
   },
   "embedding_thumbnails": {
-    "category_col_suffix": "category",
     "exclude_squeaks": true,
     "n_samples_per_category": 8,
     "tile_orientation": "vertical",

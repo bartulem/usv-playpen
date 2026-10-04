@@ -68,7 +68,7 @@ from PyQt6.QtWidgets import (
 
 from .analyses.analyze_data import Analyst
 from .analyses.generate_audio_files import _PLAYBACK_CONTEXTS
-from .os_utils import QLVM_MAP_DISPLAY_NAMES, QLVM_MAPS, configure_path, rebase_experimenter_in_paths, resolve_data_root
+from .os_utils import QLVM_CATEGORY_MAP, QLVM_MAP_DISPLAY_NAMES, QLVM_MAPS, configure_path, rebase_experimenter_in_paths, resolve_data_root
 from .processing.preprocess_data import Stylist
 from .recording.behavioral_experiments import ExperimentController
 from .visualizations.visualize_data import Visualizer
@@ -4899,13 +4899,20 @@ class USVPlaypenWindow(QMainWindow):
         vis_col_three_x1, vis_col_three_x2 = 770, 1060
         _qlvm_cfg = self.visualizations_input_dict['qlvm_torus_traversal_video']
 
-        # One QLVM map for every QLVM figure below (torus video, USV sequence,
-        # embedding thumbnails) and the embedding explorer's starting map:
+        # One QLVM map for the QLVM figures below (USV sequence, embedding
+        # thumbnails) and the embedding explorer's starting map:
         # shared_resources.qlvm_map, one of os_utils.QLVM_MAPS (the regular model
         # 'qlvm' or a conditional one, 'qlvm_duration' / 'qlvm_entropy' /
-        # 'qlvm_bandwidth' / 'qlvm_loudness').
+        # 'qlvm_bandwidth' / 'qlvm_loudness'). The torus traversal video always
+        # uses the regular map and ignores this choice (the tooltip says so).
+        qlvm_map_tooltip = (
+            'The QLVM map the USV sequence figure and the embedding thumbnails draw '
+            '(and the embedding explorer starts on). The QLVM demo (torus traversal) '
+            'video always uses the regular QLVM map and ignores this choice.'
+        )
         qlvm_map_label = QLabel('QLVM map (all QLVM figures):', self.VisualizationsSettings)
         qlvm_map_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        qlvm_map_label.setToolTip(qlvm_map_tooltip)
         qlvm_map_label.move(vis_col_three_x1, 40)
         self.qlvm_map_cb = QComboBox(self.VisualizationsSettings)
         # shown as the property each map is conditioned on ('QLVM' = the regular map); the
@@ -4914,6 +4921,7 @@ class USVPlaypenWindow(QMainWindow):
         self.qlvm_map_cb.setCurrentIndex(list(QLVM_MAPS).index(self.visualizations_input_dict['shared_resources']['qlvm_map']))
         # Wide enough for the longest map name (qlvm_bandwidth), shifted left to stay inside the window.
         self.qlvm_map_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.qlvm_map_cb.setToolTip(qlvm_map_tooltip)
         self.qlvm_map_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='qlvm_map', choices=list(QLVM_MAPS)))
         self.qlvm_map_cb.move(vis_col_three_x2, 40)
 
@@ -5032,6 +5040,25 @@ class USVPlaypenWindow(QMainWindow):
         self.usv_seq_mark_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='usv_seq_mark_segments_bool'))
         self.usv_seq_mark_cb.move(vis_col_three_x2, 340)
 
+        # Same meaning as the embedding thumbnails' toggle: 'Yes' keeps only the
+        # pure USVs (usv & ~squeak) in the sequence, leaving squeak-bearing
+        # segments out; noise segments are always dropped.
+        usv_seq_exclude_squeaks_label = QLabel('Exclude squeaks:', self.VisualizationsSettings)
+        usv_seq_exclude_squeaks_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        usv_seq_exclude_squeaks_label.move(vis_col_three_x1, 370)
+        self.usv_seq_exclude_squeaks_cb = QComboBox(self.VisualizationsSettings)
+        self.usv_seq_exclude_squeaks_cb.addItems(['No', 'Yes'])
+        self.usv_seq_exclude_squeaks_cb.setCurrentIndex(1 if _seq_cfg['exclude_squeaks'] else 0)
+        self.usv_seq_exclude_squeaks_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.usv_seq_exclude_squeaks_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='usv_seq_exclude_squeaks_bool'))
+        self.usv_seq_exclude_squeaks_cb.move(vis_col_three_x2, 370)
+
+        # The category boundaries exist on the regular map only, so the
+        # boundaries toggle greys out whenever a conditional map is selected;
+        # set once now and again on every map change.
+        self.qlvm_map_cb.currentIndexChanged.connect(self._update_usv_seq_boundaries_enabled_state)
+        self._update_usv_seq_boundaries_enabled_state()
+
         # # # # Embedding + per-category thumbnails (cohort-level, run-once): pools
         # the cohort session lists + resolves the store from spectrograms_dir, then
         # renders a 2-panel embedding scatter + per-category spectrogram thumbnail
@@ -5041,74 +5068,74 @@ class USVPlaypenWindow(QMainWindow):
         embedding_thumbnails_label = QLabel('Render embedding thumbnails:', self.VisualizationsSettings)
         embedding_thumbnails_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         embedding_thumbnails_label.setStyleSheet(self.orange_label_style)
-        embedding_thumbnails_label.move(vis_col_three_x1, 370)
+        embedding_thumbnails_label.move(vis_col_three_x1, 400)
         self.embedding_thumbnails_cb = QComboBox(self.VisualizationsSettings)
         self.embedding_thumbnails_cb.addItems(['No', 'Yes'])
         self.embedding_thumbnails_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.embedding_thumbnails_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='make_embedding_thumbnails_cb_bool'))
-        self.embedding_thumbnails_cb.move(vis_col_three_x2, 370)
+        self.embedding_thumbnails_cb.move(vis_col_three_x2, 400)
 
         embedding_thumbnails_exclude_squeaks_label = QLabel('Exclude squeaks:', self.VisualizationsSettings)
         embedding_thumbnails_exclude_squeaks_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        embedding_thumbnails_exclude_squeaks_label.move(vis_col_three_x1, 400)
+        embedding_thumbnails_exclude_squeaks_label.move(vis_col_three_x1, 430)
         self.embedding_thumbnails_exclude_squeaks_cb = QComboBox(self.VisualizationsSettings)
         self.embedding_thumbnails_exclude_squeaks_cb.addItems(['No', 'Yes'])
         self.embedding_thumbnails_exclude_squeaks_cb.setCurrentIndex(1 if _emb_cfg['exclude_squeaks'] else 0)
         self.embedding_thumbnails_exclude_squeaks_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.embedding_thumbnails_exclude_squeaks_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='embedding_thumbnails_exclude_squeaks_bool'))
-        self.embedding_thumbnails_exclude_squeaks_cb.move(vis_col_three_x2, 400)
+        self.embedding_thumbnails_exclude_squeaks_cb.move(vis_col_three_x2, 430)
 
         self.embedding_thumbnails_samples_label = QLabel(f"Thumbnails per category {_emb_cfg['n_samples_per_category']}:", self.VisualizationsSettings)
         self.embedding_thumbnails_samples_label.setFixedWidth(220)
         self.embedding_thumbnails_samples_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        self.embedding_thumbnails_samples_label.move(vis_col_three_x1, 430)
+        self.embedding_thumbnails_samples_label.move(vis_col_three_x1, 460)
         self.embedding_thumbnails_samples_slider = QSlider(Qt.Orientation.Horizontal, self.VisualizationsSettings)
         self.embedding_thumbnails_samples_slider.setFixedWidth(88)
-        self.embedding_thumbnails_samples_slider.move(vis_col_three_x2, 430)
+        self.embedding_thumbnails_samples_slider.move(vis_col_three_x2, 460)
         self.embedding_thumbnails_samples_slider.setRange(1, 20)
         self.embedding_thumbnails_samples_slider.setValue(int(_emb_cfg['n_samples_per_category']))
         self.embedding_thumbnails_samples_slider.valueChanged.connect(self._update_embedding_thumbnails_samples_label)
 
         embedding_thumbnails_layout_label = QLabel('Thumbnail layout:', self.VisualizationsSettings)
         embedding_thumbnails_layout_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        embedding_thumbnails_layout_label.move(vis_col_three_x1, 460)
+        embedding_thumbnails_layout_label.move(vis_col_three_x1, 490)
         self.embedding_thumbnails_layout_cb = QComboBox(self.VisualizationsSettings)
         self.embedding_thumbnails_layout_cb.addItems(['horizontal', 'vertical'])
         self.embedding_thumbnails_layout_cb.setCurrentText(_emb_cfg['tile_orientation'])
         self.embedding_thumbnails_layout_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.embedding_thumbnails_layout_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_orientation', choices=['horizontal', 'vertical']))
-        self.embedding_thumbnails_layout_cb.move(vis_col_three_x2, 460)
+        self.embedding_thumbnails_layout_cb.move(vis_col_three_x2, 490)
 
         embedding_thumbnails_boundaries_label = QLabel('Draw cluster boundaries:', self.VisualizationsSettings)
         embedding_thumbnails_boundaries_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        embedding_thumbnails_boundaries_label.move(vis_col_three_x1, 490)
+        embedding_thumbnails_boundaries_label.move(vis_col_three_x1, 520)
         self.embedding_thumbnails_boundaries_cb = QComboBox(self.VisualizationsSettings)
         self.embedding_thumbnails_boundaries_cb.addItems(['No', 'Yes'])
         self.embedding_thumbnails_boundaries_cb.setCurrentIndex(1 if _emb_cfg['draw_cluster_boundaries'] else 0)
         self.embedding_thumbnails_boundaries_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.embedding_thumbnails_boundaries_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='embedding_thumbnails_draw_boundaries_bool'))
-        self.embedding_thumbnails_boundaries_cb.move(vis_col_three_x2, 490)
+        self.embedding_thumbnails_boundaries_cb.move(vis_col_three_x2, 520)
 
         embedding_thumbnails_mask_label = QLabel('Apply SAM2 mask to spectrograms:', self.VisualizationsSettings)
         embedding_thumbnails_mask_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        embedding_thumbnails_mask_label.move(vis_col_three_x1, 520)
+        embedding_thumbnails_mask_label.move(vis_col_three_x1, 550)
         self.embedding_thumbnails_mask_cb = QComboBox(self.VisualizationsSettings)
         self.embedding_thumbnails_mask_cb.addItems(['No', 'Yes'])
         self.embedding_thumbnails_mask_cb.setCurrentIndex(1 if _emb_cfg['apply_mask'] else 0)
         self.embedding_thumbnails_mask_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.embedding_thumbnails_mask_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='embedding_thumbnails_apply_mask_bool'))
-        self.embedding_thumbnails_mask_cb.move(vis_col_three_x2, 520)
+        self.embedding_thumbnails_mask_cb.move(vis_col_three_x2, 550)
 
         embedding_thumbnails_sampling_label = QLabel('Per-cluster sampling method:', self.VisualizationsSettings)
         embedding_thumbnails_sampling_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        embedding_thumbnails_sampling_label.move(vis_col_three_x1, 550)
+        embedding_thumbnails_sampling_label.move(vis_col_three_x1, 580)
         self.embedding_thumbnails_sampling_cb = QComboBox(self.VisualizationsSettings)
         _emb_sampling_choices = ['random', 'nearest', 'spread', 'grid', 'spiral']
         self.embedding_thumbnails_sampling_cb.addItems(_emb_sampling_choices)
         self.embedding_thumbnails_sampling_cb.setCurrentText(_emb_cfg['sampling_method'])
         self.embedding_thumbnails_sampling_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.embedding_thumbnails_sampling_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_sampling_method', choices=_emb_sampling_choices))
-        self.embedding_thumbnails_sampling_cb.move(vis_col_three_x2, 550)
+        self.embedding_thumbnails_sampling_cb.move(vis_col_three_x2, 580)
 
         self._create_buttons_visualize(seq=0, class_option=self.VisualizationsSettings,
                                        button_pos_y=visualize_one_y - 35, next_button_x_pos=visualize_one_x - 100)
@@ -5267,6 +5294,7 @@ class USVPlaypenWindow(QMainWindow):
         self.visualizations_input_dict['make_usv_spectrograms']['fig_format'] = self.usv_seq_fig_format
         self.visualizations_input_dict['make_usv_spectrograms']['sequence']['draw_boundaries'] = self.usv_seq_draw_boundaries_bool
         self.visualizations_input_dict['make_usv_spectrograms']['sequence']['mark_usv_segments'] = self.usv_seq_mark_segments_bool
+        self.visualizations_input_dict['make_usv_spectrograms']['sequence']['exclude_squeaks'] = self.usv_seq_exclude_squeaks_bool
         self.visualizations_input_dict['make_usv_spectrograms']['apply_mask'] = self.usv_seq_apply_mask_bool
         self.visualizations_input_dict['make_usv_spectrograms']['plot_raw_audio'] = self.usv_seq_raw_audio_bool
         # the sequence start + duration are the shared make_usv_spectrograms time_window
@@ -5811,6 +5839,38 @@ class USVPlaypenWindow(QMainWindow):
 
         shown = f"{value / 100:.2f}" if fraction else f"{value}"
         label_widget.setText(f"{prefix} ({shown}):")
+
+    def _update_usv_seq_boundaries_enabled_state(self, *_args) -> None:
+        """
+        Description
+        -----------
+        Enable the USV sequence figure's ``Draw embedding boundaries`` toggle (combo and
+        label) only while the regular map (``os_utils.QLVM_CATEGORY_MAP``) is selected in
+        the ``QLVM map (all QLVM figures)`` box, and grey both out (their ``:disabled``
+        styling, ``#cccccc``) for a conditional map (``qlvm_duration``, ``qlvm_entropy``,
+        ``qlvm_bandwidth``, ``qlvm_loudness``). The category bundle partitions the regular
+        map's torus only, so a conditional map's sequence panel never draws boundaries
+        and the toggle has no effect there. The map is read from the combo's current
+        index (``list(QLVM_MAPS)[index]``, the order the items were added in), not from
+        ``self.qlvm_map``, so the state is right regardless of the order in which the
+        combo's signals reach their slots. The saved ``draw_boundaries`` value is left
+        untouched, so switching back to the regular map restores the previous choice.
+
+        Parameters
+        ----------
+        *_args
+            Ignored positional args (the combo ``currentIndexChanged`` signal passes an
+            index this slot reads from the combo itself instead).
+
+        Returns
+        -------
+        None
+        """
+
+        selected_map = list(QLVM_MAPS)[self.qlvm_map_cb.currentIndex()]
+        boundaries_available = selected_map == QLVM_CATEGORY_MAP
+        self.usv_seq_boundaries_label.setEnabled(boundaries_available)
+        self.usv_seq_boundaries_cb.setEnabled(boundaries_available)
 
     def _update_complexity_enabled_state(self, *_args) -> None:
         """
@@ -7608,6 +7668,7 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
                            'usv_seq_apply_mask_bool': visualizations_input_dict['make_usv_spectrograms']['apply_mask'],
                            'usv_seq_raw_audio_bool': visualizations_input_dict['make_usv_spectrograms']['plot_raw_audio'],
                            'usv_seq_mark_segments_bool': visualizations_input_dict['make_usv_spectrograms']['sequence']['mark_usv_segments'],
+                           'usv_seq_exclude_squeaks_bool': visualizations_input_dict['make_usv_spectrograms']['sequence']['exclude_squeaks'],
                            'make_embedding_thumbnails_cb_bool': False,
                            'embedding_thumbnails_exclude_squeaks_bool': visualizations_input_dict['embedding_thumbnails']['exclude_squeaks'],
                            'embedding_thumbnails_orientation': visualizations_input_dict['embedding_thumbnails']['tile_orientation'],

@@ -1226,6 +1226,16 @@ class USVSpectrogramPlotter:
         (``plot_raw_audio``). The left numbering matches the time order of calls
         along the right time axis.
 
+        The window's calls exclude every segment the noise classifier flagged
+        (always; ``os_utils.drop_noise_usvs``) and, when the sequence settings'
+        ``exclude_squeaks`` is True, every squeak-bearing segment as well: only
+        the pure USVs (``usv & ~squeak``, ``os_utils.call_class_mask``) are kept,
+        exactly as ``embedding_thumbnails.exclude_squeaks`` does, so pure squeaks,
+        segments holding a squeak and a USV, and unclassed rows are neither
+        plotted on the map, numbered, stitched into the spectrogram nor marked.
+        The summary's row index is taken before this filtering, so the stitched
+        spectrogram still looks each call up at its original store row.
+
         Parameters
         ----------
 
@@ -1239,6 +1249,9 @@ class USVSpectrogramPlotter:
         ValueError
             If the chosen QLVM map's coordinate columns are absent from the
             session's USV summary CSV.
+        KeyError
+            If the session's USV summary has no ``noise`` column, or (with
+            ``exclude_squeaks``) no ``usv`` / ``squeak`` columns.
         """
 
         cfg = self.visualizations_parameter_dict["make_usv_spectrograms"]
@@ -1262,7 +1275,22 @@ class USVSpectrogramPlotter:
             recursive=True,
             label="USV summary CSV",
         )
+        # The row index is taken BEFORE any filtering, so it stays aligned with the
+        # spectrogram store's per-USV rows (_build_stitched_canvas looks them up by it).
         usv_df = pls.read_csv(str(usv_summary_path)).with_row_index(name="row_index")
+        # Noise segments are never part of a sequence (os_utils.drop_noise_usvs, the
+        # shared noise rule; a summary without the noise column raises).
+        usv_df = drop_noise_usvs(usv_df, usv_summary_path.name, self.message_output)[0]
+        if seq_cfg["exclude_squeaks"]:
+            # Same rule as embedding_thumbnails.exclude_squeaks: keep the pure USVs
+            # (usv & ~squeak) and leave out pure squeaks, segments holding both and
+            # unclassed rows (call_class_mask raises without the usv / squeak columns).
+            n_before_squeaks = usv_df.height
+            usv_df = usv_df.filter(call_class_mask(usv_df, ("usv",), usv_summary_path.name))
+            self.message_output(
+                f"Sequence: kept the {usv_df.height} pure USV(s) of {n_before_squeaks} non-noise segments "
+                f"({n_before_squeaks - usv_df.height} squeak, both or unclassed left out)."
+            )
 
         qlvm_map = shared["qlvm_map"]
         x_col, y_col = f"{qlvm_map}1", f"{qlvm_map}2"

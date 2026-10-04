@@ -275,7 +275,7 @@ def test_gui_visualize_tab_constructs(qtbot, monkeypatch, tmp_path):
     for attr in ("usv_seq_cb", "usv_seq_fig_format_cb", "usv_seq_start_edit",
                  "usv_seq_duration_edit", "qlvm_map_cb",
                  "usv_seq_mask_cb", "usv_seq_raw_cb", "usv_seq_boundaries_cb",
-                 "usv_seq_mark_cb"):
+                 "usv_seq_mark_cb", "usv_seq_exclude_squeaks_cb"):
         assert hasattr(win, attr), f"Visualize tab missing USV-sequence widget: {attr}"
     # the one QLVM map selector (shared by every QLVM figure) is seeded from
     # shared_resources.qlvm_map and lists exactly the production maps, each shown by
@@ -292,6 +292,64 @@ def test_gui_visualize_tab_constructs(qtbot, monkeypatch, tmp_path):
         "Yes" if win.visualizations_input_dict["embedding_thumbnails"]["exclude_squeaks"] else "No"
     )
     assert not hasattr(win, "embedding_thumbnails_category_cb")
+    # the sequence figure has its own Exclude squeaks toggle, seeded from its sequence block
+    assert win.usv_seq_exclude_squeaks_cb.currentText() == (
+        "Yes" if win.visualizations_input_dict["make_usv_spectrograms"]["sequence"]["exclude_squeaks"] else "No"
+    )
+    # the QLVM map selector tells the user the torus video ignores it
+    assert "regular" in win.qlvm_map_cb.toolTip() and "video" in win.qlvm_map_cb.toolTip()
+    win.close()
+
+
+def test_gui_sequence_exclude_squeaks_round_trips(qtbot, monkeypatch, tmp_path):
+    """Choosing 'No' / 'Yes' in the sequence figure's Exclude squeaks combo sets the
+    variable the save handler writes to make_usv_spectrograms.sequence.exclude_squeaks,
+    and the row sits directly below the sequence block's last row, above the
+    embedding-thumbnails block, with the shifted column still inside the window."""
+    monkeypatch.chdir(tmp_path)
+    win = _make_main_window(qtbot)
+    win.visualize_one()
+    assert win.usv_seq_mark_cb.y() < win.usv_seq_exclude_squeaks_cb.y() < win.embedding_thumbnails_cb.y()
+    assert win.embedding_thumbnails_sampling_cb.y() + win.embedding_thumbnails_sampling_cb.height() < win.height() - 35
+    for choice, expected in ((0, False), (1, True)):
+        win.usv_seq_exclude_squeaks_cb.setCurrentIndex(choice)
+        win.usv_seq_exclude_squeaks_cb.activated.emit(choice)
+        assert win.usv_seq_exclude_squeaks_bool is expected
+    win.usv_seq_exclude_squeaks_cb.setCurrentIndex(0)
+    win.usv_seq_exclude_squeaks_cb.activated.emit(0)
+    win._save_visualizations_labels_func()
+    assert win.visualizations_input_dict["make_usv_spectrograms"]["sequence"]["exclude_squeaks"] is False
+    win.close()
+
+
+def test_gui_sequence_boundaries_toggle_follows_qlvm_map(qtbot, monkeypatch, tmp_path):
+    """The sequence figure's Draw embedding boundaries toggle (combo + label) is enabled
+    only while the regular map is selected in the shared QLVM map box: it greys out for
+    every conditional map, comes back for the regular map, and is set right at build."""
+    monkeypatch.chdir(tmp_path)
+    win = _make_main_window(qtbot)
+    win.visualize_one()
+    maps = list(os_utils.QLVM_MAPS)
+    assert win.usv_seq_boundaries_cb.isEnabled() is (maps[win.qlvm_map_cb.currentIndex()] == os_utils.QLVM_CATEGORY_MAP)
+    for index, qlvm_map in enumerate(maps):
+        win.qlvm_map_cb.setCurrentIndex(index)
+        on_regular = qlvm_map == os_utils.QLVM_CATEGORY_MAP
+        assert win.usv_seq_boundaries_cb.isEnabled() is on_regular, qlvm_map
+        assert win.usv_seq_boundaries_label.isEnabled() is on_regular, qlvm_map
+    win.qlvm_map_cb.setCurrentIndex(maps.index(os_utils.QLVM_CATEGORY_MAP))
+    assert win.usv_seq_boundaries_cb.isEnabled()
+    win.close()
+
+
+def test_gui_sequence_boundaries_disabled_at_build_for_conditional_map(qtbot, monkeypatch, tmp_path):
+    """A window built while the settings name a conditional map opens with the
+    boundaries toggle already greyed out."""
+    monkeypatch.chdir(tmp_path)
+    win = _make_main_window(qtbot)
+    win.visualizations_input_dict["shared_resources"]["qlvm_map"] = "qlvm_duration"
+    win.visualize_one()
+    assert not win.usv_seq_boundaries_cb.isEnabled()
+    assert not win.usv_seq_boundaries_label.isEnabled()
     win.close()
 
 
