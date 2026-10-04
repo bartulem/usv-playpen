@@ -448,7 +448,9 @@ def _session_filter(get_loaded_lists, list_to_sessions, mo):
     # Empty selection == show all (compact box, dropdown arrow visible, native clear
     # resets to all); pick one or more to ISOLATE them.
     _loaded = get_loaded_lists() or []
-    _avail = sorted({_s for _lp in _loaded for _s in list_to_sessions.get(_lp, [])})
+    # A loaded list can be missing from list_to_sessions (the settings cell skips a
+    # list file it could not read), so only lists present in the map contribute.
+    _avail = sorted({_s for _lp in _loaded if _lp in list_to_sessions for _s in list_to_sessions[_lp]})
     sessions_select = mo.ui.multiselect(options=_avail, value=[], label="")
     sessions_row = mo.hstack(
         [
