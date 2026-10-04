@@ -539,17 +539,16 @@ To render it, select *Render embedding thumbnails* in the *Visualize* window, ch
 
    <br>
 
-Being cohort-level, the figure is written to the project-wide ``figures.save_directory`` with a name built from the QLVM map and label column (plus a ``_YYYYMMDD_HHMMSS`` stamp when ``figures.timestamp_in_name`` is set):
+Being cohort-level, the figure is written to the project-wide ``figures.save_directory`` with a name built from the QLVM map alone, ``embedding_thumbnails_<qlvm_map>`` (``qlvm_category`` is the one category column, so the name carries no label-column part; plus a ``_YYYYMMDD_HHMMSS`` stamp when ``figures.timestamp_in_name`` is set):
 
 .. parsed-literal::
 
     ├── ...  (the ``figures.save_directory`` cohort output folder)
-    │   ├── **embedding_thumbnails_qlvm_category_20250430_145017.png**
+    │   ├── **embedding_thumbnails_qlvm_20250430_145017.png**
     │   ...
 
 The layout / sampling knobs live in the ``embedding_thumbnails`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (the figure DPI and the sampling seed come from the general ``figures`` block). Core keys:
 
-* **category_col_suffix** : the label column that colors / groups the scatter and thumbnail rows — ``category`` (``qlvm_category``; the only level).
 * **exclude_squeaks** : keep only the segments ``detect-usv-squeaks`` classed as pure USVs (``usv`` true and ``squeak`` false) in the scatter, the four small maps and the thumbnails, leaving out pure squeaks, segments holding both a squeak and a USV (``usv`` and ``squeak`` both true) and unclassed rows (default ``true``). The USV QLVM models were trained on USVs only, so squeak-bearing segments sit wherever the decoder places them. A pooled embeddings table without the ``usv`` / ``squeak`` booleans (built from summaries ``detect-usv-squeaks`` has not classified) raises; a cache written before the booleans existed is rebuilt automatically.
 * **n_samples_per_category** : number of thumbnail spectrograms sampled per category.
 * **tile_orientation** : thumbnail grid orientation — ``vertical`` / ``horizontal``.
@@ -586,7 +585,6 @@ Annotations / layout:
 .. code-block:: json
 
     "embedding_thumbnails": {
-        "category_col_suffix": "category",
         "exclude_squeaks": true,
         "n_samples_per_category": 8,
         "tile_orientation": "vertical",

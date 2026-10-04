@@ -3007,7 +3007,6 @@ def plot_embedding_with_category_thumbnails(
     sessions_txt_path: str,
     consolidated_h5_path: str,
     qlvm_map: str = "qlvm",
-    category_col_suffix: str = "category",
     n_samples_per_category: int = 8,
     apply_mask: bool = True,
     mask_excluded_categories: tuple[int, ...] | int | None = (),
@@ -3095,9 +3094,6 @@ def plot_embedding_with_category_thumbnails(
         no boundaries (the colours show each call's category), the spiral
         sampler walks without a boundary filter, and the centres are the
         per-category means of that map's calls.
-    category_col_suffix (str)
-        ``"category"`` (the only level; there is no coarse level) - names the
-        categorical label to color and group by, ``qlvm_category``.
     n_samples_per_category (int)
         How many spectrograms to display per category row.
     apply_mask (bool)
@@ -3237,12 +3233,6 @@ def plot_embedding_with_category_thumbnails(
 
     if qlvm_map not in QLVM_MAPS:
         msg = f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}."
-        raise ValueError(msg)
-    if category_col_suffix != "category":
-        msg = (
-            f"category_col_suffix must be 'category' (there is no coarse level), "
-            f"got {category_col_suffix!r}."
-        )
         raise ValueError(msg)
 
     x_col, y_col = f"{qlvm_map}1", f"{qlvm_map}2"
@@ -3860,7 +3850,8 @@ def render_embedding_thumbnails_for_cohort(
     ``shared_resources['spectrograms_dir']``, and renders
     ``plot_embedding_with_category_thumbnails`` with the knobs from the
     ``embedding_thumbnails`` settings block. The figure is written to
-    ``figures['save_directory']`` (with a ``_YYYYMMDD_HHMMSS`` stamp appended when
+    ``figures['save_directory']`` as ``embedding_thumbnails_<qlvm_map>.<fig_format>``
+    (with a ``_YYYYMMDD_HHMMSS`` stamp appended to the stem when
     ``figures['timestamp_in_name']`` is set) and, in an interactive GUI context,
     opened in the OS default viewer at the end (headless / batch runs never spawn
     a viewer).
@@ -3946,7 +3937,9 @@ def render_embedding_thumbnails_for_cohort(
     out_dir = pathlib.Path(configure_path(figures["save_directory"]))
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_format = figures["fig_format"]
-    stem = f"embedding_thumbnails_{qlvm_map}_{cfg['category_col_suffix']}"
+    # Named by the map alone: qlvm_category is the one category column, so the
+    # label column adds nothing to the name.
+    stem = f"embedding_thumbnails_{qlvm_map}"
     if figures["timestamp_in_name"]:
         stem = f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_path = str(out_dir / f"{stem}.{fig_format}")
@@ -3963,7 +3956,6 @@ def render_embedding_thumbnails_for_cohort(
             sessions_txt_path=combined_sessions_txt,
             consolidated_h5_path=store_path,
             qlvm_map=qlvm_map,
-            category_col_suffix=cfg["category_col_suffix"],
             exclude_squeaks=cfg["exclude_squeaks"],
             n_samples_per_category=cfg["n_samples_per_category"],
             apply_mask=cfg["apply_mask"],

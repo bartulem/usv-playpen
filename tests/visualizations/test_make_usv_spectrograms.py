@@ -27,6 +27,7 @@ failure.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import pathlib
@@ -1644,7 +1645,6 @@ def test_plot_umap_thumbnails_spiral_unstretched(tmp_path):
     fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
-        category_col_suffix="category",
         n_samples_per_category=4,
         sampling_method="spiral",
         draw_spiral_overlay=True,
@@ -1716,7 +1716,6 @@ def test_plot_umap_thumbnails_bundle_centers_and_boundaries(tmp_path):
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         qlvm_map="qlvm",
-        category_col_suffix="category",
         n_samples_per_category=3,
         sampling_method="spiral",
         annotate_cluster_ids=True,
@@ -1741,8 +1740,7 @@ def test_plot_umap_thumbnails_bundle_label_mismatch_raises(tmp_path):
             sessions_txt_path="unused",
             consolidated_h5_path="unused",
             qlvm_map="qlvm",
-            category_col_suffix="category",
-            pooled_df=pooled,
+                pooled_df=pooled,
             message_output=lambda *_: None,
         )
 
@@ -1760,16 +1758,10 @@ def test_plot_umap_thumbnails_bad_qlvm_map(tmp_path):
         )
 
 
-def test_plot_umap_thumbnails_bad_category_suffix(tmp_path):
-    """An invalid category_col_suffix raises ValueError."""
-    with pytest.raises(ValueError, match="category_col_suffix must be"):
-        plot_embedding_with_category_thumbnails(
-            sessions_txt_path="unused",
-            consolidated_h5_path="unused",
-            category_col_suffix="bogus",
-            pooled_df=_make_pooled_df(),
-            message_output=lambda *_: None,
-        )
+def test_plot_umap_thumbnails_has_no_category_suffix_parameter():
+    """qlvm_category is the one category column, so the figure takes no
+    category_col_suffix parameter any more."""
+    assert "category_col_suffix" not in inspect.signature(plot_embedding_with_category_thumbnails).parameters
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
@@ -2220,7 +2212,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
         "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir),
                              "qlvm_map": "qlvm_duration"},
         "embedding_thumbnails": {
-            "category_col_suffix": "category", "exclude_squeaks": True,
+            "exclude_squeaks": True,
             "n_samples_per_category": 6, "tile_orientation": "vertical",
             "apply_mask": False, "mask_excluded_categories": [], "category_colors": None,
             "sampling_method": "random",
@@ -2247,7 +2239,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert not pathlib.Path(captured["sessions_txt_path"]).exists()
     # block knobs forwarded verbatim
     assert captured["qlvm_map"] == "qlvm_duration"
-    assert captured["category_col_suffix"] == "category"
+    assert "category_col_suffix" not in captured
     assert captured["exclude_squeaks"] is True
     assert captured["n_samples_per_category"] == 6
     assert captured["tile_orientation"] == "vertical"
@@ -2273,7 +2265,8 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert opened == [captured["output_path"]]
     # timestamp_in_name -> the filename ends with a _YYYYMMDD_HHMMSS stamp
     out_name = pathlib.Path(captured["output_path"]).name
-    assert re.fullmatch(r"embedding_thumbnails_qlvm_duration_category_\d{8}_\d{6}\.png", out_name)
+    # named by the map alone (no label-column part)
+    assert re.fullmatch(r"embedding_thumbnails_qlvm_duration_\d{8}_\d{6}\.png", out_name)
 
     # explicit category colours come from JSON, whose object keys are strings; the
     # driver keys them by the int qlvm_category so the figure's lookups match
