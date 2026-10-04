@@ -16,7 +16,7 @@ ANALYSIS_TYPE=$1
 EXPERIMENTER_ID="Name"
 USV_PLAYPEN_PATH="/usr/people/nsurname/usv-playpen/"
 UNIVARIATE_PATH="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/cluster/univariate_results_multi_file/univariate_results.pkl"
-INPUT_DATA="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/modeling_UMAP_manifold_position_female_20260226_150803_hist4s.pkl"
+INPUT_DATA="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/modeling_manifold_qlvm_category_<cohort>_<YYYYMMDD_HHMMSS>.pkl"  # the analysis's extraction pickle
 OUTPUT_DIR="/mnt/cup/labs/falkner/$EXPERIMENTER_ID/modeling/cluster/model_selection_multi_file"
 
 mkdir -p logs

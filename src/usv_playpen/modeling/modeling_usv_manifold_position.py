@@ -1051,11 +1051,13 @@ class ContinuousModelingPipeline(FeatureZoo):
         )
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
-        # Tag carries the USV category column the manifold target derives
-        # from (e.g. `qlvm_category`) so every
-        # downstream filename — modeling input pickle, univariate pkls,
-        # model-selection step pkls, consolidated artifact — makes the
-        # source clustering explicit.
+        # Tag carries the USV category column (e.g. `qlvm_category`) into
+        # every downstream filename — modeling input pickle, univariate pkls,
+        # model-selection step pkls, consolidated artifact. That column is
+        # the regular map's category for every map, so the tag does NOT name
+        # the map the target comes from (a `qlvm_duration1` / `qlvm_duration2`
+        # run is tagged `manifold_qlvm_category` like a `qlvm1` / `qlvm2` run);
+        # the map is in `_input_metadata.analysis_specific.usv_manifold_column_names`.
         # Without a label column the tag names the embedding instead (e.g.
         # `manifold_qlvm`), see `manifold_tag_segment`.
         analysis_tag = f"manifold_{manifold_tag_segment(column_name_cats, manifold_cols)}"

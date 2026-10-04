@@ -460,7 +460,7 @@ differ only in *what gets predicted*:
     # One target USV category vs pooled "other" (binomial, one-vs-rest)
     VocalCategoryModelingPipeline(
         modeling_settings_dict=None
-    ).extract_and_save_category_input_data(target_category=6)
+    ).extract_and_save_category_input_data(target_category=3)
 
     # Vocal categories across all categories jointly (multinomial)
     MultinomialModelingPipeline(
