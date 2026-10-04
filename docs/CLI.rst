@@ -1144,7 +1144,7 @@ Analyze
                                   [--head-points TEXT TEXT TEXT TEXT]
                                   [--tail-points TEXT TEXT TEXT TEXT TEXT]
                                   [--back-root-points TEXT TEXT TEXT]
-                                  [--derivative-bins TEXT...]
+                                  [--derivative-bins INTEGER]
 
     required arguments:
       --root-directory      Session root directory path.

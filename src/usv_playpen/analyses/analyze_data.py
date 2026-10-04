@@ -329,7 +329,7 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--head-points', 'head_points', nargs=4, type=str, default=None, required=False, help='Skeleton head nodes.')
 @click.option('--tail-points', 'tail_points',  nargs=5, type=str, default=None, required=False, help='Skeleton tail nodes.')
 @click.option('--back-root-points', 'back_root_points', nargs=3, type=str, default=None, required=False, help='Skeleton back nodes.')
-@click.option('--derivative-bins', 'derivative_bins', multiple=True, type=str, default=None, required=False, help='Number of bins for derivative calculation.')
+@click.option('--derivative-bins', 'derivative_bins', type=int, default=None, required=False, help='Number of bins for derivative calculation.')
 @click.pass_context
 def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
     """
