@@ -1097,6 +1097,80 @@ def test_prepare_for_vocalocator_writes_dset_h5(tmp_path, processing_settings, m
         assert float(f.attrs["audio_sr"]) == 250000.0
 
 
+@pytest.mark.parametrize("band", ["usv", "broadband"])
+def test_prepare_for_vocalocator_reads_the_configured_audio_band(tmp_path, processing_settings, mocker, band):
+    """
+    Description
+    -----------
+    ``vocalocator.vcl_audio_band`` picks the memmap the vocalocator dataset is cut
+    from: ``usv`` the 30 kHz high-passed ``audio/hpss_filtered`` memmap (the shipped
+    default, the band the current models were trained on), ``broadband`` the 2 kHz
+    high-passed ``audio/broadband_filtered`` one. With both present, the dataset
+    must carry the configured file's samples.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op the interactive ``smart_wait``.
+    band (str)
+        The configured band.
+
+    Returns
+    -------
+    None
+    """
+
+    assert processing_settings['vocalocator']['vcl_audio_band'] == 'usv'
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    _build_prepare_for_vocalocator_layout(tmp_path, processing_settings)
+    usv_mmap = next((tmp_path / "audio" / "hpss_filtered").glob("*.mmap"))
+    broadband_dir = tmp_path / "audio" / "broadband_filtered"
+    broadband_dir.mkdir()
+    broadband_mmap = broadband_dir / usv_mmap.name.replace("hpss_filtered", "broadband_filtered")
+    np.full(usv_mmap.stat().st_size // 2, 7, dtype=np.int16).tofile(broadband_mmap)
+    processing_settings['vocalocator']['vcl_audio_band'] = band
+
+    _make_vocalocator(tmp_path, processing_settings).prepare_for_vocalocator()
+
+    with h5py.File(tmp_path / "audio" / "sound_localization" / "dset.h5", "r") as f:
+        audio = f["audio"][()]
+    # the dataset stores int16 audio scaled to [-1, 1]: the broadband file holds 7s,
+    # the usv file zeros
+    expected = 7 / 32768 if band == "broadband" else 0.0
+    assert np.allclose(audio.astype(np.float64), expected, atol=1e-6)
+
+
+def test_prepare_for_vocalocator_rejects_an_unknown_audio_band(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    A ``vocalocator.vcl_audio_band`` other than ``usv`` / ``broadband`` raises
+    before any file is read.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    processing_settings['vocalocator']['vcl_audio_band'] = 'ultrasonic'
+    with pytest.raises(ValueError, match="vcl_audio_band"):
+        _make_vocalocator(tmp_path, processing_settings).prepare_for_vocalocator()
+
+
 def test_prepare_for_vocalocator_skips_when_dset_exists(tmp_path, processing_settings, mocker):
     """
     Description

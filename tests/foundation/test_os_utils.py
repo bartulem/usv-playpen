@@ -584,7 +584,9 @@ def test_every_audio_mmap_reader_asks_for_the_usv_band():
     # Static guard over the package: no reader may locate a memmap with a glob
     # ('*.mmap' patterns, recursive or not) and every find_audio_mmap call names
     # the 'usv' band, so no USV reader can be handed the broadband memmap; the
-    # broadband writer (modify_files) is the only module allowed to name it.
+    # broadband writer (modify_files) is the only module allowed to name it. The
+    # vocalocator (assign_vocalizations) is the one reader whose band is a setting,
+    # vocalocator.vcl_audio_band ('usv' by default), checked separately below.
     package_root = pathlib.Path(os_utils.__file__).parent
     readers = []
     for source_path in sorted(package_root.rglob("*.py")):
@@ -598,12 +600,14 @@ def test_every_audio_mmap_reader_asks_for_the_usv_band():
     assert sorted(set(readers)) == [
         "analyses/build_naturalistic_usv_repository.py",
         "analyses/neuronal_coactivity_engine.py",
-        "processing/assign_vocalizations.py",
         "processing/das_inference.py",
         "processing/generate_spectrograms.py",
         "visualizations/make_behavioral_videos.py",
         "visualizations/make_usv_spectrograms.py",
     ]
+    vocalocator_source = (package_root / "processing" / "assign_vocalizations.py").read_text(encoding="utf-8")
+    assert "find_audio_mmap(root_directory=self.root_directory, band=vcl_audio_band)" in vocalocator_source
+    assert "self.input_parameter_dict['vocalocator']['vcl_audio_band']" in vocalocator_source
 
 
 # newest_match_or_raise
