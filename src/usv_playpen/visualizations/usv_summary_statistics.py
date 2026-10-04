@@ -30,7 +30,7 @@ from ..os_utils import (
     load_qlvm_category_bundle,
     squeak_class_selection,
 )
-from .auxiliary_plot_functions import create_colormap
+from .auxiliary_plot_functions import create_colormap, draw_category_outlines
 
 # Load the project-wide default cmap from `visualizations_settings.json`
 # at module import. Used as the default for every `cmap=` arg in this
@@ -2172,7 +2172,10 @@ def plot_category_prevalence_and_embedding(
     (``os_utils.load_qlvm_category_bundle``, the partition the summaries'
     ``qlvm_category`` was assigned from), overlaid on top of every embedding plot
     when the embedding is the map the bundle is defined on (the regular map
-    ``qlvm``). On a conditional map (``qlvm_duration``, ``qlvm_entropy``,
+    ``qlvm``). Each category is outlined as the 0.5 contour of its own binary mask
+    (``auxiliary_plot_functions.draw_category_outlines``, the method the embedding
+    explorer uses), not by contouring the integer grid at half-integer levels, which
+    would stack lines wherever non-consecutive categories touch. On a conditional map (``qlvm_duration``, ``qlvm_entropy``,
     ``qlvm_bandwidth``, ``qlvm_loudness``) the bundle does not partition the torus the calls sit on, so no boundaries are drawn and the
     embedding titles say so; the bars still count the calls' ``qlvm_category``.
     Boundaries are never estimated from the data.
@@ -2224,7 +2227,6 @@ def plot_category_prevalence_and_embedding(
         category_bundle = load_qlvm_category_bundle()
         boundary_axis = category_bundle['axis']
         boundary_grid = category_bundle['label_grid']
-        boundary_levels = np.arange(1.5, len(category_bundle['names']) + 0.5, 1.0)
         boundary_note = ''
     else:
         boundary_grid = None
@@ -2301,10 +2303,11 @@ def plot_category_prevalence_and_embedding(
                     alpha=0.7, edgecolors='none', zorder=2
                 )
 
-        # Draw the category boundaries ON TOP (regular map only)
+        # Draw the category boundaries ON TOP (regular map only): one 0.5
+        # outline per category (uniform width where non-consecutive categories touch).
         if boundary_grid is not None:
-            ax_emb.contour(
-                boundary_axis, boundary_axis, boundary_grid, levels=boundary_levels,
+            draw_category_outlines(
+                ax_emb, boundary_axis, boundary_axis, boundary_grid,
                 colors=boundary_color, linewidths=2.5, zorder=10
             )
 
@@ -2374,10 +2377,10 @@ def plot_category_prevalence_and_embedding(
                 alpha=0.7, edgecolors='none', zorder=2
             )
 
-    # Category boundaries on top (regular map only)
+    # Category boundaries on top (regular map only), one outline per category
     if boundary_grid is not None:
-        ax_sum_emb.contour(
-            boundary_axis, boundary_axis, boundary_grid, levels=boundary_levels,
+        draw_category_outlines(
+            ax_sum_emb, boundary_axis, boundary_axis, boundary_grid,
             colors=boundary_color, linewidths=2.5, zorder=10
         )
 
