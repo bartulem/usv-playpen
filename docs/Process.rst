@@ -795,7 +795,7 @@ The processing of audio data passes multiple stages:
     #. Generate per-USV spectrograms (runs on cluster)
     #. Generate USV masks — YOLO detection + SAM2 segmentation (runs on cluster)
     #. Compute USV acoustic features (runs on cluster)
-    #. Infer QLVM latents, then assign QLVM categories with ``assign-qlvm-categories`` (runs on cluster)
+    #. Infer QLVM latents (runs on cluster), then assign QLVM categories (``assign-qlvm-categories``, CLI only; a re-embedding drops the earlier ``qlvm_category``)
 
 The QLVM decoder and mask detector that the last two steps rely on are trained separately, once per cohort — see *Train spectrogram-pipeline models* below.
 
