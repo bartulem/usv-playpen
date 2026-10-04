@@ -413,7 +413,7 @@ class NaturalisticUsvRepositoryBuilder:
                     filename=audio_file_loc, mode="r", dtype=data_type, shape=(sample_num, channel_num)
                 )
 
-                usv_summary_df = pls.read_csv(source=str(usv_summary_loc))
+                usv_summary_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
                 starts_all = usv_summary_df["start"].to_numpy()
                 stops_all = usv_summary_df["stop"].to_numpy()
 
@@ -433,6 +433,15 @@ class NaturalisticUsvRepositoryBuilder:
                 with h5py.File(str(h5_loc), "r") as h5_file:
                     session_id = next(iter(h5_file["spectrogram"].keys()))
                     durations = h5_file[f"spectrogram/{session_id}"]["durations"][:]
+                    # Summary rows index the H5 rows (durations, masks) and are stored as
+                    # usv_row, so a summary re-curated after the spectrograms were made would
+                    # attach every mask to the wrong call; such a session is skipped and logged.
+                    if durations.size != usv_summary_df.height:
+                        error_message = (
+                            f"{usv_summary_loc.name} has {usv_summary_df.height} rows but {h5_loc.name} holds "
+                            f"{durations.size} spectrograms; re-run generate-usv-spectrograms and generate-usv-masks."
+                        )
+                        raise ValueError(error_message)
 
                     # Select this build's USV rows: a courtship build keeps only the target
                     # sex's attributed emitter; same-sex / lone / mixed builds keep every
@@ -453,6 +462,10 @@ class NaturalisticUsvRepositoryBuilder:
                         emitter_rows = np.arange(len(starts_all), dtype=np.int64)
                     emitter_rows = emitter_rows[is_not_noise[emitter_rows]]
                     if emitter_rows.size == 0:
+                        self.message_output(
+                            f"Skipping {root.name}: no non-noise USV is attributed to '{stored_emitter}' "
+                            f"(an empty emitter column means vcl-assign has not run since the last das-summarize)."
+                        )
                         continue
 
                     order = np.argsort(starts_all[emitter_rows], kind="stable")
