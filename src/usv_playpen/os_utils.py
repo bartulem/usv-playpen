@@ -765,11 +765,9 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     refuses to embed on a mismatch (the shipped defaults already match; this keeps
     a derived run correct when a user's settings still carry the earlier
     ``"none"`` / false). An explicitly configured ``model_cells`` is left entirely
-    alone, ``masking_type`` and ``time_stretch`` included.
-    ``infer_qlvm_latents.model_cell_label_levels`` is never touched: its shipped
-    ``{}`` writes coordinates only, which is the production layout (the production
-    cells carry no label grids; ``qlvm_category`` comes from
-    ``assign-qlvm-categories``). Likewise an empty
+    alone, ``masking_type`` and ``time_stretch`` included. ``infer-qlvm-latents``
+    writes coordinates only, which is the production layout (``qlvm_category``
+    comes from ``assign-qlvm-categories``). Likewise an empty
     ``infer_qlvm_squeak_latents.model_cell_directory`` is filled with the
     production squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under
     ``QLVM_SQUEAK_PACKAGE_ROOT`` (the time-stretched, unmasked, unfloored

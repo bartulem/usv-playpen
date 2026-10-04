@@ -25,7 +25,6 @@ from usv_playpen import os_utils
 from usv_playpen.processing.generate_spectrograms import open_hpss_audio
 from usv_playpen.visualizations.make_behavioral_videos import load_audio_data
 from usv_playpen.processing.qlvm_latents import (
-    model_cell_label_columns,
     model_cell_reserved_columns,
     validate_model_cells,
 )
@@ -934,11 +933,11 @@ def test_derive_spectrogram_model_paths_keeps_configured_qlvm_models(configured)
 
 
 def test_derived_qlvm_model_cells_pass_model_cell_validation():
-    """The derived production prefixes, with the shipped (empty) label-level setting, write
-    their coordinates only, which the model_cells validator and the label-level resolver
-    (which forbid overwriting other summary columns) accept. Every canonical map coordinate
-    column (qlvm, qlvm_duration, qlvm_entropy, qlvm_bandwidth, qlvm_loudness) is writable by a model_cells run, and so is the regular
-    map's qlvm_category; the squeak torus coordinates are not."""
+    """The derived production prefixes write their coordinates only, which the model_cells
+    validator (which forbids overwriting other summary columns) accepts. Every canonical
+    map coordinate column (qlvm, qlvm_duration, qlvm_entropy, qlvm_bandwidth, qlvm_loudness)
+    is writable by a model_cells run and nothing else is: the regular map's qlvm_category
+    (written by assign-qlvm-categories) and the squeak torus coordinates are not."""
     settings = {
         "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",
         "generate_masks": {"sam2_model_dir": "", "sam2_model_path": "", "yolo_weights": ""},
@@ -949,12 +948,12 @@ def test_derived_qlvm_model_cells_pass_model_cell_validation():
         "detect_usv_noise": {"noise_model_path": ""},
     }
     os_utils.derive_spectrogram_model_paths(settings)
-    validated = validate_model_cells(settings["infer_qlvm_latents"]["model_cells"].items())
-    assert all(columns == {} for columns in model_cell_label_columns(validated, {}).values())
+    validate_model_cells(settings["infer_qlvm_latents"]["model_cells"].items())
     reserved = model_cell_reserved_columns()
     canonical_qlvm = {c for c in os_utils.USV_SUMMARY_COLUMN_ORDER if c.startswith("qlvm")}
-    assert canonical_qlvm - reserved == canonical_qlvm - {"qlvm_squeak1", "qlvm_squeak2"}
-    assert {"qlvm_squeak1", "qlvm_squeak2"} <= reserved
+    map_coordinates = {f"{prefix}{axis}" for prefix in os_utils.QLVM_SUMMARY_MAP_PREFIXES for axis in (1, 2)}
+    assert canonical_qlvm - reserved == map_coordinates
+    assert {"qlvm_category", "qlvm_squeak1", "qlvm_squeak2"} <= reserved
     validate_model_cells([(prefix, "/cell") for prefix in os_utils.QLVM_SUMMARY_MAP_PREFIXES])
 
 

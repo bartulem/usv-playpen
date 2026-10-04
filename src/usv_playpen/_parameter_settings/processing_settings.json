@@ -460,7 +460,6 @@
   },
   "infer_qlvm_latents": {
     "model_cells": {},
-    "model_cell_label_levels": {},
     "prefer_package_values": true,
     "latent_dim": 2,
     "time_stretch": true,
