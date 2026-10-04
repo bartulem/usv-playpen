@@ -691,11 +691,17 @@ def _write_session_dir(
         track_file.create_dataset("tracks", data=np.zeros((n_frames, 2, 3), dtype=np.float64))
 
     if rows is None:
+        # Three focal pure USVs (two in category 1, one in category 3), one partner pure USV,
+        # and three focal rows that carry a category label but must never enter a group: a
+        # noise segment, a segment holding both a squeak and a USV, and a pure squeak.
         rows = [
-            {"emitter": emitter,       "start": 1.0, category_column: "USV", "peak_amp_ch": 2},
-            {"emitter": emitter,       "start": 2.0, category_column: "USV", "peak_amp_ch": 0},
-            {"emitter": emitter,       "start": 3.0, category_column: "WHISTLE", "peak_amp_ch": 1},
-            {"emitter": other_emitter, "start": 4.0, category_column: "USV", "peak_amp_ch": 2},
+            {"emitter": emitter,       "start": 1.0, "noise": False, "usv": True,  "squeak": False, category_column: 1, "peak_amp_ch": 2},
+            {"emitter": emitter,       "start": 2.0, "noise": False, "usv": True,  "squeak": False, category_column: 1, "peak_amp_ch": 0},
+            {"emitter": emitter,       "start": 3.0, "noise": False, "usv": True,  "squeak": False, category_column: 3, "peak_amp_ch": 1},
+            {"emitter": other_emitter, "start": 4.0, "noise": False, "usv": True,  "squeak": False, category_column: 1, "peak_amp_ch": 2},
+            {"emitter": emitter,       "start": 5.0, "noise": True,  "usv": None,  "squeak": None,  category_column: 1, "peak_amp_ch": 2},
+            {"emitter": emitter,       "start": 6.0, "noise": False, "usv": True,  "squeak": True,  category_column: 1, "peak_amp_ch": 2},
+            {"emitter": emitter,       "start": 7.0, "noise": False, "usv": False, "squeak": True,  category_column: 3, "peak_amp_ch": 2},
         ]
     frame = pls.DataFrame(rows)
     if not with_peak_amp_ch and "peak_amp_ch" in frame.columns:
@@ -719,8 +725,8 @@ def test_load_animal_sessions_empty_session_names_returns_empty():
         data_root=pathlib.Path("/nonexistent"),
         catalog={},
         category_column="qlvm_category",
-        group_a_ids=["USV"],
-        group_b_ids=["WHISTLE"],
+        group_a_ids=[1],
+        group_b_ids=[3],
         cluster_group="good",
         require_somatic=False,
         brain_areas=set(),
@@ -768,8 +774,8 @@ def test_load_animal_sessions_picks_richest_day_and_builds_entries(tmp_path):
         data_root=tmp_path,
         catalog=catalog,
         category_column=category_column,
-        group_a_ids=["USV"],
-        group_b_ids=["WHISTLE"],
+        group_a_ids=[1],
+        group_b_ids=[3],
         cluster_group="good",
         require_somatic=True,
         brain_areas={"PAG"},
@@ -784,9 +790,14 @@ def test_load_animal_sessions_picks_richest_day_and_builds_entries(tmp_path):
     assert entry["fs"] == pytest.approx(150.0)
     assert entry["total_duration"] == pytest.approx(300 / 150.0)
     assert set(entry["neural_data"]) == {"u_a_good", "u_b_good"}
-    # Focal-only calls split by category; group A = USV (2 focal rows), B = WHISTLE (1).
+    # Focal-only pure USVs split by category; group A = category 1 (2 focal pure USVs), B =
+    # category 3 (1). The labelled noise, both and pure-squeak rows enter neither group.
     assert entry["group_a_df"].height == 2
     assert entry["group_b_df"].height == 1
+    assert sorted(entry["group_a_df"]["start"].to_list()) == [1.0, 2.0]
+    assert entry["group_b_df"]["start"].to_list() == [3.0]
+    # The noise drop is logged through the supplied sink.
+    assert any("dropped 1 noise segment" in line for line in messages)
     # Both diagnostic lines were emitted and name the chosen day.
     assert any("20240102" in line and "picked day" in line for line in messages)
     assert any("common filtered units" in line for line in messages)
@@ -820,8 +831,8 @@ def test_load_animal_sessions_absent_category_column_raises(tmp_path):
     """
     Description
     -----------
-    A summary without the configured category column (the production summaries
-    carry qlvm1/qlvm2 but no qlvm_category) raises a ValueError naming the
+    A summary without the configured category column (one that carries qlvm1/qlvm2
+    but that assign-qlvm-categories has not labelled yet) raises a ValueError naming the
     column and saying QLVM labels are unavailable, instead of polars'
     ColumnNotFoundError.
     """

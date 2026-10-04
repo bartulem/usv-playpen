@@ -1117,8 +1117,9 @@ population (PAG by default) is during one class of USV versus another. For a
 pairwise spike-count correlation (``r_sc``), population-vector cosine similarity
 (``similarity``), and population-vector Pearson correlation (``pop_corr``) — and
 tests them with a pooled trial-count bootstrap, a chained circular-shuffle null,
-and a direct label-permutation test. It reads nothing from
-``analyses_settings.json``: every knob lives in the **Parameters** cell.
+and a direct label-permutation test. Its coactivity hyperparameters are read from
+the ``neuronal_coactivity`` block of ``analyses_settings.json``; every other knob
+lives in the **Parameters** cell.
 
 The statistics and figures are factored out of the notebook: the compute lives
 in ``usv_playpen.analyses.neuronal_coactivity_engine`` (each section calls
@@ -1249,7 +1250,10 @@ chosen animal's data through ``engine.load_animal_sessions``: the three-criteria
 unit filter (``cluster_group`` + ``somatic`` + ``brain_area``), the
 single-best-day population selection (Kilosort is per-day, so units aren't
 comparable across days), and the per-session ``group_a``/``group_b`` category
-split all happen inside the engine. This builds the ``sessions_data`` that every
+split (over the focal mouse's pure USVs only, ``usv & ~squeak``: noise segments,
+pure squeaks and segments holding both a squeak and a USV are dropped first, even
+though ``assign-qlvm-categories`` gives them a ``qlvm_category`` label) all happen
+inside the engine. This builds the ``sessions_data`` that every
 later section consumes. Edit inputs in **Parameters** — this cell should not need
 changing.
 
