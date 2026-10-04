@@ -26,7 +26,7 @@ USV, and unscored rows -- per `exclude_squeaks_self` / `exclude_squeaks_partner`
                           frequency, bandwidth, mean / max amplitude,
                           absolute loudness_db, spectral entropy, mask
                           number)
-  `usv_category_tuning`   per-category within-USV firing rate for every
+  `usv_category_tuning`   per-category within-USV firing rate for the
                           QLVM category column (`qlvm_category`, the
                           content-ridge categories R-1..R-k of the
                           regular map; only pure USVs, `usv & ~squeak`,
@@ -1335,8 +1335,8 @@ class NeuronalTuning(FeatureZoo):
         metadata), validates and stashes the keyword arguments as attributes,
         and records GUI-vs-CLI execution context. The categorical vocal
         compute reads its category labels straight from the
-        `qlvm_*` columns of the `*_usv_summary.csv`, not from any
-        bundled segmentation file.
+        `qlvm_category` column of the `*_usv_summary.csv` (written by
+        `assign-qlvm-categories`), not from the category bundle itself.
 
         Parameters
         ----------
@@ -1937,8 +1937,9 @@ class NeuronalTuning(FeatureZoo):
         - `partner` included iff
           `include_partner_vocalization_tuning_bool` AND its anchor count
           >= `n_usv_min_partner`.
-        - The QLVM category tuning (every map of `CATEGORICAL_FEATURES`)
-          uses pure-USV anchors only, whatever the knobs: the
+        - The QLVM category tuning (the `qlvm_category` column,
+          `CATEGORICAL_FEATURES`) uses pure-USV anchors only, whatever the
+          knobs: the
           QLVM models were trained on pure USVs (squeaks get their own
           embedding), so the label of a squeak or of a segment holding both is not
           a USV category.
@@ -1984,8 +1985,8 @@ class NeuronalTuning(FeatureZoo):
         usv_df = voc_inputs["usv_df"]
         is_usv = voc_inputs["is_usv"]
 
-        # A summary embedded before infer-qlvm-latents wrote the QLVM cluster labels
-        # lacks them; say so once per session instead of leaving the QLVM category
+        # A summary that assign-qlvm-categories has not labelled yet lacks
+        # qlvm_category; say so once per session instead of leaving the QLVM category
         # tuning empty without a word (the categorical loop below yields no categories
         # for a missing column).
         missing_qlvm_labels = [
@@ -2072,8 +2073,8 @@ class NeuronalTuning(FeatureZoo):
                 if prop in usv_df.columns:
                     values = usv_df[prop].to_numpy()[anchor_idx]
                 else:
-                    # Optional feature column absent for this session (e.g. a QLVM /
-                    # spectral property not produced when QLVM wasn't run); treat it as
+                    # Optional feature column absent for this session (e.g. an acoustic
+                    # property its summary was never given); treat it as
                     # all-NaN so it yields empty occupancy and NaN tuning instead of
                     # raising ColumnNotFoundError and aborting the whole run.
                     values = np.full(anchor_durations.shape[0], np.nan, dtype=float)
@@ -2095,8 +2096,8 @@ class NeuronalTuning(FeatureZoo):
                 if cat_feat in usv_df.columns:
                     cat_values = usv_df[cat_feat].to_numpy()[anchor_idx]
                 else:
-                    # Optional categorical column absent (e.g. a session never run through
-                    # QLVM inference); all-NaN -> the null-drop below yields an empty category set
+                    # Optional categorical column absent (e.g. a session assign-qlvm-categories
+                    # has not labelled); all-NaN -> the null-drop below yields an empty category set
                     # (n_cats == 0), so this feature produces no tuning instead of crashing.
                     cat_values = np.full(anchor_durations.shape[0], np.nan, dtype=float)
                 # Anchors that are not pure USVs (squeak / both segments kept on a side
