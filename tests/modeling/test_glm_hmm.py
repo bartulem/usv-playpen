@@ -448,6 +448,22 @@ def test_read_selected_features_from_directory_and_error_paths(tmp_path):
         _read_selected_features(str(empty))
 
 
+def test_read_selected_features_from_the_consolidated_artifact(tmp_path):
+    """The consolidated artifact (``model_selection_final_*.pkl``: the steps in order, the last
+    one carrying ``final_model_features``) is read both as a file and through its directory,
+    where it wins over leftover step pickles of other runs."""
+    consolidated = tmp_path / 'model_selection_final_male_cohort_manifold_qlvm_session.pkl'
+    with open(consolidated, 'wb') as handle:
+        pickle.dump({
+            'steps': [{'step_idx': 0, 'current_features': []},
+                      {'step_idx': 1, 'final_model_features': ['neck', 'nose']}],
+            '_input_metadata': {},
+        }, handle)
+    _write_model_selection_file(tmp_path / 'other_run_step_9.pkl', ['stale'])
+    assert _read_selected_features(str(consolidated)) == ['neck', 'nose']
+    assert _read_selected_features(str(tmp_path)) == ['neck', 'nose']
+
+
 # Input-driven-transition engine (direct-marginal, reference-coded)
 def _simulate_input_driven_categorical(rng, n_features, n_time_bins, n_classes,
                                        n_seqs, seq_len):
