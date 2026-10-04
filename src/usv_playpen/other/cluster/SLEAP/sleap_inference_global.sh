@@ -35,7 +35,7 @@ cat << EOF > "$JOB_SCRIPT"
 #SBATCH --job-name=sleap-inference
 #SBATCH --output=logs/infer_%j.out
 #SBATCH --error=logs/infer_%j.err
-#SBATCH --gpus=1
+#SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=$CPUS_PER_TASK
 #SBATCH --mem-per-cpu=$MEMORY_PER_CPU
 #SBATCH --time=$TIME_RESTRICTION
