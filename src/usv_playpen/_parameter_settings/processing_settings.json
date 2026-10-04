@@ -399,7 +399,7 @@
     "strict_squeak_exclusion": false,
     "reference_squeak_index_path": "",
     "exclude_noise": true,
-    "row_exclusion_table": "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean/trainset/reference_strict_squeak_rows.csv",
+    "row_exclusion_table": null,
     "masking_type": "sam",
     "apply_mask": true,
     "floor": null,
