@@ -2202,13 +2202,19 @@ def test_vocalocator_prepare_missing_audio_mmap_raises(tmp_path, processing_sett
     (tmp_path / 'audio').mkdir()
 
     voc = _make_vocalocator(tmp_path, processing_settings)
-    with pytest.raises(FileNotFoundError, match=r"concatenated audio mmap"):
+    with pytest.raises(FileNotFoundError, match=r"usv audio memmap"):
         voc.prepare_for_vocalocator()
 
 
 def test_vocalocator_prepare_missing_video_root_raises(tmp_path, processing_settings):
+    # the 'usv' band memmap and the USV summary exist, so the lookup that fails
+    # is the one under the (absent) video root
+    (tmp_path / 'audio' / 'hpss_filtered').mkdir(parents=True)
+    np.zeros((10, 2), dtype=np.int16).tofile(
+        tmp_path / 'audio' / 'hpss_filtered' / 'sess_concatenated_audio_hpss_filtered_250000_10_2_int16.mmap')
+    (tmp_path / 'audio' / 'sess_usv_summary.csv').write_text('start,stop\n')
     voc = _make_vocalocator(tmp_path, processing_settings)
-    with pytest.raises(FileNotFoundError, match=r"search root"):
+    with pytest.raises(FileNotFoundError, match=r"search root '.*video' does not exist"):
         voc.prepare_for_vocalocator()
 
 
