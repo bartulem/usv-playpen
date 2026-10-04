@@ -489,12 +489,8 @@
     "n_bootstraps": 200,
     "bootstrap_seed": 7,
     "uncertain_agreement": 0.6,
-    "category_descriptions": [
-      "simple",
-      "mixed",
-      "complex",
-      "wide-band two-mask"
-    ],
+    "category_order": [1, 4, 2, 3],
+    "category_descriptions": ["simple", "biphones", "intermediate", "complex"],
     "n_jobs": 20
   },
   "assign_qlvm_categories": {

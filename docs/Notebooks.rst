@@ -1181,9 +1181,9 @@ so they resolve on macOS (``/Volumes/falkner``) too.
     # Segmentation configuration
     # content-ridge categories R-1..R-4 of the regular map
     CATEGORY_COLUMN = "qlvm_category"
-    # Ids follow the category directory's category_nomenclature.json (R-1 simple, R-2 mixed,
-    # R-3 complex, R-4 wide-band two-mask in the shipped build settings); check them there.
-    GROUP_A_IDS = [3]
+    # Ids follow the category directory's category_nomenclature.json (R-1 simple, R-2 biphones,
+    # R-3 intermediate, R-4 complex in the shipped build settings); check them there.
+    GROUP_A_IDS = [4]
     GROUP_A_LABEL = "complex"
     GROUP_B_IDS = [1]
     GROUP_B_LABEL = "simple"

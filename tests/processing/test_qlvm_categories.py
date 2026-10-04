@@ -31,6 +31,7 @@ _CFG = {
     "n_bootstraps": 6,
     "bootstrap_seed": 3,
     "uncertain_agreement": 0.6,
+    "category_order": [],
     "category_descriptions": ["low", "high"],
     "n_jobs": 1,
 }
@@ -327,3 +328,56 @@ def test_shipped_settings_hold_the_category_blocks():
     settings = json.loads((qc.pathlib.Path(qc.__file__).parent.parent / "_parameter_settings" / "processing_settings.json").read_text())
     assert set(settings["build_qlvm_categories"]) == set(_CFG)
     assert set(settings["assign_qlvm_categories"]) == {"category_directory", "coordinate_prefix"}
+
+
+def test_apply_category_order_renumbers_by_size_rank():
+    """
+    Description
+    -----------
+    ``category_order`` names, for each output category, the size rank it takes
+    (1 = most calls): ``[1, 4, 2, 3]`` keeps the largest first, puts the smallest
+    second and shifts the second and third largest to third and fourth. An empty
+    order keeps the size order, and a non-permutation raises.
+
+    Returns
+    -------
+    None
+    """
+
+    by_size = np.array([[0, 1], [2, 3]], dtype=np.int16)
+    ordered = qc.apply_category_order(by_size, [1, 4, 2, 3], 4)
+    assert ordered.tolist() == [[0, 2], [3, 1]]
+    assert ordered.dtype == by_size.dtype
+    assert qc.apply_category_order(by_size, [], 4).tolist() == by_size.tolist()
+    with pytest.raises(ValueError, match="permutation"):
+        qc.apply_category_order(by_size, [1, 1, 2, 3], 4)
+
+
+def test_build_numbers_categories_by_category_order(tmp_path):
+    """
+    Description
+    -----------
+    A build with ``category_order`` reversed numbers the categories in that order:
+    the category that is first by call count becomes the last, with its call
+    count, and the settings check rejects an order that is not a permutation.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temporary directory.
+
+    Returns
+    -------
+    None
+    """
+
+    size_order = _build(tmp_path, {**_CFG, "category_order": []}, "size")
+    reversed_order = _build(tmp_path, {**_CFG, "category_order": [2, 1]}, "reversed")
+    sizes = [category["n_calls"] for category in json.loads((size_order / qc.CATEGORY_NOMENCLATURE_NAME).read_text())["categories"]]
+    reversed_sizes = [category["n_calls"] for category in json.loads((reversed_order / qc.CATEGORY_NOMENCLATURE_NAME).read_text())["categories"]]
+    assert reversed_sizes == sizes[::-1]
+    size_grid = np.load(size_order / qc.CATEGORY_GRIDS_NAME)["label_grid"]
+    reversed_grid = np.load(reversed_order / qc.CATEGORY_GRIDS_NAME)["label_grid"]
+    assert np.array_equal(reversed_grid, 3 - size_grid)
+    with pytest.raises(ValueError, match="category_order must be empty or a permutation"):
+        _build(tmp_path, {**_CFG, "category_order": [1, 1]}, "bad")

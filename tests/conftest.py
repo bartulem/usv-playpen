@@ -170,7 +170,7 @@ def write_qlvm_category_bundle(directory: Path, resolution: int = 20) -> Path:
         density=density,
     )
     centres = {1: (0.25, 0.25), 2: (0.75, 0.25), 3: (0.25, 0.75), 4: (0.75, 0.75)}
-    descriptions = ["simple", "mixed", "complex", "wide-band two-mask"]
+    descriptions = ["simple", "biphones", "intermediate", "complex"]
     nomenclature = {
         "grid_resolution": resolution,
         "n_categories": 4,

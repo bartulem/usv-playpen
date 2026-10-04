@@ -47,8 +47,13 @@ call's torus position and six acoustic properties:
 
 Each call takes the consensus category of the pixel under its position, with
 that pixel's agreement; a call is ``uncertain`` when its agreement is below
-``uncertain_agreement``. Categories are named ``R-1`` ... ``R-k`` by full-data
-call count, each with the description ``category_descriptions`` gives it.
+``uncertain_agreement``. Categories are numbered ``1`` ... ``k`` and named ``R-1``
+... ``R-k`` in the order ``category_order`` gives (category ``i`` is the
+category whose full-data call count ranks ``category_order[i - 1]``, largest
+first; empty keeps the size order, :func:`apply_category_order`), each with the
+description ``category_descriptions`` gives it (``category_order`` ``[1, 4, 2, 3]``
+with ``simple``, ``biphones``, ``intermediate``, ``complex`` in the shipped
+settings).
 
 The build writes, into its output directory: ``category_grids.npz``
 (``label_grid`` (int16, ``1..k``, indexed ``[y, x]``), ``agreement``,
@@ -476,6 +481,55 @@ def partition_grid(rows: np.ndarray, cols: np.ndarray, ranks: np.ndarray, weight
     return relabel[raw], layers
 
 
+def apply_category_order(grid: np.ndarray, category_order: list, n_categories: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    Renumbers a partition whose categories are numbered ``0..k-1`` by call count,
+    largest first (:func:`partition_grid`), into the order ``category_order``
+    gives: category ``i`` (``0``-based) of the result is the category of size
+    rank ``category_order[i]`` (``1``-based, ``1`` = most calls). ``[1, 4, 2, 3]``
+    makes the largest category the first, the smallest the second, the second
+    largest the third and the third largest the fourth. An empty order keeps the
+    size order. Cells outside ``0..k-1`` (none in a complete partition) keep
+    their value.
+
+    Parameters
+    ----------
+    grid (np.ndarray)
+        Integer partition, categories ``0..k-1`` by size rank.
+    category_order (list)
+        Size rank (``1..k``) of each output category, the first output category
+        first; empty for the size order.
+    n_categories (int)
+        Number of categories ``k``.
+
+    Returns
+    -------
+    ordered (np.ndarray)
+        The partition renumbered, same shape and dtype.
+
+    Raises
+    ------
+    ValueError
+        ``category_order`` is not empty and not a permutation of ``1..k``.
+    """
+
+    if not category_order:
+        return grid.copy()
+    ranks = [int(rank) for rank in category_order]
+    if sorted(ranks) != list(range(1, n_categories + 1)):
+        error_message = f"category_order must be a permutation of 1..{n_categories}, got {category_order!r}."
+        raise ValueError(error_message)
+    new_of_rank = np.empty(n_categories, dtype=np.int64)
+    for new_category, rank in enumerate(ranks):
+        new_of_rank[rank - 1] = new_category
+    ordered = grid.copy()
+    inside = (grid >= 0) & (grid < n_categories)
+    ordered[inside] = new_of_rank[grid[inside]].astype(grid.dtype)
+    return ordered
+
+
 def align_to_reference(reference: np.ndarray, grid: np.ndarray, n_categories: int) -> np.ndarray:
     """
     Description
@@ -843,6 +897,11 @@ class QLVMCategoryBuilder:
             problems.append(f"n_bootstraps must be at least 1, got {cfg['n_bootstraps']!r}")
         if not 0.0 < float(cfg['uncertain_agreement']) <= 1.0:
             problems.append(f"uncertain_agreement must lie in (0, 1], got {cfg['uncertain_agreement']!r}")
+        if cfg['category_order'] and sorted(int(rank) for rank in cfg['category_order']) != list(range(1, int(cfg['n_categories']) + 1)):
+            problems.append(
+                f"category_order must be empty or a permutation of 1..n_categories ({cfg['n_categories']}), "
+                f"got {cfg['category_order']!r}"
+            )
         if cfg['category_descriptions'] and len(cfg['category_descriptions']) != int(cfg['n_categories']):
             problems.append(
                 f"category_descriptions must be empty or hold one description per category "
@@ -943,6 +1002,8 @@ class QLVMCategoryBuilder:
         if n_votes == 0:
             error_message = f"build_qlvm_categories: none of the {cfg['n_bootstraps']} session resamples reached {n_categories} categories."
             raise ValueError(error_message)
+        grid = apply_category_order(grid, cfg['category_order'], n_categories)
+        reference = apply_category_order(reference, cfg['category_order'], n_categories)
         call_category = grid[rows, cols] + 1
         call_agreement = agreement[rows, cols]
         uncertain = call_agreement < float(cfg['uncertain_agreement'])
@@ -1160,7 +1221,8 @@ class QLVMCategoryAssigner:
 @click.option('--n-bootstraps', 'n_bootstraps', type=int, default=None, required=False, help='Session resamples of the consensus vote.')
 @click.option('--bootstrap-seed', 'bootstrap_seed', type=int, default=None, required=False, help='Seed of the first session resample (resample i uses seed + i).')
 @click.option('--uncertain-agreement', 'uncertain_agreement', type=float, default=None, required=False, help='A call whose pixel agreement is below this is flagged uncertain.')
-@click.option('--category-descriptions', 'category_descriptions', type=str, default=None, required=False, help='Comma-separated short description of each category, R-1 first (e.g. "simple,mixed,complex,wide-band two-mask"), or an empty string for none.')
+@click.option('--category-order', 'category_order', type=str, default=None, required=False, help='Comma-separated size rank (1 = most calls) of each category, R-1 first (e.g. "1,4,2,3"), or an empty string for size order.')
+@click.option('--category-descriptions', 'category_descriptions', type=str, default=None, required=False, help='Comma-separated short description of each category, R-1 first (e.g. "simple,biphones,intermediate,complex"), or an empty string for none.')
 @click.option('--n-jobs', 'n_jobs', type=int, default=None, required=False, help='Parallel workers of the session resamples.')
 @click.pass_context
 def build_qlvm_categories_cli(ctx, positions_file, properties_file, output_directory, **kwargs) -> None:
@@ -1183,6 +1245,8 @@ def build_qlvm_categories_cli(ctx, positions_file, properties_file, output_direc
     for key in ('properties', 'category_descriptions'):
         if key in provided_params:
             ctx.params[key] = [entry.strip() for entry in ctx.params[key].split(',') if entry.strip()]
+    if 'category_order' in provided_params:
+        ctx.params['category_order'] = [int(entry) for entry in ctx.params['category_order'].split(',') if entry.strip()]
 
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
