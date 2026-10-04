@@ -2680,8 +2680,9 @@ from the summaries:
 * **QLVM | duration**, **| spectral entropy**, **| bandwidth**, **| loudness** (``qlvm_duration``,
   ``qlvm_entropy``, ``qlvm_bandwidth``, ``qlvm_loudness``) — the conditional
   models, whose maps are what is left once that acoustic variable is removed. They carry no
-  categories, so on them a **Color by** category falls back to density and **Boundaries**
-  are skipped (the chart title says so).
+  categories of their own: a **Color by** category colours their calls by the regular map's
+  ``qlvm_category`` (the categories label the call), and **Boundaries** are skipped, since the
+  category bundle partitions the regular map's torus only (the chart title says so).
 * **Squeaks** (``qlvm_squeak``) — the squeak (broadband vocalization) map: the production
   squeak QLVM model's (``os_utils.QLVM_SQUEAK_PRODUCTION_CELL``, the time-stretched ``stretch_nofloor`` cell) coordinates ``qlvm_squeak1`` / ``qlvm_squeak2``, written by
   ``infer-qlvm-squeak-latents`` on the squeak-bearing rows only (``squeak`` true: pure squeaks

@@ -90,7 +90,7 @@ def extract_category_embedding_data(
     """
     Description
     -----------
-    Extracts category labels and continuous embedding coordinates (e.g., UMAP)
+    Extracts category labels and continuous embedding coordinates (e.g., a QLVM map's torus position)
     for all non-noise vocalizations across multiple sessions.
 
     This function first filters out any noise rows, with ``usv_only`` keeps only

@@ -143,9 +143,10 @@ class Visualizer:
                 self.message_output(traceback.format_exc())
                 failed_directories.append((one_directory, f"{type(exc).__name__}: {exc}"))
 
-        # # # # cohort-level (run-once) QLVM torus-traversal video: reads a model's
-        # arrays + provenance pickle + the consolidated H5 from settings (not a
-        # session directory), so it runs ONCE outside the per-session loop.
+        # # # # cohort-level (run-once) QLVM torus-traversal video: reads the QLVM
+        # category bundle (os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY) + the consolidated
+        # H5 resolved from settings (not a session directory), so it runs ONCE
+        # outside the per-session loop.
         if self.input_parameter_dict['visualize_booleans']['make_qlvm_torus_traversal_video_bool']:
             try:
                 QLVMTorusTraversalVideo(output_path=None,

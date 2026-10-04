@@ -280,7 +280,7 @@ def _settings(
 
 
 @app.cell
-def _widgets(SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
+def _widgets(QLVM_MAPS, SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
     # Session-list picker: a multiselect dropdown (pick one / some / all),
     # FIXED WIDTH so it never widens, capped height with overflow so extra chips
     # SCROLL inside the box rather than growing the layout. .style() returns a
@@ -332,6 +332,11 @@ def _widgets(SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
         "QLVM | loudness": "qlvm_loudness",
         "Squeaks": "qlvm_squeak",
     }
+    # The USV maps offered must be exactly os_utils.QLVM_MAPS (plus the squeak map),
+    # so a map added to or retired from the production set cannot silently drift
+    # out of (or linger in) the dropdown.
+    if set(_map_labels.values()) != set(QLVM_MAPS) | {"qlvm_squeak"}:
+        raise ValueError("The explorer's Map options must match os_utils.QLVM_MAPS plus the squeak map 'qlvm_squeak'.")
     map_dropdown = mo.ui.dropdown(
         options=_map_labels,
         value=next(_label for _label, _map in _map_labels.items() if _map == default_qlvm_map),

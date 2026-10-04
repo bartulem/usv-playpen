@@ -278,11 +278,20 @@ def test_gui_visualize_tab_constructs(qtbot, monkeypatch, tmp_path):
                  "usv_seq_mark_cb"):
         assert hasattr(win, attr), f"Visualize tab missing USV-sequence widget: {attr}"
     # the one QLVM map selector (shared by every QLVM figure) is seeded from
-    # shared_resources.qlvm_map and lists exactly the production maps
+    # shared_resources.qlvm_map and lists exactly the production maps, each shown by
+    # its display name (os_utils.QLVM_MAP_DISPLAY_NAMES) while the setting stores the prefix
     assert win.qlvm_map in os_utils.QLVM_MAPS
-    assert win.qlvm_map_cb.currentText() == win.qlvm_map
-    assert [win.qlvm_map_cb.itemText(i) for i in range(win.qlvm_map_cb.count())] == list(os_utils.QLVM_MAPS)
+    assert win.qlvm_map_cb.currentText() == os_utils.QLVM_MAP_DISPLAY_NAMES[win.qlvm_map]
+    assert [win.qlvm_map_cb.itemText(i) for i in range(win.qlvm_map_cb.count())] == [
+        os_utils.QLVM_MAP_DISPLAY_NAMES[qlvm_map] for qlvm_map in os_utils.QLVM_MAPS
+    ]
     assert not hasattr(win, "usv_seq_embedding_cb") and not hasattr(win, "embedding_thumbnails_map_cb")
+    # the embedding thumbnails offer an Exclude squeaks toggle seeded from the settings,
+    # and no longer a one-choice 'Clustering type borders' selector
+    assert win.embedding_thumbnails_exclude_squeaks_cb.currentText() == (
+        "Yes" if win.visualizations_input_dict["embedding_thumbnails"]["exclude_squeaks"] else "No"
+    )
+    assert not hasattr(win, "embedding_thumbnails_category_cb")
     win.close()
 
 

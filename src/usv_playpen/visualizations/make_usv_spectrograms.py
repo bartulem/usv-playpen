@@ -3923,6 +3923,13 @@ def render_embedding_thumbnails_for_cohort(
         stem = f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_path = str(out_dir / f"{stem}.{fig_format}")
 
+    # JSON object keys are always strings ({"1": "#RRGGBB", ...}) while the pooled
+    # qlvm_category values are ints, so key the settings' explicit colours by int;
+    # otherwise every scatter colour lookup would raise a KeyError.
+    category_colors = cfg["category_colors"]
+    if category_colors is not None:
+        category_colors = {int(category): color for category, color in category_colors.items()}
+
     try:
         fig = plot_embedding_with_category_thumbnails(
             sessions_txt_path=combined_sessions_txt,
@@ -3933,7 +3940,7 @@ def render_embedding_thumbnails_for_cohort(
             n_samples_per_category=cfg["n_samples_per_category"],
             apply_mask=cfg["apply_mask"],
             mask_excluded_categories=tuple(cfg["mask_excluded_categories"]),
-            category_colors=cfg["category_colors"],
+            category_colors=category_colors,
             sampling_method=cfg["sampling_method"],
             draw_spiral_overlay=cfg["draw_spiral_overlay"],
             spiral_show_only_for=cfg["spiral_show_only_for"],
