@@ -1899,7 +1899,7 @@ def first_match_or_raise(
 # loudness, vocalocator, figures, videos) was built and trained on; ``broadband``
 # is the 2 kHz high-passed, line-noise-cleaned HPSS audio written by
 # ``Operator.broadband_filter_audio``.
-AUDIO_MMAP_BAND_FOLDERS = {"usv": "hpss_filtered", "broadband": "broadband_filtered"}
+AUDIO_MMAP_BAND_FOLDERS = {"ultrasonic": "hpss_filtered", "broadband": "broadband_filtered"}
 
 
 def audio_mmap_name_regex(band: str) -> re.Pattern:
@@ -1918,7 +1918,7 @@ def audio_mmap_name_regex(band: str) -> re.Pattern:
     Parameters
     ----------
     band (str)
-        ``'usv'`` or ``'broadband'``.
+        ``'ultrasonic'`` or ``'broadband'``.
 
     Returns
     -------
@@ -1940,7 +1940,7 @@ def find_audio_mmap(root_directory: str | pathlib.Path, band: str) -> pathlib.Pa
     -----------
     Returns the ONE concatenated audio memmap of a session for the requested
     band, searched in that band's exact folder (``<root>/audio/hpss_filtered``
-    for ``'usv'``, ``<root>/audio/broadband_filtered`` for ``'broadband'``, never
+    for ``'ultrasonic'``, ``<root>/audio/broadband_filtered`` for ``'broadband'``, never
     recursively) with the exact name pattern of :func:`audio_mmap_name_regex`.
 
     This replaces the older ``first_match_or_raise`` lookups with a ``*.mmap``
@@ -1955,7 +1955,7 @@ def find_audio_mmap(root_directory: str | pathlib.Path, band: str) -> pathlib.Pa
     root_directory (str | pathlib.Path)
         Session root directory (contains ``audio``).
     band (str)
-        ``'usv'`` (the 30 kHz high-passed HPSS memmap the USV pipeline reads) or
+        ``'ultrasonic'`` (the 30 kHz high-passed HPSS memmap the USV pipeline reads) or
         ``'broadband'`` (the 2 kHz high-passed, line-noise-cleaned memmap).
 
     Returns

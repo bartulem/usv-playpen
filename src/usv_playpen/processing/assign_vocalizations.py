@@ -86,7 +86,7 @@ class Vocalocator:
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
         # The audio band the vocalocator model was trained on, the setting
-        # vocalocator.vcl_audio_band: 'usv' (default) is the 30 kHz high-passed memmap
+        # vocalocator.vcl_audio_band: 'ultrasonic' (default) is the 30 kHz high-passed memmap
         # (audio/hpss_filtered) the current models were trained on, 'broadband' the
         # 2 kHz high-passed one (audio/broadband_filtered), for a model trained on
         # 2-125 kHz audio. The lookup takes the exact folder and name and needs exactly

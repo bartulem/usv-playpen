@@ -399,7 +399,7 @@ def load_audio_data(root_directory: str) -> tuple[np.ndarray, int]:
     Description
     -----------
     Returns audio data w/ sampling rate.
-    NB: Audio is loaded from the 30 kHz high-passed ('usv' band) mmap file in
+    NB: Audio is loaded from the 30 kHz high-passed ('ultrasonic' band) mmap file in
     the exact folder 'audio/hpss_filtered' (os_utils.find_audio_mmap: exact
     name, exactly one match, never the broadband memmap)!
 
@@ -414,7 +414,7 @@ def load_audio_data(root_directory: str) -> tuple[np.ndarray, int]:
        Audio data and audio sampling rate.
     """
 
-    audio_loc = find_audio_mmap(root_directory=root_directory, band='usv')
+    audio_loc = find_audio_mmap(root_directory=root_directory, band='ultrasonic')
     channel_num = int(audio_loc.name.split('_')[-2])
     sample_num = int(audio_loc.name.split('_')[-3])
     sampling_rate = int(audio_loc.name.split('_')[-4])

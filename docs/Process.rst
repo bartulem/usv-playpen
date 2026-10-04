@@ -1043,7 +1043,7 @@ The channels go into one memory-mapped file whose columns follow the sorted file
     │   │   ├── hpss_filtered
     │   │   │   ...
 
-Every reader of the concatenated audio asks for its band explicitly (``os_utils.find_audio_mmap(root, 'usv')`` or ``find_audio_mmap(root, 'broadband')``): the file is looked up in its exact folder with its exact name, and the lookup fails unless exactly one file matches, so no USV step can read the broadband file by accident. The step works in short time chunks across all channels (memory stays at a few hundred MB), writes to a hidden temporary file that is renamed only when complete, and skips a session whose broadband file and report already exist and still match the source files and settings, so it can be re-run or resumed safely. To backfill many sessions, ``broadband-filter-audio-batch`` runs it over a list of sessions in parallel, with a log and a per-session report table.
+Every reader of the concatenated audio asks for its band explicitly (``os_utils.find_audio_mmap(root, 'ultrasonic')`` or ``find_audio_mmap(root, 'broadband')``): the file is looked up in its exact folder with its exact name, and the lookup fails unless exactly one file matches, so no USV step can read the broadband file by accident. The step works in short time chunks across all channels (memory stays at a few hundred MB), writes to a hidden temporary file that is renamed only when complete, and skips a session whose broadband file and report already exist and still match the source files and settings, so it can be re-run or resumed safely. To backfill many sessions, ``broadband-filter-audio-batch`` runs it over a list of sessions in parallel, with a log and a per-session report table.
 
 The step takes its parameters from the ``broadband_filter_audio`` block of */usv-playpen/_parameter_settings/processing_settings.json*:
 
@@ -1447,7 +1447,7 @@ The modified *usv_summary.csv* file now contains information in the last column 
 
 The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section partially modifiable in the GUI, but it can entirely be modified manually:
 
-* **vcl_audio_band** : the concatenated audio the vocalocator dataset (``dset.h5``) is cut from, which must be the band the model in ``vcl_model_directory`` was trained on: ``"usv"`` (default) is the 30 kHz high-passed memmap in *audio/hpss_filtered* (*Ultrasonic MEMMAP*), the band the current models were trained on; ``"broadband"`` is the 2 kHz high-passed memmap in *audio/broadband_filtered* (*Broadband MEMMAP*), for a model trained on 2-125 kHz audio, e.g. one that localizes squeaks (settings only; not exposed in the GUI)
+* **vcl_audio_band** : the concatenated audio the vocalocator dataset (``dset.h5``) is cut from, which must be the band the model in ``vcl_model_directory`` was trained on: ``"ultrasonic"`` (default) is the 30 kHz high-passed memmap in *audio/hpss_filtered* (*Ultrasonic MEMMAP*), the band the current models were trained on; ``"broadband"`` is the 2 kHz high-passed memmap in *audio/broadband_filtered* (*Broadband MEMMAP*), for a model trained on 2-125 kHz audio, e.g. one that localizes squeaks (settings only; not exposed in the GUI)
 * **vcl_conda_env_name** : name of the local conda environment used for running Vocalocator (settings / CLI only; not exposed in the GUI)
 * **vcl_model_directory** : directory containing the trained Vocalocator model
 * **vcl_version** : version of the Vocalocator model (e.g., "vcl-ssl" for the SSL model)
@@ -1455,7 +1455,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
 .. code-block:: json
 
    "vocalocator": {
-    "vcl_audio_band": "usv",
+    "vcl_audio_band": "ultrasonic",
     "vcl_conda_env_name": "vcl-ssl-ss",
     "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/mouse_all_model_June2026",
     "vcl_version": "vcl-ssl"

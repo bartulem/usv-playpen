@@ -343,7 +343,7 @@ def _write_tone_mmap(
     """
     Description
     -----------
-    Writes a synthetic concatenated int16 audio memmap at the canonical 'usv'
+    Writes a synthetic concatenated int16 audio memmap at the canonical 'ultrasonic'
     band location ``<tmp_path>/audio/hpss_filtered`` whose canonical filename
     encodes the ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` metadata the helper
     parses. The loud channel carries a pure ``f0`` tone of int16 amplitude
@@ -561,7 +561,7 @@ def test_extract_snippet_acoustics_unparseable_mmap_name_raises(tmp_path):
     -----------
     When an ``*_int16.mmap*`` file exists but its name lacks the canonical
     ``<id>_concatenated_audio_hpss_filtered_<sr>_<n_samples>_<n_ch>_int16.mmap``
-    form, the exact-name 'usv' band lookup never selects it and the helper raises
+    form, the exact-name 'ultrasonic' band lookup never selects it and the helper raises
     a ``FileNotFoundError`` naming the band, instead of mis-parsing the file.
     """
 
@@ -570,7 +570,7 @@ def test_extract_snippet_acoustics_unparseable_mmap_name_raises(tmp_path):
     # A file with an int16 memmap suffix but NOT the canonical name.
     bad_name = "session_audio_int16.mmap"
     (audio_dir / bad_name).write_bytes(b"\x00\x00")
-    with pytest.raises(FileNotFoundError, match=r"usv audio memmap"):
+    with pytest.raises(FileNotFoundError, match=r"ultrasonic audio memmap"):
         engine.extract_snippet_acoustics(
             str(tmp_path), np.array([0.10]), np.array([0.0]), 0.030,
         )

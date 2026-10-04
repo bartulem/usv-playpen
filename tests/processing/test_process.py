@@ -2241,12 +2241,12 @@ def test_vocalocator_prepare_missing_audio_mmap_raises(tmp_path, processing_sett
     (tmp_path / 'audio').mkdir()
 
     voc = _make_vocalocator(tmp_path, processing_settings)
-    with pytest.raises(FileNotFoundError, match=r"usv audio memmap"):
+    with pytest.raises(FileNotFoundError, match=r"ultrasonic audio memmap"):
         voc.prepare_for_vocalocator()
 
 
 def test_vocalocator_prepare_missing_video_root_raises(tmp_path, processing_settings):
-    # the 'usv' band memmap and the USV summary exist, so the lookup that fails
+    # the 'ultrasonic' band memmap and the USV summary exist, so the lookup that fails
     # is the one under the (absent) video root
     (tmp_path / 'audio' / 'hpss_filtered').mkdir(parents=True)
     np.zeros((10, 2), dtype=np.int16).tofile(

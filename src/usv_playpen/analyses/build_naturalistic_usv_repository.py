@@ -380,9 +380,9 @@ class NaturalisticUsvRepositoryBuilder:
         for root_directory in root_directories:
             root = pathlib.Path(root_directory)
             try:
-                # The 30 kHz high-passed ('usv' band) memmap the spectrograms and
+                # The 30 kHz high-passed ('ultrasonic' band) memmap the spectrograms and
                 # masks were built from (exact folder, exact name, exactly one).
-                audio_file_loc = find_audio_mmap(root_directory=root, band="usv")
+                audio_file_loc = find_audio_mmap(root_directory=root, band="ultrasonic")
 
                 usv_summary_loc = first_match_or_raise(
                     root=root / "audio",

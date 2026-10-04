@@ -223,7 +223,7 @@ def test_find_region_by_channel_returns_other_for_unknown_channel():
 
 def test_load_audio_data_reads_mmap_with_correct_shape(tmp_path):
     """Filename encodes (sample_rate, n_samples, n_channels, dtype); the file is
-    the 'usv' band memmap in its exact folder ``audio/hpss_filtered``."""
+    the 'ultrasonic' band memmap in its exact folder ``audio/hpss_filtered``."""
     n_samples = 100
     n_channels = 4
     sample_rate = 250000

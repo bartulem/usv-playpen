@@ -209,7 +209,7 @@ def open_hpss_audio(root: pathlib.Path) -> tuple[np.memmap, int]:
     Opens a session's concatenated HPSS-filtered audio memmap read-only, parsing
     its layout from the file name exactly as ``das_inference.summarize_das_findings``
     does (``..._<sampling rate>_<samples>_<channels>_<dtype>.mmap``). The file is
-    the ``'usv'`` band memmap located by :func:`os_utils.find_audio_mmap` (exact
+    the ``'ultrasonic'`` band memmap located by :func:`os_utils.find_audio_mmap` (exact
     folder ``audio/hpss_filtered``, exact name, exactly one match), so the
     broadband memmap or a stray memmap elsewhere under ``audio`` is never read.
 
@@ -226,7 +226,7 @@ def open_hpss_audio(root: pathlib.Path) -> tuple[np.memmap, int]:
         Audio sampling rate in Hz.
     """
 
-    audio_file_loc = find_audio_mmap(root_directory=root, band="usv")
+    audio_file_loc = find_audio_mmap(root_directory=root, band="ultrasonic")
     name_parts = audio_file_loc.name.split("_")
     data_type, channel_num, sample_num, sampling_rate = (
         name_parts[-1][:-5],

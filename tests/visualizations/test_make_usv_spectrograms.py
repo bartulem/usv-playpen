@@ -189,7 +189,7 @@ def _write_audio_memmap(
     Description
     -----------
     Write a synthetic concatenated int16 audio memmap at the canonical
-    'usv' band location ``<root>/audio/hpss_filtered/`` with the canonical
+    'ultrasonic' band location ``<root>/audio/hpss_filtered/`` with the canonical
     name ``<id>_concatenated_audio_hpss_filtered_<sr>_<n_samples>_<n_ch>_int16.mmap``
     (so ``os_utils.find_audio_mmap`` locates it and the parse in
     ``_load_audio_memmap`` resolves it) and fill it with a low-amplitude
@@ -464,7 +464,7 @@ def test_load_audio_memmap_parses_filename(tmp_path):
 
 def test_load_audio_memmap_rejects_malformed_name(tmp_path):
     """A memmap whose name lacks the encoded triple is never picked up: the
-    exact-name 'usv' band lookup finds no match and raises FileNotFoundError
+    exact-name 'ultrasonic' band lookup finds no match and raises FileNotFoundError
     instead of an opaque parse failure (A1)."""
     bad_dir = tmp_path / "audio" / "hpss_filtered"
     bad_dir.mkdir(parents=True)
@@ -473,7 +473,7 @@ def test_load_audio_memmap_rejects_malformed_name(tmp_path):
         root_directory=str(tmp_path),
         visualizations_parameter_dict=_base_settings(),
     )
-    with pytest.raises(FileNotFoundError, match="usv audio memmap"):
+    with pytest.raises(FileNotFoundError, match="ultrasonic audio memmap"):
         plotter._load_audio_memmap()
 
 

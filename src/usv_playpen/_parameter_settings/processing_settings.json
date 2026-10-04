@@ -260,7 +260,7 @@
     }
   },
   "vocalocator": {
-    "vcl_audio_band": "usv",
+    "vcl_audio_band": "ultrasonic",
     "vcl_conda_env_name": "vcl-ssl-ss",
     "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/mouse_all_model_June2026",
     "vcl_version": "vcl-ssl"

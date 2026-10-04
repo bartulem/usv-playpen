@@ -280,7 +280,7 @@ class USVSpectrogramPlotter:
         Description
         -----------
         Locate and memory-map the session's concatenated multi-channel
-        int16 audio file: the 30 kHz high-passed ('usv' band) memmap in the
+        int16 audio file: the 30 kHz high-passed ('ultrasonic' band) memmap in the
         exact folder ``audio/hpss_filtered``, found by
         ``os_utils.find_audio_mmap`` (exact name, exactly one match, never the
         broadband memmap). The filename encodes the sampling rate,
@@ -305,7 +305,7 @@ class USVSpectrogramPlotter:
             output-file naming).
         """
 
-        audio_loc = find_audio_mmap(root_directory=self.root_directory, band="usv")
+        audio_loc = find_audio_mmap(root_directory=self.root_directory, band="ultrasonic")
         file_basename = audio_loc.name
         # The sampling-rate / sample-count / channel-count triple comes from
         # the anchored, keyed name pattern ``find_audio_mmap`` already matched

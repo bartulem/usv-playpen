@@ -777,9 +777,9 @@ class FindMouseVocalizations:
             # Phase 4: amplitude + spectrogram quality checks
             # (skipped entirely when filter_putative_noise_bool is False)
             if filter_putative_noise_bool and n_usv > 0:
-                # The 30 kHz high-passed ('usv' band) memmap only: exact folder,
+                # The 30 kHz high-passed ('ultrasonic' band) memmap only: exact folder,
                 # exact name, exactly one match (never the broadband memmap).
-                audio_file_loc = find_audio_mmap(root_directory=self.root_directory, band="usv")
+                audio_file_loc = find_audio_mmap(root_directory=self.root_directory, band="ultrasonic")
                 audio_file_name = audio_file_loc.name
                 # The mmap filename encodes its array metadata as the last four
                 # underscore-separated tokens, in the trailing layout

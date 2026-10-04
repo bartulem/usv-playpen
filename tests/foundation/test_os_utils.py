@@ -3,7 +3,7 @@ Tests for usv_playpen.os_utils: cross-OS path translation (find_base_path /
 configure_path), the Data->EPHYS sibling-tree mapping (ephys_base_for_data_root),
 the deterministic glob helpers (first_match_or_raise / newest_match_or_raise),
 the band-explicit audio memmap lookup (find_audio_mmap / parse_audio_mmap_name,
-including that every reader gets the 'usv' memmap when both bands exist)
+including that every reader gets the 'ultrasonic' memmap when both bands exist)
 and the subprocess-group waiter (wait_for_subprocesses).
 
 `configure_path`/`find_base_path` are exercised under all three target OSs by
@@ -499,7 +499,7 @@ def _write_band_mmap(root, band, value, n_samples=40, n_channels=3, session_id="
     root (pathlib.Path)
         Session root.
     band (str)
-        ``'usv'`` or ``'broadband'``.
+        ``'ultrasonic'`` or ``'broadband'``.
     value (int)
         Constant sample value (identifies the file when read back).
     n_samples, n_channels (int)
@@ -521,14 +521,14 @@ def _write_band_mmap(root, band, value, n_samples=40, n_channels=3, session_id="
 
 
 def test_find_audio_mmap_returns_the_band_file(tmp_path):
-    usv = _write_band_mmap(tmp_path, "usv", 1)
+    usv = _write_band_mmap(tmp_path, "ultrasonic", 1)
     broadband = _write_band_mmap(tmp_path, "broadband", 2)
-    assert os_utils.find_audio_mmap(tmp_path, "usv") == usv
+    assert os_utils.find_audio_mmap(tmp_path, "ultrasonic") == usv
     assert os_utils.find_audio_mmap(str(tmp_path), "broadband") == broadband
 
 
 def test_find_audio_mmap_ignores_strays_temporaries_and_other_folders(tmp_path):
-    usv = _write_band_mmap(tmp_path, "usv", 1)
+    usv = _write_band_mmap(tmp_path, "ultrasonic", 1)
     # a stray unfiltered memmap that sorts first under audio/, a temporary
     # sibling, a non-canonical name and another band's name in the usv folder
     stray_dir = tmp_path / "audio" / "cropped_to_video"
@@ -537,21 +537,21 @@ def test_find_audio_mmap_ignores_strays_temporaries_and_other_folders(tmp_path):
     (usv.parent / f".{usv.name}.tmp-123").write_bytes(b"\x00\x00")
     (usv.parent / "sess_250000_40_3_int16.mmap").write_bytes(b"\x00\x00")
     (usv.parent / "230101120000_concatenated_audio_broadband_filtered_250000_40_3_int16.mmap").write_bytes(b"\x00\x00")
-    assert os_utils.find_audio_mmap(tmp_path, "usv") == usv
+    assert os_utils.find_audio_mmap(tmp_path, "ultrasonic") == usv
     with pytest.raises(FileNotFoundError, match="broadband audio memmap"):
         os_utils.find_audio_mmap(tmp_path, "broadband")
 
 
 def test_find_audio_mmap_raises_unless_exactly_one(tmp_path):
     with pytest.raises(FileNotFoundError, match="does not exist"):
-        os_utils.find_audio_mmap(tmp_path, "usv")
+        os_utils.find_audio_mmap(tmp_path, "ultrasonic")
     (tmp_path / "audio" / "hpss_filtered").mkdir(parents=True)
     with pytest.raises(FileNotFoundError, match="no file matching"):
-        os_utils.find_audio_mmap(tmp_path, "usv")
-    _write_band_mmap(tmp_path, "usv", 1, n_samples=40)
-    _write_band_mmap(tmp_path, "usv", 1, n_samples=41)
+        os_utils.find_audio_mmap(tmp_path, "ultrasonic")
+    _write_band_mmap(tmp_path, "ultrasonic", 1, n_samples=40)
+    _write_band_mmap(tmp_path, "ultrasonic", 1, n_samples=41)
     with pytest.raises(RuntimeError, match="exactly one"):
-        os_utils.find_audio_mmap(tmp_path, "usv")
+        os_utils.find_audio_mmap(tmp_path, "ultrasonic")
     with pytest.raises(ValueError, match="Unknown audio band"):
         os_utils.find_audio_mmap(tmp_path, "sonic")
 
@@ -566,8 +566,8 @@ def test_parse_audio_mmap_name_reads_layout(tmp_path):
 
 
 def test_usv_readers_get_the_usv_file_when_both_bands_exist(tmp_path):
-    # usv band = 1, broadband = 2, stray recursive-glob trap = 3
-    _write_band_mmap(tmp_path, "usv", 1)
+    # ultrasonic band = 1, broadband = 2, stray recursive-glob trap = 3
+    _write_band_mmap(tmp_path, "ultrasonic", 1)
     _write_band_mmap(tmp_path, "broadband", 2)
     stray_dir = tmp_path / "audio" / "cropped_to_video"
     stray_dir.mkdir(parents=True)
@@ -583,10 +583,10 @@ def test_usv_readers_get_the_usv_file_when_both_bands_exist(tmp_path):
 def test_every_audio_mmap_reader_asks_for_the_usv_band():
     # Static guard over the package: no reader may locate a memmap with a glob
     # ('*.mmap' patterns, recursive or not) and every find_audio_mmap call names
-    # the 'usv' band, so no USV reader can be handed the broadband memmap; the
+    # the 'ultrasonic' band, so no USV reader can be handed the broadband memmap; the
     # broadband writer (modify_files) is the only module allowed to name it. The
     # vocalocator (assign_vocalizations) is the one reader whose band is a setting,
-    # vocalocator.vcl_audio_band ('usv' by default), checked separately below.
+    # vocalocator.vcl_audio_band ('ultrasonic' by default), checked separately below.
     package_root = pathlib.Path(os_utils.__file__).parent
     readers = []
     for source_path in sorted(package_root.rglob("*.py")):
@@ -596,7 +596,7 @@ def test_every_audio_mmap_reader_asks_for_the_usv_band():
         assert not re.search(r"glob\(\s*['\"][^'\"]*\.mmap", source), f"{relative} globs for a memmap"
         for band in re.findall(r"find_audio_mmap\([^)]*band\s*=\s*['\"](\w+)['\"]", source):
             readers.append(relative)
-            assert band == "usv", f"{relative} asks for the {band!r} band"
+            assert band == "ultrasonic", f"{relative} asks for the {band!r} band"
     assert sorted(set(readers)) == [
         "analyses/build_naturalistic_usv_repository.py",
         "analyses/neuronal_coactivity_engine.py",

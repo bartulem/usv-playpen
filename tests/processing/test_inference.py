@@ -1097,13 +1097,13 @@ def test_prepare_for_vocalocator_writes_dset_h5(tmp_path, processing_settings, m
         assert float(f.attrs["audio_sr"]) == 250000.0
 
 
-@pytest.mark.parametrize("band", ["usv", "broadband"])
+@pytest.mark.parametrize("band", ["ultrasonic", "broadband"])
 def test_prepare_for_vocalocator_reads_the_configured_audio_band(tmp_path, processing_settings, mocker, band):
     """
     Description
     -----------
     ``vocalocator.vcl_audio_band`` picks the memmap the vocalocator dataset is cut
-    from: ``usv`` the 30 kHz high-passed ``audio/hpss_filtered`` memmap (the shipped
+    from: ``ultrasonic`` the 30 kHz high-passed ``audio/hpss_filtered`` memmap (the shipped
     default, the band the current models were trained on), ``broadband`` the 2 kHz
     high-passed ``audio/broadband_filtered`` one. With both present, the dataset
     must carry the configured file's samples.
@@ -1124,7 +1124,7 @@ def test_prepare_for_vocalocator_reads_the_configured_audio_band(tmp_path, proce
     None
     """
 
-    assert processing_settings['vocalocator']['vcl_audio_band'] == 'usv'
+    assert processing_settings['vocalocator']['vcl_audio_band'] == 'ultrasonic'
     mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
     _build_prepare_for_vocalocator_layout(tmp_path, processing_settings)
     usv_mmap = next((tmp_path / "audio" / "hpss_filtered").glob("*.mmap"))
@@ -1148,7 +1148,7 @@ def test_prepare_for_vocalocator_rejects_an_unknown_audio_band(tmp_path, process
     """
     Description
     -----------
-    A ``vocalocator.vcl_audio_band`` other than ``usv`` / ``broadband`` raises
+    A ``vocalocator.vcl_audio_band`` other than ``ultrasonic`` / ``broadband`` raises
     before any file is read.
 
     Parameters
@@ -1166,7 +1166,8 @@ def test_prepare_for_vocalocator_rejects_an_unknown_audio_band(tmp_path, process
     """
 
     mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
-    processing_settings['vocalocator']['vcl_audio_band'] = 'ultrasonic'
+    # the band's former name, no longer accepted
+    processing_settings['vocalocator']['vcl_audio_band'] = 'usv'
     with pytest.raises(ValueError, match="vcl_audio_band"):
         _make_vocalocator(tmp_path, processing_settings).prepare_for_vocalocator()
 

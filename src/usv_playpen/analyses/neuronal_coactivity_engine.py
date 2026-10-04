@@ -118,7 +118,7 @@ def extract_snippet_acoustics(
     Parameters
     ----------
     session_root : str
-        Session root directory; the ``*_int16.mmap`` audio is the 'usv' band
+        Session root directory; the ``*_int16.mmap`` audio is the 'ultrasonic' band
         memmap in its ``audio/hpss_filtered`` folder (``os_utils.find_audio_mmap``).
     onsets : np.ndarray
         1D array of call onset times in seconds.
@@ -167,13 +167,13 @@ def extract_snippet_acoustics(
         )
         raise ValueError(msg)
 
-    # Locate + memmap the concatenated int16 audio: the 30 kHz high-passed ('usv'
+    # Locate + memmap the concatenated int16 audio: the 30 kHz high-passed ('ultrasonic'
     # band) memmap in the exact folder 'audio/hpss_filtered' with the exact name
     # pattern and exactly one match, matching the spectrogram pipeline (a recursive
     # glob could pick a stray or broadband memmap that sorts first); the sample
     # rate, sample count and channel count are encoded in the trailing
     # ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` filename segment.
-    audio_path = find_audio_mmap(root_directory=session_root, band="usv")
+    audio_path = find_audio_mmap(root_directory=session_root, band="ultrasonic")
     layout = parse_audio_mmap_name(audio_path)
     sampling_rate = layout["sampling_rate"]
     n_samples = layout["n_samples"]
