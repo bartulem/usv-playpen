@@ -1051,16 +1051,15 @@ class ContinuousModelingPipeline(FeatureZoo):
         )
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
-        # Tag carries the USV category column (e.g. `qlvm_category`) into
-        # every downstream filename — modeling input pickle, univariate pkls,
-        # model-selection step pkls, consolidated artifact. That column is
-        # the regular map's category for every map, so the tag does NOT name
-        # the map the target comes from (a `qlvm_duration1` / `qlvm_duration2`
-        # run is tagged `manifold_qlvm_category` like a `qlvm1` / `qlvm2` run);
-        # the map is in `_input_metadata.analysis_specific.usv_manifold_column_names`.
-        # Without a label column the tag names the embedding instead (e.g.
-        # `manifold_qlvm`), see `manifold_tag_segment`.
-        analysis_tag = f"manifold_{manifold_tag_segment(column_name_cats, manifold_cols)}"
+        # Tag carries the QLVM map the target comes from (the manifold columns'
+        # prefix: `qlvm1` / `qlvm2` -> `manifold_qlvm`, `qlvm_duration1` /
+        # `qlvm_duration2` -> `manifold_qlvm_duration`) into every downstream
+        # filename — modeling input pickle, univariate pkls, model-selection step
+        # pkls, consolidated artifact — whether or not a label column is
+        # configured; see `manifold_tag_segment`. The label column (the regular
+        # map's `qlvm_category` for every map) is recorded in
+        # `_input_metadata.analysis_specific.usv_category_column_name`.
+        analysis_tag = f"manifold_{manifold_tag_segment(manifold_cols)}"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
