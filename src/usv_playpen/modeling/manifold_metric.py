@@ -96,7 +96,7 @@ def signed_diff(a: np.ndarray, b: np.ndarray, *,
     ----------
     a, b : np.ndarray
         Same-shape coordinate arrays. Last axis is the per-coordinate
-        axis (typically 2 for `(x, y)` UMAP).
+        axis (typically 2 for the `(x, y)` QLVM torus coordinates).
     metric : str
         `'euclidean'` or `'torus'`.
     period : float

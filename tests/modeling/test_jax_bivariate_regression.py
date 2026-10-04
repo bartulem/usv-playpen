@@ -1,7 +1,7 @@
 """
 @author: bartulem
 Unit tests for ``usv_playpen.modeling.jax_bivariate_regression`` —
-the JAX/Optax smooth 2-D (UMAP-coordinate) regressor used for the
+the JAX/Optax smooth 2-D (manifold-coordinate) regressor used for the
 continuous-manifold-position analyses.
 
 Coverage is end-to-end ("maximal"): weight initialisation, then a full
@@ -142,7 +142,7 @@ class TestFitPredictEvaluate:
         assert metrics['euclidean_mae_raw'] < 0.05
 
     def test_snap_returns_training_points(self):
-        """With ``snap=True`` every prediction is an actual training UMAP
+        """With ``snap=True`` every prediction is an actual training manifold
         point (the kd-tree 1-NN projection)."""
 
         X, y = _make_linear_2d()

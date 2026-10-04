@@ -12,7 +12,7 @@ The dispatcher manages five distinct analysis frameworks:
 2.  Vocal Category: One-vs-Rest classification of specific USV types.
 3.  Vocal Params: Gamma-regression of continuous bout duration and complexity.
 4.  Multinomial: JAX-accelerated flat classification of the 5-6 USV repertoire.
-5.  Continuous: Bivariate Gaussian modeling of UMAP manifold coordinates.
+5.  Continuous: Bivariate Gaussian modeling of acoustic manifold coordinates.
 
 Computational & Structural Features:
 ------------------------------------
@@ -348,7 +348,7 @@ def dispatch_univariate_job(args: argparse.Namespace) -> None:
 
             results = {feature_name: res}
 
-        # CATEGORY C: CONTINUOUS TOPOGRAPHY (UMAP Manifold)
+        # CATEGORY C: CONTINUOUS TOPOGRAPHY (Acoustic Manifold)
         elif args.analysis_type == 'continuous':
 
             pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)

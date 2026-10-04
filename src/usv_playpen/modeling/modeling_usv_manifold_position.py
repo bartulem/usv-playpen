@@ -1,9 +1,9 @@
 """
 @author: bartulem
-Module for continuous UMAP-position USV modelling (JAX, assumes GPU usage).
+Module for continuous manifold-position USV modelling (JAX, assumes GPU usage).
 
 This module provides a pipeline for mapping behavioural kinematics onto the
-continuous 2-D UMAP manifold of the vocal repertoire. It predicts the
+continuous 2-D acoustic manifold of the vocal repertoire. It predicts the
 deterministic `(x, y)` location of an upcoming vocalisation from a short
 history window of behavioural features. Earlier revisions fitted a full
 bivariate-Gaussian density with globally shared variance parameters; we
@@ -18,7 +18,7 @@ learned linear map, the temporal smoothness penalty, and the inverse-
 density sample weighting — and drops only the density head.
 
 Key scientific capabilities:
-1.  Continuous target extraction: extracts `(x, y)` UMAP coordinate pairs
+1.  Continuous target extraction: extracts `(x, y)` manifold coordinate pairs
     for every valid bout, enabling the model to learn a continuous mapping
     from behavioural history to acoustic outcomes.
 2.  Geographic fairness (inverse density weighting): computes a Gaussian
@@ -111,7 +111,7 @@ def compute_inverse_density_weights(Y: np.ndarray,
     """
     Computes inverse density sample weights using Gaussian Kernel Density Estimation (KDE).
 
-    This neutralizes the topographical bias of the UMAP space. Rare "satellite"
+    This neutralizes the topographical bias of the manifold space. Rare "satellite"
     vocalizations receive mathematically higher weights than syllables in the
     dense manifold core, ensuring the optimizer treats all geographic regions equally.
 
@@ -133,7 +133,7 @@ def compute_inverse_density_weights(Y: np.ndarray,
     Parameters
     ----------
     Y : np.ndarray
-        Array of shape (N, 2) containing continuous UMAP coordinates.
+        Array of shape (N, 2) containing continuous manifold coordinates.
     clip_percentile : float, default 95.0
         The percentile at which to cap maximum weights, preventing single extreme
         outliers from mathematically dominating the loss landscape.
@@ -194,9 +194,9 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
                                          metric: str = 'euclidean',
                                          period: float = 1.0) -> List[Tuple[np.ndarray, np.ndarray]]:
     """
-    Generates deterministic folds ensuring spatial geographic fairness across the UMAP manifold.
+    Generates deterministic folds ensuring spatial geographic fairness across the acoustic manifold.
 
-    Uses K-Means to temporarily partition the continuous UMAP space into micro-neighborhoods
+    Uses K-Means to temporarily partition the continuous manifold space into micro-neighborhoods
     (proxy labels). Depending on the `split_strategy`, it then splits the dataset to ensure
     the dense core and rare satellite clusters are proportionally represented in both train
     and test sets.
@@ -206,7 +206,7 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
     groups : np.ndarray
         Array of session IDs. Used strictly when split_strategy='session'.
     Y : np.ndarray
-        Array of shape (N, 2) containing continuous UMAP coordinates.
+        Array of shape (N, 2) containing continuous manifold coordinates.
     split_strategy : str, default 'session'
         Determines the data leakage constraint:
         - 'session': Strict cross-session prediction. Samples from the same session
@@ -482,7 +482,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     Parameters
     ----------
     X_train, Y_train, w_train, groups_train : np.ndarray
-        Training-fold design matrix, UMAP targets, inverse-density weights,
+        Training-fold design matrix, manifold targets, inverse-density weights,
         and session IDs.
     lambda_smooth_grid, l2_reg_grid : np.ndarray
         1-D candidate grids, typically log-spaced.
@@ -835,7 +835,7 @@ class ContinuousModelingPipeline(FeatureZoo):
 
         Process Outline:
         1. Target extraction: Identifies all valid USVs across specified sessions, verifies they
-           meet the historical time constraints, and extracts their continuous 2D UMAP coordinates (Y).
+           meet the historical time constraints, and extracts their continuous 2D manifold coordinates (Y).
         2. Geographic fairness (KDE weights): Computes a global Gaussian Kernel Density Estimate
            across the universal Y manifold to generate normalized inverse-density sample weights (w).
            This mathematically neutralizes the topographical bias of the dense acoustic core.
@@ -853,7 +853,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             `data[feature_name][session_id] = {'X': array, 'Y': array, 'w': array}`
 
             - 'X': Predictor history matrix of shape (n_samples, history_frames).
-            - 'Y': Target spatial matrix of shape (n_samples, 2) containing (umap_x, umap_y).
+            - 'Y': Target spatial matrix of shape (n_samples, 2) containing (x, y).
             - 'w': Inverse-density sample weights of shape (n_samples,).
         """
 
@@ -971,7 +971,7 @@ class ContinuousModelingPipeline(FeatureZoo):
                 all_valid_Y_list.append(valid_targets_arr)
 
         if not all_valid_Y_list:
-            raise ValueError("No valid continuous targets extracted. Check UMAP data.")
+            raise ValueError("No valid continuous targets extracted. Check manifold data.")
 
         global_Y_matrix = np.vstack(all_valid_Y_list)
         # Manifold-metric configuration. On torus the KDE uses the 3x3
@@ -1051,7 +1051,7 @@ class ContinuousModelingPipeline(FeatureZoo):
         )
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
-        # Tag carries the USV category column the UMAP target derives
+        # Tag carries the USV category column the manifold target derives
         # from (e.g. `qlvm_category`) so every
         # downstream filename — modeling input pickle, univariate pkls,
         # model-selection step pkls, consolidated artifact — makes the
@@ -1268,7 +1268,7 @@ class ContinuousModelingPipeline(FeatureZoo):
 
 class ContinuousModelRunner:
     """
-    Orchestrates the training and statistical evaluation of continuous UMAP-
+    Orchestrates the training and statistical evaluation of continuous manifold-
     position USV regression models.
 
     This class serves as the execution engine for the continuous modelling
@@ -1311,7 +1311,7 @@ class ContinuousModelRunner:
       `manifold_metric.dcor_prediction_truth`). **Selection score on Euclidean
       manifolds**; `nan` on the torus (uninformative there).
     - `euclidean_mae` — mean Euclidean distance between snapped predictions
-      and truth, in native UMAP units. Interpretable headline error.
+      and truth, in native manifold units. Interpretable headline error.
     - `euclidean_rmse` — root-mean-squared Euclidean distance; a large
       `RMSE / MAE` ratio flags heavy-tailed outlier folds.
     - `euclidean_mae_weighted` — MAE on the Euclidean residual weighted by
@@ -1323,7 +1323,7 @@ class ContinuousModelRunner:
       off-manifold.
     - `mahalanobis_mae` — mean standardized residual distance using the
       inverse-density-weighted training covariance of `Y_train`. Removes
-      the UMAP axis-scale arbitrariness; dimensionless, lower is better.
+      the manifold axis-scale arbitrariness; dimensionless, lower is better.
     - `mae_x`, `mae_y` — per-axis absolute error on snapped predictions.
     - `pearson_x`, `pearson_y`, `spearman_x`, `spearman_y` — per-axis
       linear and rank correlations between predictions and truth.
@@ -1407,7 +1407,7 @@ class ContinuousModelRunner:
             - 'X' : np.ndarray (n_samples, n_binned_time)
                 The flattened and binned behavioral history matrix.
             - 'Y' : np.ndarray (n_samples, 2)
-                The continuous (x, y) UMAP targets.
+                The continuous (x, y) manifold targets.
             - 'w' : np.ndarray (n_samples,)
                 The inverse-density sample weights.
             - 'groups' : np.ndarray (n_samples,)
@@ -1593,7 +1593,7 @@ class ContinuousModelRunner:
         single feature.
 
         This method applies `SmoothBivariateRegression` to the temporal
-        kinematics `X` to predict the UMAP position `Y`. Performance is
+        kinematics `X` to predict the manifold position `Y`. Performance is
         evaluated across three strategies:
 
         1. `actual` — fits the true kinematic-to-acoustic mapping.
@@ -1914,7 +1914,7 @@ class ContinuousModelRunner:
                     'w_test': [],
                     # Deterministic (x, y) predictions for every test trial —
                     # shape `(n_test, 2)`. Predictions are manifold-snapped
-                    # to the nearest training UMAP point for the active and
+                    # to the nearest training manifold point for the active and
                     # `null` strategies; `null_model_free` predicts a uniform
                     # draw from the training `Y` (an on-manifold sample).
                     'y_pred_xy': [],

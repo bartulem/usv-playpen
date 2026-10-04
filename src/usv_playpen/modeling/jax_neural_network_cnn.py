@@ -225,7 +225,7 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
     """
     Generates training indices that uniformly sample the 2D continuous acoustic manifold.
 
-    The UMAP projection of vocalizations typically features an overwhelmingly dense
+    The acoustic manifold of vocalizations typically features an overwhelmingly dense
     central core and sparse "satellite" clusters. Standard random mini-batching
     would cause the network to exclusively optimize for the dense core, entirely
     ignoring rare vocal states. This function imposes spatial fairness.
@@ -243,7 +243,7 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
     Parameters
     ----------
     Y_vals : np.ndarray
-        A 2D array of shape (N, 2) containing the continuous UMAP targets.
+        A 2D array of shape (N, 2) containing the continuous manifold targets.
     grid_size : int, default 25
         The number of bins to divide both the X and Y spatial axes into.
     base_samples : int, default 40
@@ -300,7 +300,7 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
 
 # Number of manifold axes the CNN regresses. The whole pipeline (Y,
 # Y_center, Y_scale, fold metrics, saliency centroids) is hard-coded
-# around two-axis manifolds (`(umap1, umap2)`), but pulling the value
+# around two-axis manifolds (`(qlvm1, qlvm2)`), but pulling the value
 # through a single helper keeps the output-head plumbing explicit and
 # leaves a single place to revisit if a future modality ever ships a
 # D != 2 manifold.
@@ -934,7 +934,7 @@ class NeuralContinuousCNNRunner:
         groups : np.ndarray
             Array of session IDs.
         Y : np.ndarray
-            Array of shape `(N, 2)` containing continuous UMAP coordinates.
+            Array of shape `(N, 2)` containing continuous manifold coordinates.
         split_strategy : str, default 'session'
             `'session'` (whole-session holdout) or `'mixed'` (epoch-level
             stratified shuffling).
@@ -992,7 +992,7 @@ class NeuralContinuousCNNRunner:
         data_blocks : dict
             A dictionary configured for the JAX engine, containing:
             - 'X_seq': (Batch, Features, Bins) array of stacked kinematic sequences.
-            - 'Y': (Batch, 2) array of continuous UMAP coordinates.
+            - 'Y': (Batch, 2) array of continuous manifold coordinates.
             - 'w': (Batch, ) array of KDE inverse-density sample weights.
             - 'groups': (Batch, ) array of session IDs.
             - 'features': Sorted list of the kinematic feature names.
@@ -1160,7 +1160,7 @@ class NeuralContinuousCNNRunner:
         Extracts kinematic drivers for a specific manifold region via Contrastive Centroid-Gradient Saliency.
 
         This method identifies the precise, millisecond-resolution behavioral motifs that causally
-        drive the network's prediction into a specific acoustic cluster on the continuous UMAP manifold.
+        drive the network's prediction into a specific acoustic cluster on the continuous acoustic manifold.
         It adapts the legacy directional MLP gradient attribution to a point-attractor framework,
         suitable for the 1D-CNN.
 
