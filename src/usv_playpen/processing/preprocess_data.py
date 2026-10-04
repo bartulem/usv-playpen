@@ -151,10 +151,17 @@ class Stylist:
         (15) summarizes DAS findings across different audio channels
         (16) prepares data for vocal assignment (Vocalocator)
         (17) assigns vocalizations to mice (Vocalocator / Vocalocator-SSL)
+        (17b) flags the USV segments that hold no vocalization (noise labels)
+        (17c) classifies the remaining segments as USV / squeak / both
+              (squeak labels)
         (18) generates USV spectrograms
         (19) generates USV masks
         (20) computes USV acoustic features
-        (21) infers QLVM latents
+        (21) infers QLVM latents (the regular map qlvm1 / qlvm2 and the
+             qlvm_duration / qlvm_entropy / qlvm_bandwidth / qlvm_loudness
+             conditional maps), then labels the regular map's calls with
+             the QLVM category bundle (qlvm_category) and embeds the
+             squeaks in the squeak QLVM (qlvm_squeak1 / qlvm_squeak2)
 
         Note: extraction of phidget-measured data during the experiment is
         performed as part of the audio-video sync step (step 5 above).

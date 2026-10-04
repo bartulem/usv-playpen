@@ -49,11 +49,12 @@ The output directory is laid out like a v3 model package cell:
 ``config/training_contract.json`` (what ``infer-qlvm-latents`` checks its
 settings against), ``config/run_config.json`` (the run's settings and data) and
 ``metrics/val_diagnostics.npz`` (per-epoch training loss, the validation losses
-and the validation subset). Clustering the trained torus into
-``inference/clusters_<level>/label_grid.npy`` is a separate, later step; until
-it exists ``infer-qlvm-latents`` writes the cell's coordinates only (its prefix
-must ask for no label level), and ``build-qlvm-categories`` /
-``assign-qlvm-categories`` can label them with content-ridge categories instead.
+and the validation subset). The cell carries no cluster label grid
+(``inference/clusters_<level>/label_grid.npy``), so ``infer-qlvm-latents``
+writes its coordinates only (its prefix must ask for no label level); categories
+of a trained map are built with ``build-qlvm-categories`` and written into the
+summaries by ``assign-qlvm-categories``, as they are for the production regular
+map (``qlvm_category``).
 
 With ``conditional`` null the decoder takes no conditioning input (``c_dim``
 0). With ``conditional`` one of ``duration``, ``mean_freq``, ``bandwidth``,
