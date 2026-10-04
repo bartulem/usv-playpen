@@ -79,7 +79,7 @@ from ..os_utils import (
     resolve_consolidated_h5_path,
 )
 from ..time_utils import is_gui_context, smart_wait
-from .auxiliary_plot_functions import create_colormap
+from .auxiliary_plot_functions import create_colormap, draw_category_outlines
 from .plot_style import apply_plot_style
 
 matplotlib.use("Agg")
@@ -701,8 +701,8 @@ class QLVMTorusTraversalVideo:
                         cmap=spec_cmap, vmin=0, vmax=vmax, aspect='equal')
             xx = np.linspace(0, 1, res)
             yy = np.linspace(0, 1, res)
-            ax_l.contour(xx, yy, ws_labels, levels=np.arange(0.5, K + 1.5),
-                         colors=_C_WHITE, linewidths=2.5)
+            # one outline per category (draw_category_outlines), so every border has the same width
+            draw_category_outlines(ax_l, xx, yy, ws_labels, colors=_C_WHITE, linewidths=2.5, zorder=2)
             ax_l.set_xlim(0, 1); ax_l.set_ylim(0, 1); ax_l.set_aspect('equal')
             # No axis labels / ticks / ticklabels on the latent map -- just the map.
             ax_l.set_xticks([]); ax_l.set_yticks([])

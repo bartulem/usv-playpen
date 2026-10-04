@@ -68,6 +68,7 @@ from ..os_utils import (
     resolve_pooled_embeddings_cache,
 )
 from ..time_utils import is_gui_context, smart_wait
+from .auxiliary_plot_functions import draw_category_outlines
 from .plot_style import apply_plot_style
 
 # Register the bundled Helvetica weights + activate the project mplstyle so every
@@ -3352,7 +3353,6 @@ def plot_embedding_with_category_thumbnails(
     if category_bundle is not None:
         boundary_xx = boundary_yy = category_bundle["axis"]
         boundary_labels = category_bundle["label_grid"].astype(float)
-        contour_levels = np.arange(1.5, len(category_bundle["names"]) + 0.5, 1.0)
 
     picks_per_category: dict[int, pls.DataFrame] = {}
     # When ``sampling_method == 'spiral'`` we also record the spiral
@@ -3437,14 +3437,10 @@ def plot_embedding_with_category_thumbnails(
         # otherwise spiral runs draw boundary contours despite draw_cluster_boundaries=False.
         if boundary_labels is None or not draw_cluster_boundaries:
             return
-        ax.contour(
-            boundary_xx, boundary_yy, boundary_labels,
-            levels=contour_levels,
-            colors="#000000",
-            linewidths=linewidth,
-            alpha=alpha,
-            zorder=4,
-        )
+        # one outline per category (draw_category_outlines), so every border has the same width
+        for contour_set in draw_category_outlines(ax, boundary_xx, boundary_yy, boundary_labels,
+                                                  colors="#000000", linewidths=linewidth, zorder=4):
+            contour_set.set_alpha(alpha)
 
     # Top-left: large category-colored scatter.
     ax_scatter = fig.add_subplot(top_row[0, 0])
