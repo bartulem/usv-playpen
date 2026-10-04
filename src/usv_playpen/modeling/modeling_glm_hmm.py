@@ -424,10 +424,26 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
     input_driven = transition_mode == 'input_driven'
     factory = None
     n_classes = None
+    class_labels = None
     if input_driven:
         if emission_type == 'multinomial':
+            # The reference-coded engine reads each emission as a class index 0..C-1
+            # (class 0 the fixed zero baseline), but the QLVM category labels are
+            # 1..k (R-1..R-k). Sizing the engine by `max + 1` would add a phantom
+            # class 0 that no call carries and make it the reference, so the observed
+            # labels are mapped onto contiguous indices in sorted order instead
+            # (index i is label class_labels[i]); the mapping is stored in the
+            # metadata. The static engine keeps the raw labels: its per-state
+            # classifier carries them in `classes_`.
             all_labels = np.concatenate([target for _, target in dev_xy + held_xy])
-            n_classes = int(np.asarray(all_labels).max()) + 1
+            class_labels = np.unique(np.asarray(all_labels))
+            n_classes = int(class_labels.size)
+            dev_xy = [(x_seq, np.searchsorted(class_labels, target_seq))
+                      for x_seq, target_seq in dev_xy]
+            held_xy = [(x_seq, np.searchsorted(class_labels, target_seq))
+                       for x_seq, target_seq in held_xy]
+            dev_sequences = [(session_id, x_seq, np.searchsorted(class_labels, target_seq))
+                             for session_id, x_seq, target_seq in dev_sequences]
         # The input-driven manifold engine reads the torus target directly (no factory).
     elif emission_type == 'manifold':
         factory = _manifold_emission_factory(
@@ -568,6 +584,7 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
             'n_lbfgs': n_lbfgs,
             'n_restarts': n_restarts,
             'n_classes': n_classes,
+            'class_labels': None if class_labels is None else class_labels.tolist(),
             'n_dev_sessions': len(dev_xy),
             'n_held_out_sessions': len(held_xy),
             'held_out_session_ids': held_ids,

@@ -1068,7 +1068,11 @@ Two engines are available, chosen by ``transition_mode``:
   categorical model (``emission_type='multinomial'``) or the torus product-von-Mises
   manifold model (``emission_type='manifold'``, torus only) by maximising the
   regularised marginal likelihood with L-BFGS under the ``input_driven_lambda_smooth``
-  first-difference filter penalty.
+  first-difference filter penalty. Its categorical model reads class indices
+  ``0 … C-1`` with class 0 as the reference, so the observed ``qlvm_category`` labels
+  (``1 … k``) are mapped onto contiguous indices in sorted order; the results'
+  ``metadata`` records ``n_classes`` and ``class_labels`` (index ``i`` is label
+  ``class_labels[i]``).
 
 Run on a single node from the notebook:
 
