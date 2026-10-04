@@ -1010,6 +1010,68 @@ The *Concatenate to MEMMAP* step takes its parameters from the adjacent ``concat
         ]
     }
 
+Broadband MEMMAP (2 kHz+)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+The *hpss_filtered* memory-mapped file above keeps only the band above 30 kHz, which is what DAS, the USV spectrograms/masks, loudness, the vocalocator and the figures were built and trained on. Lower-frequency calls (squeaks, 2-30 kHz) need a second, broadband file. Selecting *Broadband MEMMAP (2 kHz+)* (or running ``broadband-filter-audio``) writes it straight from the full-band HPSS files in *audio/hpss*, without storing any per-channel files. For every channel it:
+
+1. finds the narrow electrical line-noise tones in a few search bands (a line near 8 kHz and its 16 kHz harmonic, a line near 1.65 kHz, and a comb of lines about 30 Hz apart around 2.09-2.15 kHz, some of them close doublets). The exact frequencies follow each recording device's clock (e.g. 8000.17 Hz on the master and 8000.67 Hz on the slave device of one session; 2091.7 / 2122.5 / 2152.9 Hz on the master and 2090.05 / 2120.06 / 2150.05 Hz on the slave channels of the same session), so they are estimated per channel. The spectrum is whitened by its running median, and up to six peaks per band are kept when they stand at least 8 dB above that local floor;
+2. subtracts each kept tone as a sinusoid whose amplitude and phase may drift slowly (complex demodulation over 0.5 s blocks, median-smoothed over 9 blocks);
+3. high-passes the result with a linear-phase (zero-delay) Kaiser FIR equivalent to sox ``sinc -t 1000 2k`` (-6 dB at 2 kHz, at least 120 dB down at and below 1.5 kHz, flat from 2.5 kHz), in floating point and without dither, then rounds to int16.
+
+The channels go into one memory-mapped file whose columns follow the sorted file names (the same order as the *hpss_filtered* file), next to a *line_noise.json* report (per channel: the tones searched, found and removed, with frequency, height and amplitude; the filter and its measured response; the source files and their sizes; the code version):
+
+.. parsed-literal::
+
+    ├── 20250430_145017
+    │   ├── audio
+    │   │   ├── **broadband_filtered**
+    │   │   │   ├── **250430145009_concatenated_audio_broadband_filtered_250000_299885168_24_int16.mmap**
+    │   │   │   ├── **line_noise.json**
+    │   │   ├── hpss
+    │   │   │   ...
+    │   │   ├── hpss_filtered
+    │   │   │   ...
+
+Every reader of the concatenated audio asks for its band explicitly (``os_utils.find_audio_mmap(root, 'usv')`` or ``find_audio_mmap(root, 'broadband')``): the file is looked up in its exact folder with its exact name, and the lookup fails unless exactly one file matches, so no USV step can read the broadband file by accident. The step works in short time chunks across all channels (memory stays at a few hundred MB), writes to a hidden temporary file that is renamed only when complete, and skips a session whose broadband file and report already exist and still match the source files and settings, so it can be re-run or resumed safely. To backfill many sessions, ``broadband-filter-audio-batch`` runs it over a list of sessions in parallel, with a log and a per-session report table.
+
+The step takes its parameters from the ``broadband_filter_audio`` block of */usv-playpen/_parameter_settings/processing_settings.json*:
+
+* **source_dir** : folder under *audio* holding the full-band single-channel files (usually "hpss")
+* **source_glob** : file pattern of the source files (usually "\*_cropped_to_video_hpss.wav"; stray files in the folder are ignored)
+* **highpass_cutoff_hz** : -6 dB point of the high-pass (usually 2000)
+* **transition_width_hz** : width of the high-pass transition band, centred on the cutoff (usually 1000)
+* **stopband_attenuation_db** : stopband attenuation of the Kaiser design (usually 120)
+* **line_noise_search_bands_hz** : frequency bands searched for line-noise tones (each at most 100 Hz wide)
+* **line_noise_min_height_db** : minimum tone height above the local floor (dB) for the tone to be removed
+* **line_noise_max_tones_per_band** : maximum number of tones removed per search band
+* **line_noise_min_separation_hz** : minimum distance (Hz) between two removed tones of a band
+* **line_noise_floor_window_hz** : width (Hz) of the running median that estimates the local floor
+* **line_noise_estimation_windows** / **line_noise_estimation_window_s** : number and length (s) of the windows the tones are estimated from
+* **line_noise_block_s** / **line_noise_smoothing_blocks** : demodulation block length (s) and running-median length (blocks, odd) of the tone subtraction
+* **chunk_s** : length of the processing chunks (s); does not change the result
+* **n_threads** : threads the channels of a chunk are spread over; does not change the result
+
+.. code-block:: json
+
+    "broadband_filter_audio": {
+        "source_dir": "hpss",
+        "source_glob": "*_cropped_to_video_hpss.wav",
+        "highpass_cutoff_hz": 2000,
+        "transition_width_hz": 1000,
+        "stopband_attenuation_db": 120,
+        "line_noise_search_bands_hz": [[7990, 8010], [15980, 16020], [1640, 1665], [2080, 2165]],
+        "line_noise_min_height_db": 8.0,
+        "line_noise_max_tones_per_band": 6,
+        "line_noise_min_separation_hz": 0.25,
+        "line_noise_floor_window_hz": 4.0,
+        "line_noise_estimation_windows": 8,
+        "line_noise_estimation_window_s": 20.0,
+        "line_noise_block_s": 0.5,
+        "line_noise_smoothing_blocks": 9,
+        "chunk_s": 10.0,
+        "n_threads": 4
+    }
+
 Run DAS inference
 ~~~~~~~~~~~~~~~~~
 The *usv-playpen* GUI assumes usage of the Deep Audio Segmenter (`DAS <https://janclemenslab.org/das/>`_) for identifying vocalizations in audio recordings. To do this, one first needs to train a model on the data of interest (*i.e.*, social interactions with vocal output). Explaining how to do this is beyond the scope of this text, so we will assume you already have a *model* ready for running inference.

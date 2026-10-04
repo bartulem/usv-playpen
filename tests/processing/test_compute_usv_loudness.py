@@ -100,7 +100,7 @@ def test_session_image_level_db_slices_like_the_generator_and_drops_excluded_cha
         for ch in range(n_channels):
             amplitude = 20000.0 if ch == 1 else 2000.0 * (ch + 1)    # column 1 = m_ch02, excluded and loudest
             audio[s0:s1, ch] = np.clip(_tone(s1 - s0, 60000.0, amplitude, rng), -32768, 32767).astype(np.int16)
-    audio.tofile(root / "audio" / "hpss_filtered" / f"{session_id}_audio_hpss_filtered_{_SR}_{n_samples}_{n_channels}_int16.mmap")
+    audio.tofile(root / "audio" / "hpss_filtered" / f"sess_concatenated_audio_hpss_filtered_{_SR}_{n_samples}_{n_channels}_int16.mmap")
     (root / f"{session_id}_metadata.yaml").write_text(
         yaml.dump({"Equipment": {"audio_Avisoft": {"excluded_channels": ["m_ch02"]}}})
     )

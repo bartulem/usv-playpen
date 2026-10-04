@@ -6,7 +6,6 @@ bootstrapping and circular shuffle controls for statistical validation.
 """
 
 import pathlib
-import re
 from collections import defaultdict
 from typing import Any
 
@@ -15,7 +14,7 @@ import librosa
 import numpy as np
 import polars as pls
 
-from ..os_utils import first_match_or_raise
+from ..os_utils import find_audio_mmap, parse_audio_mmap_name
 
 
 def extract_snippet_matrix(
@@ -119,8 +118,8 @@ def extract_snippet_acoustics(
     Parameters
     ----------
     session_root : str
-        Session root directory; the ``*_int16.mmap`` audio is found recursively
-        beneath it.
+        Session root directory; the ``*_int16.mmap`` audio is the 'usv' band
+        memmap in its ``audio/hpss_filtered`` folder (``os_utils.find_audio_mmap``).
     onsets : np.ndarray
         1D array of call onset times in seconds.
     peak_channels : np.ndarray
@@ -168,26 +167,17 @@ def extract_snippet_acoustics(
         )
         raise ValueError(msg)
 
-    # Locate + memmap the concatenated int16 audio (searched recursively under the
-    # session root, matching the spectrogram pipeline); the per-OS sample rate,
-    # sample count and channel count are encoded in the trailing
+    # Locate + memmap the concatenated int16 audio: the 30 kHz high-passed ('usv'
+    # band) memmap in the exact folder 'audio/hpss_filtered' with the exact name
+    # pattern and exactly one match, matching the spectrogram pipeline (a recursive
+    # glob could pick a stray or broadband memmap that sorts first); the sample
+    # rate, sample count and channel count are encoded in the trailing
     # ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` filename segment.
-    audio_path = first_match_or_raise(
-        root=pathlib.Path(session_root),
-        pattern="*_int16.mmap*",
-        recursive=True,
-        label="concatenated int16 audio memmap",
-    )
-    meta = re.search(r"_(?P<sr>\d+)_(?P<n_samples>\d+)_(?P<n_ch>\d+)_int16\.mmap", audio_path.name)
-    if meta is None:
-        msg = (
-            f"Could not parse the '_<sr>_<n_samples>_<n_ch>_int16.mmap' segment from "
-            f"audio memmap name {audio_path.name!r}."
-        )
-        raise ValueError(msg)
-    sampling_rate = int(meta["sr"])
-    n_samples = int(meta["n_samples"])
-    n_channels = int(meta["n_ch"])
+    audio_path = find_audio_mmap(root_directory=session_root, band="usv")
+    layout = parse_audio_mmap_name(audio_path)
+    sampling_rate = layout["sampling_rate"]
+    n_samples = layout["n_samples"]
+    n_channels = layout["n_channels"]
     handle = np.memmap(audio_path, dtype=np.int16, mode="r", shape=(n_samples, n_channels), order="C")
 
     window_samples = round(window_s * sampling_rate)

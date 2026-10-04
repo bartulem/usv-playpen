@@ -174,7 +174,7 @@ def _write_fake_session(
 
     rng = np.random.default_rng(1)
     audio = rng.integers(-3000, 3000, size=(n_samples, n_channels)).astype(np.int16)
-    mmap_name = f"{session_id}_audio_hpss_filtered_{sampling_rate}_{n_samples}_{n_channels}_int16.mmap"
+    mmap_name = f"sess_concatenated_audio_hpss_filtered_{sampling_rate}_{n_samples}_{n_channels}_int16.mmap"
     audio.tofile(hpss_dir / mmap_name)
 
     pls.DataFrame({

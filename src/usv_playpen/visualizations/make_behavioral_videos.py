@@ -27,7 +27,7 @@ from scipy.io import wavfile
 
 from ..analyses.decode_experiment_label import extract_information
 from ..analyses.generate_audio_files import AudioGenerator
-from ..os_utils import first_match_or_raise
+from ..os_utils import find_audio_mmap, first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
 from .figure_io import save_figure
@@ -399,7 +399,9 @@ def load_audio_data(root_directory: str) -> tuple[np.ndarray, int]:
     Description
     -----------
     Returns audio data w/ sampling rate.
-    NB: Audio is loaded from mmap file!
+    NB: Audio is loaded from the 30 kHz high-passed ('usv' band) mmap file in
+    the exact folder 'audio/hpss_filtered' (os_utils.find_audio_mmap: exact
+    name, exactly one match, never the broadband memmap)!
 
     Parameters
     ----------
@@ -412,12 +414,7 @@ def load_audio_data(root_directory: str) -> tuple[np.ndarray, int]:
        Audio data and audio sampling rate.
     """
 
-    audio_loc = first_match_or_raise(
-        root=pathlib.Path(root_directory),
-        pattern='*_int16.mmap*',
-        recursive=True,
-        label="concatenated int16 audio memmap",
-    )
+    audio_loc = find_audio_mmap(root_directory=root_directory, band='usv')
     channel_num = int(audio_loc.name.split('_')[-2])
     sample_num = int(audio_loc.name.split('_')[-3])
     sampling_rate = int(audio_loc.name.split('_')[-4])

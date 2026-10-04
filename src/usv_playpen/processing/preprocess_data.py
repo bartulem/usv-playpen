@@ -29,7 +29,7 @@ from .detect_usv_squeaks import USVSqueakDetector
 from .extract_phidget_data import Gatherer
 from .generate_masks import MaskGenerator
 from .generate_spectrograms import SpectrogramGenerator
-from .modify_files import Operator
+from .modify_files import Operator, broadband_filter_sessions, read_broadband_session_list
 from .prepare_cluster_job import PrepareClusterJob
 from .preprocessing_plot import SummaryPlotter
 from .qlvm_latents import QLVMLatentInference
@@ -140,6 +140,8 @@ class Stylist:
         (7) cleans audio background with harmonic-percussive source separation
         (8) band-pass filters audio files
         (9) vertically stacks all audio files in one memmap file
+        (9b) removes line-noise tones and high-passes the HPSS audio at 2 kHz
+             into the broadband memmap (audio/broadband_filtered)
         (10) converts SLP to H5 files after proofreading
         (11) conducts SLEAP-Anipose calibration
         (12) conducts SLEAP-Anipose triangulation
@@ -282,6 +284,12 @@ class Stylist:
                         Operator(root_directory=one_directory,
                                  input_parameter_dict=self.input_parameter_dict,
                                  message_output=self.message_output).concatenate_audio_files()
+
+                    # # # line-noise removal + 2 kHz high-pass into the broadband memmap
+                    if self.input_parameter_dict['processing_booleans']['conduct_broadband_filtering']:
+                        Operator(root_directory=one_directory,
+                                 input_parameter_dict=self.input_parameter_dict,
+                                 message_output=self.message_output).broadband_filter_audio()
 
                     # # # convert .slp to .h5 files
                     if self.input_parameter_dict['processing_booleans']['sleap_h5_conversion']:
@@ -760,6 +768,92 @@ def concatenate_audio_files_cli(ctx, root_directory, **kwargs) -> None:
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
     ).concatenate_audio_files()
+
+@click.command(name="broadband-filter-audio")
+@click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
+@click.option('--source-dir', 'source_dir', type=str, default=None, required=False, help='Folder under audio/ holding the full-band single-channel wavs.')
+@click.option('--cutoff', 'highpass_cutoff_hz', type=float, default=None, required=False, help='-6 dB point of the high-pass (Hz).')
+@click.option('--transition-width', 'transition_width_hz', type=float, default=None, required=False, help='Width of the high-pass transition band (Hz).')
+@click.option('--min-tone-height', 'line_noise_min_height_db', type=float, default=None, required=False, help='Minimum line-noise tone height above the local floor (dB) to subtract it.')
+@click.option('--chunk-s', 'chunk_s', type=float, default=None, required=False, help='Length of the processing chunks (s).')
+@click.option('--threads', 'n_threads', type=int, default=None, required=False, help='Threads the channels of a chunk are spread over.')
+@click.pass_context
+def broadband_filter_audio_cli(ctx, root_directory, **kwargs) -> None:
+    """
+    Description
+    -----------
+    A command-line tool to write the broadband memmap of one session: removes
+    the line-noise tones of every full-band HPSS channel, high-passes it at
+    2 kHz and writes the channels into
+    audio/broadband_filtered/<id>_concatenated_audio_broadband_filtered_<sr>_<n>_<ch>_int16.mmap
+    (plus line_noise.json). Skips the session if a valid output already exists.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
+
+    processing_settings_dict = modify_settings_json_for_cli(
+        ctx=ctx,
+        parameters_lists=[],
+        provided_params=provided_params,
+        settings_dict='processing_settings'
+    )
+
+    _stamp_processing_version(root_directory)
+
+    Operator(
+        root_directory=root_directory,
+        input_parameter_dict=processing_settings_dict
+    ).broadband_filter_audio()
+
+@click.command(name="broadband-filter-audio-batch")
+@click.option('--sessions-file', 'sessions_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Text file with one session root per line.')
+@click.option('--usv-counts-csv', 'usv_counts_csv', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help="Session table with 'dir' and 'tag' columns (e.g. session_usv_counts.csv).")
+@click.option('--tag', 'tag', type=str, default='ok', show_default=True, required=False, help="Tag of the --usv-counts-csv rows to process.")
+@click.option('--workers', 'n_workers', type=int, default=2, show_default=True, required=False, help='Sessions processed in parallel (separate processes).')
+@click.option('--threads', 'n_threads', type=int, default=None, required=False, help='Threads per session (default: the settings value).')
+@click.option('--log-file', 'log_file', type=click.Path(file_okay=True, dir_okay=False), required=True, help='Batch log file (appended to).')
+@click.option('--report-csv', 'report_csv', type=click.Path(file_okay=True, dir_okay=False), required=True, help='Per-session report CSV (appended to).')
+@click.pass_context
+def broadband_filter_audio_batch_cli(ctx, sessions_file, usv_counts_csv, tag, n_workers, log_file, report_csv, **kwargs) -> None:
+    """
+    Description
+    -----------
+    A command-line tool to backfill the broadband memmap over many sessions
+    (from --sessions-file or the --tag rows of --usv-counts-csv), --workers
+    sessions at a time. Resumable: sessions with a valid broadband memmap are
+    skipped, every finished session appends a row to --report-csv, and all
+    messages go to --log-file.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
+
+    processing_settings_dict = modify_settings_json_for_cli(
+        ctx=ctx,
+        parameters_lists=[],
+        provided_params=provided_params,
+        settings_dict='processing_settings'
+    )
+
+    session_roots = read_broadband_session_list(sessions_file=sessions_file, usv_counts_csv=usv_counts_csv, tag=tag)
+    broadband_filter_sessions(session_roots=session_roots,
+                              processing_settings=processing_settings_dict,
+                              n_workers=n_workers,
+                              log_path=log_file,
+                              report_csv_path=report_csv)
 
 @click.command(name="sleap-to-h5")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')

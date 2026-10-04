@@ -56,8 +56,8 @@ def _build_session(tmp_path, *, sr=250000, n_channels=4, n_usv=3):
         audio[s0:s1, :] = rng.integers(-8000, 8000, size=(s1 - s0, n_channels), dtype=np.int16)
         rows.append({"usv_id": f"{i:04d}", "start": start, "stop": stop, "duration": stop - start})
 
-    # Filename: ..._<sr>_<n_samples>_<n_channels>_<dtype>.mmap
-    mmap_name = f"{session_id}_audio_hpss_filtered_{sr}_{n_samples}_{n_channels}_int16.mmap"
+    # Canonical 'usv' band name: <id>_concatenated_audio_hpss_filtered_<sr>_<n_samples>_<n_channels>_int16.mmap
+    mmap_name = f"sess_concatenated_audio_hpss_filtered_{sr}_{n_samples}_{n_channels}_int16.mmap"
     audio.tofile(hpss_dir / mmap_name)
 
     pls.DataFrame(rows).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")

@@ -77,6 +77,7 @@ echo "echo \"All HPSS jobs are assumed to have completed successfully.\"" >> "$J
 echo "" >> "$JOB_SCRIPT"
 echo "bp-filter-audio --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
 echo "concatenate-audio-files --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
+echo "broadband-filter-audio --root-directory \"$SESSION_ROOT_DIRECTORY\" --threads $CPUS_PER_TASK" >> "$JOB_SCRIPT"
 echo "" >> "$JOB_SCRIPT"
 echo "echo $SESSION_ID > \"$DAS_GLOBAL_JOB_LIST\"" >> "$JOB_SCRIPT"
 echo "DAS_SUB_OUT=\$(bash \"$DAS_GLOBAL_SHELL_SCRIPT\")" >> "$JOB_SCRIPT"

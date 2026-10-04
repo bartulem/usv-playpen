@@ -25,6 +25,7 @@ from tqdm import tqdm
 from ..os_utils import (
     atomic_output_path,
     configure_path,
+    find_audio_mmap,
     first_match_or_raise,
     order_usv_summary_columns,
     wait_for_subprocesses,
@@ -776,11 +777,9 @@ class FindMouseVocalizations:
             # Phase 4: amplitude + spectrogram quality checks
             # (skipped entirely when filter_putative_noise_bool is False)
             if filter_putative_noise_bool and n_usv > 0:
-                audio_file_loc = first_match_or_raise(
-                    root=pathlib.Path(self.root_directory) / "audio" / "hpss_filtered",
-                    pattern="*.mmap",
-                    label="concatenated audio mmap",
-                )
+                # The 30 kHz high-passed ('usv' band) memmap only: exact folder,
+                # exact name, exactly one match (never the broadband memmap).
+                audio_file_loc = find_audio_mmap(root_directory=self.root_directory, band="usv")
                 audio_file_name = audio_file_loc.name
                 # The mmap filename encodes its array metadata as the last four
                 # underscore-separated tokens, in the trailing layout

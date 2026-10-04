@@ -31,7 +31,6 @@ import hashlib
 import json
 import os
 import pathlib
-import re
 import subprocess
 import sys
 import tempfile
@@ -61,8 +60,10 @@ from ..os_utils import (
     call_class_mask,
     configure_path,
     drop_noise_usvs,
+    find_audio_mmap,
     first_match_or_raise,
     load_qlvm_category_bundle,
+    parse_audio_mmap_name,
     resolve_consolidated_h5_path,
     resolve_pooled_embeddings_cache,
 )
@@ -278,7 +279,10 @@ class USVSpectrogramPlotter:
         Description
         -----------
         Locate and memory-map the session's concatenated multi-channel
-        int16 audio file. The filename encodes the sampling rate,
+        int16 audio file: the 30 kHz high-passed ('usv' band) memmap in the
+        exact folder ``audio/hpss_filtered``, found by
+        ``os_utils.find_audio_mmap`` (exact name, exactly one match, never the
+        broadband memmap). The filename encodes the sampling rate,
         sample count and channel count (``*_<sr>_<n_samples>_<n_ch>_int16.mmap*``);
         these are parsed out and used to reshape the memmap.
 
@@ -300,34 +304,16 @@ class USVSpectrogramPlotter:
             output-file naming).
         """
 
-        audio_loc = first_match_or_raise(
-            root=pathlib.Path(self.root_directory),
-            pattern="*_int16.mmap*",
-            recursive=True,
-            label="concatenated int16 audio memmap",
-        )
+        audio_loc = find_audio_mmap(root_directory=self.root_directory, band="usv")
         file_basename = audio_loc.name
-        # Parse the sampling-rate / sample-count / channel-count triple out
-        # of the trailing ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` segment with
-        # a single anchored, keyed regex rather than three positional
-        # ``split("_")[-2/-3/-4]`` lookups. The positional form silently
-        # mis-parses (or raises an opaque ``ValueError: invalid literal``)
-        # the moment any earlier ``_``-delimited token count changes; the
-        # anchored regex instead fails loudly with the offending basename.
-        meta_match = re.search(
-            r"_(?P<sr>\d+)_(?P<n_samples>\d+)_(?P<n_ch>\d+)_int16\.mmap",
-            file_basename,
-        )
-        if meta_match is None:
-            msg = (
-                f"Cannot parse sampling rate / sample count / channel count "
-                f"from audio memmap basename {file_basename!r}; expected a "
-                f"trailing '_<sr>_<n_samples>_<n_ch>_int16.mmap' segment."
-            )
-            raise ValueError(msg)
-        sampling_rate = int(meta_match["sr"])
-        sample_num = int(meta_match["n_samples"])
-        channel_num = int(meta_match["n_ch"])
+        # The sampling-rate / sample-count / channel-count triple comes from
+        # the anchored, keyed name pattern ``find_audio_mmap`` already matched
+        # (``os_utils.parse_audio_mmap_name``), not from positional
+        # ``split("_")`` lookups that mis-parse when a token count changes.
+        layout = parse_audio_mmap_name(audio_loc)
+        sampling_rate = layout["sampling_rate"]
+        sample_num = layout["n_samples"]
+        channel_num = layout["n_channels"]
 
         audio_data = np.memmap(
             filename=audio_loc,
