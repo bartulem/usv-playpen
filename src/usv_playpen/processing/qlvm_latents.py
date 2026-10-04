@@ -1,8 +1,7 @@
 """
 @author: bartulem
 Embed a session's USV spectrograms into the tori of trained QLVM model package
-cells and merge the torus coordinates (plus, only when explicitly asked, a
-package cell's own cluster labels) into its ``*_usv_summary.csv``.
+cells and merge the torus coordinates into its ``*_usv_summary.csv``.
 
 This is the in-house, JAX (torch-free) inference driver. Every model it embeds
 with is one cell of a QLVM model package (``qlvm_models_latest/v3``, and the
@@ -13,14 +12,9 @@ everything inference needs (:func:`load_model_cell`): its ``checkpoint.tar`` is
 read without torch, its ``training_contract.json`` fixes the head (legacy or
 ReLU), the input normalization (min-max, and the loudness floor of floor-trained
 cells) and the duration window, and its Fibonacci embedding lattice is rebuilt.
-A clustered v2 / v3 package cell also ships fine and coarse ``label_grid.npy``
-files (``inference/clusters_<level>/`` in v3, ``cluster/<level>/`` in v2 /
-v2.1); the production cells ship none. Only when a prefix explicitly asks for
-those package labels (``model_cell_label_levels``, see below) is each call
-labelled, by **spatial lookup into those fixed, torus-periodic grids** -- NOT a
-per-session re-watershed -- so labels are comparable across every session
-embedded into the same torus. The summary's one category column,
-``qlvm_category``, does not come from these grids (see below).
+A clustered v2 / v3 package cell may also ship fine and coarse ``label_grid.npy``
+files; they are not read here. The summary's one category column,
+``qlvm_category``, comes from ``assign-qlvm-categories`` (see below).
 Conditional cells take one conditioning value per call: phase 10 cells
 (``qlvm_models_latest/v2``, duration or mean frequency) decode it at the frozen
 corpus bin mean, phase 11 cells (``qlvm_models_latest/v3``, duration, mean
@@ -31,24 +25,16 @@ says (:func:`frozen_condition_values`); a phase 11 recipe cell trained by
 scaled by its training split's range) is decoded on its grid the same way.
 
 The session is placed on the torus of every listed cell and each prefix ``P``
-gets the float columns ``P1`` / ``P2`` (nulls where the call was not placed). By
-default that is all: the summary's category column of the regular map,
-``qlvm_category``, holds the content-ridge categories ``assign-qlvm-categories``
-writes after this step (:mod:`qlvm_categories`), and the canonical layout
+gets the float columns ``P1`` / ``P2`` (nulls where the call was not placed), and
+nothing else: the summary's category column of the regular map, ``qlvm_category``,
+holds the content-ridge categories ``assign-qlvm-categories`` writes after this
+step (:mod:`qlvm_categories`), and the canonical layout
 (``os_utils.USV_SUMMARY_COLUMN_ORDER``) has no coarse level and no category
-column on the conditional maps. A prefix can still be asked for the package's own
-cluster labels with the ``model_cell_label_levels`` setting (prefix -> levels among
-``"fine"`` and ``"coarse"``; ``qlvm_category`` / ``qlvm_supercategory`` for the
-regular model's prefix ``"qlvm"``, ``P_category`` / ``P_supercategory`` for every
-other prefix, :func:`model_cell_label_columns`): integer labels read off the
-cell's ``label_grid.npy`` at the pixel of the coordinates
-(:func:`label_grid_lookup`, labels ``1..k`` with 1 the largest cluster; the grids
-label every pixel from 1, so there is no background / noise label 0); a cell
-without the grid of a level asked of it is refused. Re-embedding a prefix drops
-every earlier coordinate, label and category confidence column of it
-(``P_category``, ``P_supercategory``, ``P_category_agreement``,
-``P_category_uncertain``), since labels read off the old coordinates no longer
-hold. No model-provenance column is written; the legacy ``qlvm_model`` column that
+column on the conditional maps. Re-embedding a prefix drops every earlier
+coordinate, category and category confidence column of it (``P_category``, the
+legacy ``P_supercategory``, ``P_category_agreement``, ``P_category_uncertain``;
+:func:`model_cell_stale_columns`), since categories read off the old coordinates
+no longer hold. No model-provenance column is written; the legacy ``qlvm_model`` column that
 summaries embedded by the retired single-model run still carry is dropped.
 
 ``tidy-usv-summary-columns`` (:func:`tidy_usv_summary_columns_cli`) migrates an
@@ -63,7 +49,7 @@ exactly what a masked training set fed it: call and SAM mask union resized
 separately, the resized mask binarized at 0.5 and multiplied in, then a min-max
 and the binarized mask once more (``build-qlvm-training-set --apply-mask`` and
 ``train_qlvm.prepare_split``). A cell that has not been clustered (no
-``label_grid.npy``) embeds too when its prefix asks for no label level.
+``label_grid.npy``) embeds like any other.
 
 Per model, a corpus session whose spectrogram H5 is verifiably the one the
 package was built from (``SESSION_H5_BASELINE.tsv`` SHA-256, row count, and the
@@ -75,7 +61,7 @@ Pure squeaks. The USV maps were trained on ultrasonic calls, so a pure squeak --
 ``squeak`` true and ``usv`` false in the summary (written by
 ``detect-usv-squeaks``), a broadband squeak with no ultrasonic call in it -- is not
 a USV the maps can place: it is skipped by every model cell and gets null
-coordinates and null labels (squeaks have their own map,
+coordinates (squeaks have their own map,
 ``infer-qlvm-squeak-latents``). A segment holding both (``usv`` and ``squeak``
 true) is embedded like any other call. Rows with null booleans (noise, or too
 short to score) are treated as before. Because the rule needs the two booleans, a
@@ -110,7 +96,6 @@ from ..os_utils import (
     QLVM_SUMMARY_MAP_PREFIXES,
     USV_SUMMARY_COLUMN_ORDER,
     atomic_output_path,
-    cell_cluster_directory,
     configure_path,
     derive_spectrogram_model_paths,
     first_match_or_raise,
@@ -130,17 +115,6 @@ from .qlvm_model import (
     gen_fib_basis_float32,
     torus_basis_reverse,
 )
-
-# Cluster-label levels a model package cell holds (inference/clusters_<level>/ in v3),
-# and the column-name suffix each gets in a model_cells run: <prefix>_category for the
-# fine level, <prefix>_supercategory for the coarse one (qlvm_category /
-# qlvm_supercategory for the regular model's prefix, see model_cell_label_column).
-LABEL_LEVELS = ("fine", "coarse")
-LABEL_LEVEL_SUFFIXES = {"fine": "category", "coarse": "supercategory"}
-
-# The model_cells prefix of the regular (unconditional) model: its label columns
-# keep the historical names qlvm_category / qlvm_supercategory.
-REGULAR_MODEL_PREFIX = "qlvm"
 
 # Conditions a package decoder may be trained on (phase 10: the first two; phase 11: the
 # first four; train-qlvm: all five, spectral_entropy only there).
@@ -423,13 +397,9 @@ def load_model_cell(model_cell_directory: str) -> dict:
     Loads one cell of a QLVM model package (the ``qlvm_models_latest/v2`` layout):
     the decoder weights from its torch ``checkpoint.tar`` (read without torch), its
     ``training_contract.json``, the Fibonacci lattice the package embedded its
-    corpus on (``embedding_fib_m`` of the contract), and the ``label_grid.npy`` of
-    its fine and coarse cluster levels (``inference/clusters_<level>/`` in v3,
-    ``cluster/<level>/`` in v2 / v2.1; the grids its per-call labels were read
-    from, indexed ``[y, x]`` like the reference ``arrays.npz``). A level the cell
-    has no cluster folder for (every cell ``train-qlvm`` writes, until it is
-    clustered) gets ``None``: such a cell still embeds, and only asking it for that
-    label level stops a run.
+    corpus on (``embedding_fib_m`` of the contract) and, for a conditional cell,
+    its frozen condition table. A package cell's cluster ``label_grid.npy`` files,
+    if any, are not read: inference writes torus coordinates only.
 
     Parameters
     ----------
@@ -441,9 +411,7 @@ def load_model_cell(model_cell_directory: str) -> dict:
     -------
     model (dict)
         ``params`` (decoder weights), ``contract`` (dict), ``lattice``
-        (``(fib(m), 2)``), ``fine_grid`` and ``coarse_grid`` (``(res, res)`` label
-        grids, or None for a level the cell has not been clustered at),
-        ``condition_bins`` (dict, or None for an unconditional cell) and
+        (``(fib(m), 2)``), ``condition_bins`` (dict, or None for an unconditional cell) and
         ``model_id`` (``<package>/<phase>/<cell>``, the last three path components).
     """
     cell = pathlib.Path(configure_path(model_cell_directory))
@@ -473,14 +441,6 @@ def load_model_cell(model_cell_directory: str) -> dict:
                 f"decode_grid + train_c_min/train_c_max and a decode of 'grid' or 'exact'."
             )
             raise ValueError(error_message)
-    # A cell train-qlvm wrote has no clustering until one is added; its grids are None,
-    # and a run that asks it for a label level stops (see _merge_model_cells).
-    label_grids = {}
-    for level in LABEL_LEVELS:
-        try:
-            label_grids[level] = np.load(cell_cluster_directory(cell, level) / "label_grid.npy", allow_pickle=False)
-        except FileNotFoundError:
-            label_grids[level] = None
     return {
         "params": load_decoder_params(str(cell / "checkpoint.tar")),
         "contract": contract,
@@ -488,8 +448,6 @@ def load_model_cell(model_cell_directory: str) -> dict:
         # exact lattice, cast to float32 by JAX, lands up to ~1e-3 off it and moves 8% of
         # calls by more than 1e-3; measured on 9,390 calls of 6 corpus sessions).
         "lattice": gen_fib_basis_float32(contract["embedding_fib_m"]),
-        "fine_grid": label_grids["fine"],
-        "coarse_grid": label_grids["coarse"],
         "condition_bins": condition_bins,
         "model_id": "/".join(cell.parts[-3:]),
     }
@@ -814,16 +772,14 @@ def validate_model_cells(model_cells: Iterable[tuple[str, str]]) -> dict[str, st
     must be a non-empty Python identifier (letters, digits and underscores, not
     starting with a digit), may be listed only once, and ``P1`` / ``P2`` must not
     be any other column of the USV summary (``USV_SUMMARY_COLUMN_ORDER``; the
-    torus-coordinate and label columns of the summary's QLVM map prefixes
+    torus-coordinate columns of the summary's QLVM map prefixes
     ``os_utils.QLVM_SUMMARY_MAP_PREFIXES`` and of the production prefixes of
     ``os_utils.QLVM_PRODUCTION_MODEL_CELLS`` -- ``qlvm1`` / ``qlvm2``,
-    ``qlvm_category``, ``qlvm_duration1`` / ``qlvm_duration2``,
+    ``qlvm_duration1`` / ``qlvm_duration2``,
     ``qlvm_entropy1`` / ``qlvm_entropy2``, ``qlvm_bandwidth1`` /
     ``qlvm_bandwidth2``, ``qlvm_loudness1`` / ``qlvm_loudness2``, ... -- are allowed, since writing them is what a run is for;
     see :func:`model_cell_reserved_columns`). Each cell directory must be a
-    non-empty string. Every problem is collected and raised together. The label
-    columns a prefix writes are checked separately
-    (:func:`model_cell_label_columns`).
+    non-empty string. Every problem is collected and raised together.
 
     Parameters
     ----------
@@ -859,75 +815,19 @@ def validate_model_cells(model_cells: Iterable[tuple[str, str]]) -> dict[str, st
     return dict(pairs)
 
 
-def model_cell_label_column(prefix: str, level: str) -> str:
-    """
-    Description
-    -----------
-    Names the cluster-label column a ``model_cells`` prefix writes for one label
-    level. The regular model's prefix ``"qlvm"`` keeps the historical names --
-    ``"fine"`` -> ``qlvm_category``, ``"coarse"`` -> ``qlvm_supercategory`` --
-    and every other prefix ``P`` gets ``P_category`` (fine) and
-    ``P_supercategory`` (coarse), e.g. ``qlvm_duration_category``.
-
-    Parameters
-    ----------
-    prefix (str)
-        The column prefix (a key of ``infer_qlvm_latents.model_cells``).
-    level (str)
-        ``"fine"`` or ``"coarse"`` (``LABEL_LEVELS``).
-
-    Returns
-    -------
-    column (str)
-        The label column name.
-    """
-    suffix = LABEL_LEVEL_SUFFIXES[level]
-    if prefix == REGULAR_MODEL_PREFIX:
-        return f"qlvm_{suffix}"
-    return f"{prefix}_{suffix}"
-
-
-def default_model_cell_label_levels(prefix: str) -> list[str]:
-    """
-    Description
-    -----------
-    The label levels a ``model_cells`` prefix writes when
-    ``infer_qlvm_latents.model_cell_label_levels`` does not list it: none, for
-    every prefix, so a run writes the coordinates ``P1`` / ``P2`` only. The
-    summary's one category column, ``qlvm_category`` of the regular map, holds
-    the content-ridge categories ``assign-qlvm-categories`` writes after this step;
-    the canonical layout (``os_utils.USV_SUMMARY_COLUMN_ORDER``) has no coarse
-    level (``*_supercategory``) and no category column on the conditional maps,
-    and a cell that was never clustered has no ``label_grid.npy`` to read labels
-    from. A prefix that should still get the package's own cluster labels lists
-    its levels in the setting explicitly.
-
-    Parameters
-    ----------
-    prefix (str)
-        The column prefix.
-
-    Returns
-    -------
-    levels (list[str])
-        The default levels (an empty list).
-    """
-    return []
-
-
 def model_cell_reserved_columns() -> set[str]:
     """
     Description
     -----------
     The USV summary columns a ``model_cells`` run may never write: every column
     of ``USV_SUMMARY_COLUMN_ORDER`` except the torus-coordinate columns
-    (``P1`` / ``P2``) and the label columns of both levels
-    (:func:`model_cell_label_column`) of the summary's QLVM map prefixes
+    (``P1`` / ``P2``) of the summary's QLVM map prefixes
     (``os_utils.QLVM_SUMMARY_MAP_PREFIXES``: ``qlvm``, ``qlvm_duration``,
     ``qlvm_entropy``, ``qlvm_bandwidth``, ``qlvm_loudness``)
     and of the production prefixes of ``os_utils.QLVM_PRODUCTION_MODEL_CELLS`` --
     writing those is what a run is for. Every other summary column (DAS event,
-    acoustic features, the squeak torus coordinates, ...) must stay untouched.
+    acoustic features, the category columns ``assign-qlvm-categories`` writes, the
+    squeak torus coordinates, ...) must stay untouched.
 
     Parameters
     ----------
@@ -939,7 +839,6 @@ def model_cell_reserved_columns() -> set[str]:
     """
     prefixes = (*QLVM_SUMMARY_MAP_PREFIXES, *QLVM_PRODUCTION_MODEL_CELLS)
     writable = {f"{prefix}{axis}" for prefix in prefixes for axis in (1, 2)}
-    writable |= {model_cell_label_column(prefix, level) for prefix in prefixes for level in LABEL_LEVELS}
     return set(USV_SUMMARY_COLUMN_ORDER) - writable
 
 
@@ -949,11 +848,13 @@ def model_cell_stale_columns(prefix: str) -> list[str]:
     -----------
     The summary columns that describe a ``model_cells`` prefix's placement, and so
     go stale when the prefix is embedded again: its coordinates ``P1`` / ``P2``,
-    its label columns of both levels (:func:`model_cell_label_column`, whichever
-    levels this run writes) and the per-call category confidence columns an
-    earlier ``assign-qlvm-categories`` wrote for it (the category column name plus
-    each suffix of ``os_utils.CATEGORY_CONFIDENCE_SUFFIXES`` minus its leading
-    ``_category``, e.g. ``qlvm_category_agreement``, ``qlvm_category_uncertain``).
+    the category column ``P_category`` an earlier ``assign-qlvm-categories`` wrote
+    for it (``qlvm_category`` for the regular map), the coarse-level
+    ``P_supercategory`` older summaries may still carry (the canonical layout has no
+    coarse level), and the per-call category confidence columns of the category
+    column (its name plus each suffix of ``os_utils.CATEGORY_CONFIDENCE_SUFFIXES``
+    minus its leading ``_category``, e.g. ``qlvm_category_agreement``,
+    ``qlvm_category_uncertain``).
     A category assigned from the old coordinates no longer holds for the new
     ones, so ``assign-qlvm-categories`` must run again after a re-embedding.
 
@@ -967,122 +868,11 @@ def model_cell_stale_columns(prefix: str) -> list[str]:
     stale (list[str])
         The column names, coordinates first.
     """
-    category_column = model_cell_label_column(prefix, "fine")
+    category_column = f"{prefix}_category"
     stale = [f"{prefix}{axis}" for axis in (1, 2)]
-    stale += [model_cell_label_column(prefix, level) for level in LABEL_LEVELS]
+    stale += [category_column, f"{prefix}_supercategory"]
     stale += [f"{category_column}{suffix.removeprefix('_category')}" for suffix in CATEGORY_CONFIDENCE_SUFFIXES]
     return stale
-
-
-def model_cell_label_columns(model_cells: dict[str, str], label_levels: object) -> dict[str, dict[str, str]]:
-    """
-    Description
-    -----------
-    Resolves which cluster-label columns a ``model_cells`` run writes, per prefix,
-    from the ``infer_qlvm_latents.model_cell_label_levels`` setting (prefix ->
-    list of levels among ``"fine"`` and ``"coarse"``). A prefix the setting does
-    not list takes :func:`default_model_cell_label_levels` (so the shipped ``{}``
-    writes no label column for any prefix); a listed prefix writes the levels
-    listed for it, an empty list none. Column names follow
-    :func:`model_cell_label_column` (``qlvm_category`` / ``qlvm_supercategory``
-    for ``"qlvm"``, ``P_category`` / ``P_supercategory`` for every other prefix ``P``).
-
-    The setting is validated and every problem is raised together: it must be an
-    object; each key must be a prefix of ``model_cells``; each value a list of
-    distinct levels from ``LABEL_LEVELS``; and no label column may be a reserved
-    summary column (:func:`model_cell_reserved_columns`) or a column another
-    listed prefix or level also writes.
-
-    Parameters
-    ----------
-    model_cells (dict[str, str])
-        The validated ``model_cells`` mapping (:func:`validate_model_cells`).
-    label_levels (object)
-        The ``model_cell_label_levels`` setting (expected: dict of prefix -> list
-        of levels).
-
-    Returns
-    -------
-    label_columns (dict[str, dict[str, str]])
-        Prefix -> (level -> label column), for every prefix of ``model_cells`` in
-        its order, levels in the order ``LABEL_LEVELS`` lists them.
-    """
-    if not isinstance(label_levels, dict):
-        error_message = (
-            f"infer_qlvm_latents.model_cell_label_levels must be an object of column prefix -> list of label levels "
-            f"(among {list(LABEL_LEVELS)}), got {type(label_levels).__name__}."
-        )
-        raise ValueError(error_message)
-    problems = []
-    unknown = [prefix for prefix in label_levels if prefix not in model_cells]
-    if unknown:
-        problems.append(f"prefixes not in model_cells: {unknown} (model_cells lists {list(model_cells)})")
-    label_columns = {}
-    for prefix in model_cells:
-        levels = label_levels[prefix] if prefix in label_levels else default_model_cell_label_levels(prefix)
-        if not isinstance(levels, (list, tuple)):
-            problems.append(f"prefix {prefix!r}: levels must be a list, got {type(levels).__name__}")
-            continue
-        invalid = [level for level in levels if level not in LABEL_LEVELS]
-        if invalid:
-            problems.append(f"prefix {prefix!r}: invalid level(s) {invalid} (allowed: {list(LABEL_LEVELS)})")
-            continue
-        repeated = sorted({level for level in levels if list(levels).count(level) > 1})
-        if repeated:
-            problems.append(f"prefix {prefix!r}: level(s) listed more than once: {repeated}")
-            continue
-        label_columns[prefix] = {
-            level: model_cell_label_column(prefix, level) for level in LABEL_LEVELS if level in levels
-        }
-    reserved = model_cell_reserved_columns()
-    for prefix, columns in label_columns.items():
-        clashing = [column for column in columns.values() if column in reserved]
-        if clashing:
-            problems.append(f"prefix {prefix!r}: label column(s) {clashing} would overwrite summary column(s)")
-    written = collections.Counter(f"{prefix}{axis}" for prefix in model_cells for axis in (1, 2))
-    written.update(column for columns in label_columns.values() for column in columns.values())
-    duplicated = sorted(column for column, count in written.items() if count > 1)
-    if duplicated:
-        problems.append(f"columns written by more than one prefix or level: {duplicated}")
-    if problems:
-        error_message = "infer_qlvm_latents.model_cell_label_levels is invalid:\n  " + "\n  ".join(problems)
-        raise ValueError(error_message)
-    return label_columns
-
-
-def parse_model_cell_label_levels(pairs: Iterable[tuple[str, str]]) -> dict[str, list[str]]:
-    """
-    Description
-    -----------
-    Turns the repeated ``--model-cell-labels PREFIX LEVELS`` CLI options into the
-    ``infer_qlvm_latents.model_cell_label_levels`` object (prefix -> list of
-    levels). ``LEVELS`` is a comma-separated list (``"fine"``, ``"coarse"``,
-    ``"fine,coarse"``; blanks around commas are ignored, and an empty string
-    means no label column). The levels themselves are validated when the run
-    resolves them against ``model_cells`` (:func:`model_cell_label_columns`).
-
-    Parameters
-    ----------
-    pairs (Iterable[tuple[str, str]])
-        ``(prefix, levels)`` pairs as click passes them.
-
-    Returns
-    -------
-    label_levels (dict[str, list[str]])
-        Prefix -> levels, in the given order.
-
-    Raises
-    ------
-    ValueError
-        A prefix is given more than once.
-    """
-    label_levels = {}
-    for prefix, levels_text in pairs:
-        if prefix in label_levels:
-            error_message = f"--model-cell-labels lists prefix {prefix!r} more than once."
-            raise ValueError(error_message)
-        label_levels[prefix] = [level.strip() for level in levels_text.split(",") if level.strip()]
-    return label_levels
 
 
 def find_package_root(model_cell_directory: str) -> pathlib.Path | None:
@@ -1325,8 +1115,8 @@ class QLVMLatentInference:
     Description
     -----------
     Embeds one session's spectrograms into the torus of every QLVM model package
-    cell of the ``model_cells`` setting and merges the coordinates + cluster
-    labels into its ``*_usv_summary.csv``.
+    cell of the ``model_cells`` setting and merges the torus coordinates into its
+    ``*_usv_summary.csv``.
     """
 
     def __init__(
@@ -1346,8 +1136,7 @@ class QLVMLatentInference:
             Session root directory (contains the ``audio`` tree).
         input_parameter_dict (dict)
             Processing settings; the ``infer_qlvm_latents`` block supplies the
-            model package cells (``model_cells``), their label levels and the
-            preprocessing settings checked against each cell's training contract.
+            model package cells (``model_cells``) and the preprocessing settings checked against each cell's training contract.
         message_output (Callable)
             Logging callback; defaults to ``print``.
 
@@ -1368,13 +1157,12 @@ class QLVMLatentInference:
         ``model_cells`` setting (column prefix -> model package cell; filled with
         the production mapping by :func:`os_utils.derive_spectrogram_model_paths`
         when the settings name no model and carry a ``spectrograms_root``). Per
-        cell: loads its decoder weights, training contract, embedding lattice and
-        label grids (:func:`load_model_cell`); checks the settings against the
+        cell: loads its decoder weights, training contract and embedding lattice
+        (:func:`load_model_cell`); checks the settings against the
         contract (:func:`enforce_training_contract`), whose ``length_threshold``
         applies; reads the session spectrogram H5, preprocesses identically to
         training, embeds into the torus (or takes the package's own coordinates,
-        see :meth:`_merge_model_cells`), labels by grid lookup, and merges the
-        columns into the matching USV summary rows (joined on the positional USV
+        see :meth:`_merge_model_cells`), and merges the coordinate columns into the matching USV summary rows (joined on the positional USV
         row index, since the spectrogram rows are 1:1 with the
         ``usv_summary.csv`` rows; USVs with non-positive duration, or with a
         duration at or above the training set's ``length_threshold``, are skipped
@@ -1397,13 +1185,11 @@ class QLVMLatentInference:
         ``entropy_max`` and clamped to ``[0, 1]``; missing column raises), and
         calls with no value get nulls. The summary is rewritten atomically.
 
-        Each prefix ``P`` gets the float columns ``P1`` / ``P2`` plus the cluster
-        labels of the levels ``model_cell_label_levels`` lists for it (by default
-        none: the regular map's ``qlvm_category`` comes from
-        ``assign-qlvm-categories``); no model column is written, and the legacy
-        ``qlvm_model`` column (written by the retired single-model run) and the
-        earlier coordinate, label and category confidence columns of the listed
-        prefixes are removed first (see :meth:`_merge_model_cells`). An empty ``model_cells``
+        Each prefix ``P`` gets the float columns ``P1`` / ``P2`` only (the regular
+        map's ``qlvm_category`` comes from ``assign-qlvm-categories``); no model
+        column is written, and the legacy ``qlvm_model`` column (written by the
+        retired single-model run) and the earlier coordinate, category and category
+        confidence columns of the listed prefixes are removed first (see :meth:`_merge_model_cells`). An empty ``model_cells``
         raises ValueError before anything is read: model package cells are the
         only models this module embeds with.
 
@@ -1412,8 +1198,8 @@ class QLVMLatentInference:
 
         Returns
         -------
-        Updated ``*_usv_summary.csv`` with the ``P1`` / ``P2`` and label columns of
-        every ``model_cells`` prefix.
+        Updated ``*_usv_summary.csv`` with the ``P1`` / ``P2`` columns of every
+        ``model_cells`` prefix.
         """
         self.message_output(
             f"QLVM latent inference started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
@@ -1483,16 +1269,8 @@ class QLVMLatentInference:
         -----------
         The run of :meth:`infer_and_merge`: places the session on the
         torus of every cell of ``model_cells`` and merges, per prefix ``P``, the
-        float columns ``P1`` / ``P2`` and the integer cluster-label columns of the
-        prefix's label levels into the summary (nulls where a call was not placed).
-        The levels come from ``model_cell_label_levels``
-        (:func:`model_cell_label_columns`; by default none, so only the
-        coordinates are written; a listed level gives ``qlvm_category`` (fine) /
-        ``qlvm_supercategory`` (coarse) for prefix ``"qlvm"``, ``P_category`` /
-        ``P_supercategory`` for every other prefix). Every label is the cell's
-        ``label_grid.npy`` of that level at the pixel of the call's written
-        coordinates (:func:`label_grid_lookup`): ``1..k``, 1 the largest cluster,
-        as the package numbers them. The settings are validated, and every cell
+        float columns ``P1`` / ``P2`` into the summary (nulls where a call was not
+        placed). The settings are validated, and every cell
         is loaded once and checked against them
         (:func:`enforce_training_contract`), before anything is embedded.
 
@@ -1506,16 +1284,16 @@ class QLVMLatentInference:
         once per session), a summary as long as the H5, and the package's
         durations and mask counts equal to the H5's on every one of its rows. Any
         other case embeds the session with the cell (:meth:`_embed_session`).
-        Both routes label by the same grid lookup. Pure squeaks (``squeak & ~usv``)
+        Pure squeaks (``squeak & ~usv``)
         are left out of both routes -- not embedded by the cell, and dropped from
-        the package's rows -- so their coordinates and labels are null; a summary
+        the package's rows -- so their coordinates are null; a summary
         without ``usv`` / ``squeak`` raises before anything is embedded.
 
         No model-provenance column is written; the legacy ``qlvm_model`` column
         (which summaries embedded by the retired single-model run still carry)
-        and every earlier coordinate, label and category confidence column of the
-        listed prefixes (:func:`model_cell_stale_columns`: ``P1`` / ``P2``, both
-        label levels whichever this run writes, ``P_category_agreement`` and
+        and every earlier coordinate, category and category confidence column of
+        the listed prefixes (:func:`model_cell_stale_columns`: ``P1`` / ``P2``,
+        ``P_category``, the legacy ``P_supercategory``, ``P_category_agreement`` and
         ``P_category_uncertain``) are dropped before the merge, so a re-embedded
         prefix never keeps categories read off its old coordinates. The summary is
         rewritten atomically and in canonical column order.
@@ -1536,24 +1314,12 @@ class QLVMLatentInference:
             )
             raise ValueError(error_message)
         model_cells = validate_model_cells(cfg['model_cells'].items())
-        label_columns = model_cell_label_columns(model_cells, cfg['model_cell_label_levels'])
 
         models = {}
-        unclustered = []
         for prefix, cell_directory in model_cells.items():
             model = load_model_cell(cell_directory)
             model['length_threshold'] = enforce_training_contract(model['contract'], cfg, model['params'])
             models[prefix] = model
-            unclustered += [
-                f"{prefix}: {level} ({cell_directory})" for level in label_columns[prefix] if model[f"{level}_grid"] is None
-            ]
-        if unclustered:
-            error_message = (
-                "infer_qlvm_latents: these model cells have no label_grid.npy for the label levels asked of them "
-                "(the cell was never clustered):\n  " + "\n  ".join(unclustered) + "\nWrite only their coordinates "
-                "with an empty level list for the prefix (model_cell_label_levels, or --model-cell-labels PREFIX \"\")."
-            )
-            raise ValueError(error_message)
         for prefix, model in models.items():
             self.message_output(
                 f"{prefix}1/{prefix}2: model package cell {model['model_id']} ({decoder_head(model['params'])} head, "
@@ -1562,11 +1328,11 @@ class QLVMLatentInference:
 
         root, h5_loc, usv_summary_loc, usv_df = self._locate_session_files()
         # Pure squeaks are not USVs the maps can place; every cell skips them (null
-        # coordinates and labels). "both" segments hold a USV too and are embedded.
+        # coordinates). "both" segments hold a USV too and are embedded.
         is_pure_squeak = pure_squeak_mask(usv_df, usv_summary_loc.name).to_numpy()
         self.message_output(
             f"{int(np.count_nonzero(is_pure_squeak))} pure squeak(s) (squeak true, usv false) are skipped by every "
-            f"model and get null coordinates and labels."
+            f"model and get null coordinates."
         )
         h5_durations, h5_mask_counts = session_h5_call_table(h5_loc, root.name)
         # Hashed on first use and reused for every cell: one read of the H5 per session.
@@ -1607,24 +1373,18 @@ class QLVMLatentInference:
                     f"{prefix}1/{prefix}2", is_pure_squeak,
                 )
             self.message_output(f"{prefix}1/{prefix}2: {len(usv_indices)} of {usv_df.height} USVs placed.")
-            # The labels are read off the coordinates as written (float64), with the
-            # package's pixel rule, so a summary's labels can always be re-derived from
-            # its own P1/P2 and the cell's label grids, whichever route placed the call.
             placed_coords = np.asarray(coords, dtype=np.float64).reshape(-1, 2)
-            frame_columns = {
+            coordinate_frames.append(pls.DataFrame({
                 "_usv_row": np.asarray(usv_indices).astype(np.uint32),
                 f"{prefix}1": placed_coords[:, 0],
                 f"{prefix}2": placed_coords[:, 1],
-            }
-            for level, column in label_columns[prefix].items():
-                frame_columns[column] = label_grid_lookup(placed_coords, model[f"{level}_grid"]).astype(np.int64)
-            coordinate_frames.append(pls.DataFrame(frame_columns))
+            }))
 
         # Provenance of these models is kept outside the summary, so the legacy
         # qlvm_model column (written by the retired single-model run; older summaries
-        # may still carry it) goes, together with every earlier coordinate, label and
+        # may still carry it) goes, together with every earlier coordinate, category and
         # category confidence column of every listed prefix (model_cell_stale_columns):
-        # labels read off the old coordinates do not hold for the new ones.
+        # categories read off the old coordinates do not hold for the new ones.
         stale = ["qlvm_model"]
         stale += [column for prefix in models for column in model_cell_stale_columns(prefix)]
         merged = usv_df.drop([column for column in stale if column in usv_df.columns]).with_row_index(name="_usv_row")
@@ -1637,8 +1397,8 @@ class QLVMLatentInference:
             merged.write_csv(file=str(tmp_summary_path))
 
         self.message_output(
-            f"Merged the torus coordinates (and any cluster labels asked for) of {len(models)} models "
-            f"({', '.join('/'.join([f'{prefix}1', f'{prefix}2', *label_columns[prefix].values()]) for prefix in models)}) "
+            f"Merged the torus coordinates of {len(models)} models "
+            f"({', '.join(f'{prefix}1/{prefix}2' for prefix in models)}) "
             f"into {usv_summary_loc.name}."
         )
 
@@ -1969,8 +1729,7 @@ def tidy_session_usv_summary(
 
 @click.command(name="infer-qlvm-latents")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--model-cell', 'model_cells', type=(str, str), multiple=True, default=None, required=False, help='A column prefix and a QLVM model package cell (e.g. --model-cell qlvm_duration .../qlvm_time_stretch/masked_clean/conditionals/cell/duration); repeat once per model. When given, these pairs replace the model_cells setting: the session is placed on the torus of every listed cell and <prefix>1/<prefix>2 plus the cluster-label columns asked of each prefix (see --model-cell-labels; none by default) are written, and earlier coordinate, label and category columns of each listed prefix are removed. Without it, the model_cells setting is used (by default the production cells).')
-@click.option('--model-cell-labels', 'model_cell_label_levels', type=(str, str), multiple=True, default=None, required=False, help='A model_cells column prefix and the comma-separated cluster-label levels it writes, among fine and coarse (e.g. --model-cell-labels qlvm_duration fine,coarse writes qlvm_duration_category and qlvm_duration_supercategory; an empty string writes none); repeat once per prefix. When given, these pairs replace the model_cell_label_levels setting; prefixes not listed keep the default (no label column: the coordinates only; qlvm_category of the regular map comes from assign-qlvm-categories).')
+@click.option('--model-cell', 'model_cells', type=(str, str), multiple=True, default=None, required=False, help='A column prefix and a QLVM model package cell (e.g. --model-cell qlvm_duration .../qlvm_time_stretch/masked_clean/conditionals/cell/duration); repeat once per model. When given, these pairs replace the model_cells setting: the session is placed on the torus of every listed cell and <prefix>1/<prefix>2 are written, and earlier coordinate and category columns of each listed prefix are removed. Without it, the model_cells setting is used (by default the production cells).')
 @click.option('--prefer-package-values/--no-prefer-package-values', 'prefer_package_values', default=None, required=False, help='With model cells: take a corpus session\'s coordinates from the package\'s own embedding when its spectrogram H5 is unchanged since the package (SHA-256, row count, durations and mask counts verified), else infer them; --no-prefer-package-values infers every session.')
 @click.option('--latent-dim', 'latent_dim', type=int, default=None, required=False, help='Dimensionality of the toroidal latent space; must equal every model cell\'s training contract.')
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing; true for the production cells) instead of a plain resize; must match every cell\'s training contract.')
@@ -1987,10 +1746,8 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
     A command-line tool to embed a session's USV spectrograms into the torus of
     every QLVM model package cell of the ``model_cells`` setting (or of the
     ``--model-cell`` pairs, which replace it) and merge the torus coordinates of
-    every listed model into its USV summary CSV; ``--model-cell-labels`` pairs
-    additionally ask a prefix for its package cell's own cluster labels (none by
-    default; the regular map's ``qlvm_category`` is written by
-    ``assign-qlvm-categories``).
+    every listed model into its USV summary CSV (the regular map's
+    ``qlvm_category`` is written afterwards by ``assign-qlvm-categories``).
 
     Parameters
     ----------
@@ -2001,22 +1758,17 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
     """
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
-    # --model-cell pairs become the model_cells object (prefix -> cell) and
-    # --model-cell-labels pairs the model_cell_label_levels object (prefix -> levels),
-    # which the generic key-by-key override cannot build; they are written after the others.
+    # --model-cell pairs become the model_cells object (prefix -> cell), which the
+    # generic key-by-key override cannot build; it is written after the others.
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
-        provided_params=[key for key in provided_params if key not in ('model_cells', 'model_cell_label_levels')],
+        provided_params=[key for key in provided_params if key != 'model_cells'],
         settings_dict='processing_settings',
         parameters_lists=['target_shape'],
         block='infer_qlvm_latents',
     )
     if 'model_cells' in provided_params:
         processing_settings_dict['infer_qlvm_latents']['model_cells'] = validate_model_cells(kwargs['model_cells'])
-    if 'model_cell_label_levels' in provided_params:
-        processing_settings_dict['infer_qlvm_latents']['model_cell_label_levels'] = parse_model_cell_label_levels(
-            kwargs['model_cell_label_levels']
-        )
 
     QLVMLatentInference(
         root_directory=root_directory,

@@ -25,6 +25,7 @@ import polars as pls
 import pytest
 from click.testing import CliRunner
 
+from usv_playpen.os_utils import cell_cluster_directory
 from usv_playpen.processing import qlvm_latents as ql
 from usv_playpen.processing.build_qlvm_training_set import build_session_masks, file_sha256, stretch_specs
 
@@ -112,7 +113,6 @@ def _make_inference_session(tmp_path, rng, *, with_masks=True):
 
     cfg = {
         "model_cells": {},
-        "model_cell_label_levels": {},
         "prefer_package_values": True,
         "latent_dim": 2,
         "time_stretch": False,
@@ -478,10 +478,10 @@ def _phase11_bins(name, c_min, c_max, step):
 
 
 def test_infer_and_merge_with_a_model_package_cell(tmp_path, mocker):
-    """A model_cells cell's ReLU checkpoint, contract, Fibonacci lattice and label grids
-    are used: calls outside its duration window are null, inputs are min-maxed and
-    floored, labels asked for explicitly come from label_grid.npy (fine -> qlvm_category,
-    coarse -> qlvm_supercategory), and no qlvm_model column is written."""
+    """A model_cells cell's ReLU checkpoint, contract and Fibonacci lattice are used:
+    calls outside its duration window are null and inputs are min-maxed and floored.
+    The cell's label_grid.npy files are not read: only the qlvm1 / qlvm2 coordinates are
+    written (no qlvm_category / qlvm_supercategory), and no qlvm_model column."""
     rng = np.random.default_rng(13)
     res = 8
     fine_grid = rng.integers(101, 117, size=(res, res)).astype(np.int16)
@@ -490,7 +490,6 @@ def test_infer_and_merge_with_a_model_package_cell(tmp_path, mocker):
     _set_session_durations(root, session_id, [128, 0, 64])  # row 0 is outside the cell's window (100)
     cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=fine_grid, coarse_grid=coarse_grid)
     cfg["model_cells"] = {"qlvm": str(cell)}
-    cfg["model_cell_label_levels"] = {"qlvm": ["fine", "coarse"]}
 
     captured = {}
     real_embed = ql.embed_data
@@ -517,9 +516,8 @@ def test_infer_and_merge_with_a_model_package_cell(tmp_path, mocker):
     df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
     assert df["qlvm1"][0] is None
     assert df["qlvm1"][2] is not None
-    assert 101 <= df["qlvm_category"][2] <= 116
-    assert 201 <= df["qlvm_supercategory"][2] <= 207
-    assert "qlvm_model" not in df.columns
+    for column in ("qlvm_category", "qlvm_supercategory", "qlvm_model"):
+        assert column not in df.columns
 
 
 def test_compute_condition_values_follow_the_contract_definitions():
@@ -991,8 +989,8 @@ def _model_cells_session(tmp_path, rng, prefixes=("qlvm", "qlvm_x")):
     """A session whose rows 0 and 2 are real 64-bin calls with a SAM mask (row 1 a
     placeholder), one unmasked floor-trained package cell per prefix (all in one
     package, ``<tmp_path>/pkg``) and settings listing them in ``model_cells``. Every
-    cell gets its own label grids (:func:`_model_cell_grids`), so a label read from the
-    wrong cell or level shows."""
+    cell ships its own (unread) label grids (:func:`_model_cell_grids`), as a clustered
+    package cell does."""
     root, session_id, cfg = _make_inference_session(tmp_path, rng)
     for index, prefix in enumerate(prefixes):
         fine_grid, coarse_grid = _model_cell_grids(index)
@@ -1010,22 +1008,6 @@ def _model_cell_grids(index):
     fine = (np.arange(64).reshape(8, 8) + 1 + 1000 * index).astype(np.int16)
     coarse = (np.repeat(np.arange(8)[:, None], 8, axis=1) + 101 + 1000 * index).astype(np.int16)
     return fine, coarse
-
-
-def _assert_labels_follow_coordinates(df, prefix, index, levels):
-    """Every label column of ``prefix`` in ``levels`` equals label_grid_lookup of the
-    prefix's written coordinates in the ``index``-th cell's grid of that level, as Int64,
-    and is null exactly where the coordinates are."""
-    grids = dict(zip(("fine", "coarse"), _model_cell_grids(index), strict=True))
-    placed = df[f"{prefix}1"].is_not_null().to_numpy()
-    coords = df.select(f"{prefix}1", f"{prefix}2").to_numpy()[placed]
-    for level in levels:
-        column = ql.model_cell_label_column(prefix, level)
-        assert df[column].dtype == pls.Int64
-        np.testing.assert_array_equal(df[column].is_not_null().to_numpy(), placed)
-        np.testing.assert_array_equal(
-            df[column].to_numpy()[placed], ql.label_grid_lookup(coords, grids[level]).astype(np.int64)
-        )
 
 
 def _write_fake_package(tmp_path, root, session_id, cfg, rng, *, baseline_session=None, sha256=None,
@@ -1080,18 +1062,15 @@ def _run_model_cells(root, cfg, mocker):
     return embedded, messages
 
 
-def test_model_cells_write_prefixed_coordinates_and_labels(tmp_path, mocker):
-    """With model_cells and model_cell_label_levels asking both levels of every prefix,
-    every listed cell places the session and each prefix gets exactly its coordinates
-    <prefix>1/<prefix>2 plus its labels -- qlvm_category (fine) and qlvm_supercategory
-    (coarse) for 'qlvm', qlvm_x_category and qlvm_x_supercategory for 'qlvm_x' -- each the
-    cell's grid of that level at the pixel of the written coordinates, null where the call
-    was not placed. No model column is written; stale label, category confidence, model
-    and coordinate columns of the listed prefixes are replaced or removed; other columns
-    stay, after the canonical ones."""
+def test_model_cells_write_prefixed_coordinates_only(tmp_path, mocker):
+    """Every listed cell places the session and each prefix gets exactly its coordinates
+    <prefix>1/<prefix>2, null where the call was not placed, and no cluster-label column
+    (the cells' label grids are not read). No model column is written; the stale category
+    (qlvm_category), legacy coarse-level (qlvm_supercategory, qlvm_x_supercategory),
+    category confidence, model and coordinate columns of the listed prefixes are replaced
+    or removed; other columns stay, after the canonical ones."""
     rng = np.random.default_rng(30)
     root, session_id, cfg = _model_cells_session(tmp_path, rng)
-    cfg["model_cell_label_levels"] = {"qlvm": ["fine", "coarse"], "qlvm_x": ["fine", "coarse"]}
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
     pls.read_csv(summary_path).with_columns(
         quality=pls.Series([0.11, 0.22, 0.33]),
@@ -1113,19 +1092,15 @@ def test_model_cells_write_prefixed_coordinates_and_labels(tmp_path, mocker):
 
     df = pls.read_csv(summary_path)
     assert df.columns == [
-        "usv_id", "start", "stop", "usv", "squeak", "qlvm1", "qlvm2", "qlvm_category",
-        "quality", "qlvm_supercategory", "qlvm_x1", "qlvm_x2", "qlvm_x_category", "qlvm_x_supercategory",
+        "usv_id", "start", "stop", "usv", "squeak", "qlvm1", "qlvm2", "quality", "qlvm_x1", "qlvm_x2",
     ]
     for column in ("qlvm1", "qlvm2", "qlvm_x1", "qlvm_x2"):
         assert df[column].dtype == pls.Float64
         assert df[column][1] is None
         assert 0.0 <= df[column][0] < 1.0
         assert 0.0 <= df[column][2] < 1.0
-    _assert_labels_follow_coordinates(df, "qlvm", 0, ("fine", "coarse"))
-    _assert_labels_follow_coordinates(df, "qlvm_x", 1, ("fine", "coarse"))
     assert df["quality"].to_list() == [0.11, 0.22, 0.33]
-    assert any("qlvm1/qlvm2/qlvm_category/qlvm_supercategory, qlvm_x1/qlvm_x2/qlvm_x_category/qlvm_x_supercategory"
-               in message
+    assert any("Merged the torus coordinates of 2 models (qlvm1/qlvm2, qlvm_x1/qlvm_x2)" in message
                for message in messages)
     # No package baseline above these cells: both are inferred, and the log says why.
     assert sum("inference (no SESSION_H5_BASELINE.tsv in or above the cell" in message for message in messages) == 2
@@ -1156,7 +1131,7 @@ def _to_v3_layout(package_root):
 def test_load_model_cell_reads_the_v3_layout(tmp_path):
     """A v3 cell (contract and bins in config/, clusters in inference/clusters_<level>/)
     loads to the same model as the same cell in the v2 layout: the same contract,
-    decoder parameters, label grids and phase 11 bins."""
+    decoder parameters and phase 11 bins; neither layout's label grids are loaded."""
     rng = np.random.default_rng(41)
     condition = {"name": "bandwidth", "source": "usv_summary freq_bandwidth_hz", "decode": "exact"}
     fine = rng.integers(1, 5, size=(8, 8)).astype(np.int16)
@@ -1175,8 +1150,7 @@ def test_load_model_cell_reads_the_v3_layout(tmp_path):
         np.asarray(after["lattice"]),
         np.asarray(ql.gen_fib_basis_float32(after["contract"]["embedding_fib_m"])),
     )
-    np.testing.assert_array_equal(after["fine_grid"], fine)
-    np.testing.assert_array_equal(after["coarse_grid"], coarse)
+    assert "fine_grid" not in after and "coarse_grid" not in after
     for key in before["condition_bins"]:
         np.testing.assert_array_equal(after["condition_bins"][key], before["condition_bins"][key])
     for key in before["params"]:
@@ -1190,7 +1164,7 @@ def test_cell_file_names_what_it_looked_for(tmp_path):
     with pytest.raises(FileNotFoundError, match="no posterior_cache.npz in"):
         ql.cell_file(tmp_path / "cell", "posterior_cache.npz")
     with pytest.raises(FileNotFoundError, match="no fine cluster folder"):
-        ql.cell_cluster_directory(tmp_path / "cell", "fine")
+        cell_cluster_directory(tmp_path / "cell", "fine")
 
 
 @pytest.mark.parametrize("layout", ["v2", "v3"])
@@ -1201,7 +1175,6 @@ def test_model_cells_take_package_values_when_the_session_is_verified(tmp_path, 
     are read: v2 / v2.1 (flat) and v3 (config/, inference/, corpus/)."""
     rng = np.random.default_rng(31)
     root, session_id, cfg = _model_cells_session(tmp_path, rng)
-    cfg["model_cell_label_levels"] = {"qlvm": ["fine", "coarse"], "qlvm_x": ["fine", "coarse"]}
     expected = _write_fake_package(tmp_path, root, session_id, cfg, rng)
     if layout == "v3":
         _to_v3_layout(tmp_path / "pkg")
@@ -1217,9 +1190,8 @@ def test_model_cells_take_package_values_when_the_session_is_verified(tmp_path, 
         assert df[f"{prefix}1"][1] is None
         np.testing.assert_array_equal(df[f"{prefix}1"].to_numpy()[[0, 2]], coords[:, 0])
         np.testing.assert_array_equal(df[f"{prefix}2"].to_numpy()[[0, 2]], coords[:, 1])
-    # The package route labels by the same grid lookup, on the package's coordinates.
-    _assert_labels_follow_coordinates(df, "qlvm", 0, ("fine", "coarse"))
-    _assert_labels_follow_coordinates(df, "qlvm_x", 1, ("fine", "coarse"))
+    # The package route writes coordinates only, as the inference route does.
+    assert not [column for column in df.columns if column.endswith(("_category", "_supercategory"))]
 
 
 @pytest.mark.parametrize(
@@ -1342,21 +1314,10 @@ def test_model_cells_refuse_invalid_prefixes_before_writing(tmp_path, mocker):
     assert summary_path.read_bytes() == before
 
 
-def test_model_cell_label_column_names_follow_the_rule():
-    """Prefix 'qlvm' keeps qlvm_category (fine) / qlvm_supercategory (coarse); every other
-    prefix P gets P_category / P_supercategory. The default is no level for any prefix
-    (coordinates only; the regular map's category comes from assign-qlvm-categories), and
-    the stale columns of a prefix are its coordinates, both label levels and the category
-    confidence columns."""
-    assert ql.model_cell_label_column("qlvm", "fine") == "qlvm_category"
-    assert ql.model_cell_label_column("qlvm", "coarse") == "qlvm_supercategory"
-    assert ql.model_cell_label_column("qlvm_duration", "fine") == "qlvm_duration_category"
-    assert ql.model_cell_label_column("qlvm_loud", "coarse") == "qlvm_loud_supercategory"
-    assert ql.model_cell_label_columns({"qlvm": "/a", "qlvm_mf": "/b"}, {}) == {"qlvm": {}, "qlvm_mf": {}}
-    assert ql.model_cell_label_columns({"qlvm": "/a", "qlvm_mf": "/b"}, {"qlvm": ["fine", "coarse"], "qlvm_mf": ["fine", "coarse"]}) == {
-        "qlvm": {"fine": "qlvm_category", "coarse": "qlvm_supercategory"},
-        "qlvm_mf": {"fine": "qlvm_mf_category", "coarse": "qlvm_mf_supercategory"},
-    }
+def test_model_cell_stale_columns_cover_coordinates_and_categories():
+    """The stale columns of a prefix are its coordinates, its category column (written by
+    assign-qlvm-categories), the legacy coarse-level column older summaries may carry and
+    the category confidence columns."""
     assert ql.model_cell_stale_columns("qlvm") == [
         "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_category_agreement", "qlvm_category_uncertain",
     ]
@@ -1364,90 +1325,20 @@ def test_model_cell_label_column_names_follow_the_rule():
         "qlvm_entropy1", "qlvm_entropy2", "qlvm_entropy_category", "qlvm_entropy_supercategory",
         "qlvm_entropy_category_agreement", "qlvm_entropy_category_uncertain",
     ]
-    # Levels come out in the fine, coarse order whatever order the setting lists them in.
-    assert list(ql.model_cell_label_columns({"qlvm_bw": "/a"}, {"qlvm_bw": ["coarse", "fine"]})["qlvm_bw"]) == [
-        "fine", "coarse",
-    ]
 
 
-def test_model_cells_write_the_configured_label_levels(tmp_path, mocker):
-    """model_cell_label_levels overrides the default per prefix: 'qlvm' fine only drops
-    qlvm_supercategory (a stale one is removed, not kept), 'qlvm_x' both levels adds
-    qlvm_x_supercategory, and an empty list writes coordinates only. Each label is the
-    grid lookup of the written coordinates."""
-    rng = np.random.default_rng(36)
-    root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm", "qlvm_x", "qlvm_y"))
-    cfg["model_cell_label_levels"] = {"qlvm": ["fine"], "qlvm_x": ["fine", "coarse"], "qlvm_y": []}
-    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
-    pls.read_csv(summary_path).with_columns(
-        qlvm_supercategory=pls.Series([1, None, 2]),
-        qlvm_y_category=pls.Series([7, 7, 7]),
-    ).write_csv(summary_path)
-
-    _run_model_cells(root, cfg, mocker)
-
-    df = pls.read_csv(summary_path)
-    assert df.columns == [
-        "usv_id", "start", "stop", "usv", "squeak", "qlvm1", "qlvm2", "qlvm_category",
-        "qlvm_x1", "qlvm_x2", "qlvm_x_category", "qlvm_x_supercategory", "qlvm_y1", "qlvm_y2",
-    ]
-    _assert_labels_follow_coordinates(df, "qlvm", 0, ("fine",))
-    _assert_labels_follow_coordinates(df, "qlvm_x", 1, ("fine", "coarse"))
-    # The stand-in embedding places every call at the torus center: pixel (4, 4) of the 8 x 8 grids.
-    assert df["qlvm_x_category"].to_list() == [_model_cell_grids(1)[0][4, 4], None, _model_cell_grids(1)[0][4, 4]]
-
-
-@pytest.mark.parametrize(
-    ("label_levels", "match"),
-    [
-        ([], "must be an object of column prefix -> list of label levels"),
-        ({"qlvm": ["medium"]}, r"prefix 'qlvm': invalid level\(s\) \['medium'\]"),
-        ({"qlvm": "fine"}, "prefix 'qlvm': levels must be a list, got str"),
-        ({"qlvm": ["fine", "fine"]}, r"prefix 'qlvm': level\(s\) listed more than once: \['fine'\]"),
-        ({"qlvm_z": ["fine"]}, r"prefixes not in model_cells: \['qlvm_z'\]"),
-    ],
-)
-def test_model_cells_refuse_invalid_label_levels_before_writing(tmp_path, mocker, label_levels, match):
-    """An invalid model_cell_label_levels -- not an object, an unknown level, a level that is
-    not in a list, a repeated level, or a prefix model_cells does not list -- stops the run
-    before any cell is loaded or the summary is touched."""
-    rng = np.random.default_rng(37)
-    root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm",))
-    cfg["model_cell_label_levels"] = label_levels
-    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
-    before = summary_path.read_bytes()
-    loads = mocker.patch("usv_playpen.processing.qlvm_latents.load_model_cell", side_effect=ql.load_model_cell)
-
-    mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
-    with pytest.raises(ValueError, match=match):
-        ql.QLVMLatentInference(
-            root_directory=str(root),
-            input_parameter_dict={"infer_qlvm_latents": cfg},
-            message_output=lambda *_a, **_kw: None,
-        ).infer_and_merge()
-    assert loads.call_count == 0
-    assert summary_path.read_bytes() == before
-
-
-def test_model_cell_label_columns_refuse_to_overwrite_summary_columns(mocker):
-    """A label column may not be another summary column; the label columns of the
-    summary map prefixes and the production prefixes (qlvm_category, ...) are allowed, and
-    so are their coordinates (qlvm_entropy1 / qlvm_entropy2 included)."""
-    mocker.patch.object(ql, "USV_SUMMARY_COLUMN_ORDER", (*ql.USV_SUMMARY_COLUMN_ORDER, "peak_category"))
-    with pytest.raises(ValueError, match=r"prefix 'peak': label column\(s\) \['peak_category'\] would overwrite"):
-        ql.model_cell_label_columns({"peak": "/cell"}, {"peak": ["fine"]})
+def test_model_cell_coordinates_of_the_summary_and_production_maps_are_writable():
+    """The coordinates of the summary map prefixes and the production prefixes
+    (qlvm_entropy1 / qlvm_entropy2 included) are writable; the squeak map's are not, and
+    no category column is (assign-qlvm-categories writes those)."""
     summary_maps = dict.fromkeys(ql.QLVM_SUMMARY_MAP_PREFIXES, "/cell")
     assert ql.validate_model_cells(summary_maps.items()) == summary_maps
     with pytest.raises(ValueError, match=r"prefix 'qlvm_squeak' would overwrite"):
         ql.validate_model_cells([("qlvm_squeak", "/cell")])
     production = {prefix: "/cell" for prefix in ql.QLVM_PRODUCTION_MODEL_CELLS}
     assert ql.validate_model_cells(production.items()) == production
-    both = {prefix: ["fine", "coarse"] for prefix in production}
     assert list(production) == ["qlvm", "qlvm_duration", "qlvm_entropy", "qlvm_bandwidth", "qlvm_loudness"]
-    assert ql.model_cell_label_columns(production, both)["qlvm_loudness"]["coarse"] == "qlvm_loudness_supercategory"
-    assert ql.model_cell_label_columns(production, both)["qlvm_entropy"] == {
-        "fine": "qlvm_entropy_category", "coarse": "qlvm_entropy_supercategory",
-    }
+    assert "qlvm_category" in ql.model_cell_reserved_columns()
 
 
 def test_infer_and_merge_sam_inputs_equal_the_masked_training_inputs(tmp_path, mocker):
@@ -1465,8 +1356,7 @@ def test_infer_and_merge_sam_inputs_equal_the_masked_training_inputs(tmp_path, m
     _write_session_masks(root, session_id, {0: region, 2: region})
     cell = _make_model_cell(tmp_path, rng, masking_type="sam", floor=None, fine_grid=grid, coarse_grid=grid,
                             contract_overrides={"time_stretch": True})
-    cfg.update(masking_type="sam", time_stretch=True, model_cells={"qlvm_masked": str(cell)},
-               model_cell_label_levels={"qlvm_masked": []})
+    cfg.update(masking_type="sam", time_stretch=True, model_cells={"qlvm_masked": str(cell)})
     captured = {}
 
     def _fake_embed(lattice, data, params, *_block_sizes):
@@ -1494,34 +1384,20 @@ def test_infer_and_merge_sam_inputs_equal_the_masked_training_inputs(tmp_path, m
     assert not np.array_equal(pre_masked, expected), "the test must tell the two orders apart"
 
 
-def test_model_cells_embed_an_unclustered_cell_without_labels(tmp_path, mocker):
-    """A cell train-qlvm wrote has no cluster folders: it loads with None label grids,
-    embeds with the shipped (empty) label-level setting (coordinates only, no category or
-    supercategory column), and a run that asks it for a label level stops before the
-    summary is touched, naming the prefix and level."""
+def test_model_cells_embed_an_unclustered_cell(tmp_path, mocker):
+    """A cell train-qlvm wrote has no cluster folders: it loads and embeds like any other
+    (coordinates only, no category or supercategory column)."""
     rng = np.random.default_rng(42)
     grid = np.ones((8, 8), dtype=np.int16)
     root, session_id, cfg = _make_inference_session(tmp_path, rng)
     cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=None, fine_grid=grid, coarse_grid=grid)
     shutil.rmtree(cell / "cluster")
-    model = ql.load_model_cell(str(cell))
-    assert model["fine_grid"] is None
-    assert model["coarse_grid"] is None
     mocker.patch("usv_playpen.processing.qlvm_latents.smart_wait")
     mocker.patch("usv_playpen.processing.qlvm_latents.embed_data",
                  side_effect=lambda lattice, data, *_rest: np.full((data.shape[0], 2), 0.25, dtype=np.float64))
     summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
-    before = summary_path.read_bytes()
 
     cfg["model_cells"] = {"qlvm_new": str(cell)}
-    cfg["model_cell_label_levels"] = {"qlvm_new": ["fine", "coarse"]}
-    with pytest.raises(ValueError, match=r"qlvm_new: fine .*\n.*qlvm_new: coarse"):
-        ql.QLVMLatentInference(
-            root_directory=str(root), input_parameter_dict={"infer_qlvm_latents": cfg}, message_output=lambda *_a, **_kw: None,
-        ).infer_and_merge()
-    assert summary_path.read_bytes() == before
-
-    cfg["model_cell_label_levels"] = {}
     ql.QLVMLatentInference(
         root_directory=str(root), input_parameter_dict={"infer_qlvm_latents": cfg}, message_output=lambda *_a, **_kw: None,
     ).infer_and_merge()
@@ -1643,14 +1519,12 @@ def _set_vocal_flags(root, session_id, flags):
 def test_model_cells_skip_pure_squeaks_on_both_routes(tmp_path, mocker, route):
     """A pure squeak (squeak true, usv false) is not a USV the maps can place: on the
     inference route the cell never embeds it, on the package route the package's
-    coordinates are dropped for it, and either way its coordinates and labels are
-    null. A segment holding both (usv and squeak true) is placed as before: only pure
+    coordinates are dropped for it, and either way its coordinates are null. A segment holding both (usv and squeak true) is placed as before: only pure
     squeaks are nulled, never a row whose usv is true."""
     rng = np.random.default_rng(35)
     root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm",))
     expected = _write_fake_package(tmp_path, root, session_id, cfg, rng)
     cfg["prefer_package_values"] = route == "package"
-    cfg["model_cell_label_levels"] = {"qlvm": ["fine", "coarse"]}
     _set_vocal_flags(root, session_id, [(False, True), (None, None), (True, True)])
 
     embedded, messages = _run_model_cells(root, cfg, mocker)
@@ -1658,13 +1532,12 @@ def test_model_cells_skip_pure_squeaks_on_both_routes(tmp_path, mocker, route):
     assert embedded == ([1] if route == "inference" else [])
     assert any("1 pure squeak(s)" in message for message in messages)
     df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
-    for column in ("qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory"):
+    for column in ("qlvm1", "qlvm2"):
         assert df[column][0] is None
         assert df[column][1] is None
         assert df[column][2] is not None
     if route == "package":
         assert df["qlvm1"][2] == expected["qlvm"][1, 0]
-    _assert_labels_follow_coordinates(df, "qlvm", 0, ("fine", "coarse"))
 
 
 def test_infer_and_merge_refuses_a_summary_without_vocal_flags(tmp_path, mocker):

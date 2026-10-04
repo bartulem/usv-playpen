@@ -153,11 +153,13 @@ def _write_fake_session(
     n_channels: int = 4,
     durations_bins: int = 64,
     emitter: str = "male",
+    noise: list[bool] | None = None,
 ) -> None:
     """
     Write a minimal on-disk session the builder can consume: a raw noise
     ``hpss_filtered`` mmap (its filename encodes sr / samples / channels /
-    dtype), a ``usv_summary.csv`` (start / stop / emitter + one feature column),
+    dtype), a ``usv_summary.csv`` (start / stop / emitter / ``noise`` flag + one
+    feature column; ``noise`` defaults to all False, i.e. every row a vocalization),
     and a spectrogram H5 carrying per-row ``durations`` plus a ``mask/<session>``
     group with one segmentation per USV (so every row has a detected mask).
     """
@@ -181,6 +183,7 @@ def _write_fake_session(
         "start": starts,
         "stop": stops,
         "emitter": [emitter] * n_usv,
+        "noise": noise if noise is not None else [False] * n_usv,
         "duration_s": [float(b - a) for a, b in zip(starts, stops)],
     }).write_csv(str(audio_dir / f"{session_id}_usv_summary.csv"))
 
@@ -370,6 +373,70 @@ def test_build_courtship_emitter_filter_keeps_target_sex(tmp_path, mocker, _patc
     with h5py.File(str(written[0]), "r") as h5_file:
         assert int(h5_file.attrs["n_usv"]) == 3   # only the male bout
         assert set(e.decode() if isinstance(e, bytes) else e for e in h5_file["usv/emitter"][:]) == {"male_mouse"}
+
+
+def test_build_drops_noise_before_bout_segmentation(tmp_path, _patched_env):
+    """
+    Description
+    -----------
+    Noise-flagged segments are dropped BEFORE bouts are segmented. The session has
+    two 3- and 2-USV bouts separated by a 0.20 s silence (above the ~0.116 s IBI
+    threshold) and one noise row sitting in that silence: kept, it would bridge the
+    gap (0.09 s on either side) and merge everything into one 6-row bout. Dropped,
+    the repository holds the 5 genuine USVs in two bouts (3 + 2), never stores the
+    noise row's ``usv_row`` (3), and the dropped count is logged.
+    """
+
+    session_root = tmp_path / "session_root"
+    _write_fake_session(
+        session_root,
+        starts=[0.01, 0.05, 0.09, 0.20, 0.31, 0.35],
+        stops=[0.03, 0.07, 0.11, 0.22, 0.33, 0.37],
+        noise=[False, False, False, True, False, False],
+    )
+    repo_out = tmp_path / "repo"
+    messages = []
+    NaturalisticUsvRepositoryBuilder(
+        root_directories=[str(session_root)],
+        input_parameter_dict={
+            "build_naturalistic_usv_repository": _build_cfg("same_sex_male"),
+            "data_roots": {"naturalistic_usv_repository_dir": str(repo_out)},
+        },
+        message_output=lambda *m, **_k: messages.append(" ".join(str(x) for x in m)),
+    ).build()
+
+    written = list((repo_out / "male").glob("naturalistic_usv_repository_same_sex_*.h5"))
+    assert len(written) == 1
+    with h5py.File(str(written[0]), "r") as h5_file:
+        assert int(h5_file.attrs["n_usv"]) == 5
+        assert int(h5_file.attrs["n_bout"]) == 2
+        np.testing.assert_array_equal(h5_file["bout/usv_count"][:], [3, 2])
+        np.testing.assert_array_equal(h5_file["usv/usv_row"][:], [0, 1, 2, 4, 5])
+        np.testing.assert_array_equal(h5_file["usv/features/noise"][:], [False] * 5)
+    assert any("dropped 1 noise segment(s) of 6" in m for m in messages)
+
+
+def test_build_skips_session_without_noise_column(tmp_path, _patched_env):
+    """A summary lacking the ``noise`` column cannot have its noise excluded, so
+    the session is skipped and logged rather than built with noise left in."""
+
+    session_root = tmp_path / "session_root"
+    _write_fake_session(session_root, starts=[0.01, 0.05, 0.09], stops=[0.03, 0.07, 0.11])
+    summary_path = session_root / "audio" / "20230101_120000_usv_summary.csv"
+    pls.read_csv(str(summary_path)).drop("noise").write_csv(str(summary_path))
+    repo_out = tmp_path / "repo"
+    messages = []
+    NaturalisticUsvRepositoryBuilder(
+        root_directories=[str(session_root)],
+        input_parameter_dict={
+            "build_naturalistic_usv_repository": _build_cfg("same_sex_male"),
+            "data_roots": {"naturalistic_usv_repository_dir": str(repo_out)},
+        },
+        message_output=lambda *m, **_k: messages.append(" ".join(str(x) for x in m)),
+    ).build()
+
+    assert any("skipping session_root" in m.lower() and "noise" in m for m in messages)
+    assert not (repo_out / "male").exists() or not list((repo_out / "male").glob("*.h5"))
 
 
 def test_build_rejects_unknown_context_label(tmp_path, _patched_env):

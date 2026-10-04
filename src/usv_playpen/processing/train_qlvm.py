@@ -50,8 +50,8 @@ The output directory is laid out like a v3 model package cell:
 settings against), ``config/run_config.json`` (the run's settings and data) and
 ``metrics/val_diagnostics.npz`` (per-epoch training loss, the validation losses
 and the validation subset). The cell carries no cluster label grid
-(``inference/clusters_<level>/label_grid.npy``), so ``infer-qlvm-latents``
-writes its coordinates only (its prefix must ask for no label level); categories
+(``inference/clusters_<level>/label_grid.npy``); ``infer-qlvm-latents``
+writes its coordinates only, as for every cell; categories
 of a trained map are built with ``build-qlvm-categories`` and written into the
 summaries by ``assign-qlvm-categories``, as they are for the production regular
 map (``qlvm_category``).

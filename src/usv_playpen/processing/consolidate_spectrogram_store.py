@@ -77,15 +77,89 @@ from ..os_utils import (
 from ..time_utils import is_gui_context, smart_wait
 from .build_qlvm_training_set import file_sha256
 from .qlvm_latents import (
-    LABEL_LEVELS,
     PACKAGE_BASELINE_NAME,
-    REGULAR_MODEL_PREFIX,
     cell_file,
     load_package_baseline,
-    model_cell_label_column,
-    model_cell_label_columns,
     package_baseline_path,
 )
+
+# Cluster-label levels a v3 model package cell holds (inference/clusters_<level>/), and
+# the column-name suffix each carries in the summaries this store archives:
+# <prefix>_category for the fine level, <prefix>_supercategory for the coarse one
+# (qlvm_category / qlvm_supercategory for the regular model's prefix, see
+# model_cell_label_column). Kept here: infer-qlvm-latents no longer writes package
+# cluster labels, and this store is the only reader of those columns.
+LABEL_LEVELS = ("fine", "coarse")
+LABEL_LEVEL_SUFFIXES = {"fine": "category", "coarse": "supercategory"}
+
+# The prefix of the regular (unconditional) model: its label columns keep the
+# historical names qlvm_category / qlvm_supercategory.
+REGULAR_MODEL_PREFIX = "qlvm"
+
+
+def model_cell_label_column(prefix: str, level: str) -> str:
+    """
+    Description
+    -----------
+    Names the cluster-label column a model prefix carries for one label level in
+    the summaries this store archives. The regular model's prefix ``"qlvm"`` keeps
+    the historical names -- ``"fine"`` -> ``qlvm_category``, ``"coarse"`` ->
+    ``qlvm_supercategory`` -- and every other prefix ``P`` gets ``P_category``
+    (fine) and ``P_supercategory`` (coarse), e.g. ``qlvm_dur_category``.
+
+    Parameters
+    ----------
+    prefix (str)
+        The column prefix (a key of ``V3_MODEL_CELLS``).
+    level (str)
+        ``"fine"`` or ``"coarse"`` (``LABEL_LEVELS``).
+
+    Returns
+    -------
+    column (str)
+        The label column name.
+    """
+    suffix = LABEL_LEVEL_SUFFIXES[level]
+    if prefix == REGULAR_MODEL_PREFIX:
+        return f"qlvm_{suffix}"
+    return f"{prefix}_{suffix}"
+
+
+def model_cell_label_columns(model_cells: dict[str, str], label_levels: dict[str, list[str]]) -> dict[str, dict[str, str]]:
+    """
+    Description
+    -----------
+    Resolves which cluster-label columns each model prefix must carry: the levels
+    ``label_levels`` lists for the prefix (a prefix it does not list carries none,
+    so ``{}`` asks for no label column), named by :func:`model_cell_label_column`.
+
+    Parameters
+    ----------
+    model_cells (dict[str, str])
+        Prefix -> model cell directory; only the prefixes (and their order) are used.
+    label_levels (dict[str, list[str]])
+        Prefix -> list of levels among ``LABEL_LEVELS``.
+
+    Returns
+    -------
+    label_columns (dict[str, dict[str, str]])
+        Prefix -> (level -> label column), for every prefix of ``model_cells`` in
+        its order, levels in the order ``LABEL_LEVELS`` lists them.
+
+    Raises
+    ------
+    ValueError
+        A listed level is not one of ``LABEL_LEVELS``.
+    """
+    label_columns = {}
+    for prefix in model_cells:
+        levels = label_levels[prefix] if prefix in label_levels else []
+        invalid = [level for level in levels if level not in LABEL_LEVELS]
+        if invalid:
+            error_message = f"prefix {prefix!r}: invalid label level(s) {invalid} (allowed: {list(LABEL_LEVELS)})."
+            raise ValueError(error_message)
+        label_columns[prefix] = {level: model_cell_label_column(prefix, level) for level in LABEL_LEVELS if level in levels}
+    return label_columns
 
 # File-name stem of the stores this module writes (the store's layout version).
 STORE_NAME_PREFIX = "spectrograms_qlvmv3"
@@ -348,7 +422,7 @@ class SpectrogramStoreConsolidator:
         (``<prefix>1`` / ``<prefix>2`` of every production prefix) or a default
         label column (``qlvm_category`` and ``qlvm_supercategory`` for ``qlvm``,
         ``<prefix>_category`` and ``<prefix>_supercategory`` for the others,
-        :func:`default_model_cell_label_levels`); a session without a session type
+        :func:`model_cell_label_columns`); a session without a session type
         in the package; and an embedding that disagrees with the package's rules
         -- the per-call status (:func:`embedding_status`, from the H5 durations
         and the bincount of ``mask/<session>/spectrogram_index``, against the

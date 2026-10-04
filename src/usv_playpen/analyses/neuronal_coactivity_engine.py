@@ -930,10 +930,10 @@ def load_animal_sessions(
 
     Each returned entry carries the session id + root, the recording frame rate, the
     total session duration, per-call onsets split into the two category groups (as
-    polars dataframes; only the focal mouse's pure USVs, ``usv & ~squeak``, enter a
-    group: noise segments, pure squeaks, segments holding both a squeak and a USV and
-    unscored rows are dropped first, and a summary without the ``noise`` / ``usv`` /
-    ``squeak`` columns raises), and spike-time arrays for the filtered unit set common to all
+    polars dataframes; only the focal mouse's USV-bearing segments -- pure USVs,
+    ``usv & ~squeak``, and segments holding both a squeak and a USV, ``usv & squeak``
+    -- enter a group: noise segments, pure squeaks and unscored rows are dropped first,
+    and a summary without the ``noise`` / ``usv`` / ``squeak`` columns raises), and spike-time arrays for the filtered unit set common to all
     of the chosen day's sessions. The tracks array is not materialised -- only its
     leading dimension is read so ``total_duration = n_frames / fs`` is cheap.
 
@@ -1044,15 +1044,18 @@ def load_animal_sessions(
                 f"cannot be split into groups; set the category column to an existing label column."
             )
             raise ValueError(error_message)
-        # Only pure USVs of the focal mouse enter a category group: noise segments are dropped
-        # (os_utils.drop_noise_usvs, the one shared definition; a summary without the `noise`
-        # column raises), and so are pure squeaks, segments holding both a squeak and a USV, and
-        # unscored rows (os_utils.call_class_mask, `usv & ~squeak`; a summary without the
-        # `usv` / `squeak` booleans raises). assign-qlvm-categories labels every row that has a
-        # regular-map position, noise and squeak-bearing segments included, but the QLVM maps
-        # were trained on pure USVs, so those labels are not USV categories.
+        # Only USV-bearing segments of the focal mouse enter a category group: noise segments
+        # are dropped (os_utils.drop_noise_usvs, the one shared definition; a summary without
+        # the `noise` column raises), and so are pure squeaks and unscored rows
+        # (os_utils.call_class_mask with the "usv" and "both" classes, i.e. `usv & ~squeak`
+        # plus `usv & squeak`; a summary without the `usv` / `squeak` booleans raises). A
+        # segment holding both a squeak and a USV is kept because it carries a USV;
+        # assign-qlvm-categories labels every row with a regular-map position, noise and
+        # pure squeaks included, but those rows hold no USV, so their labels are not USV
+        # categories.
         usv_summary_data = drop_noise_usvs(usv_summary_data, usv_summary_file.name, message_output=log)[0]
-        usv_summary_data = usv_summary_data.filter(call_class_mask(usv_summary_data, ("usv",), usv_summary_file.name))
+        usv_summary_data = usv_summary_data.filter(
+            call_class_mask(usv_summary_data, ("usv", "both"), usv_summary_file.name))
         focal_usvs = usv_summary_data.filter(pls.col("emitter") == mouse_track_names[0])
         group_a_df = focal_usvs.filter(pls.col(category_column).is_in(group_a_ids))
         group_b_df = focal_usvs.filter(pls.col(category_column).is_in(group_b_ids))

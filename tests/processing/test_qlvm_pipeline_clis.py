@@ -166,33 +166,17 @@ def test_infer_qlvm_latents_cli_model_cell_pairs_become_model_cells(runner, mock
     assert "prefixes listed more than once" in str(result.exception)
 
 
-def test_infer_qlvm_latents_cli_model_cell_labels_become_label_levels(runner, mocker, tmp_path):
-    """Repeated --model-cell-labels PREFIX LEVELS options become the model_cell_label_levels
-    object (prefix -> list of comma-separated levels; an empty string is no level), written
-    after the generic overrides, which never see them; a prefix given twice is refused."""
+def test_infer_qlvm_latents_cli_has_no_label_level_option(runner, mocker, tmp_path):
+    """infer-qlvm-latents writes torus coordinates only: the retired --model-cell-labels
+    option is refused as unknown and the inference never runs."""
     mock_cls = mocker.patch("usv_playpen.processing.qlvm_latents.QLVMLatentInference")
-    spy = mocker.patch(
-        "usv_playpen.processing.qlvm_latents.modify_settings_json_for_cli",
-        return_value={"infer_qlvm_latents": {"model_cells": {}, "model_cell_label_levels": {}}},
-    )
-    result = runner.invoke(infer_qlvm_latents_cli, [
-        "--root-directory", str(tmp_path),
-        "--model-cell-labels", "qlvm_duration", "fine, coarse",
-        "--model-cell-labels", "qlvm", "",
-        "--no-prefer-package-values",
-    ])
-    assert result.exit_code == 0, result.output
-    assert spy.call_args.kwargs["provided_params"] == ["prefer_package_values"]
-    settings = mock_cls.call_args.kwargs["input_parameter_dict"]["infer_qlvm_latents"]
-    assert settings["model_cell_label_levels"] == {"qlvm_duration": ["fine", "coarse"], "qlvm": []}
-
     result = runner.invoke(infer_qlvm_latents_cli, [
         "--root-directory", str(tmp_path),
         "--model-cell-labels", "qlvm", "fine",
-        "--model-cell-labels", "qlvm", "coarse",
     ])
     assert result.exit_code != 0
-    assert "lists prefix 'qlvm' more than once" in str(result.exception)
+    assert "No such option: --model-cell-labels" in result.output
+    mock_cls.assert_not_called()
 
 
 def test_train_qlvm_cli_routes(runner, mocker, tmp_path):
