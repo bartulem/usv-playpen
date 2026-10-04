@@ -16,7 +16,7 @@ import numpy as np
 import polars as pls
 from tqdm import tqdm
 
-from ..os_utils import atomic_output_path, configure_path, first_match_or_raise, order_usv_summary_columns
+from ..os_utils import atomic_output_path, configure_path, find_audio_mmap, first_match_or_raise, order_usv_summary_columns
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import load_session_metadata, save_session_metadata
 from .assign_vocalizations_utils import (
@@ -85,12 +85,11 @@ class Vocalocator:
         self.message_output(f"Preparing data for vocal assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        audio_file_path = first_match_or_raise(
-            root=pathlib.Path(self.root_directory) / 'audio',
-            pattern='*_concatenated_audio_*.mmap',
-            recursive=True,
-            label="concatenated audio mmap",
-        )
+        # The 30 kHz high-passed ('usv' band) memmap the vocalocator models were
+        # trained on: exact folder 'audio/hpss_filtered', exact name, exactly one
+        # match. A recursive glob here used to pick the alphabetically first memmap
+        # anywhere under 'audio' (e.g. a stray unfiltered one in 'cropped_to_video').
+        audio_file_path = find_audio_mmap(root_directory=self.root_directory, band='usv')
         usv_segments_path = first_match_or_raise(
             root=pathlib.Path(self.root_directory) / 'audio',
             pattern='*_usv_summary.csv',

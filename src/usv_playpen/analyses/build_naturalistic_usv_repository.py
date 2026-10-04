@@ -39,7 +39,7 @@ from click.core import ParameterSource
 from scipy.ndimage import binary_dilation, gaussian_filter
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import first_match_or_raise, resolve_experimenter_path
+from ..os_utils import find_audio_mmap, first_match_or_raise, resolve_experimenter_path
 from ..processing.build_qlvm_training_set import build_session_masks
 from ..time_utils import is_gui_context, smart_wait
 from ._usv_io import extract_session_metadata
@@ -374,11 +374,9 @@ class NaturalisticUsvRepositoryBuilder:
         for root_directory in root_directories:
             root = pathlib.Path(root_directory)
             try:
-                audio_file_loc = first_match_or_raise(
-                    root=root / "audio" / "hpss_filtered",
-                    pattern="*.mmap",
-                    label="concatenated audio mmap",
-                )
+                # The 30 kHz high-passed ('usv' band) memmap the spectrograms and
+                # masks were built from (exact folder, exact name, exactly one).
+                audio_file_loc = find_audio_mmap(root_directory=root, band="usv")
 
                 usv_summary_loc = first_match_or_raise(
                     root=root / "audio",

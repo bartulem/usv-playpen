@@ -38,7 +38,7 @@ import polars as pls
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import first_match_or_raise
+from ..os_utils import find_audio_mmap, first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import read_excluded_audio_channels
 
@@ -208,7 +208,10 @@ def open_hpss_audio(root: pathlib.Path) -> tuple[np.memmap, int]:
     -----------
     Opens a session's concatenated HPSS-filtered audio memmap read-only, parsing
     its layout from the file name exactly as ``das_inference.summarize_das_findings``
-    does (``..._<sampling rate>_<samples>_<channels>_<dtype>.mmap``).
+    does (``..._<sampling rate>_<samples>_<channels>_<dtype>.mmap``). The file is
+    the ``'usv'`` band memmap located by :func:`os_utils.find_audio_mmap` (exact
+    folder ``audio/hpss_filtered``, exact name, exactly one match), so the
+    broadband memmap or a stray memmap elsewhere under ``audio`` is never read.
 
     Parameters
     ----------
@@ -223,11 +226,7 @@ def open_hpss_audio(root: pathlib.Path) -> tuple[np.memmap, int]:
         Audio sampling rate in Hz.
     """
 
-    audio_file_loc = first_match_or_raise(
-        root=root / "audio" / "hpss_filtered",
-        pattern="*.mmap",
-        label="concatenated audio mmap",
-    )
+    audio_file_loc = find_audio_mmap(root_directory=root, band="usv")
     name_parts = audio_file_loc.name.split("_")
     data_type, channel_num, sample_num, sampling_rate = (
         name_parts[-1][:-5],

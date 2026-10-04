@@ -343,9 +343,10 @@ def _write_tone_mmap(
     """
     Description
     -----------
-    Writes a synthetic concatenated int16 audio memmap under ``<tmp_path>/audio``
-    whose filename encodes the ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` metadata the
-    helper parses. The loud channel carries a pure ``f0`` tone of int16 amplitude
+    Writes a synthetic concatenated int16 audio memmap at the canonical 'usv'
+    band location ``<tmp_path>/audio/hpss_filtered`` whose canonical filename
+    encodes the ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` metadata the helper
+    parses. The loud channel carries a pure ``f0`` tone of int16 amplitude
     ``loud_amp`` ONLY within ``[tone_lo_s, tone_hi_s)`` (silence elsewhere on it);
     every other channel carries a quieter ``f0`` tone (amplitude ``quiet_amp``)
     throughout. This lets the test exercise channel selection, the onset-anchored
@@ -372,8 +373,8 @@ def _write_tone_mmap(
         ``tmp_path`` (the directory containing ``audio/``).
     """
 
-    audio_dir = tmp_path / "audio"
-    audio_dir.mkdir()
+    audio_dir = tmp_path / "audio" / "hpss_filtered"
+    audio_dir.mkdir(parents=True)
     t = np.arange(n_samples) / sampling_rate
     arr = np.zeros((n_samples, n_channels), dtype=np.int16)
     quiet = (quiet_amp * np.sin(2 * np.pi * f0 * t)).astype(np.int16)
@@ -383,7 +384,7 @@ def _write_tone_mmap(
     loud = (loud_amp * np.sin(2 * np.pi * f0 * t)).astype(np.int16)
     arr[:, loud_channel] = 0
     arr[s_lo:s_hi, loud_channel] = loud[s_lo:s_hi]
-    name = f"sess_concatenated_audio_{sampling_rate}_{n_samples}_{n_channels}_int16.mmap"
+    name = f"sess_concatenated_audio_hpss_filtered_{sampling_rate}_{n_samples}_{n_channels}_int16.mmap"
     arr.tofile(audio_dir / name)
     return tmp_path
 
@@ -558,18 +559,18 @@ def test_extract_snippet_acoustics_unparseable_mmap_name_raises(tmp_path):
     """
     Description
     -----------
-    When an ``*_int16.mmap*`` file exists but its name lacks the
-    ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` metadata segment, the metadata regex
-    returns ``None`` and the helper raises a ``ValueError`` quoting the offending
-    file name. Exercises the malformed-filename branch.
+    When an ``*_int16.mmap*`` file exists but its name lacks the canonical
+    ``<id>_concatenated_audio_hpss_filtered_<sr>_<n_samples>_<n_ch>_int16.mmap``
+    form, the exact-name 'usv' band lookup never selects it and the helper raises
+    a ``FileNotFoundError`` naming the band, instead of mis-parsing the file.
     """
 
-    audio_dir = tmp_path / "audio"
-    audio_dir.mkdir()
-    # A file matching the glob ('*_int16.mmap*') but NOT the metadata regex.
+    audio_dir = tmp_path / "audio" / "hpss_filtered"
+    audio_dir.mkdir(parents=True)
+    # A file with an int16 memmap suffix but NOT the canonical name.
     bad_name = "session_audio_int16.mmap"
     (audio_dir / bad_name).write_bytes(b"\x00\x00")
-    with pytest.raises(ValueError, match=r"Could not parse.*int16\.mmap.*segment"):
+    with pytest.raises(FileNotFoundError, match=r"usv audio memmap"):
         engine.extract_snippet_acoustics(
             str(tmp_path), np.array([0.10]), np.array([0.0]), 0.030,
         )

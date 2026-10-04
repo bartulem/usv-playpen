@@ -11,6 +11,7 @@ import json
 import os
 import pathlib
 import platform
+import re
 import subprocess
 import time as _time
 from collections.abc import Callable, Iterable, Iterator
@@ -1882,6 +1883,141 @@ def first_match_or_raise(
             f"{label or pattern}: no match for {kind} pattern '{pattern}' under '{root}'."
         )
     return matches[0]
+
+
+# The concatenated multi-channel audio memmaps of a session, one per frequency
+# band, each in its own exact folder under ``<root>/audio``: ``usv`` is the
+# 30 kHz high-passed HPSS audio every USV reader (DAS summary, spectrograms,
+# loudness, vocalocator, figures, videos) was built and trained on; ``broadband``
+# is the 2 kHz high-passed, line-noise-cleaned HPSS audio written by
+# ``Operator.broadband_filter_audio``.
+AUDIO_MMAP_BAND_FOLDERS = {"usv": "hpss_filtered", "broadband": "broadband_filtered"}
+
+
+def audio_mmap_name_regex(band: str) -> re.Pattern:
+    """
+    Description
+    -----------
+    Compiled regular expression matching the exact file name of a session's
+    concatenated audio memmap for one band:
+    ``<id>_concatenated_audio_<folder>_<sampling rate>_<samples>_<channels>_int16.mmap``,
+    where ``<folder>`` is the band's folder (``hpss_filtered`` for ``usv``,
+    ``broadband_filtered`` for ``broadband``) and ``<id>`` the recording id token
+    of the source wav names (no underscore). The pattern is anchored at both
+    ends, so temporary siblings (``.<name>.tmp-<pid>``), copies with a suffix and
+    the memmap of another band never match.
+
+    Parameters
+    ----------
+    band (str)
+        ``'usv'`` or ``'broadband'``.
+
+    Returns
+    -------
+    regex (re.Pattern)
+        Pattern with the named groups ``id``, ``sr``, ``n_samples`` and ``n_ch``.
+    """
+
+    if band not in AUDIO_MMAP_BAND_FOLDERS:
+        raise ValueError(f"Unknown audio band {band!r}; expected one of {sorted(AUDIO_MMAP_BAND_FOLDERS)}.")
+    folder = AUDIO_MMAP_BAND_FOLDERS[band]
+    return re.compile(
+        rf"^(?P<id>[^_]+)_concatenated_audio_{folder}_(?P<sr>\d+)_(?P<n_samples>\d+)_(?P<n_ch>\d+)_int16\.mmap$"
+    )
+
+
+def find_audio_mmap(root_directory: str | pathlib.Path, band: str) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Returns the ONE concatenated audio memmap of a session for the requested
+    band, searched in that band's exact folder (``<root>/audio/hpss_filtered``
+    for ``'usv'``, ``<root>/audio/broadband_filtered`` for ``'broadband'``, never
+    recursively) with the exact name pattern of :func:`audio_mmap_name_regex`.
+
+    This replaces the older ``first_match_or_raise`` lookups with a ``*.mmap``
+    glob (some of them recursive), which returned the alphabetically first memmap
+    anywhere under ``audio/`` and so silently picked up any second memmap (a
+    stray unfiltered file in ``cropped_to_video``, or a memmap of another band
+    in a folder that sorts first). Here a reader of one band can never be handed
+    the file of another band, and an ambiguous session fails loudly.
+
+    Parameters
+    ----------
+    root_directory (str | pathlib.Path)
+        Session root directory (contains ``audio``).
+    band (str)
+        ``'usv'`` (the 30 kHz high-passed HPSS memmap the USV pipeline reads) or
+        ``'broadband'`` (the 2 kHz high-passed, line-noise-cleaned memmap).
+
+    Returns
+    -------
+    mmap_path (pathlib.Path)
+        Path of the single matching memmap.
+
+    Raises
+    ------
+    ValueError
+        If ``band`` is not a known band.
+    FileNotFoundError
+        If the band folder does not exist or holds no matching memmap.
+    RuntimeError
+        If the band folder holds more than one matching memmap.
+    """
+
+    regex = audio_mmap_name_regex(band)
+    folder = pathlib.Path(root_directory) / "audio" / AUDIO_MMAP_BAND_FOLDERS[band]
+    if not folder.is_dir():
+        raise FileNotFoundError(f"{band} audio memmap: folder '{folder}' does not exist.")
+    matches = sorted(path for path in folder.iterdir() if path.is_file() and regex.match(path.name))
+    if not matches:
+        raise FileNotFoundError(f"{band} audio memmap: no file matching '{regex.pattern}' in '{folder}'.")
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"{band} audio memmap: {len(matches)} files match in '{folder}' "
+            f"({', '.join(path.name for path in matches)}); exactly one is required."
+        )
+    return matches[0]
+
+
+def parse_audio_mmap_name(mmap_path: str | pathlib.Path) -> dict:
+    """
+    Description
+    -----------
+    Reads the layout a concatenated audio memmap encodes in its file name
+    (``<id>_concatenated_audio_<folder>_<sr>_<n_samples>_<n_ch>_int16.mmap``),
+    for either band.
+
+    Parameters
+    ----------
+    mmap_path (str | pathlib.Path)
+        Path (or name) of the memmap.
+
+    Returns
+    -------
+    layout (dict)
+        ``band`` (str), ``id`` (str), ``sampling_rate`` (int), ``n_samples``
+        (int), ``n_channels`` (int) and ``dtype`` (``'int16'``).
+
+    Raises
+    ------
+    ValueError
+        If the name matches no band's pattern.
+    """
+
+    name = pathlib.Path(mmap_path).name
+    for band in AUDIO_MMAP_BAND_FOLDERS:
+        match = audio_mmap_name_regex(band).match(name)
+        if match is not None:
+            return {
+                "band": band,
+                "id": match["id"],
+                "sampling_rate": int(match["sr"]),
+                "n_samples": int(match["n_samples"]),
+                "n_channels": int(match["n_ch"]),
+                "dtype": "int16",
+            }
+    raise ValueError(f"'{name}' is not a concatenated audio memmap name of any band.")
 
 
 def newest_match_or_raise(

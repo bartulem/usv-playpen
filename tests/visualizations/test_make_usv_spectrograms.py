@@ -187,15 +187,18 @@ def _write_audio_memmap(
     """
     Description
     -----------
-    Write a synthetic concatenated int16 audio memmap whose basename
-    encodes ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` (so the parse in
+    Write a synthetic concatenated int16 audio memmap at the canonical
+    'usv' band location ``<root>/audio/hpss_filtered/`` with the canonical
+    name ``<id>_concatenated_audio_hpss_filtered_<sr>_<n_samples>_<n_ch>_int16.mmap``
+    (so ``os_utils.find_audio_mmap`` locates it and the parse in
     ``_load_audio_memmap`` resolves it) and fill it with a low-amplitude
     multi-channel sine so spectrograms are non-degenerate.
 
     Parameters
     ----------
     root (pathlib.Path)
-        Directory to write the file into (created if absent).
+        Session root directory; the memmap is written under
+        ``<root>/audio/hpss_filtered`` (created if absent).
     sampling_rate, sample_num, channel_num (int)
         Encoded in the filename and used to shape the (sample, channel)
         int16 array.
@@ -206,9 +209,10 @@ def _write_audio_memmap(
         Path to the written memmap file.
     """
 
-    root.mkdir(parents=True, exist_ok=True)
-    name = f"audio_{sampling_rate}_{sample_num}_{channel_num}_int16.mmap"
-    path = root / name
+    mmap_dir = root / "audio" / "hpss_filtered"
+    mmap_dir.mkdir(parents=True, exist_ok=True)
+    name = f"230101120000_concatenated_audio_hpss_filtered_{sampling_rate}_{sample_num}_{channel_num}_int16.mmap"
+    path = mmap_dir / name
     t = np.arange(sample_num, dtype=np.float64) / sampling_rate
     data = np.empty((sample_num, channel_num), dtype=np.int16)
     for ch in range(channel_num):
@@ -458,15 +462,17 @@ def test_load_audio_memmap_parses_filename(tmp_path):
 
 
 def test_load_audio_memmap_rejects_malformed_name(tmp_path):
-    """A memmap whose name lacks the encoded triple raises a clear
-    ValueError instead of an opaque parse failure (A1)."""
-    bad = tmp_path / "totally_wrong_int16.mmap"
-    bad.write_bytes(np.zeros(8, dtype=np.int16).tobytes())
+    """A memmap whose name lacks the encoded triple is never picked up: the
+    exact-name 'usv' band lookup finds no match and raises FileNotFoundError
+    instead of an opaque parse failure (A1)."""
+    bad_dir = tmp_path / "audio" / "hpss_filtered"
+    bad_dir.mkdir(parents=True)
+    (bad_dir / "totally_wrong_int16.mmap").write_bytes(np.zeros(8, dtype=np.int16).tobytes())
     plotter = USVSpectrogramPlotter(
         root_directory=str(tmp_path),
         visualizations_parameter_dict=_base_settings(),
     )
-    with pytest.raises(ValueError, match="Cannot parse sampling rate"):
+    with pytest.raises(FileNotFoundError, match="usv audio memmap"):
         plotter._load_audio_memmap()
 
 
@@ -1883,7 +1889,7 @@ def _write_sequence_session(
     [0, 0.006] s: male, female, male, unassigned (track_names male_x/female_y)."""
     root = tmp_path / session_id
     audio_dir = root / "audio"
-    _write_audio_memmap(audio_dir, channel_num=3)
+    _write_audio_memmap(root, channel_num=3)
     rows = {
         "start": [0.0005, 0.0015, 0.0030, 0.0045],
         "stop": [0.0010, 0.0020, 0.0035, 0.0050],
@@ -2007,7 +2013,7 @@ def test_plot_sequence_raw_audio_uses_loudest_channel(tmp_path):
         root_directory=str(root), visualizations_parameter_dict=settings
     ).plot_sequence()
 
-    mm_path = next((root / "audio").glob("*_int16.mmap"))
+    mm_path = next((root / "audio" / "hpss_filtered").glob("*_int16.mmap"))
     mm = np.memmap(mm_path, dtype=np.int16, mode="r", shape=(2000, 3), order="C")
     raw_ydata = fig.axes[1].lines[0].get_ydata()  # axes: [left, raw, spec, cbar]
     n = len(raw_ydata)
@@ -2050,7 +2056,7 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
 
     session_id = "20230101_120000"
     root = tmp_path / session_id
-    _write_audio_memmap(root / "audio")
+    _write_audio_memmap(root)
     rows = {
         "start": [0.001, 0.003], "stop": [0.002, 0.004],
         "emitter": ["male_x", "male_x"],
