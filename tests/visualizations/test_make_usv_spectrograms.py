@@ -2276,6 +2276,24 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
 
 
 
+@pytest.mark.parametrize("default_qlvm_map", ["qlvm", "qlvm_entropy"])
+def test_explorer_map_dropdown_uses_the_gui_display_names(default_qlvm_map):
+    """The explorer's Map dropdown lists every map of os_utils.QLVM_MAPS under its GUI
+    name (os_utils.QLVM_MAP_DISPLAY_NAMES), in that order, plus the squeak map, returns
+    the map prefix as its value, and starts on the shared map."""
+    _output, definitions = usv_embedding_explorer._widgets.run(
+        QLVM_MAPS=os_utils.QLVM_MAPS, QLVM_MAP_DISPLAY_NAMES=os_utils.QLVM_MAP_DISPLAY_NAMES,
+        SQUEAK_CLASS_SELECTIONS=SQUEAK_CLASS_SELECTIONS, available_lists={},
+        default_qlvm_map=default_qlvm_map, mo=mo,
+    )
+    map_dropdown = definitions["map_dropdown"]
+    expected = [os_utils.QLVM_MAP_DISPLAY_NAMES[qlvm_map] for qlvm_map in os_utils.QLVM_MAPS] + ["Squeaks"]
+    assert list(map_dropdown.options) == expected
+    assert map_dropdown.options[os_utils.QLVM_MAP_DISPLAY_NAMES["qlvm_duration"]] == "qlvm_duration"
+    assert map_dropdown.value == default_qlvm_map
+    assert not any("|" in label for label in map_dropdown.options)
+
+
 def _explorer_scatter_rows(qlvm_map: str, squeak_class: str) -> list[int]:
     """
     Description

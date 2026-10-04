@@ -2675,11 +2675,11 @@ reveals that USV's identity and acoustics.
 
 Every map is the toroidal (doughnut-shaped) surface of one production QLVM (quasi-Monte
 Carlo latent variable model; ``os_utils.QLVM_MAPS``), with its coordinates ``P1`` / ``P2``
-from the summaries:
+from the summaries. The **Map** dropdown names each USV map as the GUI does (``os_utils.QLVM_MAP_DISPLAY_NAMES``):
 
 * **QLVM** (``qlvm``) — the regular model, with its categories ``qlvm_category`` (R-1 … R-k,
   written by ``assign-qlvm-categories``).
-* **QLVM | duration**, **| spectral entropy**, **| bandwidth**, **| loudness** (``qlvm_duration``,
+* **duration**, **entropy**, **bandwidth**, **loudness** (``qlvm_duration``,
   ``qlvm_entropy``, ``qlvm_bandwidth``, ``qlvm_loudness``) — the conditional
   models, whose maps are what is left once that acoustic variable is removed. They carry no
   categories of their own: a **Color by** category colours their calls by the regular map's
