@@ -1,8 +1,8 @@
 """
 @author: bartulem
 Embed a session's USV spectrograms into the tori of trained QLVM model package
-cells and merge the torus coordinates + cluster labels into its
-``*_usv_summary.csv``.
+cells and merge the torus coordinates (plus, only when explicitly asked, a
+package cell's own cluster labels) into its ``*_usv_summary.csv``.
 
 This is the in-house, JAX (torch-free) inference driver. Every model it embeds
 with is one cell of a QLVM model package (``qlvm_models_latest/v3``, and the
@@ -12,12 +12,15 @@ filled in by :func:`os_utils.derive_spectrogram_model_paths`). A cell brings
 everything inference needs (:func:`load_model_cell`): its ``checkpoint.tar`` is
 read without torch, its ``training_contract.json`` fixes the head (legacy or
 ReLU), the input normalization (min-max, and the loudness floor of floor-trained
-cells) and the duration window, its Fibonacci embedding lattice is rebuilt, and
-its fine and coarse ``label_grid.npy`` (``inference/clusters_<level>/`` in v3,
-``cluster/<level>/`` in v2 / v2.1) supply the cluster labels. Each call is
-labelled (when its prefix asks for labels, see below) by **spatial lookup into
-those fixed, torus-periodic grids** -- NOT a per-session re-watershed -- so
-clusters are comparable across every session embedded into the same torus.
+cells) and the duration window, and its Fibonacci embedding lattice is rebuilt.
+A clustered v2 / v3 package cell also ships fine and coarse ``label_grid.npy``
+files (``inference/clusters_<level>/`` in v3, ``cluster/<level>/`` in v2 /
+v2.1); the production cells ship none. Only when a prefix explicitly asks for
+those package labels (``model_cell_label_levels``, see below) is each call
+labelled, by **spatial lookup into those fixed, torus-periodic grids** -- NOT a
+per-session re-watershed -- so labels are comparable across every session
+embedded into the same torus. The summary's one category column,
+``qlvm_category``, does not come from these grids (see below).
 Conditional cells take one conditioning value per call: phase 10 cells
 (``qlvm_models_latest/v2``, duration or mean frequency) decode it at the frozen
 corpus bin mean, phase 11 cells (``qlvm_models_latest/v3``, duration, mean
@@ -1634,7 +1637,7 @@ class QLVMLatentInference:
             merged.write_csv(file=str(tmp_summary_path))
 
         self.message_output(
-            f"Merged the torus coordinates and cluster labels of {len(models)} models "
+            f"Merged the torus coordinates (and any cluster labels asked for) of {len(models)} models "
             f"({', '.join('/'.join([f'{prefix}1', f'{prefix}2', *label_columns[prefix].values()]) for prefix in models)}) "
             f"into {usv_summary_loc.name}."
         )
@@ -1983,9 +1986,11 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
     -----------
     A command-line tool to embed a session's USV spectrograms into the torus of
     every QLVM model package cell of the ``model_cells`` setting (or of the
-    ``--model-cell`` pairs, which replace it) and merge the torus coordinates and
-    cluster labels of every listed model into its USV summary CSV;
-    ``--model-cell-labels`` pairs choose each prefix's label levels.
+    ``--model-cell`` pairs, which replace it) and merge the torus coordinates of
+    every listed model into its USV summary CSV; ``--model-cell-labels`` pairs
+    additionally ask a prefix for its package cell's own cluster labels (none by
+    default; the regular map's ``qlvm_category`` is written by
+    ``assign-qlvm-categories``).
 
     Parameters
     ----------
