@@ -1680,6 +1680,9 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
         # `tracks.shape[0]` to derive session duration in seconds.
         f.create_dataset("tracks", data=np.zeros((n_frames, 1, 1, 3), dtype=float))
 
+    # Session metadata: the vocal sides read each animal's sex from its Subjects entry.
+    (root / "session_metadata.yaml").write_text("Subjects:\n- subject_id: 'm1'\n  sex: male\n")
+
     # Audio sync JSON
     duration_s = float(n_frames / fps)
     sync_json = root / "audio" / "sync" / "audio_triggerbox_sync_info.json"
@@ -1852,10 +1855,31 @@ def test_load_vocal_inputs_returns_expected_keys(synthetic_compute_session):
     nt = _make_neuronal_tuning(root)
     bundle = nt._load_vocal_inputs()
     assert bundle is not None
-    for k in ("usv_df", "track_names", "male", "duration_seconds",
+    for k in ("usv_df", "track_names", "animal_sex", "duration_seconds",
               "starts", "stops", "emitters"):
         assert k in bundle
-    assert bundle["male"] == "m1"
+    assert "male" not in bundle and "female" not in bundle
+    assert bundle["animal_sex"] == {"m1": "male"}
+
+
+def test_vocal_sides_take_sex_from_metadata_not_track_slot(synthetic_compute_session):
+    """A female in track slot 0 (here the only track) is labelled female on its vocal
+    side; a slot-0-is-male rule would have called it male."""
+    root, _ = synthetic_compute_session
+    (root / "session_metadata.yaml").write_text("Subjects:\n- subject_id: 'm1'\n  sex: female\n")
+    nt = _make_neuronal_tuning(root)
+    voc_inputs = nt._load_vocal_inputs()
+    assert voc_inputs["animal_sex"] == {"m1": "female"}
+    precompute = nt._build_vocal_side_precompute(voc_inputs)
+    assert precompute["self"]["side"]["sex"] == "female"
+
+
+def test_load_vocal_inputs_unmatched_track_raises(synthetic_compute_session):
+    """A track with no metadata subject raises instead of defaulting to its slot."""
+    root, _ = synthetic_compute_session
+    (root / "session_metadata.yaml").write_text("Subjects:\n- subject_id: 'other'\n  sex: male\n")
+    with pytest.raises(ValueError, match="'m1' has no subject"):
+        _make_neuronal_tuning(root)._load_vocal_inputs()
 
 
 def test_load_vocal_inputs_returns_none_when_no_inputs(tmp_path):
@@ -2464,7 +2488,7 @@ def test_compute_session_usv_intervals_basic_pairs(monkeypatch):
     import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
 
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
-        "male_id": "M", "female_id": "F", "frame_rate": 150.0,
+        "track_names": ["M", "F"], "frame_rate": 150.0,
     })
     monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
         "M": "male", "F": "female",
@@ -2494,7 +2518,7 @@ def test_compute_session_usv_intervals_empty_usv_returns_empty_arrays(monkeypatc
     """Zero rows in the USV CSV → empty interval arrays, not a crash."""
     import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
-        "male_id": "M", "female_id": "F", "frame_rate": 150.0,
+        "track_names": ["M", "F"], "frame_rate": 150.0,
     })
     monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
         "M": "male", "F": "female",
@@ -2517,7 +2541,7 @@ def test_compute_session_usv_intervals_e2s_drops_overlapping(monkeypatch):
     """e2s mode: stop[0]=0.6, start[1]=0.5 → -0.1 interval, dropped, counted."""
     import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
-        "male_id": "M", "female_id": "F", "frame_rate": 150.0,
+        "track_names": ["M", "F"], "frame_rate": 150.0,
     })
     monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
         "M": "male", "F": "female",
@@ -2549,7 +2573,7 @@ def test_compute_session_usv_intervals_same_sex_session_pairs_per_animal(monkeyp
     """
     import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
-        "male_id": "A", "female_id": "B", "frame_rate": 150.0,
+        "track_names": ["A", "B"], "frame_rate": 150.0,
     })
     monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
         "A": "female", "B": "female",

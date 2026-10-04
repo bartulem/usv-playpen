@@ -2310,7 +2310,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
 * **male_female_txt_path** / **female_female_txt_path** / **lone_male_txt_path** — the three per-session-type session lists (each a bar in the chart).
 * **session_counts_output_path** / **session_counts_fig_format** — save location and format for the figure.
 
-**4. Session timeline.** ``plot_session_usv_timeline`` draws every non-noise USV in one session as a colored rectangle spanning its ``[start, stop]`` interval on a single horizontal strip. The session's male / female track ids are read from ``<session>/video/*_points3d_translated_rotated_metric.h5`` (``track_names[0]`` = male, ``track_names[1]`` = female); each USV's CSV ``emitter`` field is matched against them — male → ``#9AC0CD``, female → ``#FF6347``, anything else → ``#C0C0C0`` (unassigned). The title reports the total non-noise count.
+**4. Session timeline.** ``plot_session_usv_timeline`` draws every non-noise USV in one session as a colored rectangle spanning its ``[start, stop]`` interval on a single horizontal strip. The session's track names are read from ``<session>/video/*_points3d_translated_rotated_metric.h5`` and each animal's sex from the ``Subjects`` block of the session's ``*_metadata.yaml`` (the ``subject_id`` matching the track name; never the track slot, so a female-female session draws both animals female, and a track the metadata cannot resolve raises); each USV's CSV ``emitter`` field is matched against the track names — a male → ``#9AC0CD``, a female → ``#FF6347``, anything else → ``#C0C0C0`` (unassigned). The title reports the total non-noise count.
 
 .. code-block:: python
 
@@ -2717,7 +2717,7 @@ The USV maps show only the segments ``detect-usv-squeaks`` classed as pure USVs 
 * **Map** — one of the five QLVM maps or the squeak map; it starts on ``shared_resources.qlvm_map`` (the map
   the other QLVM figures draw).
 * **Color by** — a categorical label (category, session type, session id, or
-  emitter sex) or a continuous metric (point density, or a per-USV acoustic feature), the
+  emitter sex, read from each session's metadata ``Subjects`` so same-sex sessions need no correction) or a continuous metric (point density, or a per-USV acoustic feature), the
   latter rendered through the project colormap. The category is the calls' ``qlvm_category``
   on every USV map, the conditional ones included (the categories are defined on the regular
   map and label the call); the squeak map has none and falls back to density, saying so.

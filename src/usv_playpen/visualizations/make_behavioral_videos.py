@@ -25,10 +25,10 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from numba import njit
 from scipy.io import wavfile
 
-from ..analyses.decode_experiment_label import extract_information
 from ..analyses.generate_audio_files import AudioGenerator
 from ..os_utils import drop_noise_usvs, find_audio_mmap, first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import extract_animal_sexes
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
 from .figure_io import save_figure
 from .plot_style import apply_plot_style
@@ -1576,15 +1576,19 @@ class Create3DVideo:
         putative_save_directory = pathlib.Path(self.root_directory) / 'data_animation_examples'
         putative_save_directory.mkdir(exist_ok=True, parents=True)
 
-        experiment_info_dict = extract_information(experiment_code=mouse_experimental_code)
+        # Each animal's sex comes from the session metadata (the Subjects entry
+        # matched to its stripped track name), never from the track slot or the
+        # order of the sexes in the experimental code; an unmatched track raises.
+        animal_sex = extract_animal_sexes(self.root_directory, mouse_track_names, logger=self.message_output)
+        mouse_sexes = [animal_sex[mouse_name.strip('\x00').strip()] for mouse_name in mouse_track_names]
         # Plain Unicode (not mathtext "$\u2642$"): Helvetica lacks the \u2642 / \u2640
         # signs, so the symbols resolve through the silent Helvetica -> DejaVu
         # Sans text-fallback chain. Wrapping them in mathtext instead would
         # route them through the custom math fontset and emit the noisy
         # "Font family ['cursive'] not found" findfont message.
-        animal_id_sex_dict = {mouse_name: "\u2642" if mouse_sex == 'male' else "\u2640" for mouse_name, mouse_sex in zip(mouse_track_names, experiment_info_dict['mouse_sex'], strict=True)}
+        animal_id_sex_dict = {mouse_name: "\u2642" if mouse_sex == 'male' else "\u2640" for mouse_name, mouse_sex in zip(mouse_track_names, mouse_sexes, strict=True)}
 
-        animal_colors = choose_animal_colors(exp_info_dict=experiment_info_dict, visualizations_parameter_dict=self.visualizations_parameter_dict)
+        animal_colors = choose_animal_colors(exp_info_dict={'mouse_sex': mouse_sexes}, visualizations_parameter_dict=self.visualizations_parameter_dict)
         animal_colors_dict = {mouse_name: animal_colors[mouse_idx] for mouse_idx, mouse_name in enumerate(mouse_track_names)}
 
         # The GUI / JSON default for "raster_special_units" is [""] (a lone

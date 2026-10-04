@@ -55,8 +55,8 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from PIL import Image
 from scipy.ndimage import gaussian_filter1d
 
-from ..analyses.decode_experiment_label import extract_information
 from ..os_utils import drop_noise_usvs, first_match_or_raise, noise_mask, pure_usv_mask, squeak_bearing_mask
+from ..yaml_utils import extract_animal_sexes
 from .auxiliary_plot_functions import choose_animal_colors
 from .figure_io import resolve_save_path
 from .make_behavioral_videos import (
@@ -247,21 +247,24 @@ def load_session_poses(root_directory: pathlib.Path, visualizations_parameter_di
     session (dict)
         ``tracks`` (frames, animals, nodes, 3), ``names`` (track names), ``nodes`` (node names), ``fps``,
         ``sex_of`` (track name -> ``'male'`` / ``'female'``), ``colors`` (hex per animal, in track order).
+
+    Notes
+    -----
+    Track names are stripped of null-byte padding and whitespace, and each animal's sex is read
+    from the session metadata (``yaml_utils.extract_animal_sexes``: the ``Subjects`` entry whose
+    ``subject_id`` matches the track name), never from the order of the tracks or of the sexes
+    in the experimental code. A track the metadata cannot resolve raises.
     """
     h5_path = first_match_or_raise(root=root_directory / 'video', pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
                                    recursive=True, label='translated/rotated mouse points3d .h5')
     with h5py.File(h5_path, 'r') as h5_file:
         tracks = np.array(h5_file['tracks'])
-        names = [item.decode('utf-8') for item in h5_file['track_names']]
+        names = [item.decode('utf-8').strip('\x00').strip() for item in h5_file['track_names']]
         nodes = [item.decode('utf-8') for item in h5_file['node_names']]
         fps = float(h5_file['recording_frame_rate'][()])
-        experimental_code = h5_file['experimental_code'][()].decode('utf-8')
-    experiment_info = extract_information(experiment_code=experimental_code)
-    if experiment_info is None:
-        message = f'The experimental code {experimental_code!r} of {h5_path} could not be decoded.'
-        raise ValueError(message)
-    sex_of = dict(zip(names, experiment_info['mouse_sex'], strict=True))
-    colors = choose_animal_colors(exp_info_dict=experiment_info, visualizations_parameter_dict=visualizations_parameter_dict)
+    sex_of = extract_animal_sexes(str(root_directory), names)
+    colors = choose_animal_colors(exp_info_dict={'mouse_sex': [sex_of[name] for name in names]},
+                                  visualizations_parameter_dict=visualizations_parameter_dict)
     return {'tracks': tracks, 'names': names, 'nodes': nodes, 'fps': fps, 'sex_of': sex_of, 'colors': list(colors)}
 
 

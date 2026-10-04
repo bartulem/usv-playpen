@@ -18,7 +18,7 @@ from tqdm import tqdm
 
 from ..os_utils import AUDIO_MMAP_BAND_FOLDERS, atomic_output_path, configure_path, find_audio_mmap, first_match_or_raise, order_usv_summary_columns
 from ..time_utils import is_gui_context, smart_wait
-from ..yaml_utils import load_session_metadata, save_session_metadata
+from ..yaml_utils import extract_animal_sexes, load_session_metadata, save_session_metadata
 from .assign_vocalizations_utils import (
     are_points_in_conf_set,
     get_arena_dimensions,
@@ -188,45 +188,23 @@ class Vocalocator:
             # np.arange only coincidentally produced the right codes for
             # male/female (courtship) sessions; female-female sessions need
             # [1, 1] and male-male [0, 0], so the codes are derived from the
-            # session metadata's Subjects, matched to the track names.
+            # session metadata's Subjects, matched to the track names
+            # (yaml_utils.extract_animal_sexes, the package's one sex lookup).
             with h5py.File(track_file_path, mode='r') as track_file:
                 # some track h5 files carry stray whitespace in track names
                 # (e.g. ' 158800_0'); strip before matching against Subjects
-                track_names = [item.decode('utf-8').strip() for item in list(track_file['track_names'])]
+                track_names = [item.decode('utf-8').strip('\x00').strip() for item in list(track_file['track_names'])]
             if len(track_names) != tracks.shape[1]:
                 err_msg = (
                     f"Track h5 '{track_file_path}' is inconsistent: {len(track_names)} track_names "
                     f"but {tracks.shape[1]} animals on the tracks array."
                 )
                 raise ValueError(err_msg)
-            session_metadata, _ = load_session_metadata(self.root_directory, logger=self.message_output)
-            if session_metadata is None or 'Subjects' not in session_metadata or not session_metadata['Subjects']:
-                err_msg = (
-                    f"Session metadata of '{self.root_directory}' has no Subjects; cannot derive "
-                    f"the per-animal sex codes Vocalocator's animal_id field requires."
-                )
-                raise ValueError(err_msg)
-            subject_sex_by_id = {
-                str(subject['subject_id']): subject['sex']
-                for subject in session_metadata['Subjects']
-            }
+            # Raises (FileNotFoundError / ValueError) on missing metadata, a track with no
+            # matching subject_id, or a sex other than male / female: never a guess.
+            animal_sex = extract_animal_sexes(self.root_directory, track_names, logger=self.message_output)
             sex_to_code = {'male': 0, 'female': 1}
-            animal_id_codes = []
-            for track_name in track_names:
-                if track_name not in subject_sex_by_id:
-                    err_msg = (
-                        f"Track '{track_name}' has no matching subject_id in the session metadata "
-                        f"Subjects of '{self.root_directory}'; cannot derive its sex code."
-                    )
-                    raise ValueError(err_msg)
-                subject_sex = subject_sex_by_id[track_name]
-                if subject_sex not in sex_to_code:
-                    err_msg = (
-                        f"Unrecognized sex '{subject_sex}' for subject '{track_name}' in the session "
-                        f"metadata of '{self.root_directory}'; expected 'male' or 'female'."
-                    )
-                    raise ValueError(err_msg)
-                animal_id_codes.append(sex_to_code[subject_sex])
+            animal_id_codes = [sex_to_code[animal_sex[track_name]] for track_name in track_names]
             animal_ids = np.array(animal_id_codes, dtype=np.int32)
             self.message_output(
                 "Vocalocator animal_id sex codes (0=male, 1=female): "

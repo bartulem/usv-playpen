@@ -116,6 +116,8 @@ def _make_synthetic_session(
     n_squeak: int = 0,
     n_both: int = 0,
     write_vocal_flag_columns: bool = True,
+    male_sex: str = "male",
+    female_sex: str = "female",
 ):
     """Build a session_root containing:
 
@@ -145,6 +147,11 @@ def _make_synthetic_session(
         f.create_dataset("track_names", data=np.array([male_id.encode(), female_id.encode()]))
         f.create_dataset("recording_frame_rate", data=np.float64(frame_rate))
         f.create_dataset("experimental_code", data=np.bytes_(experiment_code))
+
+    # ---- session metadata (the source of each animal's sex) ---------------
+    (session_root / f"{session_id}_metadata.yaml").write_text(
+        f"Subjects:\n- subject_id: '{male_id}'\n  sex: {male_sex}\n"
+        f"- subject_id: '{female_id}'\n  sex: {female_sex}\n")
 
     # ---- USV summary CSV --------------------------------------------------
     audio_dir = session_root / "audio"
@@ -257,8 +264,8 @@ def test_extract_session_metadata_happy_path(tmp_path):
     _make_synthetic_session(sess, male_id="Mx", female_id="Fy",
                             frame_rate=200.0, experiment_code="my_exp")
     md = extract_session_metadata(str(sess))
-    assert md["male_id"] == "Mx"
-    assert md["female_id"] == "Fy"
+    assert md["track_names"] == ["Mx", "Fy"]
+    assert "male_id" not in md and "female_id" not in md
     assert md["frame_rate"] == 200.0
     assert md["experiment_code"] == "my_exp"
     assert md["tracking_file"].name.endswith("_points3d_translated_rotated_metric.h5")
@@ -463,6 +470,65 @@ def test_build_master_usv_dataframe_returns_two_frames_and_count(tmp_path):
                 "start", "duration", "frame_index",
                 "distance", "mf_angle", "fm_angle"):
         assert col in usv_df.columns
+
+
+def _master_df(session_roots):
+    """build_master_usv_dataframe over ``session_roots`` with the default suffixes."""
+    return build_master_usv_dataframe(
+        session_roots=[str(root) for root in session_roots],
+        exclude_noise_usvs=True,
+        usv_category_col="qlvm_category",
+        distance_suffix="nose-nose",
+        mf_angle_suffix="allo_yaw-nose",
+        fm_angle_suffix="nose-allo_yaw",
+    )
+
+
+def test_build_master_usv_dataframe_sex_comes_from_metadata_not_track_order(tmp_path):
+    """A courtship session whose metadata lists the female in track slot 0: her calls
+    are 'female', male_id / female_id name the metadata male / female, and the dyadic
+    angles are swapped so 'mf_angle' stays the male's angle to the female."""
+    sess = tmp_path / "20260101_120000"
+    # track 0 ("Fa") is the female, track 1 ("Mb") the male
+    _make_synthetic_session(sess, male_id="Fa", female_id="Mb", male_sex="female", female_sex="male",
+                            n_male_calls=4, n_female_calls=3, n_unassigned=1, n_noise=0)
+    beh_csv = sess / f"{sess.name}_behavioral_features.csv"
+    n_frames = pls.read_csv(beh_csv).height
+    pls.DataFrame({
+        "Fa-Mb.nose-nose": [0.1] * n_frames,
+        "Fa-Mb.allo_yaw-nose": [-10.0] * n_frames,
+        "Fa-Mb.nose-allo_yaw": [20.0] * n_frames,
+    }).write_csv(beh_csv)
+
+    usv_df, bg_df, _n = _master_df([sess])
+    sex_of = dict(zip(usv_df["emitter"].to_list(), usv_df["sex"].to_list()))
+    assert sex_of == {"Fa": "female", "Mb": "male", "UNKNOWN": "unassigned"}
+    assert set(usv_df["male_id"].to_list()) == {"Mb"}
+    assert set(usv_df["female_id"].to_list()) == {"Fa"}
+    # '<female>-<male>.nose-allo_yaw' is the male's angle to the female
+    assert set(bg_df["mf_angle"].to_list()) == {20.0}
+    assert set(bg_df["fm_angle"].to_list()) == {-10.0}
+
+
+def test_build_master_usv_dataframe_female_female_session(tmp_path):
+    """A female-female session: every attributed call is 'female', there is no single
+    male or female, so male_id and female_id are null."""
+    sess = tmp_path / "20260101_120000"
+    _make_synthetic_session(sess, male_id="F1", female_id="F2", male_sex="female", female_sex="female",
+                            n_noise=0)
+    usv_df, _bg, _n = _master_df([sess])
+    assert set(usv_df.filter(pls.col("emitter") != "UNKNOWN")["sex"].to_list()) == {"female"}
+    assert usv_df["male_id"].null_count() == usv_df.height
+    assert usv_df["female_id"].null_count() == usv_df.height
+
+
+def test_build_master_usv_dataframe_unmatched_track_raises(tmp_path):
+    """A tracked animal without a metadata subject raises; it is not given a sex by slot."""
+    sess = tmp_path / "20260101_120000"
+    _make_synthetic_session(sess, n_noise=0)
+    (sess / f"{sess.name}_metadata.yaml").write_text("Subjects:\n- subject_id: 'Mr_X'\n  sex: male\n")
+    with pytest.raises(ValueError, match="'Ms_Y' has no subject"):
+        _master_df([sess])
 
 
 def test_build_master_usv_dataframe_handles_heterogeneous_session_dtypes(tmp_path):

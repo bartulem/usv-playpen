@@ -50,6 +50,7 @@ from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from scipy.ndimage import gaussian_filter1d, zoom
 from scipy.signal.windows import tukey
 
+from ..analyses._usv_io import emitter_sex_expression, extract_animal_sexes
 from ..os_utils import (
     NOISE_COLUMN,
     QLVM_CATEGORY_COLUMN,
@@ -1307,13 +1308,9 @@ class USVSpectrogramPlotter:
             )
             raise ValueError(msg)
 
-        male_id, female_id = _resolve_session_emitter_ids(str(self.root_directory))
-        usv_df = usv_df.with_columns(
-            pls.when(pls.col("emitter") == male_id).then(pls.lit("male"))
-            .when(pls.col("emitter") == female_id).then(pls.lit("female"))
-            .otherwise(pls.lit("unassigned"))
-            .alias("sex")
-        )
+        # emitter -> sex from the session metadata (never the track slot)
+        animal_sex = _resolve_session_emitter_sexes(str(self.root_directory))
+        usv_df = usv_df.with_columns(emitter_sex_expression(animal_sex))
 
         seq_df = usv_df.filter(
             (pls.col("start") < end_time_sec) & (pls.col("stop") > start_time_sec)
@@ -2071,18 +2068,15 @@ USV_TIMELINE_FEMALE_COLOR = _FEMALE_COLORS[0]
 USV_TIMELINE_UNASSIGNED_COLOR = _UNASSIGNED_COLORS[0]
 
 
-def _resolve_session_emitter_ids(session_root: str) -> tuple[str, str]:
+def _read_session_track_names(session_root: str) -> list[str]:
     """
     Description
     -----------
-    Resolve the male / female emitter id strings from a session's
-    ``*_points3d_translated_rotated_metric.h5`` tracking file. The
-    h5's ``track_names`` array is the same string that appears in the
-    USV summary CSV's ``emitter`` column, so this mapping is what
-    drives the male / female / unassigned assignment downstream.
-    Convention in this dataset: ``track_names[0]`` is the male and
-    ``track_names[1]`` is the female (matches
-    ``usv_summary_statistics.extract_session_metadata``).
+    Reads the animal track names from a session's
+    ``*_points3d_translated_rotated_metric.h5`` tracking file, stripped of
+    null-byte padding and whitespace. The ``track_names`` array holds the same
+    strings that appear in the USV summary CSV's ``emitter`` column and in the
+    session metadata's ``Subjects[].subject_id``; their order carries no sex.
 
     Parameters
     ----------
@@ -2092,8 +2086,13 @@ def _resolve_session_emitter_ids(session_root: str) -> tuple[str, str]:
 
     Returns
     -------
-    male_id, female_id (tuple of str)
-        Track-name strings for the male and female animal.
+    track_names (list of str)
+        The stripped track names, in file order.
+
+    Raises
+    ------
+    FileNotFoundError
+        The session has no tracking file under ``video``.
     """
 
     tracking_file = first_match_or_raise(
@@ -2103,14 +2102,51 @@ def _resolve_session_emitter_ids(session_root: str) -> tuple[str, str]:
         label="3D tracking h5",
     )
     with h5py.File(str(tracking_file), "r") as h5_file:
-        track_names = [item.decode("utf-8") for item in list(h5_file["track_names"])]
+        return [item.decode("utf-8").strip("\x00").strip() for item in list(h5_file["track_names"])]
+
+
+def _resolve_session_emitter_sexes(session_root: str) -> dict[str, str]:
+    """
+    Description
+    -----------
+    Resolves the sex of every tracked animal of a session, keyed by the
+    emitter string the USV summary CSV uses. The track names come from the
+    session's ``*_points3d_translated_rotated_metric.h5`` tracking file
+    (:func:`_read_session_track_names`) and each animal's sex from the session
+    metadata (``yaml_utils.extract_animal_sexes``: the ``Subjects`` entry whose
+    ``subject_id`` matches the track name). The slot a track occupies is never
+    used, so a female-female session maps both emitters to ``'female'`` and a
+    male-male session both to ``'male'``; this mapping drives the male / female /
+    unassigned colouring downstream (``emitter_sex_expression``).
+
+    Parameters
+    ----------
+    session_root (str)
+        Session root directory path (already ``configure_path``'d by
+        the caller).
+
+    Returns
+    -------
+    animal_sex (dict)
+        ``{stripped track name: 'male' | 'female'}`` for every tracked animal.
+
+    Raises
+    ------
+    FileNotFoundError
+        The session has no tracking file or no readable metadata.
+    ValueError
+        The tracking file lists fewer than two animals, or a track name has no
+        subject with a recorded male / female sex in the metadata.
+    """
+
+    track_names = _read_session_track_names(session_root)
     if len(track_names) < 2:
         msg = (
             f"Session {session_root!r} tracking file lists "
             f"{len(track_names)} animals; need at least two."
         )
         raise ValueError(msg)
-    return track_names[0], track_names[1]
+    return extract_animal_sexes(session_root, track_names)
 
 
 def plot_session_usv_timeline(
@@ -2134,16 +2170,16 @@ def plot_session_usv_timeline(
     Render a single horizontal timeline of every (non-noise) USV in
     ``session_root``, with each call drawn as a rectangle that spans
     its ``[start, stop]`` interval and is colored by its assigned
-    emitter: ``male_color`` if the CSV's ``emitter`` matches the
-    session's male track id, ``female_color`` if it matches the
+    emitter: ``male_color`` if the CSV's ``emitter`` is an animal the
+    session metadata records as male, ``female_color`` if it is a
     female, otherwise ``unassigned_color``. Three calls to
     ``ax.broken_barh`` (one per group) handle the drawing efficiently
     even for thousands of events.
 
-    Emitter ids are looked up from the session's
-    ``*_points3d_translated_rotated_metric.h5`` tracking file (same
-    convention as ``usv_summary_statistics.extract_session_metadata``:
-    ``track_names[0]`` is male, ``track_names[1]`` is female). The
+    Emitter sexes come from the session metadata, matched to the track
+    names of the session's ``*_points3d_translated_rotated_metric.h5``
+    tracking file (:func:`_resolve_session_emitter_sexes`), never from the
+    order of the tracks. The
     USV summary CSV is read non-recursively from ``<session>/audio``
     and rows the ``noise`` classifier flagged
     are dropped before rendering.
@@ -2193,7 +2229,7 @@ def plot_session_usv_timeline(
     session_path = pathlib.Path(session_root)
     session_id = session_path.name
 
-    male_id, female_id = _resolve_session_emitter_ids(session_root)
+    animal_sex = _resolve_session_emitter_sexes(session_root)
 
     csv_path = first_match_or_raise(
         root=session_path / "audio",
@@ -2205,12 +2241,7 @@ def plot_session_usv_timeline(
     if exclude_noise_usvs:
         df = drop_noise_usvs(df, csv_path.name, message_output)[0]
 
-    df = df.with_columns(
-        pls.when(pls.col("emitter") == male_id).then(pls.lit("male"))
-        .when(pls.col("emitter") == female_id).then(pls.lit("female"))
-        .otherwise(pls.lit("unassigned"))
-        .alias("sex")
-    )
+    df = df.with_columns(emitter_sex_expression(animal_sex))
 
     if time_window is not None:
         win_lo, win_hi = float(time_window[0]), float(time_window[1])
@@ -2306,6 +2337,10 @@ EMBEDDING_OPTIONAL_LABEL_COLS = EMBEDDING_LABEL_COLS
 # embeddings cache was built from (see `_pooled_summaries_fingerprint`).
 POOLED_CACHE_FINGERPRINT_KEY = "usv_playpen_summaries_fingerprint"
 
+# Where the pooled table's 'sex' column comes from; folded into the summaries
+# fingerprint so caches built when sex was read from the track slot are rebuilt.
+POOLED_CACHE_SEX_SOURCE = "session_metadata"
+
 # Per-USV acoustic features (written by compute_usv_acoustic_features into
 # usv_summary.csv) -- pulled into the pooled embeddings DataFrame as continuous
 # color-by metrics in the embedding explorer.
@@ -2347,8 +2382,12 @@ def _pooled_summaries_fingerprint(
     pooled embeddings cache stores this fingerprint in its parquet metadata, so a
     cache built from other or older summaries (e.g. before the QLVM columns were
     re-embedded with another model) no longer matches and is rebuilt instead of
-    being served. Only file metadata is read, never the CSV contents, so the check
-    costs one directory listing and one ``stat`` per session.
+    being served. Because the ``sex`` column is read from the session metadata,
+    each session's ``*_metadata.yaml`` path, size and modification time enter the
+    fingerprint too, together with the ``POOLED_CACHE_SEX_SOURCE`` token, so a
+    cache built when sex was taken from the track slot (or before a metadata
+    correction) is rebuilt. Only file metadata is read, never the CSV contents,
+    so the check costs two directory listings and two ``stat`` calls per session.
 
     Parameters
     ----------
@@ -2369,6 +2408,9 @@ def _pooled_summaries_fingerprint(
 
     digest = hashlib.sha256()
     digest.update(f"exclude_noise_usvs={bool(exclude_noise_usvs)}\n".encode())
+    # Marks caches whose 'sex' column comes from the session metadata; a cache
+    # from before (sex taken from the track slot) lacks it and is rebuilt.
+    digest.update(f"sex_source={POOLED_CACHE_SEX_SOURCE}\n".encode())
     located: dict = {}
     for session_root in session_roots:
         try:
@@ -2385,6 +2427,14 @@ def _pooled_summaries_fingerprint(
             continue
         located[session_root] = csv_path
         digest.update(f"{session_root}\t{csv_path}\t{csv_stat.st_size}\t{csv_stat.st_mtime_ns}\n".encode())
+        # The 'sex' column is read from the session metadata, so an edited
+        # metadata file (a corrected Subjects sex) also makes the cache stale.
+        metadata_paths = sorted(pathlib.Path(session_root).glob("*_metadata.yaml"))
+        if metadata_paths:
+            metadata_stat = metadata_paths[0].stat()
+            digest.update(f"{metadata_paths[0]}\t{metadata_stat.st_size}\t{metadata_stat.st_mtime_ns}\n".encode())
+        else:
+            digest.update(f"{session_root}\tno-metadata\n".encode())
     return digest.hexdigest(), located
 
 
@@ -2462,7 +2512,9 @@ def build_pooled_embeddings_df(
                 where a summary has no squeak embedding)
             qlvm_category (Int64; only when some summary carries it)
             emitter (Utf8)
-            sex (Utf8)
+            sex (Utf8; 'male' / 'female' from the session metadata's
+                Subjects matched to the emitter, 'unassigned' for calls
+                with no attributed emitter -- never from the track slot)
             duration (Float64)
             usv, squeak (Boolean; the vocal-class booleans, null on unscorable
                 rows and where a summary has no such columns)
@@ -2570,38 +2622,21 @@ def build_pooled_embeddings_df(
         if exclude_noise_usvs:
             df = drop_noise_usvs(df, csv_path.name, message_output)[0]
 
-        # Look up the session's male / female track ids from the
-        # tracking h5 so we can map ``emitter`` -> ``sex``. Failure
-        # here just yields empty ids; all rows end up as "unassigned".
-        male_id: str = ""
-        female_id: str = ""
+        # Map ``emitter`` -> ``sex``: the session's track names come from
+        # the tracking h5 and each animal's sex from the session metadata
+        # (extract_animal_sexes), never from the track slot. A session whose
+        # tracking file cannot be read has no animals to attribute, so all
+        # its rows end up "unassigned"; a tracked animal the metadata cannot
+        # resolve raises instead of being guessed.
+        track_names: list[str] = []
         try:
-            tracking_h5 = first_match_or_raise(
-                root=pathlib.Path(session_root) / "video",
-                pattern="*_points3d_translated_rotated_metric.h5",
-                recursive=True,
-                label="3D tracking h5",
-            )
-            with h5py.File(str(tracking_h5), "r") as h5_track:
-                track_names = [
-                    item.decode("utf-8") for item in list(h5_track["track_names"])
-                ]
-            if len(track_names) > 0:
-                male_id = track_names[0]
-            if len(track_names) > 1:
-                female_id = track_names[1]
+            track_names = _read_session_track_names(session_root)
         except (FileNotFoundError, OSError, KeyError) as exc:
             message_output(f"[skip-tracks] {session_root}: {exc}")
+        animal_sex = extract_animal_sexes(session_root, track_names) if track_names else {}
 
         if "emitter" in df.columns:
-            df = df.with_columns(
-                pls.when(pls.col("emitter") == male_id)
-                .then(pls.lit("male"))
-                .when(pls.col("emitter") == female_id)
-                .then(pls.lit("female"))
-                .otherwise(pls.lit("unassigned"))
-                .alias("sex")
-            )
+            df = df.with_columns(emitter_sex_expression(animal_sex))
         else:
             df = df.with_columns(pls.lit("unassigned").alias("sex"))
 

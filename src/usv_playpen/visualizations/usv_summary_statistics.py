@@ -21,7 +21,13 @@ from statsmodels.stats.multicomp import pairwise_tukeyhsd
 # The USV/session loaders live in analyses/_usv_io.py (moved there to break the
 # analyses<->visualizations near-cycle); re-imported here so this module and its
 # importers keep using them unchanged.
-from ..analyses._usv_io import extract_session_metadata, load_and_filter_usv_data
+from ..analyses._usv_io import (
+    emitter_sex_expression,
+    extract_animal_sexes,
+    extract_session_metadata,
+    load_and_filter_usv_data,
+    sex_track_ids,
+)
 from ..os_utils import (
     QLVM_CATEGORY_MAP,
     QLVM_MAPS,
@@ -130,12 +136,10 @@ def extract_category_embedding_data(
     for session_root in session_roots:
         try:
             metadata = extract_session_metadata(session_root)
-            # Strip null-byte padding / whitespace off the H5 track names so the
-            # emitter match below is normalized on both sides (matching
-            # build_master_usv_dataframe); a padded ID would otherwise send every
-            # USV to 'unassigned'.
-            male_id = str(metadata['male_id']).strip('\x00').strip()
-            female_id = str(metadata['female_id']).strip('\x00').strip()
+            # Each animal's sex comes from the session metadata, matched to its
+            # (stripped) track name; the slot a track occupies says nothing about
+            # sex. A track the metadata cannot resolve raises instead of being guessed.
+            animal_sex = extract_animal_sexes(session_root, metadata['track_names'])
 
             # Filter noise
             usv_info = load_and_filter_usv_data(
@@ -151,13 +155,9 @@ def extract_category_embedding_data(
             if not all(col in usv_info.columns for col in req_cols):
                 continue
 
-            # Map sex and select target columns
-            emitter_norm = pls.col("emitter").cast(pls.Utf8).str.strip_chars('\x00').str.strip_chars()
+            # Map sex (stripped emitter -> metadata sex) and select target columns
             usv_processed = usv_info.with_columns([
-                pls.when(emitter_norm == male_id).then(pls.lit("male"))
-                .when(emitter_norm == female_id).then(pls.lit("female"))
-                .otherwise(pls.lit("unassigned"))
-                .alias("sex")
+                emitter_sex_expression(animal_sex)
             ]).select([
                 "sex",
                 pls.col(usv_category_col).alias("category"),
@@ -385,10 +385,11 @@ def build_master_usv_dataframe(
             skipped_sessions['missing or invalid tracking file'] += 1
             continue
 
-        raw_male_id = metadata['male_id']
-        raw_female_id = metadata['female_id']
-        male_id = str(raw_male_id).strip('\x00').strip()
-        female_id = str(raw_female_id).strip('\x00').strip()
+        # Sexes come from the session metadata (never the track slot); male_id /
+        # female_id are the session's single male and single female, None when the
+        # session does not hold exactly one animal of that sex (e.g. female-female).
+        animal_sex = extract_animal_sexes(session_root, metadata['track_names'])
+        male_id, female_id = sex_track_ids(animal_sex)
         frame_rate = metadata['frame_rate']
         experiment_code = metadata['experiment_code']
 
@@ -420,12 +421,6 @@ def build_master_usv_dataframe(
         date_str = session_id.split('_')[0]
         hour_int = int(session_id.split('_')[1][0:2])
 
-        # Match the emitter against the *normalized* IDs: H5 track names can carry
-        # trailing null-byte padding / whitespace (hence the strip on the stored
-        # *_id columns), so strip the CSV emitter the same way before comparing --
-        # otherwise a padded ID silently sends every USV to 'unassigned'.
-        emitter_norm = pls.col('emitter').cast(pls.Utf8).str.strip_chars('\x00').str.strip_chars()
-
         # Carry every continuous acoustic feature present in this CSV; null-fill the
         # rest so the master schema is identical across sessions.
         acoustic_exprs = [
@@ -435,15 +430,14 @@ def build_master_usv_dataframe(
         ]
 
         usv_processed = usv_info.with_columns([
-            pls.when(emitter_norm == male_id).then(pls.lit('male'))
-            .when(emitter_norm == female_id).then(pls.lit('female'))
-            .otherwise(pls.lit('unassigned'))
-            .alias('sex'),
+            # The emitter is stripped of null-byte padding / whitespace inside
+            # emitter_sex_expression, so a padded ID cannot send every USV to 'unassigned'.
+            emitter_sex_expression(animal_sex),
             pls.lit(session_id).alias('session_id'),
             pls.lit(date_str).alias('date'),
             pls.lit(hour_int).cast(pls.Int32).alias('hour'),
-            pls.lit(male_id).alias('male_id'),
-            pls.lit(female_id).alias('female_id'),
+            pls.lit(male_id, dtype=pls.Utf8).alias('male_id'),
+            pls.lit(female_id, dtype=pls.Utf8).alias('female_id'),
             pls.lit(experiment_code).alias('experiment_code'),
             pls.col(usv_category_col).alias('category'),
             *acoustic_exprs,
@@ -459,6 +453,13 @@ def build_master_usv_dataframe(
             dist_col = next((c for c in behavioral_features.columns if c.endswith(distance_suffix)), None)
             mf_col = next((c for c in behavioral_features.columns if c.endswith(mf_angle_suffix)), None)
             fm_col = next((c for c in behavioral_features.columns if c.endswith(fm_angle_suffix)), None)
+            # The dyadic columns are named '<first>-<second>.<feature>' in track order, and
+            # the mf / fm suffixes read the first animal as the male. When the metadata puts
+            # the female first, '<female>-<male>.<mf suffix>' is the female-to-male angle, so
+            # the two columns are swapped to keep 'mf_angle' the male's angle to the female.
+            if (mf_col and fm_col and male_id is not None and female_id is not None
+                    and mf_col.split('.')[0] == f"{female_id}-{male_id}"):
+                mf_col, fm_col = fm_col, mf_col
 
             if dist_col and mf_col and fm_col:
                 has_behavioral = True

@@ -1393,7 +1393,7 @@ You might also want to know which animal emitted which vocalization. To do this,
 
    <br>
 
-This will create a *sound_localization* subdirectory. With the default *vcl-ssl* backend, it contains a *dset.h5* file (all data relevant for sound localization) and a *model_predictions.npz* file, whose predictions are transferred to the "emitter" column of the *20250430_145017_usv_summary.csv* file. (With the older *vcl* backend it instead contains *dset.h5*, an *assessment.h5* file with 2D assessment data, and an *assessment_assn.npy* file with 6D assessment output that feeds the "emitter" column.)
+This will create a *sound_localization* subdirectory. With the default *vcl-ssl* backend, it contains a *dset.h5* file (all data relevant for sound localization) and a *model_predictions.npz* file, whose predictions are transferred to the "emitter" column of the *20250430_145017_usv_summary.csv* file. The *dset.h5* ``animal_id`` field holds one sex code per tracked animal (0 = male, 1 = female), read from the ``Subjects`` block of the session's *_metadata.yaml* (the ``subject_id`` matching the track name), never from the track order; a track without a matching subject raises. (With the older *vcl* backend it instead contains *dset.h5*, an *assessment.h5* file with 2D assessment data, and an *assessment_assn.npy* file with 6D assessment output that feeds the "emitter" column.)
 
 .. parsed-literal::
 

@@ -8,7 +8,7 @@ log-inter-USV interval samples.
 
 Convention
 Each animal's sex is read from the session metadata
-(:func:`._usv_io.extract_animal_sexes`), never from its track slot, and
+(:func:`usv_playpen.yaml_utils.extract_animal_sexes`), never from its track slot, and
 inter-vocalization intervals are computed only between consecutive USVs
 emitted by the *same* animal. A pool of one sex therefore holds every
 animal of that sex in a session: one per session in courtship, both
@@ -255,7 +255,7 @@ def compute_session_usv_intervals(
     except (FileNotFoundError, IndexError):
         return {}
 
-    animal_sex = extract_animal_sexes(session_root, [metadata['male_id'], metadata['female_id']])
+    animal_sex = extract_animal_sexes(session_root, metadata['track_names'])
 
     try:
         # Under 'filtered' the other call types are removed before pairing, so the loader

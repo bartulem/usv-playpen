@@ -134,6 +134,9 @@ def _build_synthetic_figure_session(
         f.create_dataset("experimental_code", data=b"E1M")
         f.create_dataset("tracks", data=np.zeros((n_frames, 1, 1, 3), dtype=float))
 
+    # The vocal compute reads each animal's sex from the session metadata Subjects.
+    (root / f"{root.name}_metadata.yaml").write_text("Subjects:\n- subject_id: 'm1'\n  sex: male\n")
+
     duration_s = float(n_frames / fps)
     sync_json = root / "audio" / "sync" / "audio_triggerbox_sync_info.json"
     sync_json.write_text(json.dumps({"m": {"duration_seconds": duration_s}}))

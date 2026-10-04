@@ -150,6 +150,9 @@ def _write_session(root: pathlib.Path) -> pathlib.Path:
         h5_file.create_dataset("node_names", data=np.array([name.encode("utf-8") for name in _NODES]))
         h5_file.create_dataset("recording_frame_rate", data=_FPS)
         h5_file.create_dataset("experimental_code", data=b"BCL2MGFGd")
+    # each animal's sex is read from the session metadata, matched to its track name
+    (session / f"{session.name}_metadata.yaml").write_text(
+        "Subjects:\n- subject_id: '100_1'\n  sex: male\n- subject_id: '200_2'\n  sex: female\n")
     rows = []
     for start in np.concatenate([np.arange(3.0, 5.0, 0.2), np.arange(9.0, 11.0, 0.2)]):
         rows.append({"start": start, "stop": start + 0.08, "duration": 0.08, "peak_amp_ch": 0, "emitter": "100_1", "noise": False, "usv": True,
