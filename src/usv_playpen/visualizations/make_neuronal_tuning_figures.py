@@ -4072,8 +4072,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             )
 
         # Memoize on the full argument tuple: make_all_category_figures renders two
-        # figures per segmentation, each independently collecting the same data (8
-        # pickle reads for 4 distinct collections). The collection is deterministic
+        # figures per segmentation, each independently collecting the same data (with
+        # the one category column, 2 reads for 1 distinct collection). The collection is deterministic
         # (reads the triage pickle + unit_catalog.csv, no RNG) and both render helpers
         # treat the result read-only, so returning the cached dict is byte-identical.
         if not hasattr(self, '_category_collection_cache'):
@@ -4533,8 +4533,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Description
         -----------
         Convenience wrapper that renders both category figures (peak
-        distribution + selectivity-breadth scatter) for every
-        segmentation in `USV_CATEGORY_SEGMENTATIONS`. Returns the
+        distribution + selectivity-breadth scatter) for each
+        segmentation in `USV_CATEGORY_SEGMENTATIONS` (the one QLVM
+        category column, `qlvm_category`). Returns the
         list of output paths in render order so the caller can log
         and cross-reference them.
 
@@ -4545,7 +4546,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         Returns
         -------
         out_paths (list[pathlib.Path])
-            4 paths: 2 segmentations × 2 figures each.
+            2 paths per segmentation (peak distribution, then
+            selectivity-breadth); 2 paths with the one category
+            column `qlvm_category`.
         """
 
         out_paths: list[pathlib.Path] = []

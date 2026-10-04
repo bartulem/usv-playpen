@@ -111,7 +111,7 @@ def _make_synthetic_session(
     include_behavioral: bool = True,
     include_embedding: bool = True,
     write_noise_column: bool = True,
-    cat_col: str = "usv_supercategory",
+    cat_col: str = "qlvm_category",
     n_noise: int = 2,
     n_squeak: int = 0,
     n_both: int = 0,
@@ -155,8 +155,8 @@ def _make_synthetic_session(
     rows_noise = []
     rows_class = []
     rows_cat = []
-    rows_umap_x = []
-    rows_umap_y = []
+    rows_qlvm1 = []
+    rows_qlvm2 = []
 
     t = 0.05
     for _ in range(n_male_calls):
@@ -166,8 +166,8 @@ def _make_synthetic_session(
         rows_noise.append(False)  # a real vocalization
         rows_class.append("usv")
         rows_cat.append(1)
-        rows_umap_x.append(np.random.RandomState(0).rand())
-        rows_umap_y.append(np.random.RandomState(1).rand())
+        rows_qlvm1.append(np.random.RandomState(0).rand())
+        rows_qlvm2.append(np.random.RandomState(1).rand())
         t += 0.5
     for _ in range(n_female_calls):
         rows_start.append(t)
@@ -176,8 +176,8 @@ def _make_synthetic_session(
         rows_noise.append(False)
         rows_class.append("usv")
         rows_cat.append(2)
-        rows_umap_x.append(0.5)
-        rows_umap_y.append(0.5)
+        rows_qlvm1.append(0.5)
+        rows_qlvm2.append(0.5)
         t += 0.5
     for _ in range(n_unassigned):
         rows_start.append(t)
@@ -186,8 +186,8 @@ def _make_synthetic_session(
         rows_noise.append(False)
         rows_class.append("usv")
         rows_cat.append(3)
-        rows_umap_x.append(0.7)
-        rows_umap_y.append(0.7)
+        rows_qlvm1.append(0.7)
+        rows_qlvm2.append(0.7)
         t += 0.5
     for squeak_class in ["squeak"] * n_squeak + ["both"] * n_both:
         rows_start.append(t)
@@ -196,8 +196,8 @@ def _make_synthetic_session(
         rows_noise.append(False)
         rows_class.append(squeak_class)
         rows_cat.append(4)
-        rows_umap_x.append(0.9)
-        rows_umap_y.append(0.9)
+        rows_qlvm1.append(0.9)
+        rows_qlvm2.append(0.9)
         t += 0.5
     for _ in range(n_noise):
         rows_start.append(t)
@@ -206,8 +206,8 @@ def _make_synthetic_session(
         rows_noise.append(True)  # flagged by the noise classifier
         rows_class.append(None)
         rows_cat.append(99)
-        rows_umap_x.append(0.0)
-        rows_umap_y.append(0.0)
+        rows_qlvm1.append(0.0)
+        rows_qlvm2.append(0.0)
         t += 0.5
 
     cols = {
@@ -222,8 +222,8 @@ def _make_synthetic_session(
         cols["squeak"] = pls.Series([None if c is None else c in ("squeak", "both") for c in rows_class], dtype=pls.Boolean)
     if include_embedding:
         cols[cat_col] = rows_cat
-        cols["umap_x"] = rows_umap_x
-        cols["umap_y"] = rows_umap_y
+        cols["qlvm1"] = rows_qlvm1
+        cols["qlvm2"] = rows_qlvm2
     else:
         cols[cat_col] = rows_cat
 
@@ -356,8 +356,8 @@ def test_extract_category_embedding_data_concats_sessions(tmp_path):
     df = extract_category_embedding_data(
         session_roots=[str(sess1), str(sess2)],
         exclude_noise_usvs=True,
-        usv_category_col="usv_supercategory",
-        usv_continuous_cols=("umap_x", "umap_y"),
+        usv_category_col="qlvm_category",
+        usv_continuous_cols=("qlvm1", "qlvm2"),
     )
     assert set(df.columns) == {"sex", "category", "dim1", "dim2"}
     assert df.height > 0
@@ -373,8 +373,8 @@ def test_extract_category_embedding_data_skips_missing_columns(tmp_path):
     df = extract_category_embedding_data(
         session_roots=[str(sess)],
         exclude_noise_usvs=True,
-        usv_category_col="usv_supercategory",
-        usv_continuous_cols=("umap_x", "umap_y"),
+        usv_category_col="qlvm_category",
+        usv_continuous_cols=("qlvm1", "qlvm2"),
     )
     # No matching columns → the per-session block continues; final result empty.
     assert df.height == 0
@@ -385,8 +385,8 @@ def test_extract_category_embedding_data_skips_bad_session(tmp_path):
     df = extract_category_embedding_data(
         session_roots=["/no/such/session"],
         exclude_noise_usvs=True,
-        usv_category_col="usv_supercategory",
-        usv_continuous_cols=("umap_x", "umap_y"),
+        usv_category_col="qlvm_category",
+        usv_continuous_cols=("qlvm1", "qlvm2"),
     )
     assert df.height == 0
 
@@ -426,7 +426,7 @@ def test_merge_usv_and_behavioral_features_join_shape(tmp_path):
         nose_distance_col="X-nose-nose",
         mf_angle_col="X-allo_yaw-nose",
         fm_angle_col="X-nose-allo_yaw",
-        usv_category_col="usv_supercategory",
+        usv_category_col="qlvm_category",
     )
     assert set(out.columns) >= {
         "frame_index", "emitter", "category", "usv_duration",
@@ -448,7 +448,7 @@ def test_build_master_usv_dataframe_returns_two_frames_and_count(tmp_path):
     usv_df, bg_df, n_noise_total = build_master_usv_dataframe(
         session_roots=[str(sess1), str(sess2)],
         exclude_noise_usvs=True,
-        usv_category_col="usv_supercategory",
+        usv_category_col="qlvm_category",
         distance_suffix="nose-nose",
         mf_angle_suffix="allo_yaw-nose",
         fm_angle_suffix="nose-allo_yaw",
@@ -480,7 +480,7 @@ def test_build_master_usv_dataframe_handles_heterogeneous_session_dtypes(tmp_pat
     usv_df, _bg, _n = build_master_usv_dataframe(
         session_roots=[str(sess1), str(sess2)],
         exclude_noise_usvs=True,
-        usv_category_col="usv_supercategory",
+        usv_category_col="qlvm_category",
         distance_suffix="nose-nose",
         mf_angle_suffix="allo_yaw-nose",
         fm_angle_suffix="nose-allo_yaw",
@@ -494,7 +494,7 @@ def test_build_master_usv_dataframe_raises_when_all_skipped(tmp_path):
         build_master_usv_dataframe(
             session_roots=[str(tmp_path / "absent")],
             exclude_noise_usvs=True,
-            usv_category_col="usv_supercategory",
+            usv_category_col="qlvm_category",
             distance_suffix="nose-nose",
             mf_angle_suffix="allo_yaw-nose",
             fm_angle_suffix="nose-allo_yaw",
@@ -528,7 +528,7 @@ def test_build_master_usv_dataframe_counts_pure_usvs_only(tmp_path):
     sess = tmp_path / "20260101_120000"
     _make_synthetic_session(sess, n_male_calls=4, n_female_calls=3, n_unassigned=1,
                             n_squeak=2, n_both=1, n_noise=2)
-    common = dict(session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="usv_supercategory",
+    common = dict(session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="qlvm_category",
                   distance_suffix="nose-nose", mf_angle_suffix="allo_yaw-nose", fm_angle_suffix="nose-allo_yaw")
     usv_only_df, _bg, n_noise = build_master_usv_dataframe(**common)
     assert usv_only_df.height == 8 and n_noise == 2
@@ -545,7 +545,7 @@ def test_build_master_usv_dataframe_usv_only_needs_vocal_flags(tmp_path):
     _make_synthetic_session(sess, write_vocal_flag_columns=False)
     with pytest.raises(KeyError, match="detect-usv-squeaks"):
         build_master_usv_dataframe(
-            session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="usv_supercategory",
+            session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="qlvm_category",
             distance_suffix="nose-nose", mf_angle_suffix="allo_yaw-nose", fm_angle_suffix="nose-allo_yaw",
         )
 
@@ -555,8 +555,8 @@ def test_extract_category_embedding_data_keeps_pure_usvs_only(tmp_path):
     (category 4 in the synthetic session) come back with ``usv_only=False``."""
     sess = tmp_path / "20260101_120000"
     _make_synthetic_session(sess, n_squeak=1, n_both=1)
-    kwargs = dict(session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="usv_supercategory",
-                  usv_continuous_cols=("umap_x", "umap_y"))
+    kwargs = dict(session_roots=[str(sess)], exclude_noise_usvs=True, usv_category_col="qlvm_category",
+                  usv_continuous_cols=("qlvm1", "qlvm2"))
     assert 4 not in extract_category_embedding_data(**kwargs)["category"].to_list()
     assert extract_category_embedding_data(**kwargs, usv_only=False)["category"].to_list().count(4) == 2
 

@@ -26,7 +26,8 @@ Deep non-linear USV manifold visualizations
 -------------------------------------------
 A specialized interpretation suite for Dual-Stream MLP/CNN models that
 quantitatively and qualitatively assess how behavioral kinematics map onto
-the continuous acoustic UMAP manifold.
+the continuous acoustic manifold (the QLVM torus; legacy pickles without
+a ``manifold_metric`` are drawn on a flat UMAP plane).
 
 1.  Statistical validation: Bootstrapped permutation testing against null
     models.
@@ -4767,7 +4768,11 @@ class DeepResultsVisualizer:
         ax3.set_ylabel('Bootstrapped count', fontsize=label_fontsize, color=text_color)
 
         # Perfectly center the X-labels under the broken axes pairs
-        ax1.text(1.5, -0.25, 'Euclidean Error (UMAP Units)', transform=ax1.transAxes,
+        # torus pickles carry wrap-aware (geodesic) fold errors on the QLVM torus;
+        # legacy flat-space pickles carry Euclidean errors on the UMAP plane
+        error_axis_label = ('Geodesic Error (QLVM Torus Units)' if self.manifold_metric == 'torus'
+                            else 'Euclidean Error (UMAP Units)')
+        ax1.text(1.5, -0.25, error_axis_label, transform=ax1.transAxes,
                  ha='center', va='top', fontsize=label_fontsize, color=text_color)
         ax3.text(1.5, -0.25, 'Error Reduction Skill Score', transform=ax3.transAxes,
                  ha='center', va='top', fontsize=label_fontsize, color=text_color)
@@ -4936,7 +4941,7 @@ class DeepResultsVisualizer:
         Generates a tiled grid of 'Hero Shot' panels focusing on representative regions across the manifold.
 
         This version uses K-Means clustering to identify patch centers. Unlike a pure density
-        search, K-Means ensures that isolated clusters (like small UMAP islands) are
+        search, K-Means ensures that isolated clusters (like small manifold islands) are
         guaranteed a representative panel, as centroids are distributed to minimize
         global spatial variance regardless of local point density.
 
@@ -4961,7 +4966,7 @@ class DeepResultsVisualizer:
         min_samples : int, default 50
             Minimum number of data points required inside a patch.
         bg_pt_color : str, default '#E0E0E0'
-            Hex code for the background global UMAP coordinates.
+            Hex code for the background global manifold coordinates.
         peak_pt_color : str, default '#00FFFF'
             Color of the crosshair ('+') marking the peak density of predictions.
         square_edge_color : str, default '#000000'
@@ -5568,7 +5573,7 @@ class DeepResultsVisualizer:
             Human-readable plot title (e.g., 'Category 3: Complex').
             If None, ``region_key`` is used.
         prediction_plot_type : str, default 'contour'
-            Visualization style for the predicted UMAP coordinates.
+            Visualization style for the predicted manifold coordinates.
             Options: ['contour', 'density', 'hexbin', 'scatter'].
         highlight_color : str, optional
             Color for the region border, the peak density marker,
@@ -5715,7 +5720,8 @@ class DeepResultsVisualizer:
 
         # PANEL 1: Manifold Context
         ax1.set_facecolor('#FFFFFF')
-        ax1.set_title(f"UMAP Context: {display_title}", fontsize=14, color=text_color, pad=15)
+        context_prefix = 'QLVM' if self.manifold_metric == 'torus' else 'UMAP'
+        ax1.set_title(f"{context_prefix} Context: {display_title}", fontsize=14, color=text_color, pad=15)
 
         # Background scatter (both the out-of-region grey dots and
         # the in-region highlighted dots) intentionally omitted --
