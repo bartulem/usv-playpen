@@ -2674,8 +2674,8 @@ from the summaries:
   models, whose maps are what is left once that acoustic variable is removed. They carry no
   categories, so on them a **Color by** category falls back to density and **Boundaries**
   are skipped (the chart title says so).
-* **Squeaks** (``qlvm_squeak``) — the squeak (broadband vocalization) map: the phase 3 BBV
-  model's coordinates ``qlvm_squeak1`` / ``qlvm_squeak2``, written by
+* **Squeaks** (``qlvm_squeak``) — the squeak (broadband vocalization) map: the production
+  squeak QLVM model's (``os_utils.QLVM_SQUEAK_PRODUCTION_CELL``, the time-stretched ``stretch_nofloor`` cell) coordinates ``qlvm_squeak1`` / ``qlvm_squeak2``, written by
   ``infer-qlvm-squeak-latents`` on the squeak-bearing rows only (``squeak`` true: pure squeaks
   and segments holding both; noise rows have null booleans), so every other row is left off this map. The
   **Squeak class** control filters it further. It has positions only — no categories —

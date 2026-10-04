@@ -729,7 +729,7 @@ def test_squeak_crop_inputs_normalizes_per_crop_and_centres_the_crop():
     rng = np.random.default_rng(3)
     spectrogram = rng.uniform(-90.0, 10.0, size=(128, 60)).astype(np.float32)
     spectrogram[:, :5] = 500.0
-    inputs = squeaks.squeak_crop_inputs([spectrogram], np.array([10]), np.array([29]))
+    inputs = squeaks.squeak_crop_inputs([spectrogram], np.array([10]), np.array([29]), False, squeaks.SQUEAK_QLVM_INPUT_CONTRACT)
     assert inputs.shape == (1, 128, 128)
     assert inputs.dtype == np.float32
     crop = spectrogram[:, 10:30]
@@ -741,7 +741,35 @@ def test_squeak_crop_inputs_normalizes_per_crop_and_centres_the_crop():
     assert not inputs[0, :, :left].any()
     assert not inputs[0, :, left + 20:].any()
     with pytest.raises(ValueError, match="1 to 128 frames"):
-        squeaks.squeak_crop_inputs([np.zeros((128, 200), dtype=np.float32)], np.array([0]), np.array([150]))
+        squeaks.squeak_crop_inputs(
+            [np.zeros((128, 200), dtype=np.float32)], np.array([0]), np.array([150]), False, squeaks.SQUEAK_QLVM_INPUT_CONTRACT
+        )
+
+
+def test_squeak_crop_inputs_time_stretches_and_floors_as_the_contract_says():
+    """
+    With time_stretch true the per-crop normalized crop is stretched over all 128 frames exactly as the
+    training-set builder stretched it (stretch_specs(..., True) of the zero-padded frame, no zero
+    columns left), then min-max normalized; a contract floor is applied after the resize and the input
+    min-maxed again (qlvm_latents.normalize_model_inputs), as the floored training sets were.
+    """
+    rng = np.random.default_rng(5)
+    spectrogram = rng.uniform(-90.0, 10.0, size=(128, 60)).astype(np.float32)
+    contract = {"input_normalization": "minmax", "normalization_epsilon": 1e-8, "floor": None}
+    inputs = squeaks.squeak_crop_inputs([spectrogram], np.array([10]), np.array([29]), True, contract)
+    crop = spectrogram[:, 10:30]
+    low, high = float(crop.min()), float(crop.max())
+    padded = np.zeros((1, 128, 128), dtype=np.float32)
+    padded[0, :, :20] = (crop - low) / (high - low + 1e-6)
+    stretched = squeaks.stretch_specs(padded, np.array([20]), (128, 128), True)
+    expected = squeaks.normalize_model_inputs(stretched, contract)
+    assert np.array_equal(inputs, expected)
+    assert inputs[0, :, 0].any() and inputs[0, :, -1].any()
+    floored = squeaks.squeak_crop_inputs([spectrogram], np.array([10]), np.array([29]), True, {**contract, "floor": 0.2})
+    once = (expected - expected.min()) / np.float32(expected.max() - expected.min() + np.float32(1e-8))
+    clipped = np.clip((once - np.float32(0.2)) / np.float32(0.8), 0.0, 1.0)
+    assert np.allclose(floored, (clipped - clipped.min()) / (clipped.max() - clipped.min() + np.float32(1e-8)), atol=1e-6)
+    assert not np.array_equal(floored, inputs)
 
 
 def test_squeak_qlvm_rows_selects_squeak_and_both_that_are_not_noise():
@@ -764,7 +792,7 @@ def test_squeak_qlvm_inputs_crops_and_excludes(tmp_path):
     widened window); the other candidates are counted by reason."""
     root = _build_squeak_embedding_session(tmp_path)
     summary = pls.read_csv(root / "audio" / f"{SESSION_ID}_usv_summary.csv", schema_overrides={"usv_id": pls.String})
-    built = squeaks.squeak_qlvm_inputs(root, summary, True, lambda *_a, **_kw: None)
+    built = squeaks.squeak_qlvm_inputs(root, summary, True, lambda *_a, **_kw: None, False, squeaks.SQUEAK_QLVM_INPUT_CONTRACT)
     assert built["row_index"].tolist() == [0, 2]
     assert built["window_start_s"] == pytest.approx([0.10, 0.40 - 12 * squeaks.FRAME_DT_S])
     assert built["first"].tolist() == [3, 0]
@@ -773,7 +801,16 @@ def test_squeak_qlvm_inputs_crops_and_excludes(tmp_path):
     assert built["n_candidates"] == 6
     assert built["excluded"] == {"no squeak extent": 1, "no spectrogram": 1, "crop < 8 frames": 1, "crop > 128 frames": 1}
     spectrograms = squeaks.squeak_window_spectrograms(root, np.array([0.10]), np.array([0.20]), True, lambda *_a, **_kw: None)
-    assert np.array_equal(built["inputs"][:1], squeaks.squeak_crop_inputs(spectrograms, np.array([3]), np.array([22])))
+    assert np.array_equal(
+        built["inputs"][:1],
+        squeaks.squeak_crop_inputs(spectrograms, np.array([3]), np.array([22]), False, squeaks.SQUEAK_QLVM_INPUT_CONTRACT),
+    )
+    stretched = squeaks.squeak_qlvm_inputs(root, summary, True, lambda *_a, **_kw: None, True, squeaks.SQUEAK_QLVM_INPUT_CONTRACT)
+    assert stretched["row_index"].tolist() == [0, 2]
+    assert np.array_equal(
+        stretched["inputs"][:1],
+        squeaks.squeak_crop_inputs(spectrograms, np.array([3]), np.array([22]), True, squeaks.SQUEAK_QLVM_INPUT_CONTRACT),
+    )
 
 
 def _write_squeak_cell(cell: pathlib.Path, mask_tag: str = "nomask", masking_type: str = "none") -> None:
@@ -820,10 +857,75 @@ def test_load_squeak_qlvm_cell_reads_the_old_layout_and_checks_it(tmp_path):
     assert model["lattice_m"] == 8
     assert model["head"] == "legacy"
     assert np.array_equal(np.asarray(model["lattice"]), np.asarray(squeaks.gen_fib_basis_float32(8)))
+    assert model["layout"] == "phase 3"
+    assert model["time_stretch"] is False
+    assert model["input_contract"] == squeaks.SQUEAK_QLVM_INPUT_CONTRACT
     _write_squeak_cell(tmp_path / "bad", mask_tag="masked", masking_type="sam")
     with pytest.raises(ValueError, match="mask_tag") as error:
         squeaks.load_squeak_qlvm_cell(str(tmp_path / "bad"))
     assert "masking_type" in str(error.value)
+
+
+def _write_contract_squeak_cell(cell: pathlib.Path, **contract_overrides) -> None:
+    """
+    Description
+    -----------
+    Writes a minimal squeak cell in the train-qlvm layout: a torch zip checkpoint holding a tiny
+    unconditional ReLU-head decoder prefix (layers 0 and 2) and ``config/training_contract.json``
+    with the production stretch_nofloor contract, any field replaced by ``contract_overrides``.
+
+    Parameters
+    ----------
+    cell (pathlib.Path)
+        Cell directory to create.
+    contract_overrides (dict)
+        Contract fields to replace.
+
+    Returns
+    -------
+    None
+    """
+
+    (cell / "config").mkdir(parents=True)
+    torch.save(
+        {"model": {"decoder.0.weight": torch.zeros(8, 4), "decoder.2.weight": torch.zeros(2, 8)}},
+        cell / "checkpoint.tar",
+    )
+    contract = {
+        "decoder_head": "relu", "latent_dim": 2, "c_dim": 0, "conditional": None,
+        "input_normalization": "minmax", "normalization_epsilon": 1e-08, "masking_type": "none", "floor": None,
+        "target_shape": [128, 128], "time_stretch": True, "length_threshold": None, "require_mask": False,
+        "embedding_lattice_type": "fibonacci", "embedding_fib_m": 8, "training_lattice_type": "fibonacci",
+        "training_fib_m": 5, "validation_fib_m": 6, "condition": None,
+    }
+    contract.update(contract_overrides)
+    (cell / "config" / "training_contract.json").write_text(json.dumps(contract))
+
+
+def test_load_squeak_qlvm_cell_reads_the_contract_layout_and_checks_it(tmp_path):
+    """A train-qlvm cell is read from its training_contract.json: time stretch, floor and input
+    normalization come from the contract and the lattice from embedding_fib_m; a masked, conditional,
+    mis-headed or badly floored contract is refused with every problem listed."""
+    _write_contract_squeak_cell(tmp_path / "squeaks" / "cell" / "stretch_nofloor")
+    model = squeaks.load_squeak_qlvm_cell(str(tmp_path / "squeaks" / "cell" / "stretch_nofloor"))
+    assert model["layout"] == "train-qlvm"
+    assert model["model_id"] == "squeaks/cell/stretch_nofloor"
+    assert model["head"] == "relu"
+    assert model["time_stretch"] is True
+    assert model["input_contract"] == {"input_normalization": "minmax", "normalization_epsilon": 1e-08, "floor": None}
+    assert model["lattice_m"] == 8
+    assert np.array_equal(np.asarray(model["lattice"]), np.asarray(squeaks.gen_fib_basis_float32(8)))
+    _write_contract_squeak_cell(tmp_path / "padded_floor", time_stretch=False, floor=0.2)
+    padded = squeaks.load_squeak_qlvm_cell(str(tmp_path / "padded_floor"))
+    assert padded["time_stretch"] is False
+    assert padded["input_contract"]["floor"] == 0.2
+    _write_contract_squeak_cell(
+        tmp_path / "bad", masking_type="sam", c_dim=1, condition={"name": "duration"}, decoder_head="legacy", floor=1.5,
+    )
+    with pytest.raises(ValueError, match="masking_type") as error:
+        squeaks.load_squeak_qlvm_cell(str(tmp_path / "bad"))
+    for problem in ("c_dim", "decoder_head", "floor"):
+        assert problem in str(error.value)
 
 
 def test_embed_and_merge_writes_the_two_squeak_torus_columns(tmp_path, mocker):
@@ -840,7 +942,10 @@ def test_embed_and_merge_writes_the_two_squeak_torus_columns(tmp_path, mocker):
     mocker.patch("usv_playpen.processing.detect_usv_squeaks.smart_wait")
     mocker.patch(
         "usv_playpen.processing.detect_usv_squeaks.load_squeak_qlvm_cell",
-        return_value={"params": {}, "lattice": np.zeros((21, 2)), "lattice_m": 8, "head": "legacy", "model_id": "p/c"},
+        return_value={
+            "params": {}, "lattice": np.zeros((21, 2)), "lattice_m": 8, "head": "legacy", "model_id": "p/c",
+            "layout": "phase 3", "time_stretch": False, "input_contract": dict(squeaks.SQUEAK_QLVM_INPUT_CONTRACT),
+        },
     )
     embed = mocker.patch(
         "usv_playpen.processing.detect_usv_squeaks.embed_data",

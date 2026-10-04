@@ -398,12 +398,17 @@ QLVM_PRODUCTION_MODEL_CELLS = {
     "qlvm_loudness": "conditionals/cell/loudness",
 }
 
-# The production squeak (broadband vocalization) embedding: the phase 3 BBV package
-# and its natural_session cell (natural draw over the duration bins, per-session bin
-# cap; the production choice since 2026-09-30), written by infer-qlvm-squeak-latents as
-# qlvm_squeak1/qlvm_squeak2. A constant for the same reason as the package root above.
-QLVM_SQUEAK_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm"
-QLVM_SQUEAK_PRODUCTION_CELL = "natural_session_N11000_nomask"
+# The production squeak (broadband vocalization) embedding, written by
+# infer-qlvm-squeak-latents as qlvm_squeak1/qlvm_squeak2: the train-qlvm cell
+# stretch_nofloor of the squeak package (11,000 class-balanced squeak crops, 3-30 kHz,
+# 128 linear bins, envelope +/- 2 frames, time-stretched to 128 frames, unmasked, no
+# loudness floor; its config/training_contract.json records masking_type "none",
+# time_stretch true and floor null, and infer-qlvm-squeak-latents reads and checks
+# them). It replaces the phase 3 BBV cell natural_session_N11000_nomask (zero-padded,
+# un-stretched), which the step still reads in its old package layout when named
+# explicitly. A constant for the same reason as the package root above.
+QLVM_SQUEAK_PACKAGE_ROOT = "/mnt/falkner/Bartul/PC_transfer/qlvm_final/squeaks"
+QLVM_SQUEAK_PRODUCTION_CELL = "cell/stretch_nofloor"
 
 # The spectrogram preprocessing every production cell was trained with (their
 # training_contract.json `masking_type` and `time_stretch`): SAM-masked
@@ -756,7 +761,8 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     ``assign-qlvm-categories``). Likewise an empty
     ``infer_qlvm_squeak_latents.model_cell_directory`` is filled with the
     production squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under
-    ``QLVM_SQUEAK_PACKAGE_ROOT`` (the phase 3 BBV ``natural_session`` cell); an
+    ``QLVM_SQUEAK_PACKAGE_ROOT`` (the time-stretched, unmasked, unfloored
+    ``train-qlvm`` cell ``squeaks/cell/stretch_nofloor``); an
     explicitly configured squeak cell is left alone. An empty
     ``assign_qlvm_categories.category_directory`` is filled with the category
     bundle ``QLVM_CATEGORY_BUNDLE_DIRECTORY`` and an empty

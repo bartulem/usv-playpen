@@ -70,18 +70,25 @@ files it was trained on, and this step reads every one of them from the bundle.
 
 Squeak QLVM embedding (``infer-qlvm-squeak-latents``,
 :class:`USVSqueakQLVMEmbedder`): a second step places every row of call class
-``squeak`` true (pure squeaks and "both") that is not noise on the torus of one of the phase 3
-broadband-vocalization QLVM cells (``qlvm_models_latest/phase3_BBVs_qlvm/<cell>``:
-the ``infer_qlvm_squeak_latents.model_cell_directory`` setting, filled with the
-production ``natural_session_N11000_nomask`` cell when empty) and writes the two
+``squeak`` true (pure squeaks and "both") that is not noise on the torus of one
+squeak QLVM cell (the ``infer_qlvm_squeak_latents.model_cell_directory`` setting,
+filled when empty with the production cell ``os_utils.QLVM_SQUEAK_PRODUCTION_CELL``
+under ``os_utils.QLVM_SQUEAK_PACKAGE_ROOT``: the time-stretched, unmasked,
+unfloored ``train-qlvm`` cell ``squeaks/cell/stretch_nofloor``) and writes the two
 float columns ``qlvm_squeak1`` / ``qlvm_squeak2`` (torus coordinates in
-``[0, 1)``, null on every other row). Its input is the sonic spectrogram
-(3-30 kHz, 128 linear bins, absolute dB, the cells' front end) cropped to the
-squeak extent the way the reference builder ``build_bbv_dataset.py`` built the
-cells' training sets: the frames whose centres lie inside
+``[0, 1)``, null on every other row). Two cell layouts are read
+(:func:`load_squeak_qlvm_cell`): a ``train-qlvm`` cell, whose
+``config/training_contract.json`` names its time stretch, loudness floor and
+masking (checked), and the old-layout phase 3 broadband-vocalization cells
+(``qlvm_models_latest/phase3_BBVs_qlvm/<cell>``: zero-padded, un-stretched,
+unfloored). Its input is the sonic spectrogram (3-30 kHz, 128 linear bins,
+absolute dB, the cells' front end) cropped to the squeak extent the way the
+cells' training sets were built: the frames whose centres lie inside
 ``[squeak_start, squeak_end]`` plus two frames of context either side, min-max
-normalized per crop, zero-padded to 128 frames, centred by ``stretch_specs`` and
-min-max normalized once more as the decoder's data loader did
+normalized per crop, written into a 128-frame zero frame, resized by
+``stretch_specs`` (time-stretched to fill all 128 frames, or centred without
+stretching, as the cell was trained) and normalized once more as the decoder's
+data loader did, with the cell's loudness floor when it has one
 (:func:`squeak_qlvm_inputs`). One row has one squeak extent (the envelope of all its
 above-threshold frames), so a row with several squeaks is embedded ONCE, over
 that envelope (gaps included).
@@ -89,10 +96,11 @@ Because a squeak may extend past its segment, the audio the spectrogram is built
 from covers the segment and the envelope plus its context
 (:func:`squeak_crop_window`), so a crop is never cut off at the segment
 boundary. Crops narrower than 8 frames (the training set's minimum) or wider
-than 128 frames (the decoder's frame; the training set never compressed a crop
-in time) get nulls. The embedding is the posterior mean over the cell's
-Fibonacci lattice (``lattice_m`` of its ``manifest.json``) built in float32 as
-the torch driver built it (:func:`qlvm_model.gen_fib_basis_float32`).
+than 128 frames (the decoder's frame; no training set held a wider crop, the
+stretched one included) get nulls. The embedding is the posterior mean over the
+cell's Fibonacci lattice (``embedding_fib_m`` of a ``train-qlvm`` cell's
+contract, ``lattice_m`` of an old-layout cell's ``manifest.json``) built in
+float32 as the torch driver built it (:func:`qlvm_model.gen_fib_basis_float32`).
 
 Training (``train-usv-squeak-model``, :class:`USVSqueakModelTrainer`): from the
 labelling tool's files -- one or more label sets, each a labels CSV
@@ -142,6 +150,7 @@ from ..os_utils import (
     derive_spectrogram_model_paths,
     first_match_or_raise,
     order_usv_summary_columns,
+    qlvm_cell_model_id,
     squeak_bearing_mask,
 )
 from ..time_utils import is_gui_context, smart_wait
@@ -226,18 +235,25 @@ SQUEAK_REFERENCE_WINDOW_FRAMES = 128
 # Columns the squeak QLVM embedding writes into the USV summary CSV.
 SQUEAK_QLVM_COLUMNS = ("qlvm_squeak1", "qlvm_squeak2")
 
-# Input contract of the phase 3 squeak (BBV) QLVM cells, fixed by the way
-# scripts/dataset_construct/build_bbv_dataset.py built their training sets (the
-# cells record them only in their model cards), therefore constants, not settings:
-# two context frames either side of the squeak extent, crops of at least 8 frames,
-# per-crop min-max with epsilon 1e-6, a 128 x 128 frame the crop is centred in
-# without time stretching, and the data loader's second per-spectrogram min-max
-# with epsilon 1e-8 (qmc_deep_gen data/mouse_data.py).
+# Crop rule shared by every squeak QLVM cell, fixed by the way their training sets
+# were built (scripts/dataset_construct/build_bbv_dataset.py for the phase 3 cells,
+# the squeak package's s01_build_sets.py for the train-qlvm cells), therefore
+# constants, not settings: two context frames either side of the squeak extent,
+# crops of at least 8 and at most 128 frames, per-crop min-max with epsilon 1e-6
+# and a 128 x 128 decoder frame.
 SQUEAK_QLVM_CONTEXT_FRAMES = 2
 SQUEAK_QLVM_MIN_CROP_FRAMES = 8
 SQUEAK_QLVM_CROP_EPSILON = 1e-6
 SQUEAK_QLVM_TARGET_SHAPE = (128, 128)
+
+# Input contract of the old-layout phase 3 squeak (BBV) QLVM cells, which record it
+# only in their model cards: the crop centred in the frame without time stretching,
+# then the data loader's second per-spectrogram min-max with epsilon 1e-8
+# (qmc_deep_gen data/mouse_data.py) and no loudness floor. A train-qlvm cell reads
+# the same three normalization fields and its time stretch from its own
+# training_contract.json instead.
 SQUEAK_QLVM_INPUT_CONTRACT = {"input_normalization": "minmax", "normalization_epsilon": 1e-8, "floor": None}
+SQUEAK_QLVM_OLD_LAYOUT_TIME_STRETCH = False
 
 
 class USVSqueakTimeMIL(NoiseTimeMIL):
@@ -1613,19 +1629,25 @@ def squeak_crop_inputs(
     spectrograms_db: list[np.ndarray],
     first: np.ndarray,
     last: np.ndarray,
+    time_stretch: bool,
+    input_contract: dict,
 ) -> np.ndarray:
     """
     Description
     -----------
-    Turns squeak crops into squeak QLVM decoder inputs, step for step as
-    the reference builder ``build_bbv_dataset.py`` (``--normalization per-crop``) and the
-    decoder's data loader did: each crop ``spectrogram[:, first:last + 1]``
-    (float32) is min-max normalized on its own,
-    ``(x - min) / (max - min + 1e-6)``, written into a 128-frame zero frame from
-    column 0, centred with ``stretch_specs(..., time_stretch=False)`` (the
-    128 x 128 input is not resized, only the crop's columns are moved to the
-    middle), and min-max normalized once more with epsilon 1e-8
-    (:func:`qlvm_latents.normalize_model_inputs`).
+    Turns squeak crops into squeak QLVM decoder inputs, step for step as the
+    cell's training set was built and its data loader normalized it: each crop
+    ``spectrogram[:, first:last + 1]`` (float32) is min-max normalized on its own,
+    ``(x - min) / (max - min + 1e-6)`` (``build_qlvm_squeak_training_set.normalize_crop``
+    ``"per_crop"``), written into a 128-frame zero frame from column 0 and resized by
+    ``stretch_specs(..., time_stretch)``: with ``time_stretch`` true (the
+    ``train-qlvm`` cells built with it, e.g. the production ``stretch_nofloor``) the
+    crop's columns are stretched to fill all 128 frames, with it false (the phase 3
+    cells, ``build_bbv_dataset.py --normalization per-crop``) they are only moved to
+    the middle, unresized. The result is normalized once more by the cell's input
+    contract (:func:`qlvm_latents.normalize_model_inputs`: per-spectrogram min-max
+    with the contract's epsilon, then the loudness floor and min-max again when the
+    contract has a floor).
 
     Parameters
     ----------
@@ -1635,6 +1657,16 @@ def squeak_crop_inputs(
         ``(N,)`` first crop frame of each (:func:`squeak_crop_frames`).
     last (np.ndarray)
         ``(N,)`` last crop frame of each, inclusive.
+    time_stretch (bool)
+        Whether the cell was trained on crops time-stretched to the 128-frame
+        frame (its ``training_contract.json`` ``time_stretch``; false for the
+        old-layout phase 3 cells). Read from the loaded cell
+        (:func:`load_squeak_qlvm_cell`), never chosen separately.
+    input_contract (dict)
+        The cell's ``input_normalization`` (``"minmax"`` or ``"none"``),
+        ``normalization_epsilon`` and ``floor`` (null or in ``[0, 1)``), as
+        :func:`load_squeak_qlvm_cell` returns them (``SQUEAK_QLVM_INPUT_CONTRACT``
+        for an old-layout cell).
 
     Returns
     -------
@@ -1662,8 +1694,8 @@ def squeak_crop_inputs(
         low, high = float(crop.min()), float(crop.max())
         specs[position, :, :width] = (crop - low) / (high - low + SQUEAK_QLVM_CROP_EPSILON)
         widths[position] = width
-    resized = stretch_specs(specs, widths, SQUEAK_QLVM_TARGET_SHAPE, False)
-    return normalize_model_inputs(resized, SQUEAK_QLVM_INPUT_CONTRACT)
+    resized = stretch_specs(specs, widths, SQUEAK_QLVM_TARGET_SHAPE, bool(time_stretch))
+    return normalize_model_inputs(resized, input_contract)
 
 
 def squeak_qlvm_rows(usv_summary: pls.DataFrame) -> np.ndarray:
@@ -1709,6 +1741,8 @@ def squeak_qlvm_inputs(
     usv_summary: pls.DataFrame,
     exclude_metadata_audio_channels: bool,
     message_output: Callable,
+    time_stretch: bool,
+    input_contract: dict,
 ) -> dict:
     """
     Description
@@ -1720,8 +1754,8 @@ def squeak_qlvm_inputs(
     :func:`squeak_window_spectrograms`), crops each to its envelope plus context
     (:func:`squeak_crop_frames`), leaves out crops narrower than ``SQUEAK_QLVM_MIN_CROP_FRAMES`` (the
     training set's minimum) or wider than the 128-frame decoder frame (never trained on: the decoder
-    frame has no room for them and the training crops were never compressed in time), and normalizes
-    the rest (:func:`squeak_crop_inputs`). The extent is already the envelope of all the row's
+    frame has no room for them and no training set held a wider crop), and normalizes the rest the way
+    the cell was trained (:func:`squeak_crop_inputs`, time-stretched or centred). The extent is already the envelope of all the row's
     above-threshold squeak frames, so a row with several squeaks is cropped to their envelope (one row
     holds one pair of coordinates). A fallback extent (one frame) gives a crop of 5 frames, below the
     8-frame minimum, so those rows get nulls.
@@ -1737,6 +1771,13 @@ def squeak_qlvm_inputs(
         Whether to drop metadata-excluded channels from the spectrogram average.
     message_output (Callable)
         Logging callback.
+    time_stretch (bool)
+        The loaded cell's ``time_stretch`` (:func:`load_squeak_qlvm_cell`), passed
+        on to :func:`squeak_crop_inputs`.
+    input_contract (dict)
+        The loaded cell's input normalization (``input_normalization``,
+        ``normalization_epsilon``, ``floor``), passed on to
+        :func:`squeak_crop_inputs`.
 
     Returns
     -------
@@ -1804,13 +1845,154 @@ def squeak_qlvm_inputs(
         "window_start_s": window_start[usable[keep]],
         "first": first[keep],
         "last": last[keep],
-        "inputs": squeak_crop_inputs([spectrograms[position] for position in usable[keep]], first[keep], last[keep]),
+        "inputs": squeak_crop_inputs(
+            [spectrograms[position] for position in usable[keep]], first[keep], last[keep], time_stretch, input_contract
+        ),
         "n_candidates": int(candidates.size),
         "excluded": excluded,
     }
 
 
 def load_squeak_qlvm_cell(model_cell_directory: str) -> dict:
+    """
+    Description
+    -----------
+    Loads one squeak QLVM cell, in either of the two layouts squeak cells come in,
+    and returns everything the embedding needs: the decoder, its lattice and the
+    input rule it was trained with (time stretch and input normalization), so the
+    inputs are always built the way the cell's training set was.
+
+    * A ``train-qlvm`` cell (the production ``squeaks/cell/stretch_nofloor``, and
+      any cell with a ``training_contract.json`` in ``config/`` or at its root) is
+      read by :func:`load_contract_squeak_qlvm_cell`: ``time_stretch``, ``floor``
+      and ``masking_type`` come from its contract and are checked.
+    * An old-layout phase 3 cell (``qlvm_models_latest/phase3_BBVs_qlvm/<cell>``:
+      every file at the cell root, no ``training_contract.json``) is read by
+      :func:`load_old_layout_squeak_qlvm_cell`: zero-padded, un-stretched,
+      unfloored inputs (``SQUEAK_QLVM_OLD_LAYOUT_TIME_STRETCH``,
+      ``SQUEAK_QLVM_INPUT_CONTRACT``).
+
+    Parameters
+    ----------
+    model_cell_directory (str)
+        Path to the cell, e.g.
+        ``/mnt/falkner/Bartul/PC_transfer/qlvm_final/squeaks/cell/stretch_nofloor`` or
+        ``/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm/natural_lumped_N11000_nomask``;
+        translated to the host mount with ``configure_path``.
+
+    Returns
+    -------
+    model (dict)
+        ``params`` (decoder weights), ``lattice`` (``(fib(lattice_m), 2)``
+        float32), ``lattice_m`` (int), ``head`` (``"legacy"`` or ``"relu"``),
+        ``model_id`` (the cell's identifier), ``layout`` (``"train-qlvm"`` or
+        ``"phase 3"``), ``time_stretch`` (bool) and ``input_contract`` (dict with
+        ``input_normalization``, ``normalization_epsilon`` and ``floor``).
+
+    Raises
+    ------
+    ValueError
+        Any check of the cell fails; every failure is reported together.
+    """
+
+    cell = pathlib.Path(configure_path(model_cell_directory))
+    if any((cell / subdirectory / "training_contract.json").is_file() for subdirectory in ("config", "")):
+        return load_contract_squeak_qlvm_cell(cell)
+    return load_old_layout_squeak_qlvm_cell(cell)
+
+
+def load_contract_squeak_qlvm_cell(cell: pathlib.Path) -> dict:
+    """
+    Description
+    -----------
+    Loads a squeak QLVM cell written by ``train-qlvm`` (the repo-trainer layout:
+    ``checkpoint.tar``, ``config/training_contract.json``, ``config/run_config.json``,
+    ``metrics/``). The contract states how the training inputs were prepared, and
+    each field the embedding depends on is read from it and checked:
+
+    * ``masking_type`` must be ``"none"`` and ``require_mask`` false (squeaks have
+      no SAM masks, so a masked cell cannot be fed);
+    * ``time_stretch`` (a boolean) decides whether each crop is time-stretched to
+      the 128-frame frame or centred in it (:func:`squeak_crop_inputs`);
+    * ``floor`` (null, or a loudness floor in ``[0, 1)``), ``input_normalization``
+      (``"minmax"`` or ``"none"``) and ``normalization_epsilon`` are the data
+      loader's normalization, applied after the resize
+      (:func:`qlvm_latents.normalize_model_inputs`);
+    * ``target_shape`` must be ``[128, 128]``, ``latent_dim`` 2, ``c_dim`` 0 with
+      no ``condition`` (an unconditional 2-D torus; the weights' first layer must
+      take 4 inputs), and ``decoder_head`` must be the head of the weights
+      (:func:`qlvm_model.decoder_head`);
+    * ``embedding_lattice_type`` must be ``"fibonacci"``; ``embedding_fib_m``
+      gives the lattice, rebuilt in float32 as the torch driver built it
+      (:func:`qlvm_model.gen_fib_basis_float32`).
+
+    Parameters
+    ----------
+    cell (pathlib.Path)
+        The cell directory, already translated to the host mount.
+
+    Returns
+    -------
+    model (dict)
+        As :func:`load_squeak_qlvm_cell`; ``model_id`` is the last three path
+        components (``os_utils.qlvm_cell_model_id``, e.g.
+        ``squeaks/cell/stretch_nofloor``) and ``layout`` is ``"train-qlvm"``.
+
+    Raises
+    ------
+    ValueError
+        Any check fails; every failure is reported together.
+    """
+
+    with cell_file(cell, "training_contract.json").open() as contract_file:
+        contract = json.load(contract_file)
+    params = load_decoder_params(str(cell / "checkpoint.tar"))
+    weights_head = decoder_head(params)
+    problems = []
+    if contract["masking_type"] != "none" or contract["require_mask"]:
+        problems.append(
+            f"training_contract.json masking_type {contract['masking_type']!r} / require_mask {contract['require_mask']!r}, "
+            f"expected 'none' / false (squeaks have no SAM masks)"
+        )
+    if not isinstance(contract["time_stretch"], bool):
+        problems.append(f"training_contract.json time_stretch is {contract['time_stretch']!r}, expected true or false")
+    if contract["floor"] is not None and not 0.0 <= float(contract["floor"]) < 1.0:
+        problems.append(f"training_contract.json floor is {contract['floor']!r}, expected null or a value in [0, 1)")
+    if contract["input_normalization"] not in ("minmax", "none"):
+        problems.append(f"training_contract.json input_normalization is {contract['input_normalization']!r}, expected 'minmax' or 'none'")
+    if [int(value) for value in contract["target_shape"]] != list(SQUEAK_QLVM_TARGET_SHAPE):
+        problems.append(f"training_contract.json target_shape {contract['target_shape']!r}, expected {list(SQUEAK_QLVM_TARGET_SHAPE)}")
+    if contract["latent_dim"] != 2:
+        problems.append(f"training_contract.json latent_dim is {contract['latent_dim']!r}, expected 2")
+    if contract["c_dim"] != 0 or contract["condition"] is not None:
+        problems.append(f"training_contract.json c_dim {contract['c_dim']!r} / condition {contract['condition']!r}, expected 0 / null (unconditional)")
+    if contract["decoder_head"] != weights_head:
+        problems.append(f"training_contract.json decoder_head is {contract['decoder_head']!r}, the weights are {weights_head!r}")
+    if contract["embedding_lattice_type"] != "fibonacci":
+        problems.append(f"training_contract.json embedding_lattice_type is {contract['embedding_lattice_type']!r}, expected 'fibonacci'")
+    if int(params["0.weight"].shape[1]) != 4:
+        problems.append(f"the decoder's first layer takes {int(params['0.weight'].shape[1])} inputs, expected 4 (an unconditional 2-D torus)")
+    if problems:
+        error_message = f"{cell} is not a squeak QLVM cell this step can embed with:\n  " + "\n  ".join(problems)
+        raise ValueError(error_message)
+    lattice_m = int(contract["embedding_fib_m"])
+    return {
+        "params": params,
+        "lattice": gen_fib_basis_float32(lattice_m),
+        "lattice_m": lattice_m,
+        "head": weights_head,
+        "model_id": qlvm_cell_model_id(cell),
+        "layout": "train-qlvm",
+        "time_stretch": contract["time_stretch"],
+        "input_contract": {
+            "input_normalization": contract["input_normalization"],
+            "normalization_epsilon": contract["normalization_epsilon"],
+            "floor": contract["floor"],
+        },
+    }
+
+
+def load_old_layout_squeak_qlvm_cell(cell: pathlib.Path) -> dict:
     """
     Description
     -----------
@@ -1833,18 +2015,20 @@ def load_squeak_qlvm_cell(model_cell_directory: str) -> dict:
       on, rebuilt in float32 as the torch driver built it
       (:func:`qlvm_model.gen_fib_basis_float32`).
 
+    The input rule of these cells is fixed (their model cards): crops centred
+    without time stretching (``SQUEAK_QLVM_OLD_LAYOUT_TIME_STRETCH``) and the
+    normalization ``SQUEAK_QLVM_INPUT_CONTRACT`` (min-max, epsilon 1e-8, no floor).
+
     Parameters
     ----------
-    model_cell_directory (str)
-        Path to the cell, e.g.
-        ``/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm/natural_lumped_N11000_nomask``.
+    cell (pathlib.Path)
+        The cell directory, already translated to the host mount.
 
     Returns
     -------
     model (dict)
-        ``params`` (decoder weights), ``lattice`` (``(fib(lattice_m), 2)``
-        float32), ``lattice_m`` (int), ``head`` (``"legacy"`` or ``"relu"``) and
-        ``model_id`` (``<phase>/<cell>``, the last two path components).
+        As :func:`load_squeak_qlvm_cell`; ``model_id`` is ``<phase>/<cell>`` (the
+        last two path components) and ``layout`` is ``"phase 3"``.
 
     Raises
     ------
@@ -1852,7 +2036,6 @@ def load_squeak_qlvm_cell(model_cell_directory: str) -> dict:
         Any check fails; every failure is reported together.
     """
 
-    cell = pathlib.Path(configure_path(model_cell_directory))
     with cell_file(cell, "run_config.json").open() as run_config_file:
         run_config = json.load(run_config_file)
     with cell_file(cell, "manifest.json").open() as manifest_file:
@@ -1884,6 +2067,9 @@ def load_squeak_qlvm_cell(model_cell_directory: str) -> dict:
         "lattice_m": lattice_m,
         "head": decoder_head(params),
         "model_id": "/".join(cell.parts[-2:]),
+        "layout": "phase 3",
+        "time_stretch": SQUEAK_QLVM_OLD_LAYOUT_TIME_STRETCH,
+        "input_contract": dict(SQUEAK_QLVM_INPUT_CONTRACT),
     }
 
 
@@ -1892,7 +2078,7 @@ class USVSqueakQLVMEmbedder:
     Description
     -----------
     Places every ``squeak`` / ``both`` row of one session that is not noise on the torus of a squeak
-    (BBV) QLVM cell and merges ``qlvm_squeak1`` / ``qlvm_squeak2`` into its ``*_usv_summary.csv``.
+    QLVM cell (:func:`load_squeak_qlvm_cell`, either layout) and merges ``qlvm_squeak1`` / ``qlvm_squeak2`` into its ``*_usv_summary.csv``.
     """
 
     def __init__(
@@ -1936,7 +2122,8 @@ class USVSqueakQLVMEmbedder:
         production cell by ``os_utils.derive_spectrogram_model_paths`` and raises
         only when there is no ``spectrograms_root`` to derive it from), builds the decoder inputs of the
         session's ``squeak`` / ``both`` rows that are not noise (:func:`squeak_qlvm_inputs`, one crop
-        per row over its squeak envelope), embeds them as the posterior mean over the cell's lattice
+        per row over its squeak envelope, time-stretched or centred and normalized as the loaded cell
+        was trained), embeds them as the posterior mean over the cell's lattice
         (:func:`qlvm_model.embed_data`) and writes ``qlvm_squeak1`` / ``qlvm_squeak2`` (torus
         coordinates in ``[0, 1)``) on those rows and nulls on every other row, replacing any earlier
         squeak coordinates. Run it after ``detect-usv-noise`` and ``detect-usv-squeaks``. The summary
@@ -1961,13 +2148,15 @@ class USVSqueakQLVMEmbedder:
             error_message = (
                 "infer_qlvm_squeak_latents.model_cell_directory is empty and spectrograms_root is not set, so the "
                 "production squeak QLVM cell is not filled in. Set spectrograms_root or name a "
-                "qlvm_models_latest/phase3_BBVs_qlvm cell (e.g. via --model-cell-directory)."
+                "squeak QLVM cell (e.g. via --model-cell-directory)."
             )
             raise ValueError(error_message)
         model = load_squeak_qlvm_cell(cfg['model_cell_directory'])
+        floor_note = "no floor" if model['input_contract']['floor'] is None else f"floor {model['input_contract']['floor']}"
         self.message_output(
-            f"{'/'.join(SQUEAK_QLVM_COLUMNS)}: squeak QLVM cell {model['model_id']} ({model['head']} head, "
-            f"{model['lattice'].shape[0]}-point float32 Fibonacci lattice, m = {model['lattice_m']})."
+            f"{'/'.join(SQUEAK_QLVM_COLUMNS)}: squeak QLVM cell {model['model_id']} ({model['layout']} layout, "
+            f"{model['head']} head, {model['lattice'].shape[0]}-point float32 Fibonacci lattice, m = {model['lattice_m']}; "
+            f"inputs {'time-stretched' if model['time_stretch'] else 'centred, not stretched'}, {floor_note})."
         )
 
         root = pathlib.Path(self.root_directory)
@@ -1985,6 +2174,8 @@ class USVSqueakQLVMEmbedder:
             usv_summary=usv_df,
             exclude_metadata_audio_channels=cfg['exclude_metadata_audio_channels'],
             message_output=self.message_output,
+            time_stretch=model['time_stretch'],
+            input_contract=model['input_contract'],
         )
         left_out = ", ".join(f"{count} {reason}" for reason, count in squeak_inputs['excluded'].items() if count)
         null_note = f"; null {'/'.join(SQUEAK_QLVM_COLUMNS)} for {left_out}" if left_out else ""
@@ -2118,7 +2309,7 @@ def train_usv_squeak_model_cli(ctx, bundle_path, label_set, label_override, **kw
 
 @click.command(name="infer-qlvm-squeak-latents")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--model-cell-directory', 'model_cell_directory', type=str, default=None, required=False, help='A squeak (BBV) QLVM cell; filled with the production phase3_BBVs_qlvm/natural_session_N11000_nomask cell when empty and spectrograms_root is set.')
+@click.option('--model-cell-directory', 'model_cell_directory', type=str, default=None, required=False, help='A squeak QLVM cell (a train-qlvm cell with a training_contract.json, or an old-layout phase3_BBVs_qlvm cell); filled with the production squeaks/cell/stretch_nofloor cell when empty and spectrograms_root is set.')
 @click.option('--exclude-metadata-audio-channels/--no-exclude-metadata-audio-channels', 'exclude_metadata_audio_channels', default=None, required=False, help='Drop channels the session metadata marks as excluded from the spectrogram average (keep it equal to the detect-usv-squeaks run).')
 @click.option('--lattice-batch-size', 'lattice_batch_size', type=int, default=None, required=False, help='Lattice points decoded and scored per block; lower it to cut memory.')
 @click.option('--data-batch-size', 'data_batch_size', type=int, default=None, required=False, help='Squeaks whose lattice posteriors are computed together; memory grows with this times the lattice size.')
@@ -2128,7 +2319,7 @@ def infer_qlvm_squeak_latents_cli(ctx, root_directory, **kwargs) -> None:
     Description
     -----------
     A command-line tool to place a session's squeak / both segments that are not noise on the torus of a
-    squeak (BBV) QLVM cell and merge ``qlvm_squeak1`` / ``qlvm_squeak2`` into its USV summary CSV.
+    squeak QLVM cell and merge ``qlvm_squeak1`` / ``qlvm_squeak2`` into its USV summary CSV.
 
     Parameters
     ----------

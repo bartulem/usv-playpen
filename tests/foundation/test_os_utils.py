@@ -738,9 +738,9 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     ]
     assert settings["infer_qlvm_latents"]["masking_type"] == "sam"
     assert settings["infer_qlvm_latents"]["time_stretch"] is True
-    # the production squeak QLVM cell (phase 3 BBV, natural_session)
+    # the production squeak QLVM cell (time-stretched, unmasked, no floor)
     assert settings["infer_qlvm_squeak_latents"]["model_cell_directory"] == (
-        "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm/natural_session_N11000_nomask"
+        "/mnt/falkner/Bartul/PC_transfer/qlvm_final/squeaks/cell/stretch_nofloor"
     )
     assert settings["detect_usv_squeaks"]["squeak_model_path"] == f"{root}/squeak/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt"
     assert settings["detect_usv_noise"]["noise_model_path"] == f"{root}/noise/noise_timemil_ens5_n4680_20260926.pt"
