@@ -179,6 +179,33 @@ def test_merge_features_into_summary(tmp_path, mocker):
     assert df["loudness_db"].null_count() == df.height
 
 
+def test_merge_features_refuses_a_summary_the_h5_does_not_match(tmp_path, mocker):
+    """The features are joined to the summary by row position, so a summary whose row count
+    differs from the H5's (re-curated after the spectrograms were made) raises instead of
+    writing every feature onto the wrong call, and the summary is left untouched."""
+    session_id = "20230119_155302"
+    root = tmp_path / session_id
+    (root / "audio" / "spectrograms").mkdir(parents=True)
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    pls.DataFrame({
+        "usv_id": [f"{i:06d}" for i in range(5)],
+        "start": [0.1, 0.3, 0.5, 0.7, 0.9],
+        "stop": [0.15, 0.35, 0.55, 0.75, 0.95],
+    }).write_csv(summary_path)
+    before = summary_path.read_bytes()
+    _write_h5(root / "audio" / "spectrograms" / f"{session_id}_spectrograms.h5",
+              session_id, n_usv=4, valid_rows=[0, 1, 3])
+
+    mocker.patch("usv_playpen.processing.compute_usv_acoustic_features.smart_wait")
+    with pytest.raises(ValueError, match="5 rows but .* holds 4 spectrograms"):
+        USVAcousticFeatureExtractor(
+            root_directory=str(root),
+            input_parameter_dict={"compute_usv_acoustic_features": _CFG},
+            message_output=lambda *_a, **_kw: None,
+        ).merge_features_into_summary()
+    assert summary_path.read_bytes() == before
+
+
 def test_merge_features_preserves_the_usv_id_padding(tmp_path, mocker):
     """usv_id is a zero-padded STRING. Reading the summary without a schema
     override lets polars re-infer it as Int64, and writing the frame back then

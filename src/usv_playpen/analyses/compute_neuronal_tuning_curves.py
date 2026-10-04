@@ -2071,7 +2071,10 @@ class NeuronalTuning(FeatureZoo):
             anchor_property_occ_seconds: dict[str, np.ndarray] = {}
             for prop in CONTINUOUS_PROPERTIES:
                 if prop in usv_df.columns:
-                    values = usv_df[prop].to_numpy()[anchor_idx]
+                    # Cast to Float64: a column with no value in the rows polars infers
+                    # the CSV schema from (e.g. an all-null loudness_db) is read as
+                    # String, whose object array np.isfinite cannot take.
+                    values = usv_df[prop].cast(pls.Float64).to_numpy()[anchor_idx]
                 else:
                     # Optional feature column absent for this session (e.g. an acoustic
                     # property its summary was never given); treat it as

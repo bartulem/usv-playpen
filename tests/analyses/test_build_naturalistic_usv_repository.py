@@ -439,6 +439,55 @@ def test_build_skips_session_without_noise_column(tmp_path, _patched_env):
     assert not (repo_out / "male").exists() or not list((repo_out / "male").glob("*.h5"))
 
 
+def test_build_skips_session_whose_summary_the_h5_does_not_match(tmp_path, _patched_env):
+    """Summary rows index the spectrogram H5 rows (durations, masks) and are stored as usv_row,
+    so a summary with more rows than the H5 (re-curated after the spectrograms were made) is
+    skipped and logged instead of attaching masks to the wrong calls."""
+
+    session_root = tmp_path / "session_root"
+    _write_fake_session(session_root, starts=[0.01, 0.05, 0.09], stops=[0.03, 0.07, 0.11])
+    summary_path = session_root / "audio" / "20230101_120000_usv_summary.csv"
+    summary = pls.read_csv(str(summary_path))
+    pls.concat([summary, summary.tail(1)]).write_csv(str(summary_path))
+    repo_out = tmp_path / "repo"
+    messages = []
+    NaturalisticUsvRepositoryBuilder(
+        root_directories=[str(session_root)],
+        input_parameter_dict={
+            "build_naturalistic_usv_repository": _build_cfg("same_sex_male"),
+            "data_roots": {"naturalistic_usv_repository_dir": str(repo_out)},
+        },
+        message_output=lambda *m, **_k: messages.append(" ".join(str(x) for x in m)),
+    ).build()
+
+    assert any("skipping session_root" in m.lower() and "4 rows but" in m for m in messages)
+    assert not (repo_out / "male").exists() or not list((repo_out / "male").glob("*.h5"))
+
+
+def test_build_courtship_logs_a_session_without_attributed_usvs(tmp_path, mocker, _patched_env):
+    """A courtship build whose session has an empty emitter column (vcl-assign not run since the
+    last das-summarize) skips the session with a log line naming the cause, not silently."""
+
+    session_root = tmp_path / "session_root"
+    _write_fake_session(session_root, starts=[0.01, 0.05, 0.09], stops=[0.03, 0.07, 0.11], emitter="")
+    mocker.patch.object(
+        bnr, "extract_session_metadata",
+        return_value={"male_id": "male_mouse", "female_id": "female_mouse"},
+    )
+    repo_out = tmp_path / "repo"
+    messages = []
+    NaturalisticUsvRepositoryBuilder(
+        root_directories=[str(session_root)],
+        input_parameter_dict={
+            "build_naturalistic_usv_repository": _build_cfg("courtship_male"),
+            "data_roots": {"naturalistic_usv_repository_dir": str(repo_out)},
+        },
+        message_output=lambda *m, **_k: messages.append(" ".join(str(x) for x in m)),
+    ).build()
+
+    assert any("skipping session_root" in m.lower() and "empty emitter column" in m for m in messages)
+
+
 def test_build_rejects_unknown_context_label(tmp_path, _patched_env):
     """An unrecognised ``context_label`` fails fast with a clear ValueError."""
 

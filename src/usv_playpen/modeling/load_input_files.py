@@ -77,6 +77,49 @@ def load_behavioral_feature_data(behavior_file_paths: list = None,
 CATEGORY_PREDICTOR_TYPES = ('categories_rate', 'all_rate')
 
 
+def read_usv_summary_table(csv_path: str | Path, csv_sep: str) -> pls.DataFrame:
+    """
+    Description
+    -----------
+    Reads one session's ``*_usv_summary.csv`` for the modeling loaders.
+
+    Every column's type is inferred from ALL rows (``infer_schema_length=None``):
+    with the default 100-row inference a column empty in the first 100 rows (e.g.
+    ``qlvm_category`` or ``mask_number`` of a session that opens with noise or
+    unlabelled rows) is read as String, and the category filters
+    (``pls.col(category_column) == k``) and mask sums then fail. ``usv_id`` stays
+    a zero-padded string.
+
+    The per-mouse selections filter on ``emitter``, so a session whose
+    ``emitter`` column is entirely empty (``vcl-assign`` has not run since the
+    last ``das-summarize``, which rewrites the summary without it) gives every
+    mouse zero calls; a warning names that cause here, before the downstream
+    "no events" errors that would otherwise hide it.
+
+    Parameters
+    ----------
+    csv_path (str | pathlib.Path)
+        Path of the session's USV summary.
+    csv_sep (str)
+        Column separator of the summary.
+
+    Returns
+    -------
+    usv_summary_data (polars.DataFrame)
+        The summary table.
+    """
+
+    usv_summary_data = pls.read_csv(
+        source=csv_path, separator=csv_sep, infer_schema_length=None, schema_overrides={'usv_id': pls.String}
+    )
+    if 'emitter' in usv_summary_data.columns and usv_summary_data.height and usv_summary_data['emitter'].null_count() == usv_summary_data.height:
+        print(
+            f"Warning: {Path(csv_path).name} has no assigned emitter (the emitter column is empty), so no call "
+            f"is attributed to either mouse; run vcl-assign on the session (after das-summarize)."
+        )
+    return usv_summary_data
+
+
 def require_usv_category_column(category_column: str | None,
                                 purpose: str,
                                 summary_columns: list | None = None,
@@ -711,7 +754,7 @@ def find_onset_epochs(root_directories: list = None,
             print(f"Warning: No USV summary found for {session_id}. Skipping.")
             continue
 
-        usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
+        usv_summary_data = read_usv_summary_table(csv_path, csv_sep)
 
         for category_purpose in category_purposes:
             require_usv_category_column(category_column, category_purpose,
@@ -1092,7 +1135,7 @@ def find_usv_categories(root_directories: list = None,
             print(f"Warning: No USV summary found for {session_id}. Skipping.")
             continue
 
-        usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
+        usv_summary_data = read_usv_summary_table(csv_path, csv_sep)
 
         # A configured column must exist (an explicit setting that names a missing
         # column is a configuration error on every path, the manifold one included).
@@ -1423,7 +1466,7 @@ def find_variable_length_bouts(root_directories: list = None,
             print(f"Warning: No USV summary found for {session_id}. Skipping.")
             continue
 
-        usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
+        usv_summary_data = read_usv_summary_table(csv_path, csv_sep)
 
         has_mask = 'mask_number' in usv_summary_data.columns
         if category_traces:

@@ -1483,7 +1483,7 @@ def drop_noise_usvs(usv_summary: Any, source: str, message_output: Callable = pr
             f"every detection."
         )
         raise KeyError(error_message)
-    kept = usv_summary.filter(~usv_summary[NOISE_COLUMN].fill_null(False))
+    kept = usv_summary.filter(~noise_mask(usv_summary, source))
     n_dropped = usv_summary.height - kept.height
     if n_dropped:
         message_output(f"    {source}: dropped {n_dropped} noise segment(s) of {usv_summary.height}.")
@@ -1551,16 +1551,16 @@ def _vocal_flag(usv_summary: Any, column: str) -> Any:
     """
     Description
     -----------
-    One of the two booleans as a null-free boolean Series (null -> False). The column is cast through
-    text, so a flag read from CSV as Boolean, as the strings "true" / "false", or as an all-null
-    column of any type all give the same answer.
+    One of the summary's boolean flags (``usv``, ``squeak`` or ``noise``) as a null-free boolean
+    Series (null -> False). The column is cast through text, so a flag read from CSV as Boolean, as
+    the strings "true" / "false", or as an all-null column of any type all give the same answer.
 
     Parameters
     ----------
     usv_summary (polars.DataFrame)
         A table holding ``column``.
     column (str)
-        ``"usv"`` or ``"squeak"``.
+        ``"usv"``, ``"squeak"`` or ``"noise"``.
 
     Returns
     -------
@@ -1569,6 +1569,43 @@ def _vocal_flag(usv_summary: Any, column: str) -> Any:
     """
 
     return usv_summary[column].cast(str).str.to_lowercase().eq("true").fill_null(False)
+
+
+def noise_mask(usv_summary: Any, source: str) -> Any:
+    """
+    Description
+    -----------
+    Marks the rows of a USV summary that ``detect-usv-noise`` flagged as noise (``noise`` true), as
+    a null-free boolean Series: a null ``noise`` (a segment too short to score) counts as not noise.
+    The column is read through text exactly like the ``usv`` / ``squeak`` booleans
+    (:func:`_vocal_flag`), so the answer is the same whether the CSV reader typed ``noise`` as
+    Boolean, as the strings ``"true"`` / ``"false"`` (which ``polars.read_csv`` does when the rows it
+    infers the schema from hold no value) or as an all-null column. A plain
+    ``.cast(polars.Boolean)`` raises on a string column, which is why every noise reader goes
+    through here (or through :func:`drop_noise_usvs`, which uses it).
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table (or any table holding ``noise``).
+    source (str)
+        What the table came from (a session id or file name), named in the error.
+
+    Returns
+    -------
+    mask (polars.Series)
+        Boolean, one value per row, True on noise rows.
+
+    Raises
+    ------
+    KeyError
+        The table has no ``noise`` column.
+    """
+
+    if NOISE_COLUMN not in usv_summary.columns:
+        error_message = f"{source} has no '{NOISE_COLUMN}' column; run detect-usv-noise on the session first."
+        raise KeyError(error_message)
+    return _vocal_flag(usv_summary, NOISE_COLUMN).alias(NOISE_COLUMN)
 
 
 def call_class_mask(usv_summary: Any, classes: Iterable[str], source: str) -> Any:

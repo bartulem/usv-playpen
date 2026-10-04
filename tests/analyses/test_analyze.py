@@ -20,7 +20,7 @@ from sklearn.mixture import GaussianMixture
 # Headless matplotlib for the mixture_model_utils plotting smoke tests.
 matplotlib.use("Agg")
 
-from usv_playpen.analyses.analyze_data import Analyst
+from usv_playpen.analyses.analyze_data import Analyst, generate_beh_features_cli
 from usv_playpen.analyses.decode_experiment_label import extract_information
 from usv_playpen.analyses.compute_behavioral_features import (
     FeatureZoo,
@@ -2006,6 +2006,32 @@ def test_build_vocal_side_precompute_notices_missing_qlvm_labels(synthetic_compu
     assert len(notices) == 1
     assert "(qlvm_category)" in notices[0]
     assert "labels are unavailable" in notices[0]
+
+
+def test_generate_beh_features_cli_derivative_bins_is_one_integer():
+    """--derivative-bins is the single integer calculate_derivatives slices with (the settings
+    value derivative_bins is an int); declared as a multiple string option it reached the
+    slice as the tuple ('10',) and raised TypeError."""
+    option = next(param for param in generate_beh_features_cli.params if param.name == "derivative_bins")
+    assert not option.multiple
+    assert option.type.name == "integer"
+    assert option.type.convert("10", option, None) == 10
+
+
+def test_build_vocal_side_precompute_takes_an_all_null_property_column(synthetic_compute_session):
+    """A continuous property with no value in the session (e.g. loudness_db never measured) is
+    read from CSV as an all-null String column; the precompute casts it to Float64 and bins it as
+    all-NaN (every anchor out of range) instead of raising inside np.isfinite."""
+    root, _ = synthetic_compute_session
+    nt = _make_neuronal_tuning(root)
+    voc_inputs = nt._load_vocal_inputs()
+    voc_inputs["usv_df"] = voc_inputs["usv_df"].with_columns(
+        pls.lit(None, dtype=pls.String).alias("loudness_db")
+    )
+    precompute = nt._build_vocal_side_precompute(voc_inputs)
+    assert precompute is not None
+    assert "self" in precompute
+    assert (precompute["self"]["anchor_property_bin_idx"]["loudness_db"] == -1).all()
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")

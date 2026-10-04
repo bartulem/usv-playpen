@@ -113,6 +113,7 @@ from ..os_utils import (
     VOCAL_FLAG_COLUMNS,
     configure_path,
     first_match_or_raise,
+    noise_mask,
     squeak_bearing_mask,
 )
 from ..time_utils import is_gui_context, smart_wait
@@ -899,7 +900,7 @@ def usv_summary_exclusions(
         if "noise" not in usv_summary.columns:
             error_message = f"{usv_summary_path} has no 'noise' column; run detect-usv-noise on the session first."
             raise ValueError(error_message)
-        excluded |= usv_summary["noise"].cast(pls.Boolean).fill_null(False).to_numpy()
+        excluded |= noise_mask(usv_summary, usv_summary_path.name).to_numpy()
     return excluded
 
 

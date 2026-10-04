@@ -31,10 +31,30 @@ from usv_playpen.modeling.load_input_files import (
     find_variable_length_bouts,
     load_behavioral_feature_data,
     load_pickle_modeling_data,
+    read_usv_summary_table,
     require_labels_for_vocal_predictors,
     require_usv_category_column,
 )
 from tests.modeling._synth import _SETTINGS_JSON
+
+
+def test_read_usv_summary_table_infers_types_from_every_row_and_warns_on_no_emitter(tmp_path, capsys):
+    """A category label empty in the first 100 rows is still read as an integer (default
+    100-row inference would give String, and ``col == k`` would raise), usv_id keeps its
+    padding, and an all-empty emitter column prints a warning naming vcl-assign."""
+    n_rows = 150
+    summary_path = tmp_path / 's_usv_summary.csv'
+    pls.DataFrame({
+        'usv_id': [f"{i:06d}" for i in range(n_rows)],
+        'start': np.arange(n_rows, dtype=float),
+        'emitter': pls.Series([None] * n_rows, dtype=pls.String),
+        'qlvm_category': [None] * 120 + [2] * 30,
+    }).write_csv(summary_path)
+    table = read_usv_summary_table(summary_path, ',')
+    assert table['qlvm_category'].dtype == pls.Int64
+    assert table.filter(pls.col('qlvm_category') == 2).height == 30
+    assert table['usv_id'][0] == '000000'
+    assert 'no assigned emitter' in capsys.readouterr().out
 
 # The message every label-dependent path raises when its label column is null or absent.
 _LABELS_UNAVAILABLE = 'QLVM category labels are not available'

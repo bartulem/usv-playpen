@@ -27,7 +27,7 @@ from scipy.io import wavfile
 
 from ..analyses.decode_experiment_label import extract_information
 from ..analyses.generate_audio_files import AudioGenerator
-from ..os_utils import find_audio_mmap, first_match_or_raise
+from ..os_utils import drop_noise_usvs, find_audio_mmap, first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
 from .figure_io import save_figure
@@ -1847,7 +1847,11 @@ class Create3DVideo:
                         pattern='*_usv_summary.csv',
                         label="USV summary CSV",
                     )
-                    usv_summary_df = pls.read_csv(str(usv_summary_file))
+                    usv_summary_df = pls.read_csv(str(usv_summary_file), schema_overrides={'usv_id': pls.String})
+                    # Segments the noise classifier flagged hold no vocalization, so they are not
+                    # drawn as USVs (os_utils.drop_noise_usvs, the shared noise rule; a summary
+                    # without the noise column raises: run detect-usv-noise first).
+                    usv_summary_df = drop_noise_usvs(usv_summary_df, usv_summary_file.name, message_output=self.message_output)[0]
                     usv_summary_df = usv_summary_df.filter((pls.col('stop') >= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] - half_window_size_sec) &
                                                            (pls.col('start') <= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] + self.visualizations_parameter_dict['make_behavioral_videos']['video_duration'] + half_window_size_sec))
 

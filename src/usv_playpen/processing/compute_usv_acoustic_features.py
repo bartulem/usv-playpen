@@ -393,6 +393,7 @@ class USVAcousticFeatureExtractor:
             session_group = h5_file[f"spectrogram/{root.name}"]
             specs = session_group["spectrograms"][:]
             durations = session_group["durations"][:]
+            n_h5_rows = int(durations.size)
             freq_axis = h5_file["frequency_bins"][:]
             has_masks = mask_group_key in h5_file
             if has_masks:
@@ -458,6 +459,16 @@ class USVAcousticFeatureExtractor:
             label="USV summary CSV",
         )
         usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
+        # The features are joined back by row position, so the H5 must hold one
+        # spectrogram per summary row; a summary re-curated after the spectrograms
+        # were generated would otherwise get every feature on the wrong call.
+        if usv_df.height != n_h5_rows:
+            error_message = (
+                f"{usv_summary_loc.name} has {usv_df.height} rows but {h5_loc.name} holds {n_h5_rows} spectrograms; "
+                f"the features cannot be joined to the summary by row. Re-run generate-usv-spectrograms and "
+                f"generate-usv-masks on the session first."
+            )
+            raise ValueError(error_message)
         loudness = np.full(len(usv_indices), np.nan, dtype=np.float64)
         masked = loudness_mask_counts > 0
         if masked.any():

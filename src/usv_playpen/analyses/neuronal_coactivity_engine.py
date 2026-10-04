@@ -14,7 +14,7 @@ import librosa
 import numpy as np
 import polars as pls
 
-from ..os_utils import call_class_mask, drop_noise_usvs, find_audio_mmap, parse_audio_mmap_name
+from ..os_utils import call_class_mask, drop_noise_usvs, find_audio_mmap, first_match_or_raise, parse_audio_mmap_name
 
 
 def extract_snippet_matrix(
@@ -1028,14 +1028,16 @@ def load_animal_sessions(
     sessions_data = []
     for session_name in chosen_session_names:
         directory = data_root / session_name
-        tracking_file = next(directory.glob("**/*_translated_rotated_metric.h5"))
+        tracking_file = first_match_or_raise(root=directory, pattern="*_translated_rotated_metric.h5", recursive=True, label="tracking H5")
         with h5py.File(name=tracking_file, mode="r") as track_file:
-            mouse_track_names = [t.decode("utf-8") for t in list(track_file["track_names"])]
+            # Stripped like every other track-name reader: some track H5 files carry stray
+            # whitespace in the names (e.g. ' 158800_0'), which would then match no emitter.
+            mouse_track_names = [t.decode("utf-8").strip() for t in list(track_file["track_names"])]
             recording_frame_rate = float(track_file["recording_frame_rate"][()])
             n_frames = int(track_file["tracks"].shape[0])
 
-        usv_summary_file = next(directory.glob("**/*_usv_summary.csv"))
-        usv_summary_data = pls.read_csv(usv_summary_file)
+        usv_summary_file = first_match_or_raise(root=directory, pattern="*_usv_summary.csv", recursive=True, label="USV summary CSV")
+        usv_summary_data = pls.read_csv(usv_summary_file, schema_overrides={"usv_id": pls.String})
         if category_column not in usv_summary_data.columns:
             error_message = (
                 f"load_animal_sessions: the category column '{category_column}' is absent from "
@@ -1056,7 +1058,10 @@ def load_animal_sessions(
         usv_summary_data = drop_noise_usvs(usv_summary_data, usv_summary_file.name, message_output=log)[0]
         usv_summary_data = usv_summary_data.filter(
             call_class_mask(usv_summary_data, ("usv", "both"), usv_summary_file.name))
-        focal_usvs = usv_summary_data.filter(pls.col("emitter") == mouse_track_names[0])
+        focal_usvs = usv_summary_data.filter(pls.col("emitter").cast(pls.String).str.strip_chars() == mouse_track_names[0])
+        if focal_usvs.height == 0:
+            log(f"  {directory.name}: no USV is attributed to {mouse_track_names[0]} (an empty emitter column means "
+                f"vcl-assign has not run since the last das-summarize).")
         group_a_df = focal_usvs.filter(pls.col(category_column).is_in(group_a_ids))
         group_b_df = focal_usvs.filter(pls.col(category_column).is_in(group_b_ids))
 
