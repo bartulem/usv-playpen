@@ -32,6 +32,7 @@ from .generate_spectrograms import SpectrogramGenerator
 from .modify_files import Operator, broadband_filter_sessions, read_broadband_session_list
 from .prepare_cluster_job import PrepareClusterJob
 from .preprocessing_plot import SummaryPlotter
+from .qlvm_categories import QLVMCategoryAssigner
 from .qlvm_latents import QLVMLatentInference
 from .synchronize_files import Synchronizer
 
@@ -337,18 +338,6 @@ class Stylist:
                                                input_parameter_dict=self.input_parameter_dict,
                                                message_output=self.message_output).summarize_das_findings()
 
-                    # # # flag the USV segments that hold no vocalization (after das_summarize, which rewrites the summary)
-                    if self.input_parameter_dict['processing_booleans']['detect_usv_noise']:
-                        USVNoiseDetector(root_directory=one_directory,
-                                         input_parameter_dict=self.input_parameter_dict,
-                                         message_output=self.message_output).detect_and_merge()
-
-                    # # # detect squeaks among the curated USV segments (after das_summarize, which rewrites the summary)
-                    if self.input_parameter_dict['processing_booleans']['detect_usv_squeaks']:
-                        USVSqueakDetector(root_directory=one_directory,
-                                          input_parameter_dict=self.input_parameter_dict,
-                                          message_output=self.message_output).detect_and_merge()
-
                     # # # prepare data for vocal assignment
                     if self.input_parameter_dict['processing_booleans']['prepare_assign_vocalizations']:
                         Vocalocator(root_directory=one_directory,
@@ -365,6 +354,18 @@ class Stylist:
                             Vocalocator(root_directory=one_directory,
                                         input_parameter_dict=self.input_parameter_dict,
                                         message_output=self.message_output).run_vocalocator_ssl()
+
+                    # # # flag the USV segments that hold no vocalization (after das_summarize, which rewrites the summary; assignment neither reads nor drops these columns)
+                    if self.input_parameter_dict['processing_booleans']['detect_usv_noise']:
+                        USVNoiseDetector(root_directory=one_directory,
+                                         input_parameter_dict=self.input_parameter_dict,
+                                         message_output=self.message_output).detect_and_merge()
+
+                    # # # detect squeaks among the curated USV segments (after das_summarize, which rewrites the summary)
+                    if self.input_parameter_dict['processing_booleans']['detect_usv_squeaks']:
+                        USVSqueakDetector(root_directory=one_directory,
+                                          input_parameter_dict=self.input_parameter_dict,
+                                          message_output=self.message_output).detect_and_merge()
 
                     # # # generate USV spectrograms
                     if self.input_parameter_dict['processing_booleans']['generate_usv_spectrograms']:
@@ -384,11 +385,15 @@ class Stylist:
                                                     input_parameter_dict=self.input_parameter_dict,
                                                     message_output=self.message_output).merge_features_into_summary()
 
-                    # # # infer QLVM latents
+                    # # # infer QLVM latents, then label the regular map's calls with the QLVM categories
+                    # (re-inferring drops qlvm_category, so the two always run together)
                     if self.input_parameter_dict['processing_booleans']['infer_qlvm_latents']:
                         QLVMLatentInference(root_directory=one_directory,
                                             input_parameter_dict=self.input_parameter_dict,
                                             message_output=self.message_output).infer_and_merge()
+                        QLVMCategoryAssigner(root_directory=one_directory,
+                                             input_parameter_dict=self.input_parameter_dict,
+                                             message_output=self.message_output).assign_and_merge()
 
                     self.message_output(f"Preprocessing data in {one_directory} finished at: "
                                         f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")
