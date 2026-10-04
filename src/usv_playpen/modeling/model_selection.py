@@ -4834,7 +4834,7 @@ def continuous_vocal_manifold_model_selection(
         Path to the univariate regression results pickle file containing the
         paired actual / null per-fold metric arrays.
     input_data_path : str
-        Path to the extracted UMAP data containing X (history), Y (UMAP),
+        Path to the extracted manifold data containing X (history), Y (manifold position),
         and w (KDE spatial weights).
     output_directory : str
         Directory to save the step-wise state dictionaries.

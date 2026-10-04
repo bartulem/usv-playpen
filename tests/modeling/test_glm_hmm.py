@@ -752,6 +752,48 @@ def test_glm_hmm_pipeline_runs_input_driven_multinomial(tmp_path):
     assert list(out_dir.glob('glm_hmm_states_multinomial_category_*.pkl'))
 
 
+def test_glm_hmm_pipeline_input_driven_maps_one_based_category_labels(tmp_path):
+    """
+    The QLVM category labels are 1..k, not 0..k-1. The input-driven categorical
+    engine reads class indices 0..C-1 with class 0 as its reference, so the pipeline
+    maps the observed labels onto contiguous indices: two observed categories (1, 2)
+    give a two-class engine (no phantom class 0) and the mapping index -> label is
+    recorded in the metadata.
+    """
+    rng = np.random.default_rng(12)
+    feature_names = ['featA', 'featB']
+    input_pkl = tmp_path / 'manifold_input.pkl'
+    _write_synthetic_manifold_pickle(input_pkl, feature_names, 3, rng)
+    with open(input_pkl, 'rb') as handle:
+        raw = pickle.load(handle)
+    for feat in feature_names:
+        for session_entry in raw[feat].values():
+            session_entry['category'] = session_entry['category'] + 1.0
+    with open(input_pkl, 'wb') as handle:
+        pickle.dump(raw, handle)
+    settings_json = tmp_path / 'settings.json'
+    _write_glm_hmm_settings(settings_json)
+    settings = json.loads(settings_json.read_text())
+    settings['glm_hmm']['emission_type'] = 'multinomial'
+    settings['glm_hmm']['transition_mode'] = 'input_driven'
+    settings['glm_hmm']['n_states_max'] = 2
+    settings['glm_hmm']['n_lbfgs'] = 120
+    settings_json.write_text(json.dumps(settings))
+    selection_pkl = tmp_path / 'model_selection_final.pkl'
+    _write_model_selection_file(selection_pkl, feature_names)
+
+    results = run_glm_hmm_state_selection(
+        input_data_path=str(input_pkl),
+        settings_path=str(settings_json),
+        output_directory=str(tmp_path / 'glm_hmm_out'),
+        model_selection_path=str(selection_pkl),
+    )
+
+    assert results['metadata']['n_classes'] == 2
+    assert results['metadata']['class_labels'] == [1, 2]
+    assert set(results['state_paths']) == {'s0', 's1', 's2', 's3', 's4'}
+
+
 def test_glm_hmm_pipeline_runs_input_driven_manifold(tmp_path):
     """
     End-to-end with the input-driven MANIFOLD engine: emission_type='manifold' +

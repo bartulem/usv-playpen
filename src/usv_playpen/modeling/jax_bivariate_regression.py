@@ -1,10 +1,10 @@
 """
 @author: bartulem
-JAX-based 2-D regression for behaviour-conditioned UMAP position prediction.
+JAX-based 2-D regression for behaviour-conditioned manifold position prediction.
 
 This module implements a scikit-learn-compatible estimator that maps a
 high-dimensional behavioural-kinematic history `X` onto the 2-D coordinates
-`(x, y)` of the UMAP acoustic manifold. The target is a deterministic point
+`(x, y)` of the acoustic manifold. The target is a deterministic point
 in R^2 rather than a full probability density — we predict *where* a bout
 will land, not *how uncertain* the prediction is.
 
@@ -48,7 +48,7 @@ Density-weighted Huber regression on the 2-D residual:
 Manifold-bounded predictions
 ----------------------------
 At predict time, every raw linear output `X @ W + b` is projected onto
-the nearest observed training UMAP point (`k=1` in Euclidean distance
+the nearest observed training manifold point (`k=1` in Euclidean distance
 over `Y_train_`, cached in a `scipy.spatial.cKDTree`). Training targets
 and their kd-tree are stored on the fitted model, so `predict(snap=True)`
 returns only coordinates that the training manifold actually contained.
@@ -62,7 +62,7 @@ is retained for diagnostics.
 
 Outputs
 -------
-- `predict(X, snap=True)` -> (n_samples, 2) snapped UMAP coordinates, or
+- `predict(X, snap=True)` -> (n_samples, 2) snapped manifold coordinates, or
   the raw linear prediction when `snap=False`.
 - `evaluate_metrics(X, Y_true, weights=None)` returns a metric bundle
   containing `r2_spatial` (the selection score on Euclidean
@@ -268,7 +268,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
 
     This estimator learns a weight matrix `W` of shape
     `(n_features * n_time_bins, 2)` and a bias `b` of shape `(2,)`; predictions
-    are the deterministic UMAP coordinates `X @ W + b`. The optimisation
+    are the deterministic manifold coordinates `X @ W + b`. The optimisation
     objective is a density-weighted Huber residual loss augmented by L2 and
     a temporal-smoothness penalty on the second time derivative of `W`.
 
@@ -314,7 +314,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             the scientific goal is to learn unbiased filter *shape*
             without a preference for piecewise-constant plateaux.
     huber_delta : float, default=1.0
-        Transition point of the Huber loss in the native UMAP distance
+        Transition point of the Huber loss in the native manifold distance
         units. Residuals with `||r||_2 <= huber_delta` are penalised
         quadratically; larger residuals are penalised linearly. Set to
         `np.inf` to recover pure squared-error regression.
@@ -360,7 +360,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
     intercept_ : np.ndarray, shape (2,)
         Learned bias vector.
     Y_train_ : np.ndarray, shape (n_samples, 2)
-        Copy of the training UMAP targets. Used by `predict(snap=True)`
+        Copy of the training manifold targets. Used by `predict(snap=True)`
         to project raw linear predictions onto the nearest observed
         training point — a hard manifold constraint that keeps the model's
         output inside the same convex support as the null baselines so
@@ -371,7 +371,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
     train_cov_inv_ : np.ndarray, shape (2, 2)
         Inverse of the inverse-density-weighted training covariance of
         `Y_train_`. Powers the `mahalanobis_mae` evaluation metric so a
-        unit error on a tight UMAP axis is not silently treated the same
+        unit error on a tight manifold axis is not silently treated the same
         as a unit error on a loose one.
     n_iter_ : int
         Number of optimiser steps actually taken (1-indexed). Equals
@@ -532,7 +532,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         lam_l2 : float
             L2 (Ridge) penalty strength.
         huber_delta : float
-            Huber transition point in native UMAP distance units.
+            Huber transition point in native manifold distance units.
             Residuals with `||r||_2 <= huber_delta` are penalised
             quadratically; larger residuals are penalised linearly.
         smoothness_derivative_order : int
@@ -607,7 +607,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         X : np.ndarray
             Training vectors, shape `(n_samples, n_features * n_time_bins)`.
         y : np.ndarray
-            Target UMAP coordinates, shape `(n_samples, 2)`.
+            Target manifold coordinates, shape `(n_samples, 2)`.
         sample_weight : np.ndarray, optional
             Inverse-density weights of shape `(n_samples,)`. If `None`,
             defaults to uniform weights of 1.0 (standard weighted
@@ -632,7 +632,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             )
 
         if y.shape[1] != 2:
-            raise ValueError(f"Target y must have exactly 2 columns (UMAP X and Y). Found shape {y.shape}.")
+            raise ValueError(f"Target y must have exactly 2 columns (manifold X and Y). Found shape {y.shape}.")
 
         if sample_weight is None:
             sample_weight = np.ones(n_samples)
@@ -760,11 +760,11 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
 
         # Store the training targets + their precomputed spatial structures.
         # The kd-tree powers `predict(snap=True)`, projecting raw linear
-        # predictions onto the nearest observed training UMAP point so the
+        # predictions onto the nearest observed training manifold point so the
         # model never extrapolates outside the convex support its metrics are
         # compared against. The inverse-density-weighted covariance of
         # `Y_train` powers the Mahalanobis metric — a standardized distance
-        # that removes the axis-scale arbitrariness of the UMAP embedding.
+        # that removes the axis-scale arbitrariness of the manifold embedding.
         # On `metric='torus'` the kdtree is built on the canonical
         # 4-D torus embedding `(cos, sin, cos, sin)` so a 1-NN query
         # respects wraparound: a raw prediction at `(0.99, 0.5)` snaps
@@ -804,7 +804,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
 
     def predict(self, X: np.ndarray, snap: bool = True) -> np.ndarray:
         """
-        Predicts the 2-D UMAP coordinates of upcoming vocalisations.
+        Predicts the 2-D manifold coordinates of upcoming vocalisations.
 
         Parameters
         ----------
@@ -813,7 +813,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             `(n_samples, n_features * n_time_bins)`.
         snap : bool, default=True
             When True (the default), each raw prediction `X @ W + b` is
-            projected onto the nearest training UMAP point (1-NN in
+            projected onto the nearest training manifold point (1-NN in
             Euclidean distance over `Y_train_`) so the model's output is
             constrained to the same convex support as the training
             manifold and the null baselines. When False, returns the raw
@@ -842,7 +842,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             # query point must be embedded before the 1-NN lookup. The
             # returned index points back into the original (un-embedded)
             # `Y_train_`, so the snapped prediction is automatically in
-            # native UMAP coordinates.
+            # native manifold coordinates.
             if self.metric == 'torus':
                 query = torus_embed(raw, self.period)
             else:
@@ -860,7 +860,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
 
         All Euclidean- and correlation-based metrics are computed on the
         **snapped** predictions (raw linear output projected onto the
-        nearest observed training UMAP point), so the regressor competes
+        nearest observed training manifold point), so the regressor competes
         against the null baselines on the same manifold support.
         `euclidean_mae_raw` is preserved as a diagnostic to quantify how
         often the unconstrained linear map extrapolates off-manifold.
@@ -873,7 +873,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
           slightly negative when the model under-performs a constant
           test-fold-mean predictor.
         - `euclidean_mae` : mean Euclidean distance between snapped
-          predictions and truth, in native UMAP units. Interpretable
+          predictions and truth, in native manifold units. Interpretable
           headline error magnitude for reporting.
         - `euclidean_rmse` : root-mean-squared Euclidean distance on the
           snapped predictions. `RMSE / MAE` well above `sqrt(pi / 2)
@@ -887,11 +887,11 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
           improves the fair-comparison number.
         - `mahalanobis_mae` : mean Mahalanobis distance of the residual in
           the inverse-density-weighted training covariance of `Y_train`.
-          Removes the axis-scale arbitrariness of the UMAP embedding so a
+          Removes the axis-scale arbitrariness of the manifold embedding so a
           unit error on a tight axis is not silently treated the same as
           a unit error on a loose one. Dimensionless; lower is better.
         - `mae_x`, `mae_y` : per-axis absolute error on the snapped
-          predictions. Useful when one UMAP axis is systematically easier
+          predictions. Useful when one manifold axis is systematically easier
           to predict than the other.
         - `spearman_x`, `spearman_y` : per-axis rank correlation between
           snapped predictions and truth.
@@ -1020,8 +1020,8 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
 
         # Mahalanobis MAE using the (metric-aware) inverse-density-weighted
         # training covariance. Interprets "how many spread-units off"
-        # rather than "how many raw UMAP units off", removing the
-        # arbitrariness of the UMAP embedding's axis scales. On torus
+        # rather than "how many raw manifold units off", removing the
+        # arbitrariness of the manifold embedding's axis scales. On torus
         # both the residual and the covariance were built from
         # wrap-aware signed differences (see `fit`), so the metric is
         # internally consistent with the rest of the bundle.

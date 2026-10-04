@@ -3,7 +3,7 @@
 Module for multinomial USV category modeling (based on JAX, assumes GPU usage).
 
 This module provides a specialized pipeline for predicting the specific semantic
-category of a USV bout (e.g., category 0 vs category 1 vs ... category K) using a
+category of a USV (the `qlvm_category` R-1 vs R-2 vs ... R-k, labels 1..k) using a
 multinomial (softmax) framework. It extracts behavioral and vocal history preceding a
 vocalization and classifies the integer category label of that vocalization.
 

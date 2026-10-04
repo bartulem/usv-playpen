@@ -234,7 +234,6 @@ def _write_category_usv_summary(
         'start': starts,
         'stop': stops,
         category_column: categories,
-        'vae_category': categories,
         # No synthesized noise here: every row is a real vocalization, so the noise filter is a no-op.
         'noise': [False] * n_rows,
         'usv': [True] * n_rows,
@@ -1467,7 +1466,7 @@ class TestRunModelingCategoryHandlers:
 @pytest.mark.parametrize('usv_predictor_type', [None, 'categories_rate'])
 def test_binomial_extraction_without_labels_fails_before_loading(tmp_path, mocker, usv_predictor_type):
     """
-    With no category label column (the shipped ``usv_category_column_name``
+    With no category label column (``usv_category_column_name`` set to
     null, QLVM labels unavailable) the binomial category extraction stops with the labels-unavailable
     error before any session list or behavioral file is read.
     """

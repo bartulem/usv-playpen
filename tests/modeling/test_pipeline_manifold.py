@@ -1,6 +1,6 @@
 """
 @author: bartulem
-End-to-end smoke tests for the continuous USV-MANIFOLD-POSITION (2-D UMAP)
+End-to-end smoke tests for the continuous USV-MANIFOLD-POSITION (2-D acoustic manifold)
 modeling pipeline and its JAX `SmoothBivariateRegression` model-selection path,
 driven entirely on tiny synthetic data.
 
@@ -307,7 +307,7 @@ class TestContinuousInputExtraction:
         ``modeling_manifold_*.pkl`` whose structure matches the documented
         continuous contract: a nested ``{feature: {session: {X, Y, w}}}`` dict
         carrying a reserved ``_input_metadata`` block. Every per-event window
-        is ``HISTORY_FRAMES`` wide, every target is the 2-D UMAP coordinate
+        is ``HISTORY_FRAMES`` wide, every target is the 2-D manifold coordinate
         pair, the inverse-density weights are finite with unit global mean, and
         the per-session event counts are identical across features (the
         intra-session alignment invariant).
@@ -373,7 +373,7 @@ class TestContinuousInputExtraction:
 
     def test_extraction_without_labels_drops_unplaced_calls(self, tmp_path, capsys):
         """
-        With the shipped label-free setting (``usv_category_column_name`` null)
+        With the label-free setting (``usv_category_column_name`` null)
         on summaries that carry torus coordinates only -- no ``qlvm_category`` --
         and some calls the embedding could not place
         (null ``qlvm1`` / ``qlvm2``), extraction still runs: the unplaced calls
@@ -457,7 +457,7 @@ class TestContinuousInputExtraction:
     def test_more_than_two_manifold_columns_raises(self, tmp_path):
         """
         A 3-D ``usv_manifold_column_names`` list trips the second guard: the
-        continuous pipeline currently assumes a strictly 2-D UMAP target.
+        continuous pipeline currently assumes a strictly 2-D manifold target.
         """
 
         settings, _ = _build_manifold_settings(tmp_path)
@@ -504,7 +504,7 @@ class TestContinuousModelRunner:
                 assert len(metrics[key]) == n_splits
             assert len(folds['y_pred_xy']) == n_splits
             assert len(folds['test_indices']) == n_splits
-            # Every fold's prediction is the (n_test, 2) UMAP coordinate pair.
+            # Every fold's prediction is the (n_test, 2) manifold coordinate pair.
             for pred in folds['y_pred_xy']:
                 assert pred.ndim == 2 and pred.shape[1] == 2
 

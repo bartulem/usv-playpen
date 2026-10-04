@@ -539,6 +539,8 @@ consolidated univariate pickle and set the metric accordingly.
         ".../univariate_results/univariate_multinomial_qlvm_supercategory_..._male_...Z.pkl"
     )
     uni_ranking_p_val = 0.01
+    # The three pickles below are pre-v3 runs on retired category labels (ids 18
+    # and 10 do not exist among R-1..R-4); point them at v3 re-runs
     uni_filters_results = configure_path(
         ".../gam_results_male_mute_partner_category_18_...pkl"
     )

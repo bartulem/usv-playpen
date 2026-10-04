@@ -877,7 +877,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         balanced : bool, default=False
             If True, makes predictions based purely on the behavioral feature evidence
             by neutralizing the class priors (intercepts) before calculating the argmax.
-            This prevents the model from defaulting to the majority class (e.g., Category 5)
+            This prevents the model from defaulting to the majority class (e.g., R-1, the category with the most calls)
             when uncertain, allowing for the isolation and visualization of specific
             kinematic relationships to rare vocal categories.
 

@@ -268,7 +268,6 @@ def build_multinomial_usv_summary_csv(
         'start': starts,
         'stop': stops,
         category_column: categories,
-        'vae_category': categories,
         # The classifier's verdict: the synthesized noise rows are what the loaders now strip.
         'noise': [category == NOISE_CATEGORY for category in categories],
         'mask_number': [2] * n_rows,
@@ -1602,7 +1601,6 @@ class TestMultinomialExtractionEdgeCases:
             df = pls.read_csv(csv_path)
             df = df.with_columns(
                 pls.lit(NOISE_CATEGORY).alias('qlvm_category'),
-                pls.lit(NOISE_CATEGORY).alias('vae_category'),
                 pls.lit(value=True).alias('noise'),
             )
             df.write_csv(csv_path)
@@ -1658,7 +1656,7 @@ class TestMultinomialExtractionEdgeCases:
 @pytest.mark.parametrize('usv_predictor_type', [None, 'categories_rate'])
 def test_multinomial_extraction_without_labels_fails_before_loading(tmp_path, mocker, usv_predictor_type):
     """
-    With no category label column (the shipped ``usv_category_column_name``
+    With no category label column (``usv_category_column_name`` set to
     null, QLVM labels unavailable) the multinomial category extraction stops with the labels-unavailable
     error before any session list or behavioral file is read.
     """
