@@ -253,6 +253,50 @@ Process
       --format              Audio file format.
       --dirs                Directory/ies to search for files to concatenate.
 
+``broadband-filter-audio``
+``broadband-filter-audio`` is the command-line interface for writing a session's broadband (2 kHz+) memmap: it removes the line-noise tones of every full-band HPSS channel, high-passes it at 2 kHz (linear phase, no dither) and writes the channels into ``audio/broadband_filtered/<id>_concatenated_audio_broadband_filtered_<sr>_<n>_<ch>_int16.mmap`` with a ``line_noise.json`` report. A session whose output already exists and validates is skipped.
+
+.. code-block:: text
+
+    usage: broadband-filter-audio [-h] --root-directory PATH [--source-dir TEXT]
+                                  [--cutoff FLOAT] [--transition-width FLOAT]
+                                  [--min-tone-height FLOAT] [--chunk-s FLOAT]
+                                  [--threads INTEGER]
+
+    required arguments:
+      --root-directory      Session root directory path.
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --source-dir          Folder under audio/ holding the full-band single-channel wavs.
+      --cutoff              -6 dB point of the high-pass (Hz).
+      --transition-width    Width of the high-pass transition band (Hz).
+      --min-tone-height     Minimum line-noise tone height above the local floor (dB) to subtract it.
+      --chunk-s             Length of the processing chunks (s).
+      --threads             Threads the channels of a chunk are spread over.
+
+``broadband-filter-audio-batch``
+``broadband-filter-audio-batch`` is the command-line interface for backfilling the broadband memmap over many sessions, several sessions at a time. It is resumable (sessions with a valid broadband memmap are skipped), appends one row per finished session to the report CSV and writes all messages to the log file.
+
+.. code-block:: text
+
+    usage: broadband-filter-audio-batch [-h] (--sessions-file PATH | --usv-counts-csv PATH)
+                                        [--tag TEXT] [--workers INTEGER]
+                                        [--threads INTEGER] --log-file PATH
+                                        --report-csv PATH
+
+    required arguments:
+      --log-file            Batch log file (appended to).
+      --report-csv          Per-session report CSV (appended to).
+
+    optional arguments:
+      -h, --help            Show this help message and exit.
+      --sessions-file       Text file with one session root per line.
+      --usv-counts-csv      Session table with 'dir' and 'tag' columns (e.g. session_usv_counts.csv).
+      --tag                 Tag of the --usv-counts-csv rows to process (default: ok).
+      --workers             Sessions processed in parallel (default: 2).
+      --threads             Threads per session (default: the settings value).
+
 ``sleap-to-h5``
 ``sleap-to-h5`` is the command-line interface for converting SLEAP (the SLEAP pose-tracking framework) ``.slp`` files to hierarchical data format (HDF5) ``.h5`` files.
 
