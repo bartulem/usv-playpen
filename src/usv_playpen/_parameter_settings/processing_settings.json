@@ -109,7 +109,7 @@
       "broadband_filter_audio": {
         "source_dir": "hpss",
         "source_glob": "*_cropped_to_video_hpss.wav",
-        "highpass_cutoff_hz": 2000,
+        "filter_freq_bounds": [0, 2000],
         "transition_width_hz": 1000,
         "stopband_attenuation_db": 120,
         "line_noise_search_bands_hz": [

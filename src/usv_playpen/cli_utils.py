@@ -155,12 +155,14 @@ def modify_settings_json_for_cli(
         visualizations); used as ``f"_parameter_settings/{settings_dict}.json"``.
         Defaults to None.
     block (str | None)
-        Top-level settings block to scope every override into (e.g.
-        ``'train_qlvm'``). When set, each provided flag is resolved and written
-        WITHIN this block only, so a key shared across blocks (``n_epochs``,
-        ``batch_size``, ``latent_dim``, ...) always targets this command's block
-        instead of the first global match. When None (the default), overrides
-        fall back to the legacy global key search across all blocks.
+        Settings block to scope every override into: a top-level block (e.g.
+        ``'train_qlvm'``) or a dot-separated path to a nested one (e.g.
+        ``'modify_files.Operator.broadband_filter_audio'``). When set, each
+        provided flag is resolved and written WITHIN this block only, so a key
+        shared across blocks (``n_epochs``, ``batch_size``, ``latent_dim``,
+        ``filter_freq_bounds``, ...) always targets this command's block instead
+        of the first global match. When None (the default), overrides fall back
+        to the legacy global key search across all blocks.
 
     Returns
     -------
@@ -209,7 +211,9 @@ def modify_settings_json_for_cli(
         # occur in several processing blocks) always targets THIS command's block
         # rather than the first global match.
         if block is not None:
-            block_dict = settings_parameter_dict.get(block)
+            block_dict = settings_parameter_dict
+            for block_key in block.split("."):
+                block_dict = block_dict.get(block_key) if isinstance(block_dict, dict) else None
             sub_paths = (
                 find_nested_key_paths(block_dict, param_name)
                 if isinstance(block_dict, dict)

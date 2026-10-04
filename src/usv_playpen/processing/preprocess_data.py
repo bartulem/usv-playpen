@@ -718,11 +718,13 @@ def bp_filter_audio_files_cli(ctx, root_directory, **kwargs) -> None:
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
 
+    # filter_freq_bounds also names the broadband block's removed band, so the flags are scoped to this block
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
         parameters_lists=parameters_lists,
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='modify_files.Operator.filter_audio_files'
     )
 
     _stamp_processing_version(root_directory)
@@ -772,7 +774,7 @@ def concatenate_audio_files_cli(ctx, root_directory, **kwargs) -> None:
 @click.command(name="broadband-filter-audio")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
 @click.option('--source-dir', 'source_dir', type=str, default=None, required=False, help='Folder under audio/ holding the full-band single-channel wavs.')
-@click.option('--cutoff', 'highpass_cutoff_hz', type=float, default=None, required=False, help='-6 dB point of the high-pass (Hz).')
+@click.option('--freq-bounds', 'filter_freq_bounds', nargs=2, type=int, default=None, required=False, help='Band removed by the high-pass, as LOW HIGH (Hz); LOW must be 0 and HIGH is the -6 dB point (e.g. 0 2000).')
 @click.option('--transition-width', 'transition_width_hz', type=float, default=None, required=False, help='Width of the high-pass transition band (Hz).')
 @click.option('--min-tone-height', 'line_noise_min_height_db', type=float, default=None, required=False, help='Minimum line-noise tone height above the local floor (dB) to subtract it.')
 @click.option('--chunk-s', 'chunk_s', type=float, default=None, required=False, help='Length of the processing chunks (s).')
@@ -800,9 +802,10 @@ def broadband_filter_audio_cli(ctx, root_directory, **kwargs) -> None:
 
     processing_settings_dict = modify_settings_json_for_cli(
         ctx=ctx,
-        parameters_lists=[],
+        parameters_lists=['filter_freq_bounds'],
         provided_params=provided_params,
-        settings_dict='processing_settings'
+        settings_dict='processing_settings',
+        block='modify_files.Operator.broadband_filter_audio'
     )
 
     _stamp_processing_version(root_directory)

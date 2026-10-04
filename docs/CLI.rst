@@ -259,7 +259,7 @@ Process
 .. code-block:: text
 
     usage: broadband-filter-audio [-h] --root-directory PATH [--source-dir TEXT]
-                                  [--cutoff FLOAT] [--transition-width FLOAT]
+                                  [--freq-bounds INTEGER INTEGER] [--transition-width FLOAT]
                                   [--min-tone-height FLOAT] [--chunk-s FLOAT]
                                   [--threads INTEGER]
 
@@ -269,7 +269,7 @@ Process
     optional arguments:
       -h, --help            Show this help message and exit.
       --source-dir          Folder under audio/ holding the full-band single-channel wavs.
-      --cutoff              -6 dB point of the high-pass (Hz).
+      --freq-bounds         Band removed by the high-pass, as LOW HIGH (Hz); LOW must be 0 and HIGH is the -6 dB point (e.g. 0 2000).
       --transition-width    Width of the high-pass transition band (Hz).
       --min-tone-height     Minimum line-noise tone height above the local floor (dB) to subtract it.
       --chunk-s             Length of the processing chunks (s).

@@ -43,6 +43,8 @@ from usv_playpen.processing.modify_files import (
     Operator,
     block_mean_phasors,
     broadband_filter_sessions,
+    broadband_highpass_cutoff,
+    broadband_output_settings,
     design_broadband_highpass,
     estimate_line_noise,
     read_broadband_session_list,
@@ -866,6 +868,45 @@ def _read_broadband(root):
     path = find_audio_mmap(root, "broadband")
     n_samples, n_channels = (int(token) for token in path.name.split("_")[-3:-1])
     return np.array(np.memmap(path, dtype=np.int16, mode="r", shape=(n_samples, n_channels)))
+
+
+def test_broadband_highpass_cutoff_reads_the_upper_edge_of_the_removed_band(processing_settings):
+    """
+    The broadband block's ``filter_freq_bounds`` follows the ``filter_audio_files``
+    convention (the band between the two bounds is removed): the shipped
+    ``[0, 2000]`` is the 2 kHz high-pass, whose -6 dB point is the upper edge.
+    """
+    settings = processing_settings['modify_files']['Operator']['broadband_filter_audio']
+    assert settings['filter_freq_bounds'] == [0, 2000]
+    assert broadband_highpass_cutoff(settings) == 2000.0
+
+
+@pytest.mark.parametrize("bounds", [[500, 2000], [0, 0], [0, -10], [2000]])
+def test_broadband_highpass_cutoff_rejects_bounds_that_are_not_a_highpass(bounds):
+    """
+    The broadband filter is a high-pass only: a nonzero lower bound (a
+    band-stop), a non-positive upper bound or a wrong length must raise rather
+    than silently filter something else.
+    """
+    with pytest.raises(ValueError, match="filter_freq_bounds"):
+        broadband_highpass_cutoff({'filter_freq_bounds': bounds})
+
+
+def test_broadband_output_settings_record_the_cutoff_as_one_number(processing_settings):
+    """
+    The settings stored in line_noise.json (and compared to decide whether an
+    output is current) hold the cutoff as ``highpass_cutoff_hz``, the upper
+    edge of ``filter_freq_bounds``, and not the bounds themselves: that is the
+    form of every report written before the bounds setting existed, so those
+    outputs stay current while the filter is unchanged.
+    """
+    settings = processing_settings['modify_files']['Operator']['broadband_filter_audio']
+    recorded = broadband_output_settings(settings)
+    assert recorded['highpass_cutoff_hz'] == 2000
+    assert 'filter_freq_bounds' not in recorded
+    changed = dict(settings, filter_freq_bounds=[0, 3000])
+    assert broadband_output_settings(changed)['highpass_cutoff_hz'] == 3000
+    assert broadband_output_settings(changed) != recorded
 
 
 def test_design_broadband_highpass_matches_sox_sinc_t1000_2k():

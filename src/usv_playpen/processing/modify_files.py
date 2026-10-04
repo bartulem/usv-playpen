@@ -59,11 +59,12 @@ BROADBAND_REPORT_NAME = "line_noise.json"
 
 # Settings of the broadband filter that change WHAT is written (and so decide
 # whether an existing output is still valid); the remaining keys (chunk length,
-# thread count) only change how fast it is written.
+# thread count) only change how fast it is written. The removed band
+# ``filter_freq_bounds`` enters as its upper edge, ``highpass_cutoff_hz`` (see
+# broadband_output_settings).
 BROADBAND_OUTPUT_SETTINGS = (
     "source_dir",
     "source_glob",
-    "highpass_cutoff_hz",
     "transition_width_hz",
     "stopband_attenuation_db",
     "line_noise_search_bands_hz",
@@ -637,13 +638,53 @@ def broadband_source_files(root_directory: str | pathlib.Path, settings: dict) -
     return sorted(source_dir.glob(settings["source_glob"]), key=lambda path: path.name)
 
 
+def broadband_highpass_cutoff(settings: dict) -> float:
+    """
+    Description
+    -----------
+    The high-pass cutoff of the broadband filter, read from its removed band
+    ``filter_freq_bounds`` = ``[low, high]`` (Hz), the same convention as the
+    ``filter_audio_files`` block: the band between ``low`` and ``high`` is
+    filtered out, so ``[0, 30000]`` there is the 30 kHz high-pass of the USV
+    wavs and ``[0, 2000]`` here is the 2 kHz high-pass of the broadband memmap.
+    The broadband filter is a high-pass only, so ``low`` must be 0; ``high`` is
+    the -6 dB point of the filter.
+
+    Parameters
+    ----------
+    settings (dict)
+        The ``broadband_filter_audio`` settings block.
+
+    Returns
+    -------
+    cutoff_hz (float)
+        The -6 dB point of the high-pass (Hz), ``filter_freq_bounds[1]``.
+
+    Raises
+    ------
+    ValueError
+        ``filter_freq_bounds`` is not two numbers ``[0, high]`` with ``high > 0``.
+    """
+
+    bounds = settings['filter_freq_bounds']
+    if len(bounds) != 2 or bounds[0] != 0 or not bounds[1] > 0:
+        error_message = f"broadband filter_freq_bounds must be [0, high] with high > 0 (the filter is a high-pass), got {bounds}."
+        raise ValueError(error_message)
+    return float(bounds[1])
+
+
 def broadband_output_settings(settings: dict) -> dict:
     """
     Description
     -----------
     The subset of the broadband settings that decides the written output
-    (``BROADBAND_OUTPUT_SETTINGS``), JSON-normalised (tuples become lists) so it
-    compares equal to the copy stored in ``line_noise.json``.
+    (``BROADBAND_OUTPUT_SETTINGS``, plus the high-pass cutoff as
+    ``highpass_cutoff_hz``, the upper edge of ``filter_freq_bounds``, see
+    :func:`broadband_highpass_cutoff`), JSON-normalised (tuples become lists) so
+    it compares equal to the copy stored in ``line_noise.json``. The cutoff is
+    recorded as one number under ``highpass_cutoff_hz`` because that is the
+    form every report written so far holds, so a report stays current as long
+    as the filter it describes is unchanged.
 
     Parameters
     ----------
@@ -656,7 +697,10 @@ def broadband_output_settings(settings: dict) -> dict:
         The output-defining settings.
     """
 
-    return json.loads(json.dumps({key: settings[key] for key in BROADBAND_OUTPUT_SETTINGS}))
+    broadband_highpass_cutoff(settings)
+    output_settings = {key: settings[key] for key in BROADBAND_OUTPUT_SETTINGS}
+    output_settings['highpass_cutoff_hz'] = settings['filter_freq_bounds'][1]
+    return json.loads(json.dumps(output_settings))
 
 
 def validate_broadband_output(root_directory: str | pathlib.Path, settings: dict) -> tuple[bool, str]:
@@ -1461,9 +1505,10 @@ class Operator:
            ``line_noise_block_s`` blocks, running median over
            ``line_noise_smoothing_blocks`` blocks, linear interpolation);
         3. the result is high-passed with a linear-phase Kaiser FIR equivalent to
-           sox ``sinc -t 1000 2k`` (-6 dB at ``highpass_cutoff_hz``, stopband
-           below ``highpass_cutoff_hz - transition_width_hz / 2``, flat above
-           ``highpass_cutoff_hz + transition_width_hz / 2``), in float, without
+           sox ``sinc -t 1000 2k`` (``filter_freq_bounds`` = ``[0, 2000]`` is
+           the band removed, the ``filter_audio_files`` convention; -6 dB at its
+           upper edge, the cutoff, stopband below ``cutoff - transition_width_hz / 2``,
+           flat above ``cutoff + transition_width_hz / 2``), in float, without
            dither, then rounded to int16 (round half to even) and clipped.
 
         The work runs in time chunks of ``chunk_s`` seconds across all channels
@@ -1525,7 +1570,7 @@ class Operator:
             stale_temporary.unlink()
 
         taps, kaiser_beta = design_broadband_highpass(sampling_rate=sampling_rate,
-                                                      cutoff_hz=settings['highpass_cutoff_hz'],
+                                                      cutoff_hz=broadband_highpass_cutoff(settings),
                                                       transition_width_hz=settings['transition_width_hz'],
                                                       stopband_attenuation_db=settings['stopband_attenuation_db'])
         block_length = int(round(settings['line_noise_block_s'] * sampling_rate))
@@ -1602,8 +1647,8 @@ class Operator:
                        'column_order': 'sorted source wav names'},
             'sources': [{'column': column, 'file': path.name, 'bytes': path.stat().st_size} for column, path in enumerate(wav_paths)],
             'filter': {'type': 'linear-phase Kaiser-windowed sinc FIR high-pass (scipy.signal.kaiserord + firwin), applied centred (zero delay)',
-                       'equivalent_of': f"sox sinc -t {settings['transition_width_hz']:g} {settings['highpass_cutoff_hz']:g}",
-                       'cutoff_hz': settings['highpass_cutoff_hz'],
+                       'equivalent_of': f"sox sinc -t {settings['transition_width_hz']:g} {broadband_highpass_cutoff(settings):g}",
+                       'cutoff_hz': broadband_highpass_cutoff(settings),
                        'transition_width_hz': settings['transition_width_hz'],
                        'stopband_attenuation_db': settings['stopband_attenuation_db'],
                        'numtaps': int(taps.shape[0]),

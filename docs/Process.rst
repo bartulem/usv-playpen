@@ -977,11 +977,11 @@ The purpose of these two functions is to first high-pass filter each audio file 
     │   └── video
     │       ...
 
-The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section fully modifiable in the GUI, with the following parameters:
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section with the following parameters; the GUI shows *Filter freq bounds (Hz)* under *Filter audio files*, the other two are set in the settings file only:
 
 * **filter_audio_format** : audio file format (usually "wav")
 * **filter_dirs** : list of directories to be filtered (usually "hpss")
-* **filter_freq_bounds** : frequency bounds for filtering (usually [0, 30000])
+* **filter_freq_bounds** : band filtered out, as [low, high] in Hz (usually [0, 30000], i.e. a 30 kHz high-pass)
 
 .. code-block:: json
 
@@ -996,7 +996,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         ]
     }
 
-The *Concatenate to MEMMAP* step takes its parameters from the adjacent ``concatenate_audio_files`` block (also fully modifiable in the GUI):
+The *Concatenate to MEMMAP* step takes its parameters from the adjacent ``concatenate_audio_files`` block (set in the settings file only; the GUI shows just the step's toggle):
 
 * **concatenate_audio_format** : audio file format to concatenate (usually "wav")
 * **concat_dirs** : list of directories whose single-channel files are concatenated into the memory-mapped file (usually "hpss_filtered")
@@ -1012,7 +1012,7 @@ The *Concatenate to MEMMAP* step takes its parameters from the adjacent ``concat
 
 Broadband MEMMAP (2 kHz+)
 ~~~~~~~~~~~~~~~~~~~~~~~~~
-The *hpss_filtered* memory-mapped file above keeps only the band above 30 kHz, which is what DAS, the USV spectrograms/masks, loudness, the vocalocator and the figures were built and trained on. Lower-frequency calls (squeaks, 2-30 kHz) need a second, broadband file. Selecting *Broadband MEMMAP (2 kHz+)* (or running ``broadband-filter-audio``) writes it straight from the full-band HPSS files in *audio/hpss*, without storing any per-channel files. For every channel it:
+The *hpss_filtered* memory-mapped file above keeps only the band above 30 kHz, which is what DAS, the USV spectrograms/masks, loudness, the vocalocator and the figures were built and trained on. Lower-frequency calls (squeaks, 2-30 kHz) need a second, broadband file. Selecting *Broadband MEMMAP (2 kHz+)* (or running ``broadband-filter-audio``) writes it straight from the full-band HPSS files in *audio/hpss* (the ``source_dir`` setting, set in the settings file only), without storing any per-channel files. The GUI shows the step's toggle and, under it, its own *Filter freq bounds (Hz)* (``filter_freq_bounds``, usually 0,2000). For every channel it:
 
 1. finds the narrow electrical line-noise tones in a few search bands (a line near 8 kHz and its 16 kHz harmonic, a line near 1.65 kHz, and a comb of lines about 30 Hz apart around 2.09-2.15 kHz, some of them close doublets). The exact frequencies follow each recording device's clock (e.g. 8000.17 Hz on the master and 8000.67 Hz on the slave device of one session; 2091.7 / 2122.5 / 2152.9 Hz on the master and 2090.05 / 2120.06 / 2150.05 Hz on the slave channels of the same session), so they are estimated per channel. The spectrum is whitened by its running median, and up to six peaks per band are kept when they stand at least 8 dB above that local floor;
 2. subtracts each kept tone as a sinusoid whose amplitude and phase may drift slowly (complex demodulation over 0.5 s blocks, median-smoothed over 9 blocks);
@@ -1038,7 +1038,7 @@ The step takes its parameters from the ``broadband_filter_audio`` block of */usv
 
 * **source_dir** : folder under *audio* holding the full-band single-channel files (usually "hpss")
 * **source_glob** : file pattern of the source files (usually "\*_cropped_to_video_hpss.wav"; stray files in the folder are ignored)
-* **highpass_cutoff_hz** : -6 dB point of the high-pass (usually 2000)
+* **filter_freq_bounds** : band filtered out, as [low, high] in Hz, the same convention as ``filter_audio_files`` (usually [0, 2000]); the filter is a high-pass, so low must be 0, and high is its -6 dB point (``line_noise.json`` records it as ``highpass_cutoff_hz``)
 * **transition_width_hz** : width of the high-pass transition band, centred on the cutoff (usually 1000)
 * **stopband_attenuation_db** : stopband attenuation of the Kaiser design (usually 120)
 * **line_noise_search_bands_hz** : frequency bands searched for line-noise tones (each at most 100 Hz wide)
@@ -1056,7 +1056,7 @@ The step takes its parameters from the ``broadband_filter_audio`` block of */usv
     "broadband_filter_audio": {
         "source_dir": "hpss",
         "source_glob": "*_cropped_to_video_hpss.wav",
-        "highpass_cutoff_hz": 2000,
+        "filter_freq_bounds": [0, 2000],
         "transition_width_hz": 1000,
         "stopband_attenuation_db": 120,
         "line_noise_search_bands_hz": [[7990, 8010], [15980, 16020], [1640, 1665], [2080, 2165]],
