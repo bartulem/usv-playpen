@@ -802,7 +802,7 @@ def _setup_stitched_session(tmp_path: pathlib.Path, *, with_mask: bool = True):
         {
             "start": [0.10, 0.30, 0.55, 0.80],
             "stop": [0.18, 0.38, 0.63, 0.88],
-            "qlvm_supercategory": [1, 1, 2, 2],
+            "qlvm_category": [1, 1, 2, 2],
         },
     )
     return _base_settings(
@@ -845,7 +845,7 @@ def test_plot_stitched_missing_session_group(tmp_path):
     spec_dir = _write_spectrograms_dir(tmp_path / "spectrograms", "some_other_session", n_usvs=4)
     _write_usv_summary_csv(
         tmp_path / "audio",
-        {"start": [0.1], "stop": [0.2], "qlvm_supercategory": [1]},
+        {"start": [0.1], "stop": [0.2], "qlvm_category": [1]},
     )
     settings = _base_settings(
         mode="stitched",
@@ -962,7 +962,7 @@ def test_plot_usv_property_histograms(tmp_path):
             "mean_freq_hz": [40_000, 60_000, 80_000, 100_000],
             "freq_bandwidth_hz": [10_000, 20_000, 50_000, 70_000],
             "spectral_entropy": [1.0, 2.0, 3.0, 4.0],
-            "qlvm_supercategory": [1, 1, 1, 2],
+            "qlvm_category": [1, 1, 1, 2],
             "noise": [True, False, False, False],
         },
     )
@@ -1013,8 +1013,8 @@ def test_plot_session_type_usv_counts(tmp_path):
     for kind in ("mf", "ff", "lm"):
         s1 = tmp_path / f"{kind}_1"
         s2 = tmp_path / f"{kind}_2"
-        _write_usv_summary_csv(s1 / "audio", {"qlvm_supercategory": [1, 1, 2]})
-        _write_usv_summary_csv(s2 / "audio", {"qlvm_supercategory": [1, 2, 2, 2]})
+        _write_usv_summary_csv(s1 / "audio", {"qlvm_category": [1, 1, 2]})
+        _write_usv_summary_csv(s2 / "audio", {"qlvm_category": [1, 2, 2, 2]})
         txts[kind] = _write_sessions_txt(tmp_path / f"list_{kind}", [s1, s2])
     out = tmp_path / "counts.pdf"
     fig = plot_session_type_usv_counts(
@@ -1057,7 +1057,7 @@ def test_plot_session_usv_timeline(tmp_path):
             "start": [0.1, 0.5, 1.0, 2.0],
             "stop": [0.2, 0.6, 1.1, 2.1],
             "emitter": ["M", "F", "ghost", "M"],
-            "qlvm_supercategory": [1, 1, 1, 2],
+            "qlvm_category": [1, 1, 1, 2],
             "noise": [False, False, True, False],
         },
     )
@@ -1083,7 +1083,7 @@ def test_plot_session_usv_timeline_full_session(tmp_path):
             "start": [0.1, 0.5],
             "stop": [0.2, 0.6],
             "emitter": ["M", "F"],
-            "qlvm_supercategory": [1, 2],
+            "qlvm_category": [1, 2],
         },
     )
     fig = plot_session_usv_timeline(
@@ -2201,6 +2201,12 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     # timestamp_in_name -> the filename ends with a _YYYYMMDD_HHMMSS stamp
     out_name = pathlib.Path(captured["output_path"]).name
     assert re.fullmatch(r"embedding_thumbnails_qlvm_duration_category_\d{8}_\d{6}\.png", out_name)
+
+    # explicit category colours come from JSON, whose object keys are strings; the
+    # driver keys them by the int qlvm_category so the figure's lookups match
+    viz["embedding_thumbnails"]["category_colors"] = {"1": "#112233", "2": "#445566"}
+    render_embedding_thumbnails_for_cohort(viz, message_output=lambda *_a, **_kw: None)
+    assert captured["category_colors"] == {1: "#112233", 2: "#445566"}
 
 
 
