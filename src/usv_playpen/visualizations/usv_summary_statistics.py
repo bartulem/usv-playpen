@@ -2172,8 +2172,8 @@ def plot_category_prevalence_and_embedding(
     (``os_utils.load_qlvm_category_bundle``, the partition the summaries'
     ``qlvm_category`` was assigned from), overlaid on top of every embedding plot
     when the embedding is the map the bundle is defined on (the regular map
-    ``qlvm``). On a conditional map (``qlvm_dur``, ``qlvm_ent``) the bundle does
-    not partition the torus the calls sit on, so no boundaries are drawn and the
+    ``qlvm``). On a conditional map (``qlvm_duration``, ``qlvm_entropy``,
+    ``qlvm_bandwidth``, ``qlvm_loudness``) the bundle does not partition the torus the calls sit on, so no boundaries are drawn and the
     embedding titles say so; the bars still count the calls' ``qlvm_category``.
     Boundaries are never estimated from the data.
 

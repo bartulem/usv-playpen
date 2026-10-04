@@ -1161,7 +1161,8 @@ class USVSpectrogramPlotter:
         neighbour-difference mask, NOT ``ax.contour`` on the label field: contour
         stacks several iso-lines wherever neighbouring region labels differ by
         more than one, which renders as uneven line thickness. A conditional map
-        (``qlvm_dur``, ``qlvm_ent``) places the calls elsewhere, so the bundle's
+        (``qlvm_duration``, ``qlvm_entropy``, ``qlvm_bandwidth``,
+        ``qlvm_loudness``) places the calls elsewhere, so the bundle's
         grid and density do not describe it: its panel is a bare unit square with
         a note saying the category boundaries are defined on the regular map (the
         calls themselves are still drawn by the caller). No other source of
@@ -2383,8 +2384,8 @@ def build_pooled_embeddings_df(
     across every session listed in ``sessions_txt_path``. The returned
     DataFrame is the master table consumed by the marimo embedding
     explorer notebook: it carries the torus coordinate columns of every
-    QLVM map (``EMBEDDING_COORD_COLS``: ``qlvm1/2``, ``qlvm_dur1/2``,
-    ``qlvm_ent1/2``, plus the squeak map's ``qlvm_squeak1/2``), the QLVM
+    QLVM map (``EMBEDDING_COORD_COLS``: ``qlvm1/2``, ``qlvm_duration1/2``,
+    ``qlvm_entropy1/2``, ``qlvm_bandwidth1/2``, ``qlvm_loudness1/2``, plus the squeak map's ``qlvm_squeak1/2``), the QLVM
     category column (``EMBEDDING_LABEL_COLS``: ``qlvm_category``), and —
     critically — a ``(session_id,
     row_index)`` pair per row that keys directly back into the
@@ -3070,8 +3071,8 @@ def plot_embedding_with_category_thumbnails(
         Path to the consolidated SAM2 + spectrogram HDF5 store.
     qlvm_map (str)
         One of ``os_utils.QLVM_MAPS`` - selects which QLVM map to plot
-        (``"qlvm"`` the regular model; ``"qlvm_dur"`` and ``"qlvm_ent"`` the
-        conditional ones): its coordinates ``<qlvm_map>1/2``. The calls are
+        (``"qlvm"`` the regular model; ``"qlvm_duration"``, ``"qlvm_entropy"``,
+        ``"qlvm_bandwidth"`` and ``"qlvm_loudness"`` the conditional ones): its coordinates ``<qlvm_map>1/2``. The calls are
         coloured and grouped by ``qlvm_category`` on EVERY map
         (``os_utils.QLVM_CATEGORY_COLUMN``; the categories are defined on the
         regular map and label the call). The category boundaries and centres
@@ -3529,7 +3530,7 @@ def plot_embedding_with_category_thumbnails(
             )
 
     # QLVM is a quasi-Monte Carlo latent variable model, not UMAP -- label
-    # the torus dimensions of the chosen map (e.g. "QLVM DUR DIM 1").
+    # the torus dimensions of the chosen map (e.g. "QLVM DURATION DIM 1").
     map_axis_name = qlvm_map.upper().replace("_", " ")
     ax_scatter.set_xlabel(
         f"{map_axis_name} DIM 1", fontsize=12,

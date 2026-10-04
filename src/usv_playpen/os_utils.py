@@ -382,8 +382,9 @@ def rebase_experimenter_in_paths(obj: object = None,
 QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
 
 # The production embedding: column prefix -> cell under the folder above. The
-# unconditional regular model gives qlvm1/qlvm2; the duration and spectral-entropy
-# conditional models give qlvm_dur1/2 and qlvm_ent1/2. Every cell was trained on
+# unconditional regular model gives qlvm1/qlvm2; the duration, spectral-entropy,
+# bandwidth and loudness conditional models give qlvm_duration1/2, qlvm_entropy1/2,
+# qlvm_bandwidth1/2 and qlvm_loudness1/2. Every cell was trained on
 # SAM-masked, time-stretched 128 x 128 spectrograms (training_contract.json:
 # masking_type "sam", time_stretch true, length_threshold 128, no floor) and
 # carries no cluster label grid: the regular map's category column qlvm_category
@@ -391,8 +392,10 @@ QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/mas
 # the conditional maps carry coordinates only.
 QLVM_PRODUCTION_MODEL_CELLS = {
     "qlvm": "cell/masked",
-    "qlvm_dur": "conditionals/cell/duration",
-    "qlvm_ent": "conditionals/cell/spectral_entropy",
+    "qlvm_duration": "conditionals/cell/duration",
+    "qlvm_entropy": "conditionals/cell/spectral_entropy",
+    "qlvm_bandwidth": "conditionals/cell/bandwidth",
+    "qlvm_loudness": "conditionals/cell/loudness",
 }
 
 # The production squeak (broadband vocalization) embedding: the phase 3 BBV package
@@ -447,7 +450,8 @@ QLVM_CATEGORY_BUILD_CONFIG_NAME = "build_config.json"
 
 # The QLVM map the category bundle is defined on: the regular map. Its grid is a
 # partition of THAT torus only, so it draws boundaries / centres on the regular map
-# alone; a conditional map (qlvm_dur, qlvm_ent) places the same calls elsewhere, so
+# alone; a conditional map (qlvm_duration, qlvm_entropy, qlvm_bandwidth,
+# qlvm_loudness) places the same calls elsewhere, so
 # a figure of a conditional map draws no category boundaries and shows each call's
 # category through its qlvm_category label instead.
 QLVM_CATEGORY_MAP = QLVM_REGULAR_MAP
@@ -456,7 +460,8 @@ QLVM_CATEGORY_MAP = QLVM_REGULAR_MAP
 # category-bundle category of each call's position on the regular map (1..k meaning
 # R-1..R-k; 4 in production), written by assign-qlvm-categories. There is no coarse
 # level and no category column of the conditional maps: an analysis of ANY map
-# (qlvm, qlvm_dur, qlvm_ent) that needs a per-call region / category label reads
+# (qlvm, qlvm_duration, qlvm_entropy, qlvm_bandwidth, qlvm_loudness) that needs a
+# per-call region / category label reads
 # this column.
 QLVM_CATEGORY_COLUMN = f"{QLVM_CATEGORY_MAP}_category"
 QLVM_CATEGORY_COLUMNS = (QLVM_CATEGORY_COLUMN,)
@@ -735,7 +740,8 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     ``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``. When
     ``infer_qlvm_latents`` names no model (``model_cells`` empty),
     ``infer_qlvm_latents.model_cells`` is filled with that mapping (prefixes
-    ``qlvm``, ``qlvm_dur``, ``qlvm_ent``), ``infer_qlvm_latents.masking_type`` is
+    ``qlvm``, ``qlvm_duration``, ``qlvm_entropy``, ``qlvm_bandwidth``,
+    ``qlvm_loudness``), ``infer_qlvm_latents.masking_type`` is
     set to the cells' trained ``QLVM_PRODUCTION_MASKING_TYPE`` (``"sam"``) and
     ``infer_qlvm_latents.time_stretch`` to their ``QLVM_PRODUCTION_TIME_STRETCH``
     (true). Both are part of the derived model, not separate choices:
@@ -1356,8 +1362,10 @@ def wait_for_subprocesses(
 #      loudness_db, the spectral_entropy and the SAM mask_number);
 #   5. the QLVM maps (infer_qlvm_latents): the regular map qlvm1 / qlvm2 with its
 #      content-ridge category qlvm_category (assign_qlvm_categories; 1..k meaning
-#      R-1..R-k), then the duration and spectral-entropy conditional maps qlvm_dur1 /
-#      qlvm_dur2 and qlvm_ent1 / qlvm_ent2 (coordinates only);
+#      R-1..R-k), then the duration, spectral-entropy, bandwidth and loudness
+#      conditional maps qlvm_duration1 / qlvm_duration2, qlvm_entropy1 /
+#      qlvm_entropy2, qlvm_bandwidth1 / qlvm_bandwidth2 and qlvm_loudness1 /
+#      qlvm_loudness2 (coordinates only);
 #   6. the squeak torus coordinates qlvm_squeak1 / qlvm_squeak2
 #      (infer_qlvm_squeak_latents; reserved, so no model_cells prefix can write them).
 # A column a session does not carry yet is simply absent; a column not listed here
@@ -1371,32 +1379,39 @@ USV_SUMMARY_COLUMN_ORDER = (
     "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "loudness_db",
     "spectral_entropy", "mask_number",
     "qlvm1", "qlvm2", "qlvm_category",
-    "qlvm_dur1", "qlvm_dur2", "qlvm_ent1", "qlvm_ent2",
+    "qlvm_duration1", "qlvm_duration2", "qlvm_entropy1", "qlvm_entropy2",
+    "qlvm_bandwidth1", "qlvm_bandwidth2", "qlvm_loudness1", "qlvm_loudness2",
     "qlvm_squeak1", "qlvm_squeak2",
 )
 
 # The column prefixes of the QLVM maps the summary holds (block 5 above): the regular
-# map ``qlvm`` and its duration (``qlvm_dur``) and spectral-entropy (``qlvm_ent``)
+# map ``qlvm`` and its duration (``qlvm_duration``), spectral-entropy
+# (``qlvm_entropy``), bandwidth (``qlvm_bandwidth``) and loudness (``qlvm_loudness``)
 # conditional maps. infer_qlvm_latents may write ``<prefix>1`` / ``<prefix>2`` of these
 # prefixes (and of the QLVM_PRODUCTION_MODEL_CELLS prefixes); every other canonical
 # column is reserved for the step that owns it.
-QLVM_SUMMARY_MAP_PREFIXES = ("qlvm", "qlvm_dur", "qlvm_ent")
+QLVM_SUMMARY_MAP_PREFIXES = ("qlvm", "qlvm_duration", "qlvm_entropy", "qlvm_bandwidth", "qlvm_loudness")
 
 # Columns older summaries carry that the canonical layout no longer has, removed by
 # tidy_usv_summary_columns (the tidy-usv-summary-columns command): the coarse cluster
-# level of the regular map (qlvm_supercategory), the cluster labels of the duration
-# map (conditional maps carry no category columns), the retired mean-frequency,
-# bandwidth and loudness conditional maps with their labels, the legacy provenance
+# level of the regular map (qlvm_supercategory), the short-prefix duration and
+# spectral-entropy maps qlvm_dur / qlvm_ent that the qlvm_duration / qlvm_entropy
+# maps replace, with the cluster labels of the duration map (conditional maps carry
+# no category columns), the retired v3 mean-frequency (qlvm_mf), bandwidth (qlvm_bw)
+# and loudness (qlvm_loud) conditional maps with their labels, the legacy provenance
 # column qlvm_model of the retired single-model run, the per-call category
 # agreement / uncertain flag of the regular map (kept outside the summary), and the
 # columns of the retired squeak detectors that the usv / squeak booleans, the class
 # probabilities and the one squeak_start / squeak_end extent replace: the binary
 # detector's squeak_probability / squeak_frame_runs and the first three-class
 # encoding's call_class / squeak_spans / n_squeaks. ``squeak`` itself is not listed:
-# it is a current column (the squeak boolean of detect_usv_squeaks).
+# it is a current column (the squeak boolean of detect_usv_squeaks). The names are
+# matched EXACTLY (never as prefixes or globs), so the current qlvm_bandwidth1/2 and
+# qlvm_loudness1/2 are never taken for the retired qlvm_bw* / qlvm_loud* columns.
 USV_SUMMARY_OBSOLETE_COLUMNS = (
     "qlvm_supercategory",
-    "qlvm_dur_category", "qlvm_dur_supercategory",
+    "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category", "qlvm_dur_supercategory",
+    "qlvm_ent1", "qlvm_ent2", "qlvm_ent_category", "qlvm_ent_supercategory",
     "qlvm_mf1", "qlvm_mf2", "qlvm_mf_category", "qlvm_mf_supercategory",
     "qlvm_bw1", "qlvm_bw2", "qlvm_bw_category", "qlvm_bw_supercategory",
     "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category", "qlvm_loud_supercategory",

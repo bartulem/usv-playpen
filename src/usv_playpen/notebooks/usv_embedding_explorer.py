@@ -28,7 +28,7 @@ Architecture
 - Pick one or more session lists; their per-session ``usv_summary.csv`` rows are
   pooled (and cached to a per-selection parquet) by ``build_pooled_embeddings_df``.
 - An altair scatter of the chosen QLVM map's torus (the regular model or the
-  duration / spectral-entropy conditional ones, ``os_utils.QLVM_MAPS``; the Map dropdown starts at
+  duration / spectral-entropy / bandwidth / loudness conditional ones, ``os_utils.QLVM_MAPS``; the Map dropdown starts at
   ``shared_resources.qlvm_map``; the USV maps show only the segments
   ``detect-usv-squeaks`` classed as pure USVs (``usv & ~squeak``); or the
   "Squeaks" map, ``qlvm_squeak1`` / ``qlvm_squeak2`` from
@@ -326,8 +326,10 @@ def _widgets(SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
     # qlvm_squeak1/qlvm_squeak2 exist on squeak rows only)}; .value returns the map.
     _map_labels = {
         "QLVM": "qlvm",
-        "QLVM | duration": "qlvm_dur",
-        "QLVM | spectral entropy": "qlvm_ent",
+        "QLVM | duration": "qlvm_duration",
+        "QLVM | spectral entropy": "qlvm_entropy",
+        "QLVM | bandwidth": "qlvm_bandwidth",
+        "QLVM | loudness": "qlvm_loudness",
         "Squeaks": "qlvm_squeak",
     }
     map_dropdown = mo.ui.dropdown(

@@ -148,14 +148,14 @@ def test_infer_qlvm_latents_cli_model_cell_pairs_become_model_cells(runner, mock
     result = runner.invoke(infer_qlvm_latents_cli, [
         "--root-directory", str(tmp_path),
         "--model-cell", "qlvm", "/pkg/phase6/cell",
-        "--model-cell", "qlvm_dur", "/pkg/phase11_duration/cell",
+        "--model-cell", "qlvm_duration", "/pkg/phase11_duration/cell",
         "--no-prefer-package-values",
     ])
     assert result.exit_code == 0, result.output
     assert spy.call_args.kwargs["provided_params"] == ["prefer_package_values"]
     settings = mock_cls.call_args.kwargs["input_parameter_dict"]["infer_qlvm_latents"]
-    assert settings["model_cells"] == {"qlvm": "/pkg/phase6/cell", "qlvm_dur": "/pkg/phase11_duration/cell"}
-    assert list(settings["model_cells"]) == ["qlvm", "qlvm_dur"]
+    assert settings["model_cells"] == {"qlvm": "/pkg/phase6/cell", "qlvm_duration": "/pkg/phase11_duration/cell"}
+    assert list(settings["model_cells"]) == ["qlvm", "qlvm_duration"]
 
     result = runner.invoke(infer_qlvm_latents_cli, [
         "--root-directory", str(tmp_path),
@@ -177,14 +177,14 @@ def test_infer_qlvm_latents_cli_model_cell_labels_become_label_levels(runner, mo
     )
     result = runner.invoke(infer_qlvm_latents_cli, [
         "--root-directory", str(tmp_path),
-        "--model-cell-labels", "qlvm_dur", "fine, coarse",
+        "--model-cell-labels", "qlvm_duration", "fine, coarse",
         "--model-cell-labels", "qlvm", "",
         "--no-prefer-package-values",
     ])
     assert result.exit_code == 0, result.output
     assert spy.call_args.kwargs["provided_params"] == ["prefer_package_values"]
     settings = mock_cls.call_args.kwargs["input_parameter_dict"]["infer_qlvm_latents"]
-    assert settings["model_cell_label_levels"] == {"qlvm_dur": ["fine", "coarse"], "qlvm": []}
+    assert settings["model_cell_label_levels"] == {"qlvm_duration": ["fine", "coarse"], "qlvm": []}
 
     result = runner.invoke(infer_qlvm_latents_cli, [
         "--root-directory", str(tmp_path),

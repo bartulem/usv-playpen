@@ -1237,7 +1237,7 @@ def test_model_cells_fall_back_to_inference_when_the_gate_fails(tmp_path, mocker
     rows are the package's -- not in its corpus, H5 rehashed, a call's duration or
     mask count changed, or a summary out of step with the H5 -- embeds the session."""
     rng = np.random.default_rng(32)
-    root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm_dur",))
+    root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm_duration",))
     package = {
         "not_in_baseline": {"baseline_session": "20990101_000000"},
         "sha256": {"sha256": "0" * 64},
@@ -1256,7 +1256,7 @@ def test_model_cells_fall_back_to_inference_when_the_gate_fails(tmp_path, mocker
     assert embedded == [2]
     assert any(reason in message for message in messages), messages
     df = pls.read_csv(root / "audio" / f"{session_id}_usv_summary.csv")
-    assert df["qlvm_dur1"].to_list()[:3] == [0.5, None, 0.5]
+    assert df["qlvm_duration1"].to_list()[:3] == [0.5, None, 0.5]
 
 
 def test_model_cells_prefer_package_values_false_always_infers(tmp_path, mocker):
@@ -1304,8 +1304,8 @@ def test_infer_and_merge_refuses_empty_model_cells(tmp_path, mocker):
         ([("", "/cell")], "is not a non-empty identifier"),
         ([("1qlvm", "/cell")], "is not a non-empty identifier"),
         ([("qlvm-dur", "/cell")], "is not a non-empty identifier"),
-        ([("qlvm_dur", "/a"), ("qlvm_dur", "/b")], r"prefixes listed more than once: \['qlvm_dur'\]"),
-        ([("qlvm_dur", "")], "has no model cell directory"),
+        ([("qlvm_duration", "/a"), ("qlvm_duration", "/b")], r"prefixes listed more than once: \['qlvm_duration'\]"),
+        ([("qlvm_duration", "")], "has no model cell directory"),
     ],
 )
 def test_validate_model_cells_refuses_bad_prefixes(pairs, match):
@@ -1321,7 +1321,7 @@ def test_validate_model_cells_refuses_prefixes_that_overwrite_summary_columns(mo
     mocker.patch.object(ql, "USV_SUMMARY_COLUMN_ORDER", (*ql.USV_SUMMARY_COLUMN_ORDER, "peak1"))
     with pytest.raises(ValueError, match=r"prefix 'peak' would overwrite the summary column\(s\) \['peak1'\]"):
         ql.validate_model_cells([("peak", "/cell")])
-    assert ql.validate_model_cells([("qlvm", "/a"), ("qlvm_dur", "/b")]) == {"qlvm": "/a", "qlvm_dur": "/b"}
+    assert ql.validate_model_cells([("qlvm", "/a"), ("qlvm_duration", "/b")]) == {"qlvm": "/a", "qlvm_duration": "/b"}
 
 
 def test_model_cells_refuse_invalid_prefixes_before_writing(tmp_path, mocker):
@@ -1350,7 +1350,7 @@ def test_model_cell_label_column_names_follow_the_rule():
     confidence columns."""
     assert ql.model_cell_label_column("qlvm", "fine") == "qlvm_category"
     assert ql.model_cell_label_column("qlvm", "coarse") == "qlvm_supercategory"
-    assert ql.model_cell_label_column("qlvm_dur", "fine") == "qlvm_dur_category"
+    assert ql.model_cell_label_column("qlvm_duration", "fine") == "qlvm_duration_category"
     assert ql.model_cell_label_column("qlvm_loud", "coarse") == "qlvm_loud_supercategory"
     assert ql.model_cell_label_columns({"qlvm": "/a", "qlvm_mf": "/b"}, {}) == {"qlvm": {}, "qlvm_mf": {}}
     assert ql.model_cell_label_columns({"qlvm": "/a", "qlvm_mf": "/b"}, {"qlvm": ["fine", "coarse"], "qlvm_mf": ["fine", "coarse"]}) == {
@@ -1360,9 +1360,9 @@ def test_model_cell_label_column_names_follow_the_rule():
     assert ql.model_cell_stale_columns("qlvm") == [
         "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory", "qlvm_category_agreement", "qlvm_category_uncertain",
     ]
-    assert ql.model_cell_stale_columns("qlvm_ent") == [
-        "qlvm_ent1", "qlvm_ent2", "qlvm_ent_category", "qlvm_ent_supercategory",
-        "qlvm_ent_category_agreement", "qlvm_ent_category_uncertain",
+    assert ql.model_cell_stale_columns("qlvm_entropy") == [
+        "qlvm_entropy1", "qlvm_entropy2", "qlvm_entropy_category", "qlvm_entropy_supercategory",
+        "qlvm_entropy_category_agreement", "qlvm_entropy_category_uncertain",
     ]
     # Levels come out in the fine, coarse order whatever order the setting lists them in.
     assert list(ql.model_cell_label_columns({"qlvm_bw": "/a"}, {"qlvm_bw": ["coarse", "fine"]})["qlvm_bw"]) == [
@@ -1432,7 +1432,7 @@ def test_model_cells_refuse_invalid_label_levels_before_writing(tmp_path, mocker
 def test_model_cell_label_columns_refuse_to_overwrite_summary_columns(mocker):
     """A label column may not be another summary column; the label columns of the
     summary map prefixes and the production prefixes (qlvm_category, ...) are allowed, and
-    so are their coordinates (qlvm_ent1 / qlvm_ent2 included)."""
+    so are their coordinates (qlvm_entropy1 / qlvm_entropy2 included)."""
     mocker.patch.object(ql, "USV_SUMMARY_COLUMN_ORDER", (*ql.USV_SUMMARY_COLUMN_ORDER, "peak_category"))
     with pytest.raises(ValueError, match=r"prefix 'peak': label column\(s\) \['peak_category'\] would overwrite"):
         ql.model_cell_label_columns({"peak": "/cell"}, {"peak": ["fine"]})
@@ -1443,9 +1443,10 @@ def test_model_cell_label_columns_refuse_to_overwrite_summary_columns(mocker):
     production = {prefix: "/cell" for prefix in ql.QLVM_PRODUCTION_MODEL_CELLS}
     assert ql.validate_model_cells(production.items()) == production
     both = {prefix: ["fine", "coarse"] for prefix in production}
-    assert list(production) == ["qlvm", "qlvm_dur", "qlvm_ent"]
-    assert ql.model_cell_label_columns(production, both)["qlvm_ent"] == {
-        "fine": "qlvm_ent_category", "coarse": "qlvm_ent_supercategory",
+    assert list(production) == ["qlvm", "qlvm_duration", "qlvm_entropy", "qlvm_bandwidth", "qlvm_loudness"]
+    assert ql.model_cell_label_columns(production, both)["qlvm_loudness"]["coarse"] == "qlvm_loudness_supercategory"
+    assert ql.model_cell_label_columns(production, both)["qlvm_entropy"] == {
+        "fine": "qlvm_entropy_category", "coarse": "qlvm_entropy_supercategory",
     }
 
 

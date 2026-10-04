@@ -33,7 +33,7 @@ package tables needed to interpret it:
 
 The store is a v3 archive and stays pinned to that package: the production QLVM
 cells (``os_utils.QLVM_PRODUCTION_MODEL_CELLS``: masked, time-stretched regular,
-duration and spectral-entropy cells) have no ``SESSION_H5_BASELINE.tsv``,
+duration, spectral-entropy, bandwidth and loudness conditional cells) have no ``SESSION_H5_BASELINE.tsv``,
 ``MANIFEST.sha256``, ``recon_mse_breakdown.npz`` or cluster tables, which every
 step below needs, and summaries migrated to the canonical layout no longer carry
 the v3 ``qlvm_mf*`` / ``qlvm_bw*`` / ``qlvm_loud*`` columns, so such summaries are

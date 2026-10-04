@@ -1659,7 +1659,7 @@ def test_plot_category_prevalence_and_embedding_conditional_map_has_no_boundarie
     fig, axes = plot_category_prevalence_and_embedding(
         _embedding_frame(),
         male_color=_HEX_MALE, female_color=_HEX_FEMALE,
-        unassigned_color=_HEX_UNASSIGNED, qlvm_map="qlvm_dur",
+        unassigned_color=_HEX_UNASSIGNED, qlvm_map="qlvm_duration",
         plot_type="scatter", log_scale_bars=False, grid_res=25,
     )
     for ax_emb in axes[:, 1]:

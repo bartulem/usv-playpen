@@ -4911,16 +4911,18 @@ class USVPlaypenWindow(QMainWindow):
         # One QLVM map for every QLVM figure below (torus video, USV sequence,
         # embedding thumbnails) and the embedding explorer's starting map:
         # shared_resources.qlvm_map, one of os_utils.QLVM_MAPS (the regular model
-        # 'qlvm' or a conditional one, 'qlvm_dur' / 'qlvm_ent').
+        # 'qlvm' or a conditional one, 'qlvm_duration' / 'qlvm_entropy' /
+        # 'qlvm_bandwidth' / 'qlvm_loudness').
         qlvm_map_label = QLabel('QLVM map (all QLVM figures):', self.VisualizationsSettings)
         qlvm_map_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         qlvm_map_label.move(vis_col_three_x1, 40)
         self.qlvm_map_cb = QComboBox(self.VisualizationsSettings)
         self.qlvm_map_cb.addItems(list(QLVM_MAPS))
         self.qlvm_map_cb.setCurrentText(self.visualizations_input_dict['shared_resources']['qlvm_map'])
-        self.qlvm_map_cb.setStyleSheet('QComboBox { width: 75px; }')
+        # Wide enough for the longest map name (qlvm_bandwidth), shifted left to stay inside the window.
+        self.qlvm_map_cb.setStyleSheet('QComboBox { width: 100px; }')
         self.qlvm_map_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='qlvm_map', choices=list(QLVM_MAPS)))
-        self.qlvm_map_cb.move(vis_col_three_x2, 40)
+        self.qlvm_map_cb.move(vis_col_three_x2 - 30, 40)
 
         qlvm_torus_video_label = QLabel('Render QLVM demo video:', self.VisualizationsSettings)
         qlvm_torus_video_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))

@@ -41,11 +41,11 @@ def test_pool_latents_from_h5(tmp_path):
     h5_path = tmp_path / "store.h5"
     with h5py.File(h5_path, "w") as h5:
         h5.create_dataset("qlvm/20230101_000000/qlvm", data=np.array([[0.1, 0.2], [0.3, 0.4]]))
-        h5.create_dataset("qlvm/20230101_000000/qlvm_dur", data=np.array([[0.9, 0.8], [np.nan, np.nan]]))
+        h5.create_dataset("qlvm/20230101_000000/qlvm_duration", data=np.array([[0.9, 0.8], [np.nan, np.nan]]))
         h5.create_dataset("qlvm/20230102_000000/qlvm", data=np.array([[0.5, 0.6], [np.nan, np.nan]]))
     with h5py.File(h5_path, "r") as h5:
         coords, index = pool_latents_from_h5(h5, "qlvm")
-        dur_coords, dur_index = pool_latents_from_h5(h5, "qlvm_dur")
+        dur_coords, dur_index = pool_latents_from_h5(h5, "qlvm_duration")
     assert coords.shape == (3, 2)
     assert index == [("20230101_000000", 0), ("20230101_000000", 1), ("20230102_000000", 0)]
     np.testing.assert_array_equal(dur_coords, [[0.9, 0.8]])
@@ -144,10 +144,10 @@ def test_make_video_refuses_a_conditional_map(tmp_path, qlvm_category_bundle):
     """The bundle's regions are defined on the regular map only, so a conditional
     shared qlvm_map is refused before anything is read, naming the map."""
     spec_dir = _write_inputs(tmp_path)
-    with pytest.raises(ValueError, match="'qlvm_dur'"):
+    with pytest.raises(ValueError, match="'qlvm_duration'"):
         QLVMTorusTraversalVideo(
             output_path=str(tmp_path / "x.gif"),
-            input_parameter_dict=_tiny_cfg(spec_dir, qlvm_map="qlvm_dur"),
+            input_parameter_dict=_tiny_cfg(spec_dir, qlvm_map="qlvm_duration"),
             message_output=lambda *_a, **_kw: None,
         ).make_video()
 
@@ -193,7 +193,7 @@ def test_make_video_errors_without_map_coordinates(tmp_path, qlvm_category_bundl
     with h5py.File(spec_dir / "spectrograms_20250907_190610.h5", "w") as h5:
         h5.create_dataset("spectrogram/20250907_190610/spectrograms",
                           data=rng.random((5, 16, 16)).astype(np.float32))
-        h5.create_dataset("qlvm/20250907_190610/qlvm_dur", data=rng.random((5, 2)))
+        h5.create_dataset("qlvm/20250907_190610/qlvm_duration", data=rng.random((5, 2)))
         model_group = h5.create_group("qlvm_models/qlvm")
         model_group.attrs["package_root"] = _PRODUCTION_PACKAGE
         model_group.attrs["cell"] = "cell/masked"

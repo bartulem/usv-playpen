@@ -138,7 +138,7 @@ def pool_latents_from_h5(h5, qlvm_map: str) -> tuple[np.ndarray, list[tuple[str,
     h5 (h5py.File)
         Open consolidated spectrogram store (read mode).
     qlvm_map (str)
-        One of ``os_utils.QLVM_MAPS`` (e.g. ``"qlvm"``, ``"qlvm_dur"``).
+        One of ``os_utils.QLVM_MAPS`` (e.g. ``"qlvm"``, ``"qlvm_duration"``).
 
     Returns
     -------

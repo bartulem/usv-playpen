@@ -774,7 +774,7 @@ def label_grid_lookup(coords: np.ndarray, grid: np.ndarray) -> np.ndarray:
     the grid's resolution (``grid.shape[0]``). This is the pixel rule of the QLVM
     model packages: on the posterior-mean coordinates of the v3 production cells
     it reproduces the package's ``inference/clusters_<level>/cluster_labels.csv``
-    on every one of the 445,742 corpus calls but one (a ``qlvm_dur`` call whose
+    on every one of the 445,742 corpus calls but one (a duration-map call whose
     coordinate lies within float32 rounding of a pixel edge).
     The ``mod`` wraps a coordinate of exactly ``1.0`` (or one whose product with
     ``res`` rounds up to ``res``) to pixel 0, the pixel it shares on the torus,
@@ -814,8 +814,9 @@ def validate_model_cells(model_cells: Iterable[tuple[str, str]]) -> dict[str, st
     torus-coordinate and label columns of the summary's QLVM map prefixes
     ``os_utils.QLVM_SUMMARY_MAP_PREFIXES`` and of the production prefixes of
     ``os_utils.QLVM_PRODUCTION_MODEL_CELLS`` -- ``qlvm1`` / ``qlvm2``,
-    ``qlvm_category``, ``qlvm_dur1`` / ``qlvm_dur2``, ``qlvm_ent1`` /
-    ``qlvm_ent2``, ... -- are allowed, since writing them is what a run is for;
+    ``qlvm_category``, ``qlvm_duration1`` / ``qlvm_duration2``,
+    ``qlvm_entropy1`` / ``qlvm_entropy2``, ``qlvm_bandwidth1`` /
+    ``qlvm_bandwidth2``, ``qlvm_loudness1`` / ``qlvm_loudness2``, ... -- are allowed, since writing them is what a run is for;
     see :func:`model_cell_reserved_columns`). Each cell directory must be a
     non-empty string. Every problem is collected and raised together. The label
     columns a prefix writes are checked separately
@@ -863,7 +864,7 @@ def model_cell_label_column(prefix: str, level: str) -> str:
     level. The regular model's prefix ``"qlvm"`` keeps the historical names --
     ``"fine"`` -> ``qlvm_category``, ``"coarse"`` -> ``qlvm_supercategory`` --
     and every other prefix ``P`` gets ``P_category`` (fine) and
-    ``P_supercategory`` (coarse), e.g. ``qlvm_dur_category``.
+    ``P_supercategory`` (coarse), e.g. ``qlvm_duration_category``.
 
     Parameters
     ----------
@@ -919,7 +920,8 @@ def model_cell_reserved_columns() -> set[str]:
     of ``USV_SUMMARY_COLUMN_ORDER`` except the torus-coordinate columns
     (``P1`` / ``P2``) and the label columns of both levels
     (:func:`model_cell_label_column`) of the summary's QLVM map prefixes
-    (``os_utils.QLVM_SUMMARY_MAP_PREFIXES``: ``qlvm``, ``qlvm_dur``, ``qlvm_ent``)
+    (``os_utils.QLVM_SUMMARY_MAP_PREFIXES``: ``qlvm``, ``qlvm_duration``,
+    ``qlvm_entropy``, ``qlvm_bandwidth``, ``qlvm_loudness``)
     and of the production prefixes of ``os_utils.QLVM_PRODUCTION_MODEL_CELLS`` --
     writing those is what a run is for. Every other summary column (DAS event,
     acoustic features, the squeak torus coordinates, ...) must stay untouched.
@@ -1679,7 +1681,7 @@ class QLVMLatentInference:
             Path of the summary, named in errors.
         null_columns (str)
             How the log names the columns a skipped call leaves null (e.g.
-            ``"qlvm_dur1/qlvm_dur2"``).
+            ``"qlvm_duration1/qlvm_duration2"``).
         skip_rows (np.ndarray)
             ``(n_rows,)`` boolean, True for summary rows never to embed (the pure
             squeaks); they get null columns whatever their duration.
@@ -1964,8 +1966,8 @@ def tidy_session_usv_summary(
 
 @click.command(name="infer-qlvm-latents")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--model-cell', 'model_cells', type=(str, str), multiple=True, default=None, required=False, help='A column prefix and a QLVM model package cell (e.g. --model-cell qlvm_dur .../qlvm_time_stretch/masked_clean/conditionals/cell/duration); repeat once per model. When given, these pairs replace the model_cells setting: the session is placed on the torus of every listed cell and <prefix>1/<prefix>2 plus the cluster-label columns asked of each prefix (see --model-cell-labels; none by default) are written, and earlier coordinate, label and category columns of each listed prefix are removed. Without it, the model_cells setting is used (by default the production cells).')
-@click.option('--model-cell-labels', 'model_cell_label_levels', type=(str, str), multiple=True, default=None, required=False, help='A model_cells column prefix and the comma-separated cluster-label levels it writes, among fine and coarse (e.g. --model-cell-labels qlvm_dur fine,coarse writes qlvm_dur_category and qlvm_dur_supercategory; an empty string writes none); repeat once per prefix. When given, these pairs replace the model_cell_label_levels setting; prefixes not listed keep the default (no label column: the coordinates only; qlvm_category of the regular map comes from assign-qlvm-categories).')
+@click.option('--model-cell', 'model_cells', type=(str, str), multiple=True, default=None, required=False, help='A column prefix and a QLVM model package cell (e.g. --model-cell qlvm_duration .../qlvm_time_stretch/masked_clean/conditionals/cell/duration); repeat once per model. When given, these pairs replace the model_cells setting: the session is placed on the torus of every listed cell and <prefix>1/<prefix>2 plus the cluster-label columns asked of each prefix (see --model-cell-labels; none by default) are written, and earlier coordinate, label and category columns of each listed prefix are removed. Without it, the model_cells setting is used (by default the production cells).')
+@click.option('--model-cell-labels', 'model_cell_label_levels', type=(str, str), multiple=True, default=None, required=False, help='A model_cells column prefix and the comma-separated cluster-label levels it writes, among fine and coarse (e.g. --model-cell-labels qlvm_duration fine,coarse writes qlvm_duration_category and qlvm_duration_supercategory; an empty string writes none); repeat once per prefix. When given, these pairs replace the model_cell_label_levels setting; prefixes not listed keep the default (no label column: the coordinates only; qlvm_category of the regular map comes from assign-qlvm-categories).')
 @click.option('--prefer-package-values/--no-prefer-package-values', 'prefer_package_values', default=None, required=False, help='With model cells: take a corpus session\'s coordinates from the package\'s own embedding when its spectrogram H5 is unchanged since the package (SHA-256, row count, durations and mask counts verified), else infer them; --no-prefer-package-values infers every session.')
 @click.option('--latent-dim', 'latent_dim', type=int, default=None, required=False, help='Dimensionality of the toroidal latent space; must equal every model cell\'s training contract.')
 @click.option('--time-stretch/--no-time-stretch', 'time_stretch', default=None, required=False, help='Whether to time-stretch each spectrogram to the fixed size (matching training preprocessing; true for the production cells) instead of a plain resize; must match every cell\'s training contract.')

@@ -917,7 +917,7 @@ class TestFindUsvCategories:
         assert set(male['events_by_category'].keys()) == {5, 8}
 
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
-    @pytest.mark.parametrize("prefix", ["qlvm", "qlvm_dur", "qlvm_ent"])
+    @pytest.mark.parametrize("prefix", ["qlvm", "qlvm_duration", "qlvm_entropy"])
     def test_continuous_targets_from_manifold_columns(self, tmp_path, prefix):
         """When ``manifold_column_names`` are present, continuous onsets, stacked
         targets and the region label array are written. The label is the regular
@@ -962,11 +962,11 @@ class TestFindUsvCategories:
             'start': [2.0, 3.0],
             'stop': [2.05, 3.05],
             'usv_category': [1, 2],
-            'qlvm_dur1': [0.1, 0.2],
-            'qlvm_dur2': [0.3, 0.4],
+            'qlvm_duration1': [0.1, 0.2],
+            'qlvm_duration2': [0.3, 0.4],
         }
         out = find_usv_categories(target_category=None, filter_history=1.0,
-                                  manifold_column_names=['qlvm_dur1', 'qlvm_dur2'],
+                                  manifold_column_names=['qlvm_duration1', 'qlvm_duration2'],
                                   **self._kwargs(tmp_path, rows))
         male = out['sess_D']['male']
         assert male['continuous_targets'].shape == (2, 2)

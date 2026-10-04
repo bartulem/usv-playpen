@@ -504,7 +504,7 @@ def test_qlvm_category_constants_and_production_cells():
     """The category bundle is one constant on the regular map, its column is the one
     category column of every map, the qlvm_v3 reference-arrays convention is gone, and
     the production cells resolve from the package root (a map outside QLVM_MAPS raises)."""
-    assert os_utils.QLVM_MAPS == ("qlvm", "qlvm_dur", "qlvm_ent")
+    assert os_utils.QLVM_MAPS == ("qlvm", "qlvm_duration", "qlvm_entropy", "qlvm_bandwidth", "qlvm_loudness")
     assert os_utils.QLVM_REGULAR_MAP == os_utils.QLVM_CATEGORY_MAP == "qlvm"
     assert os_utils.QLVM_CATEGORY_COLUMN == "qlvm_category"
     assert os_utils.QLVM_CATEGORY_COLUMNS == ("qlvm_category",)
@@ -515,7 +515,12 @@ def test_qlvm_category_constants_and_production_cells():
     assert not hasattr(os_utils, "QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME")
     package = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
     assert os_utils.qlvm_production_cell_directory("qlvm") == f"{package}/cell/masked"
-    assert os_utils.qlvm_production_cell_directory("qlvm_ent") == f"{package}/conditionals/cell/spectral_entropy"
+    assert os_utils.qlvm_production_cell_directory("qlvm_duration") == f"{package}/conditionals/cell/duration"
+    assert os_utils.qlvm_production_cell_directory("qlvm_entropy") == f"{package}/conditionals/cell/spectral_entropy"
+    assert os_utils.qlvm_production_cell_directory("qlvm_bandwidth") == f"{package}/conditionals/cell/bandwidth"
+    assert os_utils.qlvm_production_cell_directory("qlvm_loudness") == f"{package}/conditionals/cell/loudness"
+    with pytest.raises(ValueError, match="qlvm_map must be one of"):
+        os_utils.qlvm_production_cell_directory("qlvm_dur")
     with pytest.raises(ValueError, match="qlvm_map must be one of"):
         os_utils.qlvm_production_cell_directory("vae")
     assert os_utils.qlvm_cell_model_id(f"{package}/cell/masked") == "masked_clean/cell/masked"
@@ -595,7 +600,8 @@ def test_order_usv_summary_columns_puts_known_columns_in_canonical_order():
 def test_usv_summary_column_order_is_the_agreed_layout():
     """The agreed layout, in full: DAS event -> noise and vocal-class block -> emitter and DAS
     channel statistics -> acoustic features -> the regular QLVM map with its category -> the
-    duration and spectral-entropy conditional maps (coordinates only) -> the squeak torus.
+    duration, spectral-entropy, bandwidth and loudness conditional maps (coordinates only) ->
+    the squeak torus.
     No obsolete column is canonical."""
     assert list(os_utils.USV_SUMMARY_COLUMN_ORDER) == [
         "usv_id", "start", "stop", "duration",
@@ -604,12 +610,13 @@ def test_usv_summary_column_order_is_the_agreed_layout():
         "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "loudness_db",
         "spectral_entropy", "mask_number",
         "qlvm1", "qlvm2", "qlvm_category",
-        "qlvm_dur1", "qlvm_dur2", "qlvm_ent1", "qlvm_ent2",
+        "qlvm_duration1", "qlvm_duration2", "qlvm_entropy1", "qlvm_entropy2",
+        "qlvm_bandwidth1", "qlvm_bandwidth2", "qlvm_loudness1", "qlvm_loudness2",
         "qlvm_squeak1", "qlvm_squeak2",
     ]
     assert len(set(os_utils.USV_SUMMARY_COLUMN_ORDER)) == len(os_utils.USV_SUMMARY_COLUMN_ORDER)
     assert not set(os_utils.USV_SUMMARY_OBSOLETE_COLUMNS) & set(os_utils.USV_SUMMARY_COLUMN_ORDER)
-    assert os_utils.QLVM_SUMMARY_MAP_PREFIXES == ("qlvm", "qlvm_dur", "qlvm_ent")
+    assert os_utils.QLVM_SUMMARY_MAP_PREFIXES == ("qlvm", "qlvm_duration", "qlvm_entropy", "qlvm_bandwidth", "qlvm_loudness")
     assert {"squeak_probability", "squeak_frame_runs", "call_class", "squeak_spans", "n_squeaks"} <= set(
         os_utils.USV_SUMMARY_OBSOLETE_COLUMNS
     )
@@ -621,12 +628,29 @@ def test_obsolete_usv_summary_columns_picks_listed_and_confidence_columns():
     columns = [
         "usv_id", "qlvm_supercategory", "qlvm_category", "qlvm_dur_category", "qlvm_mf1", "custom",
         "qlvm_x_category_uncertain", "qlvm_category_agreement", "qlvm_loud_supercategory", "qlvm_model",
-        "qlvm_ent1",
+        "qlvm_ent1", "qlvm_entropy1",
     ]
     assert os_utils.obsolete_usv_summary_columns(columns) == [
         "qlvm_supercategory", "qlvm_dur_category", "qlvm_mf1", "qlvm_x_category_uncertain",
-        "qlvm_category_agreement", "qlvm_loud_supercategory", "qlvm_model",
+        "qlvm_category_agreement", "qlvm_loud_supercategory", "qlvm_model", "qlvm_ent1",
     ]
+
+
+def test_obsolete_columns_never_match_the_current_conditional_maps():
+    """The retired short-prefix maps (qlvm_dur*, qlvm_ent*) and the retired v3 maps
+    (qlvm_bw*, qlvm_loud*, qlvm_mf*) are obsolete, but the current conditional maps whose
+    names merely START with a retired prefix (qlvm_duration*, qlvm_entropy*,
+    qlvm_bandwidth*, qlvm_loudness*) are canonical and never picked: obsolete names are
+    matched exactly, not as prefixes."""
+    current = [f"{prefix}{axis}" for prefix in os_utils.QLVM_SUMMARY_MAP_PREFIXES for axis in (1, 2)]
+    retired = [
+        "qlvm_dur1", "qlvm_dur2", "qlvm_ent1", "qlvm_ent2", "qlvm_bw1", "qlvm_bw2",
+        "qlvm_loud1", "qlvm_loud2", "qlvm_mf1", "qlvm_mf2",
+    ]
+    assert os_utils.obsolete_usv_summary_columns(current) == []
+    assert os_utils.obsolete_usv_summary_columns(retired + current) == retired
+    assert not set(current) & set(os_utils.USV_SUMMARY_OBSOLETE_COLUMNS)
+    assert set(current) <= set(os_utils.USV_SUMMARY_COLUMN_ORDER)
 
 
 def test_tidy_usv_summary_columns_drops_obsolete_and_reorders():
@@ -639,6 +663,8 @@ def test_tidy_usv_summary_columns_drops_obsolete_and_reorders():
         "squeak_probability": [0.1, None], "mean_freq_hz": [50000.0, 60000.0],
         "qlvm1": [0.1, 0.2], "qlvm2": [0.3, 0.4], "qlvm_category": [1, 2], "qlvm_supercategory": [1, 1],
         "qlvm_dur1": [0.5, 0.6], "qlvm_dur2": [0.7, 0.8], "qlvm_dur_category": [3, 4],
+        "qlvm_duration1": [0.5, 0.6], "qlvm_duration2": [0.7, 0.8], "qlvm_bandwidth1": [0.1, 0.2],
+        "qlvm_loudness2": [0.3, 0.4],
         "qlvm_dur_supercategory": [1, 2], "qlvm_mf1": [0.0, 0.0], "qlvm_mf2": [0.0, 0.0],
         "qlvm_mf_category": [1, 1], "qlvm_bw1": [0.0, 0.0], "qlvm_loud_supercategory": [2, 2],
         "qlvm_category_agreement": [0.9, 0.5], "qlvm_category_uncertain": [False, True],
@@ -647,12 +673,13 @@ def test_tidy_usv_summary_columns_drops_obsolete_and_reorders():
     tidied, report = os_utils.tidy_usv_summary_columns(table)
     assert tidied.columns == [
         "usv_id", "start", "stop", "duration", "noise", "emitter", "peak_amp_ch", "mean_freq_hz",
-        "qlvm1", "qlvm2", "qlvm_category", "qlvm_dur1", "qlvm_dur2", "qlvm_squeak1", "qlvm_squeak2",
-        "custom",
+        "qlvm1", "qlvm2", "qlvm_category", "qlvm_duration1", "qlvm_duration2", "qlvm_bandwidth1",
+        "qlvm_loudness2", "qlvm_squeak1", "qlvm_squeak2", "custom",
     ]
     assert tidied.equals(table.select(tidied.columns))
     assert report["dropped"] == [
-        "squeak_probability", "qlvm_supercategory", "qlvm_dur_category", "qlvm_dur_supercategory", "qlvm_mf1", "qlvm_mf2",
+        "squeak_probability", "qlvm_supercategory", "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category",
+        "qlvm_dur_supercategory", "qlvm_mf1", "qlvm_mf2",
         "qlvm_mf_category", "qlvm_bw1", "qlvm_loud_supercategory", "qlvm_category_agreement",
         "qlvm_category_uncertain",
     ]
@@ -701,10 +728,14 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     package = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
     assert settings["infer_qlvm_latents"]["model_cells"] == {
         "qlvm": f"{package}/cell/masked",
-        "qlvm_dur": f"{package}/conditionals/cell/duration",
-        "qlvm_ent": f"{package}/conditionals/cell/spectral_entropy",
+        "qlvm_duration": f"{package}/conditionals/cell/duration",
+        "qlvm_entropy": f"{package}/conditionals/cell/spectral_entropy",
+        "qlvm_bandwidth": f"{package}/conditionals/cell/bandwidth",
+        "qlvm_loudness": f"{package}/conditionals/cell/loudness",
     }
-    assert list(settings["infer_qlvm_latents"]["model_cells"]) == ["qlvm", "qlvm_dur", "qlvm_ent"]
+    assert list(settings["infer_qlvm_latents"]["model_cells"]) == [
+        "qlvm", "qlvm_duration", "qlvm_entropy", "qlvm_bandwidth", "qlvm_loudness",
+    ]
     assert settings["infer_qlvm_latents"]["masking_type"] == "sam"
     assert settings["infer_qlvm_latents"]["time_stretch"] is True
     # the production squeak QLVM cell (phase 3 BBV, natural_session)
@@ -750,7 +781,7 @@ def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
 
 @pytest.mark.parametrize("configured", [
     {"qlvm_x": "/custom/cell"},
-    {"qlvm": "/custom/regular_cell", "qlvm_dur": "/custom/duration_cell"},
+    {"qlvm": "/custom/regular_cell", "qlvm_duration": "/custom/duration_cell"},
 ])
 def test_derive_spectrogram_model_paths_keeps_configured_qlvm_models(configured):
     """Configured model_cells (one cell or several) win over the derived production
@@ -773,7 +804,7 @@ def test_derived_qlvm_model_cells_pass_model_cell_validation():
     """The derived production prefixes, with the shipped (empty) label-level setting, write
     their coordinates only, which the model_cells validator and the label-level resolver
     (which forbid overwriting other summary columns) accept. Every canonical map coordinate
-    column (qlvm, qlvm_dur, qlvm_ent) is writable by a model_cells run, and so is the regular
+    column (qlvm, qlvm_duration, qlvm_entropy, qlvm_bandwidth, qlvm_loudness) is writable by a model_cells run, and so is the regular
     map's qlvm_category; the squeak torus coordinates are not."""
     settings = {
         "spectrograms_root": "/mnt/falkner/Bartul/spectrograms",

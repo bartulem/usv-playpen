@@ -1116,9 +1116,9 @@ def _write_embedding_session(root: pathlib.Path, session_id: str):
         {
             "qlvm1": [1.1, 1.2, 1.3, 1.4],
             "qlvm2": [1.5, 1.6, 1.7, 1.8],
-            "qlvm_dur1": [0.1, 0.2, 0.3, 0.4],
-            "qlvm_dur2": [0.5, 0.6, 0.7, 0.8],
-            "qlvm_dur_category": [1, 2, 1, 2],
+            "qlvm_duration1": [0.1, 0.2, 0.3, 0.4],
+            "qlvm_duration2": [0.5, 0.6, 0.7, 0.8],
+            "qlvm_duration_category": [1, 2, 1, 2],
             "noise": [True, False, False, False],
             "usv": [None, False, True, True],
             "squeak": [None, True, False, True],
@@ -1154,12 +1154,12 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     assert pooled.height == 3  # the row the noise classifier flagged is dropped
     # every map's coordinates (null-filled where a map is missing) and the one category
     # column (optional, never null-filled); retired label columns a summary still carries
-    # (qlvm_supercategory, qlvm_dur_category) are not pooled
+    # (qlvm_supercategory, qlvm_duration_category) are not pooled
     assert set(EMBEDDING_COORD_COLS).issubset(pooled.columns)
     assert "qlvm_category" in pooled.columns
-    assert not {"qlvm_supercategory", "qlvm_dur_category"} & set(pooled.columns)
-    assert pooled["qlvm_dur1"].to_list() == [0.2, 0.3, 0.4]
-    assert pooled["qlvm_ent1"].null_count() == pooled.height
+    assert not {"qlvm_supercategory", "qlvm_duration_category"} & set(pooled.columns)
+    assert pooled["qlvm_duration1"].to_list() == [0.2, 0.3, 0.4]
+    assert pooled["qlvm_entropy1"].null_count() == pooled.height
     # the usv / squeak booleans are carried as Boolean (the thumbnails' default filter and
     # the explorer derive the call class from them)
     assert pooled["usv"].to_list() == [False, True, True]
@@ -1197,8 +1197,8 @@ def test_build_pooled_embeddings_df_skips_empty_session(tmp_path):
     _write_usv_summary_csv(
         empty / "audio",
         {c: [] for c in (
-            "qlvm1", "qlvm2", "qlvm_dur1", "qlvm_dur2",
-            "qlvm_category", "qlvm_supercategory", "qlvm_dur_category",
+            "qlvm1", "qlvm2", "qlvm_duration1", "qlvm_duration2",
+            "qlvm_category", "qlvm_supercategory", "qlvm_duration_category",
             "emitter", "duration", "mean_freq_hz", "peak_freq_hz",
             "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "spectral_entropy")},
     )
@@ -1218,11 +1218,11 @@ def test_build_pooled_embeddings_df_coerces_string_numeric_columns(tmp_path):
     _write_usv_summary_csv(
         weird / "audio",
         {
-            "qlvm_dur1": [None, None],  # all-null -> CSV-inferred as String/Null
-            "qlvm_dur2": [None, None],
+            "qlvm_duration1": [None, None],  # all-null -> CSV-inferred as String/Null
+            "qlvm_duration2": [None, None],
             "qlvm1": [1.0, 2.0],
             "qlvm2": [1.0, 2.0],
-            "qlvm_dur_category": [None, None],
+            "qlvm_duration_category": [None, None],
             "qlvm_category": [1, 2],
             "qlvm_supercategory": [1, 2],
             "emitter": ["M", "F"],
@@ -1562,8 +1562,8 @@ def _make_pooled_df(session_id: str = "sessA", n_per_cat: int = 6) -> pls.DataFr
             "qlvm1": 0.4 * rng.random(n) + 0.5 * (np.array(cats, dtype=float) - 1.0),
             "qlvm2": 0.4 * rng.random(n) + 0.5 * (np.array(cats, dtype=float) - 1.0),
             "qlvm_category": cats,
-            "qlvm_dur1": rng.random(n),
-            "qlvm_dur2": rng.random(n),
+            "qlvm_duration1": rng.random(n),
+            "qlvm_duration2": rng.random(n),
             "usv": [True] * n,
             "squeak": [False] * n,
             "sex": (["male", "female"] * n)[:n],
@@ -1598,7 +1598,7 @@ def test_plot_umap_thumbnails_random(tmp_path):
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
 def test_plot_umap_thumbnails_conditional_map_colours_by_qlvm_category(tmp_path):
-    """qlvm_map='qlvm_dur' groups and colours its calls by the regular map's
+    """qlvm_map='qlvm_duration' groups and colours its calls by the regular map's
     qlvm_category (the only category column) and draws no category boundaries (the
     bundle partitions the regular map's torus only), saying so; the category-ID labels
     sit at the calls' means on that map, not at the bundle's label positions."""
@@ -1609,7 +1609,7 @@ def test_plot_umap_thumbnails_conditional_map_colours_by_qlvm_category(tmp_path)
     fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
-        qlvm_map="qlvm_dur",
+        qlvm_map="qlvm_duration",
         n_samples_per_category=3,
         sampling_method="spiral",
         annotate_cluster_ids=True,
@@ -1619,12 +1619,12 @@ def test_plot_umap_thumbnails_conditional_map_colours_by_qlvm_category(tmp_path)
     )
     assert any("defined on the qlvm map" in message for message in messages)
     scatter_ax = fig.axes[0]
-    assert scatter_ax.get_xlabel() == "QLVM DUR DIM 1"
+    assert scatter_ax.get_xlabel() == "QLVM DURATION DIM 1"
     assert not any(isinstance(child, matplotlib.contour.ContourSet) for child in scatter_ax.get_children())
     placed = {text.get_text(): tuple(text.get_position()) for text in scatter_ax.texts if text.get_text() in ("1", "2")}
     for label in (1, 2):
         rows = pooled.filter(pls.col("qlvm_category") == label)
-        assert placed[str(label)] == pytest.approx((rows["qlvm_dur1"].mean(), rows["qlvm_dur2"].mean()))
+        assert placed[str(label)] == pytest.approx((rows["qlvm_duration1"].mean(), rows["qlvm_duration2"].mean()))
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
@@ -1894,8 +1894,8 @@ def _write_sequence_session(
         "qlvm2": [0.3, 0.5, 0.7, 0.2],
     }
     if with_dur:
-        rows["qlvm_dur1"] = [0.1, 0.3, 0.5, 0.7]
-        rows["qlvm_dur2"] = [0.6, 0.4, 0.2, 0.9]
+        rows["qlvm_duration1"] = [0.1, 0.3, 0.5, 0.7]
+        rows["qlvm_duration2"] = [0.6, 0.4, 0.2, 0.9]
     _write_usv_summary_csv(audio_dir, rows, name=f"{session_id}_usv_summary.csv")
     _write_tracking_h5(
         root / "video",
@@ -1944,7 +1944,7 @@ def _seq_settings(
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
-@pytest.mark.parametrize("qlvm_map", ["qlvm", "qlvm_dur"])
+@pytest.mark.parametrize("qlvm_map", ["qlvm", "qlvm_duration"])
 def test_plot_sequence_writes_figure(tmp_path, qlvm_map):
     """A sequence figure is rendered and written for the regular and a conditional
     map, sourcing that map's coords from the CSV and specs/audio from the store/memmap."""
@@ -1974,7 +1974,7 @@ def test_plot_sequence_maps_draw_their_cohort_density(tmp_path):
         tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
     )
     save_dir = tmp_path / "out"
-    for qlvm_map in ("qlvm", "qlvm_dur"):
+    for qlvm_map in ("qlvm", "qlvm_duration"):
         fig = USVSpectrogramPlotter(
             root_directory=str(root),
             visualizations_parameter_dict=_seq_settings(spec_dir, save_dir, qlvm_map=qlvm_map),
@@ -2055,7 +2055,7 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
         "start": [0.001, 0.003], "stop": [0.002, 0.004],
         "emitter": ["male_x", "male_x"],
         "qlvm1": [0.95, 0.05], "qlvm2": [0.5, 0.5],  # opposite x-edges -> wraps
-        "qlvm_dur1": [0.45, 0.55], "qlvm_dur2": [0.5, 0.5],  # no seam crossing
+        "qlvm_duration1": [0.45, 0.55], "qlvm_duration2": [0.5, 0.5],  # no seam crossing
     }
     _write_usv_summary_csv(root / "audio", rows, name=f"{session_id}_usv_summary.csv")
     _write_tracking_h5(
@@ -2078,21 +2078,21 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
         return len(lc.get_segments())
 
     assert _n_subsegments("qlvm") == 2  # short route wraps the seam -> two pieces
-    assert _n_subsegments("qlvm_dur") == 1   # no seam between them -> one piece
+    assert _n_subsegments("qlvm_duration") == 1   # no seam between them -> one piece
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
 def test_plot_sequence_map_missing_coords_raises(tmp_path):
-    """Choosing a map whose coordinates the session's CSV lacks (qlvm_dur1/qlvm_dur2)
+    """Choosing a map whose coordinates the session's CSV lacks (qlvm_duration1/qlvm_duration2)
     raises a clear, session-named ValueError naming the map."""
     session_id = "20230101_120000"
     root = _write_sequence_session(tmp_path, session_id, with_dur=False)
     spec_dir = _write_spectrograms_dir(
         tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
     )
-    settings = _seq_settings(spec_dir, tmp_path / "out", qlvm_map="qlvm_dur")
-    with pytest.raises(ValueError, match="qlvm_dur"):
+    settings = _seq_settings(spec_dir, tmp_path / "out", qlvm_map="qlvm_duration")
+    with pytest.raises(ValueError, match="qlvm_duration"):
         USVSpectrogramPlotter(
             root_directory=str(root), visualizations_parameter_dict=settings
         ).plot_sequence()
@@ -2139,7 +2139,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     viz = {
         "figures": {"save_directory": str(tmp_path / "figs"), "fig_format": "png", "dpi": 150, "seed": 7, "timestamp_in_name": True},
         "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir),
-                             "qlvm_map": "qlvm_dur"},
+                             "qlvm_map": "qlvm_duration"},
         "embedding_thumbnails": {
             "category_col_suffix": "category", "exclude_squeaks": True,
             "n_samples_per_category": 6, "tile_orientation": "vertical",
@@ -2167,7 +2167,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     # the throwaway combined list is unlinked after the render
     assert not pathlib.Path(captured["sessions_txt_path"]).exists()
     # block knobs forwarded verbatim
-    assert captured["qlvm_map"] == "qlvm_dur"
+    assert captured["qlvm_map"] == "qlvm_duration"
     assert captured["category_col_suffix"] == "category"
     assert captured["exclude_squeaks"] is True
     assert captured["n_samples_per_category"] == 6
@@ -2194,7 +2194,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert opened == [captured["output_path"]]
     # timestamp_in_name -> the filename ends with a _YYYYMMDD_HHMMSS stamp
     out_name = pathlib.Path(captured["output_path"]).name
-    assert re.fullmatch(r"embedding_thumbnails_qlvm_dur_category_\d{8}_\d{6}\.png", out_name)
+    assert re.fullmatch(r"embedding_thumbnails_qlvm_duration_category_\d{8}_\d{6}\.png", out_name)
 
 
 
@@ -2265,7 +2265,7 @@ def test_explorer_squeak_map_class_filter(squeak_class, expected_rows):
     assert _explorer_scatter_rows("qlvm_squeak", squeak_class) == expected_rows
 
 
-@pytest.mark.parametrize("qlvm_map", ["qlvm", "qlvm_dur"])
+@pytest.mark.parametrize("qlvm_map", ["qlvm", "qlvm_duration"])
 def test_explorer_colours_by_qlvm_category_and_draws_bundle_boundaries_on_the_regular_map(qlvm_map):
     """Every USV map colours by the calls' qlvm_category (conditional maps included);
     the boundaries are the category bundle's grid on the regular map only: there they
@@ -2276,8 +2276,8 @@ def test_explorer_colours_by_qlvm_category_and_draws_bundle_boundaries_on_the_re
         "row_index": list(range(4)),
         "qlvm1": [0.1, 0.6, 0.2, 0.7],
         "qlvm2": [0.1, 0.2, 0.6, 0.7],
-        "qlvm_dur1": [0.3, 0.4, 0.5, 0.6],
-        "qlvm_dur2": [0.3, 0.4, 0.5, 0.6],
+        "qlvm_duration1": [0.3, 0.4, 0.5, 0.6],
+        "qlvm_duration2": [0.3, 0.4, 0.5, 0.6],
         "qlvm_category": [1, 2, 3, 4],
         "usv": [True] * 4,
         "squeak": [False] * 4,

@@ -1230,8 +1230,8 @@ def find_usv_categories(root_directories: list = None,
                     # downstream region-conditioned analyses (torus macro
                     # score, equal-region reweighting, model selection, CNN
                     # saliency, GLM-HMM targets). The label is the regular
-                    # map's qlvm_category (R-1..R-k) for EVERY map -- qlvm,
-                    # qlvm_dur and qlvm_ent alike: the categories are defined
+                    # map's qlvm_category (R-1..R-k) for EVERY map -- qlvm and
+                    # the four conditional maps alike: the categories are defined
                     # on the regular map only (os_utils.QLVM_CATEGORY_MAP) and
                     # are a property of the call, so a conditional map's calls
                     # carry the same labels. Stored as a plain numpy array

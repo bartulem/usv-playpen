@@ -2480,7 +2480,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
 
 The §6 category-embedding panel reads its own knobs from the **Statistics parameters** cell (``embedding_qlvm_map``, ``embedding_boundary_color``, ``embedding_log_scale_bars``, ``embedding_plot_type``, ``embedding_grid_res``) and first extracts the embedding via ``uss.extract_category_embedding_data`` (``usv_only=True``: pure USVs only) before calling ``uss.plot_category_prevalence_and_embedding``. §7 builds per-animal ``session_count`` / ``total_usvs`` dicts for each sex and passes them to ``uss.plot_animal_participation_stats``.
 
-* **embedding_qlvm_map** — the QLVM map the panel draws (``'qlvm'``, ``'qlvm_dur'`` or ``'qlvm_ent'``; its ``P1`` / ``P2`` become ``usv_continuous_cols``). The prevalence bars count the calls' ``qlvm_category`` on every map; the category boundaries are the QLVM category bundle's label grid (``os_utils.load_qlvm_category_bundle``), drawn only on ``'qlvm'``, the map the bundle is defined on (a conditional map shows no boundaries and says so in the panel titles; boundaries are never estimated from the data).
+* **embedding_qlvm_map** — the QLVM map the panel draws (``'qlvm'``, ``'qlvm_duration'``, ``'qlvm_entropy'``, ``'qlvm_bandwidth'`` or ``'qlvm_loudness'``; its ``P1`` / ``P2`` become ``usv_continuous_cols``). The prevalence bars count the calls' ``qlvm_category`` on every map; the category boundaries are the QLVM category bundle's label grid (``os_utils.load_qlvm_category_bundle``), drawn only on ``'qlvm'``, the map the bundle is defined on (a conditional map shows no boundaries and says so in the panel titles; boundaries are never estimated from the data).
 * **embedding_boundary_color** / **embedding_log_scale_bars** — category-boundary color and log/linear scaling of the prevalence bars.
 * **embedding_plot_type** — ``"density"`` vs. scatter rendering of the embedding.
 * **embedding_grid_res** — resolution of the density grid.
@@ -2669,7 +2669,8 @@ from the summaries:
 
 * **QLVM** (``qlvm``) — the regular model, with its categories ``qlvm_category`` (R-1 … R-k,
   written by ``assign-qlvm-categories``).
-* **QLVM | duration**, **| spectral entropy** (``qlvm_dur``, ``qlvm_ent``) — the conditional
+* **QLVM | duration**, **| spectral entropy**, **| bandwidth**, **| loudness** (``qlvm_duration``,
+  ``qlvm_entropy``, ``qlvm_bandwidth``, ``qlvm_loudness``) — the conditional
   models, whose maps are what is left once that acoustic variable is removed. They carry no
   categories, so on them a **Color by** category falls back to density and **Boundaries**
   are skipped (the chart title says so).
@@ -2697,7 +2698,7 @@ The USV maps show only the segments ``detect-usv-squeaks`` classed as pure USVs 
   ``~/.usv_playpen_cache`` — only when **Load** is clicked.
 * **Sessions** — narrows the loaded pool to individual sessions. Empty (the default) shows
   every session; pick one or more to isolate them.
-* **Map** — one of the three QLVM maps or the squeak map; it starts on ``shared_resources.qlvm_map`` (the map
+* **Map** — one of the five QLVM maps or the squeak map; it starts on ``shared_resources.qlvm_map`` (the map
   the other QLVM figures draw).
 * **Color by** — a categorical label (category, session type, session id, or
   emitter sex) or a continuous metric (point density, or a per-USV acoustic feature), the
