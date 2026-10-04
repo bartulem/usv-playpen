@@ -628,7 +628,7 @@ def _write_session_dir(
     other_emitter="mouse_other",
     n_frames=300,
     frame_rate=120.0,
-    category_column="qlvm_supercategory",
+    category_column="qlvm_category",
     rows=None,
     with_peak_amp_ch=True,
 ):
@@ -718,7 +718,7 @@ def test_load_animal_sessions_empty_session_names_returns_empty():
         [],
         data_root=pathlib.Path("/nonexistent"),
         catalog={},
-        category_column="qlvm_supercategory",
+        category_column="qlvm_category",
         group_a_ids=["USV"],
         group_b_ids=["WHISTLE"],
         cluster_group="good",
@@ -742,7 +742,7 @@ def test_load_animal_sessions_picks_richest_day_and_builds_entries(tmp_path):
     """
 
     animal_id = "mouse_focal"
-    category_column = "qlvm_supercategory"
+    category_column = "qlvm_category"
     # Day 1: one session, one good unit. Day 2: one session, two good units.
     day1 = tmp_path / "20240101_run0"
     day2 = tmp_path / "20240102_run0"
@@ -821,7 +821,7 @@ def test_load_animal_sessions_absent_category_column_raises(tmp_path):
     Description
     -----------
     A summary without the configured category column (the production summaries
-    carry qlvm1/qlvm2 but no qlvm_supercategory) raises a ValueError naming the
+    carry qlvm1/qlvm2 but no qlvm_category) raises a ValueError naming the
     column and saying QLVM labels are unavailable, instead of polars'
     ColumnNotFoundError.
     """
@@ -837,13 +837,13 @@ def test_load_animal_sessions_absent_category_column_raises(tmp_path):
             "cluster_group": "good", "somatic": "True", "brain_area": "PAG",
         },
     }
-    with pytest.raises(ValueError, match="'qlvm_supercategory' is absent") as excinfo:
+    with pytest.raises(ValueError, match="'qlvm_category' is absent") as excinfo:
         engine.load_animal_sessions(
             animal_id,
             ["20240101_run0"],
             data_root=tmp_path,
             catalog=catalog,
-            category_column="qlvm_supercategory",
+            category_column="qlvm_category",
             group_a_ids=[1],
             group_b_ids=[7],
             cluster_group="good",

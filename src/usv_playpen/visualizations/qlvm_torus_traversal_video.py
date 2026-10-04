@@ -30,7 +30,7 @@ the current ``consolidate-spectrogram-store``) places the calls on another torus
 and the bundle's regions would mislabel them, so it is refused.
 
 Layout:
-  left  = [0,1]^2 latent map (heatmap + watershed contours, no axes/ticks) with a
+  left  = [0,1]^2 latent map (heatmap + category-bundle contours, no axes/ticks) with a
           recency-coloured trajectory trail (accent-colored at the moving head,
           fading to white going back) and an accent-colored head marker during
           traversals.

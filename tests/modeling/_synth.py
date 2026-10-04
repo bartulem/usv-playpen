@@ -23,7 +23,7 @@ The three artifacts the pipeline expects are:
         byte-strings, index 0 == male, index 1 == female by convention).
       - ``<session>/audio/**/*_usv_summary.csv`` the USV summary table with at
         least ``emitter``, ``start``, ``stop`` columns plus the configurable
-        category / supercategory / manifold columns.
+        category / manifold columns.
 
 2.  **A ``modeling_settings`` dict** — a trimmed, hyperparameter-shrunk copy of
     the canonical ``_parameter_settings/modeling_settings.json`` with ``io``
@@ -207,7 +207,7 @@ def build_usv_summary_csv(
         filter_history: float,
         n_bouts: int = 6,
         usv_per_bout: int = 3,
-        category_column: str = 'qlvm_supercategory',
+        category_column: str = 'qlvm_category',
         manifold_columns: tuple[str, str] = ('qlvm1', 'qlvm2'),
         seed: int = 0,
         csv_sep: str = ',',
@@ -229,7 +229,8 @@ def build_usv_summary_csv(
         out negative (No-USV) events too.
 
     A non-noise integer category, two manifold coordinates, a companion
-    ``<prefix>_category`` column (prefix from ``category_column``) and a
+    ``<prefix>_category`` column (prefix from ``category_column``; the same
+    column when ``category_column`` is already ``qlvm_category``, the default) and a
     ``mask_number`` column are attached to every row so the
     category / multinomial / continuous / bout-parameter loaders all find what
     they need (even though the onset smoke path only consumes onsets).
@@ -343,7 +344,7 @@ def build_session_tree(
         mouse_name_stub: tuple[str, str] = ('m_male', 'm_female'),
         n_bouts: int = 8,
         usv_per_bout: int = 3,
-        category_column: str = 'qlvm_supercategory',
+        category_column: str = 'qlvm_category',
         manifold_columns: tuple[str, str] = ('qlvm1', 'qlvm2'),
         csv_sep: str = ',',
 ) -> list[Path]:
@@ -478,7 +479,7 @@ def build_modeling_settings(
         dyadic_features: list[str] | None = None,
         engagement_features: list[str] | None = None,
         usv_predictor_type=None,
-        usv_category_column_name: str | None = 'qlvm_supercategory',
+        usv_category_column_name: str | None = 'qlvm_category',
         split_strategy: str = 'mixed',
         split_num: int = 2,
         test_proportion: float = 0.3,
@@ -502,7 +503,7 @@ def build_modeling_settings(
         set; derivatives off.
       - ``vocal_features.usv_predictor_type`` -> ``None`` by default so no
         vocal predictor columns are generated (keeps the design matrix tiny).
-      - ``vocal_features.usv_category_column_name`` -> ``'qlvm_supercategory'``
+      - ``vocal_features.usv_category_column_name`` -> ``'qlvm_category'``
         by default, the label column the synthetic summaries carry, so the
         categorical pipelines (multinomial, binomial, single-category onsets,
         per-category predictors) keep their coverage (the shipped JSON has the
@@ -540,7 +541,7 @@ def build_modeling_settings(
     usv_predictor_type (str or None)
         Vocal predictor mode; ``None`` disables vocal predictor columns.
     usv_category_column_name (str or None)
-        Category label column the pipelines read; ``'qlvm_supercategory'``
+        Category label column the pipelines read; ``'qlvm_category'``
         (default, as shipped) matches the synthetic summaries, ``None`` is the
         label-free setting.
     split_strategy (str)

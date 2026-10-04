@@ -144,7 +144,7 @@ def build_multinomial_usv_summary_csv(
         filter_history: float,
         n_categories: int = N_CATEGORIES,
         events_per_category: int = 10,
-        category_column: str = 'qlvm_supercategory',
+        category_column: str = 'qlvm_category',
         manifold_columns: tuple[str, str] = ('qlvm1', 'qlvm2'),
         seed: int = 0,
         csv_sep: str = ',',
@@ -443,7 +443,7 @@ def build_multinomial_input_pickle(
           '_input_metadata': {
               'analysis_specific': {
                   'usv_category_number': <K>,
-                  'usv_category_column_name': 'qlvm_supercategory',
+                  'usv_category_column_name': 'qlvm_category',
               }, ...
           }
         }
@@ -504,10 +504,10 @@ def build_multinomial_input_pickle(
             artifact[feature][sess] = {'X': X_sess, 'y': y_sess.copy()}
 
     artifact['_input_metadata'] = {
-        'analysis_tag': 'multinomial_qlvm_supercategory',
+        'analysis_tag': 'multinomial_qlvm_category',
         'analysis_specific': {
             'usv_category_number': int(n_categories),
-            'usv_category_column_name': 'qlvm_supercategory',
+            'usv_category_column_name': 'qlvm_category',
         },
     }
 
@@ -677,12 +677,12 @@ class TestMultinomialInputExtraction:
 
         md = artifact['_input_metadata']
         assert md['analysis_type'] == 'multinomial'
-        assert md['analysis_tag'] == 'multinomial_qlvm_supercategory'
+        assert md['analysis_tag'] == 'multinomial_qlvm_category'
         assert sorted(md['feature_zoo_kept']) == feature_keys
         spec = md['analysis_specific']
         assert spec['usv_category_number'] >= N_CATEGORIES
         assert spec['usv_category_number'] == observed_classes.size
-        assert spec['usv_category_column_name'] == 'qlvm_supercategory'
+        assert spec['usv_category_column_name'] == 'qlvm_category'
 
 
 class TestMultinomialSplitters:
@@ -1601,7 +1601,7 @@ class TestMultinomialExtractionEdgeCases:
             csv_path = next((root / 'audio').glob('*_usv_summary.csv'))
             df = pls.read_csv(csv_path)
             df = df.with_columns(
-                pls.lit(NOISE_CATEGORY).alias('qlvm_supercategory'),
+                pls.lit(NOISE_CATEGORY).alias('qlvm_category'),
                 pls.lit(NOISE_CATEGORY).alias('vae_category'),
                 pls.lit(value=True).alias('noise'),
             )

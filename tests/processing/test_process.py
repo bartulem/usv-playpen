@@ -27,6 +27,7 @@ from usv_playpen.processing.preprocess_data import (
     bp_filter_audio_files_cli,
     concatenate_audio_files_cli,
     broadband_filter_audio_cli,
+    broadband_filter_audio_batch_cli,
     sleap_file_conversion_cli,
     conduct_anipose_calibration_cli,
     conduct_anipose_triangulation_cli,
@@ -3161,6 +3162,56 @@ def test_preprocess_cli_commands_dispatch(mock_dependencies, tmp_path):
     result = runner.invoke(split_clusters_to_sessions_cli, multi)
     assert result.exit_code == 0, result.output
     mock_dependencies['Operator'].return_value.split_clusters_to_sessions.assert_called()
+
+
+def test_broadband_filter_audio_batch_cli_dispatch(tmp_path, mocker):
+    """
+    Description
+    -----------
+    ``broadband-filter-audio-batch`` reads the session list (``--sessions-file``,
+    or the ``--tag`` rows of ``--usv-counts-csv``) with
+    ``read_broadband_session_list`` and hands it to ``broadband_filter_sessions``
+    with ``--workers`` processes, the ``--log-file`` / ``--report-csv`` paths and
+    the processing settings. A ``--threads`` flag is written into the
+    ``broadband_filter_audio`` block of those settings (its only home), while
+    the batch-only flags (workers, log, report, tag) never touch the settings.
+    Both workers are mocked, so no audio is read or written.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory holding the sessions file, log and report.
+    mocker (pytest_mock.MockerFixture)
+        Patches the two module-level batch helpers in ``preprocess_data``.
+
+    Returns
+    -------
+    None
+    """
+
+    sessions_file = tmp_path / "sessions.txt"
+    sessions_file.write_text(f"{tmp_path / 'a'}\n{tmp_path / 'b'}\n", encoding="utf-8")
+    session_roots = [str(tmp_path / 'a'), str(tmp_path / 'b')]
+    read_list = mocker.patch('usv_playpen.processing.preprocess_data.read_broadband_session_list', return_value=session_roots)
+    run_batch = mocker.patch('usv_playpen.processing.preprocess_data.broadband_filter_sessions')
+
+    result = CliRunner().invoke(broadband_filter_audio_batch_cli, [
+        "--sessions-file", str(sessions_file),
+        "--workers", "3",
+        "--threads", "7",
+        "--log-file", str(tmp_path / "batch.log"),
+        "--report-csv", str(tmp_path / "report.csv"),
+    ])
+    assert result.exit_code == 0, f"{result.output}\n{result.exception}"
+
+    read_list.assert_called_once_with(sessions_file=str(sessions_file), usv_counts_csv=None, tag='ok')
+    run_batch.assert_called_once()
+    batch_kwargs = run_batch.call_args.kwargs
+    assert batch_kwargs['session_roots'] == session_roots
+    assert batch_kwargs['n_workers'] == 3
+    assert batch_kwargs['log_path'] == str(tmp_path / "batch.log")
+    assert batch_kwargs['report_csv_path'] == str(tmp_path / "report.csv")
+    assert batch_kwargs['processing_settings']['modify_files']['Operator']['broadband_filter_audio']['n_threads'] == 7
 
 
 def _video_sync_synchronizer(tmp_path, *, tolerance=50, rel_thresh=0.6):
