@@ -373,7 +373,7 @@ class TestContinuousInputExtraction:
 
     def test_extraction_without_labels_drops_unplaced_calls(self, tmp_path, capsys):
         """
-        With the shipped label-free setting (``usv_category_column_name`` null)
+        With the label-free setting (``usv_category_column_name`` null)
         on summaries that carry torus coordinates only -- no ``qlvm_category`` --
         and some calls the embedding could not place
         (null ``qlvm1`` / ``qlvm2``), extraction still runs: the unplaced calls

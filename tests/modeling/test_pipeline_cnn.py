@@ -101,9 +101,9 @@ HISTORY_FRAMES = int(np.floor(CAMERA_FPS * FILTER_HISTORY))  # 36
 N_SESSIONS = 2
 N_PER_SESSION = 24
 FEATURE_NAMES = ['self.speed', 'other.speed']
-# Two non-noise category labels (plus the noise label 0) so the saliency
-# pre-flight resolves >= 2 cluster centres and the alpha-gap radius rule fires.
-SUPERCATEGORIES = (1, 2)
+# Two qlvm_category labels (noise is a summary column, not a label) so the
+# saliency pre-flight resolves >= 2 cluster centres and the alpha-gap radius rule fires.
+CATEGORIES = (1, 2)
 
 
 def _build_cnn_settings(save_dir: Path, source_pkl_path: Path, **mp_overrides) -> dict:
@@ -230,8 +230,8 @@ def _build_cnn_input_pickle(
     to). Within a session the same ``Y`` / ``w`` are shared across features
     (the intra-session alignment invariant the loader relies on). The
     per-USV ``category`` labels are split across two
-    non-noise classes plus the noise label ``0`` so the saliency pre-flight
-    finds >= 2 cluster centres; at least one USV per non-noise class is
+    categories so the saliency pre-flight
+    finds >= 2 cluster centres; at least one USV per category is
     placed near that class's manifold centroid so the Phase-3 dual filter can
     keep a true positive.
 
@@ -272,13 +272,13 @@ def _build_cnn_input_pickle(
     for sess in session_ids:
         signal_X = artifact[feature_names[0]][sess]['X']
         base = signal_X.mean(axis=1)
-        # Two well-separated manifold lobes (one per non-noise category)
+        # Two well-separated manifold lobes (one per category)
         # so derive_cluster_centers_empirically resolves two distinct centres.
         labels = np.where(
-            np.arange(n_per_session) % 2 == 0, SUPERCATEGORIES[0], SUPERCATEGORIES[1]
+            np.arange(n_per_session) % 2 == 0, CATEGORIES[0], CATEGORIES[1]
         ).astype(np.int64)
-        centre_x = np.where(labels == SUPERCATEGORIES[0], -3.0, 3.0)
-        centre_y = np.where(labels == SUPERCATEGORIES[0], 2.0, -2.0)
+        centre_x = np.where(labels == CATEGORIES[0], -3.0, 3.0)
+        centre_y = np.where(labels == CATEGORIES[0], 2.0, -2.0)
         Y = np.stack(
             [centre_x + 0.3 * base, centre_y - 0.2 * base], axis=1
         ).astype(np.float32) + 0.05 * target_rng.standard_normal(
@@ -459,7 +459,7 @@ class TestRunCnnTrainingFull:
         assert sorted(fi['ranked_features']) == sorted(FEATURE_NAMES)
         assert 0 <= fi['best_fold_idx'] < n_folds
 
-        # Phase-3 saliency maps (one per resolved non-noise cluster centre).
+        # Phase-3 saliency maps (one per resolved category centre).
         assert 'saliency_maps' in deep
         assert len(deep['saliency_maps']) >= 1
         for cname, sal in deep['saliency_maps'].items():
@@ -638,7 +638,7 @@ class TestRunCnnTrainingTorus:
         rng = np.random.default_rng(7)
         for sess in artifact[FEATURE_NAMES[0]]:
             labels = artifact[FEATURE_NAMES[0]][sess]['category']
-            base_xy = np.where(labels[:, None] == SUPERCATEGORIES[0], 2.0, 7.0)
+            base_xy = np.where(labels[:, None] == CATEGORIES[0], 2.0, 7.0)
             Y = (base_xy + 0.3 * rng.standard_normal((len(labels), 2))) % period
             for feature in FEATURE_NAMES:
                 artifact[feature][sess]['Y'] = Y.astype(np.float32)
@@ -721,14 +721,14 @@ class TestSaliencyPreflightGuards:
         assert not list(save_dir.glob('cnn_manifold_integrated_predictions_*.pkl'))
 
     def test_preflight_single_cluster_centre(self, tmp_path):
-        """When only one non-noise cluster centre can be resolved (every
+        """When only one category centre can be resolved (every
         labelled USV shares one class), the pre-flight raises ``RuntimeError``
         about the alpha-gap radius rule needing >= 2 centres."""
 
         save_dir = tmp_path / 'out'
         save_path = tmp_path / 'manifold_input.pkl'
         # Build the labelled pickle, then overwrite every label with the same
-        # single non-noise class so only one centre survives.
+        # single category so only one centre survives.
         _build_cnn_input_pickle(
             save_path=save_path,
             feature_names=FEATURE_NAMES,
@@ -741,7 +741,7 @@ class TestSaliencyPreflightGuards:
         for feature in FEATURE_NAMES:
             for sess in artifact[feature]:
                 n = artifact[feature][sess]['category'].shape[0]
-                artifact[feature][sess]['category'] = np.full(n, SUPERCATEGORIES[0], dtype=np.int64)
+                artifact[feature][sess]['category'] = np.full(n, CATEGORIES[0], dtype=np.int64)
         with save_path.open('wb') as fh:
             pickle.dump(artifact, fh)
 

@@ -336,7 +336,7 @@ class TestManifoldFoldFailure:
 
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_vae_supercategory',
+            'analysis_tag': 'manifold_qlvm_category',
             # `session_ids` + `n_events_per_session` are carried as realistic
             # univariate metadata (each session owns a contiguous 60-event block,
             # matching `_build_signal_continuous_pickle`'s default `n_per_session`);
@@ -344,7 +344,7 @@ class TestManifoldFoldFailure:
             'session_ids': session_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'vae_supercategory',
+                'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'euclidean',
                 'manifold_period': 1.0,
             },
