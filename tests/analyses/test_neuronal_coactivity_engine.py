@@ -805,6 +805,38 @@ def test_load_animal_sessions_picks_richest_day_and_builds_entries(tmp_path):
     assert any("common filtered units" in line for line in messages)
 
 
+def test_load_animal_sessions_strips_track_names_and_logs_unattributed_sessions(tmp_path):
+    """
+    Description
+    -----------
+    A track H5 whose names carry stray whitespace (' mouse_focal') still matches the
+    summary's emitter, as in every other track-name reader; a session whose emitter
+    column is empty (vcl-assign not run since the last das-summarize) yields empty
+    groups and a log line naming the cause instead of passing silently.
+    """
+
+    animal_id = "mouse_focal"
+    catalog = {(animal_id, "20240101", "u_a_good"): {"cluster_group": "good", "somatic": "True", "brain_area": "PAG"}}
+    session = tmp_path / "20240101_run0"
+    _write_session_dir(session, unit_stems=["u_a_good"])
+    with h5py.File(name=session / "sess_translated_rotated_metric.h5", mode="r+") as track_file:
+        del track_file["track_names"]
+        track_file.create_dataset("track_names", data=np.array([b" mouse_focal", b"mouse_other "]))
+    load_kwargs = dict(
+        data_root=tmp_path, catalog=catalog, category_column="qlvm_category", group_a_ids=[1], group_b_ids=[3],
+        cluster_group="good", require_somatic=True, brain_areas={"PAG"},
+    )
+    out = engine.load_animal_sessions(animal_id, ["20240101_run0"], message_output=lambda *_a: None, **load_kwargs)
+    assert out[0]["group_a_df"].height == 3
+
+    summary_path = session / "sess_usv_summary.csv"
+    pls.read_csv(summary_path).with_columns(pls.lit(None, dtype=pls.String).alias("emitter")).write_csv(summary_path)
+    messages: list[str] = []
+    out = engine.load_animal_sessions(animal_id, ["20240101_run0"], message_output=messages.append, **load_kwargs)
+    assert out[0]["group_a_df"].height == 0
+    assert any("no USV is attributed to mouse_focal" in line for line in messages)
+
+
 @pytest.mark.parametrize("category_column", [None, ""])
 def test_load_animal_sessions_null_category_column_raises(category_column):
     """
