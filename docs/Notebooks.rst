@@ -85,7 +85,7 @@ edits are picked up without a kernel restart.
     ) as analyses_settings_file:
         analyses_settings = json.load(analyses_settings_file)
 
-* **EXPERIMENTER** — must be set *before* the ``usv_playpen`` imports, because the data paths are re-keyed at import time. The paths are written under the shipped experimenter (``Bartul``) and re-keyed to the experimenter in use by ``resolve_experimenter_path``. ``None`` uses this machine's configured experimenter (from ``_config/behavioral_experiments_settings.toml``); an id like ``"Annegret"`` (which sets ``EXPERIMENTER_ID``) resolves every path under that experimenter's tree instead (restart the kernel to change it after import).
+* **EXPERIMENTER** — must be set *before* the ``usv_playpen`` imports, because the data paths are re-keyed at import time. The paths are written under the shipped experimenter (``Bartul``) and re-keyed to the experimenter in use by ``resolve_experimenter_path``. ``None`` uses this machine's configured experimenter (from ``_config/behavioral_experiments_settings.toml``); another experimenter's id (which sets ``EXPERIMENTER_ID``) resolves every path under that experimenter's tree instead (restart the kernel to change it after import).
 * **analyses_settings** — the parsed ``_parameter_settings/analyses_settings.json``, loaded once here; each section below indexes into it for its own settings block.
 
 **1. Light-sheet assembly.** Combine a raw light-sheet microscopy acquisition into one BigTIFF volume (the large-image TIFF format) per channel (wavelength) for brainreg / napari (the image viewer) registration. Two acquisition modalities are supported:
@@ -482,6 +482,8 @@ top of one consolidated artifact, and emit a self-describing filename.
 
 .. code-block:: python
 
+    # The univariate directory below holds a pre-v3 run on the retired
+    # qlvm_supercategory labels; point it at a v3 qlvm_category run
     cons_univariate_input_dir = configure_path(
         ".../cluster/univariate_results_multi_file/male/male_multinomial_qlvm_supercategory"
     )
@@ -603,6 +605,7 @@ plotter reading the consolidated univariate-multinomial pickle.
 
 .. code-block:: python
 
+    # Pre-v3 run on retired category labels; point it at a v3 qlvm_category re-run
     mn_univariate_results = configure_path(
         ".../univariate_results/multinomial_categories/univariate_multinomial_categories_male_...pkl"
     )
@@ -654,6 +657,8 @@ multinomial selection artifacts.
 
 .. code-block:: python
 
+    # The three paths below are pre-v3 runs on retired category labels
+    # (qlvm_supercategory and older); point them at v3 qlvm_category re-runs
     mn_trajectory_results = configure_path(
         ".../model_selection_results/male/multinomial_qlvm_supercategory/model_selection_final_..._mixed_...Z.pkl"
     )
@@ -685,7 +690,6 @@ multinomial selection artifacts.
 
     plot_multinomial_selection_diagnosis(
         selection_results_path=mn_diagnosis_results,
-        cmap_diff="bwr",
         save_plot=True,
         output_dir=figures_dir,
     )
@@ -704,6 +708,8 @@ euclidean: ``r2_spatial``, ``mahalanobis_mae``, ``pearson_x/y``,
 
 .. code-block:: python
 
+    # Pre-v3 QLVM run (pre-v3 torus coordinates, retired qlvm_supercategory
+    # labels); point it at a v3 re-run
     man_trajectory_results = configure_path(
         ".../model_selection_results/model_selection_final_male_intact_partners_manifold_qlvm_supercategory_session_...Z.pkl"
     )
@@ -1235,7 +1241,7 @@ so they resolve on macOS (``/Volumes/falkner``) too.
     NULL_COLOR = "#808080"
     THRESHOLD_COLOR = "#000000"
 
-* **CATEGORY_COLUMN** / **GROUP_A_IDS** / **GROUP_B_IDS** — the ``usv_summary`` column that labels each call and the two sets of category ids contrasted (default ``complex`` [4, 7, 8] vs ``simple`` [1, 6], the v3 regular model's coarse clusters grouped by the calls at each cluster's peak); ``*_LABEL`` names them in tables and plots.
+* **CATEGORY_COLUMN** / **GROUP_A_IDS** / **GROUP_B_IDS** — the ``usv_summary`` column that labels each call and the two sets of ``qlvm_category`` ids (1..4, meaning R-1..R-4) contrasted (default ``complex`` [3] vs ``simple`` [1], i.e. R-3 vs R-1; the names and descriptions come from the category bundle's ``category_nomenclature.json``, ``os_utils.load_qlvm_category_bundle``); ``*_LABEL`` names them in tables and plots.
 * **CATALOG_PATH** / **UNIT_BRAIN_AREAS** / **UNIT_REQUIRE_SOMATIC** / **UNIT_CLUSTER_GROUP** — the unit-catalog file and the three-criteria filter (region, somatic waveform, Kilosort ``cluster_group``) applied to select the population.
 * **ANIMALS_TO_SESSIONS** / **CHOSEN_ANIMAL** / **DATA_ROOT** — the per-animal session lists (Kilosort is per-day, so the loader keeps the single best-populated day), the focal animal for single-animal cells, and the data root.
 * The coactivity hyperparameters below are read from the ``neuronal_coactivity`` block of ``analyses_settings.json`` (loaded once in the Imports cell), so they are tuned in one place — edit the JSON to retune. The segmentation / unit-filter / animal-map values above stay inline as per-run edits.
@@ -1952,7 +1958,7 @@ or off.
         "t": "t-distribution",
         "gauss": "Gaussian",
         "ig": "inverse-Gaussian",
-    }.get(model_class, model_class)
+    }[model_class]
     density_as_bin_means = usv_interval_cfg["density_as_bin_means"]
 
     for it in plot_interval_types:
@@ -2003,8 +2009,6 @@ layout the modeling pipeline reads; component 0 is the first peak, from which th
 ``exp(mu_0 + 2.58 * sd_0)`` is derived.
 
 .. code-block:: python
-
-    import json
 
     for it in plot_interval_types:
         summary = ivs.read_usv_interval_h5(str(h5_path))["modes"][it]["pool_summary"]
@@ -2331,7 +2335,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
 * **timeline_window** — ``(start_s, end_s)`` clip in seconds; ``None`` shows the whole session.
 * **timeline_output_path** / **timeline_fig_format** — save location and format for the figure.
 
-**Statistics parameters.** The statistics half of the notebook is driven by one shared **Statistics parameters** cell — every knob a user might tweak lives here (data source, QLVM label level, noise filter, feature suffixes, output toggle, and all per-figure styling / thresholds). Nothing downstream redefines these.
+**Statistics parameters.** The statistics half of the notebook is driven by one shared **Statistics parameters** cell — every knob a user might tweak lives here (data source, QLVM category column, noise filter, feature suffixes, output toggle, and all per-figure styling / thresholds). Nothing downstream redefines these.
 
 .. code-block:: python
 
