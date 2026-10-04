@@ -65,6 +65,7 @@ from ..os_utils import (
     first_match_or_raise,
 )
 from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import extract_animal_sexes
 from .compute_behavioral_features import FeatureZoo
 
 CONTINUOUS_PROPERTIES = (
@@ -1486,8 +1487,12 @@ class NeuronalTuning(FeatureZoo):
         -----------
         Locate `*_usv_summary.csv` and the tracking H5; filter the USV
         summary to non-noise rows (raising when it has no ``usv`` /
-        ``squeak`` columns, which the squeak and category exclusions need), read sex assignment from h5
-        `track_names`, and derive session duration from the H5 as
+        ``squeak`` columns, which the squeak and category exclusions need), read the animals
+        from h5 `track_names` and each animal's sex from the session metadata
+        (``yaml_utils.extract_animal_sexes``: the ``Subjects`` entry whose ``subject_id``
+        matches the stripped track name -- never the track slot, so a female-female session
+        has two female sides and a male-male session two male sides; a track the metadata
+        cannot resolve raises), and derive session duration from the H5 as
         `tracks.shape[0] / recording_frame_rate` (same time base the
         spikes are aligned to). Returns None if either required file
         is missing or the filtered USV table is empty.
@@ -1500,8 +1505,10 @@ class NeuronalTuning(FeatureZoo):
         -------
         bundle (dict | None)
             None if any required input is missing; otherwise a dict with
-            keys: `usv_df` (filtered pls.DataFrame), `track_names`,
-            `male`, `female`, `duration_seconds`, `starts`, `stops`,
+            keys: `usv_df` (filtered pls.DataFrame), `track_names`
+            (stripped, file order), `animal_sex` (stripped track name ->
+            'male' / 'female', from the session metadata),
+            `duration_seconds`, `starts`, `stops`,
             `emitters`, `is_usv` (bool per row; True only on pure USVs,
             ``usv & ~squeak``, so pure squeaks, segments holding both and
             null booleans are False).
@@ -1553,18 +1560,17 @@ class NeuronalTuning(FeatureZoo):
         # spike data is aligned to (and that the behavioral compute
         # uses), so circular shuffles wrap modulo the right interval.
         with h5py.File(h5_path, mode="r") as f:
-            track_names = [t.decode("utf-8").strip() for t in f["track_names"]]
+            track_names = [t.decode("utf-8").strip("\x00").strip() for t in f["track_names"]]
             n_frames = int(f["tracks"].shape[0])
             recording_fr = float(f["recording_frame_rate"][()])
         duration_seconds = float(n_frames) / recording_fr
-        male = track_names[0] if len(track_names) >= 1 else None
-        female = track_names[1] if len(track_names) >= 2 else None
+        # Sex per animal from the session metadata, never from the track slot.
+        animal_sex = extract_animal_sexes(str(root), track_names)
 
         return {
             "usv_df": df,
             "track_names": track_names,
-            "male": male,
-            "female": female,
+            "animal_sex": animal_sex,
             "duration_seconds": duration_seconds,
             "starts": starts,
             "stops": stops,
@@ -1921,8 +1927,11 @@ class NeuronalTuning(FeatureZoo):
 
         Side selection
         --------------
-        - `male` = `track_names[0]`, `female` = `track_names[1]` (locked
-          convention).
+        - One candidate side per tracked animal (`track_names`, file
+          order), labelled with that animal's sex from the session
+          metadata (`animal_sex`), never with its track slot: a
+          female-female session yields two female sides, a male-male
+          session two male sides.
         - Sort sides by their count of pure USVs (``usv & ~squeak``
           only); the more-vocal side is `self`, the less-vocal side is
           `partner` (counting squeaks would make a squeak-heavy female
@@ -1979,8 +1988,8 @@ class NeuronalTuning(FeatureZoo):
         starts = voc_inputs["starts"]
         stops = voc_inputs["stops"]
         emitters = voc_inputs["emitters"]
-        male = voc_inputs["male"]
-        female = voc_inputs["female"]
+        track_names = voc_inputs["track_names"]
+        animal_sex = voc_inputs["animal_sex"]
         duration_seconds = voc_inputs["duration_seconds"]
         usv_df = voc_inputs["usv_df"]
         is_usv = voc_inputs["is_usv"]
@@ -2008,9 +2017,8 @@ class NeuronalTuning(FeatureZoo):
         rel_bin_centers = 0.5 * (rel_bin_lo + rel_bin_hi)
 
         sides_to_run: list[dict] = []
-        for emitter_str, sex_label in ((male, "male"), (female, "female")):
-            if emitter_str is None:
-                continue
+        for emitter_str in track_names:
+            sex_label = animal_sex[emitter_str]
             emitter_mask = np.array([e == emitter_str for e in emitters])
             n_usv = int((emitter_mask & is_usv).sum())
             if int(emitter_mask.sum()) == 0:

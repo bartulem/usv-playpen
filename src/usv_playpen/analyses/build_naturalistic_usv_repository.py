@@ -13,9 +13,11 @@ bouts are segmented, so they neither enter the repository nor break bouts), and 
 containing the concatenated int16 audio plus the per-USV and per-bout metadata a
 playback function needs to replay real sequences with real timing.
 
-Only courtship (male-female) sessions are used, because the male/female mapping
-(``track_names[0]``/``[1]``) is a positional convention that is only reliable there
-(same-sex sessions would mislabel sex). Bouts are segmented by the same inter-bout
+A courtship build keeps the USVs attributed to the target sex's animal. That animal is
+found through the session metadata (``yaml_utils.extract_animal_sexes``: the ``Subjects``
+whose ``subject_id`` matches a track name), never through the slot its track occupies, and
+a courtship session whose metadata does not name exactly one animal of the target sex is
+skipped with a log line rather than read by position. Bouts are segmented by the same inter-bout
 interval (IBI) rule the modeling layer uses. All gaps stored are the REAL recorded
 values: within-bout inter-USV gaps and the real pause preceding each bout.
 
@@ -43,7 +45,7 @@ from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import drop_noise_usvs, find_audio_mmap, first_match_or_raise, resolve_experimenter_path
 from ..processing.build_qlvm_training_set import build_session_masks
 from ..time_utils import is_gui_context, smart_wait
-from ._usv_io import extract_session_metadata
+from ._usv_io import extract_animal_sexes, extract_session_metadata, sex_track_ids
 from .compute_inter_usv_interval_distributions import _read_session_lists
 
 _INT16_INFO = np.iinfo(np.int16)
@@ -447,10 +449,20 @@ class NaturalisticUsvRepositoryBuilder:
                     # sex's attributed emitter; same-sex / lone / mixed builds keep every
                     # USV (no attribution) labelled by the build's sex.
                     if emitter_mode == "emitter":
-                        # Courtship: the two animals differ in sex; read the target sex's
-                        # track id and keep only USVs attributed to it.
+                        # Courtship: the two animals differ in sex; the target sex's track
+                        # is the one the session metadata records with that sex (never the
+                        # track slot), and only USVs attributed to it are kept.
                         metadata = extract_session_metadata(str(root))
-                        stored_emitter = _normalize_emitter(metadata[f'{target_sex}_id'])
+                        animal_sex = extract_animal_sexes(str(root), metadata['track_names'])
+                        male_track, female_track = sex_track_ids(animal_sex)
+                        target_track = male_track if target_sex == "male" else female_track
+                        if target_track is None:
+                            error_message = (
+                                f"the session metadata does not name exactly one {target_sex} among "
+                                f"the tracks {animal_sex}; a courtship build needs one."
+                            )
+                            raise ValueError(error_message)
+                        stored_emitter = _normalize_emitter(target_track)
                         emitters_all = [_normalize_emitter(e) for e in usv_summary_df["emitter"].to_list()]
                         emitter_rows = np.array(
                             [r for r in range(len(emitters_all)) if emitters_all[r] == stored_emitter],

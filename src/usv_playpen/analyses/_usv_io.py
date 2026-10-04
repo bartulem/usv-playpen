@@ -20,7 +20,15 @@ import h5py
 import polars as pls
 
 from ..os_utils import call_class_mask, drop_noise_usvs
-from ..yaml_utils import load_session_metadata
+from ..yaml_utils import extract_animal_sexes
+
+__all__ = [
+    'emitter_sex_expression',
+    'extract_animal_sexes',
+    'extract_session_metadata',
+    'load_and_filter_usv_data',
+    'sex_track_ids',
+]
 
 
 def extract_session_metadata(session_root: str) -> dict[str, Any]:
@@ -28,11 +36,18 @@ def extract_session_metadata(session_root: str) -> dict[str, Any]:
     Description
     -----------
     This method extracts core experimental metadata from a session directory, including
-    animal identity strings (male_id, female_id), recording frame rate, and the experimental code.
+    the animal identity strings (the track names), recording frame rate, and the experimental code.
 
     It searches for the metric H5 tracking file within the provided
     directory and extracts identity strings for the animals involved. It is
-    specifically designed for social interaction sessions (male-female).
+    designed for social interaction sessions (two or more tracked animals).
+
+    The track names are returned in file order but carry no sex: the slot a track
+    occupies says nothing about the animal's sex (track 0 is a female in a
+    female-female session), so callers that need sexes resolve them from the session
+    metadata with :func:`extract_animal_sexes`. Names are stripped of null-byte padding
+    and whitespace, so they compare equal to the metadata ``subject_id`` and the USV
+    summary ``emitter`` strings.
 
     Parameters
     ----------
@@ -42,7 +57,15 @@ def extract_session_metadata(session_root: str) -> dict[str, Any]:
     Returns
     -------
     metadata (dict)
-        Contains 'male_id', 'female_id', 'frame_rate', 'experiment_code', and 'tracking_file'.
+        Contains 'track_names' (list of stripped str, file order), 'frame_rate',
+        'experiment_code', and 'tracking_file'.
+
+    Raises
+    ------
+    FileNotFoundError
+        No tracking file in the session.
+    IndexError
+        The tracking file holds fewer than two animal tracks.
     """
 
     session_path = Path(session_root)
@@ -53,81 +76,91 @@ def extract_session_metadata(session_root: str) -> dict[str, Any]:
         raise FileNotFoundError(msg)
 
     with h5py.File(name=str(tracking_file), mode='r') as h5_file:
-        track_names = [item.decode('utf-8') for item in list(h5_file['track_names'])]
+        track_names = [item.decode('utf-8').strip('\x00').strip() for item in list(h5_file['track_names'])]
         if len(track_names) < 2:
             msg = f"Session {session_root} does not contain two animal tracks."
             raise IndexError(msg)
 
         return {
-            'male_id': track_names[0],
-            'female_id': track_names[1],
+            'track_names': track_names,
             'frame_rate': float(h5_file['recording_frame_rate'][()]),
             'experiment_code': h5_file['experimental_code'][()].decode("utf-8"),
             'tracking_file': tracking_file
         }
 
 
-def extract_animal_sexes(session_root: str, track_names: list[str]) -> dict[str, str]:
+def emitter_sex_expression(animal_sex: dict[str, str], emitter_column: str = 'emitter') -> pls.Expr:
     """
     Description
     -----------
-    Reads the sex of every tracked animal from the session's ``*_metadata.yaml``.
+    Builds the polars expression that maps a USV summary's emitter column to the
+    emitter's sex, with the sexes taken from the session metadata
+    (:func:`extract_animal_sexes`), never from the order of the tracks.
 
-    :func:`extract_session_metadata` names the two tracks ``male_id`` and ``female_id`` by
-    their position in the tracking file, which is right for a courtship session (track 0 is
-    always the male there) and wrong for any other pairing: in a female-female session the
-    track it calls ``male_id`` is a female. The sex of an animal is a recorded property of
-    that animal, not of its track slot, and the session metadata records it for every
-    subject in its ``Subjects`` block (``subject_id`` + ``sex``). ``subject_id`` is the
-    same string the tracking file stores as a track name and the USV summary stores as an
-    ``emitter``, so this map is what lets a same-sex session be read at all.
-
-    Names are compared after stripping null bytes and whitespace, because the H5-decoded
-    track names can carry padding that the YAML and CSV strings do not.
+    The emitter is cast to string and stripped of null bytes and whitespace before it is
+    compared, matching the stripping :func:`extract_animal_sexes` applies to the track
+    names, so a padded name on either side cannot silently send a call to
+    ``'unassigned'``. A row whose emitter is not one of the resolved animals -- an
+    empty / null emitter, i.e. a call Vocalocator could not attribute -- is
+    ``'unassigned'``; that is a property of the call, not a failed sex lookup (an animal
+    whose sex cannot be resolved has already raised in :func:`extract_animal_sexes`).
 
     Parameters
     ----------
-    session_root (str)
-        The session directory holding the ``*_metadata.yaml`` file.
-    track_names (list of str)
-        The animals to resolve, typically ``[metadata['male_id'], metadata['female_id']]``
-        from :func:`extract_session_metadata`.
+    animal_sex (dict)
+        ``{stripped track name: 'male' | 'female'}`` from :func:`extract_animal_sexes`.
+    emitter_column (str)
+        Name of the emitter column; defaults to ``'emitter'``.
 
     Returns
     -------
-    animal_sex (dict)
-        ``{stripped track name: 'male' | 'female'}`` for every entry of ``track_names``.
-
-    Raises
-    ------
-    FileNotFoundError
-        The session has no readable ``*_metadata.yaml``.
-    ValueError
-        A track name has no subject in the metadata, the subject has no ``sex``, or the
-        recorded sex is neither ``'male'`` nor ``'female'``. None of these is guessed.
+    sex_expression (pls.Expr)
+        A string expression aliased ``'sex'`` holding ``'male'``, ``'female'`` or
+        ``'unassigned'`` for every row.
     """
 
-    metadata, metadata_path = load_session_metadata(session_root)
-    if metadata is None:
-        msg = f"No readable *_metadata.yaml in {session_root}; the animals' sexes cannot be resolved."
-        raise FileNotFoundError(msg)
+    emitter_norm = pls.col(emitter_column).cast(pls.Utf8).str.strip_chars('\x00').str.strip_chars()
+    if not animal_sex:
+        # No resolved animal: every row is unassigned. The always-false condition keeps the
+        # expression tied to the emitter column, so it has one value per row in a select too.
+        never = emitter_norm.is_null() & emitter_norm.is_not_null()
+        return pls.when(never).then(pls.lit('unassigned')).otherwise(pls.lit('unassigned')).alias('sex')
+    names = list(animal_sex)
+    chain = pls.when(emitter_norm == names[0]).then(pls.lit(animal_sex[names[0]]))
+    for name in names[1:]:
+        chain = chain.when(emitter_norm == name).then(pls.lit(animal_sex[name]))
+    return chain.otherwise(pls.lit('unassigned')).alias('sex')
 
-    subject_sex = {str(subject['subject_id']).strip('\x00').strip(): subject['sex']
-                   for subject in metadata['Subjects'] if 'sex' in subject}
 
-    animal_sex: dict[str, str] = {}
-    for name in track_names:
-        stripped = str(name).strip('\x00').strip()
-        if stripped not in subject_sex:
-            msg = (f"Track '{stripped}' has no subject with a recorded sex in {metadata_path}; "
-                   f"subjects with a sex: {sorted(subject_sex)}.")
-            raise ValueError(msg)
-        sex = str(subject_sex[stripped]).strip().lower()
-        if sex not in ('male', 'female'):
-            msg = f"Subject '{stripped}' in {metadata_path} has sex '{subject_sex[stripped]}'; expected male or female."
-            raise ValueError(msg)
-        animal_sex[stripped] = sex
-    return animal_sex
+def sex_track_ids(animal_sex: dict[str, str]) -> tuple[str | None, str | None]:
+    """
+    Description
+    -----------
+    Names the male and the female of a session from its metadata-resolved sexes.
+
+    Some outputs carry one ``male_id`` and one ``female_id`` per session (the master USV
+    table, the courtship playback repository). Those identities are only defined when
+    the session holds exactly one animal of that sex; this returns the track of the
+    single male and the track of the single female, and ``None`` for a sex that has no
+    animal or more than one (a female-female session has no ``male_id`` and no single
+    ``female_id``). Nothing is inferred from the track order.
+
+    Parameters
+    ----------
+    animal_sex (dict)
+        ``{stripped track name: 'male' | 'female'}`` from :func:`extract_animal_sexes`.
+
+    Returns
+    -------
+    male_id, female_id (tuple of str or None)
+        The single male's and the single female's track names, each ``None`` when the
+        session does not hold exactly one animal of that sex.
+    """
+
+    males = [name for name, sex in animal_sex.items() if sex == 'male']
+    females = [name for name, sex in animal_sex.items() if sex == 'female']
+    return (males[0] if len(males) == 1 else None,
+            females[0] if len(females) == 1 else None)
 
 
 def load_and_filter_usv_data(

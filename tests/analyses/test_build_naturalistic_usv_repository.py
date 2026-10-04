@@ -356,7 +356,11 @@ def test_build_courtship_emitter_filter_keeps_target_sex(tmp_path, mocker, _patc
 
     mocker.patch.object(
         bnr, "extract_session_metadata",
-        return_value={"male_id": "male_mouse", "female_id": "female_mouse"},
+        return_value={"track_names": ["male_mouse", "female_mouse"]},
+    )
+    mocker.patch.object(
+        bnr, "extract_animal_sexes",
+        return_value={"male_mouse": "male", "female_mouse": "female"},
     )
     repo_out = tmp_path / "repo"
     NaturalisticUsvRepositoryBuilder(
@@ -472,7 +476,11 @@ def test_build_courtship_logs_a_session_without_attributed_usvs(tmp_path, mocker
     _write_fake_session(session_root, starts=[0.01, 0.05, 0.09], stops=[0.03, 0.07, 0.11], emitter="")
     mocker.patch.object(
         bnr, "extract_session_metadata",
-        return_value={"male_id": "male_mouse", "female_id": "female_mouse"},
+        return_value={"track_names": ["male_mouse", "female_mouse"]},
+    )
+    mocker.patch.object(
+        bnr, "extract_animal_sexes",
+        return_value={"male_mouse": "male", "female_mouse": "female"},
     )
     repo_out = tmp_path / "repo"
     messages = []
@@ -486,6 +494,35 @@ def test_build_courtship_logs_a_session_without_attributed_usvs(tmp_path, mocker
     ).build()
 
     assert any("skipping session_root" in m.lower() and "empty emitter column" in m for m in messages)
+
+
+def test_build_courtship_skips_a_session_without_one_animal_of_the_target_sex(tmp_path, mocker, _patched_env):
+    """The courtship target track is the animal the metadata records with the target sex,
+    never a track slot; a session whose metadata names no single male (here female-female)
+    is skipped with a log line instead of reading track 0 as the male."""
+
+    session_root = tmp_path / "session_root"
+    _write_fake_session(session_root, starts=[0.01, 0.05, 0.09], stops=[0.03, 0.07, 0.11], emitter="a_mouse")
+    mocker.patch.object(
+        bnr, "extract_session_metadata",
+        return_value={"track_names": ["a_mouse", "b_mouse"]},
+    )
+    mocker.patch.object(
+        bnr, "extract_animal_sexes",
+        return_value={"a_mouse": "female", "b_mouse": "female"},
+    )
+    repo_out = tmp_path / "repo"
+    messages = []
+    NaturalisticUsvRepositoryBuilder(
+        root_directories=[str(session_root)],
+        input_parameter_dict={
+            "build_naturalistic_usv_repository": _build_cfg("courtship_male"),
+            "data_roots": {"naturalistic_usv_repository_dir": str(repo_out)},
+        },
+        message_output=lambda *m, **_k: messages.append(" ".join(str(x) for x in m)),
+    ).build()
+
+    assert any("skipping session_root" in m.lower() and "exactly one male" in m for m in messages)
 
 
 def test_build_rejects_unknown_context_label(tmp_path, _patched_env):

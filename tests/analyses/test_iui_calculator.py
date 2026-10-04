@@ -19,7 +19,13 @@ import polars as pls
 import pytest
 
 import usv_playpen.analyses.compute_inter_usv_interval_distributions as iui_mod
-from usv_playpen.analyses._usv_io import extract_animal_sexes, load_and_filter_usv_data
+from usv_playpen.analyses._usv_io import (
+    emitter_sex_expression,
+    extract_animal_sexes,
+    load_and_filter_usv_data,
+    sex_track_ids,
+)
+from usv_playpen.yaml_utils import extract_animal_sexes as yaml_extract_animal_sexes
 from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
     InterUSVIntervalCalculator,
     compute_session_usv_intervals,
@@ -612,6 +618,38 @@ def test_extract_animal_sexes_track_without_sex_raises(tmp_path):
         extract_animal_sexes(str(tmp_path), ["A_0", "B_1"])
 
 
+def test_extract_animal_sexes_without_subjects_raises(tmp_path):
+    """A metadata file with no Subjects block is a ValueError, not an empty mapping."""
+
+    (tmp_path / f"{tmp_path.name}_metadata.yaml").write_text("Session:\n  notes: none\n")
+    with pytest.raises(ValueError, match="has no Subjects"):
+        extract_animal_sexes(str(tmp_path), ["A_0"])
+
+
+def test_extract_animal_sexes_is_the_shared_yaml_utils_helper():
+    """The analyses re-export and the processing / visualization callers use one function."""
+
+    assert extract_animal_sexes is yaml_extract_animal_sexes
+
+
+def test_emitter_sex_expression_maps_stripped_emitters_and_unassigned():
+    """Emitters are stripped before matching, unknown / null emitters are 'unassigned',
+    and a same-sex mapping gives both animals the same sex."""
+
+    df = pls.DataFrame({"emitter": ["A_0\x00", " B_1", None, "ghost"]})
+    out = df.select(emitter_sex_expression({"A_0": "female", "B_1": "female"}))
+    assert out["sex"].to_list() == ["female", "female", "unassigned", "unassigned"]
+    assert df.select(emitter_sex_expression({}))["sex"].to_list() == ["unassigned"] * 4
+
+
+def test_sex_track_ids_names_single_male_and_female_only():
+    """male_id / female_id exist only when the session holds exactly one animal of that sex."""
+
+    assert sex_track_ids({"F": "female", "M": "male"}) == ("M", "F")
+    assert sex_track_ids({"A": "female", "B": "female"}) == (None, None)
+    assert sex_track_ids({"A": "male", "B": "male", "C": "female"}) == (None, "C")
+
+
 def test_extract_animal_sexes_invalid_sex_raises(tmp_path):
     """A recorded sex other than male / female is a ValueError, not silently mapped."""
 
@@ -672,7 +710,7 @@ def _patch_session_identity(monkeypatch) -> None:
     session (male ``M``, female ``F``, 150 fps), so only the USV summary is read from disk."""
 
     monkeypatch.setattr(iui_mod, "extract_session_metadata",
-                        lambda _root: {"male_id": "M", "female_id": "F", "frame_rate": 150.0})
+                        lambda _root: {"track_names": ["M", "F"], "frame_rate": 150.0})
     monkeypatch.setattr(iui_mod, "extract_animal_sexes", lambda _root, _ids: {"M": "male", "F": "female"})
 
 

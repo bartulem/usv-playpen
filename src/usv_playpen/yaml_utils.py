@@ -144,6 +144,88 @@ def load_session_metadata(root_directory: str, logger: Callable = print) -> tupl
         return None, None
 
 
+def extract_animal_sexes(session_root: str, track_names: list[str], logger: Callable = print) -> dict[str, str]:
+    """
+    Description
+    -----------
+    Reads the sex of every tracked animal from the session's ``*_metadata.yaml``.
+
+    This is the one place in the package that answers "which sex is this animal?". The
+    sex of an animal is a recorded property of that animal, not of the slot its track
+    happens to occupy in the tracking file: in a courtship session the male is usually
+    track 0, but in a female-female session track 0 is a female, in a male-male session
+    track 1 is a male, and nothing guarantees the order in any other pairing. The session
+    metadata records the sex of every subject in its ``Subjects`` block (``subject_id`` +
+    ``sex``), and ``subject_id`` is the same string the tracking file stores as a track
+    name, the USV summary stores as an ``emitter`` and the behavioral-features CSV uses as
+    a column prefix. Every consumer that needs an animal's sex (the Vocalocator
+    ``animal_id`` sex codes, the emitter -> sex column of the USV readers, the neuronal
+    tuning sides, the pooled embeddings table, the spectrogram sequence plots) resolves it
+    here, so they cannot disagree with one another or with the metadata.
+
+    Names are compared after stripping null bytes and whitespace on both sides, because
+    the H5-decoded track names can carry padding (e.g. ``' 158800_0'`` or trailing
+    ``'\\x00'``) that the YAML and CSV strings do not. The recorded sex is lower-cased and
+    stripped, so ``'Male'`` and ``'male'`` are the same animal.
+
+    No fallback is ever applied: a session without readable metadata, without a
+    ``Subjects`` block, with a track that matches no subject, with a subject that has no
+    ``sex`` or with a sex other than male / female raises, because guessing the sex from
+    the track slot is exactly the error this function exists to remove.
+
+    Parameters
+    ----------
+    session_root (str)
+        The session directory holding the ``*_metadata.yaml`` file.
+    track_names (list of str)
+        The animals to resolve: track names from the tracking file, or emitter strings
+        from the USV summary (the same strings).
+    logger (Callable)
+        Message sink handed to :func:`load_session_metadata` for a YAML parse error;
+        defaults to ``print``.
+
+    Returns
+    -------
+    animal_sex (dict)
+        ``{stripped track name: 'male' | 'female'}`` for every entry of ``track_names``,
+        in the order given.
+
+    Raises
+    ------
+    FileNotFoundError
+        The session has no readable ``*_metadata.yaml``.
+    ValueError
+        The metadata has no ``Subjects``, a track name has no subject in the metadata, the
+        subject has no ``sex``, or the recorded sex is neither ``'male'`` nor ``'female'``.
+        None of these is guessed.
+    """
+
+    metadata, metadata_path = load_session_metadata(session_root, logger=logger)
+    if metadata is None:
+        msg = f"No readable *_metadata.yaml in {session_root}; the animals' sexes cannot be resolved."
+        raise FileNotFoundError(msg)
+    if 'Subjects' not in metadata or not metadata['Subjects']:
+        msg = f"{metadata_path} has no Subjects; the animals' sexes cannot be resolved."
+        raise ValueError(msg)
+
+    subject_sex = {str(subject['subject_id']).strip('\x00').strip(): subject['sex']
+                   for subject in metadata['Subjects'] if 'sex' in subject}
+
+    animal_sex: dict[str, str] = {}
+    for name in track_names:
+        stripped = str(name).strip('\x00').strip()
+        if stripped not in subject_sex:
+            msg = (f"Track '{stripped}' has no subject with a recorded sex in {metadata_path}; "
+                   f"subjects with a sex: {sorted(subject_sex)}.")
+            raise ValueError(msg)
+        sex = str(subject_sex[stripped]).strip().lower()
+        if sex not in ('male', 'female'):
+            msg = f"Subject '{stripped}' in {metadata_path} has sex '{subject_sex[stripped]}'; expected male or female."
+            raise ValueError(msg)
+        animal_sex[stripped] = sex
+    return animal_sex
+
+
 # Map of recording_codec values stored in behavioral_experiments_settings.toml
 # (the choices in the GUI dropdown) to the long-form Motif catalog name
 # written into per-session metadata as ``output_file_codec``. The four
