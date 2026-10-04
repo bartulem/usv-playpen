@@ -619,7 +619,7 @@ class TestMultinomialInputExtraction:
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_extraction_produces_multiclass_input_pickle(self, tmp_path):
+    def test_extraction_produces_multiclass_input_pickle(self, tmp_path, qlvm_category_bundle, capsys):
         """
         The real ``extract_and_save_multinomial_input_data`` writes a single
         ``modeling_multinomial_*.pkl`` whose structure matches the documented
@@ -628,7 +628,10 @@ class TestMultinomialInputExtraction:
         ``HISTORY_FRAMES`` wide, the integer-label target ``y`` spans at least
         ``N_CATEGORIES`` distinct (non-noise) classes, the per-session
         positive-count alignment holds across features, and the metadata records
-        the auto-derived ``usv_category_number`` >= ``N_CATEGORIES``.
+        the auto-derived ``usv_category_number`` >= ``N_CATEGORIES``. The category
+        bundle's k (4 in the synthetic bundle) is recorded beside it, and since the
+        synthetic cohort only produces labels 1..3, category 4 is listed as missing
+        and a warning naming it (R-4) is printed while the model keeps C = 3.
         """
 
         settings, save_dir = _build_extraction_settings(tmp_path)
@@ -682,7 +685,34 @@ class TestMultinomialInputExtraction:
         assert spec['usv_category_number'] >= N_CATEGORIES
         assert spec['usv_category_number'] == observed_classes.size
         assert spec['usv_category_column_name'] == 'qlvm_category'
+        assert spec['bundle_category_number'] == 4
+        assert spec['bundle_categories_missing'] == [4]
+        printed = capsys.readouterr().out
+        assert "missing: R-4" in printed and "3 observed classes" in printed
 
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_extraction_records_bundle_k_without_warning_when_complete(self, tmp_path, monkeypatch, capsys):
+        """
+        When the cohort holds every category of the bundle (a 3-category bundle
+        against the synthetic labels 1..3), k is recorded, nothing is listed as
+        missing and no missing-category warning is printed.
+        """
+
+        monkeypatch.setattr(
+            'usv_playpen.modeling.modeling_vocal_categories_multinomial.load_qlvm_category_bundle',
+            lambda: {'names': ['R-1', 'R-2', 'R-3']},
+        )
+        settings, save_dir = _build_extraction_settings(tmp_path)
+        MultinomialModelingPipeline(modeling_settings_dict=settings).extract_and_save_multinomial_input_data()
+        with next(save_dir.glob('modeling_multinomial_*.pkl')).open('rb') as fh:
+            spec = pickle.load(fh)['_input_metadata']['analysis_specific']
+        assert spec['bundle_category_number'] == 3
+        assert spec['bundle_categories_missing'] == []
+        assert spec['usv_category_number'] == 3
+        assert "missing:" not in capsys.readouterr().out
 
 class TestMultinomialSplitters:
     """Pure-NumPy splitter / balancing / grid helpers (no JAX involved)."""
