@@ -700,7 +700,7 @@ multinomial selection artifacts.
 
 **6. Manifold visualisations.** These plotters consume the consolidated artifact written by
 ``continuous_vocal_manifold_model_selection`` (forward-stepwise selection for the
-2-D acoustic-manifold regression) — same ``selection_*.pkl`` schema as the
+2-D acoustic-manifold regression) — same ``model_selection_final_*.pkl`` schema as the
 multinomial plotters but with continuous regression metrics (torus: ``vm_logscore``,
 ``euclidean_mae``, ``density_geodesic_mae``, ``pullback_geodesic_mae``;
 euclidean: ``r2_spatial``, ``mahalanobis_mae``, ``pearson_x/y``,

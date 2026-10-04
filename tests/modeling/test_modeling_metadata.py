@@ -345,6 +345,26 @@ class TestLoadSelectionResults:
         assert name == 'selection_new.pkl'
         assert out_steps == [{'step_idx': 99}]
 
+    def test_directory_finds_the_consolidator_output_names(self, tmp_path):
+        """A directory load finds the names the consolidator actually
+        writes (``model_selection_final_...pkl`` and
+        ``legacy_selection_...pkl``), which ``selection_*.pkl`` never
+        matched, and still picks the newest; the step files next to them
+        are not taken."""
+
+        final = tmp_path / 'model_selection_final_male_cohort_manifold_qlvm_session_20260101_000000Z.pkl'
+        legacy = tmp_path / 'legacy_selection_20250101_000000Z.pkl'
+        _write_consolidated(final, [{'step_idx': 7}])
+        _write_consolidated(legacy, [{'step_idx': 3}])
+        _write_consolidated(tmp_path / 'model_selection_male_step_1.pkl', [{'step_idx': 1}])
+        os.utime(legacy, (1_000, 1_000))
+        os.utime(final, (2_000, 2_000))
+        out_steps, name, _ = load_selection_results(str(tmp_path))
+        assert name == final.name
+        assert out_steps == [{'step_idx': 7}]
+        final.unlink()
+        assert load_selection_results(str(tmp_path))[1] == legacy.name
+
     def test_non_consolidated_pickle_raises_value_error(self, tmp_path):
         """A pickle without a ``steps`` list is not a consolidated
         artifact -> ``ValueError``."""

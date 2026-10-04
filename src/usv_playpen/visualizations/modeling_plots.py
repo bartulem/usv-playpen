@@ -1190,7 +1190,7 @@ def plot_model_selection_results(
     Parameters
     ----------
     selection_results_path : str
-        Path to the consolidated ``selection_*.pkl`` artifact produced
+        Path to the consolidated ``model_selection_final_*.pkl`` artifact produced
         by ``consolidate_model_selection_results``. May be either the
         file itself or a directory containing one (the latest by mtime
         wins when multiple are present). The legacy per-step layout is
@@ -1227,10 +1227,10 @@ def plot_model_selection_results(
     if output_dir is not None:
         output_dir = configure_path(str(output_dir))
 
-    # Load steps via the metadata-aware helper: prefers a consolidated
-    # `selection_*.pkl` artifact in the directory, falls back to legacy
-    # `*_step_*.pkl` glob. `display_name` keeps the substring-based sex
-    # inference below working in both modes.
+    # Load steps via the metadata-aware helper: loads the given consolidated
+    # artifact, or the newest `model_selection_final_*.pkl` (or
+    # `legacy_selection_*.pkl`) in a directory. `display_name` keeps the
+    # substring-based sex inference below working.
     selection_steps, display_name, selection_metadata = load_selection_results(selection_results_path)
 
     if not selection_steps:
@@ -2392,7 +2392,7 @@ def plot_multinomial_selection_trajectory(
     Parameters
     ----------
     selection_results_path : str
-        Path to the consolidated ``selection_*.pkl`` artifact
+        Path to the consolidated ``model_selection_final_*.pkl`` artifact
         produced by ``consolidate_model_selection_results``. May be
         either the file itself or a directory containing one
         (latest mtime wins).
@@ -2896,7 +2896,7 @@ def plot_multinomial_multivariate_filters(
     Parameters
     ----------
     selection_results_path : str
-        Path to the consolidated ``selection_*.pkl`` artifact produced
+        Path to the consolidated ``model_selection_final_*.pkl`` artifact produced
         by ``consolidate_model_selection_results``. May be either the
         file itself or a directory containing one (the latest by
         mtime wins when multiple are present). The function extracts
@@ -3113,7 +3113,7 @@ def plot_multinomial_selection_diagnosis(
     Parameters
     ----------
     selection_results_path : str
-        Consolidated ``selection_*.pkl`` produced by
+        Consolidated ``model_selection_final_*.pkl`` produced by
         ``consolidate_model_selection_results`` (file or containing
         dir). Routed through ``configure_path`` for cross-OS mounts.
     save_plot : bool, default False

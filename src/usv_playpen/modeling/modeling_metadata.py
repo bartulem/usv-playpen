@@ -81,6 +81,13 @@ from pathlib import Path
 RESERVED_METADATA_KEYS = ('_input_metadata', '_run_metadata',
                           '_univariate_metadata', '_consolidation_metadata')
 
+#: File-name globs of a consolidated model-selection artifact, as
+#: `load_selection_results` scans a directory for them: the two names
+#: `consolidate_model_selection_results` writes
+#: (`model_selection_final_...pkl`, `legacy_selection_...pkl`) and the
+#: older `selection_*.pkl`.
+CONSOLIDATED_SELECTION_PATTERNS = ('model_selection_final_*.pkl', 'legacy_selection_*.pkl', 'selection_*.pkl')
+
 #: Schema version per metadata block. Bump the corresponding entry whenever
 #: the on-disk shape of that block changes incompatibly.
 SCHEMA_VERSIONS = {
@@ -1077,9 +1084,10 @@ def derive_camera_fps_field(camera_fr_dict: dict):
 
 def load_selection_results(selection_results_path) -> tuple:
     """
-    Load a model-selection result set from a consolidated
-    `selection_*.pkl` artifact produced by
-    `consolidate_model_selection_results`.
+    Load a model-selection result set from a consolidated artifact
+    produced by `consolidate_model_selection_results`
+    (`model_selection_final_<sex>_<cohort>_<tag>_<split>[_<ts>].pkl`,
+    or `legacy_selection_<ts>.pkl` for steps without input metadata).
 
     Accepts either an explicit file path or a directory:
 
@@ -1087,13 +1095,15 @@ def load_selection_results(selection_results_path) -> tuple:
       the directory has several consolidated artifacts (e.g. multiple
       re-runs with different USV-category columns or timestamps) and
       you want to pin a specific one.
-    * **Directory** -- scanned for `selection_*.pkl` and the
-      most-recently-modified match is loaded. Convenient for the
+    * **Directory** -- scanned for the names in
+      `CONSOLIDATED_SELECTION_PATTERNS` (the two consolidator names
+      above, plus `selection_*.pkl` for artifacts renamed by hand) and
+      the most-recently-modified match is loaded. Convenient for the
       "just give me the latest" workflow.
 
     The legacy per-step `*_step_*.pkl` directory layout that this
     function used to fall back to has been removed: every recent
-    selection run consolidates into a single `selection_*.pkl`, and
+    selection run consolidates into a single artifact, and
     carrying two code paths makes the loader harder to reason about
     when both formats happen to coexist in the same directory. If
     you need to plot from an old per-step result set, run the
@@ -1102,8 +1112,8 @@ def load_selection_results(selection_results_path) -> tuple:
     Parameters
     ----------
     selection_results_path : str or pathlib.Path
-        Either a `selection_*.pkl` file or a directory containing
-        one or more such files.
+        Either a consolidated selection `.pkl` file or a directory
+        containing one or more such files.
 
     Returns
     -------
@@ -1130,7 +1140,7 @@ def load_selection_results(selection_results_path) -> tuple:
     ------
     FileNotFoundError
         When `selection_results_path` does not exist, when it points
-        to a directory that contains no `selection_*.pkl`, or when
+        to a directory that contains no consolidated artifact, or when
         the directory holds only legacy `*_step_*.pkl` files (which
         should be re-consolidated before plotting).
     ValueError
@@ -1142,15 +1152,24 @@ def load_selection_results(selection_results_path) -> tuple:
     if path.is_file():
         chosen = path
     elif path.is_dir():
+        # The names `consolidate_model_selection_results` writes:
+        # `model_selection_final_<sex>_<cohort>_<tag>_<split>[_<ts>].pkl`, or
+        # `legacy_selection_<ts>.pkl` for steps without input metadata
+        # (`selection_*.pkl` is kept for artifacts renamed by hand).
         cons_candidates = sorted(
-            path.glob('selection_*.pkl'),
+            {
+                candidate
+                for pattern in CONSOLIDATED_SELECTION_PATTERNS
+                for candidate in path.glob(pattern)
+            },
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
         if not cons_candidates:
             legacy_present = any(path.glob('*_step_*.pkl'))
             msg = (
-                f"No consolidated selection_*.pkl found in {path}."
+                f"No consolidated selection artifact "
+                f"({', '.join(CONSOLIDATED_SELECTION_PATTERNS)}) found in {path}."
                 + (
                     " Legacy *_step_*.pkl files are present; run "
                     "`consolidate_model_selection_results` on them before "
