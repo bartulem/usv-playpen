@@ -741,6 +741,7 @@ labels (the QLVM category; the pre-flight check inside ``run_cnn_training`` fail
 
 .. code-block:: python
 
+    # pre-v3 QLVM input (7 retired supercategories); point both pickles at a v3 re-run
     cnn_input_pkl = configure_path(
         ".../modeling_manifold_qlvm_supercategory_intact_partners_male_...pkl"
     )
@@ -795,6 +796,9 @@ labels (the QLVM category; the pre-flight check inside ``run_cnn_training`` fail
             file_format="svg",
         )
     elif cnn_choose_analysis == "regional_saliency":
+        # region_key must exist in the results' saliency maps ('category_1' ...
+        # 'category_4' for a qlvm_category run; the pre-v3 results above were
+        # segmented by the retired coarse level, hence 'supercategory_7').
         deep_visualizer.plot_regional_saliency_inset(
             region_key="supercategory_7",
             category_name="QLVM supercategory 7",
