@@ -1250,9 +1250,10 @@ chosen animal's data through ``engine.load_animal_sessions``: the three-criteria
 unit filter (``cluster_group`` + ``somatic`` + ``brain_area``), the
 single-best-day population selection (Kilosort is per-day, so units aren't
 comparable across days), and the per-session ``group_a``/``group_b`` category
-split (over the focal mouse's pure USVs only, ``usv & ~squeak``: noise segments,
-pure squeaks and segments holding both a squeak and a USV are dropped first, even
-though ``assign-qlvm-categories`` gives them a ``qlvm_category`` label) all happen
+split (over the focal mouse's USV-bearing segments only -- pure USVs, ``usv & ~squeak``,
+and segments holding both a squeak and a USV, ``usv & squeak``: noise segments and
+pure squeaks are dropped first, even though ``assign-qlvm-categories`` gives them a
+``qlvm_category`` label) all happen
 inside the engine. This builds the ``sessions_data`` that every
 later section consumes. Edit inputs in **Parameters** — this cell should not need
 changing.

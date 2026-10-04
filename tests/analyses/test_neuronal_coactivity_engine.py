@@ -692,8 +692,9 @@ def _write_session_dir(
 
     if rows is None:
         # Three focal pure USVs (two in category 1, one in category 3), one partner pure USV,
-        # and three focal rows that carry a category label but must never enter a group: a
-        # noise segment, a segment holding both a squeak and a USV, and a pure squeak.
+        # a focal segment holding both a squeak and a USV (category 1, which DOES enter a
+        # group: it carries a USV), and two focal rows that carry a category label but must
+        # never enter a group: a noise segment and a pure squeak.
         rows = [
             {"emitter": emitter,       "start": 1.0, "noise": False, "usv": True,  "squeak": False, category_column: 1, "peak_amp_ch": 2},
             {"emitter": emitter,       "start": 2.0, "noise": False, "usv": True,  "squeak": False, category_column: 1, "peak_amp_ch": 0},
@@ -790,11 +791,12 @@ def test_load_animal_sessions_picks_richest_day_and_builds_entries(tmp_path):
     assert entry["fs"] == pytest.approx(150.0)
     assert entry["total_duration"] == pytest.approx(300 / 150.0)
     assert set(entry["neural_data"]) == {"u_a_good", "u_b_good"}
-    # Focal-only pure USVs split by category; group A = category 1 (2 focal pure USVs), B =
-    # category 3 (1). The labelled noise, both and pure-squeak rows enter neither group.
-    assert entry["group_a_df"].height == 2
+    # Focal-only USV-bearing segments split by category; group A = category 1 (2 focal pure
+    # USVs + the focal squeak+USV "both" segment), B = category 3 (1). The labelled noise and
+    # pure-squeak rows enter neither group.
+    assert entry["group_a_df"].height == 3
     assert entry["group_b_df"].height == 1
-    assert sorted(entry["group_a_df"]["start"].to_list()) == [1.0, 2.0]
+    assert sorted(entry["group_a_df"]["start"].to_list()) == [1.0, 2.0, 6.0]
     assert entry["group_b_df"]["start"].to_list() == [3.0]
     # The noise drop is logged through the supplied sink.
     assert any("dropped 1 noise segment" in line for line in messages)
