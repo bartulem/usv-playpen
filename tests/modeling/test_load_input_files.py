@@ -538,11 +538,12 @@ class TestFindBoutEpochs:
 
     def test_target_type_selects_the_positive_onsets(self, tmp_path):
         """The ``usv`` / ``squeak`` booleans decide which onsets are positive: 'usv' (the
-        default) keeps pure USVs only (usv true, squeak false), 'squeak' pure squeaks only,
-        'all' every row; a segment with both flags true (and null flags) is in neither
-        single type -- usv being true is not enough for 'usv';
-        the silent-epoch negatives are the same in all three because they are
-        sampled against every call of the mouse."""
+        default) keeps pure USVs only (usv true, squeak false), 'usv_with_both' pure USVs
+        plus the segments with both flags true, 'squeak' pure squeaks only, 'all' every
+        row; a segment with both flags true is dropped by 'usv' (usv being true is not
+        enough) and null flags are in none of the three typed selections; the
+        silent-epoch negatives are the same in all four because they are sampled
+        against every call of the mouse."""
 
         rows = {
             'emitter': ['male', 'male', 'male', 'male', 'male'],
@@ -557,15 +558,43 @@ class TestFindBoutEpochs:
                       usv_bout_time=0.5, min_usv_per_bout=2,
                       proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
         out = {kind: find_onset_epochs(target_type=kind, **common, **kwargs)['sess_B']['male']
-               for kind in ('usv', 'squeak', 'all')}
+               for kind in ('usv', 'usv_with_both', 'squeak', 'all')}
         np.testing.assert_allclose(out['usv']['positive_events'], [2.0, 4.0])
+        np.testing.assert_allclose(out['usv_with_both']['positive_events'], [2.0, 4.0, 5.0])
         np.testing.assert_allclose(out['squeak']['positive_events'], [3.0])
         np.testing.assert_allclose(out['all']['positive_events'], [2.0, 3.0, 4.0, 5.0, 6.0])
         np.testing.assert_allclose(out['usv']['negative_events'], out['squeak']['negative_events'])
+        np.testing.assert_allclose(out['usv']['negative_events'], out['usv_with_both']['negative_events'])
         np.testing.assert_allclose(out['usv']['negative_events'], out['all']['negative_events'])
         # the default is 'usv'
         default = find_onset_epochs(**common, **kwargs)['sess_B']['male']
         np.testing.assert_allclose(default['positive_events'], [2.0, 4.0])
+
+    def test_usv_with_both_keeps_both_segments_in_bouts(self, tmp_path):
+        """In a bout mode a "both" segment (usv and squeak true) between two pure USVs is
+        a bout member under 'usv_with_both', so the three calls form one bout with one
+        onset; under the default 'usv' it is dropped and the two pure USVs, now farther
+        apart than the inter-bout threshold, are two bouts of one call each, below the
+        two-call floor (no positive; the inter-bout threshold of these parameters is
+        1 s). The negatives do not depend on the target type."""
+
+        rows = {
+            'emitter': ['male', 'male', 'male'],
+            'start': [2.0, 2.7, 3.4],
+            'stop': [2.01, 2.71, 3.41],
+            'usv_category': [1, 1, 1],
+            'usv': [True, True, True],
+            'squeak': [False, True, False],
+        }
+        kwargs = self._build(tmp_path, rows)
+        common = dict(prediction_mode='bout_onset', filter_history=1.0, usv_bout_time=0.5,
+                      min_usv_per_bout=2, proportion_smoothing_sd=None,
+                      mixture_model_params=_mixture_model_params())
+        with_both = find_onset_epochs(target_type='usv_with_both', **common, **kwargs)['sess_B']['male']
+        pure = find_onset_epochs(target_type='usv', **common, **kwargs)['sess_B']['male']
+        np.testing.assert_allclose(with_both['positive_events'], [2.0])
+        assert len(pure['positive_events']) == 0
+        np.testing.assert_allclose(with_both['negative_events'], pure['negative_events'])
 
     def test_target_type_refuses_what_it_cannot_do(self, tmp_path):
         """Squeak onsets outside 'individual' mode, an unknown call type, and a
