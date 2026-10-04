@@ -423,6 +423,16 @@ QLVM_PRODUCTION_TIME_STRETCH = True
 # visualizations_settings.json.
 QLVM_MAPS = tuple(QLVM_PRODUCTION_MODEL_CELLS)
 
+# How the GUI names each QLVM map: the regular map as 'QLVM', a conditional map by the
+# property it is conditioned on (the setting itself stores the column prefix).
+QLVM_MAP_DISPLAY_NAMES = {
+    "qlvm": "QLVM",
+    "qlvm_duration": "duration",
+    "qlvm_entropy": "entropy",
+    "qlvm_bandwidth": "bandwidth",
+    "qlvm_loudness": "loudness",
+}
+
 # The regular (unconditional) QLVM map: the only map whose decoder is a function of
 # the torus position alone (the geodesic pullback metric and the manifold filter
 # atlas decode with its cell) and the map the category bundle is defined on.

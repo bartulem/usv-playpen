@@ -9,6 +9,7 @@ import ast
 import configparser
 import copy
 import ctypes
+import fnmatch
 import json
 import os
 import platform
@@ -66,7 +67,7 @@ from PyQt6.QtWidgets import (
 
 from .analyses.analyze_data import Analyst
 from .analyses.generate_audio_files import _PLAYBACK_CONTEXTS
-from .os_utils import QLVM_MAPS, configure_path, rebase_experimenter_in_paths, resolve_data_root
+from .os_utils import QLVM_MAP_DISPLAY_NAMES, QLVM_MAPS, configure_path, rebase_experimenter_in_paths, resolve_data_root
 from .processing.preprocess_data import Stylist
 from .recording.behavioral_experiments import ExperimentController
 from .visualizations.visualize_data import Visualizer
@@ -4895,8 +4896,10 @@ class USVPlaypenWindow(QMainWindow):
         qlvm_map_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         qlvm_map_label.move(vis_col_three_x1, 40)
         self.qlvm_map_cb = QComboBox(self.VisualizationsSettings)
-        self.qlvm_map_cb.addItems(list(QLVM_MAPS))
-        self.qlvm_map_cb.setCurrentText(self.visualizations_input_dict['shared_resources']['qlvm_map'])
+        # shown as the property each map is conditioned on ('QLVM' = the regular map); the
+        # setting stores the map's column prefix, list(QLVM_MAPS)[index]
+        self.qlvm_map_cb.addItems([QLVM_MAP_DISPLAY_NAMES[qlvm_map] for qlvm_map in QLVM_MAPS])
+        self.qlvm_map_cb.setCurrentIndex(list(QLVM_MAPS).index(self.visualizations_input_dict['shared_resources']['qlvm_map']))
         # Wide enough for the longest map name (qlvm_bandwidth), shifted left to stay inside the window.
         self.qlvm_map_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.qlvm_map_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='qlvm_map', choices=list(QLVM_MAPS)))
@@ -5033,18 +5036,15 @@ class USVPlaypenWindow(QMainWindow):
         self.embedding_thumbnails_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='make_embedding_thumbnails_cb_bool'))
         self.embedding_thumbnails_cb.move(vis_col_three_x2, 370)
 
-        embedding_thumbnails_category_label = QLabel('Clustering type borders:', self.VisualizationsSettings)
-        embedding_thumbnails_category_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
-        embedding_thumbnails_category_label.move(vis_col_three_x1, 400)
-        self.embedding_thumbnails_category_cb = QComboBox(self.VisualizationsSettings)
-        # The category column suffix the figure reads. The summary has one category
-        # level (qlvm_category; there is no coarse level), shown as 'fine' for
-        # consistency with the other clustering selectors.
-        self.embedding_thumbnails_category_cb.addItems(['fine'])
-        self.embedding_thumbnails_category_cb.setCurrentText('fine')
-        self.embedding_thumbnails_category_cb.setStyleSheet('QComboBox { width: 57px; }')
-        self.embedding_thumbnails_category_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='embedding_thumbnails_category', choices=['category']))
-        self.embedding_thumbnails_category_cb.move(vis_col_three_x2, 400)
+        embedding_thumbnails_exclude_squeaks_label = QLabel('Exclude squeaks:', self.VisualizationsSettings)
+        embedding_thumbnails_exclude_squeaks_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
+        embedding_thumbnails_exclude_squeaks_label.move(vis_col_three_x1, 400)
+        self.embedding_thumbnails_exclude_squeaks_cb = QComboBox(self.VisualizationsSettings)
+        self.embedding_thumbnails_exclude_squeaks_cb.addItems(['No', 'Yes'])
+        self.embedding_thumbnails_exclude_squeaks_cb.setCurrentIndex(1 if _emb_cfg['exclude_squeaks'] else 0)
+        self.embedding_thumbnails_exclude_squeaks_cb.setStyleSheet('QComboBox { width: 57px; }')
+        self.embedding_thumbnails_exclude_squeaks_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='embedding_thumbnails_exclude_squeaks_bool'))
+        self.embedding_thumbnails_exclude_squeaks_cb.move(vis_col_three_x2, 400)
 
         self.embedding_thumbnails_samples_label = QLabel(f"Thumbnails per category {_emb_cfg['n_samples_per_category']}:", self.VisualizationsSettings)
         self.embedding_thumbnails_samples_label.setFixedWidth(220)
@@ -5266,7 +5266,7 @@ class USVPlaypenWindow(QMainWindow):
         # the knobs live in the embedding_thumbnails settings block.
         self.visualizations_input_dict['visualize_booleans']['make_embedding_thumbnails_bool'] = self.make_embedding_thumbnails_cb_bool
         self.make_embedding_thumbnails_cb_bool = False
-        self.visualizations_input_dict['embedding_thumbnails']['category_col_suffix'] = self.embedding_thumbnails_category
+        self.visualizations_input_dict['embedding_thumbnails']['exclude_squeaks'] = self.embedding_thumbnails_exclude_squeaks_bool
         self.visualizations_input_dict['embedding_thumbnails']['tile_orientation'] = self.embedding_thumbnails_orientation
         self.visualizations_input_dict['embedding_thumbnails']['n_samples_per_category'] = self.embedding_thumbnails_samples_slider.value()
         self.visualizations_input_dict['embedding_thumbnails']['draw_cluster_boundaries'] = self.embedding_thumbnails_draw_boundaries_bool
@@ -5834,12 +5834,15 @@ class USVPlaypenWindow(QMainWindow):
         Description
         -----------
         Return the naturalistic playback context labels that actually have a built repository
-        on disk, by globbing ``<naturalistic_usv_repository_dir>/<sex>/`` for each context's
-        ``naturalistic_usv_repository_<token>_*.h5``. The playback-context dropdown offers only
-        these, so a user cannot select a context that has not been built. Falls back to every
-        context if the repository root cannot be resolved or nothing is found (fail-open, so a
-        transient mount issue does not empty the dropdown; the run-time FileNotFoundError from
-        the generator remains the backstop).
+        on disk: a context has one when ``<naturalistic_usv_repository_dir>/<sex>/`` holds a
+        ``naturalistic_usv_repository_<token>_*.h5``. Each sex folder is listed once and every
+        context of that sex is matched against the listing in memory, so opening the window costs
+        one directory listing per sex on the share (two), not one per context (seven); a listing
+        on the network share can take seconds when the link is busy. The playback-context
+        dropdown offers only these, so a user cannot select a context that has not been built.
+        Falls back to every context if the repository root cannot be resolved or nothing is found
+        (fail-open, so a transient mount issue does not empty the dropdown; the run-time
+        FileNotFoundError from the generator remains the backstop).
 
         Parameters
         ----------
@@ -5854,8 +5857,14 @@ class USVPlaypenWindow(QMainWindow):
             repository_root = resolve_data_root('naturalistic_usv_repository_dir')
         except Exception:
             return list(_PLAYBACK_CONTEXTS)
+        repository_names = {}
+        for sex in {sex for _token, sex in _PLAYBACK_CONTEXTS.values()}:
+            try:
+                repository_names[sex] = [path.name for path in (repository_root / sex).iterdir()]
+            except OSError:
+                repository_names[sex] = []
         available = [label for label, (token, sex) in _PLAYBACK_CONTEXTS.items()
-                     if any((repository_root / sex).glob(f'naturalistic_usv_repository_{token}_*.h5'))]
+                     if any(fnmatch.fnmatchcase(name, f'naturalistic_usv_repository_{token}_*.h5') for name in repository_names[sex])]
         return available or list(_PLAYBACK_CONTEXTS)
 
     def _combo_box_fs_audio_dir(self,
@@ -7548,7 +7557,7 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
                            'usv_seq_raw_audio_bool': visualizations_input_dict['make_usv_spectrograms']['plot_raw_audio'],
                            'usv_seq_mark_segments_bool': visualizations_input_dict['make_usv_spectrograms']['sequence']['mark_usv_segments'],
                            'make_embedding_thumbnails_cb_bool': False,
-                           'embedding_thumbnails_category': visualizations_input_dict['embedding_thumbnails']['category_col_suffix'],
+                           'embedding_thumbnails_exclude_squeaks_bool': visualizations_input_dict['embedding_thumbnails']['exclude_squeaks'],
                            'embedding_thumbnails_orientation': visualizations_input_dict['embedding_thumbnails']['tile_orientation'],
                            'embedding_thumbnails_draw_boundaries_bool': visualizations_input_dict['embedding_thumbnails']['draw_cluster_boundaries'],
                            'embedding_thumbnails_apply_mask_bool': visualizations_input_dict['embedding_thumbnails']['apply_mask'],

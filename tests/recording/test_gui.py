@@ -769,3 +769,50 @@ def test_subject_completer_refreshes_after_repository_change(qtbot, monkeypatch,
     model = win.subject_completer.model()
     listed = [model.data(model.index(i, 0)) for i in range(model.rowCount())]
     assert 'NEW_1' in listed
+
+
+def test_available_playback_contexts_lists_each_sex_folder_once(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    The playback-context dropdown offers only contexts with a built repository.
+    Each sex folder of the repository root is listed once (the share can take
+    seconds per listing), every context of that sex is matched in memory, a
+    missing sex folder counts as empty, and nothing found falls back to every
+    context.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Temporary repository root.
+    monkeypatch (pytest.MonkeyPatch)
+        Points the repository root at ``tmp_path`` and counts the listings.
+
+    Returns
+    -------
+    None
+    """
+
+    (tmp_path / 'male').mkdir()
+    (tmp_path / 'female').mkdir()
+    (tmp_path / 'male' / 'naturalistic_usv_repository_courtship_20260101.h5').touch()
+    (tmp_path / 'male' / 'notes.txt').touch()
+    (tmp_path / 'female' / 'naturalistic_usv_repository_lone_20260101.h5').touch()
+    monkeypatch.setattr(usv_playpen_gui, 'resolve_data_root', lambda key: tmp_path)
+    listed = []
+    original_iterdir = Path.iterdir
+
+    def counting_iterdir(self):
+        listed.append(self.name)
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, 'iterdir', counting_iterdir)
+    available = usv_playpen_gui.USVPlaypenWindow._available_playback_contexts(None)
+    assert available == ['courtship_male', 'lone_female']
+    assert sorted(listed) == ['female', 'male', 'mixed']
+
+    for path in (tmp_path / 'male').iterdir():
+        path.unlink()
+    for path in (tmp_path / 'female').iterdir():
+        path.unlink()
+    assert usv_playpen_gui.USVPlaypenWindow._available_playback_contexts(None) == list(usv_playpen_gui._PLAYBACK_CONTEXTS)

@@ -626,6 +626,13 @@ def test_newest_match_raises_when_empty(tmp_path):
 
 # QLVM category bundle / production cells / resolve_consolidated_h5_path
 
+def test_qlvm_map_display_names_cover_every_map():
+    """The GUI names every QLVM map, and only those: the regular map as 'QLVM',
+    each conditional map by its conditioning property."""
+    assert tuple(os_utils.QLVM_MAP_DISPLAY_NAMES) == os_utils.QLVM_MAPS
+    assert list(os_utils.QLVM_MAP_DISPLAY_NAMES.values()) == ["QLVM", "duration", "entropy", "bandwidth", "loudness"]
+
+
 def test_qlvm_category_constants_and_production_cells():
     """The category bundle is one constant on the regular map, its column is the one
     category column of every map, the qlvm_v3 reference-arrays convention is gone, and
