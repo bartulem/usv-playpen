@@ -1105,9 +1105,13 @@ class USVSpectrogramPlotter:
             recursive=True,
             label="USV summary CSV",
         )
-        usv_df = pls.read_csv(str(usv_summary_path))
+        # The row index is taken BEFORE the noise drop, so it stays aligned with the
+        # spectrogram store's per-USV rows; noise segments are never stitched in
+        # (os_utils.drop_noise_usvs, the shared noise rule, as in plot_sequence).
+        usv_df = pls.read_csv(str(usv_summary_path)).with_row_index(name="row_index")
+        usv_df = drop_noise_usvs(usv_df, usv_summary_path.name, self.message_output)[0]
         in_window_df = (
-            usv_df.with_row_index(name="row_index")
+            usv_df
             .filter(
                 (pls.col("start") < end_time_sec) & (pls.col("stop") > start_time_sec)
             )

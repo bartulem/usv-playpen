@@ -803,6 +803,7 @@ def _setup_stitched_session(tmp_path: pathlib.Path, *, with_mask: bool = True):
         {
             "start": [0.10, 0.30, 0.55, 0.80],
             "stop": [0.18, 0.38, 0.63, 0.88],
+            "noise": [False, True, False, False],
             "qlvm_category": [1, 1, 2, 2],
         },
     )
@@ -825,6 +826,21 @@ def test_plot_stitched_with_mask(tmp_path):
     )
     fig = plotter.plot_stitched()
     assert isinstance(fig, plt.Figure)
+
+
+def test_plot_stitched_drops_noise_and_keeps_store_row_indices(tmp_path, mocker):
+    """The stitched timeline leaves out the noise segment (row 1) and hands the canvas
+    builder the remaining rows under their ORIGINAL summary row indices, which index the
+    spectrogram store."""
+    settings = _setup_stitched_session(tmp_path, with_mask=True)
+    plotter = USVSpectrogramPlotter(root_directory=str(tmp_path), visualizations_parameter_dict=settings)
+    # The synthetic memmap is shorter than the calls; widen the window over all four.
+    mocker.patch.object(plotter, "_resolve_window", return_value=(0, 250_000, 0.0, 1.0))
+    canvas_builder = mocker.patch.object(plotter, "_build_stitched_canvas", side_effect=RuntimeError("stop"))
+    with pytest.raises(RuntimeError, match="stop"):
+        plotter.plot_stitched()
+    in_window_df = canvas_builder.call_args.args[-1]
+    assert in_window_df["row_index"].to_list() == [0, 2, 3]
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
