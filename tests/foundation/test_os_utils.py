@@ -1140,3 +1140,28 @@ def test_call_class_mask_derives_classes_from_the_two_booleans():
         os_utils.call_class_mask(pls.DataFrame({"squeak": [True]}), ["usv"], "old_summary.csv")
     with pytest.raises(ValueError, match="squeak class selection"):
         os_utils.squeak_class_selection("usv")
+
+
+def test_noise_mask_and_drop_noise_usvs_take_any_csv_encoding(tmp_path):
+    """The noise flag is read through text, like the usv / squeak booleans: a Boolean column, the
+    strings "true" / "false" (what polars.read_csv infers when the schema-inference rows hold no
+    value) and an all-null column all work, a null counts as not noise, and a summary without the
+    column raises. The CSV round trip reproduces the String typing a plain cast(Boolean) or ``~``
+    refused."""
+    as_bool = pls.DataFrame({"noise": [True, False, None]}, schema={"noise": pls.Boolean})
+    assert os_utils.noise_mask(as_bool, "s").to_list() == [True, False, False]
+    as_text = as_bool.with_columns(pls.col("noise").cast(pls.String))
+    assert os_utils.noise_mask(as_text, "s").to_list() == [True, False, False]
+    summary_path = tmp_path / "s_usv_summary.csv"
+    pls.DataFrame(
+        {"start": [0.1, 0.2, 0.3], "noise": [None, None, None]},
+        schema={"start": pls.Float64, "noise": pls.Boolean},
+    ).write_csv(summary_path)
+    all_null = pls.read_csv(summary_path)
+    assert all_null["noise"].dtype == pls.String
+    kept, n_dropped = os_utils.drop_noise_usvs(all_null, "s", message_output=lambda *_args: None)
+    assert (kept.height, n_dropped) == (3, 0)
+    kept, n_dropped = os_utils.drop_noise_usvs(as_text, "s", message_output=lambda *_args: None)
+    assert (kept.height, n_dropped) == (2, 1)
+    with pytest.raises(KeyError, match="detect-usv-noise"):
+        os_utils.noise_mask(pls.DataFrame({"start": [0.1]}), "old_summary.csv")

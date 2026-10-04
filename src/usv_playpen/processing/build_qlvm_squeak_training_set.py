@@ -92,6 +92,7 @@ from ..os_utils import (
     SQUEAK_FLAG_COLUMN,
     USV_FLAG_COLUMN,
     first_match_or_raise,
+    noise_mask,
     squeak_bearing_mask,
 )
 from ..time_utils import is_gui_context, smart_wait
@@ -163,7 +164,7 @@ def squeak_candidates_from_summary(usv_summary: pls.DataFrame, exclude_noise: bo
         raise ValueError(error_message)
     keep = squeak_bearing_mask(usv_summary, "the USV summary").to_numpy().copy()
     if exclude_noise:
-        keep &= ~usv_summary["noise"].cast(pls.Boolean).fill_null(False).to_numpy()
+        keep &= ~noise_mask(usv_summary, "the USV summary").to_numpy()
     start = usv_summary["start"].cast(pls.Float64).to_numpy()
     stop = usv_summary["stop"].cast(pls.Float64).to_numpy()
     squeak_start = usv_summary["squeak_start"].cast(pls.Float64).fill_null(np.nan).to_numpy()

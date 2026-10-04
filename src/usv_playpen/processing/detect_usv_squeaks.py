@@ -149,6 +149,7 @@ from ..os_utils import (
     configure_path,
     derive_spectrogram_model_paths,
     first_match_or_raise,
+    noise_mask,
     order_usv_summary_columns,
     qlvm_cell_model_id,
     squeak_bearing_mask,
@@ -672,7 +673,7 @@ def classify_usv_squeak_rows(
         error_message = "The USV summary has no 'noise' column; run detect-usv-noise on the session before detect-usv-squeaks."
         raise ValueError(error_message)
     n_rows = usv_summary.height
-    is_noise = usv_summary["noise"].cast(pls.Boolean).fill_null(False).to_numpy()
+    is_noise = noise_mask(usv_summary, "the USV summary").to_numpy()
     candidates = np.flatnonzero(~is_noise)
     starts = usv_summary["start"].cast(pls.Float64).to_numpy()
     stops = usv_summary["stop"].cast(pls.Float64).to_numpy()
@@ -1732,7 +1733,7 @@ def squeak_qlvm_rows(usv_summary: pls.DataFrame) -> np.ndarray:
         )
         raise ValueError(error_message)
     squeaky = squeak_bearing_mask(usv_summary, "the USV summary").to_numpy()
-    noise = usv_summary["noise"].cast(pls.Boolean).fill_null(False).to_numpy()
+    noise = noise_mask(usv_summary, "the USV summary").to_numpy()
     return np.flatnonzero(squeaky & ~noise).astype(np.int64)
 
 
