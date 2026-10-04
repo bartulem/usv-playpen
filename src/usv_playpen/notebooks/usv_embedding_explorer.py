@@ -499,24 +499,8 @@ def _load_pooled_df(
         # subset has its own cache.
         seen, lines = set(), []
         session_to_list = {}
-        session_to_type = {}
         for _list_path in selected_paths:
             _list_label = Path(_list_path).stem
-            # Classify the list by filename so the emitter -> sex mapping can be
-            # corrected per session type. Most-specific first:
-            # "courtship_male_male" must match male_male, not courtship. Unknown
-            # lists (e.g. playback) keep the raw track-index convention.
-            _ln = _list_label.lower()
-            if "female_female" in _ln:
-                _ltype = "female_female"
-            elif "male_male" in _ln:
-                _ltype = "male_male"
-            elif "lone_male" in _ln:
-                _ltype = "lone_male"
-            elif "courtship" in _ln:
-                _ltype = "male_female"
-            else:
-                _ltype = "other"
             try:
                 _raw_lines = Path(_list_path).read_text().splitlines()
             except OSError as exc:
@@ -531,7 +515,6 @@ def _load_pooled_df(
                     lines.append(_session)
                     # session_id is the session root basename; first list wins.
                     session_to_list[Path(_session).name] = _list_label
-                    session_to_type[Path(_session).name] = _ltype
 
         selection_token = hashlib.md5("\n".join(sorted(seen)).encode()).hexdigest()[:12]
         cache_dir = Path.home() / ".usv_playpen_cache"
@@ -554,28 +537,15 @@ def _load_pooled_df(
             )
         # Tag every row with its source list (a marimo-side enrichment, not
         # cached); every pooled session came from a selected list.
-        pooled = pooled.with_columns(
+        # The 'sex' column needs no per-list correction: build_pooled_embeddings_df
+        # reads each emitter's sex from its session's metadata (Subjects matched to
+        # the track name), so same-sex sessions come out right as built.
+        return pooled.with_columns(
             pls.Series(
                 "session_type",
                 [session_to_list[_s] for _s in pooled["session_id"].to_list()],
             )
         )
-        # Correct emitter sex by session type. build_pooled_embeddings_df
-        # assigns sex purely by track index (0 = male, 1 = female), right only
-        # for male-female sessions: female-female mislabels the track-0 animal
-        # "male" (remap -> female) and male-male mislabels track-1 "female"
-        # (remap -> male). Other types already come out correct.
-        _types = [session_to_type[_s] for _s in pooled["session_id"].to_list()]
-        _sexes = pooled["sex"].to_list()
-        _corrected = []
-        for _type, _sex in zip(_types, _sexes):
-            if _type == "female_female" and _sex == "male":
-                _corrected.append("female")
-            elif _type == "male_male" and _sex == "female":
-                _corrected.append("male")
-            else:
-                _corrected.append(_sex)
-        return pooled.with_columns(pls.Series("sex", _corrected))
 
     pooled_df = _()
     return (pooled_df,)

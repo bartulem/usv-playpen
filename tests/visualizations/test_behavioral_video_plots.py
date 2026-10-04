@@ -576,7 +576,7 @@ _VIS_ARENA_NODES = ["North", "East", "South", "West"] + [f"ch_{i}" for i in rang
 
 
 def _write_tracks_h5(path, tracks, node_names, *, track_names=None,
-                     exp_code=None, frame_rate=None):
+                     exp_code=None, frame_rate=None, subject_sexes=None):
     """
     Description
     -----------
@@ -600,11 +600,23 @@ def _write_tracks_h5(path, tracks, node_names, *, track_names=None,
         Experimental code scalar (mouse file only).
     frame_rate (float | None)
         Recording frame rate (mouse file only).
+    subject_sexes (dict | None)
+        ``{track name: sex}``; when given, a ``<session>_metadata.yaml`` whose
+        ``Subjects`` record these sexes is written in the session root
+        (``path.parents[2]``, the file sitting in ``<root>/video/<sub>/``) --
+        the source the video reads each animal's sex from.
 
     Returns
     -------
     None
     """
+
+    if subject_sexes is not None:
+        session_root = path.parents[2]
+        lines = ["Subjects:"]
+        for subject_id, sex in subject_sexes.items():
+            lines += [f"- subject_id: '{subject_id}'", f"  sex: {sex}"]
+        (session_root / f"{session_root.name}_metadata.yaml").write_text("\n".join(lines) + "\n")
 
     with h5py.File(path, "w") as f:
         f.create_dataset("tracks", data=np.asarray(tracks, dtype=float))
@@ -669,6 +681,7 @@ def test_visualize_in_video_static_render(tmp_path, mocker):
         rng.uniform(-0.2, 0.2, size=(n_frames, 2, len(_VIS_MOUSE_NODES), 3)),
         _VIS_MOUSE_NODES, track_names=["m1", "m2"],
         exp_code="BCL2FSmFSm", frame_rate=fr,
+        subject_sexes={"m1": "female", "m2": "female"},
     )
 
     maker = Create3DVideo(
@@ -762,6 +775,7 @@ def test_visualize_in_video_animate_path(tmp_path, mocker):
         rng.uniform(-0.2, 0.2, size=(n_frames, 2, len(_VIS_MOUSE_NODES), 3)),
         _VIS_MOUSE_NODES, track_names=["m1", "m2"],
         exp_code="BCL2FSmFSm", frame_rate=fr,
+        subject_sexes={"m1": "female", "m2": "female"},
     )
 
     maker = Create3DVideo(
@@ -830,6 +844,7 @@ def _build_animate_maker(tmp_path, msgs=None, **mbv_extra):
         rng.uniform(-0.2, 0.2, size=(n_frames, 2, len(_VIS_MOUSE_NODES), 3)),
         _VIS_MOUSE_NODES, track_names=["m1", "m2"],
         exp_code="BCL2FSmFSm", frame_rate=fr,
+        subject_sexes={"m1": "female", "m2": "female"},
     )
     return Create3DVideo(
         exp_id="20250919_155842",

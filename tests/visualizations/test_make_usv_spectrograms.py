@@ -65,7 +65,7 @@ from usv_playpen.visualizations.make_usv_spectrograms import (
     _medoid_xy,
     _pick_category_samples,
     _pick_spiral_with_grid,
-    _resolve_session_emitter_ids,
+    _resolve_session_emitter_sexes,
     build_pooled_embeddings_df,
     plot_embedding_with_category_thumbnails,
     plot_session_type_usv_counts,
@@ -321,22 +321,29 @@ def _write_tracking_h5(
     video_dir: pathlib.Path,
     track_names: tuple[str, ...] = ("male_x", "female_y"),
     name: str = "session_points3d_translated_rotated_metric.h5",
+    sexes: tuple[str, ...] = ("male", "female"),
 ) -> pathlib.Path:
     """
     Description
     -----------
     Write a stand-in 3D tracking HDF5 carrying only the ``track_names``
-    dataset (the single field ``_resolve_session_emitter_ids`` and the
-    pooled-embeddings loader read).
+    dataset (the single field ``_resolve_session_emitter_sexes`` and the
+    pooled-embeddings loader read from it), plus the session's
+    ``<session>_metadata.yaml`` in the session root (``video_dir.parent``)
+    whose ``Subjects`` record each track's sex -- the source every emitter
+    -> sex mapping reads.
 
     Parameters
     ----------
     video_dir (pathlib.Path)
-        Directory to write the HDF5 into.
+        Directory to write the HDF5 into (the session root's ``video``).
     track_names (tuple of str)
-        Animal id strings; index 0 is male, index 1 is female.
+        Animal id strings, in track order.
     name (str)
         File name (must end in ``_points3d_translated_rotated_metric.h5``).
+    sexes (tuple of str)
+        The metadata sex of each track, paired with ``track_names`` in order
+        (extra entries are ignored); defaults to a male-female pair.
 
     Returns
     -------
@@ -351,6 +358,36 @@ def _write_tracking_h5(
             "track_names",
             data=np.array([n.encode("utf-8") for n in track_names]),
         )
+    _write_session_metadata(video_dir.parent, dict(zip(track_names, sexes)))
+    return path
+
+
+def _write_session_metadata(session_root: pathlib.Path, subject_sexes: dict[str, str]) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Write a minimal ``<session>_metadata.yaml`` whose ``Subjects`` block
+    lists each subject id with its sex, as the recording GUI does.
+
+    Parameters
+    ----------
+    session_root (pathlib.Path)
+        Session root directory the metadata file goes into.
+    subject_sexes (dict)
+        ``{subject_id: sex}``.
+
+    Returns
+    -------
+    path (pathlib.Path)
+        The written metadata path.
+    """
+
+    session_root.mkdir(parents=True, exist_ok=True)
+    lines = ["Subjects:"]
+    for subject_id, sex in subject_sexes.items():
+        lines += [f"- subject_id: '{subject_id}'", f"  sex: {sex}"]
+    path = session_root / f"{session_root.name}_metadata.yaml"
+    path.write_text("\n".join(lines) + "\n")
     return path
 
 
@@ -1049,18 +1086,35 @@ def test_plot_session_type_usv_counts(tmp_path):
 # ---- _resolve_session_emitter_ids / plot_session_usv_timeline -------------
 
 
-def test_resolve_session_emitter_ids(tmp_path):
-    """Track names 0/1 map to (male, female)."""
+def test_resolve_session_emitter_sexes(tmp_path):
+    """A male-female session maps each track to its metadata sex."""
     _write_tracking_h5(tmp_path / "video", ("M", "F"))
-    male, female = _resolve_session_emitter_ids(str(tmp_path))
-    assert (male, female) == ("M", "F")
+    assert _resolve_session_emitter_sexes(str(tmp_path)) == {"M": "male", "F": "female"}
 
 
-def test_resolve_session_emitter_ids_too_few(tmp_path):
+def test_resolve_session_emitter_sexes_ignores_the_track_slot(tmp_path):
+    """Sex comes from the metadata, not the slot: a female-female session maps
+    both tracks female, and a female listed first stays female."""
+    _write_tracking_h5(tmp_path / "video", ("A", "B"), sexes=("female", "female"))
+    assert _resolve_session_emitter_sexes(str(tmp_path)) == {"A": "female", "B": "female"}
+    other = tmp_path / "swapped"
+    _write_tracking_h5(other / "video", ("F", "M"), sexes=("female", "male"))
+    assert _resolve_session_emitter_sexes(str(other)) == {"F": "female", "M": "male"}
+
+
+def test_resolve_session_emitter_sexes_unmatched_track_raises(tmp_path):
+    """A track with no metadata subject raises instead of defaulting to its slot."""
+    _write_tracking_h5(tmp_path / "video", ("M", "F"))
+    _write_session_metadata(tmp_path, {"M": "male", "somebody_else": "female"})
+    with pytest.raises(ValueError, match="no subject with a recorded sex"):
+        _resolve_session_emitter_sexes(str(tmp_path))
+
+
+def test_resolve_session_emitter_sexes_too_few(tmp_path):
     """Fewer than two tracked animals raises ValueError."""
     _write_tracking_h5(tmp_path / "video", ("only_one",))
     with pytest.raises(ValueError, match="need at least two"):
-        _resolve_session_emitter_ids(str(tmp_path))
+        _resolve_session_emitter_sexes(str(tmp_path))
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
@@ -1208,6 +1262,44 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     )
     assert cached.height == pooled.height
     assert any("from cache" in m for m in logs)
+
+
+def test_build_pooled_embeddings_df_sex_comes_from_metadata(tmp_path):
+    """The pooled 'sex' column is the emitter's metadata sex, never its track
+    slot: in a female-female session the track-0 animal is female; a call with
+    no attributed emitter stays unassigned; editing the metadata invalidates
+    the cache."""
+    sess = tmp_path / "20230101_000000"
+    _write_embedding_session(sess, "20230101_000000")
+    _write_session_metadata(sess, {"M": "female", "F": "female"})
+    txt = _write_sessions_txt(tmp_path, [sess])
+    cache = tmp_path / "cache.parquet"
+    pooled = build_pooled_embeddings_df(
+        sessions_txt_path=str(txt), cache_path=str(cache), message_output=lambda *_: None,
+    )
+    assert dict(zip(pooled["emitter"].to_list(), pooled["sex"].to_list())) == {
+        "F": "female", "M": "female", "ghost": "unassigned"}
+
+    meta_path = sess / f"{sess.name}_metadata.yaml"
+    meta_path.write_text("Subjects:\n- subject_id: 'M'\n  sex: male\n- subject_id: 'F'\n  sex: female\n")
+    os.utime(meta_path, ns=(meta_path.stat().st_atime_ns, meta_path.stat().st_mtime_ns + 10**9))
+    logs: list[str] = []
+    rebuilt = build_pooled_embeddings_df(
+        sessions_txt_path=str(txt), cache_path=str(cache), message_output=logs.append,
+    )
+    assert any("stale" in m for m in logs)
+    assert dict(zip(rebuilt["emitter"].to_list(), rebuilt["sex"].to_list()))["M"] == "male"
+
+
+def test_build_pooled_embeddings_df_unmatched_track_raises(tmp_path):
+    """A tracked animal the metadata cannot resolve raises instead of being
+    assigned a sex by its slot."""
+    sess = tmp_path / "20230101_000000"
+    _write_embedding_session(sess, "20230101_000000")
+    _write_session_metadata(sess, {"M": "male"})
+    txt = _write_sessions_txt(tmp_path, [sess])
+    with pytest.raises(ValueError, match="'F' has no subject"):
+        build_pooled_embeddings_df(sessions_txt_path=str(txt), message_output=lambda *_: None)
 
 
 def test_build_pooled_embeddings_df_skips_empty_session(tmp_path):
