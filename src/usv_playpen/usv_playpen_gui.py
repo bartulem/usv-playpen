@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import configparser
+import concurrent.futures
 import copy
 import ctypes
 import fnmatch
@@ -89,6 +90,11 @@ if os.name == 'nt':
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(my_app_id)
 
 app_name = f"USV Playpen v{metadata.version('usv-playpen').split('.dev')[0].split('.post')[0]}"
+
+# One background thread lists the naturalistic playback repositories on the network share
+# (seconds per listing when the link is busy), so opening the analyses window never waits
+# on it; see USVPlaypenWindow._apply_available_playback_contexts.
+_PLAYBACK_CONTEXT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='playback-contexts')
 
 _img_dir = Path(__file__).parent / 'img'
 background_img = str(_img_dir / 'background_img.png')
@@ -4338,7 +4344,10 @@ class USVPlaypenWindow(QMainWindow):
         playback_context_label = QLabel('Choose vocalization context:', self.AnalysesSettings)
         playback_context_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
         playback_context_label.move(analyses_col_two_x1, 430)
-        self.playback_context_list = sorted(self._available_playback_contexts(), key=lambda x: x == self.analyses_input_dict['create_naturalistic_usv_playback_wav']['context_label'], reverse=True)
+        # every context first, so building the window never waits on the network share; the
+        # dropdown is narrowed to the built repositories once a background listing returns
+        # (_available_playback_contexts / _apply_available_playback_contexts)
+        self.playback_context_list = sorted(_PLAYBACK_CONTEXTS, key=lambda x: x == self.analyses_input_dict['create_naturalistic_usv_playback_wav']['context_label'], reverse=True)
         self.playback_context_cb = QComboBox(self.AnalysesSettings)
         self.playback_context_cb.addItems(self.playback_context_list)
         # keep the closed box narrow (user preference) but let the dropdown popup show full labels
@@ -4346,8 +4355,11 @@ class USVPlaypenWindow(QMainWindow):
         self.playback_context_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.playback_context_cb.activated.connect(partial(self._combo_box_playback_context, variable_id='playback_context'))
         self.playback_context_cb.move(analyses_col_two_x2, 430)
-        # keep the stored context in sync with the (built-only) dropdown's default selection
+        # keep the stored context in sync with the dropdown's default selection
         self.playback_context = self.playback_context_list[0]
+        playback_context_future = _PLAYBACK_CONTEXT_EXECUTOR.submit(self._available_playback_contexts)
+        self._playback_context_future = playback_context_future
+        QTimer.singleShot(250, partial(self._apply_available_playback_contexts, playback_context_future))
 
         total_playback_file_duration_label = QLabel('Playback duration (s):', self.AnalysesSettings)
         total_playback_file_duration_label.setFont(QFont(self.font_id, 12 + self.font_size_increase))
@@ -5828,6 +5840,46 @@ class USVPlaypenWindow(QMainWindow):
         ):
             label_widget.setEnabled(complexity_enabled)
             slider_widget.setEnabled(complexity_enabled)
+
+    def _apply_available_playback_contexts(self, playback_context_future: concurrent.futures.Future) -> None:
+        """
+        Description
+        -----------
+        Narrows the playback-context dropdown of the analyses window to the contexts with a
+        built repository once the background listing (``_available_playback_contexts``,
+        submitted when the window was built) has returned; until then it re-checks every
+        250 ms on the GUI thread, so the window opens without waiting on the network share.
+        The context selected in the settings stays first when it is available. A listing
+        that belongs to an earlier opening of the window (``_playback_context_future`` has
+        moved on), or a dropdown that no longer exists because the user left the window,
+        is ignored.
+
+        Parameters
+        ----------
+        playback_context_future (concurrent.futures.Future)
+            The background listing submitted when the window was built.
+
+        Returns
+        -------
+        None
+        """
+
+        if playback_context_future is not self._playback_context_future:
+            return
+        if not playback_context_future.done():
+            QTimer.singleShot(250, partial(self._apply_available_playback_contexts, playback_context_future))
+            return
+        selected = self.analyses_input_dict['create_naturalistic_usv_playback_wav']['context_label']
+        available = sorted(playback_context_future.result(), key=lambda x: x == selected, reverse=True)
+        try:
+            self.playback_context_cb.clear()
+            self.playback_context_cb.addItems(available)
+            self.playback_context_cb.view().setMinimumWidth(max((self.playback_context_cb.fontMetrics().horizontalAdvance(_ctx) for _ctx in available), default=0) + 30)
+        except RuntimeError:
+            # the analyses window was closed before the listing returned (its widgets are deleted)
+            return
+        self.playback_context_list = available
+        self.playback_context = available[0]
 
     def _available_playback_contexts(self) -> list:
         """

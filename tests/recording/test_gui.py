@@ -1,5 +1,6 @@
 import pytest
 
+import threading
 from importlib import metadata
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -816,3 +817,43 @@ def test_available_playback_contexts_lists_each_sex_folder_once(tmp_path, monkey
     for path in (tmp_path / 'female').iterdir():
         path.unlink()
     assert usv_playpen_gui.USVPlaypenWindow._available_playback_contexts(None) == list(usv_playpen_gui._PLAYBACK_CONTEXTS)
+
+
+def test_analyze_window_opens_without_listing_and_narrows_contexts_later(app, qtbot, preserve_all_settings, monkeypatch):
+    """
+    Description
+    -----------
+    Building the analyses window must not wait on the playback-repository listing
+    (a network share, seconds per listing when the link is busy): the dropdown
+    opens with every context and is narrowed to the built ones once the
+    background listing returns.
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test driver.
+    preserve_all_settings (None)
+        Fixture backing up / restoring the package config files.
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces the listing with one that blocks until released.
+
+    Returns
+    -------
+    None
+    """
+
+    release = threading.Event()
+
+    def slow_listing(self):
+        release.wait(10)
+        return ['lone_female']
+
+    monkeypatch.setattr(usv_playpen_gui.USVPlaypenWindow, '_available_playback_contexts', slow_listing)
+    qtbot.mouseClick(app.button_map['Analyze'], Qt.MouseButton.LeftButton)
+    assert app.playback_context_cb.count() == len(usv_playpen_gui._PLAYBACK_CONTEXTS)
+    release.set()
+    qtbot.waitUntil(lambda: app.playback_context_cb.count() == 1, timeout=5000)
+    assert app.playback_context_cb.itemText(0) == 'lone_female'
+    assert app.playback_context == 'lone_female'
