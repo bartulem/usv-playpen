@@ -25,7 +25,7 @@ from .assign_vocalizations import Vocalocator
 from .compute_usv_acoustic_features import USVAcousticFeatureExtractor
 from .das_inference import FindMouseVocalizations
 from .detect_usv_noise import USVNoiseDetector
-from .detect_usv_squeaks import USVSqueakDetector
+from .detect_usv_squeaks import USVSqueakDetector, USVSqueakQLVMEmbedder
 from .extract_phidget_data import Gatherer
 from .generate_masks import MaskGenerator
 from .generate_spectrograms import SpectrogramGenerator
@@ -385,8 +385,9 @@ class Stylist:
                                                     input_parameter_dict=self.input_parameter_dict,
                                                     message_output=self.message_output).merge_features_into_summary()
 
-                    # # # infer QLVM latents, then label the regular map's calls with the QLVM categories
-                    # (re-inferring drops qlvm_category, so the two always run together)
+                    # # # infer QLVM latents, label the regular map's calls with the QLVM categories
+                    # (re-inferring drops qlvm_category, so the two always run together) and embed the
+                    # squeaks with the squeak QLVM (qlvm_squeak1 / qlvm_squeak2)
                     if self.input_parameter_dict['processing_booleans']['infer_qlvm_latents']:
                         QLVMLatentInference(root_directory=one_directory,
                                             input_parameter_dict=self.input_parameter_dict,
@@ -394,6 +395,9 @@ class Stylist:
                         QLVMCategoryAssigner(root_directory=one_directory,
                                              input_parameter_dict=self.input_parameter_dict,
                                              message_output=self.message_output).assign_and_merge()
+                        USVSqueakQLVMEmbedder(root_directory=one_directory,
+                                              input_parameter_dict=self.input_parameter_dict,
+                                              message_output=self.message_output).embed_and_merge()
 
                     self.message_output(f"Preprocessing data in {one_directory} finished at: "
                                         f"{datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}.")

@@ -53,6 +53,7 @@ echo "generate-usv-masks --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_
 echo "generate-usv-acoustic-features --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
 echo "infer-qlvm-latents --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
 echo "assign-qlvm-categories --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
+echo "infer-qlvm-squeak-latents --root-directory \"$SESSION_ROOT_DIRECTORY\"" >> "$JOB_SCRIPT"
 echo "echo 'All processing steps (step four) completed successfully.'" >> "$JOB_SCRIPT"
 
 # -------------------------------------------------- #

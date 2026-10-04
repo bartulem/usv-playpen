@@ -638,6 +638,7 @@ def mock_dependencies(mocker):
         'USVAcousticFeatureExtractor': mocker.patch('usv_playpen.processing.preprocess_data.USVAcousticFeatureExtractor'),
         'QLVMLatentInference': mocker.patch('usv_playpen.processing.preprocess_data.QLVMLatentInference'),
         'QLVMCategoryAssigner': mocker.patch('usv_playpen.processing.preprocess_data.QLVMCategoryAssigner'),
+        'USVSqueakQLVMEmbedder': mocker.patch('usv_playpen.processing.preprocess_data.USVSqueakQLVMEmbedder'),
         'USVNoiseDetector': mocker.patch('usv_playpen.processing.preprocess_data.USVNoiseDetector'),
         'USVSqueakDetector': mocker.patch('usv_playpen.processing.preprocess_data.USVSqueakDetector'),
     }
@@ -695,7 +696,8 @@ def test_inhouse_usv_pipeline_dispatch_order(processing_settings, mock_dependenc
     """All 4 in-house USV steps run once each, in pipeline order
     (spectrograms -> masks -> acoustic-features -> QLVM), and the QLVM step
     labels the categories right after the inference (re-inferring drops
-    qlvm_category, so the two run together under one boolean)."""
+    qlvm_category, so the two run together under one boolean) and then embeds the
+    squeaks with the squeak QLVM."""
     for key in ('generate_usv_spectrograms', 'generate_usv_masks',
                 'compute_usv_acoustic_features', 'infer_qlvm_latents'):
         processing_settings['processing_booleans'][key] = True
@@ -706,6 +708,7 @@ def test_inhouse_usv_pipeline_dispatch_order(processing_settings, mock_dependenc
     manager.attach_mock(mock_dependencies['USVAcousticFeatureExtractor'], 'features')
     manager.attach_mock(mock_dependencies['QLVMLatentInference'], 'qlvm')
     manager.attach_mock(mock_dependencies['QLVMCategoryAssigner'], 'categories')
+    manager.attach_mock(mock_dependencies['USVSqueakQLVMEmbedder'], 'squeak_qlvm')
 
     Stylist(
         input_parameter_dict=processing_settings,
@@ -718,11 +721,12 @@ def test_inhouse_usv_pipeline_dispatch_order(processing_settings, mock_dependenc
     mock_dependencies['USVAcousticFeatureExtractor'].return_value.merge_features_into_summary.assert_called_once()
     mock_dependencies['QLVMLatentInference'].return_value.infer_and_merge.assert_called_once()
     mock_dependencies['QLVMCategoryAssigner'].return_value.assign_and_merge.assert_called_once()
+    mock_dependencies['USVSqueakQLVMEmbedder'].return_value.embed_and_merge.assert_called_once()
 
     # constructor call order == pipeline order
     call_names = [c[0] for c in manager.mock_calls]
-    first_idx = {name: call_names.index(name) for name in ('spectrograms', 'masks', 'features', 'qlvm', 'categories')}
-    assert first_idx['spectrograms'] < first_idx['masks'] < first_idx['features'] < first_idx['qlvm'] < first_idx['categories']
+    first_idx = {name: call_names.index(name) for name in ('spectrograms', 'masks', 'features', 'qlvm', 'categories', 'squeak_qlvm')}
+    assert first_idx['spectrograms'] < first_idx['masks'] < first_idx['features'] < first_idx['qlvm'] < first_idx['categories'] < first_idx['squeak_qlvm']
 
 
 def test_squeak_detection_runs_after_das_summarize_only_when_enabled(processing_settings, mock_dependencies, tmp_path, mocker):
@@ -829,6 +833,7 @@ def test_inhouse_usv_pipeline_subset_gated_by_booleans(processing_settings, mock
     mock_dependencies['MaskGenerator'].assert_not_called()
     mock_dependencies['QLVMLatentInference'].assert_not_called()
     mock_dependencies['QLVMCategoryAssigner'].assert_not_called()
+    mock_dependencies['USVSqueakQLVMEmbedder'].assert_not_called()
 
 
 def test_multiple_directory_looping(processing_settings, mock_dependencies, tmp_path):
