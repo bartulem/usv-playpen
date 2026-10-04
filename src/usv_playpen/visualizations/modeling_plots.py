@@ -68,15 +68,17 @@ from scipy.ndimage import gaussian_filter1d
 
 from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_results
 from ..modeling.manifold_metric import pairwise_distance
+from ..modeling.modeling_utils import manifold_tag_segment
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..processing.qlvm_latents import load_model_cell
-from ..processing.qlvm_model import decode_lattice_atlas
+from ..processing.qlvm_latents import load_model_cell, model_decode_condition
+from ..processing.qlvm_model import decode_lattice_atlas, decode_shifted_lattice
 from ..os_utils import (
     QLVM_CATEGORY_MAP,
+    QLVM_REGULAR_MAP,
     configure_path,
     load_qlvm_category_bundle,
     qlvm_cell_model_id,
-    qlvm_production_cell_directory,
+    qlvm_map_cell_directory,
 )
 from .plot_style import apply_plot_style
 
@@ -4031,7 +4033,44 @@ def _extract_manifold_final_bivariate_weights(selection_results_path,
     return mean_weights, features, n_time_bins, selection_metadata, is_magnitude
 
 
-def _resolve_atlas_decoder_and_categories() -> tuple[dict, dict, str]:
+def _atlas_manifold_columns(selection_metadata: dict | None) -> list:
+    """
+    Description
+    -----------
+    The two summary columns the manifold target of a consolidated selection
+    artifact was read from, which name the QLVM map the atlas decodes: the
+    artifact's ``_input_metadata.analysis_specific.usv_manifold_column_names``
+    (written by the extraction and carried through the univariate results, the
+    selection steps and the consolidation). An artifact without that record
+    predates the conditional and squeak maps, when every manifold run was on the
+    regular map, so it falls back to the regular map's columns (``qlvm1`` /
+    ``qlvm2``) and says so.
+
+    Parameters
+    ----------
+    selection_metadata (dict | None)
+        The metadata block ``load_selection_results`` returns for the artifact.
+
+    Returns
+    -------
+    manifold_column_names (list)
+        The manifold column names (e.g. ``['qlvm_duration1', 'qlvm_duration2']``).
+    """
+
+    if selection_metadata and '_input_metadata' in selection_metadata:
+        input_metadata = selection_metadata['_input_metadata']
+        if input_metadata and 'analysis_specific' in input_metadata:
+            analysis_specific = input_metadata['analysis_specific']
+            if analysis_specific and 'usv_manifold_column_names' in analysis_specific:
+                return list(analysis_specific['usv_manifold_column_names'])
+    regular_columns = [f"{QLVM_REGULAR_MAP}1", f"{QLVM_REGULAR_MAP}2"]
+    print(f"plot_manifold_filter_atlas: the artifact records no usv_manifold_column_names (it predates the "
+          f"record), so it is read as a {QLVM_REGULAR_MAP!r} map run ({regular_columns}).")
+    return regular_columns
+
+
+def _resolve_atlas_decoder_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
+                                          condition_quantile: float = 0.5) -> tuple[dict, np.float32 | None, dict | None, str]:
     """
     Description
     -----------
@@ -4040,56 +4079,79 @@ def _resolve_atlas_decoder_and_categories() -> tuple[dict, dict, str]:
     constants, never from settings paths the GUI / CLI experimenter re-keying
     rewrites:
 
-    * **Decoder.** The production cell of the map the category bundle is defined
-      on, the regular map: ``os_utils.qlvm_production_cell_directory("qlvm")``
-      (``.../masked_clean/cell/masked``, the model of the ``qlvm1`` / ``qlvm2``
-      summary columns), loaded by ``processing.qlvm_latents.load_model_cell``. It
-      must be unconditional (``c_dim`` 0): a conditional decoder needs one
-      condition value per call, so its decode is not a function of the torus
-      position alone.
-    * **Categories.** The category bundle, ``os_utils.load_qlvm_category_bundle``
+    * **Decoder.** The production cell of the map the run's coordinates come
+      from, ``os_utils.qlvm_map_cell_directory(qlvm_map)`` (``qlvm`` ->
+      ``.../masked_clean/cell/masked``; ``qlvm_duration`` / ``qlvm_entropy`` /
+      ``qlvm_bandwidth`` / ``qlvm_loudness`` -> the conditional cells under
+      ``.../masked_clean/conditionals/cell``; ``qlvm_squeak`` -> the squeak cell),
+      loaded by ``processing.qlvm_latents.load_model_cell``. An atlas of one map's
+      filter decoded on another map's torus would show calls that do not live at
+      the positions the filter fields point to. A conditional cell decodes
+      ``(z, c)``, so the atlas fixes ``c`` at the ``condition_quantile`` of the
+      cell's training corpus's conditioning distribution
+      (``processing.qlvm_latents.model_decode_condition``; ``0.5`` is the corpus
+      median call), one value for every tile; the regular and squeak cells take
+      no conditioning value.
+    * **Categories.** Only on the map the category bundle is defined on
+      (``os_utils.QLVM_CATEGORY_MAP``, the regular map): the category bundle,
+      ``os_utils.load_qlvm_category_bundle``
       (``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``, written by
-      ``build-qlvm-categories``): its ``label_grid`` (``1..k``, R-1..R-k, indexed
-      ``[y, x]``) is the partition the summaries' ``qlvm_category`` was assigned
-      from. The bundle records no model cell itself, so its identity is the map it
-      is defined on (``os_utils.QLVM_CATEGORY_MAP``) and its ``build_config.json``
-      (build time, positions file SHA-256, call count; ``bundle['identity']``,
-      printed with the decoder for the figure's record). The decoder's
-      ``model_id`` must equal the bundle's (``bundle['model_id']``, the cell of the
-      bundle's map), otherwise ValueError: boundaries of one torus over an atlas
-      decoded on another would mislabel every region.
+      ``build-qlvm-categories``), whose ``label_grid`` (``1..k``, R-1..R-k,
+      indexed ``[y, x]``) is the partition the summaries' ``qlvm_category`` was
+      assigned from. The bundle records no model cell itself, so its identity is
+      the map it is defined on and its ``build_config.json`` (build time,
+      positions file SHA-256, call count; ``bundle['identity']``, printed with the
+      decoder for the figure's record). The decoder's ``model_id`` must equal the
+      bundle's (``bundle['model_id']``, the cell of the bundle's map), otherwise
+      ValueError: boundaries of one torus over an atlas decoded on another would
+      mislabel every region. Any other map places the same calls elsewhere, so it
+      gets no category grid (None) and the atlas draws no boundaries.
 
     Parameters
     ----------
-    None
+    qlvm_map (str)
+        The map of the run's manifold coordinates, one of
+        ``os_utils.QLVM_DECODER_MAPS``. Defaults to the regular map.
+    condition_quantile (float)
+        The training-corpus quantile of the conditioning value a conditional
+        cell is decoded at, in ``[0, 1]``; ignored for an unconditional cell.
+        Defaults to 0.5 (the corpus median).
 
     Returns
     -------
     decoder_params (dict)
-        Decoder weights for ``processing.qlvm_model.decode_lattice_atlas``.
-    bundle (dict)
-        The category bundle (``os_utils.read_qlvm_category_bundle``).
+        Decoder weights for ``processing.qlvm_model`` decoding.
+    condition (np.float32 | None)
+        The conditioning value every tile is decoded at, or None for an
+        unconditional cell.
+    bundle (dict | None)
+        The category bundle (``os_utils.read_qlvm_category_bundle``) on the
+        category map, None on every other map.
     decoder_model_id (str)
         ``<package>/<phase>/<cell>`` of the decoder's cell (for messages and
         tests).
     """
 
-    model = load_model_cell(qlvm_production_cell_directory(QLVM_CATEGORY_MAP))
-    if model['contract']['c_dim'] != 0:
-        raise ValueError(
-            f"plot_manifold_filter_atlas: {model['model_id']} is a conditional cell "
-            f"(c_dim {model['contract']['c_dim']}); the atlas needs an unconditional decoder, "
-            f"the production regular cell."
-        )
+    model = load_model_cell(qlvm_map_cell_directory(qlvm_map))
     decoder_model_id = qlvm_cell_model_id(model['model_id'])
+    condition = model_decode_condition(model, condition_quantile)
+    if condition is None:
+        decoder_note = f"decoder {decoder_model_id}"
+    else:
+        decoder_note = (f"decoder {decoder_model_id} at {model['contract']['condition']['name']} c = "
+                        f"{float(condition):.4f} (training-corpus quantile {float(condition_quantile):.3g})")
+    if qlvm_map != QLVM_CATEGORY_MAP:
+        print(f"plot_manifold_filter_atlas: map {qlvm_map!r}, {decoder_note}; no category boundaries "
+              f"(the categories are defined on the {QLVM_CATEGORY_MAP!r} map).")
+        return model['params'], condition, None, decoder_model_id
     bundle = load_qlvm_category_bundle()
     if bundle['model_id'] != decoder_model_id:
         raise ValueError(
             f"plot_manifold_filter_atlas: the category bundle {bundle['identity']} partitions the torus of "
             f"{bundle['model_id']} (map {bundle['map']!r}), but the atlas decoder is {decoder_model_id}."
         )
-    print(f"plot_manifold_filter_atlas: decoder {decoder_model_id}; categories {bundle['identity']}.")
-    return model['params'], bundle, decoder_model_id
+    print(f"plot_manifold_filter_atlas: map {qlvm_map!r}, {decoder_note}; categories {bundle['identity']}.")
+    return model['params'], condition, bundle, decoder_model_id
 
 
 def plot_manifold_filter_atlas(
@@ -4102,6 +4164,7 @@ def plot_manifold_filter_atlas(
         save_plot: bool = False,
         output_dir: str = None,
         feature_label_overrides: dict = None,
+        condition_quantile: float = 0.5,
 ) -> None:
     """
     Single-figure "atlas" summary of the converged multivariate torus-manifold
@@ -4112,15 +4175,20 @@ def plot_manifold_filter_atlas(
     ------
     * **Top-left -- vocal-space atlas.** A tiled ``atlas_grid_n`` x
       ``atlas_grid_n`` grid of torus positions is decoded through the frozen
-      QLVM decoder (``decode_lattice_atlas``; the production regular cell's
-      decoder, the torus the ``qlvm1`` / ``qlvm2`` coordinates live on) into
-      canonical USV spectrograms,
+      QLVM decoder of the map the run's coordinates come from (the map prefix of
+      the artifact's ``usv_manifold_column_names``: ``qlvm1`` / ``qlvm2`` -> the
+      production regular cell, ``qlvm_duration1`` / ``qlvm_duration2`` -> the
+      duration-conditioned cell, ``qlvm_squeak1`` / ``qlvm_squeak2`` -> the
+      squeak cell, and so on; a conditional cell decoded at the
+      ``condition_quantile`` of its training conditioning distribution) into
+      canonical spectrograms,
       each drawn as a small ``figures.sequential_cmap`` (inferno) image on a black
       background at its torus location and **normalised to its own peak** so the
       contour shape reads at every position regardless of absolute intensity.
-      The QLVM categories (R-1..R-k of the category bundle,
+      On the regular map the QLVM categories (R-1..R-k of the category bundle,
       ``os_utils.load_qlvm_category_bundle``) are overlaid as thin white
-      boundaries. This is
+      boundaries; the categories are defined on the regular map only, so a
+      conditional or squeak map's atlas (and filmstrips) carry none. This is
       the "what vocalization lives where" key for the two field panels.
     * **Bottom-left -- filter magnitude.** One ``|W(t)|`` line per selected
       feature (the L2 norm across the 4 torus output coordinates), averaged into
@@ -4175,12 +4243,23 @@ def plot_manifold_filter_atlas(
         ``{raw_feature_name: display_label}`` overrides; unmapped names fall back
         to ``FeatureZoo.resolve_feature_label`` with the cohort sexes from the
         artifact metadata.
+    condition_quantile : float, default 0.5
+        Only for a conditional map (``qlvm_duration``, ``qlvm_entropy``,
+        ``qlvm_bandwidth``, ``qlvm_loudness``): the quantile of the conditioning
+        value's training-corpus distribution every atlas tile is decoded at
+        (``processing.qlvm_latents.condition_quantile_value``, decoded by the
+        cell's exact / grid rule). ``0.5`` decodes the corpus median call; e.g.
+        ``0.1`` / ``0.9`` show the same torus for short / long calls on the
+        duration map. Ignored on the regular and squeak maps.
 
     Notes
     -----
     The decoder and the category grid are not arguments: both come from the code
-    constants (``_resolve_atlas_decoder_and_categories``), the production regular
-    cell and the category bundle, and must describe one torus.
+    constants (``_resolve_atlas_decoder_and_categories``), the production cell of
+    the artifact's map and, on the regular map, the category bundle, which must
+    describe the same torus. The map is read from the artifact's
+    ``_input_metadata.analysis_specific.usv_manifold_column_names``
+    (``_atlas_manifold_columns``).
 
     Returns
     -------
@@ -4215,9 +4294,12 @@ def plot_manifold_filter_atlas(
         history_window_sec = (float(_im['filter_history_seconds'])
                               if 'filter_history_seconds' in _im else 4.0)
 
-    # Resolve the QLVM decoder (the production regular cell) and the category
-    # grid (the category bundle) from the code constants; they must share a torus.
-    decoder_params, category_bundle, _ = _resolve_atlas_decoder_and_categories()
+    # Resolve the QLVM decoder (the production cell of the artifact's map) and,
+    # on the regular map, the category grid (the category bundle) from the code
+    # constants; they must share a torus.
+    manifold_columns = _atlas_manifold_columns(selection_metadata)
+    decoder_params, decoder_condition, category_bundle, _ = _resolve_atlas_decoder_and_categories(
+        manifold_tag_segment(manifold_columns), condition_quantile)
 
     # Feature colours: self / partner by cohort, dyadic social; features sharing a
     # category are separated by OPACITY only (mirrors the trajectory plotter).
@@ -4251,9 +4333,13 @@ def plot_manifold_filter_atlas(
     # Category partition (the bundle's label grid, R-1..R-k) on the torus. The grid
     # is indexed [dim2, dim1], so contour(X=dim1, Y=dim2, lab) is already oriented
     # to match the field panels' (dim1 = x, dim2 = y) convention.
-    lab = category_bundle['label_grid']
-    n_categories = len(category_bundle['names'])
-    axg = category_bundle['axis']
+    # Off the category map there is no grid: zero categories draw no contours.
+    if category_bundle is not None:
+        lab = category_bundle['label_grid']
+        n_categories = len(category_bundle['names'])
+        axg = category_bundle['axis']
+    else:
+        lab, n_categories, axg = None, 0, None
 
     # Field-evaluation grid for e(theta) . W. The (cos, sin, cos, sin) basis
     # matches SmoothTorusManifoldRegression._encode.
@@ -4282,7 +4368,14 @@ def plot_manifold_filter_atlas(
     _tile_c = (np.arange(int(atlas_grid_n)) + 0.5) / int(atlas_grid_n)
     _tile_gx, _tile_gy = np.meshgrid(_tile_c, _tile_c, indexing='ij')
     _lattice = np.column_stack([_tile_gx.ravel(), _tile_gy.ravel()]).astype(np.float32)
-    atlas = np.asarray(decode_lattice_atlas(_lattice, decoder_params))   # (K, 1, 128, 128)
+    if decoder_condition is None:
+        atlas = np.asarray(decode_lattice_atlas(_lattice, decoder_params))   # (K, 1, 128, 128)
+    else:
+        # A conditional decoder takes the one fixed conditioning value appended to
+        # every tile's basis (no shift: the tiles are decoded where they sit).
+        atlas = np.asarray(decode_shifted_lattice(
+            _lattice, np.zeros((1, 2), dtype=np.float32), decoder_params,
+            condition=np.full((1, 1), decoder_condition, dtype=np.float32)))   # (K, 1, 128, 128)
 
     # Approved layout constants (data-unit geometry of the filmstrip decks and the
     # labelled-time axis; tuned once with the user, kept here as named values).
@@ -4325,8 +4418,8 @@ def plot_manifold_filter_atlas(
     ax_atlas.set_aspect('equal')
     ax_atlas.set_xticks([])
     ax_atlas.set_yticks([])
-    ax_atlas.set_xlabel("QLVM1", color=TEXT_COLOR)
-    ax_atlas.set_ylabel("QLVM2", color=TEXT_COLOR)
+    ax_atlas.set_xlabel(manifold_columns[0].upper(), color=TEXT_COLOR)
+    ax_atlas.set_ylabel(manifold_columns[1].upper(), color=TEXT_COLOR)
 
     # (2) Bottom-left: per-feature filter-magnitude |W(t)|.
     ax_mag = fig.add_subplot(left_gs[1, 0])
@@ -4367,8 +4460,8 @@ def plot_manifold_filter_atlas(
                                 interpolation='bilinear', zorder=ri * 100 + 2 * k)
             if is_front:
                 im_ref = im
-            _xp, _yp = x0 + axg * side, y_base + axg * side
             for _kk in range(1, n_categories + 1):
+                _xp, _yp = x0 + axg * side, y_base + axg * side
                 ax_film.contour(_xp, _yp, (lab == _kk).astype(float), levels=[0.5],
                                 colors=_gray(t_norm),
                                 linewidths=(0.55 if is_front else 0.45 - 0.30 * t_norm),

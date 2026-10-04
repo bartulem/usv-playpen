@@ -433,10 +433,21 @@ QLVM_MAP_DISPLAY_NAMES = {
     "qlvm_loudness": "loudness",
 }
 
-# The regular (unconditional) QLVM map: the only map whose decoder is a function of
-# the torus position alone (the geodesic pullback metric and the manifold filter
-# atlas decode with its cell) and the map the category bundle is defined on.
+# The regular (unconditional) QLVM map: the map the category bundle is defined on.
+# It and the squeak map are the maps whose decoder is a function of the torus
+# position alone; a conditional map's decoder also takes one conditioning value,
+# so a decode on it (the geodesic pullback metric, the manifold filter atlas)
+# fixes that value (processing.qlvm_latents.condition_quantile_value).
 QLVM_REGULAR_MAP = "qlvm"
+
+# The squeak (broadband vocalization) map: the column prefix of qlvm_squeak1 /
+# qlvm_squeak2, decoded by the production squeak cell QLVM_SQUEAK_PRODUCTION_CELL
+# under QLVM_SQUEAK_PACKAGE_ROOT (unconditional, c_dim 0).
+QLVM_SQUEAK_MAP = "qlvm_squeak"
+
+# Every map whose decoder a consumer of torus coordinates can load: the USV maps
+# of QLVM_MAPS plus the squeak map (qlvm_map_cell_directory).
+QLVM_DECODER_MAPS = QLVM_MAPS + (QLVM_SQUEAK_MAP,)
 
 # The QLVM category bundle: the content-ridge categories of the regular map, written
 # once by build-qlvm-categories (processing.qlvm_categories) from the regular map's
@@ -496,8 +507,9 @@ def qlvm_production_cell_directory(qlvm_map: str) -> str:
     ``/mnt/falkner`` form: ``QLVM_PRODUCTION_MODEL_CELLS[qlvm_map]`` under
     ``QLVM_MODEL_PACKAGE_ROOT`` (``.../masked_clean/cell/masked`` for the regular
     map). Every reader of a production cell that is not
-    ``infer-qlvm-latents`` (the torus geodesic pullback metric, the manifold filter
-    atlas decoder, the torus-traversal video's provenance check) takes it from here,
+    ``infer-qlvm-latents`` (the torus geodesic pullback metric and the manifold
+    filter atlas decoder through :func:`qlvm_map_cell_directory`, the
+    torus-traversal video's provenance check) takes it from here,
     so no settings path the experimenter re-keying rewrites can point them at
     another cell. Callers translate it to the host mount with ``configure_path``.
 
@@ -521,6 +533,48 @@ def qlvm_production_cell_directory(qlvm_map: str) -> str:
         error_message = f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}."
         raise ValueError(error_message)
     return f"{QLVM_MODEL_PACKAGE_ROOT}/{QLVM_PRODUCTION_MODEL_CELLS[qlvm_map]}"
+
+
+def qlvm_map_cell_directory(qlvm_map: str) -> str:
+    """
+    Description
+    -----------
+    The production model cell whose decoder defines the torus of one map, in its
+    canonical ``/mnt/falkner`` form, for every map a consumer of torus coordinates
+    can work on (``QLVM_DECODER_MAPS``): a USV map of ``QLVM_MAPS`` resolves
+    through :func:`qlvm_production_cell_directory` (``qlvm`` ->
+    ``.../masked_clean/cell/masked``, ``qlvm_duration`` ->
+    ``.../masked_clean/conditionals/cell/duration``, and so on), the squeak map
+    ``QLVM_SQUEAK_MAP`` (``qlvm_squeak``) to ``QLVM_SQUEAK_PRODUCTION_CELL`` under
+    ``QLVM_SQUEAK_PACKAGE_ROOT``. The torus geodesic pullback metric and the
+    manifold filter atlas decode with the cell this returns for the map of the
+    coordinates they work on, so a decode never mixes one map's coordinates with
+    another map's decoder. Callers translate it to the host mount with
+    ``configure_path`` (``processing.qlvm_latents.load_model_cell`` does).
+
+    Parameters
+    ----------
+    qlvm_map (str)
+        One of ``QLVM_DECODER_MAPS``: a column prefix (``qlvm1`` / ``qlvm2`` ->
+        ``qlvm``).
+
+    Returns
+    -------
+    cell_directory (str)
+        The canonical cell path (not checked for existence).
+
+    Raises
+    ------
+    ValueError
+        ``qlvm_map`` is not one of ``QLVM_DECODER_MAPS``.
+    """
+
+    if qlvm_map == QLVM_SQUEAK_MAP:
+        return f"{QLVM_SQUEAK_PACKAGE_ROOT}/{QLVM_SQUEAK_PRODUCTION_CELL}"
+    if qlvm_map not in QLVM_MAPS:
+        error_message = f"qlvm_map must be one of {QLVM_DECODER_MAPS}, got {qlvm_map!r}."
+        raise ValueError(error_message)
+    return qlvm_production_cell_directory(qlvm_map)
 
 
 def qlvm_cell_model_id(cell_directory: str | pathlib.Path) -> str:

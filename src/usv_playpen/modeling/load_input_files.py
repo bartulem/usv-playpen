@@ -76,6 +76,19 @@ def load_behavioral_feature_data(behavior_file_paths: list = None,
 # per-call label column; 'pooled_rate' / 'pooled_binary' never read one.
 CATEGORY_PREDICTOR_TYPES = ('categories_rate', 'all_rate')
 
+# The onset target types (`model_params.onset_target_type`): which call classes of
+# the summary's usv / squeak booleans (os_utils.call_class_mask) are the positive
+# onset source. 'usv' keeps pure USVs only, so a segment holding both a squeak and
+# an ultrasonic call is dropped; 'usv_with_both' keeps those "both" segments as
+# USVs too; 'squeak' keeps pure squeaks only. 'all' keeps every row without
+# reading the booleans (None: no class filter).
+ONSET_TARGET_CALL_CLASSES = {
+    'usv': ('usv',),
+    'usv_with_both': ('usv', 'both'),
+    'squeak': ('squeak',),
+    'all': None,
+}
+
 
 def read_usv_summary_table(csv_path: str | Path, csv_sep: str) -> pls.DataFrame:
     """
@@ -658,18 +671,24 @@ def find_onset_epochs(root_directories: list = None,
     target_type : str, optional
         Which calls are the POSITIVE onset source, read from the summary's
         ``usv`` / ``squeak`` booleans (written by the call classifier, ``detect-usv-squeaks``):
-        ``'usv'`` (default) keeps pure USVs only (``usv & ~squeak``), ``'squeak'``
-        pure squeaks only (``squeak & ~usv``), ``'all'`` every row. A segment holding
-        both (a squeak and an ultrasonic call together) and null booleans (a segment
-        too short to score) are in neither ``'usv'`` nor
-        ``'squeak'``, so they are removed from both positive sequences. Applied before
+        ``'usv'`` (default) keeps pure USVs only (``usv & ~squeak``),
+        ``'usv_with_both'`` pure USVs and the segments holding both a squeak and an
+        ultrasonic call (``usv``, whatever ``squeak`` is), ``'squeak'`` pure squeaks
+        only (``squeak & ~usv``), ``'all'`` every row (``ONSET_TARGET_CALL_CLASSES``).
+        A segment holding both (a squeak and an ultrasonic call together) is
+        therefore dropped by default and kept only by ``'usv_with_both'`` (or
+        ``'all'``); null booleans (a segment too short to score) are in none of
+        ``'usv'``, ``'usv_with_both'`` and ``'squeak'``. Applied before
         `target_category`, in every mode whose positives are call times ('bout_onset',
         'individual', 'bout_offset'), so in 'usv' mode bouts are grouped from pure
         ultrasonic calls alone -- a squeak or a "both" segment between two calls no
         longer joins or splits a bout -- and squeak onsets are no longer counted as USV
-        onsets. As with `target_category`, the predictor vocal traces and the
-        silent-epoch (negative) reference still use ALL of the mouse's calls, so a
-        negative window is silent of squeaks too. ``'squeak'`` is accepted in
+        onsets; in 'usv_with_both' mode a "both" segment is a bout member and an
+        onset like any USV. As with `target_category`, the predictor vocal traces and
+        the silent-epoch (negative) reference still use ALL of the mouse's calls
+        (every class, whatever the target type), so a negative window is silent of
+        squeaks and "both" segments too, and the negatives are the same for every
+        target type. ``'squeak'`` is accepted in
         'individual' mode only: bout grouping needs an inter-bout threshold, and
         the per-sex thresholds are calibrated on ultrasonic-call intervals, not on
         squeaks. A summary without the ``usv`` / ``squeak`` columns raises unless ``'all'``.
@@ -718,8 +737,8 @@ def find_onset_epochs(root_directories: list = None,
             'usv_rate': Gaussian-smoothed density trace over the full per-mouse USV set.
     """
 
-    if target_type not in ('usv', 'squeak', 'all'):
-        raise ValueError(f"Unknown target_type: {target_type!r}. Must be 'usv', 'squeak' or 'all'.")
+    if target_type not in ONSET_TARGET_CALL_CLASSES:
+        raise ValueError(f"Unknown target_type: {target_type!r}. Must be one of {list(ONSET_TARGET_CALL_CLASSES)}.")
     if target_type == 'squeak' and prediction_mode != 'individual':
         raise ValueError(
             f"target_type 'squeak' is supported in 'individual' mode only, not {prediction_mode!r}: "
@@ -814,11 +833,13 @@ def find_onset_epochs(root_directories: list = None,
             # drives the predictor vocal traces below, and the all-USV frame
             # still drives the silent-epoch (negative) reference, so neither the
             # predictors nor the negatives are affected by the category choice.
-            # The target type is applied first: pure ultrasonic calls, pure squeaks, or
-            # every call. A segment holding both and null booleans match neither single type.
-            if target_type in ('usv', 'squeak'):
+            # The target type is applied first: pure ultrasonic calls, pure ultrasonic
+            # calls plus "both" segments, pure squeaks, or every call. Null booleans
+            # match no class; a "both" segment only 'usv_with_both' (and 'all').
+            target_call_classes = ONSET_TARGET_CALL_CLASSES[target_type]
+            if target_call_classes is not None:
                 typed_source_df = mouse_usvs_df.filter(
-                    call_class_mask(mouse_usvs_df, (target_type,), Path(csv_path).name)
+                    call_class_mask(mouse_usvs_df, target_call_classes, Path(csv_path).name)
                 )
             else:
                 typed_source_df = mouse_usvs_df

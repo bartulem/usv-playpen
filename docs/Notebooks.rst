@@ -739,7 +739,7 @@ euclidean: ``r2_spatial``, ``mahalanobis_mae``, ``pearson_x/y``,
     )
 
 * **man_trajectory_results** — cumulative primary metric (von Mises log-score) across forward-stepwise iterations, plus one "% improvement over chance" gain panel per secondary error metric (manifold-position / acoustic).
-* **man_filters_results** — the combined ``plot_manifold_filter_atlas`` (torus only): decoded vocal-space map + per-feature ``|W(t)|`` magnitude + per-feature ``e(theta).W`` affinity filmstrips, reusing the same path.
+* **man_filters_results** — the combined ``plot_manifold_filter_atlas`` (torus only): decoded vocal-space map + per-feature ``|W(t)|`` magnitude + per-feature ``e(theta).W`` affinity filmstrips, reusing the same path. The atlas decodes with the cell of the run's own QLVM map (read from the artifact); on a conditional map ``condition_quantile`` (default ``0.5``) sets the quantile of the conditioning value it is decoded at.
 
 **7. CNN pipeline.** A non-linear baseline (1-D ResNet) for the continuous manifold-position
 regression. Load the multivariate feature blocks into the ``(N, F, T)`` tensor the

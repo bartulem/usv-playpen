@@ -92,7 +92,8 @@
       "grid_n_per_dim": 40,
       "graph_k": 8,
       "density_exponent": 1.0,
-      "pullback_metric": true
+      "pullback_metric": true,
+      "pullback_condition_quantile": 0.5
     }
   },
 

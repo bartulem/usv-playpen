@@ -406,7 +406,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # `category_<col>_<idx>` convention), so the QLVM category column
         # is unambiguous in every downstream
         # artifact name and provenance block.
-        # The onset target type ('usv' default, 'squeak', 'all') joins the tag whenever it
+        # The onset target type ('usv' default, 'usv_with_both', 'squeak', 'all') joins the tag whenever it
         # is not the default, so a squeak-onset run and a USV-onset run of the same
         # cohort never share an artifact name.
         onset_target_type = self.modeling_settings['model_params']['onset_target_type']

@@ -584,6 +584,106 @@ def frozen_condition_values(values: np.ndarray, condition_bins: dict, decode: st
     return bin_mean[np.digitize(values, edges[1:-1], right=False)]
 
 
+def condition_quantile_value(condition_bins: dict, decode: str | None, quantile: float) -> np.float32:
+    """
+    Description
+    -----------
+    One fixed conditioning value of a conditional QLVM cell: the ``quantile`` of
+    the conditioning distribution of the corpus the cell was trained on, decoded
+    by the cell's own rule (:func:`frozen_condition_values`: clamped to the
+    training range for ``decode`` ``"exact"``, snapped to the decode grid for
+    ``"grid"``, the bin mean for phase 10 bins), so the value is one the cell's
+    embedding itself decodes calls at.
+
+    A conditional decoder maps a torus position AND a conditioning value to a
+    spectrogram, so anything that decodes torus positions without a call (the
+    pullback metric ``G(z) = J(z)^T J(z)`` of the torus geodesics, the decoded
+    vocal-space atlas of the manifold filter atlas) has to fix that value. This
+    fixes it from the cell alone: the training corpus distribution is read from
+    ``condition_bins.npz``, whose ``edges`` are the bin edges of ``c`` and whose
+    ``group_sizes`` count the training rows in each bin (phase 11 /
+    ``train-qlvm`` cells); the quantile is interpolated linearly inside the bin it
+    falls in. A phase 10 table (``edges`` + ``bin_mean``, no ``group_sizes``) holds
+    corpus quantile bins, so each of its bins is taken to hold an equal share. The
+    value is therefore the same for every run, cohort and session subset (it does
+    not depend on which calls a run happens to hold), and ``quantile`` ``0.5`` is
+    the corpus median call.
+
+    Parameters
+    ----------
+    condition_bins (dict)
+        The cell's ``condition_bins.npz`` (``load_model_cell``'s
+        ``condition_bins``).
+    decode (str | None)
+        The contract's ``condition.decode`` (``"exact"`` or ``"grid"``; None for
+        phase 10 bins).
+    quantile (float)
+        The corpus quantile of ``c`` to decode at, in ``[0, 1]``.
+
+    Returns
+    -------
+    value (np.float32)
+        The conditioning value.
+
+    Raises
+    ------
+    ValueError
+        ``quantile`` is outside ``[0, 1]``, or the table holds no usable ``edges``
+        (or its ``group_sizes`` do not match them).
+    """
+    quantile = float(quantile)
+    if not 0.0 <= quantile <= 1.0:
+        error_message = f"condition_quantile_value: quantile must be in [0, 1], got {quantile!r}."
+        raise ValueError(error_message)
+    if "edges" not in condition_bins:
+        error_message = f"condition_quantile_value: condition_bins holds {sorted(condition_bins)}, no 'edges'."
+        raise ValueError(error_message)
+    edges = np.asarray(condition_bins["edges"], dtype=np.float64).reshape(-1)
+    if "group_sizes" in condition_bins:
+        sizes = np.asarray(condition_bins["group_sizes"], dtype=np.float64).reshape(-1)
+    else:
+        sizes = np.ones(edges.shape[0] - 1, dtype=np.float64)
+    if edges.shape[0] != sizes.shape[0] + 1 or sizes.sum() <= 0.0:
+        error_message = (
+            f"condition_quantile_value: {edges.shape[0]} edges for {sizes.shape[0]} bins "
+            f"(total {sizes.sum()} rows); the table needs one more edge than bins and at least one row."
+        )
+        raise ValueError(error_message)
+    cumulative = np.concatenate([[0.0], np.cumsum(sizes)]) / sizes.sum()
+    value = np.interp(quantile, cumulative, edges)
+    return frozen_condition_values(np.array([value]), condition_bins, decode)[0]
+
+
+def model_decode_condition(model: dict, condition_quantile: float) -> np.float32 | None:
+    """
+    Description
+    -----------
+    The conditioning value a cell is decoded at when there is no call to take it
+    from: None for an unconditional cell (``c_dim`` 0, which takes none), else
+    :func:`condition_quantile_value` of the cell's training corpus at
+    ``condition_quantile``.
+
+    Parameters
+    ----------
+    model (dict)
+        A cell as :func:`load_model_cell` returns it (``contract`` and
+        ``condition_bins`` are read).
+    condition_quantile (float)
+        The corpus quantile of the conditioning value, in ``[0, 1]`` (ignored for
+        an unconditional cell).
+
+    Returns
+    -------
+    value (np.float32 | None)
+        The conditioning value, or None for an unconditional cell.
+    """
+    if not model["contract"]["c_dim"]:
+        return None
+    condition = model["contract"]["condition"]
+    decode = condition["decode"] if condition is not None and "decode" in condition else None
+    return condition_quantile_value(model["condition_bins"], decode, condition_quantile)
+
+
 def minmax_per_spectrogram(spectrograms: np.ndarray, epsilon: np.float32) -> np.ndarray:
     """
     Description

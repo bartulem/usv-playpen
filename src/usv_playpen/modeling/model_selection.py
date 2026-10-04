@@ -69,6 +69,7 @@ from .modeling_torus_geodesics import (
     geodesic_mae_columns,
     make_qlvm_decode_fn_from_source,
     resolve_geodesic_decoder_source,
+    resolve_manifold_column_names,
 )
 from .modeling_metadata import (
     build_selection_metadata, inject_metadata, RESERVED_METADATA_KEYS,
@@ -5493,8 +5494,8 @@ def continuous_vocal_manifold_model_selection(
 
     # Precompute the torus geodesic "reference map" ONCE (fold-independent, like
     # the flat metric): the density-ratio and decoder-Jacobian pullback geodesic
-    # geometries over a regular grid, from all embedded `Y` plus the frozen QLVM
-    # decoder. Per fold, each event's (prediction, truth) pair snaps to the grid
+    # geometries over a regular grid, from all embedded `Y` plus the frozen
+    # decoder of the map `Y` comes from. Per fold, each event's (prediction, truth) pair snaps to the grid
     # and looks up its geodesic distance, giving the `density_geodesic_mae` /
     # `pullback_geodesic_mae` columns. Torus-only; any failure (disabled, missing
     # settings block, or unavailable decoder) degrades to NaN columns and never
@@ -5507,8 +5508,10 @@ def continuous_vocal_manifold_model_selection(
         if _geo_cfg['compute']:
             # Resolved outside the soft-failure block: a settings block without
             # pullback_metric is a settings error, not a NaN column. The decoder
-            # is the production regular cell (os_utils constants), never a path.
-            _geo_decoder_source = resolve_geodesic_decoder_source(_geo_cfg)
+            # is the production cell of the map the input pickle's manifold
+            # columns come from (os_utils constants), never a path.
+            _geo_decoder_source = resolve_geodesic_decoder_source(
+                _geo_cfg, resolve_manifold_column_names(_input_md, _vf_settings))
             try:
                 _geo_decode_fn = None
                 if _geo_decoder_source is not None:
