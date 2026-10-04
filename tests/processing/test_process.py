@@ -26,6 +26,7 @@ from usv_playpen.processing.preprocess_data import (
     hpss_audio_cli,
     bp_filter_audio_files_cli,
     concatenate_audio_files_cli,
+    broadband_filter_audio_cli,
     sleap_file_conversion_cli,
     conduct_anipose_calibration_cli,
     conduct_anipose_triangulation_cli,
@@ -2887,7 +2888,8 @@ def test_prepare_data_all_per_directory_steps_dispatch(processing_settings, mock
     Enabling every per-directory processing boolean must dispatch each step to
     its worker class exactly once for the single root directory, covering the
     full per-directory branch ladder (fps change, multichannel split, cropping,
-    AV + ephys sync, HPSS, filtering, mmap stacking, SLEAP/Anipose stages, the
+    AV + ephys sync, HPSS, filtering, mmap stacking, broadband filtering,
+    SLEAP/Anipose stages, the
     translate-rotate-metric match branch, DAS, and vocal preparation + ssl
     assignment).
 
@@ -2913,7 +2915,7 @@ def test_prepare_data_all_per_directory_steps_dispatch(processing_settings, mock
     for key in (
         'conduct_video_fps_change', 'conduct_audio_multichannel_to_single_ch',
         'conduct_audio_cropping', 'conduct_ephys_video_sync', 'conduct_hpss',
-        'conduct_audio_filtering', 'conduct_audio_to_mmap', 'sleap_h5_conversion',
+        'conduct_audio_filtering', 'conduct_audio_to_mmap', 'conduct_broadband_filtering', 'sleap_h5_conversion',
         'anipose_triangulation', 'anipose_trm', 'das_infer', 'das_summarize',
         'prepare_assign_vocalizations', 'assign_vocalizations',
     ):
@@ -2933,6 +2935,7 @@ def test_prepare_data_all_per_directory_steps_dispatch(processing_settings, mock
     op.hpss_audio.assert_called_once()
     op.filter_audio_files.assert_called_once()
     op.concatenate_audio_files.assert_called_once()
+    op.broadband_filter_audio.assert_called_once()
     sync = mock_dependencies['Synchronizer'].return_value
     sync.crop_wav_files_to_video.assert_called_once()
     sync.validate_ephys_video_sync.assert_called_once()
@@ -3081,6 +3084,7 @@ def test_preprocess_cli_commands_dispatch(mock_dependencies, tmp_path):
         (hpss_audio_cli, rd, mock_dependencies['Operator'], 'hpss_audio'),
         (bp_filter_audio_files_cli, rd, mock_dependencies['Operator'], 'filter_audio_files'),
         (concatenate_audio_files_cli, rd, mock_dependencies['Operator'], 'concatenate_audio_files'),
+        (broadband_filter_audio_cli, rd, mock_dependencies['Operator'], 'broadband_filter_audio'),
         (sleap_file_conversion_cli, rd, mock_dependencies['ConvertTo3D'], 'sleap_file_conversion'),
         (conduct_anipose_calibration_cli, rd, mock_dependencies['ConvertTo3D'], 'conduct_anipose_calibration'),
         (conduct_anipose_triangulation_cli, rd, mock_dependencies['ConvertTo3D'], 'conduct_anipose_triangulation'),

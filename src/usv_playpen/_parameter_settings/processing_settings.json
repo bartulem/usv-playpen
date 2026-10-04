@@ -5,6 +5,7 @@
     "conduct_audio_multichannel_to_single_ch": false,
     "conduct_audio_cropping": false,
     "conduct_audio_to_mmap": false,
+    "conduct_broadband_filtering": false,
     "conduct_audio_filtering": false,
     "conduct_hpss": false,
     "conduct_audio_video_sync": false,
@@ -104,6 +105,29 @@
         "filter_audio_format": "wav",
         "filter_dirs": ["hpss"],
         "filter_freq_bounds": [0, 30000]
+      },
+      "broadband_filter_audio": {
+        "source_dir": "hpss",
+        "source_glob": "*_cropped_to_video_hpss.wav",
+        "highpass_cutoff_hz": 2000,
+        "transition_width_hz": 1000,
+        "stopband_attenuation_db": 120,
+        "line_noise_search_bands_hz": [
+          [7990, 8010],
+          [15980, 16020],
+          [1640, 1665],
+          [2080, 2165]
+        ],
+        "line_noise_min_height_db": 8.0,
+        "line_noise_max_tones_per_band": 6,
+        "line_noise_min_separation_hz": 0.25,
+        "line_noise_floor_window_hz": 4.0,
+        "line_noise_estimation_windows": 8,
+        "line_noise_estimation_window_s": 20.0,
+        "line_noise_block_s": 0.5,
+        "line_noise_smoothing_blocks": 9,
+        "chunk_s": 10.0,
+        "n_threads": 4
       },
       "concatenate_video_files": {
         "concatenate_camera_serial_num": [
