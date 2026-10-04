@@ -3327,7 +3327,7 @@ class USVPlaypenWindow(QMainWindow):
         self.ProcessSettings = ProcessSettings(self)
         self.setWindowTitle(f'{app_name} (Process recordings > Settings)')
         self.setCentralWidget(self.ProcessSettings)
-        process_one_x, process_one_y = (1080, 995)
+        process_one_x, process_one_y = (1080, 930)
         self.setFixedSize(process_one_x, process_one_y)
 
         # column 1
@@ -4898,9 +4898,9 @@ class USVPlaypenWindow(QMainWindow):
         self.qlvm_map_cb.addItems(list(QLVM_MAPS))
         self.qlvm_map_cb.setCurrentText(self.visualizations_input_dict['shared_resources']['qlvm_map'])
         # Wide enough for the longest map name (qlvm_bandwidth), shifted left to stay inside the window.
-        self.qlvm_map_cb.setStyleSheet('QComboBox { width: 100px; }')
+        self.qlvm_map_cb.setStyleSheet('QComboBox { width: 57px; }')
         self.qlvm_map_cb.activated.connect(partial(self._combo_box_usv_seq_choice, variable_id='qlvm_map', choices=list(QLVM_MAPS)))
-        self.qlvm_map_cb.move(vis_col_three_x2 - 30, 40)
+        self.qlvm_map_cb.move(vis_col_three_x2, 40)
 
         qlvm_torus_video_label = QLabel('Render QLVM demo video:', self.VisualizationsSettings)
         qlvm_torus_video_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
