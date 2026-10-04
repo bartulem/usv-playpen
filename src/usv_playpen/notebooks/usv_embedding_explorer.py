@@ -28,7 +28,8 @@ Architecture
 - Pick one or more session lists; their per-session ``usv_summary.csv`` rows are
   pooled (and cached to a per-selection parquet) by ``build_pooled_embeddings_df``.
 - An altair scatter of the chosen QLVM map's torus (the regular model or the
-  duration / spectral-entropy / bandwidth / loudness conditional ones, ``os_utils.QLVM_MAPS``; the Map dropdown starts at
+  duration / spectral-entropy / bandwidth / loudness conditional ones, ``os_utils.QLVM_MAPS``,
+  listed in the Map dropdown by their GUI names, ``os_utils.QLVM_MAP_DISPLAY_NAMES``); the Map dropdown starts at
   ``shared_resources.qlvm_map``; the USV maps show only the segments
   ``detect-usv-squeaks`` classed as pure USVs (``usv & ~squeak``); or the
   "Squeaks" map, ``qlvm_squeak1`` / ``qlvm_squeak2`` from
@@ -103,6 +104,7 @@ def _imports():
     from usv_playpen.os_utils import (
         QLVM_CATEGORY_COLUMN,
         QLVM_CATEGORY_MAP,
+        QLVM_MAP_DISPLAY_NAMES,
         QLVM_MAPS,
         SQUEAK_CLASS_SELECTIONS,
         call_class_mask,
@@ -123,6 +125,7 @@ def _imports():
         Path,
         QLVM_CATEGORY_COLUMN,
         QLVM_CATEGORY_MAP,
+        QLVM_MAP_DISPLAY_NAMES,
         QLVM_MAPS,
         SQUEAK_CLASS_SELECTIONS,
         alt,
@@ -280,7 +283,7 @@ def _settings(
 
 
 @app.cell
-def _widgets(QLVM_MAPS, SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
+def _widgets(QLVM_MAPS, QLVM_MAP_DISPLAY_NAMES, SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
     # Session-list picker: a multiselect dropdown (pick one / some / all),
     # FIXED WIDTH so it never widens, capped height with overflow so extra chips
     # SCROLL inside the box rather than growing the layout. .style() returns a
@@ -322,21 +325,14 @@ def _widgets(QLVM_MAPS, SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_m
         ],
         align="center", justify="start", gap=0.6,
     )
-    # {display label -> QLVM map (os_utils.QLVM_MAPS, plus the squeak map, whose
-    # qlvm_squeak1/qlvm_squeak2 exist on squeak rows only)}; .value returns the map.
-    _map_labels = {
-        "QLVM": "qlvm",
-        "QLVM | duration": "qlvm_duration",
-        "QLVM | spectral entropy": "qlvm_entropy",
-        "QLVM | bandwidth": "qlvm_bandwidth",
-        "QLVM | loudness": "qlvm_loudness",
-        "Squeaks": "qlvm_squeak",
-    }
-    # The USV maps offered must be exactly os_utils.QLVM_MAPS (plus the squeak map),
-    # so a map added to or retired from the production set cannot silently drift
-    # out of (or linger in) the dropdown.
-    if set(_map_labels.values()) != set(QLVM_MAPS) | {"qlvm_squeak"}:
-        raise ValueError("The explorer's Map options must match os_utils.QLVM_MAPS plus the squeak map 'qlvm_squeak'.")
+    # {display label -> QLVM map}: every USV map of os_utils.QLVM_MAPS under the name
+    # the GUI shows it by (os_utils.QLVM_MAP_DISPLAY_NAMES: 'QLVM' for the regular map,
+    # the conditioning property for a conditional one), plus the squeak map, whose
+    # qlvm_squeak1/qlvm_squeak2 exist on squeak rows only; .value returns the map.
+    # Built from the two constants, so a map added to or retired from the production
+    # set cannot drift out of (or linger in) the dropdown.
+    _map_labels = {QLVM_MAP_DISPLAY_NAMES[_qlvm_map]: _qlvm_map for _qlvm_map in QLVM_MAPS}
+    _map_labels["Squeaks"] = "qlvm_squeak"
     map_dropdown = mo.ui.dropdown(
         options=_map_labels,
         value=next(_label for _label, _map in _map_labels.items() if _map == default_qlvm_map),
@@ -452,7 +448,9 @@ def _session_filter(get_loaded_lists, list_to_sessions, mo):
     # Empty selection == show all (compact box, dropdown arrow visible, native clear
     # resets to all); pick one or more to ISOLATE them.
     _loaded = get_loaded_lists() or []
-    _avail = sorted({_s for _lp in _loaded for _s in list_to_sessions.get(_lp, [])})
+    # A loaded list can be missing from list_to_sessions (the settings cell skips a
+    # list file it could not read), so only lists present in the map contribute.
+    _avail = sorted({_s for _lp in _loaded if _lp in list_to_sessions for _s in list_to_sessions[_lp]})
     sessions_select = mo.ui.multiselect(options=_avail, value=[], label="")
     sessions_row = mo.hstack(
         [

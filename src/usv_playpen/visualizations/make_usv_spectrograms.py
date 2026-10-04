@@ -1226,6 +1226,16 @@ class USVSpectrogramPlotter:
         (``plot_raw_audio``). The left numbering matches the time order of calls
         along the right time axis.
 
+        The window's calls exclude every segment the noise classifier flagged
+        (always; ``os_utils.drop_noise_usvs``) and, when the sequence settings'
+        ``exclude_squeaks`` is True, every squeak-bearing segment as well: only
+        the pure USVs (``usv & ~squeak``, ``os_utils.call_class_mask``) are kept,
+        exactly as ``embedding_thumbnails.exclude_squeaks`` does, so pure squeaks,
+        segments holding a squeak and a USV, and unclassed rows are neither
+        plotted on the map, numbered, stitched into the spectrogram nor marked.
+        The summary's row index is taken before this filtering, so the stitched
+        spectrogram still looks each call up at its original store row.
+
         Parameters
         ----------
 
@@ -1239,6 +1249,9 @@ class USVSpectrogramPlotter:
         ValueError
             If the chosen QLVM map's coordinate columns are absent from the
             session's USV summary CSV.
+        KeyError
+            If the session's USV summary has no ``noise`` column, or (with
+            ``exclude_squeaks``) no ``usv`` / ``squeak`` columns.
         """
 
         cfg = self.visualizations_parameter_dict["make_usv_spectrograms"]
@@ -1262,7 +1275,22 @@ class USVSpectrogramPlotter:
             recursive=True,
             label="USV summary CSV",
         )
+        # The row index is taken BEFORE any filtering, so it stays aligned with the
+        # spectrogram store's per-USV rows (_build_stitched_canvas looks them up by it).
         usv_df = pls.read_csv(str(usv_summary_path)).with_row_index(name="row_index")
+        # Noise segments are never part of a sequence (os_utils.drop_noise_usvs, the
+        # shared noise rule; a summary without the noise column raises).
+        usv_df = drop_noise_usvs(usv_df, usv_summary_path.name, self.message_output)[0]
+        if seq_cfg["exclude_squeaks"]:
+            # Same rule as embedding_thumbnails.exclude_squeaks: keep the pure USVs
+            # (usv & ~squeak) and leave out pure squeaks, segments holding both and
+            # unclassed rows (call_class_mask raises without the usv / squeak columns).
+            n_before_squeaks = usv_df.height
+            usv_df = usv_df.filter(call_class_mask(usv_df, ("usv",), usv_summary_path.name))
+            self.message_output(
+                f"Sequence: kept the {usv_df.height} pure USV(s) of {n_before_squeaks} non-noise segments "
+                f"({n_before_squeaks - usv_df.height} squeak, both or unclassed left out)."
+            )
 
         qlvm_map = shared["qlvm_map"]
         x_col, y_col = f"{qlvm_map}1", f"{qlvm_map}2"
@@ -2979,7 +3007,6 @@ def plot_embedding_with_category_thumbnails(
     sessions_txt_path: str,
     consolidated_h5_path: str,
     qlvm_map: str = "qlvm",
-    category_col_suffix: str = "category",
     n_samples_per_category: int = 8,
     apply_mask: bool = True,
     mask_excluded_categories: tuple[int, ...] | int | None = (),
@@ -3067,9 +3094,6 @@ def plot_embedding_with_category_thumbnails(
         no boundaries (the colours show each call's category), the spiral
         sampler walks without a boundary filter, and the centres are the
         per-category means of that map's calls.
-    category_col_suffix (str)
-        ``"category"`` (the only level; there is no coarse level) - names the
-        categorical label to color and group by, ``qlvm_category``.
     n_samples_per_category (int)
         How many spectrograms to display per category row.
     apply_mask (bool)
@@ -3209,12 +3233,6 @@ def plot_embedding_with_category_thumbnails(
 
     if qlvm_map not in QLVM_MAPS:
         msg = f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}."
-        raise ValueError(msg)
-    if category_col_suffix != "category":
-        msg = (
-            f"category_col_suffix must be 'category' (there is no coarse level), "
-            f"got {category_col_suffix!r}."
-        )
         raise ValueError(msg)
 
     x_col, y_col = f"{qlvm_map}1", f"{qlvm_map}2"
@@ -3832,7 +3850,8 @@ def render_embedding_thumbnails_for_cohort(
     ``shared_resources['spectrograms_dir']``, and renders
     ``plot_embedding_with_category_thumbnails`` with the knobs from the
     ``embedding_thumbnails`` settings block. The figure is written to
-    ``figures['save_directory']`` (with a ``_YYYYMMDD_HHMMSS`` stamp appended when
+    ``figures['save_directory']`` as ``embedding_thumbnails_<qlvm_map>.<fig_format>``
+    (with a ``_YYYYMMDD_HHMMSS`` stamp appended to the stem when
     ``figures['timestamp_in_name']`` is set) and, in an interactive GUI context,
     opened in the OS default viewer at the end (headless / batch runs never spawn
     a viewer).
@@ -3918,7 +3937,9 @@ def render_embedding_thumbnails_for_cohort(
     out_dir = pathlib.Path(configure_path(figures["save_directory"]))
     out_dir.mkdir(parents=True, exist_ok=True)
     fig_format = figures["fig_format"]
-    stem = f"embedding_thumbnails_{qlvm_map}_{cfg['category_col_suffix']}"
+    # Named by the map alone: qlvm_category is the one category column, so the
+    # label column adds nothing to the name.
+    stem = f"embedding_thumbnails_{qlvm_map}"
     if figures["timestamp_in_name"]:
         stem = f"{stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     output_path = str(out_dir / f"{stem}.{fig_format}")
@@ -3935,7 +3956,6 @@ def render_embedding_thumbnails_for_cohort(
             sessions_txt_path=combined_sessions_txt,
             consolidated_h5_path=store_path,
             qlvm_map=qlvm_map,
-            category_col_suffix=cfg["category_col_suffix"],
             exclude_squeaks=cfg["exclude_squeaks"],
             n_samples_per_category=cfg["n_samples_per_category"],
             apply_mask=cfg["apply_mask"],

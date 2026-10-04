@@ -60,7 +60,7 @@ from .modeling_utils import (
 )
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..os_utils import resolve_modeling_setting
+from ..os_utils import QLVM_CATEGORY_COLUMN, load_qlvm_category_bundle, resolve_modeling_setting
 
 # Initial spatial-CV session-split matching tolerance (auto-widens at runtime)
 # and the Expected-Calibration-Error histogram bin count, read from the settings
@@ -888,6 +888,29 @@ class MultinomialModelingPipeline(FeatureZoo):
         unique_labels, counts = np.unique(all_labels, return_counts=True)
         class_counts_md = {int(lbl): int(cnt) for lbl, cnt in zip(unique_labels, counts)}
 
+        # The model's class count C stays the cohort's observed label count (a
+        # class with no calls cannot be fit), but on the QLVM category column the
+        # category bundle defines k categories (1..k; os_utils.load_qlvm_category_bundle,
+        # the partition assign-qlvm-categories labelled the summaries with), so k is
+        # recorded beside C and a cohort that never produced some of them says which.
+        # Another label column has no bundle, so nothing is recorded or compared.
+        if column_name_cats == QLVM_CATEGORY_COLUMN:
+            bundle_category_number = len(load_qlvm_category_bundle()['names'])
+            bundle_categories_missing = sorted(
+                set(range(1, bundle_category_number + 1)) - set(class_counts_md.keys())
+            )
+            if bundle_categories_missing:
+                print(
+                    f"[warn] The cohort's {column_name_cats} labels hold {len(class_counts_md)} of the category "
+                    f"bundle's {bundle_category_number} categories; missing: "
+                    f"{', '.join(f'R-{category}' for category in bundle_categories_missing)} "
+                    f"(label(s) {bundle_categories_missing}). The multinomial model is fit with the "
+                    f"{len(class_counts_md)} observed classes."
+                )
+        else:
+            bundle_category_number = None
+            bundle_categories_missing = []
+
         mixture_model_idx_md = self.modeling_settings['model_params']['mixture_model_component_index']
         ibi_thresholds_md = {}
         mixture_model_params_md = self.modeling_settings['mixture_model_params']
@@ -960,6 +983,11 @@ class MultinomialModelingPipeline(FeatureZoo):
                 # `exclude_noise_usvs` is in force.
                 'usv_category_number': len(class_counts_md),
                 'usv_category_column_name': column_name_cats,
+                # The category bundle's k (its R-1..R-k) and the bundle categories
+                # the cohort has no calls of (C = usv_category_number <= k); None /
+                # [] for a label column other than qlvm_category.
+                'bundle_category_number': bundle_category_number,
+                'bundle_categories_missing': bundle_categories_missing,
             },
         )
 

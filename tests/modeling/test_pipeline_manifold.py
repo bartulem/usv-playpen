@@ -365,7 +365,9 @@ class TestContinuousInputExtraction:
 
         md = artifact['_input_metadata']
         assert md['analysis_type'] == 'continuous'
-        assert md['analysis_tag'] == 'manifold_qlvm_category'
+        # the tag names the map the target comes from (qlvm1 / qlvm2), not the
+        # category column, which stays recorded in analysis_specific
+        assert md['analysis_tag'] == 'manifold_qlvm'
         spec = md['analysis_specific']
         assert spec['manifold_metric'] == 'torus'
         assert spec['usv_category_column_name'] == 'qlvm_category'
@@ -761,7 +763,9 @@ class TestManifoldModelSelection:
         held-out session set and refits/scores each accepted model on it — the
         held-out evaluation branch skipped when the proportion is 0. Asserts the
         run reserves a non-empty held-out session set (which means the held-out
-        refit/score branch executed)."""
+        refit/score branch executed). The input pickle is tagged with a
+        conditional map (``manifold_qlvm_duration``), and every step file is named
+        after that tag."""
         gate_n_sessions = 25
         settings, _save_dir = _build_manifold_settings(
             tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
@@ -776,7 +780,7 @@ class TestManifoldModelSelection:
         held_out_ids = session_ids[:5]
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_qlvm_category',
+            'analysis_tag': 'manifold_qlvm_duration',
             'session_ids': session_ids,
             'held_out_session_ids': held_out_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
@@ -822,6 +826,8 @@ class TestManifoldModelSelection:
         knobs = final_step['_run_metadata']['extra_knobs']
         assert knobs['n_held_out_sessions'] > 0
         assert len(knobs['held_out_session_ids']) == knobs['n_held_out_sessions']
+        # the step-file prefix carries the input pickle's map-prefix tag verbatim
+        assert all(path.name.startswith('model_selection_continuous_manifold_qlvm_duration_') for path in step_pkls)
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_metric_runs_forward_search(self, tmp_path):

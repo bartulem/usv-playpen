@@ -1570,7 +1570,7 @@ Visualize
       --usv-segments-lw                Line width for USV segment markers.
 
 ``qlvm-torus-traversal-video``
-``qlvm-torus-traversal-video`` renders a demo video that traverses the toroidal QLVM (the in-house quasi-Monte Carlo latent variable model) latent space of the regular map: the category bundle's density is the background, its R-1 … R-k regions the contours and its label positions the peaks the walks start from (``os_utils.load_qlvm_category_bundle``). ``shared_resources.qlvm_map`` must be ``qlvm`` and the consolidated store's ``qlvm/<session>/qlvm`` coordinates must come from the production regular cell the bundle is defined on (its ``qlvm_models/qlvm`` provenance), otherwise the run stops: a store of another cell, such as the v3 archive ``consolidate-spectrogram-store`` writes today, puts the calls on another torus.
+``qlvm-torus-traversal-video`` renders a demo video that traverses the toroidal QLVM (the in-house quasi-Monte Carlo latent variable model) latent space of the regular map: the category bundle's density is the background, its R-1 … R-k regions the contours and its label positions the peaks the walks start from (``os_utils.load_qlvm_category_bundle``). The video always uses the regular map ``qlvm`` and ignores ``shared_resources.qlvm_map`` (a conditional choice there is reported and passed over), and the consolidated store's ``qlvm/<session>/qlvm`` coordinates must come from the production regular cell the bundle is defined on (its ``qlvm_models/qlvm`` provenance), otherwise the run stops: a store of another cell, such as the v3 archive ``consolidate-spectrogram-store`` writes today, puts the calls on another torus.
 
 .. code-block:: text
 

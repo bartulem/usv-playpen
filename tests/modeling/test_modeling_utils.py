@@ -30,6 +30,7 @@ from usv_playpen.modeling.modeling_utils import (
     expected_calibration_error,
     harmonize_session_columns,
     identify_empty_event_sessions,
+    manifold_tag_segment,
     mean_absolute_error_1d,
     paired_one_se_improvement,
     pearson_r_safe,
@@ -1379,3 +1380,36 @@ class TestDevelopmentHeldoutMasks:
         assert len(dev_mask) == len(held_mask) == len(groups)
         assert np.array_equal(dev_mask, ~held_mask)
         assert int(dev_mask.sum() + held_mask.sum()) == len(groups)
+
+
+@pytest.mark.parametrize(
+    ("manifold_column_names", "expected"),
+    [
+        (["qlvm1", "qlvm2"], "qlvm"),
+        (["qlvm_duration1", "qlvm_duration2"], "qlvm_duration"),
+        (["qlvm_entropy1", "qlvm_entropy2"], "qlvm_entropy"),
+        (["qlvm_bandwidth1", "qlvm_bandwidth2"], "qlvm_bandwidth"),
+        (["qlvm_loudness1", "qlvm_loudness2"], "qlvm_loudness"),
+    ],
+)
+def test_manifold_tag_segment_names_the_map(manifold_column_names, expected):
+    """
+    Description
+    -----------
+    The manifold analysis tag segment is the QLVM map the target columns come
+    from (their prefix without the trailing digit), never the category column, so
+    runs on different maps get different tags.
+
+    Parameters
+    ----------
+    manifold_column_names (list[str])
+        The two manifold columns of the run.
+    expected (str)
+        The map prefix the segment must be.
+
+    Returns
+    -------
+    None
+    """
+
+    assert manifold_tag_segment(manifold_column_names) == expected

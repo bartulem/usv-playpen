@@ -37,7 +37,6 @@ from .modeling_utils import (
     format_selection_step,
     held_out_session_ids_from_metadata,
     development_heldout_masks,
-    manifold_tag_segment,
 )
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_multinomial import (
@@ -5328,19 +5327,15 @@ def continuous_vocal_manifold_model_selection(
     cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
 
-    # Pin which USV category column the manifold targets were derived
-    # from (e.g. `qlvm_category`) so the per-step
-    # prefix (and downstream consolidation) carries the choice forward
-    # in the filename.
-    # Without a label column (null setting) the segment names the embedding
-    # instead, exactly as the extraction pipeline's tag does. The manifold column
-    # names are read only then: a pickle with a label column needs no other key.
-    _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
-    if not _column_name_cats:
-        _column_name_cats = manifold_tag_segment(
-            _column_name_cats, _input_md['analysis_specific']['usv_manifold_column_names'],
-        )
-    prefix = f"model_selection_continuous_manifold_{_column_name_cats}_{target_condition}_{split_strategy}_step_"
+    # The per-step prefix (and so the consolidated artifact) carries the input
+    # pickle's analysis tag verbatim: the extraction pipeline minted it from the
+    # QLVM map the manifold targets come from (`manifold_qlvm`,
+    # `manifold_qlvm_duration`, ...; `modeling_utils.manifold_tag_segment`), so
+    # the selector and the extraction always agree on the name, and a pickle
+    # written before the map-prefix tag (`manifold_qlvm_category`) keeps the
+    # step-file name it always had.
+    _analysis_tag = _input_md['analysis_tag']
+    prefix = f"model_selection_continuous_{_analysis_tag}_{target_condition}_{split_strategy}_step_"
 
     _run_md = build_selection_metadata(
         modeling_settings=settings,

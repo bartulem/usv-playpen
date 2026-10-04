@@ -6,12 +6,16 @@ This module constructs sequential (two-anchor) and diverging (three-anchor) colo
 by linearly interpolating each RGB channel with ``numpy.linspace`` between the supplied
 start, end and (for diverging maps) opposite-start RGB colors, with optional HLS
 luminance and saturation equalization of the spectrum ends. It also provides a helper
-for selecting per-animal colors by sex.
+for selecting per-animal colors by sex, and one that outlines every category of an
+integer label grid (e.g. the QLVM category bundle's ``label_grid``) with uniform-width
+lines.
 """
 
 from __future__ import annotations
 
 import colorsys
+
+from typing import Any
 
 import numpy as np
 from matplotlib.colors import ListedColormap
@@ -260,3 +264,62 @@ def create_colormap(input_parameter_dict: dict | None = None) -> ListedColormap:
     new_cm = ListedColormap(colors=cm_values, name=input_parameter_dict["cm_name"])
 
     return new_cm
+
+
+def draw_category_outlines(
+    ax: Any,
+    x_axis: np.ndarray,
+    y_axis: np.ndarray,
+    label_grid: np.ndarray,
+    colors: str,
+    linewidths: float,
+    zorder: float,
+) -> list:
+    """
+    Description
+    -----------
+    Outlines EACH category of an integer label grid as the 0.5 contour of its own
+    binary mask (``label_grid == category``), the method the embedding explorer, the
+    manifold filter atlas and the torus-traversal video use for the QLVM category
+    bundle. Contouring the integer grid itself at half-integer levels instead stacks
+    several iso-lines wherever two non-consecutive categories touch (every level in
+    between crosses there), so such borders render thicker than the rest; one 0.5
+    contour per category puts every shared border at exactly one position, so the
+    line is the same width everywhere (each shared border is drawn by the two
+    categories it separates, on the same path). Pixels that are NaN (a float grid
+    with unlabelled pixels) belong to no category.
+
+    Parameters
+    ----------
+    ax (matplotlib.axes.Axes)
+        Axes to draw the outlines on.
+    x_axis (np.ndarray)
+        1-D pixel-centre coordinates of the grid's columns (``label_grid[:, j]``).
+    y_axis (np.ndarray)
+        1-D pixel-centre coordinates of the grid's rows (``label_grid[i, :]``); the
+        grid is indexed ``[y, x]``.
+    label_grid (np.ndarray)
+        2-D grid of category labels (integers, or floats with NaN for unlabelled
+        pixels), shape ``(len(y_axis), len(x_axis))``.
+    colors (str)
+        Hex colour of the outlines.
+    linewidths (float)
+        Outline width in points.
+    zorder (float)
+        Drawing order of the outlines.
+
+    Returns
+    -------
+    contour_sets (list[matplotlib.contour.QuadContourSet])
+        One contour set per category present in the grid, in ascending label order.
+    """
+
+    labels = np.asarray(label_grid, dtype=float)
+    present_labels = [label for label in np.unique(labels) if not np.isnan(label)]
+    contour_sets = []
+    for label in present_labels:
+        category_mask = np.where(np.isnan(labels), 0.0, (labels == label).astype(float))
+        contour_sets.append(
+            ax.contour(x_axis, y_axis, category_mask, levels=[0.5], colors=colors, linewidths=linewidths, zorder=zorder)
+        )
+    return contour_sets

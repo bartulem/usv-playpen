@@ -324,6 +324,20 @@ class TestSelectionHelpers:
         assert out == ('model_selection_final_male_male_mute_partner_'
                        'multinomial_qlvm_category_mixed.pkl')
 
+    @pytest.mark.parametrize('analysis_tag', ['manifold_qlvm', 'manifold_qlvm_duration', 'manifold_qlvm_category'])
+    def test_build_default_output_filename_keeps_manifold_map_tag(self, analysis_tag):
+        """A map-prefixed manifold tag (and a legacy ``manifold_qlvm_category``
+        one) is embedded verbatim: the category column recorded in
+        ``analysis_specific`` is never appended to it."""
+
+        md_in = {'target_mouse_sex': 'male',
+                 'experimental_condition': 'intact_partners_male',
+                 'analysis_tag': analysis_tag,
+                 'analysis_specific': {'usv_category_column_name': 'qlvm_category'}}
+        md_run = {'split_strategy': 'session'}
+        out = cms._build_default_output_filename(md_in, md_run, step_prefix='')
+        assert out == f'model_selection_final_male_intact_partners_{analysis_tag}_session.pkl'
+
     def test_diff_metadata_reports_leaf_and_missing(self):
         """The selection consolidator's ``_diff_metadata`` (duplicated
         from the univariate one) enumerates leaf disagreements,

@@ -231,7 +231,9 @@ def _build_default_output_filename(input_metadata: dict,
         verbatim. The modeling pipelines now mint canonical short
         tags directly (`'bout_onset'`, `'durations'`,
         `'multinomial_qlvm_category'`,
-        `'manifold_qlvm_category'`,
+        `'manifold_qlvm'` / `'manifold_qlvm_duration'` (the QLVM map
+        the manifold target comes from; `'manifold_qlvm_category'` on
+        artifacts written before the map-prefix tag),
         `'category_qlvm_category_3'`), so no token slicing is
         needed.
       * `split_strategy` — `run_metadata['split_strategy']` (e.g.
@@ -275,7 +277,11 @@ def _build_default_output_filename(input_metadata: dict,
     # whether or not the originating pipeline minted the augmented tag
     # itself. Skip the graft if the tag already contains the column
     # (new pipelines hand it in pre-augmented).
-    if input_metadata is not None:
+    # A map-prefixed manifold tag (`manifold_qlvm`, `manifold_qlvm_duration`, ...)
+    # is complete as minted: it names the QLVM map on purpose and the category
+    # column (the regular map's `qlvm_category` for every map) must not be
+    # appended to it; only the bare legacy `manifold` gets the graft.
+    if input_metadata is not None and not analysis_tag.startswith('manifold_'):
         analysis_specific = (input_metadata['analysis_specific'] if 'analysis_specific' in input_metadata else None) or {}
         cat_col = analysis_specific['usv_category_column_name'] if 'usv_category_column_name' in analysis_specific else None
         if cat_col and cat_col not in analysis_tag:

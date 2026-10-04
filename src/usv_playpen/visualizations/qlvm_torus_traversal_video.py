@@ -13,16 +13,17 @@ This is the in-house, torch-free port of ``qmc_deep_gen``'s
 ``inference_latents_video.py``. The original loaded a ``mouse_data`` dataset
 (``full_data.pt``) index-aligned with ``latent_coords``; here the per-USV latent
 coordinates AND the spectrograms both come from the consolidated H5 (per-session
-``qlvm/<key>/<qlvm_map>`` -- the torus coordinates of the production v3 cell of
-the QLVM map chosen by ``shared_resources.qlvm_map``, e.g. ``qlvm1`` / ``qlvm2``
-for the regular map, written by ``consolidate-spectrogram-store`` -- and
+``qlvm/<key>/qlvm`` -- the torus coordinates (``qlvm1`` / ``qlvm2``) of the
+regular QLVM map, written by ``consolidate-spectrogram-store`` -- and
 ``spectrogram/<key>/spectrograms``), pooled into one ordered array. The QLVM
 category bundle (``os_utils.load_qlvm_category_bundle``,
 ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``) supplies the rest: its smoothed
 corpus ``density`` is the heatmap background, its ``label_grid`` (R-1..R-k) the
 contours, and its category label positions (``centers``) the peaks the walks
 start from. The bundle partitions the regular map's torus only, so the video
-renders the regular map (``shared_resources.qlvm_map`` must be ``qlvm``), and the
+always renders the regular map (``os_utils.QLVM_CATEGORY_MAP``, ``qlvm``) and
+ignores ``shared_resources.qlvm_map`` (the map the other QLVM figures draw; a
+conditional choice there is reported and passed over, not refused), and the
 store's ``qlvm/<key>/qlvm`` coordinates must come from the production regular
 cell the bundle is defined on (``qlvm_models/qlvm`` provenance attrs of the store,
 checked before rendering): a store of another cell (e.g. the v3 archive written by
@@ -442,7 +443,10 @@ class QLVMTorusTraversalVideo:
         Description
         -----------
         Loads the QLVM category bundle + pools per-USV latent coords /
-        spectrograms from the consolidated H5 (after checking the store's
+        spectrograms of the regular map (``os_utils.QLVM_CATEGORY_MAP``, always;
+        ``shared_resources.qlvm_map`` is ignored, since the bundle's regions
+        exist on the regular map only, and a conditional choice there is
+        reported in a message) from the consolidated H5 (after checking the store's
         coordinates come from the cell the bundle is defined on, see
         :func:`check_store_map_provenance`), builds the phase script, and
         renders the two-panel
@@ -466,12 +470,16 @@ class QLVMTorusTraversalVideo:
 
         cfg = self.input_parameter_dict['qlvm_torus_traversal_video']
         shared = self.input_parameter_dict['shared_resources']
-        qlvm_map = shared['qlvm_map']
-        if qlvm_map != QLVM_CATEGORY_MAP:
-            raise ValueError(
-                f"qlvm-torus-traversal-video draws the QLVM category bundle's regions, which are defined on the "
-                f"{QLVM_CATEGORY_MAP!r} map only; shared_resources.qlvm_map is {qlvm_map!r}. Set it to "
-                f"{QLVM_CATEGORY_MAP!r} to render the video."
+        # The video always walks the regular map: the category bundle's regions,
+        # density and peaks are defined on that torus only. The shared map choice
+        # (which the other QLVM figures follow) is ignored here, and a conditional
+        # choice is reported rather than refused.
+        qlvm_map = QLVM_CATEGORY_MAP
+        if shared['qlvm_map'] != QLVM_CATEGORY_MAP:
+            self.message_output(
+                f"qlvm-torus-traversal-video always renders the {QLVM_CATEGORY_MAP!r} map (the QLVM category "
+                f"bundle's regions are defined on it only); shared_resources.qlvm_map = {shared['qlvm_map']!r} "
+                f"is ignored for the video."
             )
         fps = cfg['fps']
         dpi = cfg['dpi']

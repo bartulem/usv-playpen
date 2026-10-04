@@ -27,6 +27,7 @@ failure.
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import pathlib
@@ -1644,7 +1645,6 @@ def test_plot_umap_thumbnails_spiral_unstretched(tmp_path):
     fig = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
-        category_col_suffix="category",
         n_samples_per_category=4,
         sampling_method="spiral",
         draw_spiral_overlay=True,
@@ -1716,7 +1716,6 @@ def test_plot_umap_thumbnails_bundle_centers_and_boundaries(tmp_path):
         sessions_txt_path="unused",
         consolidated_h5_path=str(h5_path),
         qlvm_map="qlvm",
-        category_col_suffix="category",
         n_samples_per_category=3,
         sampling_method="spiral",
         annotate_cluster_ids=True,
@@ -1741,8 +1740,7 @@ def test_plot_umap_thumbnails_bundle_label_mismatch_raises(tmp_path):
             sessions_txt_path="unused",
             consolidated_h5_path="unused",
             qlvm_map="qlvm",
-            category_col_suffix="category",
-            pooled_df=pooled,
+                pooled_df=pooled,
             message_output=lambda *_: None,
         )
 
@@ -1760,16 +1758,10 @@ def test_plot_umap_thumbnails_bad_qlvm_map(tmp_path):
         )
 
 
-def test_plot_umap_thumbnails_bad_category_suffix(tmp_path):
-    """An invalid category_col_suffix raises ValueError."""
-    with pytest.raises(ValueError, match="category_col_suffix must be"):
-        plot_embedding_with_category_thumbnails(
-            sessions_txt_path="unused",
-            consolidated_h5_path="unused",
-            category_col_suffix="bogus",
-            pooled_df=_make_pooled_df(),
-            message_output=lambda *_: None,
-        )
+def test_plot_umap_thumbnails_has_no_category_suffix_parameter():
+    """qlvm_category is the one category column, so the figure takes no
+    category_col_suffix parameter any more."""
+    assert "category_col_suffix" not in inspect.signature(plot_embedding_with_category_thumbnails).parameters
 
 
 @pytest.mark.filterwarnings("ignore:This figure includes Axes that are not compatible with tight_layout:UserWarning")
@@ -1898,6 +1890,9 @@ def _write_sequence_session(
         "peak_amp_ch": [1.0, 1.0, 0.0, 2.0],
         "qlvm1": [0.2, 0.4, 0.6, 0.8],
         "qlvm2": [0.3, 0.5, 0.7, 0.2],
+        # every call a pure USV, so exclude_squeaks keeps all four
+        "usv": [True, True, True, True],
+        "squeak": [False, False, False, False],
     }
     if with_dur:
         rows["qlvm_duration1"] = [0.1, 0.3, 0.5, 0.7]
@@ -1918,12 +1913,14 @@ def _seq_settings(
     qlvm_map: str = "qlvm",
     plot_raw_audio: bool = False,
     apply_mask: bool = True,
+    exclude_squeaks: bool = True,
 ) -> dict:
     """Build a sequence-mode settings dict: a make_usv_spectrograms block (with a
-    `sequence` sub-dict), ``shared_resources.qlvm_map`` and the emitter color
-    palettes. The consolidated store is resolved from ``spectrograms_dir`` (build
-    it with ``_write_spectrograms_dir``); the regular map's landscape is the
-    category bundle."""
+    `sequence` sub-dict, whose ``exclude_squeaks`` is the argument of that name),
+    ``shared_resources.qlvm_map`` and the emitter color palettes. The consolidated
+    store is resolved from ``spectrograms_dir`` (build it with
+    ``_write_spectrograms_dir``); the regular map's landscape is the category
+    bundle."""
     settings = _base_settings(
         mode="sequence",
         save_dir=str(save_dir),
@@ -1941,6 +1938,7 @@ def _seq_settings(
         "draw_boundaries": True,
         "annotate_right": True,
         "mark_usv_segments": True,
+        "exclude_squeaks": exclude_squeaks,
     }
     settings["male_colors"] = ["#9AC0CD", "#8CA252"]
     settings["female_colors"] = ["#FF6347", "#B851B4"]
@@ -2062,6 +2060,7 @@ def test_plot_sequence_qlvm_path_wraps_on_torus(tmp_path):
         "emitter": ["male_x", "male_x"],
         "qlvm1": [0.95, 0.05], "qlvm2": [0.5, 0.5],  # opposite x-edges -> wraps
         "qlvm_duration1": [0.45, 0.55], "qlvm_duration2": [0.5, 0.5],  # no seam crossing
+        "usv": [True, True], "squeak": [False, False],
     }
     _write_usv_summary_csv(root / "audio", rows, name=f"{session_id}_usv_summary.csv")
     _write_tracking_h5(
@@ -2102,6 +2101,72 @@ def test_plot_sequence_map_missing_coords_raises(tmp_path):
         USVSpectrogramPlotter(
             root_directory=str(root), visualizations_parameter_dict=settings
         ).plot_sequence()
+
+
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+@pytest.mark.parametrize(("exclude_squeaks", "expected_numbers"), [(True, ["1", "2"]), (False, ["1", "2", "3"])])
+def test_plot_sequence_drops_noise_and_optionally_squeaks(tmp_path, exclude_squeaks, expected_numbers):
+    """The sequence always drops the noise segments and, with ``exclude_squeaks``,
+    the squeak-bearing ones too: of four window calls (pure USV, noise, pure squeak,
+    pure USV) the map numbers two calls with the flag on and three with it off, and
+    the stitched spectrogram still renders (the store rows are looked up by the
+    pre-filter row index)."""
+    from matplotlib.collections import PathCollection
+
+    session_id = "20230101_120000"
+    root = tmp_path / session_id
+    _write_audio_memmap(root, channel_num=3)
+    rows = {
+        "start": [0.0005, 0.0015, 0.0030, 0.0045],
+        "stop": [0.0010, 0.0020, 0.0035, 0.0050],
+        "emitter": ["male_x", "female_y", "male_x", "female_y"],
+        "qlvm1": [0.2, 0.4, 0.6, 0.8],
+        "qlvm2": [0.3, 0.5, 0.7, 0.2],
+        "noise": [False, True, False, False],
+        "usv": [True, None, False, True],
+        "squeak": [False, None, True, False],
+    }
+    _write_usv_summary_csv(root / "audio", rows, name=f"{session_id}_usv_summary.csv")
+    _write_tracking_h5(
+        root / "video", track_names=("male_x", "female_y"),
+        name=f"{session_id}_points3d_translated_rotated_metric.h5",
+    )
+    spec_dir = _write_spectrograms_dir(
+        tmp_path / "spectrograms", session_id, n_usvs=4, n_freq=16, n_time=32,
+    )
+    settings = _seq_settings(spec_dir, tmp_path / "out", qlvm_map="qlvm", exclude_squeaks=exclude_squeaks)
+    fig = USVSpectrogramPlotter(
+        root_directory=str(root), visualizations_parameter_dict=settings
+    ).plot_sequence()
+    ax_left = fig.axes[0]
+    assert [t.get_text() for t in ax_left.texts] == expected_numbers
+    assert sum(isinstance(c, PathCollection) for c in ax_left.collections) == len(expected_numbers)
+    # the noise call (qlvm1 = 0.4) is never placed on the map
+    placed_x = [float(c.get_offsets()[0][0]) for c in ax_left.collections if isinstance(c, PathCollection)]
+    assert 0.4 not in placed_x
+    assert (0.6 in placed_x) is (not exclude_squeaks)
+
+
+@pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
+def test_plot_sequence_exclude_squeaks_requires_vocal_flags(tmp_path):
+    """With ``exclude_squeaks`` on, a summary without the usv / squeak booleans raises
+    instead of silently keeping every call."""
+    session_id = "20230101_120000"
+    root = tmp_path / session_id
+    _write_audio_memmap(root, channel_num=3)
+    _write_usv_summary_csv(
+        root / "audio",
+        {"start": [0.001], "stop": [0.002], "emitter": ["male_x"], "qlvm1": [0.2], "qlvm2": [0.3]},
+        name=f"{session_id}_usv_summary.csv",
+    )
+    _write_tracking_h5(
+        root / "video", track_names=("male_x", "female_y"),
+        name=f"{session_id}_points3d_translated_rotated_metric.h5",
+    )
+    spec_dir = _write_spectrograms_dir(tmp_path / "spectrograms", session_id, n_usvs=1, n_freq=16, n_time=32)
+    settings = _seq_settings(spec_dir, tmp_path / "out", qlvm_map="qlvm", exclude_squeaks=True)
+    with pytest.raises(KeyError, match="usv"):
+        USVSpectrogramPlotter(root_directory=str(root), visualizations_parameter_dict=settings).plot_sequence()
 
 
 # ---- render_embedding_thumbnails_for_cohort (cohort driver) ---------------
@@ -2147,7 +2212,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
         "shared_resources": {"spectrograms_dir": spec_dir, "input_files_directory": str(input_dir),
                              "qlvm_map": "qlvm_duration"},
         "embedding_thumbnails": {
-            "category_col_suffix": "category", "exclude_squeaks": True,
+            "exclude_squeaks": True,
             "n_samples_per_category": 6, "tile_orientation": "vertical",
             "apply_mask": False, "mask_excluded_categories": [], "category_colors": None,
             "sampling_method": "random",
@@ -2174,7 +2239,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert not pathlib.Path(captured["sessions_txt_path"]).exists()
     # block knobs forwarded verbatim
     assert captured["qlvm_map"] == "qlvm_duration"
-    assert captured["category_col_suffix"] == "category"
+    assert "category_col_suffix" not in captured
     assert captured["exclude_squeaks"] is True
     assert captured["n_samples_per_category"] == 6
     assert captured["tile_orientation"] == "vertical"
@@ -2200,7 +2265,8 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert opened == [captured["output_path"]]
     # timestamp_in_name -> the filename ends with a _YYYYMMDD_HHMMSS stamp
     out_name = pathlib.Path(captured["output_path"]).name
-    assert re.fullmatch(r"embedding_thumbnails_qlvm_duration_category_\d{8}_\d{6}\.png", out_name)
+    # named by the map alone (no label-column part)
+    assert re.fullmatch(r"embedding_thumbnails_qlvm_duration_\d{8}_\d{6}\.png", out_name)
 
     # explicit category colours come from JSON, whose object keys are strings; the
     # driver keys them by the int qlvm_category so the figure's lookups match
@@ -2208,6 +2274,24 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     render_embedding_thumbnails_for_cohort(viz, message_output=lambda *_a, **_kw: None)
     assert captured["category_colors"] == {1: "#112233", 2: "#445566"}
 
+
+
+@pytest.mark.parametrize("default_qlvm_map", ["qlvm", "qlvm_entropy"])
+def test_explorer_map_dropdown_uses_the_gui_display_names(default_qlvm_map):
+    """The explorer's Map dropdown lists every map of os_utils.QLVM_MAPS under its GUI
+    name (os_utils.QLVM_MAP_DISPLAY_NAMES), in that order, plus the squeak map, returns
+    the map prefix as its value, and starts on the shared map."""
+    _output, definitions = usv_embedding_explorer._widgets.run(
+        QLVM_MAPS=os_utils.QLVM_MAPS, QLVM_MAP_DISPLAY_NAMES=os_utils.QLVM_MAP_DISPLAY_NAMES,
+        SQUEAK_CLASS_SELECTIONS=SQUEAK_CLASS_SELECTIONS, available_lists={},
+        default_qlvm_map=default_qlvm_map, mo=mo,
+    )
+    map_dropdown = definitions["map_dropdown"]
+    expected = [os_utils.QLVM_MAP_DISPLAY_NAMES[qlvm_map] for qlvm_map in os_utils.QLVM_MAPS] + ["Squeaks"]
+    assert list(map_dropdown.options) == expected
+    assert map_dropdown.options[os_utils.QLVM_MAP_DISPLAY_NAMES["qlvm_duration"]] == "qlvm_duration"
+    assert map_dropdown.value == default_qlvm_map
+    assert not any("|" in label for label in map_dropdown.options)
 
 
 def _explorer_scatter_rows(qlvm_map: str, squeak_class: str) -> list[int]:

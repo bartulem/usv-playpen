@@ -140,16 +140,22 @@ def test_make_video_writes_gif(tmp_path, qlvm_category_bundle):
     assert any("4 categories" in message and str(qlvm_category_bundle) in message for message in messages)
 
 
-def test_make_video_refuses_a_conditional_map(tmp_path, qlvm_category_bundle):
-    """The bundle's regions are defined on the regular map only, so a conditional
-    shared qlvm_map is refused before anything is read, naming the map."""
+def test_make_video_ignores_a_conditional_shared_map(tmp_path, qlvm_category_bundle):
+    """The bundle's regions are defined on the regular map only, so the video always
+    walks the regular map: a conditional shared qlvm_map is reported as ignored and
+    the render reads the store's qlvm/<key>/qlvm coordinates (the fixture holds no
+    qlvm_duration coordinates at all) and writes its file."""
     spec_dir = _write_inputs(tmp_path)
-    with pytest.raises(ValueError, match="'qlvm_duration'"):
-        QLVMTorusTraversalVideo(
-            output_path=str(tmp_path / "x.gif"),
-            input_parameter_dict=_tiny_cfg(spec_dir, qlvm_map="qlvm_duration"),
-            message_output=lambda *_a, **_kw: None,
-        ).make_video()
+    out = tmp_path / "x.gif"
+    messages = []
+    QLVMTorusTraversalVideo(
+        output_path=str(out),
+        input_parameter_dict=_tiny_cfg(spec_dir, peaks_only=True, qlvm_map="qlvm_duration"),
+        message_output=messages.append,
+    ).make_video()
+    assert out.is_file()
+    assert any("'qlvm_duration'" in message and "ignored" in message for message in messages)
+    assert any("Pooled 12 qlvm latents" in message for message in messages)
 
 
 def test_make_video_refuses_a_store_of_another_cell(tmp_path, qlvm_category_bundle):

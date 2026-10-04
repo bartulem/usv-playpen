@@ -1620,7 +1620,9 @@ def test_plot_category_prevalence_and_embedding(plot_type, qlvm_category_bundle)
     (per-assignment prevalence bars + embedding maps, plus the global
     summary row) for both the density and scatter rendering modes. On the
     regular map every embedding panel carries the category bundle's
-    boundaries (one contour set over the bundle's grid) and no note.
+    boundaries -- one 0.5 outline per category of the bundle's grid (four in
+    the synthetic bundle), not half-integer contours of the label grid -- and
+    no note.
 
     Parameters
     ----------
@@ -1644,7 +1646,8 @@ def test_plot_category_prevalence_and_embedding(plot_type, qlvm_category_bundle)
     assert axes.shape == (4, 2)
     for ax_emb in axes[:, 1]:
         contours = [child for child in ax_emb.get_children() if isinstance(child, matplotlib.contour.ContourSet)]
-        assert len(contours) == 1
+        assert len(contours) == 4
+        assert all(list(contour.levels) == [0.5] for contour in contours)
         assert "no boundaries" not in ax_emb.get_title()
     plt.close(fig)
 

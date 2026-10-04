@@ -2495,7 +2495,7 @@ Fourth, the video, which ends on the still's frame and camera — the window pla
 
 The §6 category-embedding panel reads its own knobs from the **Statistics parameters** cell (``embedding_qlvm_map``, ``embedding_boundary_color``, ``embedding_log_scale_bars``, ``embedding_plot_type``, ``embedding_grid_res``) and first extracts the embedding via ``uss.extract_category_embedding_data`` (``usv_only=True``: pure USVs only) before calling ``uss.plot_category_prevalence_and_embedding``. §7 builds per-animal ``session_count`` / ``total_usvs`` dicts for each sex and passes them to ``uss.plot_animal_participation_stats``.
 
-* **embedding_qlvm_map** — the QLVM map the panel draws (``'qlvm'``, ``'qlvm_duration'``, ``'qlvm_entropy'``, ``'qlvm_bandwidth'`` or ``'qlvm_loudness'``; its ``P1`` / ``P2`` become ``usv_continuous_cols``). The prevalence bars count the calls' ``qlvm_category`` on every map; the category boundaries are the QLVM category bundle's label grid (``os_utils.load_qlvm_category_bundle``), drawn only on ``'qlvm'``, the map the bundle is defined on (a conditional map shows no boundaries and says so in the panel titles; boundaries are never estimated from the data).
+* **embedding_qlvm_map** — the QLVM map the panel draws (``'qlvm'``, ``'qlvm_duration'``, ``'qlvm_entropy'``, ``'qlvm_bandwidth'`` or ``'qlvm_loudness'``; its ``P1`` / ``P2`` become ``usv_continuous_cols``). The prevalence bars count the calls' ``qlvm_category`` on every map; the category boundaries are the QLVM category bundle's label grid (``os_utils.load_qlvm_category_bundle``), drawn only on ``'qlvm'``, the map the bundle is defined on (a conditional map shows no boundaries and says so in the panel titles; boundaries are never estimated from the data). Each category is outlined as the 0.5 contour of its own mask (``auxiliary_plot_functions.draw_category_outlines``, the method the embedding explorer uses), so a border between two non-consecutive categories is one line of the same width as every other, not the doubled line half-integer contours of the label grid would draw.
 * **embedding_boundary_color** / **embedding_log_scale_bars** — category-boundary color and log/linear scaling of the prevalence bars.
 * **embedding_plot_type** — ``"density"`` vs. scatter rendering of the embedding.
 * **embedding_grid_res** — resolution of the density grid.
@@ -2680,11 +2680,11 @@ reveals that USV's identity and acoustics.
 
 Every map is the toroidal (doughnut-shaped) surface of one production QLVM (quasi-Monte
 Carlo latent variable model; ``os_utils.QLVM_MAPS``), with its coordinates ``P1`` / ``P2``
-from the summaries:
+from the summaries. The **Map** dropdown names each USV map as the GUI does (``os_utils.QLVM_MAP_DISPLAY_NAMES``):
 
 * **QLVM** (``qlvm``) — the regular model, with its categories ``qlvm_category`` (R-1 … R-k,
   written by ``assign-qlvm-categories``).
-* **QLVM | duration**, **| spectral entropy**, **| bandwidth**, **| loudness** (``qlvm_duration``,
+* **duration**, **entropy**, **bandwidth**, **loudness** (``qlvm_duration``,
   ``qlvm_entropy``, ``qlvm_bandwidth``, ``qlvm_loudness``) — the conditional
   models, whose maps are what is left once that acoustic variable is removed. They carry no
   categories of their own: a **Color by** category colours their calls by the regular map's
