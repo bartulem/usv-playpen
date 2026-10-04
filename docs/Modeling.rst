@@ -213,7 +213,8 @@ cross-validation and held-out-test settings live in their own
             "grid_n_per_dim": 40,
             "graph_k": 8,
             "density_exponent": 1.0,
-            "pullback_metric": true
+            "pullback_metric": true,
+            "pullback_condition_quantile": 0.5
         }
     }
 
@@ -227,7 +228,7 @@ cross-validation and held-out-test settings live in their own
 * **usv_manifold_period** — the wrap period for the ``'torus'`` metric.
 * **usv_manifold_min_region_events** — the minimum number of labelled events an acoustic region (a QLVM category) must contain to enter the **macro** (region-balanced) von Mises average and the region-weighted MAE; sparser regions are dropped from those balanced statistics so a single under-sampled corner cannot dominate them (default ``20``). Ignored on euclidean and when no region labels are present. Without region labels (``usv_category_column_name`` ``null``, or a pickle extracted without them) the torus ``'macro'`` score falls back to the pooled score and the equal-region fit reweighting to uniform weights; the univariate and selection runs print a ``WARNING`` saying so, rather than substituting silently.
 * **usv_manifold_selection_score** — on the ``'torus'`` metric, which von Mises log-score the forward selection ranks on: ``'macro'`` (default) uses the region-balanced ``vm_logscore``, ``'micro'`` uses the event-weighted ``vm_logscore_pooled`` twin. Both are always logged per candidate, so this only changes which column drives the greedy ranking and the acceptance gate — the candidate pool, the region-reweighted fit, and every other reported metric are identical — making a macro-vs-micro selection comparison a one-key flip. Ignored on euclidean (which always ranks on ``dcor_xy``); an absent key resolves to ``'macro'``.
-* **usv_manifold_geodesic_metrics** — the analysis-only *reference-map* geometry for the two torus **geodesic** prediction-error columns (``density_geodesic_mae``, ``pullback_geodesic_mae``), reported per fold alongside the flat-torus MAE on the ``'torus'`` metric (both ``NaN`` on euclidean). ``compute`` toggles the whole block; ``grid_n_per_dim`` sets the resolution of the regular torus grid the all-pairs geodesic distance matrices are precomputed on once (``40`` → a 40×40 node lattice, so per-event errors are cheap snap-to-grid look-ups); ``graph_k`` is the number of wrap-aware nearest neighbours per node in the k-NN graph the shortest paths run over; ``density_exponent`` is the inverse-aggregate-posterior-density exponent ``α`` weighting the density-ratio geodesic (``0`` recovers the flat graph metric, larger values push paths harder through dense regions); ``pullback_metric`` switches the decoder-Jacobian pullback geodesic on: the frozen decoder whose Jacobian defines the pullback metric ``G = JᵀJ`` is not a setting but always the production regular cell, ``os_utils.qlvm_production_cell_directory('qlvm')`` (``QLVM_PRODUCTION_MODEL_CELLS['qlvm']`` under ``QLVM_MODEL_PACKAGE_ROOT``, ``.../qlvm_time_stretch/masked_clean/cell/masked``), the unconditional model the ``qlvm1`` / ``qlvm2`` coordinates come from, read without torch from its ``checkpoint.tar``. It comes from the code constants so the CLI / GUI re-keying of experimenter folders in the settings can never point it at another folder; a ``decoder_model_cell_directory`` (or the retired ``decoder_weights_npz_path``) key left in older settings is ignored. ``pullback_metric`` ``false`` (or an unreadable decoder) degrades ``pullback_geodesic_mae`` to ``NaN`` and the run proceeds.
+* **usv_manifold_geodesic_metrics** — the analysis-only *reference-map* geometry for the two torus **geodesic** prediction-error columns (``density_geodesic_mae``, ``pullback_geodesic_mae``), reported per fold alongside the flat-torus MAE on the ``'torus'`` metric (both ``NaN`` on euclidean). ``compute`` toggles the whole block; ``grid_n_per_dim`` sets the resolution of the regular torus grid the all-pairs geodesic distance matrices are precomputed on once (``40`` → a 40×40 node lattice, so per-event errors are cheap snap-to-grid look-ups); ``graph_k`` is the number of wrap-aware nearest neighbours per node in the k-NN graph the shortest paths run over; ``density_exponent`` is the inverse-aggregate-posterior-density exponent ``α`` weighting the density-ratio geodesic (``0`` recovers the flat graph metric, larger values push paths harder through dense regions); ``pullback_metric`` switches the decoder-Jacobian pullback geodesic on: the frozen decoder whose Jacobian defines the pullback metric ``G = JᵀJ`` is not a setting but the production cell of the map the manifold coordinates come from, ``os_utils.qlvm_map_cell_directory(<map>)`` with ``<map>`` the map prefix of the input pickle's recorded ``usv_manifold_column_names`` (``_input_metadata.analysis_specific``; a pickle without that record falls back to the current setting): ``qlvm1`` / ``qlvm2`` -> the regular cell ``.../qlvm_time_stretch/masked_clean/cell/masked``, ``qlvm_duration`` / ``qlvm_entropy`` / ``qlvm_bandwidth`` / ``qlvm_loudness`` -> the conditional cells under ``.../masked_clean/conditionals/cell`` (``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``), ``qlvm_squeak1`` / ``qlvm_squeak2`` -> the squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under ``QLVM_SQUEAK_PACKAGE_ROOT``; each is read without torch from its ``checkpoint.tar``. A pullback metric of one map's coordinates under another map's decoder would measure distances on a torus the coordinates do not live on. Manifold columns that name no QLVM map with ``pullback_metric`` ``true`` are a settings error. The cell comes from the code constants so the CLI / GUI re-keying of experimenter folders in the settings can never point it at another folder; a ``decoder_model_cell_directory`` (or the retired ``decoder_weights_npz_path``) key left in older settings is ignored. ``pullback_condition_quantile`` (in ``[0, 1]``, default ``0.5``) fixes the conditioning value of a conditional map's decoder, which decodes a torus position *and* a per-call conditioning value ``c`` (duration, spectral entropy, bandwidth or loudness): every grid node is decoded at the same ``c``, that quantile of the cell's training corpus's conditioning distribution (read from the cell's ``condition_bins.npz`` bin edges and per-bin training counts, linear inside a bin, then decoded by the cell's own ``condition.decode`` rule: clamped for ``'exact'``, snapped to the decode grid for ``'grid'``; ``processing.qlvm_latents.condition_quantile_value``), so ``G`` is one Riemannian metric of the torus. ``0.5`` measures distances as decoded-spectrogram change for the corpus median call (production medians: duration ``c`` 0.244, entropy 0.595, bandwidth 0.245, loudness 0.545); the value depends only on the cell, not on which calls a run holds. The regular and squeak decoders take no conditioning value and ignore it. ``pullback_metric`` ``false`` (or an unreadable decoder) degrades ``pullback_geodesic_mae`` to ``NaN`` and the run proceeds.
 
 **diagnostics** — the predictor-collinearity and predictor-timescale audits (rendered in :ref:`Predictor diagnostics <modeling-diagnostics>`).
 
@@ -865,7 +866,9 @@ top univariate feature; ``p_val`` is the per-step acceptance threshold.
      by inverse aggregate-posterior density, so paths route through dense
      corridors and pay to cross low-density valleys), and the
      **decoder-Jacobian pullback geodesic** MAE (``pullback_geodesic_mae``, the
-     Arvanitidis pullback ``G = JᵀJ`` of the frozen QLVM decoder, measuring
+     Arvanitidis pullback ``G = JᵀJ`` of the frozen decoder of the run's QLVM
+     map (a conditional map's decoder at the configured
+     ``pullback_condition_quantile`` of its conditioning value), measuring
      distance in decoded-spectrogram change rather than in raw latent
      coordinates). The two geodesic columns are ``NaN`` on euclidean manifolds
      and when their reference map is disabled or the decoder is unavailable;
@@ -960,9 +963,9 @@ gain and the retained-feature filters.
 For the acoustic-manifold model the converged filters have a single dedicated
 view, ``plot_manifold_filter_atlas`` (torus runs only), reading the same
 consolidated artifact — a three-panel figure. The **vocal-space atlas** panel
-tiles the torus with canonical USVs decoded through the frozen QLVM decoder
-(inferno on black, each icon peak-normalised, the QLVM category
-boundaries overlaid in white) as the key for the fields. The **filter magnitude**
+tiles the torus with canonical calls decoded through the frozen decoder of the
+run's QLVM map (inferno on black, each icon peak-normalised; on the regular map
+the QLVM category boundaries overlaid in white) as the key for the fields. The **filter magnitude**
 panel draws the per-feature temporal magnitude ``|W(t)|`` over the history window
 (one line per feature, coloured by behavioural category with opacity separating
 features that share a category; averaged into display bins so the medium-scale
@@ -971,12 +974,23 @@ filter at ``n_time_slices`` instants from ``-history_window_sec`` to onset and
 decodes each into the signed ``e(theta).W`` field over the torus (red = a +1 SD
 increase in the feature just before onset drives the predicted vocalization toward
 that region, blue = away), on a shared diverging scale. The atlas is decoded by
-the production regular cell, ``os_utils.qlvm_production_cell_directory('qlvm')``
-(``.../qlvm_time_stretch/masked_clean/cell/masked``, the model the ``qlvm1`` /
-``qlvm2`` coordinates come from), and its white boundaries are the R-1 … R-k
-regions of the QLVM category bundle (``os_utils.load_qlvm_category_bundle``,
+the production cell of the map the run's coordinates come from,
+``os_utils.qlvm_map_cell_directory(<map>)`` with ``<map>`` the map prefix of the
+artifact's ``_input_metadata.analysis_specific.usv_manifold_column_names``
+(``qlvm`` -> ``.../qlvm_time_stretch/masked_clean/cell/masked``, the conditional
+maps -> their cells under ``.../masked_clean/conditionals/cell``, ``qlvm_squeak``
+-> the squeak cell; an artifact without that record predates the conditional
+maps and is read as a regular-map run). A conditional cell decodes a torus
+position and a conditioning value, so every tile is decoded at one value, the
+``condition_quantile`` argument's quantile of the cell's training conditioning
+distribution (default ``0.5``, the corpus median call; e.g. ``0.1`` / ``0.9``
+show the duration map's torus for short / long calls), the same rule as the
+geodesic ``pullback_condition_quantile``. On the regular map its white boundaries
+are the R-1 … R-k regions of the QLVM category bundle (``os_utils.load_qlvm_category_bundle``,
 ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``, the partition the summaries'
-``qlvm_category`` was assigned from). Both come from the code constants, not from
+``qlvm_category`` was assigned from); the bundle partitions the regular map's
+torus only, so a conditional or squeak map's atlas and filmstrips draw no
+boundaries. Both come from the code constants, not from
 arguments or settings paths (the GUI / CLI experimenter re-keying cannot move
 them), and the bundle must be defined on the decoder's cell (the bundle's map,
 ``os_utils.QLVM_CATEGORY_MAP``, resolves to the decoder's ``model_id``),

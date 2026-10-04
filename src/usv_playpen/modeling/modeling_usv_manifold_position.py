@@ -94,6 +94,7 @@ from .modeling_torus_geodesics import (
     geodesic_mae_columns,
     make_qlvm_decode_fn_from_source,
     resolve_geodesic_decoder_source,
+    resolve_manifold_column_names,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import resolve_modeling_setting
@@ -1415,6 +1416,13 @@ class ContinuousModelRunner:
                 String IDs used for session-aware splitting and null shuffling.
             - 'n_time_bins' : int
                 The final count of temporal predictors after binning.
+            - 'held_out_session_ids' : list
+                The reserved held-out sessions of the pickle.
+            - 'input_metadata' : dict | None
+                The pickle's `_input_metadata` block (None when it has none);
+                its `analysis_specific.usv_manifold_column_names` names the QLVM
+                map whose decoder the torus geodesics use
+                (`resolve_manifold_column_names`).
         """
 
         print(f"Loading and binning continuous data (bin_size={bin_size}) from: {pkl_path}")
@@ -1429,6 +1437,9 @@ class ContinuousModelRunner:
         _held_out_session_ids = held_out_session_ids_from_metadata(
             raw_data['_input_metadata'] if '_input_metadata' in raw_data else {}
         )
+        # The pickle's metadata travels with the blocks: the columns `Y` was read
+        # from name the map (and so the decoder) of the torus pullback geodesic.
+        _input_metadata = raw_data['_input_metadata'] if '_input_metadata' in raw_data else None
 
         # Strip metadata blocks before iterating features. Without this
         # filter, the underscore-prefixed reserved keys
@@ -1495,12 +1506,14 @@ class ContinuousModelRunner:
                 'region': np.concatenate(region_list),
                 'n_time_bins': X_list[0].shape[1],
                 'held_out_session_ids': _held_out_session_ids,
+                'input_metadata': _input_metadata,
             }
 
         return data_blocks
 
     def _resolve_geodesic_context(self, pkl_path: str, Y: np.ndarray,
-                                  manifold_metric: str, manifold_period: float):
+                                  manifold_metric: str, manifold_period: float,
+                                  input_metadata: dict | None):
         """
         Description
         -----------
@@ -1512,7 +1525,11 @@ class ContinuousModelRunner:
 
         The map holds the density-ratio and decoder-Jacobian pullback geodesic
         geometries over a regular torus grid, precomputed from all embedded `Y`
-        plus the frozen QLVM decoder. It is fold-independent AND feature-
+        plus the frozen decoder of the QLVM map `Y` comes from (the map prefix
+        of the pickle's manifold columns: the regular, a conditional or the squeak
+        cell; a conditional decoder at the configured
+        `pullback_condition_quantile` of its training conditioning
+        distribution). It is fold-independent AND feature-
         independent -- it depends only on the acoustic positions `Y` (identical
         across every behavioural feature of one input pickle) and the decoder --
         so it is built a single time per input pickle and cached on the runner,
@@ -1522,7 +1539,7 @@ class ContinuousModelRunner:
 
         Torus-only. Any failure mode -- the metric is not `'torus'`, the
         `usv_manifold_geodesic_metrics` block is absent or its `compute` flag is
-        False, or the production regular cell's decoder is unreadable -- degrades the
+        False, or the map's decoder is unreadable -- degrades the
         affected column(s) to `NaN` and never aborts the run (the pullback column
         alone degrades when only the decoder is unavailable).
 
@@ -1540,6 +1557,13 @@ class ContinuousModelRunner:
             `'torus'` (any other value returns `None`, yielding NaN columns).
         manifold_period (float)
             The torus period (wrap length) the geodesic grid is defined over.
+        input_metadata (dict | None)
+            The input pickle's `_input_metadata` block (None when it has none).
+            The summary columns `Y` was read from
+            (`resolve_manifold_column_names`: its
+            `analysis_specific.usv_manifold_column_names`, else the current
+            setting) select the decoder of the pullback metric by their map
+            prefix (`resolve_geodesic_decoder_source`).
 
         Returns
         -------
@@ -1560,8 +1584,10 @@ class ContinuousModelRunner:
             if _geo_cfg['compute']:
                 # Resolved outside the soft-failure block: a settings block without
                 # pullback_metric is a settings error, not a NaN column. The decoder
-                # is the production regular cell (os_utils constants), never a path.
-                _geo_decoder_source = resolve_geodesic_decoder_source(_geo_cfg)
+                # is the production cell of the map `Y` comes from (os_utils
+                # constants), never a path.
+                _geo_decoder_source = resolve_geodesic_decoder_source(
+                    _geo_cfg, resolve_manifold_column_names(input_metadata, _vf_settings))
                 try:
                     _geo_decode_fn = None
                     if _geo_decoder_source is not None:
@@ -1854,7 +1880,8 @@ class ContinuousModelRunner:
         # and cached on the runner (fold- and feature-independent); torus-only,
         # NaN columns on any disabled / missing-decoder path (see the helper).
         geodesic_ctx = self._resolve_geodesic_context(
-            pkl_path, Y, manifold_metric, manifold_period
+            pkl_path, Y, manifold_metric, manifold_period,
+            feat_data['input_metadata'],
         )
 
         results = {}

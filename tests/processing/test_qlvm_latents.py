@@ -608,6 +608,33 @@ def test_frozen_condition_values_phase11_grid_snaps_to_the_nearest_grid_point():
         ql.frozen_condition_values(np.array([0.5]), bins)
 
 
+def test_condition_quantile_value_reads_the_training_distribution():
+    """The fixed conditioning value of a decode without a call is the quantile of the
+    cell's training c distribution (bin edges + per-bin training rows, linear inside a
+    bin), decoded by the cell's own rule: exact clamps, grid snaps, phase 10 bins (no
+    group_sizes, equal-share quantile bins) take the bin mean; a quantile outside
+    [0, 1] or a table without edges is refused."""
+    exact = _phase11_bins("bandwidth", 0.05, 0.95, 0.01)
+    assert float(ql.condition_quantile_value(exact, "exact", 0.5)) == pytest.approx(0.5, abs=1e-6)
+    assert float(ql.condition_quantile_value(exact, "exact", 0.25)) == pytest.approx(0.275, abs=1e-6)
+    assert float(ql.condition_quantile_value(exact, "exact", 0.0)) == pytest.approx(0.05, abs=1e-6)
+    assert float(ql.condition_quantile_value(exact, "exact", 1.0)) == pytest.approx(0.95, abs=1e-6)
+    skewed = {**exact, "group_sizes": np.array([30, 10])}
+    assert float(ql.condition_quantile_value(skewed, "exact", 0.5)) == pytest.approx(0.05 + 0.45 * 0.5 / 0.75, abs=1e-6)
+    grid = _phase11_bins("loudness", 0.0, 1.0, 0.25)
+    grid["edges"] = np.array([0.0, 0.5, 1.0])
+    assert float(ql.condition_quantile_value(grid, "grid", 0.3)) == pytest.approx(0.25, abs=1e-6)
+    phase10 = {"edges": np.array([0.0, 0.2, 0.6, 1.0]), "bin_mean": np.array([0.1, 0.4, 0.8], dtype=np.float32)}
+    assert float(ql.condition_quantile_value(phase10, None, 0.5)) == pytest.approx(0.4, abs=1e-6)
+    with pytest.raises(ValueError, match="quantile must be in"):
+        ql.condition_quantile_value(exact, "exact", 1.2)
+    with pytest.raises(ValueError, match="no 'edges'"):
+        ql.condition_quantile_value({"bin_mean": np.array([0.5])}, None, 0.5)
+    assert ql.model_decode_condition({"contract": {"c_dim": 0}}, 0.5) is None
+    model = {"contract": {"c_dim": 1, "condition": {"name": "bandwidth", "decode": "exact"}}, "condition_bins": exact}
+    assert float(ql.model_decode_condition(model, 0.25)) == pytest.approx(0.275, abs=1e-6)
+
+
 def test_compute_condition_values_maps_bandwidth_and_loudness_from_raw_units():
     """Phase 11's frozen maps: bandwidth Hz / 90 kHz and loudness dB over the
     contract's db_range, clipped to [0, 1], in float64 rounded to float32."""

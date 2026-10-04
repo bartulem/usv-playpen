@@ -663,6 +663,21 @@ def test_qlvm_category_constants_and_production_cells():
     assert os_utils.qlvm_cell_model_id("F:\\Bartul\\x\\masked_clean\\cell\\masked") == "masked_clean/cell/masked"
 
 
+def test_qlvm_map_cell_directory_covers_the_usv_and_squeak_maps():
+    """Every map a decode can work on resolves to its own production cell: the USV maps
+    through qlvm_production_cell_directory, the squeak map to the squeak package cell;
+    a prefix naming no map raises."""
+    assert os_utils.QLVM_SQUEAK_MAP == "qlvm_squeak"
+    assert os_utils.QLVM_DECODER_MAPS == os_utils.QLVM_MAPS + ("qlvm_squeak",)
+    for qlvm_map in os_utils.QLVM_MAPS:
+        assert os_utils.qlvm_map_cell_directory(qlvm_map) == os_utils.qlvm_production_cell_directory(qlvm_map)
+    assert os_utils.qlvm_map_cell_directory("qlvm_squeak") == (
+        "/mnt/falkner/Bartul/PC_transfer/qlvm_final/squeaks/cell/stretch_nofloor"
+    )
+    with pytest.raises(ValueError, match="qlvm_map must be one of"):
+        os_utils.qlvm_map_cell_directory("vae")
+
+
 def test_load_qlvm_category_bundle_reads_the_one_bundle(qlvm_category_bundle):
     """load_qlvm_category_bundle reads the bundle the module constant names: the label grid
     (1..k, [y, x]), density, pixel-centre axis, label positions as centres, names, the map
