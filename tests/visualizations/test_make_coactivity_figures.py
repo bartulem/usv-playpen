@@ -99,7 +99,7 @@ def _results():
 
 def test_plot_null_distributions_returns_3x2_figure():
     """The null-distribution plot is a 3-metric x 2-group grid (6 axes)."""
-    fig = mcf.plot_null_distributions(_results(), category_column="qlvm_supercategory", group_a_ids=[1], group_b_ids=[7])
+    fig = mcf.plot_null_distributions(_results(), category_column="qlvm_category", group_a_ids=[1], group_b_ids=[7])
     assert isinstance(fig, plt.Figure)
     assert len(fig.axes) == 6
     plt.close(fig)
@@ -115,7 +115,7 @@ def test_plot_per_session_pop_corr_figure_and_empty():
             "metrics_a": {"pop_corr": 0.4}, "metrics_b": {"pop_corr": 0.2},
             "null": {"pop_corr": rng.normal(0.0, 0.05, 80)},
         })
-    fig = mcf.plot_per_session_pop_corr(rows, chosen_animal="178621_2", category_column="qlvm_supercategory")
+    fig = mcf.plot_per_session_pop_corr(rows, chosen_animal="178621_2", category_column="qlvm_category")
     assert isinstance(fig, plt.Figure)
     assert len([ax for ax in fig.axes if ax.get_visible()]) >= 3
     plt.close(fig)
@@ -140,7 +140,7 @@ def test_plot_cross_animal_slope_returns_figure():
         "m0": {"pop_a": 0.4, "pop_b": 0.2, "p_two": 0.01},
         "m1": {"pop_a": 0.1, "pop_b": 0.3, "p_two": 0.20},
     }
-    fig = mcf.plot_cross_animal_slope(cross, category_column="qlvm_supercategory", group_a_ids=[1], group_b_ids=[7])
+    fig = mcf.plot_cross_animal_slope(cross, category_column="qlvm_category", group_a_ids=[1], group_b_ids=[7])
     assert isinstance(fig, plt.Figure)
     plt.close(fig)
 
@@ -226,12 +226,12 @@ def test_engine_results_feed_figures():
     results = engine.run_group_comparison(
         sessions, window_s=1.0, bootstrap_n=6, n_boot=16, n_shuffles=8, n_permutations=16, seed=0,
     )
-    fig = mcf.plot_null_distributions(results, category_column="qlvm_supercategory", group_a_ids=[1], group_b_ids=[7])
+    fig = mcf.plot_null_distributions(results, category_column="qlvm_category", group_a_ids=[1], group_b_ids=[7])
     assert len(fig.axes) == 6
     plt.close(fig)
     assert "DIRECT PERMUTATION" in mcf.summarize_group_comparison(results)
 
     rows = engine.per_session_group_metrics(sessions, window_s=1.0, n_shuffles=8, seed=0)
-    fig2 = mcf.plot_per_session_pop_corr(rows, chosen_animal="s", category_column="qlvm_supercategory")
+    fig2 = mcf.plot_per_session_pop_corr(rows, chosen_animal="s", category_column="qlvm_category")
     assert fig2 is not None
     plt.close(fig2)

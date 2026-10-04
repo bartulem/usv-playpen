@@ -365,20 +365,20 @@ class TestContinuousInputExtraction:
 
         md = artifact['_input_metadata']
         assert md['analysis_type'] == 'continuous'
-        assert md['analysis_tag'] == 'manifold_qlvm_supercategory'
+        assert md['analysis_tag'] == 'manifold_qlvm_category'
         spec = md['analysis_specific']
         assert spec['manifold_metric'] == 'torus'
-        assert spec['usv_category_column_name'] == 'qlvm_supercategory'
+        assert spec['usv_category_column_name'] == 'qlvm_category'
         assert list(spec['usv_manifold_column_names']) == ['qlvm1', 'qlvm2']
 
     def test_extraction_without_labels_drops_unplaced_calls(self, tmp_path, capsys):
         """
         With the shipped label-free setting (``usv_category_column_name`` null)
-        on summaries that carry torus coordinates only -- no ``qlvm_category`` /
-        ``qlvm_supercategory`` -- and some calls the embedding could not place
+        on summaries that carry torus coordinates only -- no ``qlvm_category`` --
+        and some calls the embedding could not place
         (null ``qlvm1`` / ``qlvm2``), extraction still runs: the unplaced calls
         are dropped before the inverse-density KDE (counts printed), no
-        supercategory packet is written, the tag names the embedding
+        category packet is written, the tag names the embedding
         (``manifold_qlvm``).
         """
 
@@ -386,7 +386,7 @@ class TestContinuousInputExtraction:
         n_nulled = 0
         for summary_path in sorted((tmp_path / 'sessions').glob('*/audio/**/*_usv_summary.csv')):
             table = pls.read_csv(summary_path)
-            table = table.drop([c for c in ('qlvm_category', 'qlvm_supercategory') if c in table.columns])
+            table = table.drop([c for c in ('qlvm_category',) if c in table.columns])
             row_index = np.arange(table.height)
             unplaced = (row_index % 4) == 0
             n_nulled += int(unplaced.sum())
@@ -681,11 +681,11 @@ class TestManifoldModelSelection:
 
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_qlvm_supercategory',
+            'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'qlvm_supercategory',
+                'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'euclidean',
                 'manifold_period': 1.0,
             },
@@ -776,12 +776,12 @@ class TestManifoldModelSelection:
         held_out_ids = session_ids[:5]
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_qlvm_supercategory',
+            'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
             'held_out_session_ids': held_out_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'qlvm_supercategory',
+                'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'euclidean',
                 'manifold_period': 1.0,
             },
@@ -856,11 +856,11 @@ class TestManifoldModelSelection:
 
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_qlvm_supercategory',
+            'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'qlvm_supercategory',
+                'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus',
                 'manifold_period': 1.0,
             },
@@ -941,11 +941,11 @@ class TestManifoldModelSelection:
         session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_qlvm_supercategory',
+            'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'qlvm_supercategory',
+                'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus',
                 'manifold_period': 1.0,
             },
@@ -1054,11 +1054,11 @@ class TestManifoldModelSelection:
         session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_qlvm_supercategory',
+            'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'qlvm_supercategory',
+                'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus', 'manifold_period': 1.0,
             },
         }

@@ -110,7 +110,7 @@ NOISE_CATEGORY = 0
 
 # The USV category column the synthetic summaries are labelled with; mirrors
 # the shipped JSON default so the loaders / metadata route through it.
-CATEGORY_COLUMN = 'qlvm_supercategory'
+CATEGORY_COLUMN = 'qlvm_category'
 
 
 def _write_category_usv_summary(
