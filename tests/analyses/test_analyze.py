@@ -1925,7 +1925,7 @@ def test_squeaks_are_dropped_from_self_anchors_and_never_categorised(synthetic_c
     """With exclude_squeaks_self (default) the self side's anchors are its pure USVs only (usv
     true AND squeak false): pure squeaks AND segments with both flags true are dropped alike, so
     usv being true is not enough. With it off they are anchors but
-    still carry no QLVM category (every map's category tuning is usv-only), and a category held
+    still carry no QLVM category (the qlvm_category tuning is usv-only), and a category held
     only by squeak / both segments does not appear."""
     root, _ = synthetic_compute_session
     usv_csv = next(root.rglob("*_usv_summary.csv"))
@@ -1987,9 +1987,9 @@ def test_load_vocal_inputs_requires_the_vocal_flags(synthetic_compute_session):
 
 
 def test_build_vocal_side_precompute_notices_missing_qlvm_labels(synthetic_compute_session):
-    """Without some QLVM label columns (e.g. a summary embedded before infer-qlvm-latents
-    wrote them) the precompute prints a one-line notice naming them, instead of leaving
-    those outputs empty without a word; with every map's labels present nothing is
+    """Without the qlvm_category column (e.g. a summary assign-qlvm-categories has not
+    labelled yet) the precompute prints a one-line notice naming it, instead of leaving
+    the category outputs empty without a word; with the column present nothing is
     printed."""
     root, _ = synthetic_compute_session
     nt = _make_neuronal_tuning(root)
