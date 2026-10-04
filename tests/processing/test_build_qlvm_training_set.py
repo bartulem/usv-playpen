@@ -49,7 +49,8 @@ from usv_playpen.processing.build_qlvm_training_set import (
     waterfill_level,
 )
 
-# Mirrors the shipped processing_settings.json block, with small targets.
+# The keys of the shipped processing_settings.json block, with small targets, no
+# row-exclusion table and the unmasked, floored phase 6 recipe the tests below exercise.
 _CFG = {
     "session_type_targets": {"MF": 6, "FF": 6, "MM": None},
     "draw_mode": "natural",

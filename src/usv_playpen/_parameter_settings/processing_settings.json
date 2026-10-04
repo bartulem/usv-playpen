@@ -399,15 +399,15 @@
     "strict_squeak_exclusion": false,
     "reference_squeak_index_path": "",
     "exclude_noise": true,
-    "row_exclusion_table": null,
+    "row_exclusion_table": "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean/trainset/reference_strict_squeak_rows.csv",
     "masking_type": "sam",
-    "apply_mask": false,
-    "floor": 0.2,
+    "apply_mask": true,
+    "floor": null,
     "validation_split": 0.2,
     "random_state": 42,
     "full_dataset": false,
     "target_shape": [128, 128],
-    "time_stretch": false
+    "time_stretch": true
   },
   "build_qlvm_squeak_training_set": {
     "draw_mode": "natural",
