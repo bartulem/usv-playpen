@@ -474,8 +474,10 @@ class NaturalisticUsvRepositoryBuilder:
                         emitter_rows = np.arange(len(starts_all), dtype=np.int64)
                     emitter_rows = emitter_rows[is_not_noise[emitter_rows]]
                     if emitter_rows.size == 0:
+                        # the message names the session only: the target animal and its sex come from the
+                        # session metadata's subject records, which are not written to logs
                         self.message_output(
-                            f"Skipping {root.name}: no non-noise USV is attributed to '{stored_emitter}' "
+                            f"Skipping {root.name}: no non-noise USV is attributed to the target animal "
                             f"(an empty emitter column means vcl-assign has not run since the last das-summarize)."
                         )
                         continue
@@ -648,7 +650,7 @@ class NaturalisticUsvRepositoryBuilder:
             prev_bout_last_stop = float(bout_stops[-1])
 
         if dropped:
-            self.message_output(f"{session_id} [{sex}]: dropped {dropped} incomplete bout(s).")
+            self.message_output(f"{session_id}: dropped {dropped} incomplete bout(s).")
 
     def _write_repository(self, acc, sex, context_token, context_label, output_dir, timestamp,
                           ibi_z_score, ibi_component_index, session_lists, root_directories) -> None:
