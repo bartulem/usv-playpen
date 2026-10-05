@@ -1151,7 +1151,6 @@ module, so every routine is called as ``engine.<fn>``), and the ``plot_*`` /
 
     import matplotlib.pyplot as plt
     import numpy as np
-    import scipy.stats as st
 
     from usv_playpen.os_utils import configure_path
     from usv_playpen.visualizations.plot_style import apply_plot_style
@@ -1241,7 +1240,7 @@ so they resolve on macOS (``/Volumes/falkner``) too.
     NULL_COLOR = "#808080"
     THRESHOLD_COLOR = "#000000"
 
-* **CATEGORY_COLUMN** / **GROUP_A_IDS** / **GROUP_B_IDS** — the ``usv_summary`` column that labels each call and the two sets of ``qlvm_category`` ids (1..4, meaning R-1..R-4) contrasted (default ``complex`` [3] vs ``simple`` [1], i.e. R-3 vs R-1; the names and descriptions come from the category bundle's ``category_nomenclature.json``, ``os_utils.load_qlvm_category_bundle``); ``*_LABEL`` names them in tables and plots.
+* **CATEGORY_COLUMN** / **GROUP_A_IDS** / **GROUP_B_IDS** — the ``usv_summary`` column that labels each call and the two sets of ``qlvm_category`` ids (1..4, meaning R-1..R-4) contrasted (default ``complex`` [4] vs ``simple`` [1], i.e. R-4 vs R-1; the names and descriptions come from the category bundle's ``category_nomenclature.json``, ``os_utils.load_qlvm_category_bundle``); ``*_LABEL`` names them in tables and plots.
 * **CATALOG_PATH** / **UNIT_BRAIN_AREAS** / **UNIT_REQUIRE_SOMATIC** / **UNIT_CLUSTER_GROUP** — the unit-catalog file and the three-criteria filter (region, somatic waveform, Kilosort ``cluster_group``) applied to select the population.
 * **ANIMALS_TO_SESSIONS** / **CHOSEN_ANIMAL** / **DATA_ROOT** — the per-animal session lists (Kilosort is per-day, so the loader keeps the single best-populated day), the focal animal for single-animal cells, and the data root.
 * The coactivity hyperparameters below are read from the ``neuronal_coactivity`` block of ``analyses_settings.json`` (loaded once in the Imports cell), so they are tuned in one place — edit the JSON to retune. The segmentation / unit-filter / animal-map values above stay inline as per-run edits.

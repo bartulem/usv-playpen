@@ -5663,7 +5663,7 @@ class DeepResultsVisualizer:
             Also used as the display title if ``category_name`` is
             None.
         category_name : str, optional
-            Human-readable plot title (e.g., 'Category 3: Complex').
+            Human-readable plot title (e.g., 'Category 4: complex').
             If None, ``region_key`` is used.
         prediction_plot_type : str, default 'contour'
             Visualization style for the predicted manifold coordinates.

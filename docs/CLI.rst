@@ -1032,7 +1032,7 @@ For each model, a session of the package's corpus takes the package's own coordi
                                  [--change-span INTEGER] [--marker-sigma FLOAT] [--marker-distance INTEGER]
                                  [--size-floor FLOAT] [--n-categories INTEGER] [--n-bootstraps INTEGER]
                                  [--bootstrap-seed INTEGER] [--uncertain-agreement FLOAT]
-                                 [--category-descriptions TEXT] [--n-jobs INTEGER]
+                                 [--category-order TEXT] [--category-descriptions TEXT] [--n-jobs INTEGER]
 
     required arguments:
       --positions-file      Per-call torus positions (.npz / .parquet / .csv with spec_id, x, y in [0, 1)).
@@ -1052,6 +1052,7 @@ For each model, a session of the package's corpus takes the package's own coordi
       --n-bootstraps        Session resamples of the consensus vote.
       --bootstrap-seed      Seed of the first session resample (resample i uses seed + i).
       --uncertain-agreement A call whose pixel agreement is below this is flagged uncertain.
+      --category-order      Comma-separated size rank (1 = most calls) of each category, R-1 first (e.g. 1,4,2,3), or an empty string for size order.
       --category-descriptions
                             Comma-separated short description of each category, R-1 first.
       --n-jobs              Parallel workers of the session resamples.
