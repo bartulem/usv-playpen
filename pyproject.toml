@@ -30,15 +30,9 @@ dependencies = [
     "astropy",
     "click",
     "cmasher",
-    "ffmpeg-binaries>=1.0.1",
+    "ffmpeg-binaries",
     "h5py",
-    # 2026-08-22 -- Dependabot #79 (hydra.utils.instantiate executes the callable named by
-    # a config's _target_, so untrusted config becomes arbitrary code execution). Reached
-    # here only through sam-2, which instantiates its own packaged model config; no repo
-    # code calls instantiate() and no config is externally supplied, so this is a floor
-    # for defense in depth rather than a live exposure. 1.3.4 adds a dangerous-target
-    # blacklist; the allowlist model lands in 1.4.
-    "hydra-core>=1.3.4",
+    "hydra-core",
     "imgstore",
     "jax",
     "joblib",
@@ -52,8 +46,8 @@ dependencies = [
     "opencv-contrib-python",
     "optax",
     "pandas",
-    "paramiko>=4.0.0",
-    "pillow>=12.3.0",
+    "paramiko",
+    "pillow",
     "platformdirs",
     "polars",
     "pyarrow",
@@ -68,7 +62,7 @@ dependencies = [
     "sleap-anipose",
     "soundfile",
     "spikeinterface==0.104.3",
-    "static-sox>=1.0.2",
+    "static-sox",
     "statsmodels",
     "tifffile",
     "toml",
@@ -312,6 +306,12 @@ messages_control.disable = [
 # all redundant (verified with `uv lock --upgrade`: each resolves to a patched
 # release on its own) and removed; constraint-dependencies is now empty.
 #
+# Last pruned 2026-10-05 -- the mistune (#52-#54), soupsieve (#82, #83), anyio (#84, #85),
+# pymdown-extensions (#78) and tornado (#80, #81) floors, and the direct-dependency floors on
+# ffmpeg-binaries, hydra-core (#79), paramiko, pillow and static-sox, were all redundant
+# (verified with `uv lock --upgrade` without them: each resolves to a patched / higher release
+# on its own) and removed; the lock keeps every installed version.
+#
 # ultralytics pulls in base `opencv-python`, but `aniposelib` (camera
 # calibration) calls the function-style cv2.aruco API (detectMarkers /
 # interpolateCornersCharuco / estimatePoseCharucoBoard / refineDetectedMarkers)
@@ -332,35 +332,6 @@ override-dependencies = [
     "opencv-python; python_version < '0'",
 ]
 constraint-dependencies = [
-    # 2026-07-13 -- Dependabot #54 (mistune: quadratic-time DoS in parse_link_text) and
-    # #52 / #53 (soupsieve: ReDoS via catastrophic backtracking in the attribute-selector
-    # VALUE regex, and unbounded memory on comma-separated selector lists). Both are
-    # DOCS-ONLY transitive deps -- mistune via nbsphinx/jupyterlab, soupsieve via
-    # furo/nbsphinx/jupyterlab -- and usv-playpen never parses untrusted Markdown or
-    # user-supplied CSS selectors, so practical exposure is nil. They are floored anyway
-    # because uv's sticky lock will NOT bump a transitive dep on its own: regenerating
-    # uv.lock for an unrelated change (e.g. the torch cu128 pin) leaves them untouched.
-    "mistune>=3.3.0",
-    # 2026-09-20 -- Dependabot #83 / #82 raise the soupsieve floor again. #83: the IDENTIFIER
-    # sub-pattern (also embedded in VALUE, so every attribute selector inherits it) places two
-    # quantified groups over overlapping character classes, giving O(n^2) backtracking whenever the
-    # match must ultimately fail -- 8 KB of selector is ~8 s of CPU. #82 is a SEPARATE root cause in
-    # the same package: RE_WS_END = '{WSC}*$' is anchored only at the end, so .search() retries at
-    # every offset and a long internal whitespace run costs O(n^2) -- and this one fires on
-    # WELL-FORMED selectors (`a` + ' '*20000 + `b` takes ~10 s), not just on the parser error path.
-    # Still DOCS-ONLY (furo / nbsphinx / jupyterlab) and usv-playpen never compiles a user-supplied
-    # CSS selector, so practical exposure remains nil; floored for the usual sticky-lock reason.
-    "soupsieve>=2.9.0",
-    # 2026-09-20 -- Dependabot #85 / #84 (anyio). #85: TLSStream encodes host names with IDNA 2003,
-    # so an attacker holding a certificate for the IDNA-2003 form of an internationalized domain can
-    # have it validate against a connection intended for the IDNA-2008 form -- exploitable only when
-    # the connection has already been redirected by other means. #84: process-pool workers are
-    # started with stderr on a pipe that is never drained, so a worker writing enough to stderr fills
-    # the pipe and wedges the awaiting call before it can return its protocol response. anyio is a
-    # DEV-GROUP-ONLY transitive dep (marimo 0.23.16 and jupyterlab 4.6.2); usv-playpen opens no TLS
-    # connections through anyio, reaches no internationalized host names, and runs no anyio process
-    # pool, so practical exposure is nil. Floored anyway -- the lock sits at 4.13.0 without it.
-    "anyio>=4.14.2",
     # 2026-07-23 -- Dependabot #70 (setuptools CVE-2026-59890: sdist MANIFEST.in exclusion
     # bypass via NFC/NFD Unicode collision on macOS APFS/HFS+) is deliberately NOT floored:
     # setuptools>=83 is incompatible with torch 2.11.0+cu128 (torch 2.11 pins setuptools<83),
@@ -368,31 +339,6 @@ constraint-dependencies = [
     # We never build/ship sdists to untrusted parties, so practical exposure is nil and the
     # GPU regression is not worth it. Alert dismissed (tolerable_risk); revisit when torch's
     # setuptools ceiling lifts.
-    #
-    # 2026-08-10 -- Dependabot #78 (pymdown-extensions: exponential-backtracking ReDoS in the
-    # caret / tilde / betterem / magiclink inline processors -- a sub-50-byte untrusted Markdown
-    # line drives markdown.markdown() into unbounded CPU on the render thread; CWE-1333). DOCS-ONLY
-    # transitive dep (via mkdocs-material) and usv-playpen never renders untrusted Markdown, so
-    # practical exposure is nil; floored anyway because uv's sticky lock will not bump a transitive
-    # dep on its own (the lock still sits at 10.21.3 without this).
-    "pymdown-extensions>=11.0.1",
-    # 2026-09-02 -- Dependabot #81 (tornado: parse_multipart_form_data splits the whole body
-    # on the boundary BEFORE the max_parts check, so a 600 KB body with 100 k parts
-    # materialises a 100 k-element list of copies and is only then rejected -- pre-auth
-    # transient memory amplification, httputil.py:34) and #80 (tornado: incomplete fix for
-    # CVE-2026-35536 -- the added [\x00-\x20\x3b\x7f] validation loop in
-    # RequestHandler.set_cookie covers only the four hardcoded lowercase named args, while the
-    # deprecated **kwargs path writes straight into the Morsel unvalidated; Morsel.__setitem__
-    # is case-insensitive, so a capitalised `Domain=` / `Path=` / `SameSite=` kwarg reaches the
-    # same reserved attribute and re-opens ;-delimited attribute injection). tornado is a
-    # DEV-GROUP-ONLY transitive dep (jupyterlab 4.6.2 and ipykernel 7.2.0, plus jupyter-server /
-    # jupyter-client / terminado underneath them -- verified with `uv tree --invert`); it is not
-    # reachable from the runtime dependency set, usv-playpen ships no tornado web application and
-    # never calls set_cookie, and the only tornado server that ever runs is a localhost Jupyter
-    # kernel on a developer's machine, so practical exposure is nil. Floored anyway because uv's
-    # sticky lock will NOT bump a transitive dep on its own -- the lock sits at 6.5.7 without it.
-    # (This re-adds the tornado floor pruned on 2026-06-13 for #43.)
-    "tornado>=6.5.8",
 ]
 
 [tool.uv.sources]
