@@ -361,12 +361,16 @@ class TestSettingsInvariants:
 
     def test_vocal_decoding_holds_only_the_vocal_decoding_axes(self):
         """The nested decoding is a separate analysis with its own model, null and statistic; its
-        configuration living inside the vocal decoding's block was the file's worst piece of mis-filing."""
+        configuration living inside the vocal decoding's block was the file's worst piece of mis-filing.
+
+        `category_surface` and `targets` DO belong here: the categorical decode is the same claim's
+        axis on a different target -- same events, same window, same folds, same currency and the same
+        permutation draws -- so it is a vocal-decoding axis rather than a separate analysis."""
         settings = _load_settings()
         assert set(settings["vocal_decoding"]) == {
             "require_clean_prevocal_bool", "usv_manifold_column_names",
             "max_quiet_tiles_per_session", "vocal_occurrence", "geodesic_metrics", "tuning_surface",
-            "discrimination_null", "record_overdispersion_index"}
+            "category_surface", "targets", "discrimination_null", "record_overdispersion_index"}
         assert set(settings["nested_vocal_manifold_position_decoding"]) == {
             "behaviour_control", "reduced_model_features", "behaviour_control_model_path",
             "vm_score_mode", "region_label_column", "min_region_events", "lambda_smooth", "l2_reg",
@@ -406,10 +410,15 @@ class TestSettingsInvariants:
         assert set(settings["vocal_gating"]) >= {"min_vocal_spikes", "min_feature_iqr_vocal"}
 
     def test_the_sufficiency_block_holds_only_live_keys(self):
-        """Every key here is read by something -- unlike the block that previously carried the name."""
+        """Every key here is read by something -- unlike the block that previously carried the name.
+
+        `min_decoding_spikes` is read by `neural_category_decoding.decoding_spike_sufficiency`. It was
+        added because the decoding axes had NO spike gate at all: measured over 1,231 units, sd(gain)
+        runs 0.029 below 50 spikes against 0.014 above, and a unit with under 25 spikes returned a gain
+        of 0.70 -- three times the cohort's strongest tuned unit."""
         assert set(_load_settings()["data_sufficiency"]) == {
             "min_courtship_sessions", "min_emitter_usvs_per_session", "min_vocal_sessions",
-            "single_session_inner_split_blocks"}
+            "min_decoding_spikes", "single_session_inner_split_blocks"}
 
     def test_the_session_gate_is_named_for_the_emitter_it_follows(self):
         """The gate counts calls from whoever `vocalization_settings.vocal_emitter` names, so a name

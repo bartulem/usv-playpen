@@ -21,6 +21,7 @@
     "min_courtship_sessions": 2,
     "min_emitter_usvs_per_session": 20,
     "min_vocal_sessions": 2,
+    "min_decoding_spikes": 50,
     "single_session_inner_split_blocks": 5
   },
   "kinematic_features": {
@@ -176,6 +177,19 @@
       },
       "record_bump_basis_gain": true
     },
+    "category_surface": {
+      "ridge_selection": {
+        "mode": "count_normalized_fixed",
+        "ridge_frac": 0.02
+      },
+      "amplitude_calibration": {
+        "enabled": true,
+        "mode": "train_tuned_inner_loso",
+        "alpha_grid": [0.1, 0.25, 0.5, 0.75, 1.0, 1.5]
+      },
+      "category_column": "qlvm_category"
+    },
+    "targets": ["manifold_position"],
     "discrimination_null": {
       "method": "within_session_position_permutation",
       "n_permutations": 1000,
