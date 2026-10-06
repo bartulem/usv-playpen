@@ -2342,8 +2342,9 @@ POOLED_CACHE_FINGERPRINT_KEY = "usv_playpen_summaries_fingerprint"
 POOLED_CACHE_SEX_SOURCE = "session_metadata"
 
 # Per-USV acoustic features (written by compute_usv_acoustic_features into
-# usv_summary.csv) -- pulled into the pooled embeddings DataFrame as continuous
-# color-by metrics in the embedding explorer.
+# usv_summary.csv, plus the loudness and the SAM-mask count) -- pulled into the
+# pooled embeddings DataFrame as continuous color-by metrics in the embedding
+# explorer and as the swept properties of the QLVM property-sweep video.
 EMBEDDING_FEATURE_COLS = (
     "mean_freq_hz",
     "peak_freq_hz",
@@ -2351,6 +2352,8 @@ EMBEDDING_FEATURE_COLS = (
     "mean_amplitude",
     "max_amplitude",
     "spectral_entropy",
+    "loudness_db",
+    "mask_number",
 )
 # Per-USV vocal-class booleans (``usv`` and ``squeak``, written by detect_usv_squeaks
 # into usv_summary.csv): a pure USV is usv & ~squeak, a pure squeak squeak & ~usv, and a
@@ -2438,6 +2441,164 @@ def _pooled_summaries_fingerprint(
     return digest.hexdigest(), located
 
 
+def read_cohort_session_roots(input_files_directory: str, label: str) -> list[str]:
+    """
+    Description
+    -----------
+    Pools every ``*sessions_list.txt`` under ``input_files_directory`` into one
+    deduplicated list of session roots (first occurrence kept, ``#`` / blank lines
+    skipped). Playback lists are dropped, as the embedding explorer drops them:
+    playback sessions carry no emitter / embedding structure (and no noise column,
+    so pooling them with ``exclude_noise_usvs`` fails). This is the cohort
+    definition of the cohort-level embedding figures (the embedding thumbnails,
+    the QLVM property-sweep video and the QLVM figures).
+
+    Parameters
+    ----------
+    input_files_directory (str)
+        Directory holding the cohort's ``*sessions_list.txt`` files (run
+        through ``configure_path``).
+    label (str)
+        Short name of the caller, used in the error.
+
+    Returns
+    -------
+    roots (list[str])
+        The session roots, as written in the lists.
+
+    Raises
+    ------
+    FileNotFoundError
+        No ``*sessions_list.txt`` (other than playback lists) is found.
+    """
+
+    input_files_dir = pathlib.Path(configure_path(input_files_directory))
+    list_files = sorted(p for p in input_files_dir.glob("*sessions_list.txt") if "playback" not in p.name.lower())
+    if not list_files:
+        raise FileNotFoundError(f"{label}: no '*sessions_list.txt' under '{input_files_dir}'.")
+    roots, seen = [], set()
+    for list_file in list_files:
+        for line in list_file.read_text().splitlines():
+            root = line.strip()
+            if root and not root.startswith("#") and root not in seen:
+                seen.add(root)
+                roots.append(root)
+    return roots
+
+
+def write_cohort_sessions_file(
+    input_files_directory: str,
+    label: str,
+    message_output: Callable | None = None,
+) -> str:
+    """
+    Description
+    -----------
+    Writes the cohort session list (``read_cohort_session_roots``: every
+    non-playback ``*sessions_list.txt`` under ``input_files_directory``, pooled
+    and deduplicated) to a temporary text file, the input
+    ``build_pooled_embeddings_df`` reads. The caller removes the file.
+
+    Parameters
+    ----------
+    input_files_directory (str)
+        Directory holding the cohort's ``*sessions_list.txt`` files.
+    label (str)
+        Short name of the caller, used in the log line, the error and the
+        temporary file's suffix.
+    message_output (Callable | None)
+        Logger; defaults to ``print``.
+
+    Returns
+    -------
+    combined_sessions_txt (str)
+        Path of the temporary combined session list.
+
+    Raises
+    ------
+    FileNotFoundError
+        No ``*sessions_list.txt`` (other than playback lists) is found.
+    """
+
+    log = message_output or print
+    roots = read_cohort_session_roots(input_files_directory, label)
+    log(f"[{label}] pooled {len(roots)} session roots.")
+    with tempfile.NamedTemporaryFile("w", suffix=f"_{label}_sessions.txt", delete=False) as combined_file:
+        combined_file.write("\n".join(roots))
+        return combined_file.name
+
+
+REGULAR_MAP_PROPERTY_COLUMNS = (
+    "duration",
+    "spectral_entropy",
+    "freq_bandwidth_hz",
+    "mean_freq_hz",
+    "loudness_db",
+    "mask_number",
+)
+
+
+def load_regular_map_cohort_usvs(
+    input_files_directory: str,
+    cache_path: str | None,
+    exclude_noise_usvs: bool,
+    label: str,
+    message_output: Callable | None = None,
+) -> pls.DataFrame:
+    """
+    Description
+    -----------
+    Pools the cohort's USVs on the regular QLVM map for the cohort-level QLVM
+    figures and videos: every session of the ``*sessions_list.txt`` files under
+    ``input_files_directory`` (playback lists dropped), read with
+    ``build_pooled_embeddings_df`` (served from ``cache_path`` when that parquet
+    matches the current summaries, otherwise rebuilt and written there). Keeps
+    the pure USVs (``usv & ~squeak``, ``os_utils.call_class_mask``: squeaks and
+    segments holding both are left out, the USV maps being trained on USVs only)
+    with a regular-map position (``qlvm1`` / ``qlvm2``) and every
+    ``REGULAR_MAP_PROPERTY_COLUMNS`` value finite.
+
+    Parameters
+    ----------
+    input_files_directory (str)
+        Directory holding the cohort's ``*sessions_list.txt`` files.
+    cache_path (str | None)
+        Pooled-embeddings parquet cache (``os_utils.resolve_pooled_embeddings_cache``);
+        ``None`` pools from the summaries without reading or writing a cache.
+    exclude_noise_usvs (bool)
+        Whether to drop the segments ``detect_usv_noise`` flagged as holding no vocalization.
+    label (str)
+        Short name of the caller, used in the log lines.
+    message_output (Callable | None)
+        Logger; defaults to ``print``.
+
+    Returns
+    -------
+    usvs (pls.DataFrame)
+        ``session_id``, ``row_index`` (the summary row, which keys the session's
+        spectrogram H5), ``qlvm1``, ``qlvm2``, ``qlvm_category`` (when the
+        summaries carry it) and the ``REGULAR_MAP_PROPERTY_COLUMNS``, one row per USV.
+    """
+
+    log = message_output or print
+    sessions_txt = write_cohort_sessions_file(input_files_directory, label, message_output=log)
+    try:
+        pooled = build_pooled_embeddings_df(sessions_txt_path=sessions_txt, cache_path=cache_path,
+                                            exclude_noise_usvs=exclude_noise_usvs, message_output=log)
+    finally:
+        pathlib.Path(sessions_txt).unlink()
+    numeric = ["qlvm1", "qlvm2", *REGULAR_MAP_PROPERTY_COLUMNS]
+    columns = ["session_id", "row_index", "qlvm1", "qlvm2",
+               *([QLVM_CATEGORY_COLUMN] if QLVM_CATEGORY_COLUMN in pooled.columns else []), *REGULAR_MAP_PROPERTY_COLUMNS]
+    usvs = (pooled.filter(call_class_mask(pooled, ("usv",), "pooled embeddings table"))
+            .select(columns)
+            .drop_nulls(numeric)
+            .filter(pls.all_horizontal([pls.col(column).is_finite() for column in numeric])))
+    log(f"[{label}] {usvs.height:,} pure USVs with a regular-map position and all six properties "
+        f"(of {pooled.height:,} pooled rows).")
+    return usvs
+
+
 def build_pooled_embeddings_df(
     sessions_txt_path: str,
     cache_path: str | None = None,
@@ -2519,7 +2680,8 @@ def build_pooled_embeddings_df(
             usv, squeak (Boolean; the vocal-class booleans, null on unscorable
                 rows and where a summary has no such columns)
             mean_freq_hz, peak_freq_hz, freq_bandwidth_hz,
-            mean_amplitude, max_amplitude, spectral_entropy (Float64)
+            mean_amplitude, max_amplitude, spectral_entropy,
+            loudness_db, mask_number (Float64)
         Columns missing from individual sessions become nulls in the
         pooled output (diagonal concat).
     """
@@ -3923,37 +4085,17 @@ def render_embedding_thumbnails_for_cohort(
     cfg = visualizations_parameter_dict["embedding_thumbnails"]
     figures = visualizations_parameter_dict["figures"]
 
-    input_files_dir = pathlib.Path(
-        configure_path(visualizations_parameter_dict["shared_resources"]["input_files_directory"])
-    )
     store_path = resolve_consolidated_h5_path(
         visualizations_parameter_dict["shared_resources"]["spectrograms_dir"]
     )
 
     # Pool every cohort session list into one deduplicated combined list (same
-    # cohort definition as the embedding explorer). Playback
-    # lists are dropped, as the explorer drops them: playback sessions carry no
-    # emitter / embedding structure (and no noise column, so pooling them with
-    # exclude_noise_usvs fails).
-    list_files = sorted(p for p in input_files_dir.glob("*sessions_list.txt") if "playback" not in p.name.lower())
-    if not list_files:
-        raise FileNotFoundError(
-            f"embedding thumbnails: no '*sessions_list.txt' under '{input_files_dir}'."
-        )
-    roots, seen = [], set()
-    for list_file in list_files:
-        for line in list_file.read_text().splitlines():
-            root = line.strip()
-            if root and not root.startswith("#") and root not in seen:
-                seen.add(root)
-                roots.append(root)
-    log(f"[embedding-thumbnails] pooled {len(roots)} session roots from {len(list_files)} list(s).")
-
-    with tempfile.NamedTemporaryFile(
-        "w", suffix="_embedding_thumbnails_sessions.txt", delete=False
-    ) as combined_file:
-        combined_file.write("\n".join(roots))
-        combined_sessions_txt = combined_file.name
+    # cohort definition as the embedding explorer; playback lists dropped).
+    combined_sessions_txt = write_cohort_sessions_file(
+        visualizations_parameter_dict["shared_resources"]["input_files_directory"],
+        "embedding-thumbnails",
+        message_output=log,
+    )
 
     # The category boundaries and the cluster-ID / spiral centres come from the
     # category bundle (os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY) inside

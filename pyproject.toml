@@ -69,7 +69,8 @@ dependencies = [
     "torch",
     "torchvision",
     "tqdm",
-    "ultralytics"
+    "ultralytics",
+    "umap-learn"
 ]
 
 [project.optional-dependencies]
@@ -190,6 +191,11 @@ filterwarnings = [
     # Module-scoping cannot target it (the warning fires at compile time, before the
     # offending module has a stack frame), so it is matched by message + category.
     "ignore:invalid escape sequence:SyntaxWarning",
+    # umap-learn announces at import that its optional ParametricUMAP needs
+    # TensorFlow (not a dependency here; only the plain UMAP is used, by
+    # visualizations/qlvm_figures). Under the `error` filter that ImportWarning
+    # would abort test collection, so it is matched by message + category.
+    "ignore:Tensorflow not installed:ImportWarning",
 ]
 log_cli_level = "INFO"
 testpaths = [

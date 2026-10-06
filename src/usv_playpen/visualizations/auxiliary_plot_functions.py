@@ -323,3 +323,38 @@ def draw_category_outlines(
             ax.contour(x_axis, y_axis, category_mask, levels=[0.5], colors=colors, linewidths=linewidths, zorder=zorder)
         )
     return contour_sets
+
+
+def periodic_density(rows: np.ndarray, cols: np.ndarray, resolution: int, bandwidth: float) -> np.ndarray:
+    """
+    Description
+    -----------
+    Counts per pixel of a ``resolution`` x ``resolution`` torus grid convolved with
+    a periodic separable Gaussian of standard deviation ``bandwidth`` (torus
+    units), applied in the Fourier domain so the seams wrap; exact on the torus up
+    to the pixel width. The density estimate of the QLVM figures and videos.
+
+    Parameters
+    ----------
+    rows (np.ndarray)
+        Pixel row (y) of each point.
+    cols (np.ndarray)
+        Pixel column (x) of each point.
+    resolution (int)
+        Grid pixels per side.
+    bandwidth (float)
+        Gaussian standard deviation in torus units.
+
+    Returns
+    -------
+    density (np.ndarray)
+        ``(resolution, resolution)`` smoothed counts, indexed ``[y, x]`` (the
+        kernel is not normalized: every point adds the kernel's peak value 1 at
+        its own pixel, so the field reads as a smoothed count).
+    """
+
+    counts = np.zeros((resolution, resolution))
+    np.add.at(counts, (rows, cols), 1.0)
+    offsets = (np.arange(resolution) + resolution // 2) % resolution - resolution // 2
+    kernel = np.exp(-0.5 * (offsets / resolution) ** 2 / bandwidth ** 2)
+    return np.real(np.fft.ifft2(np.fft.fft2(counts) * np.fft.fft2(np.outer(kernel, kernel))))
