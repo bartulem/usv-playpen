@@ -563,22 +563,20 @@ class TestPygamEngine:
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
-    def test_pygam_missing_params_uses_hardcoded_fallback(self, tmp_path):
+    def test_pygam_missing_params_raises(self, tmp_path):
         """
-        Removing the ``pygam`` hyperparameter block makes the param read raise
-        ``KeyError``, so the runner falls back to its hard-coded defaults
-        (8/5 splines, lam=0.6, 100 iters). Tiny data keeps the fallback fit
-        bounded; asserts the run completes.
+        The pyGAM hyperparameters always come from the settings: removing the
+        ``pygam`` block raises ``KeyError`` instead of falling back to
+        hard-coded values.
         """
 
         pipeline = _pipeline(tmp_path, model_engine='pygam', split_strategy='mixed', split_num=1)
         del pipeline.modeling_settings['hyperparameters']['classical']['pygam']
         feature_data = _make_feature_data(['session_0', 'session_1'], n_usv=14, n_no_usv=28)
-        feat_name, results = pipeline._run_model_for_feature_pygam(
-            feature_name='self.speed', feature_data=feature_data, basis_matrix=None,
-        )
-        assert feat_name == 'self.speed'
-        assert results['actual']['filter_shapes'].shape == (1, HISTORY_FRAMES)
+        with pytest.raises(KeyError, match='pygam'):
+            pipeline._run_model_for_feature_pygam(
+                feature_name='self.speed', feature_data=feature_data, basis_matrix=None,
+            )
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     def test_pygam_no_valid_splits_reports_empty(self, tmp_path):

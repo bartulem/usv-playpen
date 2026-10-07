@@ -1286,15 +1286,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         n_splits = self.modeling_settings['model_validation']['n_cv_folds']
         history_frames = self.history_frames
 
-        try:
-            pygam_params = self.modeling_settings['hyperparameters']['classical']['pygam']
-            n_splines_time = pygam_params['n_splines_time']
-            n_splines_value = pygam_params['n_splines_value']
-            lam_penalty = pygam_params['lam_penalty']
-            max_iterations = pygam_params['max_iterations']
-            tol_val = pygam_params['tol_val']
-        except KeyError:
-            n_splines_time, n_splines_value, lam_penalty, max_iterations, tol_val = 8, 5, 0.6, 100, 1e-4
+        pygam_params = self.modeling_settings['hyperparameters']['classical']['pygam']
+        n_splines_time = pygam_params['n_splines_time']
+        n_splines_value = pygam_params['n_splines_value']
+        lam_penalty = pygam_params['lam_penalty']
+        max_iterations = pygam_params['max_iterations']
+        tol_val = pygam_params['tol_val']
 
         gam_kwargs_actual = {
             'max_iter': max_iterations,
