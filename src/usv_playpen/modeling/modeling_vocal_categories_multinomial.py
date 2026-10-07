@@ -1570,6 +1570,10 @@ class MultinomialModelRunner:
                                 ['auc', 'score', 'recall', 'f1', 'll',
                                  'brier', 'ece', 'mcc']},
                     'weights': [],
+                    # Raw spline coefficients (n_splines per feature) when a temporal
+                    # basis is used; None per fold otherwise. `weights` holds the
+                    # same filters mapped back onto the frame axis.
+                    'basis_coefficients': [],
                     'intercepts': [],
                     'y_true': [],
                     'y_pred': [],
@@ -1623,6 +1627,7 @@ class MultinomialModelRunner:
                 y_train, y_test = y[train_idx], y[test_idx]
 
                 fold_weights = None
+                fold_basis_coefficients = None
                 fold_intercepts = None
 
                 if strategy == 'null_model_free':
@@ -1735,6 +1740,7 @@ class MultinomialModelRunner:
                     model_classes = model.classes_
                     fold_weights = model.coef_
                     if temporal_basis is not None:
+                        fold_basis_coefficients = np.asarray(model.coef_)
                         fold_weights = basis_coefficients_to_frames(fold_weights, temporal_basis, n_features=1, axis=1)
                     fold_intercepts = model.intercept_
                     fold_n_iter = int(model.n_iter_)
@@ -1789,6 +1795,7 @@ class MultinomialModelRunner:
 
                 # Persist deep storage matrices
                 strategy_data['folds']['weights'].append(fold_weights)
+                strategy_data['folds']['basis_coefficients'].append(fold_basis_coefficients)
                 strategy_data['folds']['intercepts'].append(fold_intercepts)
                 strategy_data['folds']['y_true'].append(y_test)
                 strategy_data['folds']['y_pred'].append(predictions)
@@ -1845,6 +1852,7 @@ class MultinomialModelRunner:
                         y_dev[sess_mask] = sess_labels
 
                 held_weights = None
+                held_basis_coefficients = None
                 held_intercepts = None
 
                 if strategy == 'null_model_free':
@@ -1944,6 +1952,7 @@ class MultinomialModelRunner:
                     model_classes = model.classes_
                     held_weights = model.coef_
                     if temporal_basis is not None:
+                        held_basis_coefficients = np.asarray(model.coef_)
                         held_weights = basis_coefficients_to_frames(held_weights, temporal_basis, n_features=1, axis=1)
                     held_intercepts = model.intercept_
                     held_n_iter = int(model.n_iter_)
@@ -1982,6 +1991,7 @@ class MultinomialModelRunner:
                         'brier': h_brier, 'ece': h_ece, 'mcc': h_mcc,
                     },
                     'weights': held_weights,
+                    'basis_coefficients': held_basis_coefficients,
                     'intercepts': held_intercepts,
                     'y_true': y_held,
                     'y_pred': predictions,

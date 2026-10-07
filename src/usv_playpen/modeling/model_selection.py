@@ -4111,7 +4111,7 @@ def multinomial_vocal_category_model_selection(
                 'metrics': {m: [] for m in
                             ['auc', 'score', 'recall', 'f1', 'll',
                              'brier', 'ece', 'mcc']},
-                'weights': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
+                'weights': [], 'basis_coefficients': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
                 'p_train': [], 'p_test': [],
                 'confusion_matrix': [],
                 'n_iter': [], 'converged': [], 'fit_time': [],
@@ -4182,6 +4182,7 @@ def multinomial_vocal_category_model_selection(
                 f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
 
                 cand_data['folds']['weights'].append((basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=1, axis=1) if temporal_basis is not None else model.coef_))
+                cand_data['folds']['basis_coefficients'].append((np.asarray(model.coef_) if temporal_basis is not None else None))
                 cand_data['folds']['intercepts'].append(model.intercept_)
                 cand_data['folds']['y_true'].append(y_te)
                 cand_data['folds']['y_pred'].append(y_pred)
@@ -4343,7 +4344,7 @@ def multinomial_vocal_category_model_selection(
                     'metrics': {m: [] for m in
                                 ['auc', 'score', 'recall', 'f1', 'll',
                                  'brier', 'ece', 'mcc']},
-                    'weights': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
+                    'weights': [], 'basis_coefficients': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
                     'p_train': [], 'p_test': [],
                     'confusion_matrix': [],
                     'n_iter': [], 'converged': [], 'fit_time': [],
@@ -4433,6 +4434,7 @@ def multinomial_vocal_category_model_selection(
                     f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
 
                     cand_data['folds']['weights'].append((basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=n_trial_feats, axis=1) if temporal_basis is not None else model.coef_))
+                    cand_data['folds']['basis_coefficients'].append((np.asarray(model.coef_) if temporal_basis is not None else None))
                     cand_data['folds']['intercepts'].append(model.intercept_)
                     cand_data['folds']['y_true'].append(y_te)
                     cand_data['folds']['y_pred'].append(y_pred)
@@ -4647,6 +4649,7 @@ def multinomial_vocal_category_model_selection(
                 y_pred = held_model.predict(X_held, balanced=hp['balance_predictions_bool'])
                 model_classes = held_model.classes_
                 held_weights = (basis_coefficients_to_frames(held_model.coef_, temporal_basis, n_features=n_final_feats, axis=1) if temporal_basis is not None else held_model.coef_)
+                held_basis_coefficients = (np.asarray(held_model.coef_) if temporal_basis is not None else None)
                 held_intercepts = held_model.intercept_
                 held_n_iter = int(held_model.n_iter_)
                 held_converged = bool(held_model.converged_)
@@ -4662,6 +4665,7 @@ def multinomial_vocal_category_model_selection(
                 y_pred = np.full(len(y_held), majority_class)
                 model_classes = unique_classes
                 held_weights = None
+                held_basis_coefficients = None
                 held_intercepts = None
                 held_n_iter = 0
                 held_converged = True
@@ -4709,6 +4713,7 @@ def multinomial_vocal_category_model_selection(
                     'brier': h_brier, 'ece': h_ece, 'mcc': h_mcc,
                 },
                 'weights': held_weights,
+                'basis_coefficients': held_basis_coefficients,
                 'intercepts': held_intercepts,
                 'y_true': y_held,
                 'y_pred': y_pred,
@@ -5697,6 +5702,9 @@ def continuous_vocal_manifold_model_selection(
             'folds': {
                 'metrics': {m: [] for m in MANIFOLD_METRIC_KEYS},
                 'weights': [],
+                # Raw spline coefficients when a temporal basis is used (None
+                # otherwise); `weights` holds them mapped onto the frame axis.
+                'basis_coefficients': [],
                 'intercepts': [],
                 'test_indices': [],
                 'y_true': [],
@@ -5863,6 +5871,7 @@ def continuous_vocal_manifold_model_selection(
                     f_met[_mk].append(metrics[_mk])
 
                 cand_data['folds']['weights'].append((basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=1, axis=0) if temporal_basis is not None else model.coef_))
+                cand_data['folds']['basis_coefficients'].append((np.asarray(model.coef_) if temporal_basis is not None else None))
                 cand_data['folds']['intercepts'].append(model.intercept_)
                 cand_data['folds']['test_indices'].append(te_idx)
                 cand_data['folds']['y_true'].append(Y_te)
@@ -6061,6 +6070,7 @@ def continuous_vocal_manifold_model_selection(
                         f_met[_mk].append(metrics[_mk])
 
                     cand_data['folds']['weights'].append((basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=n_trial_feats, axis=0) if temporal_basis is not None else model.coef_))
+                    cand_data['folds']['basis_coefficients'].append((np.asarray(model.coef_) if temporal_basis is not None else None))
                     cand_data['folds']['intercepts'].append(model.intercept_)
                     cand_data['folds']['test_indices'].append(te_idx)
                     cand_data['folds']['y_true'].append(Y_te)
@@ -6256,6 +6266,7 @@ def continuous_vocal_manifold_model_selection(
                     'features': list(current_model_features),
                     'metrics': {_mk: float(held_metrics[_mk]) for _mk in MANIFOLD_METRIC_KEYS},
                     'weights': (basis_coefficients_to_frames(held_model.coef_, temporal_basis, n_features=n_feats_final, axis=0) if temporal_basis is not None else held_model.coef_),
+                    'basis_coefficients': (np.asarray(held_model.coef_) if temporal_basis is not None else None),
                     'intercept': held_model.intercept_,
                     'test_indices': _held_positions,
                     'y_true': Y_held,

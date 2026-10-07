@@ -929,13 +929,17 @@ class TestMultinomialUnivariateRunner:
         runner = MultinomialModelRunner(pipeline_instance=MultinomialModelingPipeline(modeling_settings_dict=settings))
         _, results = runner.run_univariate_training(pkl_path=input_pkl, feat_name='self.speed')
 
-        basis = gam_bspline_basis(HISTORY_FRAMES, 8, 3)
-        fitted = [np.asarray(w) for w in results['actual']['folds']['weights'] if w is not None]
-        assert fitted
-        for weights in fitted:
+        basis = gam_bspline_basis(HISTORY_FRAMES, 8, 3) / HISTORY_FRAMES
+        folds = results['actual']['folds']
+        pairs = [(np.asarray(w), np.asarray(c)) for w, c in zip(folds['weights'], folds['basis_coefficients'])
+                 if w is not None]
+        assert pairs
+        for weights, coefficients in pairs:
             assert weights.shape == (N_CATEGORIES, HISTORY_FRAMES)
-            coefficients = np.linalg.lstsq(basis, weights.T, rcond=None)[0]
-            np.testing.assert_allclose(basis @ coefficients, weights.T, atol=1e-6)
+            # The raw spline coefficients are stored too, and reproduce the frame filters.
+            assert coefficients.shape == (N_CATEGORIES, 8)
+            np.testing.assert_allclose(coefficients @ basis.T, weights, rtol=1e-5, atol=1e-9)
+        assert all(c is None for c in results['null_model_free']['folds']['basis_coefficients'])
         assert np.isfinite(np.asarray(results['actual']['folds']['metrics']['auc'], dtype=float)).any()
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -1167,12 +1171,15 @@ class TestMultinomialModelSelection:
             for name, candidate in step['candidates_summary'].items():
                 if name == 'null_model_free':
                     continue
-                for weights in candidate['folds']['weights']:
+                for weights, coefficients in zip(candidate['folds']['weights'],
+                                                 candidate['folds']['basis_coefficients']):
                     if weights is not None:
                         # Whole frame-axis filters per feature (never 8-coefficient blocks).
                         n_classes, n_inputs = np.asarray(weights).shape
                         assert n_classes == N_CATEGORIES
                         assert n_inputs % HISTORY_FRAMES == 0 and n_inputs >= HISTORY_FRAMES
+                        # ...and the raw 8 coefficients per feature beside them.
+                        assert np.asarray(coefficients).shape == (N_CATEGORIES, 8 * (n_inputs // HISTORY_FRAMES))
                         checked += 1
         assert checked > 0
 

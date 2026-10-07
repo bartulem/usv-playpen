@@ -1721,8 +1721,10 @@ class ContinuousModelRunner:
         Data persistence
         -----------------
         Saves full-resolution tracking data (`test_indices`, `y_true`,
-        `y_pred_xy` — manifold-snapped, `weights`, `intercepts`,
-        convergence diagnostics, `w_test`) for every strategy so
+        `y_pred_xy` — manifold-snapped, `weights` on the frame axis,
+        `basis_coefficients` — the raw spline coefficients when a temporal
+        basis is used, else None — `intercepts`, convergence diagnostics,
+        `w_test`) for every strategy so
         downstream comparative scatter plotting and manifold
         visualisation can be regenerated without re-training.
 
@@ -1963,6 +1965,10 @@ class ContinuousModelRunner:
                     # Learned linear map and bias (None for `null_model_free`,
                     # which has no trainable parameters).
                     'weights': [],
+                    # Raw spline coefficients (n_splines per feature) when a temporal
+                    # basis is used; None per fold otherwise. `weights` holds the
+                    # same filters mapped back onto the frame axis.
+                    'basis_coefficients': [],
                     'intercepts': [],
                     'test_indices': [],
                     'y_true': [],
@@ -2070,6 +2076,7 @@ class ContinuousModelRunner:
                     )
 
                     fold_weights, fold_intercepts = None, None
+                    fold_basis_coefficients = None
                     # The draw "fit" is closed-form and instantaneous.
                     fold_n_iter = 0
                     fold_converged = True
@@ -2167,7 +2174,9 @@ class ContinuousModelRunner:
 
                     y_pred_xy = model.predict(X_test, snap=True).astype(np.float32)
                     fold_weights = model.coef_
+                    fold_basis_coefficients = None
                     if temporal_basis is not None:
+                        fold_basis_coefficients = np.asarray(model.coef_)
                         fold_weights = basis_coefficients_to_frames(fold_weights, temporal_basis, n_features=1, axis=0)
                     fold_intercepts = model.intercept_
                     fold_n_iter = int(model.n_iter_)
@@ -2184,6 +2193,7 @@ class ContinuousModelRunner:
                     results[strategy]['folds']['metrics'][m_key].append(m_val)
 
                 results[strategy]['folds']['weights'].append(fold_weights)
+                results[strategy]['folds']['basis_coefficients'].append(fold_basis_coefficients)
                 results[strategy]['folds']['intercepts'].append(fold_intercepts)
                 results[strategy]['folds']['test_indices'].append(test_idx)
                 results[strategy]['folds']['y_true'].append(Y_test)
@@ -2264,6 +2274,7 @@ class ContinuousModelRunner:
                     region_labels=region_held, min_region_events=min_region_events,
                 )
                 h_weights, h_intercepts = None, None
+                h_basis_coefficients = None
                 h_n_iter, h_converged, h_fit_time = 0, True, 0.0
                 h_lambda_smooth = float('nan')
                 h_l2_reg = float('nan')
@@ -2341,7 +2352,9 @@ class ContinuousModelRunner:
                 )
                 yh_pred_xy = model_h.predict(Xh_test, snap=True).astype(np.float32)
                 h_weights = model_h.coef_
+                h_basis_coefficients = None
                 if temporal_basis is not None:
+                    h_basis_coefficients = np.asarray(model_h.coef_)
                     h_weights = basis_coefficients_to_frames(h_weights, temporal_basis, n_features=1, axis=0)
                 h_intercepts = model_h.intercept_
                 h_n_iter = int(model_h.n_iter_)
@@ -2355,6 +2368,7 @@ class ContinuousModelRunner:
             results[strategy]['heldout'] = {
                 'metrics': metrics_h,
                 'weights': h_weights,
+                'basis_coefficients': h_basis_coefficients,
                 'intercepts': h_intercepts,
                 'test_indices': _held_positions,
                 'y_true': Yh_test,
