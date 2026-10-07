@@ -80,6 +80,7 @@ from .modeling_utils import (
     manifold_tag_segment,
 )
 from .manifold_torus_regression import resolve_manifold_regressor_cls
+from .modeling_bases_functions import basis_coefficients_to_frames, project_history_onto_basis, resolve_temporal_basis
 from .manifold_metric import (
     signed_diff,
     circular_mean,
@@ -405,6 +406,9 @@ def _log_spaced_grid(center: float, decades_each_side: int) -> np.ndarray:
         Sorted 1-D array of length `2 * decades_each_side + 1`.
     """
 
+    if decades_each_side == 0:
+        # No tuning: the fixed value itself (0 allowed, e.g. the pinned L2 of a B-spline fit).
+        return np.array([float(center)])
     if decades_each_side < 0:
         raise ValueError(f"decades_each_side must be >= 0, got {decades_each_side}.")
     if center <= 0:
@@ -427,6 +431,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                                   n_time_bins: int,
                                   spatial_cluster_num: int,
                                   smoothness_derivative_order: int,
+                                  smoothness_reflective_edges: bool = True,
                                   huber_delta: float,
                                   learning_rate: float,
                                   inner_max_iter: int,
@@ -516,6 +521,10 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     smoothness_derivative_order : int
         Order of the discrete time derivative penalised by the smoothness
         term; forwarded unchanged to `regressor_cls` on every inner fit.
+    smoothness_reflective_edges : bool
+        Whether an order-2 penalty also penalises the filter's edge slopes
+        (False for a B-spline temporal basis: the plain P-spline penalty);
+        forwarded unchanged to `regressor_cls` on every inner fit.
     use_lax_loop : bool
         Whether the estimator's fused `lax`-scan training loop is enabled;
         forwarded unchanged to `regressor_cls` on every inner fit.
@@ -624,6 +633,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                         lambda_smooth=float(lam_sm),
                         l2_reg=float(lam_l2),
                         smoothness_derivative_order=smoothness_derivative_order,
+                        smoothness_reflective_edges=smoothness_reflective_edges,
                         huber_delta=huber_delta,
                         learning_rate=learning_rate,
                         max_iter=inner_max_iter,
@@ -1358,9 +1368,13 @@ class ContinuousModelRunner:
         ----------
         pipeline_instance : ContinuousModelingPipeline
             An instance of the extraction class which holds the
-            'modeling_settings' dictionary and calculated attributes.
+            'modeling_settings' dictionary and calculated attributes
+            (including `history_frames`).
         """
         self.modeling_settings = pipeline_instance.modeling_settings
+        # History-window length in frames (the pipeline derives it from the camera
+        # rate and `filter_history`); a temporal basis spans exactly this window.
+        self.history_frames = int(pipeline_instance.history_frames)
 
         if hasattr(pipeline_instance, 'feature_boundaries'):
             self.feature_boundaries = pipeline_instance.feature_boundaries
@@ -1368,7 +1382,8 @@ class ContinuousModelRunner:
     @staticmethod
     def load_univariate_data_blocks(pkl_path: str,
                                     bin_size: int = 1,
-                                    feature_filter=None) -> dict:
+                                    feature_filter=None,
+                                    basis: np.ndarray | None = None) -> dict:
         """
         Loads extracted feature data from disk and applies temporal downsampling (binning).
 
@@ -1400,6 +1415,12 @@ class ContinuousModelRunner:
             pass the feature(s) actually needed to skip the rest. The
             default (`None`) retains the behaviour of binning every
             feature in the pickle.
+        basis : np.ndarray or None, optional
+            ``(history_frames, n_basis)`` temporal basis
+            (``modeling_bases_functions.resolve_temporal_basis``). When given,
+            every session's history is projected onto it after any binning, so
+            each feature contributes ``n_basis`` columns and ``n_time_bins`` is
+            ``n_basis``. ``None`` (default) keeps the frame columns.
 
         Returns
         -------
@@ -1491,6 +1512,8 @@ class ContinuousModelRunner:
                     # last column = frame onset-1, so truncating the tail instead would
                     # discard the frames closest to onset and misalign the filter time axis.
                     X_sess = X_sess[:, T - new_T * bin_size:].reshape(N, new_T, bin_size).mean(axis=2)
+                if basis is not None:
+                    X_sess = project_history_onto_basis(X_sess, basis)
 
                 X_list.append(X_sess)
                 Y_list.append(Y_sess)
@@ -1726,7 +1749,10 @@ class ContinuousModelRunner:
 
         print(f"--- Starting Univariate Training: {feat_name} ---")
 
-        hp = self.modeling_settings['hyperparameters']['linear_models']['manifold_regression']
+        # The temporal representation (full-resolution frames or a B-spline basis)
+        # decides the penalty settings the fit uses; `hp` is that effective block.
+        temporal_basis, hp = resolve_temporal_basis(
+            self.modeling_settings['hyperparameters']['linear_models']['manifold_regression'], self.history_frames)
         bin_size = hp['bin_resizing_factor']
 
         # Only bin the feature we're about to train. Mirrors the multinomial
@@ -1734,7 +1760,7 @@ class ContinuousModelRunner:
         # invocations don't pay the binning cost for every other feature
         # in the pickle.
         data_blocks = self.load_univariate_data_blocks(
-            pkl_path, bin_size=bin_size, feature_filter=feat_name,
+            pkl_path, bin_size=bin_size, feature_filter=feat_name, basis=temporal_basis,
         )
         if feat_name not in data_blocks:
             raise KeyError(f"Feature '{feat_name}' not found in {pkl_path}.")
@@ -1770,6 +1796,7 @@ class ContinuousModelRunner:
         lam_smooth_fixed = hp['lambda_smooth_fixed']
         lam_l2_fixed = hp['l2_reg_fixed']
         smoothness_order = hp['smoothness_derivative_order']
+        reflective_edges = hp['smoothness_reflective_edges']
         huber_delta = hp['huber_delta']
         lr = hp['learning_rate']
         max_iter = hp['max_iter']
@@ -2080,6 +2107,7 @@ class ContinuousModelRunner:
                             n_time_bins=n_time_bins,
                             spatial_cluster_num=n_clusters,
                             smoothness_derivative_order=smoothness_order,
+                            smoothness_reflective_edges=reflective_edges,
                             huber_delta=huber_delta,
                             learning_rate=lr,
                             inner_max_iter=inner_max_iter,
@@ -2120,6 +2148,7 @@ class ContinuousModelRunner:
                         lambda_smooth=fold_lambda_smooth,
                         l2_reg=fold_l2_reg,
                         smoothness_derivative_order=smoothness_order,
+                        smoothness_reflective_edges=reflective_edges,
                         huber_delta=huber_delta,
                         learning_rate=lr,
                         max_iter=max_iter,
@@ -2138,6 +2167,8 @@ class ContinuousModelRunner:
 
                     y_pred_xy = model.predict(X_test, snap=True).astype(np.float32)
                     fold_weights = model.coef_
+                    if temporal_basis is not None:
+                        fold_weights = basis_coefficients_to_frames(fold_weights, temporal_basis, n_features=1, axis=0)
                     fold_intercepts = model.intercept_
                     fold_n_iter = int(model.n_iter_)
                     fold_converged = bool(model.converged_)
@@ -2260,6 +2291,7 @@ class ContinuousModelRunner:
                         n_time_bins=n_time_bins,
                         spatial_cluster_num=n_clusters,
                         smoothness_derivative_order=smoothness_order,
+                        smoothness_reflective_edges=reflective_edges,
                         huber_delta=huber_delta,
                         learning_rate=lr,
                         inner_max_iter=inner_max_iter,
@@ -2291,6 +2323,7 @@ class ContinuousModelRunner:
                     lambda_smooth=h_lambda_smooth,
                     l2_reg=h_l2_reg,
                     smoothness_derivative_order=smoothness_order,
+                    smoothness_reflective_edges=reflective_edges,
                     huber_delta=huber_delta,
                     learning_rate=lr,
                     max_iter=max_iter,
@@ -2308,6 +2341,8 @@ class ContinuousModelRunner:
                 )
                 yh_pred_xy = model_h.predict(Xh_test, snap=True).astype(np.float32)
                 h_weights = model_h.coef_
+                if temporal_basis is not None:
+                    h_weights = basis_coefficients_to_frames(h_weights, temporal_basis, n_features=1, axis=0)
                 h_intercepts = model_h.intercept_
                 h_n_iter = int(model_h.n_iter_)
                 h_converged = bool(model_h.converged_)

@@ -59,6 +59,7 @@ import pytest
 
 matplotlib.use('Agg')
 
+from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
 from tests.modeling._synth import (
     build_modeling_settings,
     build_session_tree,
@@ -516,6 +517,35 @@ class TestContinuousModelRunner:
         assert all(it == 0 for it in results['null_model_free']['folds']['n_iter'])
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_run_univariate_training_bspline_basis_stores_frame_filters(self, tmp_path):
+        """
+        With ``temporal_basis.type = 'bspline'`` the continuous runner fits the
+        B-spline coefficients under the GAM-mirroring penalty and stores every
+        fold's weights converted back to the frame axis (``HISTORY_FRAMES`` rows
+        per output column), each column in the span of pyGAM's lag basis.
+        """
+
+        settings, save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='mixed', split_num=2, test_proportion=0.3,
+        )
+        settings['hyperparameters']['linear_models']['manifold_regression']['temporal_basis'] = {
+            'type': 'bspline', 'n_splines': 8, 'spline_order': 3, 'lambda_smooth_fixed': 0.6,
+            'lambda_smooth_decades_each_side': 1}
+        settings['hyperparameters']['linear_models']['manifold_regression']['bin_resizing_factor'] = 1
+        pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
+        pipeline.extract_and_save_continuous_data()
+        input_pkl = str(next(save_dir.glob('modeling_manifold_*.pkl')))
+        results = ContinuousModelRunner(pipeline).run_univariate_training(input_pkl, 'self.speed')
+
+        basis = gam_bspline_basis(HISTORY_FRAMES, 8, 3)
+        fitted = [np.asarray(w) for w in results['actual']['folds']['weights'] if w is not None]
+        assert fitted
+        for weights in fitted:
+            assert weights.shape[0] == HISTORY_FRAMES
+            coefficients = np.linalg.lstsq(basis, weights, rcond=None)[0]
+            np.testing.assert_allclose(basis @ coefficients, weights, atol=1e-6)
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_run_univariate_training_with_regularization_tuning(self, tmp_path):
         """
         With ``tune_regularization_bool=True`` (and tiny inner-CV grids) each
@@ -923,6 +953,83 @@ class TestManifoldModelSelection:
         assert 'self.speed' in final_step['current_features']
         # The torus path screens/scores on the von Mises log-score, not r2_spatial.
         assert final_step['_run_metadata']['selection_metric'] == 'vm_logscore'
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_selection_torus_bspline_basis_stores_frame_filters(self, tmp_path):
+        """
+        The torus forward search with ``temporal_basis.type = 'bspline'``: the
+        univariate ranking and every candidate fit project the histories onto
+        pyGAM's lag basis and fit under the GAM-mirroring penalty, the selector
+        still picks up the signal feature, every stored candidate weight matrix
+        is back on the frame axis (``n_features * HISTORY_FRAMES`` rows, 4 torus
+        embedding columns), and the run metadata records the basis.
+        """
+
+        gate_n_sessions = 25
+        settings, _save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'torus'
+        block = settings['hyperparameters']['linear_models']['manifold_regression']
+        block['bin_resizing_factor'] = 1
+        block['temporal_basis'] = {'type': 'bspline', 'n_splines': 8, 'spline_order': 3,
+                                   'lambda_smooth_fixed': 0.6, 'lambda_smooth_decades_each_side': 1}
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
+        input_md = {
+            'analysis_type': 'continuous',
+            'analysis_tag': 'manifold_qlvm_category',
+            'session_ids': session_ids,
+            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'analysis_specific': {
+                'usv_category_column_name': 'qlvm_category',
+                'manifold_metric': 'torus',
+                'manifold_period': 1.0,
+            },
+        }
+        input_pkl = str(_build_signal_continuous_pickle(
+            save_path=tmp_path / 'manifold_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            input_metadata=input_md,
+            target_kind='wound_torus',
+        ))
+        runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
+        combined = {feature: runner.run_univariate_training(input_pkl, feature) for feature in feature_names}
+        combined['_input_metadata'] = input_md
+        combined_path = tmp_path / 'univariate_combined.pkl'
+        with combined_path.open('wb') as fh:
+            pickle.dump(combined, fh)
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        continuous_vocal_manifold_model_selection(
+            univariate_results_path=str(combined_path), input_data_path=input_pkl, output_directory=str(ms_dir),
+            settings_path=str(settings_json), use_top_rank_as_anchor=True, p_val=0.5,
+        )
+
+        step_pkls = sorted(ms_dir.glob('model_selection_continuous_manifold_*_step_*.pkl'))
+        assert len(step_pkls) >= 2
+        checked = 0
+        for path in step_pkls:
+            with path.open('rb') as fh:
+                step = pickle.load(fh)
+            assert 'temporal_basis' in json.dumps(step['_run_metadata'], default=str)
+            for name, candidate in step['candidates_summary'].items():
+                if name == 'null_model_free':
+                    continue
+                for weights in candidate['folds']['weights']:
+                    if weights is not None:
+                        n_inputs, n_outputs = np.asarray(weights).shape
+                        assert n_outputs == 4
+                        assert n_inputs % HISTORY_FRAMES == 0 and n_inputs >= HISTORY_FRAMES
+                        checked += 1
+        assert checked > 0
+        with step_pkls[-1].open('rb') as fh:
+            final_step = pickle.load(fh)
+        assert 'self.speed' in final_step['current_features']
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_frozen_kappa_runs(self, tmp_path, capsys):

@@ -64,6 +64,7 @@ import pytest
 
 matplotlib.use('Agg')
 
+from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
 from tests.modeling._synth import (
     build_behavioral_features_csv,
     build_modeling_settings,
@@ -124,6 +125,8 @@ _MULTINOMIAL_HP_OVERRIDES = {
     'use_lax_loop': False,
     'focal_loss_gamma': 0.0,
     'tune_regularization_bool': False,
+    'temporal_basis': {'type': 'none', 'n_splines': 8, 'spline_order': 3,
+                       'lambda_smooth_fixed': 1.0, 'lambda_smooth_decades_each_side': 0},
     'tune_regularization_params': {
         'lambda_smooth_decades_each_side': 0,
         'l2_reg_decades_each_side': 0,
@@ -896,6 +899,48 @@ class TestMultinomialUnivariateRunner:
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_run_univariate_training_bspline_basis_stores_frame_filters(self, tmp_path):
+        """
+        With ``temporal_basis.type = 'bspline'`` the runner fits the B-spline
+        coefficients (the history projected onto pyGAM's lag basis) under the
+        GAM-mirroring penalty, tuning lambda_smooth by inner CV, and stores every
+        fold's weights converted back to the frame axis, so a filter keeps the
+        full ``HISTORY_FRAMES`` length and lies in the span of the basis.
+        """
+
+        settings, _ = _build_extraction_settings(
+            tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2,
+            test_proportion=0.4,
+        )
+        block = settings['hyperparameters']['linear_models']['multinomial_logistic']
+        block['temporal_basis'] = {'type': 'bspline', 'n_splines': 8, 'spline_order': 3,
+                                   'lambda_smooth_fixed': 0.6, 'lambda_smooth_decades_each_side': 1}
+        block['tune_regularization_bool'] = True
+        block['bin_resizing_factor'] = 1
+
+        input_pkl = str(build_multinomial_input_pickle(
+            save_path=tmp_path / 'modeling_multinomial_input.pkl',
+            feature_names=['self.speed', 'other.speed'],
+            session_ids=[f'session_{i}' for i in range(N_SESSIONS)],
+            history_frames=HISTORY_FRAMES,
+            n_categories=N_CATEGORIES,
+            n_per_class_per_session=18,
+        ))
+        runner = MultinomialModelRunner(pipeline_instance=MultinomialModelingPipeline(modeling_settings_dict=settings))
+        _, results = runner.run_univariate_training(pkl_path=input_pkl, feat_name='self.speed')
+
+        basis = gam_bspline_basis(HISTORY_FRAMES, 8, 3)
+        fitted = [np.asarray(w) for w in results['actual']['folds']['weights'] if w is not None]
+        assert fitted
+        for weights in fitted:
+            assert weights.shape == (N_CATEGORIES, HISTORY_FRAMES)
+            coefficients = np.linalg.lstsq(basis, weights.T, rcond=None)[0]
+            np.testing.assert_allclose(basis @ coefficients, weights.T, atol=1e-6)
+        assert np.isfinite(np.asarray(results['actual']['folds']['metrics']['auc'], dtype=float)).any()
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
     def test_run_univariate_training_holdout_populates_heldout_block(self, tmp_path):
         """
         Recording ``held_out_session_ids`` in the input pickle's
@@ -1071,6 +1116,65 @@ class TestMultinomialModelSelection:
         assert saw_baseline, "Step-0 model-free baseline pickle was not written"
         # The forward search never drops an already-accepted feature.
         assert accepted_counts == sorted(accepted_counts)
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_multinomial_selection_bspline_basis_stores_frame_filters(self, tmp_path):
+        """
+        Model selection with ``temporal_basis.type = 'bspline'`` projects every
+        candidate's histories onto the basis, stores the candidates' weights back
+        on the frame axis (``n_features * HISTORY_FRAMES`` inputs per class), and
+        records the basis in the run metadata.
+        """
+
+        settings, _ = _build_extraction_settings(
+            tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2,
+            test_proportion=0.4,
+        )
+        settings['hyperparameters']['linear_models']['multinomial_logistic']['temporal_basis'] = {
+            'type': 'bspline', 'n_splines': 8, 'spline_order': 3, 'lambda_smooth_fixed': 0.6,
+            'lambda_smooth_decades_each_side': 1}
+        settings['hyperparameters']['linear_models']['multinomial_logistic']['bin_resizing_factor'] = 1
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        input_pkl = str(build_multinomial_input_pickle(
+            save_path=tmp_path / 'modeling_multinomial_input.pkl',
+            feature_names=feature_names,
+            session_ids=[f'session_{i}' for i in range(N_SESSIONS)],
+            history_frames=HISTORY_FRAMES,
+            n_categories=N_CATEGORIES,
+            n_per_class_per_session=18,
+        ))
+        univ_pkl = str(build_univariate_ranking_pickle(
+            save_path=tmp_path / 'univariate_combined.pkl',
+            feature_names=feature_names,
+            n_splits=settings['model_validation']['n_cv_folds'],
+        ))
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        multinomial_vocal_category_model_selection(
+            univariate_results_path=univ_pkl, input_data_path=input_pkl, settings_path=str(settings_json),
+            output_directory=str(ms_dir), use_top_rank_as_anchor=True, p_val=0.05,
+        )
+
+        checked = 0
+        for path in sorted(ms_dir.glob('model_selection_multinomial_*_step_*.pkl')):
+            with path.open('rb') as fh:
+                step = pickle.load(fh)
+            assert 'temporal_basis' in json.dumps(step['_run_metadata'], default=str)
+            for name, candidate in step['candidates_summary'].items():
+                if name == 'null_model_free':
+                    continue
+                for weights in candidate['folds']['weights']:
+                    if weights is not None:
+                        # Whole frame-axis filters per feature (never 8-coefficient blocks).
+                        n_classes, n_inputs = np.asarray(weights).shape
+                        assert n_classes == N_CATEGORIES
+                        assert n_inputs % HISTORY_FRAMES == 0 and n_inputs >= HISTORY_FRAMES
+                        checked += 1
+        assert checked > 0
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")

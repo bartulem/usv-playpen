@@ -546,6 +546,8 @@ def _full_modeling_settings(model_engine='sklearn',
                     'random_state': 7,
                     'use_lax_loop': True,
                     'tune_regularization_bool': tune_regularization,
+                    'temporal_basis': {'type': 'none', 'n_splines': 8, 'spline_order': 3,
+                                       'lambda_smooth_fixed': 1.0, 'lambda_smooth_decades_each_side': 3},
                     'focal_loss_gamma': 2.0,
                     'balance_predictions_bool': True,
                     'balance_train_bool': False,
@@ -569,6 +571,8 @@ def _full_modeling_settings(model_engine='sklearn',
                     'random_state': 11,
                     'use_lax_loop': False,
                     'tune_regularization_bool': tune_regularization,
+                    'temporal_basis': {'type': 'bspline', 'n_splines': 8, 'spline_order': 3,
+                                       'lambda_smooth_fixed': 0.6, 'lambda_smooth_decades_each_side': 2},
                     'tune_regularization_params': {
                         'lambda_smooth_decades_each_side': 4,
                         'l2_reg_decades_each_side': 3,
@@ -964,6 +968,11 @@ class TestBuildRunMetadata:
         assert 'tune_regularization_params' not in jax
         assert 'focal_loss_gamma' not in jax
         assert 'balance_predictions_bool' not in jax
+        # The fixture's manifold block fits B-splines: the recorded penalty is the
+        # GAM-mirroring P-spline one, not the block's full-resolution settings.
+        assert jax['temporal_basis']['type'] == 'bspline'
+        assert jax['effective_penalty'] == {'lambda_smooth': 0.6, 'l2_reg': 0.0,
+                                            'smoothness_derivative_order': 2, 'smoothness_reflective_edges': False}
 
     def test_continuous_jax_block_with_tuning(self, mocker):
         """``continuous`` with tuning on emits the bivariate inner-CV
@@ -975,7 +984,10 @@ class TestBuildRunMetadata:
         settings = _full_modeling_settings(tune_regularization=True)
         md = self._build(settings, 'continuous', mocker)
         tp = md['jax_hyperparameters']['tune_regularization_params']
-        assert tp['lambda_smooth_decades_each_side'] == 4
+        # B-spline fixture: lambda_smooth is tuned over the temporal_basis decades
+        # and the L2 grid is pinned to 0.
+        assert tp['lambda_smooth_decades_each_side'] == 2
+        assert tp['l2_reg_decades_each_side'] == 0
         assert tp['inner_cv_scoring_metric'] == 'vm_logscore'
         assert tp['inner_cv_use_one_se_rule'] is False
 
@@ -988,6 +1000,9 @@ class TestBuildRunMetadata:
         jax = md['jax_hyperparameters']
         assert jax['focal_loss_gamma'] == 2.0
         assert 'tune_regularization_params' not in jax
+        assert jax['temporal_basis']['type'] == 'none'
+        assert jax['effective_penalty'] == {'lambda_smooth': 0.01, 'l2_reg': 0.001,
+                                            'smoothness_derivative_order': 2, 'smoothness_reflective_edges': True}
 
 
 # build_selection_metadata

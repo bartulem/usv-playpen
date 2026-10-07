@@ -581,7 +581,13 @@ def build_run_metadata(modeling_settings: dict,
       the JAX path (multinomial, continuous): `bin_resizing_factor`,
       `lambda_smooth_fixed`, `l2_reg_fixed`, `smoothness_derivative_order`,
       `learning_rate`, `max_iter`, `tol`, `random_state`,
-      `use_lax_loop`, `tune_regularization_bool`. Plus
+      `use_lax_loop`, `tune_regularization_bool`, the `temporal_basis`
+      block (`type` "none" or "bspline", `n_splines`, `spline_order`,
+      `lambda_smooth_fixed`, `lambda_smooth_decades_each_side`) and
+      `effective_penalty` (the `lambda_smooth`, `l2_reg`,
+      `smoothness_derivative_order` and `smoothness_reflective_edges` the
+      fit actually uses: the block's own for full-resolution filters, the
+      GAM-mirroring P-spline penalty for B-splines). Plus
       `focal_loss_gamma`, `balance_predictions_bool`, and
       `balance_train_bool` for multinomial only.
     - **Inner-CV grid** — populated when `tune_regularization_bool` is
@@ -679,7 +685,26 @@ def build_run_metadata(modeling_settings: dict,
             'random_state': int(jax_block['random_state']),
             'use_lax_loop': bool(jax_block['use_lax_loop']),
             'tune_regularization_bool': bool(jax_block['tune_regularization_bool']),
+            'temporal_basis': dict(jax_block['temporal_basis']),
         }
+        # The penalty the fit actually uses: the block's own for full-resolution
+        # filters, the GAM-mirroring P-spline penalty (second order, open
+        # boundary, no L2, strength from the temporal_basis block) for B-splines
+        # (modeling_bases_functions.resolve_temporal_basis).
+        if jax_block['temporal_basis']['type'] == 'bspline':
+            metadata['jax_hyperparameters']['effective_penalty'] = {
+                'lambda_smooth': float(jax_block['temporal_basis']['lambda_smooth_fixed']),
+                'l2_reg': 0.0,
+                'smoothness_derivative_order': 2,
+                'smoothness_reflective_edges': False,
+            }
+        else:
+            metadata['jax_hyperparameters']['effective_penalty'] = {
+                'lambda_smooth': float(jax_block['lambda_smooth_fixed']),
+                'l2_reg': float(jax_block['l2_reg_fixed']),
+                'smoothness_derivative_order': int(jax_block['smoothness_derivative_order']),
+                'smoothness_reflective_edges': True,
+            }
         if jax_kind == 'multinomial_logistic':
             metadata['jax_hyperparameters']['focal_loss_gamma'] = float(jax_block['focal_loss_gamma'])
             metadata['jax_hyperparameters']['balance_predictions_bool'] = bool(jax_block['balance_predictions_bool'])
@@ -696,9 +721,13 @@ def build_run_metadata(modeling_settings: dict,
                 _inner_cv_metric = 'vm_logscore' if _manifold_metric == 'torus' else 'dcor_xy'
             else:
                 _inner_cv_metric = tp['inner_cv_scoring_metric']
+            # A B-spline basis tunes lambda_smooth over its own decades and pins
+            # the L2 grid to 0 (resolve_temporal_basis); record the grid in use.
+            _bspline = jax_block['temporal_basis']['type'] == 'bspline'
             metadata['jax_hyperparameters']['tune_regularization_params'] = {
-                'lambda_smooth_decades_each_side': int(tp['lambda_smooth_decades_each_side']),
-                'l2_reg_decades_each_side': int(tp['l2_reg_decades_each_side']),
+                'lambda_smooth_decades_each_side': int(jax_block['temporal_basis']['lambda_smooth_decades_each_side']
+                                                       if _bspline else tp['lambda_smooth_decades_each_side']),
+                'l2_reg_decades_each_side': 0 if _bspline else int(tp['l2_reg_decades_each_side']),
                 'inner_cv_folds': int(tp['inner_cv_folds']),
                 'inner_cv_scoring_metric': _inner_cv_metric,
                 'inner_cv_use_one_se_rule': bool(tp['inner_cv_use_one_se_rule']),

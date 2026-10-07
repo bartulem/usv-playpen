@@ -17,15 +17,21 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from pygam import LinearGAM, s as spline_term
+
 from usv_playpen.modeling.modeling_bases_functions import (
     _ff,
     _invnl,
     _nlin,
     _normalizecols,
+    basis_coefficients_to_frames,
     bsplines,
+    gam_bspline_basis,
     identity,
     laplacian_pyramid,
+    project_history_onto_basis,
     raised_cosine,
+    resolve_temporal_basis,
 )
 
 
@@ -186,3 +192,101 @@ class TestLaplacianPyramid:
         B = laplacian_pyramid(width=64, levels=4, step=1.0, fwhm=1.0, normalize=True)
         col_norms = np.linalg.norm(B, axis=0)
         np.testing.assert_allclose(col_norms, np.ones_like(col_norms), atol=1e-9)
+
+
+def _jax_block(basis_type: str, bin_resizing_factor: int = 1) -> dict:
+    """A JAX linear-model settings block with a temporal_basis sub-block."""
+
+    return {"bin_resizing_factor": bin_resizing_factor, "lambda_smooth_fixed": 1.0, "l2_reg_fixed": 0.01,
+            "smoothness_derivative_order": 1, "tune_regularization_bool": False,
+            "tune_regularization_params": {"lambda_smooth_decades_each_side": 0, "l2_reg_decades_each_side": 4},
+            "temporal_basis": {"type": basis_type, "n_splines": 8, "spline_order": 3,
+                               "lambda_smooth_fixed": 0.6, "lambda_smooth_decades_each_side": 3}}
+
+
+class TestGamBsplineBasis:
+
+    def test_matches_a_fitted_pygam_spline_term(self):
+        """The basis is exactly the one a pyGAM spline term over the same frames uses."""
+
+        frames = np.arange(600, dtype=float)
+        gam = LinearGAM(spline_term(0, n_splines=8, spline_order=3)).fit(frames[:, None], np.sin(frames / 100))
+        pygam_basis = gam._modelmat(frames[:, None]).toarray()[:, :8]
+        np.testing.assert_allclose(gam_bspline_basis(600, 8, 3), pygam_basis, atol=1e-12)
+
+    def test_partition_of_unity_and_shape(self):
+        """Every frame's basis values sum to 1."""
+
+        basis = gam_bspline_basis(30, 8, 3)
+        assert basis.shape == (30, 8)
+        np.testing.assert_allclose(basis.sum(axis=1), 1.0, atol=1e-12)
+
+    def test_too_few_splines_raise(self):
+        """Fewer splines than the degree allows is rejected."""
+
+        with pytest.raises(ValueError, match="n_splines"):
+            gam_bspline_basis(30, 3, 3)
+
+
+class TestResolveTemporalBasis:
+
+    def test_none_keeps_the_block(self):
+        """'none': no basis, the block's own penalty, reflective edges."""
+
+        basis, block = resolve_temporal_basis(_jax_block("none"), 30)
+        assert basis is None
+        assert block["lambda_smooth_fixed"] == 1.0 and block["l2_reg_fixed"] == 0.01
+        assert block["smoothness_derivative_order"] == 1 and block["smoothness_reflective_edges"] is True
+
+    def test_bspline_mirrors_the_gam_penalty(self):
+        """'bspline': pyGAM's basis averaged over the window, second-order open-boundary penalty, no L2, its own strength
+        and lambda tuning range, the L2 grid pinned; the input block is not modified."""
+
+        raw = _jax_block("bspline")
+        basis, block = resolve_temporal_basis(raw, 30)
+        np.testing.assert_allclose(basis, gam_bspline_basis(30, 8, 3) / 30)
+        assert block["lambda_smooth_fixed"] == 0.6 and block["l2_reg_fixed"] == 0.0
+        assert block["smoothness_derivative_order"] == 2 and block["smoothness_reflective_edges"] is False
+        assert block["tune_regularization_params"] == {"lambda_smooth_decades_each_side": 3, "l2_reg_decades_each_side": 0}
+        assert raw["lambda_smooth_fixed"] == 1.0 and raw["tune_regularization_params"]["l2_reg_decades_each_side"] == 4
+
+    def test_bspline_with_binning_or_unknown_type_raises(self):
+        """Binning cannot be combined with the basis; unknown types are rejected."""
+
+        with pytest.raises(ValueError, match="bin_resizing_factor"):
+            resolve_temporal_basis(_jax_block("bspline", bin_resizing_factor=2), 30)
+        with pytest.raises(ValueError, match="temporal_basis.type"):
+            resolve_temporal_basis(_jax_block("splines"), 30)
+
+
+class TestBasisProjection:
+
+    def test_projection_and_back_conversion_round_trip(self):
+        """A filter built from the basis gives the same linear predictor on the frame axis as its
+        coefficients on the projected history, for both weight layouts (classes x inputs and
+        inputs x outputs) with two features."""
+
+        rng = np.random.default_rng(0)
+        basis = gam_bspline_basis(30, 8, 3)
+        history = [rng.standard_normal((50, 30)) for _ in range(2)]
+        projected = np.hstack([project_history_onto_basis(h, basis) for h in history])
+        frames_design = np.hstack(history)
+
+        coef_classes = rng.standard_normal((3, 16))
+        frames_classes = basis_coefficients_to_frames(coef_classes, basis, n_features=2, axis=1)
+        assert frames_classes.shape == (3, 60)
+        np.testing.assert_allclose(projected @ coef_classes.T, frames_design @ frames_classes.T, atol=1e-10)
+
+        coef_outputs = rng.standard_normal((16, 4))
+        frames_outputs = basis_coefficients_to_frames(coef_outputs, basis, n_features=2, axis=0)
+        assert frames_outputs.shape == (60, 4)
+        np.testing.assert_allclose(projected @ coef_outputs, frames_design @ frames_outputs, atol=1e-10)
+
+    def test_mismatched_lengths_raise(self):
+        """A history or coefficient count that does not fit the basis is rejected."""
+
+        basis = gam_bspline_basis(30, 8, 3)
+        with pytest.raises(ValueError, match="frames"):
+            project_history_onto_basis(np.zeros((5, 29)), basis)
+        with pytest.raises(ValueError, match="coefficients"):
+            basis_coefficients_to_frames(np.zeros((3, 15)), basis, n_features=2, axis=1)

@@ -462,6 +462,41 @@ class TestSmoothnessBoundary:
         assert np.isclose(actual, expected, rtol=1e-4, atol=1e-5)
         assert actual > interior_only + 1e-6
 
+    def test_order2_without_reflective_edges_is_the_plain_pspline_penalty(self):
+        """With ``smoothness_reflective_edges=False`` the order-2 penalty is the
+        interior (open-boundary) second-difference energy only -- pyGAM's penalty
+        on spline coefficients -- with no edge-slope terms."""
+
+        n_feats, n_time, n_classes = 2, 6, 3
+        rng = np.random.default_rng(7)
+        W = rng.standard_normal((n_feats * n_time, n_classes))
+        b = rng.standard_normal(n_classes)
+        class_weights = np.array([1.0, 0.7, 1.5])
+        lam_smooth = 3.0
+        X = jnp.zeros((8, n_feats * n_time), dtype=jnp.float32)
+        Y = jnp.asarray(np.eye(n_classes)[rng.integers(0, n_classes, 8)], dtype=jnp.float32)
+        args = (X, Y, jnp.ones(8, dtype=jnp.float32), n_feats, n_time, lam_smooth, 0.0,
+                jnp.asarray(class_weights, dtype=jnp.float32), 0.0, 2, False)
+        W_j = jnp.asarray(W, dtype=jnp.float32)
+        b_j = jnp.asarray(b, dtype=jnp.float32)
+        actual = float(_multinomial_loss_static((W_j, b_j), *args)) - float(_multinomial_loss_static((jnp.zeros_like(W_j), b_j), *args))
+
+        interior = (np.diff(W.reshape(n_feats, n_time, n_classes), n=2, axis=1) ** 2).sum(axis=(0, 1))
+        expected = 0.5 * lam_smooth * float((interior * class_weights).sum())
+        assert np.isclose(actual, expected, rtol=1e-4, atol=1e-5)
+
+    def test_reflective_edges_switch_reaches_the_fit(self):
+        """The estimator stores the switch and fits with either setting."""
+
+        rng = np.random.default_rng(1)
+        X = rng.standard_normal((60, 6))
+        y = rng.integers(0, 3, 60)
+        for reflective in (True, False):
+            model = SmoothMultinomialLogisticRegression(n_features=1, n_time_bins=6, smoothness_derivative_order=2,
+                                                        smoothness_reflective_edges=reflective, max_iter=50).fit(X, y)
+            assert model.smoothness_reflective_edges is reflective
+            assert model.coef_.shape == (3, 6)
+
     def test_order1_has_no_boundary_augmentation(self):
         """The reflective augmentation is order-2 specific; a first-order
         penalty remains the plain forward-difference energy with no extra edge

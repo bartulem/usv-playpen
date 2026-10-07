@@ -41,6 +41,7 @@ def _multinomial_loss_static(
         class_weights,
         focal_gamma,
         smoothness_derivative_order: int,
+        smoothness_reflective_edges: bool = True,
 ):
     """
     Module-level mirror of `SmoothMultinomialLogisticRegression._loss_fn`.
@@ -73,12 +74,14 @@ def _multinomial_loss_static(
     W_reshaped = W.reshape(n_feats, n_time, -1)
     dW = jnp.diff(W_reshaped, n=smoothness_derivative_order, axis=1)
     class_smooth_penalties = jnp.sum(dW ** 2, axis=(0, 1))
-    if smoothness_derivative_order == 2:
+    if smoothness_derivative_order == 2 and smoothness_reflective_edges:
         # Reflective (Neumann) boundary: also penalise the edge SLOPE at each end
         # (as if the filter were mirrored, w_{-1}=w_0 / w_p=w_{p-1}), so the
         # endpoints are constrained like the interior instead of floating free --
         # matching SmoothTorusManifoldRegression._smoothness_penalty and removing the
-        # open-boundary edge blow-up. `smoothness_derivative_order` is a static arg.
+        # open-boundary edge blow-up. `smoothness_derivative_order` and
+        # `smoothness_reflective_edges` are static args; with the latter False the
+        # penalty is the plain (open-boundary) difference penalty of a P-spline.
         left_slope = W_reshaped[:, 1, :] - W_reshaped[:, 0, :]
         right_slope = W_reshaped[:, -2, :] - W_reshaped[:, -1, :]
         class_smooth_penalties = class_smooth_penalties + jnp.sum(
@@ -90,7 +93,7 @@ def _multinomial_loss_static(
 
 @partial(
     jax.jit,
-    static_argnames=('n_feats', 'n_time', 'smoothness_derivative_order', 'max_iter'),
+    static_argnames=('n_feats', 'n_time', 'smoothness_derivative_order', 'smoothness_reflective_edges', 'max_iter'),
 )
 def _multinomial_train_loop_jit(
         params_init,
@@ -109,6 +112,7 @@ def _multinomial_train_loop_jit(
         n_feats: int,
         n_time: int,
         smoothness_derivative_order: int,
+        smoothness_reflective_edges: bool = True,
 ):
     """
     Full multinomial descent fused into a single
@@ -151,6 +155,7 @@ def _multinomial_train_loop_jit(
             lambda_smooth, l2_reg,
             class_weights, focal_gamma,
             smoothness_derivative_order,
+            smoothness_reflective_edges,
         )
         updates, opt_state = optimizer.update(grads, opt_state)
         params = optax.apply_updates(params, updates)
@@ -192,7 +197,7 @@ def _multinomial_train_loop_jit(
 
 @partial(
     jax.jit,
-    static_argnames=('loss_fn', 'n_feats', 'n_time', 'smoothness_derivative_order', 'max_iter'),
+    static_argnames=('loss_fn', 'n_feats', 'n_time', 'smoothness_derivative_order', 'max_iter', 'smoothness_reflective_edges'),
 )
 def _multinomial_default_step(
         params,
@@ -211,6 +216,7 @@ def _multinomial_default_step(
         n_time: int,
         smoothness_derivative_order: int,
         max_iter: int,
+        smoothness_reflective_edges: bool = True,
 ):
     """
     One clipped-Adam descent step on the multinomial loss, hoisted to MODULE
@@ -261,6 +267,9 @@ def _multinomial_default_step(
     max_iter : int
         Total iterations, used as the cosine schedule's ``decay_steps``. Static
         JIT argument.
+    smoothness_reflective_edges : bool
+        Whether an order-2 penalty also penalises the edge slopes (reflective
+        boundary). Static JIT argument.
 
     Returns
     -------
@@ -281,6 +290,7 @@ def _multinomial_default_step(
         lambda_smooth, l2_reg,
         class_weights, focal_gamma,
         smoothness_derivative_order,
+        smoothness_reflective_edges,
     )
     updates, opt_state = optimizer.update(grads, opt_state)
     params = optax.apply_updates(params, updates)
@@ -334,6 +344,13 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             smooth curves; classical GAM / smoothing-spline choice.
             Recommended when the scientific goal is to learn unbiased
             filter *shape* without a piecewise-constant prior.
+    smoothness_reflective_edges : bool, default=True
+        For order 2 only: if True, also penalise the slope at both ends of every
+        filter (a reflective boundary, as if the filter continued flat), so the
+        end points are constrained like the interior; if False, the penalty is
+        the plain open-boundary second-difference penalty of a P-spline (what
+        pyGAM uses on its spline coefficients), the choice when the time axis
+        holds spline coefficients rather than frames.
     focal_gamma : float, default=2.0
         Focusing parameter of the focal loss: the `(1 - p_t) ** focal_gamma`
         modulator down-weights easy examples so gradient flow concentrates on
@@ -400,6 +417,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             lambda_smooth: float = 1,
             l2_reg: float = 0.1,
             smoothness_derivative_order: int = 2,
+            smoothness_reflective_edges: bool = True,
             focal_gamma: float = 2.0,
             uniform_class_weights: bool = False,
             learning_rate: float = 1e-3,
@@ -419,6 +437,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         self.lambda_smooth = lambda_smooth
         self.l2_reg = l2_reg
         self.smoothness_derivative_order = int(smoothness_derivative_order)
+        self.smoothness_reflective_edges = bool(smoothness_reflective_edges)
         self.focal_gamma = focal_gamma
         self.uniform_class_weights = uniform_class_weights
         self.learning_rate = learning_rate
@@ -491,7 +510,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         return W, b
 
     @staticmethod
-    @partial(jax.jit, static_argnums=(4, 5, 10))
+    @partial(jax.jit, static_argnums=(4, 5, 10, 11))
     def _loss_fn(
             params: Tuple[jnp.ndarray, jnp.ndarray],
             X: jnp.ndarray,
@@ -504,6 +523,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             class_weights: jnp.ndarray,
             focal_gamma: float,
             smoothness_derivative_order: int,
+            smoothness_reflective_edges: bool = True,
     ) -> jnp.ndarray:
         """
         Computes the total optimisation loss: alpha-balanced focal loss +
@@ -564,6 +584,9 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
             Order of the finite-difference derivative (1 or 2) used to
             build the temporal-smoothness penalty. Static JIT argument —
             see the class docstring for the interpretability tradeoff.
+        smoothness_reflective_edges : bool
+            For order 2: also penalise the edge slopes (reflective boundary) if
+            True; plain open-boundary P-spline penalty if False. Static JIT argument.
 
         Returns
         -------
@@ -616,7 +639,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         # each end (as if the filter were mirrored), so the endpoints are constrained
         # like the interior instead of floating free -- matching
         # SmoothTorusManifoldRegression and removing the open-boundary edge blow-up.
-        if smoothness_derivative_order == 2:
+        if smoothness_derivative_order == 2 and smoothness_reflective_edges:
             left_slope = W_reshaped[:, 1, :] - W_reshaped[:, 0, :]
             right_slope = W_reshaped[:, -2, :] - W_reshaped[:, -1, :]
             class_smooth_penalties = class_smooth_penalties + jnp.sum(
@@ -763,6 +786,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
                     self.grad_clip_norm,
                     self._loss_fn, self.n_features, self.n_time_bins,
                     self.smoothness_derivative_order, self.max_iter,
+                    self.smoothness_reflective_edges,
                 )
                 completed_iter = i + 1
                 if i > 0 and i % 100 == 0:
@@ -782,6 +806,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
                             self.lambda_smooth, self.l2_reg,
                             c_weights, self.focal_gamma,
                             self.smoothness_derivative_order,
+                            self.smoothness_reflective_edges,
                         )
                         print(f"Iter {i}: Loss = {current_loss:.4f}")
 
@@ -810,6 +835,7 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
                 int(self.n_features),
                 int(self.n_time_bins),
                 int(self.smoothness_derivative_order),
+                bool(self.smoothness_reflective_edges),
             )
             completed_iter = int(completed_iter_j)
             converged = bool(converged_j)

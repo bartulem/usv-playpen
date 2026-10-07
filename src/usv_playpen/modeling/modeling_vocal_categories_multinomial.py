@@ -59,6 +59,7 @@ from .modeling_utils import (
     format_split_line,
 )
 from .jax_multinomial_logistic_regression import SmoothMultinomialLogisticRegression
+from .modeling_bases_functions import basis_coefficients_to_frames, project_history_onto_basis, resolve_temporal_basis
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import QLVM_CATEGORY_COLUMN, load_qlvm_category_bundle, resolve_modeling_setting
 
@@ -351,6 +352,9 @@ def _log_spaced_grid_multinomial(center: float, decades_each_side: int) -> np.nd
         Sorted 1-D array of length `2 * decades_each_side + 1`.
     """
 
+    if decades_each_side == 0:
+        # No tuning: the fixed value itself (0 allowed, e.g. the pinned L2 of a B-spline fit).
+        return np.array([float(center)])
     if decades_each_side < 0:
         raise ValueError(f"decades_each_side must be >= 0, got {decades_each_side}.")
     if center <= 0:
@@ -370,6 +374,7 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
                                      n_features: int,
                                      n_time_bins: int,
                                      smoothness_derivative_order: int,
+                                     smoothness_reflective_edges: bool = True,
                                      focal_gamma: float,
                                      uniform_class_weights: bool,
                                      learning_rate: float,
@@ -414,6 +419,9 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
       `f1` (macro), `recall` (macro), `mcc` (Matthews correlation).
     - lower-is-better: `ll` (log-loss), `brier` (multiclass Brier),
       `ece` (expected calibration error).
+
+    `smoothness_reflective_edges` is passed through to every inner fit
+    (False for a B-spline temporal basis: the plain P-spline penalty).
 
     Parameters mirror the manifold tuner; the `regressor_cls` injection
     keeps the function unit-testable without importing JAX at module
@@ -511,6 +519,7 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
                         lambda_smooth=float(lam_sm),
                         l2_reg=float(lam_l2),
                         smoothness_derivative_order=smoothness_derivative_order,
+                        smoothness_reflective_edges=smoothness_reflective_edges,
                         focal_gamma=focal_gamma,
                         uniform_class_weights=uniform_class_weights,
                         learning_rate=learning_rate,
@@ -1194,15 +1203,20 @@ class MultinomialModelRunner:
         ----------
         pipeline_instance : MultinomialModelingPipeline
             An instance of the extraction class which holds the
-            'modeling_settings' dictionary and calculated attributes.
+            'modeling_settings' dictionary and calculated attributes
+            (including `history_frames`).
         """
 
         self.modeling_settings = pipeline_instance.modeling_settings
+        # History-window length in frames (the pipeline derives it from the camera
+        # rate and `filter_history`); a temporal basis spans exactly this window.
+        self.history_frames = int(pipeline_instance.history_frames)
 
     @staticmethod
     def load_univariate_data_blocks(pkl_path: str,
                                     bin_size: int = 10,
-                                    feature_filter=None) -> dict:
+                                    feature_filter=None,
+                                    basis: np.ndarray | None = None) -> dict:
         """
         Loads extracted feature data from disk and applies temporal downsampling.
 
@@ -1236,6 +1250,12 @@ class MultinomialModelRunner:
             pass the feature(s) actually needed to skip the rest. The default
             (`None`) retains the legacy behaviour of binning every feature in
             the pickle.
+        basis : np.ndarray or None, optional
+            ``(history_frames, n_basis)`` temporal basis
+            (``modeling_bases_functions.resolve_temporal_basis``). When given,
+            every session's history is projected onto it after any binning, so
+            each feature contributes ``n_basis`` columns and ``n_time_bins`` is
+            ``n_basis``. ``None`` (default) keeps the frame columns.
 
         Returns
         -------
@@ -1291,6 +1311,8 @@ class MultinomialModelRunner:
                             f"bin_size={bin_size} exceeds history length {T} for feature {feat}"
                         )
                     X_sess = X_sess[:, :new_T * bin_size].reshape(N, new_T, bin_size).mean(axis=2)
+                if basis is not None:
+                    X_sess = project_history_onto_basis(X_sess, basis)
 
                 X_list.append(X_sess)
                 y_list.append(y_sess)
@@ -1396,7 +1418,10 @@ class MultinomialModelRunner:
         """
 
         # Strict dictionary lookups (No .get() allowed)
-        hp = self.modeling_settings['hyperparameters']['linear_models']['multinomial_logistic']
+        # The temporal representation (full-resolution frames or a B-spline basis)
+        # decides the penalty settings the fit uses; `hp` is that effective block.
+        temporal_basis, hp = resolve_temporal_basis(
+            self.modeling_settings['hyperparameters']['linear_models']['multinomial_logistic'], self.history_frames)
         n_splits = self.modeling_settings['model_validation']['n_cv_folds']
         split_strategy = self.modeling_settings['model_validation']['split_strategy']
         test_prop = self.modeling_settings['model_validation']['cv_validation_proportion']
@@ -1430,6 +1455,7 @@ class MultinomialModelRunner:
         lam_smooth_fixed = hp['lambda_smooth_fixed']
         lam_l2_fixed = hp['l2_reg_fixed']
         smoothness_order = hp['smoothness_derivative_order']
+        reflective_edges = hp['smoothness_reflective_edges']
         tune_regularization_bool = hp['tune_regularization_bool']
         tune_params = hp['tune_regularization_params']
         lambda_smooth_grid = _log_spaced_grid_multinomial(
@@ -1451,7 +1477,7 @@ class MultinomialModelRunner:
         # reason to pay the binning cost for every other feature in the
         # pickle on every invocation.
         all_blocks = self.load_univariate_data_blocks(
-            pkl_path, bin_size=bin_size, feature_filter=feat_name
+            pkl_path, bin_size=bin_size, feature_filter=feat_name, basis=temporal_basis
         )
         if feat_name not in all_blocks:
             raise KeyError(f"Feature '{feat_name}' not found in {pkl_path}.")
@@ -1655,6 +1681,7 @@ class MultinomialModelRunner:
                             n_features=1,
                             n_time_bins=n_time,
                             smoothness_derivative_order=smoothness_order,
+                            smoothness_reflective_edges=reflective_edges,
                             focal_gamma=effective_focal_gamma,
                             uniform_class_weights=use_uniform_weights,
                             learning_rate=hp['learning_rate'],
@@ -1689,6 +1716,7 @@ class MultinomialModelRunner:
                         lambda_smooth=fold_lambda_smooth,
                         l2_reg=fold_l2_reg,
                         smoothness_derivative_order=smoothness_order,
+                        smoothness_reflective_edges=reflective_edges,
                         focal_gamma=effective_focal_gamma,
                         uniform_class_weights=use_uniform_weights,
                         learning_rate=hp['learning_rate'],
@@ -1706,6 +1734,8 @@ class MultinomialModelRunner:
 
                     model_classes = model.classes_
                     fold_weights = model.coef_
+                    if temporal_basis is not None:
+                        fold_weights = basis_coefficients_to_frames(fold_weights, temporal_basis, n_features=1, axis=1)
                     fold_intercepts = model.intercept_
                     fold_n_iter = int(model.n_iter_)
                     fold_converged = bool(model.converged_)
@@ -1870,6 +1900,7 @@ class MultinomialModelRunner:
                             n_features=1,
                             n_time_bins=n_time,
                             smoothness_derivative_order=smoothness_order,
+                            smoothness_reflective_edges=reflective_edges,
                             focal_gamma=effective_focal_gamma,
                             uniform_class_weights=use_uniform_weights,
                             learning_rate=hp['learning_rate'],
@@ -1897,6 +1928,7 @@ class MultinomialModelRunner:
                         lambda_smooth=held_lambda_smooth,
                         l2_reg=held_l2_reg,
                         smoothness_derivative_order=smoothness_order,
+                        smoothness_reflective_edges=reflective_edges,
                         focal_gamma=effective_focal_gamma,
                         uniform_class_weights=use_uniform_weights,
                         learning_rate=hp['learning_rate'],
@@ -1911,6 +1943,8 @@ class MultinomialModelRunner:
                     predictions = model.predict(X_held, balanced=hp['balance_predictions_bool'])
                     model_classes = model.classes_
                     held_weights = model.coef_
+                    if temporal_basis is not None:
+                        held_weights = basis_coefficients_to_frames(held_weights, temporal_basis, n_features=1, axis=1)
                     held_intercepts = model.intercept_
                     held_n_iter = int(model.n_iter_)
                     held_converged = bool(model.converged_)

@@ -313,6 +313,13 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             `pyGAM`-style smoothness and is typically preferred when
             the scientific goal is to learn unbiased filter *shape*
             without a preference for piecewise-constant plateaux.
+    smoothness_reflective_edges : bool, default=True
+        Read by the torus subclass :class:`SmoothTorusManifoldRegression`
+        only (this coordinate model's penalty is always open-boundary): for
+        order 2, True adds the reflective edge-slope rows to the penalty, False
+        keeps the plain open-boundary second-difference penalty of a P-spline
+        (what pyGAM uses on its spline coefficients), the choice when the time
+        axis holds spline coefficients rather than frames.
     huber_delta : float, default=1.0
         Transition point of the Huber loss in the native manifold distance
         units. Residuals with `||r||_2 <= huber_delta` are penalised
@@ -393,6 +400,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             lambda_smooth: float = 1e2,
             l2_reg: float = 0.1,
             smoothness_derivative_order: int = 2,
+            smoothness_reflective_edges: bool = True,
             huber_delta: float = 1.0,
             learning_rate: float = 1e-3,
             grad_clip_norm: float = 1.0,
@@ -414,6 +422,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         self.lambda_smooth = lambda_smooth
         self.l2_reg = l2_reg
         self.smoothness_derivative_order = int(smoothness_derivative_order)
+        self.smoothness_reflective_edges = bool(smoothness_reflective_edges)
         self.huber_delta = huber_delta
         self.learning_rate = learning_rate
         self.grad_clip_norm = grad_clip_norm
