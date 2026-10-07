@@ -2535,9 +2535,10 @@ def bout_parameter_model_selection(
     --------------------------------------
     The tensor-product unroll duplicates each trial's scalar target `y_tr` across `H` history
     frames via `np.repeat(y_tr, H)` and fits as if those `N * H` rows were independent
-    observations. This inflates the effective sample size seen by pyGAM's penalty selection
-    (GCV/REML), nudging it toward under-smoothing relative to a truly i.i.d. fit on `N`
-    observations. Test-time aggregation is performed per-trial so held-out metrics remain on
+    observations. The smoothness penalty is fixed (`lam_penalty`, never tuned: pyGAM's
+    `gridsearch()` is not called), while the data term grows with the `N * H` duplicated rows,
+    so the fixed penalty weighs less than it would on `N` truly i.i.d. observations, nudging
+    the fit toward under-smoothing. Test-time aggregation is performed per-trial so held-out metrics remain on
     the correct `N` scale, and cross-validation is the practical safeguard against the
     resulting optimism; the bias is shared by both engines' multivariate paths and so does
     not confound the sklearn-vs-pyGAM comparison.

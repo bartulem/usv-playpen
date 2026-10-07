@@ -1229,9 +1229,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             fits a single, smooth 2D *surface* that represents the log-odds
             contribution based on the *interaction* between the feature's value
             (axis 0) and the time lag (axis 1). This is a non-linear filter.
-        2.  The `pygam` library automatically applies a
-            smoothness penalty (penalizing the "wiggleness" of the 2D surface)
-            and finds the optimal penalty strength using Generalized Cross-Validation (GCV).
+        2.  The surface is fitted under pyGAM's smoothness penalty (penalizing
+            the "wiggliness" of the 2D surface) at a FIXED strength: the
+            `lam` of the settings' `hyperparameters.classical.pygam.lam_penalty`
+            (0.6), or, when that is null, pyGAM's own per-term default (also
+            0.6). The strength is never tuned: pyGAM selects it (by GCV/UBRE)
+            only in `gridsearch()`, which this pipeline does not call.
         3.  It calculates metrics for both the 'actual' data
             and a 'null' (label-shuffled) model. Note: For evaluation, the tiled
             probabilities from the test set are averaged per-epoch before
@@ -1302,7 +1305,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             gam_kwargs_actual['lam'] = lam_penalty
             print(f"  Using FIXED smoothness penalty: lam={lam_penalty}")
         else:
-            print("  Using GCV to find optimal smoothness (lam=None)")
+            print("  Using pyGAM's default smoothness penalty (lam_penalty is null; not tuned)")
 
         gam_kwargs_shuffled = {
             'max_iter': max_iterations,
