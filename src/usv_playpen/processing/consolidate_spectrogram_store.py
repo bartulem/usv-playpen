@@ -139,6 +139,7 @@ from ..os_utils import (
 )
 from ..time_utils import is_gui_context, smart_wait
 from .build_qlvm_training_set import file_sha256
+from .build_squeak_spectrogram_store import read_session_lists
 from .qlvm_categories import assign_categories
 from .qlvm_latents import (
     PACKAGE_BASELINE_NAME,
@@ -1282,13 +1283,14 @@ class SpectrogramStoreConsolidator:
 
 
 @click.command(name="consolidate-spectrogram-store")
-@click.option('--root-directories', type=str, default=None, required=False, help='Comma-separated string of session root directory paths, in store order. Give this or --package-corpus.')
+@click.option('--root-directories', type=str, default=None, required=False, help='Comma-separated string of session root directory paths, in store order. Give this and/or --session-lists, or --package-corpus.')
+@click.option('--session-lists', 'session_lists', type=str, default=None, required=False, help='Comma-separated string of session-list .txt files (one session root per line, # comments and blank lines skipped), appended after --root-directories in file order. Give this and/or --root-directories, or --package-corpus.')
 @click.option('--package-corpus', 'package_corpus', is_flag=True, default=False, help='Consolidate exactly the QLVM model package\'s corpus sessions, in the order of its SESSION_H5_BASELINE.tsv (in production mode only the session list is taken from it). Give this or --root-directories.')
 @click.option('--package-root', 'package_root', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='QLVM model package root whose models\' columns and tables a v3 store carries, and whose corpus --package-corpus lists; defaults to the v3 package (qlvm_models_latest/v3).')
 @click.option('--spectrograms-root', 'spectrograms_root', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='Output directory the consolidated store is written to (the spectrograms_root setting when not given).')
 @click.option('--store-mode', 'store_mode', type=click.Choice(STORE_MODES), default=None, required=False, help='Store mode: production (the production QLVM maps, squeak map and category bundle) or v3 (the v3 model package archive).')
 @click.pass_context
-def consolidate_spectrogram_store_cli(ctx, root_directories, package_corpus, package_root, spectrograms_root, **kwargs) -> None:
+def consolidate_spectrogram_store_cli(ctx, root_directories, session_lists, package_corpus, package_root, spectrograms_root, **kwargs) -> None:
     """
     Description
     -----------
@@ -1296,8 +1298,9 @@ def consolidate_spectrogram_store_cli(ctx, root_directories, package_corpus, pac
     and the QLVM columns of their USV summaries into one multi-session store,
     in production or v3 mode (``--store-mode``, else the
     ``consolidate_spectrogram_store.store_mode`` setting), for an explicit list
-    of sessions (``--root-directories``) or for the v3 model package's corpus
-    sessions (``--package-corpus``).
+    of sessions (``--root-directories`` and / or ``--session-lists``, duplicates
+    kept once in first-seen order) or for the v3 model package's corpus sessions
+    (``--package-corpus``).
 
     Parameters
     ----------
@@ -1307,8 +1310,8 @@ def consolidate_spectrogram_store_cli(ctx, root_directories, package_corpus, pac
     None
     """
 
-    if bool(root_directories) == package_corpus:
-        usage_message = "Give exactly one of --root-directories and --package-corpus."
+    if bool(root_directories or session_lists) == package_corpus:
+        usage_message = "Give --root-directories and / or --session-lists, or --package-corpus (not both)."
         raise click.UsageError(usage_message)
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
@@ -1326,7 +1329,10 @@ def consolidate_spectrogram_store_cli(ctx, root_directories, package_corpus, pac
     if package_corpus:
         all_paths = package_corpus_root_directories(configure_path(resolved_package_root))
     else:
-        all_paths = [one_dir.strip() for one_dir in root_directories.split(',') if one_dir.strip()]
+        all_paths = [one_dir.strip() for one_dir in (root_directories or '').split(',') if one_dir.strip()]
+        if session_lists:
+            all_paths += read_session_lists([one_list.strip() for one_list in session_lists.split(',') if one_list.strip()])
+        all_paths = list(dict.fromkeys(all_paths))
 
     SpectrogramStoreConsolidator(
         root_directories=all_paths,

@@ -13,7 +13,7 @@ written): a spectrogram H5 whose SHA-256 differs from the baseline, a session
 outside the package corpus, a summary lacking QLVM columns, an embedding that
 disagrees with the status codes, a divergent frequency axis, a row-count
 mismatch, a missing session H5. The baseline resolves to session roots, the CLI
-takes exactly one of --root-directories / --package-corpus, and
+takes --root-directories and / or --session-lists, or --package-corpus, and
 os_utils.resolve_consolidated_h5_path picks the newest store of either name.
 
 Production mode: two synthetic sessions (embedded, too-long, maskless, both,
@@ -343,9 +343,10 @@ def test_package_corpus_root_directories_follow_the_baseline(corpus):
     ]
 
 
-def test_cli_takes_exactly_one_session_source(mocker, corpus):
+def test_cli_takes_exactly_one_session_source(mocker, corpus, tmp_path_factory):
     """--package-corpus resolves the package's sessions; --root-directories splits the
-    list; giving both or neither is a usage error."""
+    list and --session-lists appends the listed roots (each once); giving an explicit
+    list together with --package-corpus, or nothing, is a usage error."""
     _roots, package = corpus
     consolidator = mocker.patch("usv_playpen.processing.consolidate_spectrogram_store.SpectrogramStoreConsolidator")
     result = CliRunner().invoke(css.consolidate_spectrogram_store_cli, ["--package-corpus", "--package-root", str(package)])
@@ -355,10 +356,15 @@ def test_cli_takes_exactly_one_session_source(mocker, corpus):
     result = CliRunner().invoke(css.consolidate_spectrogram_store_cli, ["--root-directories", "/a/b, /c/d"])
     assert result.exit_code == 0, result.output
     assert consolidator.call_args.kwargs["root_directories"] == ["/a/b", "/c/d"]
-    for arguments in (["--root-directories", "/a/b", "--package-corpus"], []):
+    session_list = tmp_path_factory.mktemp("lists") / "sessions.txt"
+    session_list.write_text("# cohort\n/c/d\n\n/e/f\n")
+    result = CliRunner().invoke(css.consolidate_spectrogram_store_cli, ["--root-directories", "/a/b, /c/d", "--session-lists", str(session_list)])
+    assert result.exit_code == 0, result.output
+    assert consolidator.call_args.kwargs["root_directories"] == ["/a/b", "/c/d", "/e/f"]
+    for arguments in (["--root-directories", "/a/b", "--package-corpus"], ["--session-lists", str(session_list), "--package-corpus"], []):
         result = CliRunner().invoke(css.consolidate_spectrogram_store_cli, arguments)
         assert result.exit_code == 2
-        assert "exactly one of" in result.output
+        assert "--package-corpus (not both)" in result.output
 
 
 def test_resolver_picks_the_newest_store_of_either_name(tmp_path, mocker, corpus):
