@@ -375,6 +375,9 @@
     "lattice_batch_size": 2048,
     "data_batch_size": 512
   },
+  "consolidate_spectrogram_store": {
+    "store_mode": "production"
+  },
   "build_squeak_spectrogram_store": {
     "min_freq": 2000.0,
     "max_freq": 125000.0,
