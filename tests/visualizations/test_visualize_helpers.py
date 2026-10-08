@@ -135,7 +135,7 @@ def test_fig_maker_skips_when_tuning_dir_empty(tmp_path):
     assert any("no tuning pkls" in m for m in msgs)
 
 
-def test_fig_maker_skips_pkl_with_no_payload(tmp_path, mocker):
+def test_fig_maker_skips_pkl_with_no_payload(tmp_path, mocker, qlvm_category_bundle):
     """A pkl with neither beh_offset= nor vocal_q keys is silently skipped
     (no save attempted), so the run finishes without errors."""
     import pickle as _pickle

@@ -1701,7 +1701,7 @@ class TestMultinomialExtractionEdgeCases:
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_extraction_out_of_range_mixture_model_index_writes_nan_ibi(self, tmp_path):
+    def test_extraction_out_of_range_mixture_model_index_writes_nan_ibi(self, tmp_path, qlvm_category_bundle):
         """
         When ``mixture_model_component_index`` exceeds the per-sex mixture-model means length, the
         metadata IBI-threshold computation takes its NaN fallback arm for both
@@ -1726,7 +1726,7 @@ class TestMultinomialExtractionEdgeCases:
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_extraction_all_noise_aborts_without_pickle(self, tmp_path):
+    def test_extraction_all_noise_aborts_without_pickle(self, tmp_path, qlvm_category_bundle):
         """
         A session tree whose target USVs are *all* the noise category yields
         no non-noise multinomial targets after the noise filter, so the
@@ -1765,7 +1765,7 @@ class TestMultinomialExtractionEdgeCases:
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
-    def test_extraction_with_vocal_predictors_adds_usv_columns(self, tmp_path):
+    def test_extraction_with_vocal_predictors_adds_usv_columns(self, tmp_path, qlvm_category_bundle):
         """
         With ``usv_predictor_type='categories_rate'`` the extractor builds
         partner-side vocal-signal predictor columns

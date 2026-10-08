@@ -1958,7 +1958,7 @@ def test_all_property_tuning_distribution_figures_writes_pngs(triage_fixture):
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
 @pytest.mark.filterwarnings("ignore::UserWarning")
-def test_all_category_figures_writes_pngs(triage_fixture):
+def test_all_category_figures_writes_pngs(triage_fixture, qlvm_category_bundle):
     """
     Description
     -----------
