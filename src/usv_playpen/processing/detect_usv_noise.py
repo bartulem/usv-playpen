@@ -30,8 +30,9 @@ real calls per 10,000 segments, most of them in the uncertain band); this step p
 
 Input contract (fixed by the trained models, therefore constants rather than settings): for every segment
 the two-band absolute-dB spectrogram (30-120 kHz and 3-30 kHz, 128 linear bins each) is rebuilt from the
-UNFILTERED per-channel ``audio/hpss/*_cropped_to_video_hpss.wav`` files, read through soundfile as float64
-(int16 / 32768), with a Blackman-Harris STFT (nperseg 2048, hop 512, centred), a variance-weighted
+session's broadband memmap (``audio/broadband_filtered``: the per-channel HPSS audio high-passed at
+2 kHz with the line-noise tones removed, written by ``broadband-filter-audio``), one column per channel
+read as float64 (int16 / 32768, as soundfile reads the source wavs), with a Blackman-Harris STFT (nperseg 2048, hop 512, centred), a variance-weighted
 average across channels and no ``top_db`` clamp (``ref=1.0``). The audio window extends
 ``context_frames`` hops either side of the segment so the channel weights and the STFT edges match how
 the training inputs were built, and the spectrogram is then cropped back to the segment's own frames: the
@@ -63,7 +64,6 @@ from datetime import datetime
 import click
 import numpy as np
 import polars as pls
-import soundfile as sf
 import torch
 from click.core import ParameterSource
 from torch import nn
@@ -72,8 +72,10 @@ from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
     configure_path,
     derive_spectrogram_model_paths,
+    find_audio_mmap,
     first_match_or_raise,
     order_usv_summary_columns,
+    parse_audio_mmap_name,
 )
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import read_excluded_audio_channels
@@ -82,11 +84,13 @@ from .generate_spectrograms import compute_usv_spectrogram
 # Columns written into the USV summary CSV.
 NOISE_COLUMNS = ("noise", "noise_probability")
 
-# The unfiltered per-channel HPSS wavs every audio classifier of the pipeline reads (the noise
-# model here, the call-class model and the squeak QLVM embedding of detect_usv_squeaks, and the
-# squeak spectrogram store); ``audio/hpss_filtered`` is high-passed above 30 kHz and carries no
-# squeak energy, so it is never used.
-HPSS_WAV_GLOB = "*_cropped_to_video_hpss.wav"
+# The audio every audio classifier of the pipeline reads (the noise model here, the call-class model
+# and the squeak QLVM embedding of detect_usv_squeaks, and the squeak spectrogram store): the session's
+# broadband memmap (the 'broadband' band of os_utils.find_audio_mmap), the per-channel HPSS audio
+# high-passed at 2 kHz with the line-noise tones removed. ``audio/hpss_filtered`` is high-passed above
+# 30 kHz and carries no squeak energy, so it is never used. The broadband filter's record next to the
+# memmap names the source wav of every column.
+BROADBAND_RECORD_NAME = "line_noise.json"
 
 # Input contract of the trained noise models.
 NOISE_SAMPLING_RATE = 250000
@@ -139,22 +143,129 @@ NOISE_LABEL_COLUMNS = ("sample_id", "session_dir", "start", "stop", "chs_count",
 NOISE_DECISION_KEYS = ("exclude_at_or_above", "noise_at_or_above", "held_out_precision", "held_out_recall", "real_calls_excluded_per_10000")
 
 
-def squeak_wav_channels(
-    session_root: pathlib.Path,
-    exclude_metadata_audio_channels: bool,
-    message_output: Callable,
-) -> list[pathlib.Path]:
+class BroadbandChannelReader:
     """
     Description
     -----------
-    Lists the session's unfiltered per-channel HPSS wavs (``audio/hpss/*_cropped_to_video_hpss.wav``),
-    optionally dropping the channels the session metadata marks as hardware-excluded
-    (``Equipment -> audio_Avisoft -> excluded_channels``, names such as ``m_ch02`` / ``s_ch11``), and
-    checks that every remaining channel shares the 250 kHz sampling rate and one common length. Every
-    audio classifier of the pipeline averages over exactly this list: the noise model (this module), the
-    call-class model and the squeak QLVM embedding (:mod:`detect_usv_squeaks`) and the squeak spectrogram
-    store. It lives here, in the module every one of them imports, so no import cycle forms (the
-    call-class model reuses this module's network, input construction and padding).
+    One channel (column) of a session's broadband memmap, read through the part of the
+    ``soundfile.SoundFile`` interface the audio classifiers use: ``frames`` (the channel length),
+    ``samplerate``, ``seek``, ``read`` (float64 by default, int16 / 32768 like soundfile's reading of
+    the PCM_16 source wavs) and ``close``. The memmap is opened read-only and shared by the readers of
+    one session; ``close`` only drops the reference.
+    """
+
+    def __init__(self, memmap: np.memmap, column: int, sampling_rate: int, name: str) -> None:
+        """
+        Description
+        -----------
+        Wraps one column of an opened memmap.
+
+        Parameters
+        ----------
+        memmap (np.memmap)
+            ``(n_samples, n_channels)`` int16 broadband memmap, opened read-only.
+        column (int)
+            Column of this channel.
+        sampling_rate (int)
+            Sampling rate of the memmap (Hz).
+        name (str)
+            Source wav name of the column (for messages).
+
+        Returns
+        -------
+        None
+        """
+
+        self._memmap = memmap
+        self._column = int(column)
+        self._position = 0
+        self.frames = int(memmap.shape[0])
+        self.samplerate = int(sampling_rate)
+        self.name = name
+
+    def seek(self, frame: int) -> int:
+        """
+        Description
+        -----------
+        Moves the read position to a sample index.
+
+        Parameters
+        ----------
+        frame (int)
+            Sample index (clipped to ``[0, frames]``).
+
+        Returns
+        -------
+        position (int)
+            The new read position.
+        """
+
+        self._position = min(max(int(frame), 0), self.frames)
+        return self._position
+
+    def read(self, frames: int, dtype: str = "float64", always_2d: bool = False) -> np.ndarray:
+        """
+        Description
+        -----------
+        Reads up to ``frames`` samples from the current position and advances it (fewer at the end of
+        the channel), scaled to [-1, 1) as soundfile scales PCM_16.
+
+        Parameters
+        ----------
+        frames (int)
+            Samples to read.
+        dtype (str)
+            Output floating-point dtype.
+        always_2d (bool)
+            Return an ``(n, 1)`` array instead of ``(n,)``.
+
+        Returns
+        -------
+        samples (np.ndarray)
+            The samples.
+        """
+
+        stop = min(self._position + max(int(frames), 0), self.frames)
+        samples = (self._memmap[self._position:stop, self._column].astype(np.float64) / 32768.0).astype(dtype)
+        self._position = stop
+        return samples[:, None] if always_2d else samples
+
+    def close(self) -> None:
+        """
+        Description
+        -----------
+        Drops the reader's reference to the shared memmap.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        None
+        """
+
+        self._memmap = None
+
+
+def squeak_audio_channels(
+    session_root: pathlib.Path,
+    exclude_metadata_audio_channels: bool,
+    message_output: Callable,
+) -> list[BroadbandChannelReader]:
+    """
+    Description
+    -----------
+    Opens the session's broadband memmap (``audio/broadband_filtered``, found by
+    ``os_utils.find_audio_mmap(root, 'broadband')``) and returns one reader per channel that enters the
+    average, optionally dropping the channels the session metadata marks as hardware-excluded
+    (``Equipment -> audio_Avisoft -> excluded_channels``, names such as ``m_ch02`` / ``s_ch11``). The
+    channel of each column is taken from the broadband filter's record next to the memmap
+    (``line_noise.json``: ``sources`` lists the source HPSS wav of every column), which must be
+    complete and describe exactly this memmap; the memmap must be sampled at 250 kHz. Every audio
+    classifier of the pipeline averages over exactly these channels: the noise model (this module), the
+    call-class model and the squeak QLVM embedding (:mod:`detect_usv_squeaks`) and the squeak
+    spectrogram store, at inference and in training. It lives here, in the module every one of them
+    imports, so no import cycle forms.
 
     Parameters
     ----------
@@ -167,36 +278,41 @@ def squeak_wav_channels(
 
     Returns
     -------
-    wav_paths (list[pathlib.Path])
-        Sorted wav paths that enter the average.
+    readers (list[BroadbandChannelReader])
+        One reader per kept channel, in column order.
 
     Raises
     ------
     FileNotFoundError
-        The session has no HPSS wavs.
+        The session has no broadband memmap or no broadband record (run ``broadband-filter-audio``).
     ValueError
-        The kept channels disagree in length or are not sampled at 250 kHz.
+        The record is incomplete or does not match the memmap, or the memmap is not sampled at 250 kHz.
     """
 
-    wav_paths = sorted((session_root / "audio" / "hpss").glob(HPSS_WAV_GLOB))
-    if not wav_paths:
-        error_message = f"No {HPSS_WAV_GLOB} files under {session_root / 'audio' / 'hpss'}."
+    mmap_path = find_audio_mmap(session_root, "broadband")
+    layout = parse_audio_mmap_name(mmap_path)
+    record_path = mmap_path.parent / BROADBAND_RECORD_NAME
+    if not record_path.is_file():
+        error_message = f"{mmap_path.parent} has no {BROADBAND_RECORD_NAME}; rerun broadband-filter-audio on {session_root}."
         raise FileNotFoundError(error_message)
+    record = json.loads(record_path.read_text())
+    sources = sorted(record["sources"], key=lambda source: int(source["column"]))
+    if (not record["complete"] or record["output"]["file"] != mmap_path.name
+            or [int(source["column"]) for source in sources] != list(range(layout["n_channels"]))):
+        error_message = f"{record_path} is incomplete or does not describe {mmap_path.name}; rerun broadband-filter-audio on {session_root}."
+        raise ValueError(error_message)
+    if layout["sampling_rate"] != NOISE_SAMPLING_RATE:
+        error_message = f"{mmap_path.name} is sampled at {layout['sampling_rate']} Hz; the audio classifiers need {NOISE_SAMPLING_RATE} Hz."
+        raise ValueError(error_message)
+    columns = list(range(layout["n_channels"]))
+    names = [str(source["file"]) for source in sources]
     if exclude_metadata_audio_channels:
         excluded_channels = set(read_excluded_audio_channels(str(session_root), logger=message_output))
         if excluded_channels:
             message_output(f"Excluding audio channel(s) {sorted(excluded_channels)} from the spectrogram average per session metadata.")
-        wav_paths = [
-            wav_path for wav_path in wav_paths
-            if f"{wav_path.name.split('_')[0]}_{wav_path.name.split('_')[2]}" not in excluded_channels
-        ]
-    infos = [sf.info(str(wav_path)) for wav_path in wav_paths]
-    sampling_rates = {info.samplerate for info in infos}
-    lengths = {info.frames for info in infos}
-    if sampling_rates != {NOISE_SAMPLING_RATE} or len(lengths) != 1:
-        error_message = f"HPSS wav channels disagree or have the wrong rate in {session_root}: rates={sampling_rates}, lengths={lengths}."
-        raise ValueError(error_message)
-    return wav_paths
+        columns = [column for column in columns if f"{names[column].split('_')[0]}_{names[column].split('_')[2]}" not in excluded_channels]
+    memmap = np.memmap(mmap_path, dtype=np.int16, mode="r", shape=(layout["n_samples"], layout["n_channels"]))
+    return [BroadbandChannelReader(memmap, column, layout["sampling_rate"], names[column]) for column in columns]
 
 
 def _conv_block(in_channels: int, out_channels: int, pool: tuple[int, int] | None) -> nn.Sequential:
@@ -470,7 +586,7 @@ def segment_input(
 
 
 def window_segment_input(
-    handles: list[sf.SoundFile],
+    handles: list[BroadbandChannelReader],
     n_file: int,
     start: float,
     stop: float,
@@ -489,7 +605,7 @@ def window_segment_input(
 
     Parameters
     ----------
-    handles (list[sf.SoundFile])
+    handles (list[BroadbandChannelReader])
         Open per-channel wavs (one per averaged channel, all of one length).
     n_file (int)
         Frame count (samples) of the wavs.
@@ -708,8 +824,7 @@ def score_noise_rows(
         ``noise`` (bool) and ``noise_probability`` (float, null when unscorable), one row per summary row.
     """
 
-    wav_paths = squeak_wav_channels(session_root, exclude_metadata_audio_channels, message_output)
-    handles = [sf.SoundFile(str(path), mode="r") for path in wav_paths]
+    handles = squeak_audio_channels(session_root, exclude_metadata_audio_channels, message_output)
     n_file = handles[0].frames
     inputs: list[np.ndarray] = []
     scalars: list[np.ndarray] = []
@@ -887,8 +1002,7 @@ def session_noise_training_inputs(
         Label row -> ``(input, raw scalars)``; segments too short for one STFT window are absent.
     """
 
-    wav_paths = squeak_wav_channels(pathlib.Path(configure_path(session_dir)), exclude_metadata_audio_channels, lambda *_args, **_kwargs: None)
-    handles = [sf.SoundFile(str(path), mode="r") for path in wav_paths]
+    handles = squeak_audio_channels(pathlib.Path(configure_path(session_dir)), exclude_metadata_audio_channels, lambda *_args, **_kwargs: None)
     built = {}
     try:
         for row, start, stop, chs_count in segments:
@@ -911,10 +1025,10 @@ def build_noise_training_inputs(
     Description
     -----------
     Builds the model input of every labelled segment exactly as ``detect-usv-noise`` builds it at
-    inference (:func:`window_segment_input` with ``NOISE_INPUT_CONTRACT``, over the same per-channel
-    ``audio/hpss`` wavs and channel exclusion), plus its raw scalars. Sessions are processed in
-    ``n_workers`` threads, each session's wavs opened once: the work is dominated by the latency of
-    reading short windows from 24 wavs on a network share (measured ~44 ms per read, ~14 s per session
+    inference (:func:`window_segment_input` with ``NOISE_INPUT_CONTRACT``, over the same broadband
+    memmap channels and channel exclusion, :func:`squeak_audio_channels`), plus its raw scalars. Sessions
+    are processed in ``n_workers`` threads, each session's memmap opened once: the work is dominated by the
+    latency of reading short windows on a network share (measured with the earlier 24-wav input: ~44 ms per read, ~14 s per session
     serially), which threads overlap. Results are collected by label row, so the output order does not
     depend on the thread schedule. Segments too short for one STFT window are left out and reported.
 

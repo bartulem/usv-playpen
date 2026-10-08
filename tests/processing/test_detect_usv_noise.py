@@ -16,11 +16,11 @@ import pathlib
 import numpy as np
 import polars as pls
 import pytest
-import soundfile as sf
 import torch
 import yaml
 from click.testing import CliRunner
 
+from tests.conftest import write_broadband_audio
 from usv_playpen.processing import detect_usv_noise as noise
 
 SESSION_ID = "20250913_193920"
@@ -58,7 +58,7 @@ def _build_session(tmp_path: pathlib.Path, excluded_channels: list[str] | None =
     """
     Description
     -----------
-    Creates a synthetic session: four PCM_16 HPSS wavs (two master, two slave channels) of noise, and a
+    Creates a synthetic session: a broadband memmap of four channels (two master, two slave) of noise, and a
     summary with two normal segments (50 and 100 ms) and a 4 ms one, far shorter than a single STFT
     window. Optionally writes session metadata excluding channels.
 
@@ -76,12 +76,11 @@ def _build_session(tmp_path: pathlib.Path, excluded_channels: list[str] | None =
     """
 
     root = tmp_path / SESSION_ID
-    hpss_dir = root / "audio" / "hpss"
-    hpss_dir.mkdir(parents=True)
     rng = np.random.default_rng(0)
-    for device, channel in (("m", 1), ("m", 2), ("s", 1), ("s", 2)):
-        audio = rng.integers(-3000, 3000, size=SAMPLING_RATE, dtype=np.int16)
-        sf.write(str(hpss_dir / f"{device}_250913193920_ch{channel:02d}_cropped_to_video_hpss.wav"), audio, SAMPLING_RATE, subtype="PCM_16")
+    write_broadband_audio(root, [
+        (f"{device}_250913193920_ch{channel:02d}_cropped_to_video_hpss.wav", rng.integers(-3000, 3000, size=SAMPLING_RATE, dtype=np.int16))
+        for device, channel in (("m", 1), ("m", 2), ("s", 1), ("s", 2))
+    ], SAMPLING_RATE)
     pls.DataFrame(
         {
             "usv_id": ["0000", "0001", "0002"],

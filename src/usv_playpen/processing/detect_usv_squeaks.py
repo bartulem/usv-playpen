@@ -15,8 +15,8 @@ that marks where every squeak in view sits.
 Input contract (fixed by the trained bundle, therefore read from it rather than
 exposed as settings): the noise model's two-band input (:mod:`detect_usv_noise`):
 two absolute-dB bands (30-120 kHz and 3-30 kHz, 128 linear rows each) of the
-variance-weighted average of the UNFILTERED per-channel
-``audio/hpss/*_cropped_to_video_hpss.wav`` files (metadata-excluded channels
+variance-weighted average of the channels of the session's broadband memmap
+(``audio/broadband_filtered``, :func:`detect_usv_noise.squeak_audio_channels`; metadata-excluded channels
 dropped when ``exclude_metadata_audio_channels`` is on), Blackman-Harris STFT
 (nperseg 2048, hop 512 = 2.048 ms, centred), mapped by
 ``(clip(x, -100, 50) + 25) / 75``. The audio window is the noise model's
@@ -74,7 +74,7 @@ Squeak QLVM embedding (``infer-qlvm-squeak-latents``,
 squeak QLVM cell (the ``infer_qlvm_squeak_latents.model_cell_directory`` setting,
 filled when empty with the production cell ``os_utils.QLVM_SQUEAK_PRODUCTION_CELL``
 under ``os_utils.QLVM_SQUEAK_PACKAGE_ROOT``: the time-stretched, unmasked,
-unfloored ``train-qlvm`` cell ``squeaks/cell/stretch_nofloor``) and writes the two
+unfloored ``train-qlvm`` cell ``qlvm/qlvm_squeak``, trained as ``squeaks/cell/stretch_nofloor``) and writes the two
 float columns ``qlvm_squeak1`` / ``qlvm_squeak2`` (torus coordinates in
 ``[0, 1)``, null on every other row). Two cell layouts are read
 (:func:`load_squeak_qlvm_cell`): a ``train-qlvm`` cell, whose
@@ -135,7 +135,6 @@ import click
 import jax.numpy as jnp
 import numpy as np
 import polars as pls
-import soundfile as sf
 import torch
 from click.core import ParameterSource
 from torch import nn
@@ -166,6 +165,7 @@ from .detect_usv_noise import (
     NOISE_INPUT_CONTRACT,
     NOISE_SAMPLING_RATE,
     NOISE_SCALAR_NAMES,
+    BroadbandChannelReader,
     NoiseTimeMIL,
     augment_noise_batch,
     frame_budget_batches,
@@ -173,7 +173,7 @@ from .detect_usv_noise import (
     noise_scalars,
     pad_noise_batch,
     segment_input,
-    squeak_wav_channels,
+    squeak_audio_channels,
 )
 from .generate_spectrograms import compute_usv_spectrogram
 from .qlvm_latents import cell_file, load_decoder_params, normalize_model_inputs
@@ -414,7 +414,7 @@ def load_usv_squeak_model(model_path: str, device: torch.device) -> dict:
 
 
 def usv_squeak_window_input(
-    handles: list[sf.SoundFile],
+    handles: list[BroadbandChannelReader],
     n_file: int,
     start: float,
     stop: float,
@@ -435,7 +435,7 @@ def usv_squeak_window_input(
 
     Parameters
     ----------
-    handles (list[sf.SoundFile])
+    handles (list[BroadbandChannelReader])
         Open per-channel wavs (one per averaged channel, all of one length).
     n_file (int)
         Frame count (samples) of the wavs.
@@ -682,8 +682,7 @@ def classify_usv_squeak_rows(
     windows: list[dict] = []
     scored_rows: list[int] = []
     if candidates.size:
-        wav_paths = squeak_wav_channels(session_root, exclude_metadata_audio_channels, message_output)
-        handles = [sf.SoundFile(str(path), mode="r") for path in wav_paths]
+        handles = squeak_audio_channels(session_root, exclude_metadata_audio_channels, message_output)
         try:
             n_file = handles[0].frames
             for row_index in candidates:
@@ -1028,8 +1027,7 @@ def session_usv_squeak_training_inputs(
     summary = pls.read_csv(str(usv_summary_loc), columns=["start", "chs_count"], infer_schema_length=None)
     summary_start = summary["start"].cast(pls.Float64).to_numpy()
     summary_chs = summary["chs_count"].cast(pls.Float64).to_numpy()
-    wav_paths = squeak_wav_channels(root, exclude_metadata_audio_channels, lambda *_args, **_kwargs: None)
-    handles = [sf.SoundFile(str(path), mode="r") for path in wav_paths]
+    handles = squeak_audio_channels(root, exclude_metadata_audio_channels, lambda *_args, **_kwargs: None)
     built = {}
     try:
         for row, row_index, start, stop in segments:
@@ -1056,8 +1054,8 @@ def build_usv_squeak_training_inputs(
     -----------
     Builds every labelled segment's call-class input exactly as ``detect-usv-squeaks`` builds it at
     inference (:func:`usv_squeak_window_input` with ``USV_SQUEAK_INPUT_CONTRACT``, over the same
-    per-channel ``audio/hpss`` wavs and channel exclusion). Sessions are processed in ``n_workers``
-    threads (the work is the latency of reading short windows from many wavs on a network share), each
+    broadband memmap channels and channel exclusion). Sessions are processed in ``n_workers``
+    threads (the work is the latency of reading short windows on a network share), each
     session's wavs opened once; results are collected by label row, so the order does not depend on the
     thread schedule. Segments too short for one STFT window are left out and reported.
 
@@ -1495,7 +1493,7 @@ def squeak_window_spectrograms(
     Description
     -----------
     Rebuilds the full-length, absolute-dB sonic spectrogram of each requested audio window from the
-    session's unfiltered HPSS wavs, with the squeak QLVM cells' front end (``SQUEAK_SPEC_PARAMS``:
+    session's broadband memmap channels (:func:`detect_usv_noise.squeak_audio_channels`), with the squeak QLVM cells' front end (``SQUEAK_SPEC_PARAMS``:
     Blackman-Harris STFT, nperseg 2048, hop 512, centred, 3-30 kHz, 128 linear frequency bins,
     ``ref=1.0``, no ``top_db`` clamp, variance-weighted channel average; the front end that reproduces
     the reference ``_sonic_wav_`` store bit-exactly). A window spans ``round(start * 250000)`` to
@@ -1523,9 +1521,8 @@ def squeak_window_spectrograms(
         when the window is too short for a single STFT frame.
     """
 
-    wav_paths = squeak_wav_channels(session_root, exclude_metadata_audio_channels, message_output)
     spectrograms: list[np.ndarray | None] = []
-    handles = [sf.SoundFile(str(wav_path), mode="r") for wav_path in wav_paths]
+    handles = squeak_audio_channels(session_root, exclude_metadata_audio_channels, message_output)
     try:
         for start_s, stop_s in zip(np.asarray(window_start_s, dtype=np.float64), np.asarray(window_stop_s, dtype=np.float64), strict=True):
             first_sample = round(float(start_s) * SQUEAK_SAMPLING_RATE)
@@ -1877,7 +1874,7 @@ def load_squeak_qlvm_cell(model_cell_directory: str) -> dict:
     ----------
     model_cell_directory (str)
         Path to the cell, e.g.
-        ``/mnt/falkner/Bartul/PC_transfer/qlvm_final/squeaks/cell/stretch_nofloor`` or
+        ``/mnt/falkner/Bartul/spectrograms/qlvm/qlvm_squeak`` or
         ``/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm/natural_lumped_N11000_nomask``;
         translated to the host mount with ``configure_path``.
 
@@ -1937,7 +1934,7 @@ def load_contract_squeak_qlvm_cell(cell: pathlib.Path) -> dict:
     model (dict)
         As :func:`load_squeak_qlvm_cell`; ``model_id`` is the last three path
         components (``os_utils.qlvm_cell_model_id``, e.g.
-        ``squeaks/cell/stretch_nofloor``) and ``layout`` is ``"train-qlvm"``.
+        ``spectrograms/qlvm/qlvm_squeak`` for the production cell) and ``layout`` is ``"train-qlvm"``.
 
     Raises
     ------
@@ -2310,7 +2307,7 @@ def train_usv_squeak_model_cli(ctx, bundle_path, label_set, label_override, **kw
 
 @click.command(name="infer-qlvm-squeak-latents")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--model-cell-directory', 'model_cell_directory', type=str, default=None, required=False, help='A squeak QLVM cell (a train-qlvm cell with a training_contract.json, or an old-layout phase3_BBVs_qlvm cell); filled with the production squeaks/cell/stretch_nofloor cell when empty and spectrograms_root is set.')
+@click.option('--model-cell-directory', 'model_cell_directory', type=str, default=None, required=False, help='A squeak QLVM cell (a train-qlvm cell with a training_contract.json, or an old-layout phase3_BBVs_qlvm cell); filled with the production qlvm/qlvm_squeak cell (trained as squeaks/cell/stretch_nofloor) when empty and spectrograms_root is set.')
 @click.option('--exclude-metadata-audio-channels/--no-exclude-metadata-audio-channels', 'exclude_metadata_audio_channels', default=None, required=False, help='Drop channels the session metadata marks as excluded from the spectrogram average (keep it equal to the detect-usv-squeaks run).')
 @click.option('--lattice-batch-size', 'lattice_batch_size', type=int, default=None, required=False, help='Lattice points decoded and scored per block; lower it to cut memory.')
 @click.option('--data-batch-size', 'data_batch_size', type=int, default=None, required=False, help='Squeaks whose lattice posteriors are computed together; memory grows with this times the lattice size.')

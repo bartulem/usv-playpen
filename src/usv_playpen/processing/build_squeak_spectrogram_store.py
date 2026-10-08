@@ -34,10 +34,10 @@ Spectrogram. The audio of a row is its squeak crop window
 to hold the squeak envelope ``squeak_start`` .. ``squeak_end`` plus the
 embedding's two context frames, because a squeak often runs past the segment the
 ultrasonic segmenter cut; the segment alone when the row has no envelope), from
-``round(window_start * 250000)`` to ``round(window_stop * 250000)`` samples on every unfiltered HPSS channel
-(``audio/hpss/*_cropped_to_video_hpss.wav``), dropping the channels the session
+``round(window_start * 250000)`` to ``round(window_stop * 250000)`` samples on every channel of the
+session's broadband memmap (``audio/broadband_filtered``), dropping the channels the session
 metadata marks as excluded when ``exclude_metadata_audio_channels`` is on
-(:func:`detect_usv_squeaks.squeak_wav_channels`, the same selection
+(:func:`detect_usv_noise.squeak_audio_channels`, the same selection
 ``detect-usv-squeaks`` averages over). Each channel is mean-removed and turned
 into a power STFT with the squeak classifier's own front end: Blackman-Harris
 window, ``nperseg`` 2048 (8.19 ms, 122 Hz bin spacing), hop 512 (2.048 ms per
@@ -109,7 +109,6 @@ import h5py
 import librosa
 import numpy as np
 import polars as pls
-import soundfile as sf
 from click.core import ParameterSource
 
 from ..analyses.usv_interval_archive import _polars_to_h5, git_sha_for_provenance
@@ -121,10 +120,10 @@ from .detect_usv_squeaks import (
     FRAME_DT_S,
     SQUEAK_SAMPLING_RATE,
     SQUEAK_SPEC_PARAMS,
+    squeak_audio_channels,
     squeak_crop_frames,
     squeak_crop_window,
     squeak_qlvm_rows,
-    squeak_wav_channels,
 )
 
 # File-name stem (and layout tag) of the stores this module writes.
@@ -496,7 +495,7 @@ def session_squeak_spectrograms(session_root: str, cfg: dict) -> dict:
     Builds the store entries of one session (runs inside a worker process): the
     ``squeak`` / ``both`` rows that are not noise
     (:func:`detect_usv_squeaks.squeak_qlvm_rows`), each rebuilt from the session's
-    HPSS wavs over its squeak crop window
+    broadband memmap over its squeak crop window
     (:func:`detect_usv_squeaks.squeak_crop_window`) as a log-frequency
     absolute-dB spectrogram (:func:`log_frequency_spectrogram`), cut to the
     display window (:func:`display_window_first`) and quantized
@@ -541,12 +540,11 @@ def session_squeak_spectrograms(session_root: str, cfg: dict) -> dict:
     window_first_all = np.zeros(rows.size, dtype=np.int32)
     audio_start_all = np.zeros(rows.size, dtype=np.float64)
     if rows.size:
-        wav_paths = squeak_wav_channels(root, cfg['exclude_metadata_audio_channels'], messages.append)
+        handles = squeak_audio_channels(root, cfg['exclude_metadata_audio_channels'], messages.append)
         starts = usv_summary["start"].to_numpy()
         stops = usv_summary["stop"].to_numpy()
         squeak_start = usv_summary["squeak_start"].cast(pls.Float64).fill_null(np.nan).to_numpy()
         squeak_end = usv_summary["squeak_end"].cast(pls.Float64).fill_null(np.nan).to_numpy()
-        handles = [sf.SoundFile(str(wav_path), mode="r") for wav_path in wav_paths]
         try:
             for position, row_index in enumerate(rows):
                 has_extent = bool(np.isfinite(squeak_start[row_index]) and np.isfinite(squeak_end[row_index]))

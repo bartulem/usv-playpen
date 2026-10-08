@@ -129,6 +129,50 @@ def pytest_collection_modifyitems(config, items):
     items[:] = other_items + integrity_items
 
 
+def write_broadband_audio(root: Path, channels: list[tuple[str, np.ndarray]], sampling_rate: int = 250000) -> Path:
+    """
+    Description
+    -----------
+    Writes a synthetic session's broadband memmap the way ``broadband-filter-audio`` lays it out:
+    ``<root>/audio/broadband_filtered/<id>_concatenated_audio_broadband_filtered_<sr>_<n>_<ch>_int16.mmap``
+    (int16, samples x channels, columns in the order given, which must be the sorted source wav names)
+    plus the filter's record ``line_noise.json`` (complete, naming the memmap and the source wav of
+    every column), which the audio classifiers read through ``detect_usv_noise.squeak_audio_channels``.
+
+    Parameters
+    ----------
+    root (Path)
+        Session root directory.
+    channels (list[tuple[str, np.ndarray]])
+        ``(source wav name, int16 samples)`` per channel, in sorted name order, all the same length.
+    sampling_rate (int)
+        Sampling rate in Hz.
+
+    Returns
+    -------
+    mmap_path (Path)
+        The written memmap.
+    """
+
+    names = [name for name, _ in channels]
+    assert names == sorted(names), "broadband columns follow the sorted source wav names"
+    data = np.stack([np.asarray(samples, dtype=np.int16) for _, samples in channels], axis=1)
+    folder = root / "audio" / "broadband_filtered"
+    folder.mkdir(parents=True, exist_ok=True)
+    mmap_path = folder / (f"{names[0].split('_')[1]}_concatenated_audio_broadband_filtered_"
+                          f"{sampling_rate}_{data.shape[0]}_{data.shape[1]}_int16.mmap")
+    data.tofile(mmap_path)
+    record = {
+        "complete": True,
+        "output": {"file": mmap_path.name, "folder": "audio/broadband_filtered", "dtype": "int16",
+                   "sampling_rate": sampling_rate, "n_samples": int(data.shape[0]), "n_channels": int(data.shape[1]),
+                   "column_order": "sorted source wav names"},
+        "sources": [{"column": column, "file": name, "bytes": 0} for column, name in enumerate(names)],
+    }
+    (folder / "line_noise.json").write_text(json.dumps(record))
+    return mmap_path
+
+
 def write_qlvm_category_bundle(directory: Path, resolution: int = 20) -> Path:
     """
     Description
