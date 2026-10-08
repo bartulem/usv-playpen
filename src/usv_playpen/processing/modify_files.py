@@ -694,8 +694,11 @@ def estimate_low_band_variance(wav_paths: list[pathlib.Path],
     their models were trained with (full-band variance = low band + high band,
     and the high band is the broadband audio). Measured on 1,118 labelled
     segments of 294 sessions: the reconstructed weights match the full-band
-    ones at Spearman 0.997 and the noise model's scores at r 0.994, where the
-    broadband variance alone drops its recall from 0.99 to 0.73.
+    ones at Spearman 0.997 and the noise model keeps its precision and recall
+    (scores r 0.984 with the wav input, about 2 more real calls lost per 10,000
+    segments beyond the 9 the tone removal costs), where the broadband variance
+    alone drops its recall from 0.99 to 0.73. Independent draws of the windows
+    agree at Spearman 0.997 (values within about 5 %).
 
     Parameters
     ----------

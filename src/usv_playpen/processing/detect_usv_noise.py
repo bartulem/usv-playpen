@@ -99,7 +99,11 @@ NOISE_COLUMNS = ("noise", "noise_probability")
 # and the high band IS the broadband audio, so every reader carries its column's stored low-band
 # variance and the spectrogram average adds it to the window's own variance
 # (compute_usv_spectrogram's channel_variance_offsets), which reproduces the production weights
-# (Spearman 0.997) and scores (r 0.994).
+# (Spearman 0.997). Through this code path on 1,118 labelled segments the noise model keeps its
+# precision and recall (0.988 / 0.993, scores r 0.984 with the wav input); it loses about 11 more real
+# calls per 10,000 segments, 9 of them from the tone removal alone and 2 from the weight reconstruction,
+# and the call-class / squeak QLVM outputs agree with the wav input at >= 99.98 % / a median position
+# shift of 0.003-0.006.
 BROADBAND_RECORD_NAME = "line_noise.json"
 BROADBAND_LOW_BAND_KEY = "low_band_variance"
 
