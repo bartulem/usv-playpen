@@ -644,22 +644,18 @@ def test_qlvm_category_constants_and_production_cells():
     assert os_utils.QLVM_REGULAR_MAP == os_utils.QLVM_CATEGORY_MAP == "qlvm"
     assert os_utils.QLVM_CATEGORY_COLUMN == "qlvm_category"
     assert os_utils.QLVM_CATEGORY_COLUMNS == ("qlvm_category",)
-    assert os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY == (
-        "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/regions/clustering_clean/category_bundle"
-    )
+    assert os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY == "/mnt/falkner/Bartul/spectrograms/categories"
     assert not hasattr(os_utils, "resolve_embedding_arrays_path")
     assert not hasattr(os_utils, "QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME")
-    package = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
-    assert os_utils.qlvm_production_cell_directory("qlvm") == f"{package}/cell/masked"
-    assert os_utils.qlvm_production_cell_directory("qlvm_duration") == f"{package}/conditionals/cell/duration"
-    assert os_utils.qlvm_production_cell_directory("qlvm_entropy") == f"{package}/conditionals/cell/spectral_entropy"
-    assert os_utils.qlvm_production_cell_directory("qlvm_bandwidth") == f"{package}/conditionals/cell/bandwidth"
-    assert os_utils.qlvm_production_cell_directory("qlvm_loudness") == f"{package}/conditionals/cell/loudness"
+    package = "/mnt/falkner/Bartul/spectrograms/qlvm"
+    for qlvm_map in os_utils.QLVM_MAPS:
+        # one folder per map, named by its column prefix
+        assert os_utils.qlvm_production_cell_directory(qlvm_map) == f"{package}/{qlvm_map}"
     with pytest.raises(ValueError, match="qlvm_map must be one of"):
         os_utils.qlvm_production_cell_directory("qlvm_dur")
     with pytest.raises(ValueError, match="qlvm_map must be one of"):
         os_utils.qlvm_production_cell_directory("vae")
-    assert os_utils.qlvm_cell_model_id(f"{package}/cell/masked") == "masked_clean/cell/masked"
+    assert os_utils.qlvm_cell_model_id(f"{package}/qlvm") == "spectrograms/qlvm/qlvm"
     assert os_utils.qlvm_cell_model_id("F:\\Bartul\\x\\masked_clean\\cell\\masked") == "masked_clean/cell/masked"
 
 
@@ -671,9 +667,7 @@ def test_qlvm_map_cell_directory_covers_the_usv_and_squeak_maps():
     assert os_utils.QLVM_DECODER_MAPS == os_utils.QLVM_MAPS + ("qlvm_squeak",)
     for qlvm_map in os_utils.QLVM_MAPS:
         assert os_utils.qlvm_map_cell_directory(qlvm_map) == os_utils.qlvm_production_cell_directory(qlvm_map)
-    assert os_utils.qlvm_map_cell_directory("qlvm_squeak") == (
-        "/mnt/falkner/Bartul/PC_transfer/qlvm_final/squeaks/cell/stretch_nofloor"
-    )
+    assert os_utils.qlvm_map_cell_directory("qlvm_squeak") == "/mnt/falkner/Bartul/spectrograms/qlvm/qlvm_squeak"
     with pytest.raises(ValueError, match="qlvm_map must be one of"):
         os_utils.qlvm_map_cell_directory("vae")
 
@@ -693,7 +687,7 @@ def test_load_qlvm_category_bundle_reads_the_one_bundle(qlvm_category_bundle):
     np.testing.assert_allclose(bundle["centers"], [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]])
     assert bundle["names"] == ["R-1", "R-2", "R-3", "R-4"]
     assert bundle["map"] == "qlvm"
-    assert bundle["model_id"] == "masked_clean/cell/masked"
+    assert bundle["model_id"] == "spectrograms/qlvm/qlvm"
     assert "built 2026-10-03T12:00:00" in bundle["identity"] and "0123456789ab" in bundle["identity"]
 
 
@@ -876,13 +870,13 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     # written); the production mapping is, with the masking and time stretch its cells
     # were trained with
     assert set(settings["infer_qlvm_latents"]) == {"model_cells", "masking_type", "time_stretch"}
-    package = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
+    package = "/mnt/falkner/Bartul/spectrograms/qlvm"
     assert settings["infer_qlvm_latents"]["model_cells"] == {
-        "qlvm": f"{package}/cell/masked",
-        "qlvm_duration": f"{package}/conditionals/cell/duration",
-        "qlvm_entropy": f"{package}/conditionals/cell/spectral_entropy",
-        "qlvm_bandwidth": f"{package}/conditionals/cell/bandwidth",
-        "qlvm_loudness": f"{package}/conditionals/cell/loudness",
+        "qlvm": f"{package}/qlvm",
+        "qlvm_duration": f"{package}/qlvm_duration",
+        "qlvm_entropy": f"{package}/qlvm_entropy",
+        "qlvm_bandwidth": f"{package}/qlvm_bandwidth",
+        "qlvm_loudness": f"{package}/qlvm_loudness",
     }
     assert list(settings["infer_qlvm_latents"]["model_cells"]) == [
         "qlvm", "qlvm_duration", "qlvm_entropy", "qlvm_bandwidth", "qlvm_loudness",
@@ -890,9 +884,7 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     assert settings["infer_qlvm_latents"]["masking_type"] == "sam"
     assert settings["infer_qlvm_latents"]["time_stretch"] is True
     # the production squeak QLVM cell (time-stretched, unmasked, no floor)
-    assert settings["infer_qlvm_squeak_latents"]["model_cell_directory"] == (
-        "/mnt/falkner/Bartul/PC_transfer/qlvm_final/squeaks/cell/stretch_nofloor"
-    )
+    assert settings["infer_qlvm_squeak_latents"]["model_cell_directory"] == "/mnt/falkner/Bartul/spectrograms/qlvm/qlvm_squeak"
     assert settings["detect_usv_squeaks"]["squeak_model_path"] == f"{root}/squeak/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt"
     assert settings["detect_usv_noise"]["noise_model_path"] == f"{root}/noise/noise_timemil_ens5_n4680_20260926.pt"
     # assign-qlvm-categories labels with the category bundle every figure draws, on the regular map

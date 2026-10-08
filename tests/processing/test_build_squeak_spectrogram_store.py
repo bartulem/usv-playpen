@@ -7,7 +7,7 @@ inside a log bin, interpolation where none does, rows summing to 1), the
 channel-averaged log spectrogram of pure tones, the dB quantization round trip,
 the display-window placement and the explorer's tile reader are tested
 directly. The builder runs end to end on a synthetic session (per-channel
-PCM_16 wavs under ``audio/hpss`` plus a ``*_usv_summary.csv`` with the usv / squeak
+a broadband memmap plus a ``*_usv_summary.csv`` with the usv / squeak
 booleans and noise column) and the written store is read back: which rows it holds, their
 frame counts, the window of a segment longer than the stored window, the
 quantized values against a direct recomputation, the attrs, and the resolver
@@ -23,14 +23,15 @@ import librosa
 import numpy as np
 import polars as pls
 import pytest
-import soundfile as sf
 import yaml
 
+from tests.conftest import write_broadband_audio
 from usv_playpen.os_utils import (
     resolve_consolidated_h5_path,
     resolve_squeak_spectrogram_store_path,
 )
 from usv_playpen.processing import build_squeak_spectrogram_store as store
+from usv_playpen.processing import detect_usv_noise as noise
 from usv_playpen.processing.detect_usv_squeaks import (
     SQUEAK_SPEC_PARAMS,
     squeak_crop_frames,
@@ -95,18 +96,13 @@ def _build_session(tmp_path: pathlib.Path, excluded_channels: list[str] | None =
     """
 
     root = tmp_path / SESSION_ID
-    hpss_dir = root / "audio" / "hpss"
-    hpss_dir.mkdir(parents=True)
     rng = np.random.default_rng(0)
     time_s = np.arange(2 * SAMPLING_RATE) / SAMPLING_RATE
+    channels = []
     for device, channel in (("m", 1), ("m", 2), ("s", 1), ("s", 2)):
         audio = rng.normal(0.0, 300.0, size=time_s.size) + 8000.0 * np.sin(2 * np.pi * 5000.0 * time_s)
-        sf.write(
-            str(hpss_dir / f"{device}_250913193920_ch{channel:02d}_cropped_to_video_hpss.wav"),
-            np.clip(audio, -32768, 32767).astype(np.int16),
-            SAMPLING_RATE,
-            subtype="PCM_16",
-        )
+        channels.append((f"{device}_250913193920_ch{channel:02d}_cropped_to_video_hpss.wav", np.clip(audio, -32768, 32767).astype(np.int16)))
+    write_broadband_audio(root, channels, SAMPLING_RATE)
     pls.DataFrame(
         {
             "usv_id": ["0000", "0001", "0002", "0003", "0004"],
@@ -264,9 +260,11 @@ def test_builder_writes_the_squeak_rows_of_every_session(tmp_path):
         assert np.all(group["spectrograms"][0, :, expected_frames[0]:] == 0)
         assert np.all(group["spectrograms"][2] == 0)
 
-        wav_paths = sorted((root / "audio" / "hpss").glob("*_cropped_to_video_hpss.wav"))
-        kept = [path for path in wav_paths if not path.name.startswith("s_") or "_ch02_" not in path.name]
-        audio = np.stack([sf.read(str(path), dtype="float64")[0][25000:37500] for path in kept], axis=1)
+        readers = noise.squeak_audio_channels(root, False, print)
+        kept = [reader for reader in readers if not reader.name.startswith("s_") or "_ch02_" not in reader.name]
+        for reader in kept:
+            reader.seek(25000)
+        audio = np.stack([reader.read(frames=12500) for reader in kept], axis=1)
         weights = store.log_frequency_weights(_linear_freqs(), edges)
         direct_db, _ = store.log_frequency_spectrogram(audio, weights)
         np.testing.assert_array_equal(group["spectrograms"][0, :, :direct_db.shape[1]], store.quantize_db(direct_db, -100.0, 60.0))

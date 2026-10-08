@@ -53,6 +53,7 @@ def compute_usv_spectrogram(
     normalize: bool = True,
     db_ref: float | None = None,
     top_db: float | None = 80.0,
+    channel_variance_offsets: np.ndarray | None = None,
 ) -> tuple[np.ndarray | None, int]:
     """
     Description
@@ -67,9 +68,10 @@ def compute_usv_spectrogram(
     fixed along time to ``num_time_bins`` (or left at its native length when
     ``num_time_bins`` is None). The per-channel
     spectrograms are then averaged with weights equal to each channel's audio
-    variance (louder/cleaner channels dominate); if every channel has zero
-    variance the weights fall back to uniform. The averaged spectrogram is
-    optionally min-max normalized to ``[0, 1]``.
+    variance (louder/cleaner channels dominate), plus ``channel_variance_offsets``
+    when given; if every channel has zero weight the weights fall back to
+    uniform. The averaged spectrogram is optionally min-max normalized to
+    ``[0, 1]``.
 
     Parameters
     ----------
@@ -97,6 +99,13 @@ def compute_usv_spectrogram(
         librosa's own default and therefore reproduces the existing QLVM
         spectrograms exactly; it is amplitude-dependent, so an absolute-dB run
         must pass None.
+    channel_variance_offsets (np.ndarray | None)
+        One value per channel of ``audio_segment_channels`` added to that
+        channel's variance before weighting (the same units as the variance of
+        the audio values). The audio classifiers pass each channel's stored
+        low-band variance here when the audio is the 2 kHz high-passed broadband
+        memmap, so the weights equal the full-band variances the models were
+        trained with (see ``detect_usv_noise``). None adds nothing.
 
     Returns
     -------
@@ -130,6 +139,11 @@ def compute_usv_spectrogram(
         raise ValueError(error_message)
 
     n_channels = audio_segment_channels.shape[1]
+    if channel_variance_offsets is not None and len(channel_variance_offsets) != n_channels:
+        error_message = (
+            f"channel_variance_offsets has {len(channel_variance_offsets)} values for {n_channels} channels."
+        )
+        raise ValueError(error_message)
     per_channel_specs: list[np.ndarray] = []
     per_channel_vars: list[float] = []
     original_time_bins = 0
@@ -185,7 +199,10 @@ def compute_usv_spectrogram(
             spec_db = librosa.util.fix_length(spec_db, size=num_time_bins, axis=1)
 
         per_channel_specs.append(spec_db)
-        per_channel_vars.append(float(np.var(audio_segment)))
+        channel_variance = float(np.var(audio_segment))
+        if channel_variance_offsets is not None:
+            channel_variance += float(channel_variance_offsets[ch_idx])
+        per_channel_vars.append(channel_variance)
 
     if not per_channel_specs:
         return None, 0

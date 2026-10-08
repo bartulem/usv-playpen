@@ -418,9 +418,9 @@ def make_qlvm_decode_fn_from_model_cell(model_cell_directory: str, condition_qua
     function, so the pullback metric is computed with the same decoder whose
     torus the manifold coordinates live on (for the production summaries, the
     cell of the coordinates' map, ``os_utils.qlvm_map_cell_directory``:
-    ``qlvm1`` / ``qlvm2`` -> ``.../masked_clean/cell/masked``,
+    ``qlvm1`` / ``qlvm2`` -> ``.../spectrograms/qlvm/qlvm``,
     ``qlvm_duration1`` / ``qlvm_duration2`` ->
-    ``.../masked_clean/conditionals/cell/duration``, ``qlvm_squeak1`` /
+    ``.../spectrograms/qlvm/qlvm_duration``, ``qlvm_squeak1`` /
     ``qlvm_squeak2`` -> the squeak cell). The cell is read by
     :func:`processing.qlvm_latents.load_model_cell` (its ``checkpoint.tar``
     without torch, plus its training contract), and the weights go through
@@ -511,9 +511,9 @@ def resolve_geodesic_decoder_source(geodesic_settings: dict,
     cell of the map the manifold coordinates come from, the map prefix of
     ``manifold_column_names`` (``modeling_utils.manifold_tag_segment``) resolved
     by ``os_utils.qlvm_map_cell_directory`` (``qlvm`` ->
-    ``.../masked_clean/cell/masked``, ``qlvm_duration`` / ``qlvm_entropy`` /
-    ``qlvm_bandwidth`` / ``qlvm_loudness`` -> the conditional cells under
-    ``.../masked_clean/conditionals/cell``, ``qlvm_squeak`` -> the squeak cell).
+    ``.../spectrograms/qlvm/qlvm``, ``qlvm_duration`` / ``qlvm_entropy`` /
+    ``qlvm_bandwidth`` / ``qlvm_loudness`` -> their cells
+    ``.../spectrograms/qlvm/<map>``, ``qlvm_squeak`` -> the squeak cell).
     A pullback metric of one map's coordinates under another map's decoder would
     measure distances on a torus the coordinates do not live on. Taking the cell
     from the code constants keeps the GUI / CLI experimenter re-keying of settings

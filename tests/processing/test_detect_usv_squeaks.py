@@ -6,7 +6,7 @@ The call-class model: the network (and its noise-trunk initialization), the sque
 envelope of above-threshold frames in runs touching the segment, no minimum run, half-hop edges, and
 the highest-scoring-frame fallback), the window input (segment indicator, frame grid) and the bundle
 loader with its refusals are tested directly. The end-to-end classifier runs on a synthetic session
-(per-channel PCM_16 wavs under ``audio/hpss`` plus a small ``*_usv_summary.csv``) with a stub ensemble
+(a four-channel broadband memmap plus a small ``*_usv_summary.csv``) with a stub ensemble
 whose class logits are set by the segment length and whose frame logits are set per frame relative to
 the segment, so every row's class, probabilities and extent are known: that pins the boolean encoding
 (pure USV (true, false), pure squeak (false, true), both (true, true), nulls on noise rows),
@@ -32,11 +32,11 @@ import jax.numpy as jnp
 import numpy as np
 import polars as pls
 import pytest
-import soundfile as sf
 import torch
 import yaml
 from click.testing import CliRunner
 
+from tests.conftest import write_broadband_audio
 from usv_playpen.processing import detect_usv_squeaks as squeaks
 from usv_playpen.processing.detect_usv_noise import HOP_SAMPLES, NoiseTimeMIL
 
@@ -124,7 +124,7 @@ def _write_wavs(root: pathlib.Path, seconds: float = 1.0) -> None:
     """
     Description
     -----------
-    Writes four PCM_16 HPSS wavs (two master, two slave channels) of noise under ``audio/hpss``.
+    Writes a broadband memmap of four channels (two master, two slave) of noise, with its record.
 
     Parameters
     ----------
@@ -138,12 +138,11 @@ def _write_wavs(root: pathlib.Path, seconds: float = 1.0) -> None:
     None
     """
 
-    hpss_dir = root / "audio" / "hpss"
-    hpss_dir.mkdir(parents=True)
     rng = np.random.default_rng(0)
-    for device, channel in (("m", 1), ("m", 2), ("s", 1), ("s", 2)):
-        audio = rng.integers(-3000, 3000, size=int(SAMPLING_RATE * seconds), dtype=np.int16)
-        sf.write(str(hpss_dir / f"{device}_250913193920_ch{channel:02d}_cropped_to_video_hpss.wav"), audio, SAMPLING_RATE, subtype="PCM_16")
+    write_broadband_audio(root, [
+        (f"{device}_250913193920_ch{channel:02d}_cropped_to_video_hpss.wav", rng.integers(-3000, 3000, size=int(SAMPLING_RATE * seconds), dtype=np.int16))
+        for device, channel in (("m", 1), ("m", 2), ("s", 1), ("s", 2))
+    ], SAMPLING_RATE)
 
 
 def _build_session(tmp_path: pathlib.Path, excluded_channels: list[str] | None = None) -> pathlib.Path:
@@ -332,7 +331,7 @@ def test_usv_squeak_window_input_marks_the_segment(tmp_path):
     """The window holds 49 context hops before the segment (fewer at the file start), frame 0 is
     centred at the read start, and the indicator marks exactly the segment frames."""
     root = _build_session(tmp_path)
-    handles = [sf.SoundFile(str(path)) for path in squeaks.squeak_wav_channels(root, False, print)]
+    handles = squeaks.squeak_audio_channels(root, False, print)
     try:
         window = squeaks.usv_squeak_window_input(handles, handles[0].frames, 0.30, 0.70, squeaks.USV_SQUEAK_INPUT_CONTRACT)
         early = squeaks.usv_squeak_window_input(handles, handles[0].frames, 0.05, 0.10, squeaks.USV_SQUEAK_INPUT_CONTRACT)
@@ -427,13 +426,55 @@ def test_classify_usv_squeak_rows_needs_the_noise_column(tmp_path):
         squeaks.classify_usv_squeak_rows(root, summary, _stub_bundle(), torch.device("cpu"), True, 64, print)
 
 
-def test_squeak_wav_channels_honours_metadata_exclusion(tmp_path):
-    """Metadata-excluded channels are dropped only when exclusion is switched on."""
+def test_squeak_audio_channels_honours_metadata_exclusion(tmp_path):
+    """Metadata-excluded channels are dropped only when exclusion is switched on; each reader serves
+    its own memmap column, scaled like soundfile's PCM_16 reading."""
     root = _build_session(tmp_path, excluded_channels=["m_ch02", "s_ch01"])
-    kept = squeaks.squeak_wav_channels(root, exclude_metadata_audio_channels=True, message_output=lambda *_a, **_kw: None)
-    assert [path.name.split("_cropped")[0] for path in kept] == ["m_250913193920_ch01", "s_250913193920_ch02"]
-    everything = squeaks.squeak_wav_channels(root, exclude_metadata_audio_channels=False, message_output=lambda *_a, **_kw: None)
+    kept = squeaks.squeak_audio_channels(root, exclude_metadata_audio_channels=True, message_output=lambda *_a, **_kw: None)
+    assert [reader.name.split("_cropped")[0] for reader in kept] == ["m_250913193920_ch01", "s_250913193920_ch02"]
+    everything = squeaks.squeak_audio_channels(root, exclude_metadata_audio_channels=False, message_output=lambda *_a, **_kw: None)
     assert len(everything) == 4
+    rng = np.random.default_rng(0)
+    first_column = rng.integers(-3000, 3000, size=SAMPLING_RATE, dtype=np.int16)
+    everything[0].seek(100)
+    np.testing.assert_array_equal(everything[0].read(frames=50), first_column[100:150] / 32768.0)
+    assert everything[0].read(frames=10 * SAMPLING_RATE).size == SAMPLING_RATE - 150
+
+
+def test_squeak_audio_channels_refuses_an_incomplete_record(tmp_path):
+    """A broadband record that is incomplete, or a session without one, stops the read."""
+    root = _build_session(tmp_path)
+    record_path = root / "audio" / "broadband_filtered" / "line_noise.json"
+    record = json.loads(record_path.read_text())
+    record_path.write_text(json.dumps({**record, "complete": False}))
+    with pytest.raises(ValueError, match="incomplete"):
+        squeaks.squeak_audio_channels(root, False, print)
+    record_path.write_text(json.dumps({k: v for k, v in record.items() if k != "low_band_variance"}))
+    with pytest.raises(ValueError, match="add-broadband-low-band-variance"):
+        squeaks.squeak_audio_channels(root, False, print)
+    record_path.unlink()
+    with pytest.raises(FileNotFoundError, match="line_noise.json"):
+        squeaks.squeak_audio_channels(root, False, print)
+
+
+def test_readers_carry_the_low_band_variance_and_the_window_input_weights_with_it(tmp_path):
+    """Each reader carries its column's stored low-band variance, and the window input adds it to
+    the window variance when weighting the channels: a dominant stored value makes the input equal
+    that channel's single-channel input."""
+    root = tmp_path / SESSION_ID
+    rng = np.random.default_rng(5)
+    channels = [(f"m_250913193920_ch{channel:02d}_cropped_to_video_hpss.wav", rng.integers(-3000, 3000, size=SAMPLING_RATE, dtype=np.int16))
+                for channel in (1, 2, 3)]
+    write_broadband_audio(root, channels, SAMPLING_RATE, low_band_variance=[0.0, 50.0, 0.0])
+    readers = squeaks.squeak_audio_channels(root, False, lambda *_a, **_kw: None)
+    assert [reader.low_band_variance for reader in readers] == [0.0, 50.0, 0.0]
+    window = squeaks.usv_squeak_window_input(readers, readers[0].frames, 0.30, 0.40, squeaks.USV_SQUEAK_INPUT_CONTRACT)
+    only_second = squeaks.usv_squeak_window_input([readers[1]], readers[1].frames, 0.30, 0.40, squeaks.USV_SQUEAK_INPUT_CONTRACT)
+    np.testing.assert_allclose(window["x"][:2], only_second["x"][:2], atol=1e-4)
+    for reader in readers:
+        reader.low_band_variance = 0.0
+    plain = squeaks.usv_squeak_window_input(readers, readers[0].frames, 0.30, 0.40, squeaks.USV_SQUEAK_INPUT_CONTRACT)
+    assert np.abs(plain["x"][:2] - only_second["x"][:2]).max() > 1e-2
 
 
 def test_detect_and_merge_replaces_the_retired_columns(tmp_path, mocker):

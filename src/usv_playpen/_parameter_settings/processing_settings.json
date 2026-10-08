@@ -127,7 +127,9 @@
         "line_noise_block_s": 0.5,
         "line_noise_smoothing_blocks": 9,
         "chunk_s": 10.0,
-        "n_threads": 4
+        "n_threads": 4,
+        "low_band_variance_windows": 25,
+        "low_band_variance_window_s": 0.25
       },
       "concatenate_video_files": {
         "concatenate_camera_serial_num": [
@@ -374,6 +376,9 @@
     "exclude_metadata_audio_channels": true,
     "lattice_batch_size": 2048,
     "data_batch_size": 512
+  },
+  "consolidate_spectrogram_store": {
+    "store_mode": "production"
   },
   "build_squeak_spectrogram_store": {
     "min_freq": 2000.0,

@@ -126,6 +126,7 @@ bp-filter-audio = "usv_playpen.processing.preprocess_data:bp_filter_audio_files_
 concatenate-audio-files = "usv_playpen.processing.preprocess_data:concatenate_audio_files_cli"
 broadband-filter-audio = "usv_playpen.processing.preprocess_data:broadband_filter_audio_cli"
 broadband-filter-audio-batch = "usv_playpen.processing.preprocess_data:broadband_filter_audio_batch_cli"
+add-broadband-low-band-variance = "usv_playpen.processing.preprocess_data:add_broadband_low_band_variance_cli"
 sleap-to-h5 = "usv_playpen.processing.preprocess_data:sleap_file_conversion_cli"
 anipose-calibrate = "usv_playpen.processing.preprocess_data:conduct_anipose_calibration_cli"
 anipose-triangulate = "usv_playpen.processing.preprocess_data:conduct_anipose_triangulation_cli"
