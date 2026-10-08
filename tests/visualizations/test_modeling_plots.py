@@ -1511,7 +1511,7 @@ def _fake_decoder_params(rng, c_dim: int = 0):
     }
 
 
-_FAKE_CELL_MODEL_ID = "masked_clean/cell/masked"
+_FAKE_CELL_MODEL_ID = "spectrograms/qlvm/qlvm"
 
 
 def _fake_model_cell_loader(rng, c_dim: int = 0, loaded: list | None = None, model_id: str = _FAKE_CELL_MODEL_ID):
@@ -1635,7 +1635,7 @@ class TestPlotManifoldFilterAtlas:
         monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng, loaded=loaded))
         _, condition, bundle, model_id = _resolve_atlas_decoder_and_categories()
         assert condition is None
-        assert loaded[0].endswith("qlvm_time_stretch/masked_clean/cell/masked")
+        assert loaded[0].endswith("spectrograms/qlvm/qlvm")
         assert model_id == bundle["model_id"] == _FAKE_CELL_MODEL_ID
         assert bundle["directory"] == str(qlvm_category_bundle)
         assert sorted(np.unique(bundle["label_grid"]).tolist()) == [1, 2, 3, 4]
@@ -1648,7 +1648,7 @@ class TestPlotManifoldFilterAtlas:
         rng = np.random.default_rng(77)
         monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(
             rng, model_id="v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked"))
-        with pytest.raises(ValueError, match="partitions the torus of masked_clean/cell/masked"):
+        with pytest.raises(ValueError, match="partitions the torus of spectrograms/qlvm/qlvm"):
             _resolve_atlas_decoder_and_categories()
 
     def test_unreadable_bundle_raises(self, tmp_path, monkeypatch):

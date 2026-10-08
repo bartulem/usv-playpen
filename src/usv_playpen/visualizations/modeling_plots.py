@@ -4081,9 +4081,9 @@ def _resolve_atlas_decoder_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
 
     * **Decoder.** The production cell of the map the run's coordinates come
       from, ``os_utils.qlvm_map_cell_directory(qlvm_map)`` (``qlvm`` ->
-      ``.../masked_clean/cell/masked``; ``qlvm_duration`` / ``qlvm_entropy`` /
-      ``qlvm_bandwidth`` / ``qlvm_loudness`` -> the conditional cells under
-      ``.../masked_clean/conditionals/cell``; ``qlvm_squeak`` -> the squeak cell),
+      ``.../spectrograms/qlvm/qlvm``; ``qlvm_duration`` / ``qlvm_entropy`` /
+      ``qlvm_bandwidth`` / ``qlvm_loudness`` -> their cells
+      ``.../spectrograms/qlvm/<map>``; ``qlvm_squeak`` -> the squeak cell),
       loaded by ``processing.qlvm_latents.load_model_cell``. An atlas of one map's
       filter decoded on another map's torus would show calls that do not live at
       the positions the filter fields point to. A conditional cell decodes

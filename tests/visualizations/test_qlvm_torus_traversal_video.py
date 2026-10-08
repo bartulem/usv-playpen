@@ -93,10 +93,10 @@ def _tiny_cfg(spectrograms_dir, peaks_only=False, qlvm_map="qlvm"):
     }
 
 
-_PRODUCTION_PACKAGE = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
+_PRODUCTION_PACKAGE = "/mnt/falkner/Bartul/spectrograms"
 
 
-def _write_inputs(tmp_path, n=12, n_f=16, n_t=16, package_root=_PRODUCTION_PACKAGE, cell="cell/masked"):
+def _write_inputs(tmp_path, n=12, n_f=16, n_t=16, package_root=_PRODUCTION_PACKAGE, cell="qlvm/qlvm"):
     """Build a shared spectrograms dir holding <dir>/spectrograms_<key>.h5 with
     per-session spectrograms, qlvm/<key>/qlvm coords and the qlvm_models/qlvm
     provenance attrs (package_root / cell, the production regular cell by default).
@@ -180,10 +180,10 @@ def test_check_store_map_provenance(tmp_path):
     h5_path = tmp_path / "store.h5"
     with h5py.File(h5_path, "w") as h5:
         group = h5.create_group("qlvm_models/qlvm")
-        group.attrs["package_root"] = "/Volumes/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
-        group.attrs["cell"] = "cell/masked"
+        group.attrs["package_root"] = "/Volumes/falkner/Bartul/spectrograms"
+        group.attrs["cell"] = "qlvm/qlvm"
     with h5py.File(h5_path, "r") as h5:
-        assert check_store_map_provenance(h5, "qlvm") == "masked_clean/cell/masked"
+        assert check_store_map_provenance(h5, "qlvm") == "spectrograms/qlvm/qlvm"
     with h5py.File(tmp_path / "bare.h5", "w") as h5:
         h5.create_dataset("qlvm/s/qlvm", data=np.zeros((2, 2)))
     with h5py.File(tmp_path / "bare.h5", "r") as h5, pytest.raises(ValueError, match="no qlvm_models/qlvm"):
@@ -202,7 +202,7 @@ def test_make_video_errors_without_map_coordinates(tmp_path, qlvm_category_bundl
         h5.create_dataset("qlvm/20250907_190610/qlvm_duration", data=rng.random((5, 2)))
         model_group = h5.create_group("qlvm_models/qlvm")
         model_group.attrs["package_root"] = _PRODUCTION_PACKAGE
-        model_group.attrs["cell"] = "cell/masked"
+        model_group.attrs["cell"] = "qlvm/qlvm"
     with pytest.raises(ValueError, match="qlvm/<session>/qlvm"):
         QLVMTorusTraversalVideo(
             output_path=str(tmp_path / "x.gif"),

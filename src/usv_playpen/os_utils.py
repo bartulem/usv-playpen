@@ -371,18 +371,22 @@ def rebase_experimenter_in_paths(obj: object = None,
 
 
 # The folder holding the production QLVM model cells the usv_summary.csv torus
-# columns come from (read-only). A module constant rather than a
-# processing_settings.json key: the GUI and the CLI re-key every experimenter name
-# in those settings to the active experimenter (`rebase_experimenter_in_paths`),
+# columns come from (read-only): ``qlvm/`` under the lab's spectrograms directory,
+# one sub-folder per map named by its column prefix (``qlvm``, ``qlvm_duration``,
+# ``qlvm_entropy``, ``qlvm_bandwidth``, ``qlvm_loudness`` and the squeak map
+# ``qlvm_squeak``), each a train-qlvm cell (checkpoint.tar, config/, metrics/), next to
+# the SAM2 / YOLO, noise and call-class models of that directory; ``qlvm/PROVENANCE.json``
+# records the training package each cell was copied from. A module constant rather
+# than a processing_settings.json key: the GUI and the CLI re-key every experimenter
+# name in those settings to the active experimenter (`rebase_experimenter_in_paths`),
 # which would rewrite this path under another experimenter's directory to the
-# active one's, where no cell exists. The cells do not live under
-# `spectrograms_root`, so they are not derived from it either (see
-# `derive_spectrogram_model_paths`). The folder is not a full model package: it has
+# active one's, where no cell exists. The folder is not a full model package: it has
 # no SESSION_H5_BASELINE.tsv, MANIFEST.sha256 or corpus embedding, so
 # infer-qlvm-latents always infers (the package route needs the baseline).
-QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
+QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Bartul/spectrograms/qlvm"
 
-# The production embedding: column prefix -> cell under the folder above. The
+# The production embedding: column prefix -> cell under the folder above (the
+# sub-folder is named by the prefix). The
 # unconditional regular model gives qlvm1/qlvm2; the duration, spectral-entropy,
 # bandwidth and loudness conditional models give qlvm_duration1/2, qlvm_entropy1/2,
 # qlvm_bandwidth1/2 and qlvm_loudness1/2. Every cell was trained on
@@ -392,11 +396,11 @@ QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/mas
 # is written by assign-qlvm-categories from a build-qlvm-categories directory, and
 # the conditional maps carry coordinates only.
 QLVM_PRODUCTION_MODEL_CELLS = {
-    "qlvm": "cell/masked",
-    "qlvm_duration": "conditionals/cell/duration",
-    "qlvm_entropy": "conditionals/cell/spectral_entropy",
-    "qlvm_bandwidth": "conditionals/cell/bandwidth",
-    "qlvm_loudness": "conditionals/cell/loudness",
+    "qlvm": "qlvm",
+    "qlvm_duration": "qlvm_duration",
+    "qlvm_entropy": "qlvm_entropy",
+    "qlvm_bandwidth": "qlvm_bandwidth",
+    "qlvm_loudness": "qlvm_loudness",
 }
 
 # The production squeak (broadband vocalization) embedding, written by
@@ -407,9 +411,10 @@ QLVM_PRODUCTION_MODEL_CELLS = {
 # time_stretch true and floor null, and infer-qlvm-squeak-latents reads and checks
 # them). It replaces the phase 3 BBV cell natural_session_N11000_nomask (zero-padded,
 # un-stretched), which the step still reads in its old package layout when named
-# explicitly. A constant for the same reason as the package root above.
-QLVM_SQUEAK_PACKAGE_ROOT = "/mnt/falkner/Bartul/PC_transfer/qlvm_final/squeaks"
-QLVM_SQUEAK_PRODUCTION_CELL = "cell/stretch_nofloor"
+# explicitly. It lives beside the USV maps' cells, as ``qlvm/qlvm_squeak``. A constant
+# for the same reason as the package root above.
+QLVM_SQUEAK_PACKAGE_ROOT = QLVM_MODEL_PACKAGE_ROOT
+QLVM_SQUEAK_PRODUCTION_CELL = "qlvm_squeak"
 
 # The spectrogram preprocessing every production cell was trained with (their
 # training_contract.json `masking_type` and `time_stretch`): SAM-masked
@@ -466,7 +471,7 @@ QLVM_DECODER_MAPS = QLVM_MAPS + (QLVM_SQUEAK_MAP,)
 # (`derive_spectrogram_model_paths`). A module constant rather than a settings path
 # for the reason given at QLVM_MODEL_PACKAGE_ROOT: the GUI and the CLI re-key every
 # experimenter folder in the settings to the active experimenter.
-QLVM_CATEGORY_BUNDLE_DIRECTORY = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/regions/clustering_clean/category_bundle"
+QLVM_CATEGORY_BUNDLE_DIRECTORY = "/mnt/falkner/Bartul/spectrograms/categories"
 
 # The files of a category bundle (build-qlvm-categories writes them, every reader
 # finds them by these names).
@@ -505,7 +510,7 @@ def qlvm_production_cell_directory(qlvm_map: str) -> str:
     -----------
     The production QLVM model package cell of one map, in its canonical
     ``/mnt/falkner`` form: ``QLVM_PRODUCTION_MODEL_CELLS[qlvm_map]`` under
-    ``QLVM_MODEL_PACKAGE_ROOT`` (``.../masked_clean/cell/masked`` for the regular
+    ``QLVM_MODEL_PACKAGE_ROOT`` (``.../spectrograms/qlvm/qlvm`` for the regular
     map). Every reader of a production cell that is not
     ``infer-qlvm-latents`` (the torus geodesic pullback metric and the manifold
     filter atlas decoder through :func:`qlvm_map_cell_directory`, the
@@ -543,8 +548,8 @@ def qlvm_map_cell_directory(qlvm_map: str) -> str:
     canonical ``/mnt/falkner`` form, for every map a consumer of torus coordinates
     can work on (``QLVM_DECODER_MAPS``): a USV map of ``QLVM_MAPS`` resolves
     through :func:`qlvm_production_cell_directory` (``qlvm`` ->
-    ``.../masked_clean/cell/masked``, ``qlvm_duration`` ->
-    ``.../masked_clean/conditionals/cell/duration``, and so on), the squeak map
+    ``.../spectrograms/qlvm/qlvm``, ``qlvm_duration`` ->
+    ``.../spectrograms/qlvm/qlvm_duration``, and so on), the squeak map
     ``QLVM_SQUEAK_MAP`` (``qlvm_squeak``) to ``QLVM_SQUEAK_PRODUCTION_CELL`` under
     ``QLVM_SQUEAK_PACKAGE_ROOT``. The torus geodesic pullback metric and the
     manifold filter atlas decode with the cell this returns for the map of the
@@ -582,7 +587,7 @@ def qlvm_cell_model_id(cell_directory: str | pathlib.Path) -> str:
     Description
     -----------
     The identifier of a QLVM model package cell: the last three components of its
-    path (``<package>/<phase>/<cell>``; ``masked_clean/cell/masked`` for the
+    path (``<package>/<phase>/<cell>``; ``spectrograms/qlvm/qlvm`` for the
     production regular cell), the ``model_id`` that
     ``processing.qlvm_latents.load_model_cell`` reports for the same directory.
     Mount-independent, so a cell read on one host compares equal to the same cell
@@ -800,14 +805,11 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     them to the host mount downstream, exactly like the other model paths. The
     mutation is in place and idempotent.
 
-    The QLVM embedding is NOT derived from ``spectrograms_root`` any more: the
-    old in-house model under ``<root>/qlvm`` (``qmc_decoder_weights.npz`` and
-    its ``arrays_{fine,coarse}.npz`` watershed grids) would re-embed sessions on
-    a different torus and write its own ``qlvm_category`` / ``qlvm_supercategory``,
-    and ``infer-qlvm-latents`` no longer reads such a decoder at all (model
-    package cells are its only models). The production cells do not live under
-    ``spectrograms_root`` at all: they are the module constants
-    ``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``. When
+    The QLVM cells are not derived from the ``spectrograms_root`` setting: they
+    are the module constants ``QLVM_PRODUCTION_MODEL_CELLS`` under
+    ``QLVM_MODEL_PACKAGE_ROOT`` (the lab's ``spectrograms/qlvm`` folder, one
+    sub-folder per map), constants because the GUI and the CLI re-key
+    experimenter folders in the settings (see the constant's comment). When
     ``infer_qlvm_latents`` names no model (``model_cells`` empty),
     ``infer_qlvm_latents.model_cells`` is filled with that mapping (prefixes
     ``qlvm``, ``qlvm_duration``, ``qlvm_entropy``, ``qlvm_bandwidth``,
@@ -825,7 +827,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     ``infer_qlvm_squeak_latents.model_cell_directory`` is filled with the
     production squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under
     ``QLVM_SQUEAK_PACKAGE_ROOT`` (the time-stretched, unmasked, unfloored
-    ``train-qlvm`` cell ``squeaks/cell/stretch_nofloor``); an
+    ``train-qlvm`` cell ``qlvm/qlvm_squeak``, trained as ``squeaks/cell/stretch_nofloor``); an
     explicitly configured squeak cell is left alone. An empty
     ``assign_qlvm_categories.category_directory`` is filled with the category
     bundle ``QLVM_CATEGORY_BUNDLE_DIRECTORY`` and an empty
@@ -855,7 +857,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     root = settings['spectrograms_root']
     sam_dir = f'{root}/sam'
     squeak_dir = f'{root}/squeak'
-    # The noise model file name carries its training: TimeMIL, 5-seed ensemble, 3,562 labels, build date.
+    # The noise model file name carries its training: TimeMIL, 5-seed ensemble, 4,680 labels, build date.
     # The call-class (usv / squeak / both) model's likewise: 5-member ensemble, 2,476 non-unsure labels,
     # build date, and "_reviewed" for the label set with the review overrides applied.
     noise_dir = f'{root}/noise'
