@@ -24,9 +24,11 @@ segments three ways -- confident vocalization, uncertain, confident noise -- and
 the last two: uncertain segments are excluded with the noise rather than guessed. The two cut-offs were
 chosen as the narrowest uncertain band whose confident decisions reach precision and recall of 0.95 on
 consensus-labelled segments drawn at random from the whole cohort, and the same rule applied held out
-(by session) gave precision 0.944 and recall 0.955 with 0.9% of segments uncertain. The bundle's
-``decision`` block records the cut-offs, those held-out numbers and the cost of the exclusion (about 71
-real calls per 10,000 segments, most of them in the uncertain band); this step prints them on every run.
+(by session) gave precision 0.954 and recall 0.953 with 9.0% of segments uncertain for the production
+model trained on broadband inputs (cut-offs 0.06 / 0.73). The bundle's ``decision`` block records the
+cut-offs, those held-out numbers with their 99% session-bootstrap intervals and the cost of the exclusion
+(about 883 real calls per 10,000 segments, nearly all of them in the uncertain band; the earlier model on
+the HPSS wavs excluded about 71 at precision 0.944 and recall 0.955); this step prints them on every run.
 
 Input contract (fixed by the trained models, therefore constants rather than settings): for every segment
 the two-band absolute-dB spectrogram (30-120 kHz and 3-30 kHz, 128 linear bins each) is rebuilt from the
