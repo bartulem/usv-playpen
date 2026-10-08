@@ -5,6 +5,7 @@
     "conduct_audio_multichannel_to_single_ch": false,
     "conduct_audio_cropping": false,
     "conduct_audio_to_mmap": false,
+    "conduct_broadband_filtering": false,
     "conduct_audio_filtering": false,
     "conduct_hpss": false,
     "conduct_audio_video_sync": false,
@@ -104,6 +105,29 @@
         "filter_audio_format": "wav",
         "filter_dirs": ["hpss"],
         "filter_freq_bounds": [0, 30000]
+      },
+      "broadband_filter_audio": {
+        "source_dir": "hpss",
+        "source_glob": "*_cropped_to_video_hpss.wav",
+        "filter_freq_bounds": [0, 2000],
+        "transition_width_hz": 1000,
+        "stopband_attenuation_db": 120,
+        "line_noise_search_bands_hz": [
+          [7990, 8010],
+          [15980, 16020],
+          [1640, 1665],
+          [2080, 2165]
+        ],
+        "line_noise_min_height_db": 8.0,
+        "line_noise_max_tones_per_band": 6,
+        "line_noise_min_separation_hz": 0.25,
+        "line_noise_floor_window_hz": 4.0,
+        "line_noise_estimation_windows": 8,
+        "line_noise_estimation_window_s": 20.0,
+        "line_noise_block_s": 0.5,
+        "line_noise_smoothing_blocks": 9,
+        "chunk_s": 10.0,
+        "n_threads": 4
       },
       "concatenate_video_files": {
         "concatenate_camera_serial_num": [
@@ -236,6 +260,7 @@
     }
   },
   "vocalocator": {
+    "vcl_audio_band": "ultrasonic",
     "vcl_conda_env_name": "vcl-ssl-ss",
     "vcl_model_directory": "/mnt/falkner/Bartul/sound_localization/mouse_all_model_June2026",
     "vcl_version": "vcl-ssl"
@@ -309,9 +334,40 @@
   },
   "detect_usv_squeaks": {
     "squeak_model_path": "",
-    "squeak_threshold": 0.385,
     "exclude_metadata_audio_channels": true,
-    "batch_size": 256
+    "batch_size": 64
+  },
+  "train_usv_squeak_model": {
+    "label_sets": [
+      {
+        "name": "r1",
+        "labels_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling/usv_squeak_labels.csv",
+        "sample_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling/usv_squeak_sample.csv"
+      },
+      {
+        "name": "r2",
+        "labels_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling_r2/usv_squeak_labels_r2.csv",
+        "sample_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling_r2/usv_squeak_sample_r2.csv"
+      }
+    ],
+    "label_overrides": [
+      {
+        "name": "r1",
+        "override_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling/usv_squeak_review_labels.csv"
+      }
+    ],
+    "pretrained": true,
+    "span_threshold": 0.6,
+    "exclude_metadata_audio_channels": true,
+    "n_workers": 16,
+    "seeds": [0, 1, 2, 3, 4],
+    "epochs": 40,
+    "batch_size": 32,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "label_smoothing": 0.05,
+    "frame_loss_weight": 1.0,
+    "class_weighted": false
   },
   "infer_qlvm_squeak_latents": {
     "model_cell_directory": "",
@@ -342,15 +398,17 @@
     "require_mask": true,
     "exclude_squeaks": true,
     "strict_squeak_exclusion": false,
+    "reference_squeak_index_path": "",
     "exclude_noise": true,
+    "row_exclusion_table": null,
     "masking_type": "sam",
-    "apply_mask": false,
-    "floor": 0.2,
+    "apply_mask": true,
+    "floor": null,
     "validation_split": 0.2,
     "random_state": 42,
     "full_dataset": false,
     "target_shape": [128, 128],
-    "time_stretch": false
+    "time_stretch": true
   },
   "build_qlvm_squeak_training_set": {
     "draw_mode": "natural",
@@ -403,14 +461,40 @@
   },
   "infer_qlvm_latents": {
     "model_cells": {},
-    "model_cell_label_levels": {},
     "prefer_package_values": true,
     "latent_dim": 2,
-    "time_stretch": false,
-    "masking_type": "none",
+    "time_stretch": true,
+    "masking_type": "sam",
     "target_shape": [128, 128],
     "length_threshold": null,
     "lattice_batch_size": 4096,
     "data_batch_size": 8192
+  },
+  "build_qlvm_categories": {
+    "properties": [
+      "mask_count",
+      "durations",
+      "freq_bandwidth_hz",
+      "spectral_entropy",
+      "mean_freq_hz",
+      "loudness_db"
+    ],
+    "grid_resolution": 200,
+    "field_sigma": 8.0,
+    "change_span": 8,
+    "marker_sigma": 1.5,
+    "marker_distance": 5,
+    "size_floor": 0.05,
+    "n_categories": 4,
+    "n_bootstraps": 200,
+    "bootstrap_seed": 7,
+    "uncertain_agreement": 0.6,
+    "category_order": [1, 4, 2, 3],
+    "category_descriptions": ["simple", "biphones", "intermediate", "complex"],
+    "n_jobs": 20
+  },
+  "assign_qlvm_categories": {
+    "category_directory": "",
+    "coordinate_prefix": ""
   }
 }

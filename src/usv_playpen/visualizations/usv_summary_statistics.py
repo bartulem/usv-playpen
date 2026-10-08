@@ -6,27 +6,37 @@ import pathlib
 from pathlib import Path
 from typing import Any
 
-import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import polars as pls
-from scipy.interpolate import griddata
-from scipy.ndimage import gaussian_filter1d
-from scipy.stats import pearsonr, gaussian_kde, sem, t
 import seaborn as sns
-
 import statsmodels.api as sm
+from scipy.ndimage import gaussian_filter1d
+from scipy.stats import gaussian_kde, pearsonr, sem, t
 from statsmodels.formula.api import ols
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 
 # The USV/session loaders live in analyses/_usv_io.py (moved there to break the
 # analyses<->visualizations near-cycle); re-imported here so this module and its
 # importers keep using them unchanged.
-from ..analyses._usv_io import extract_session_metadata, load_and_filter_usv_data
-from .auxiliary_plot_functions import create_colormap
-from ..os_utils import drop_noise_usvs
-
+from ..analyses._usv_io import (
+    emitter_sex_expression,
+    extract_animal_sexes,
+    extract_session_metadata,
+    load_and_filter_usv_data,
+    sex_track_ids,
+)
+from ..os_utils import (
+    QLVM_CATEGORY_MAP,
+    QLVM_MAPS,
+    call_class_mask,
+    drop_noise_usvs,
+    load_qlvm_category_bundle,
+    squeak_class_selection,
+)
+from .auxiliary_plot_functions import create_colormap, draw_category_outlines
 
 # Load the project-wide default cmap from `visualizations_settings.json`
 # at module import. Used as the default for every `cmap=` arg in this
@@ -80,17 +90,21 @@ def extract_category_embedding_data(
     session_roots: list[str],
     exclude_noise_usvs: bool,
     usv_category_col: str,
-    usv_continuous_cols: tuple[str, str]
+    usv_continuous_cols: tuple[str, str],
+    usv_only: bool = True,
 ) -> pls.DataFrame:
     """
     Description
     -----------
-    Extracts category labels and continuous embedding coordinates (e.g., UMAP)
+    Extracts category labels and continuous embedding coordinates (e.g., a QLVM map's torus position)
     for all non-noise vocalizations across multiple sessions.
 
-    This function first filters out any noise rows, ensures the target category
-    and embedding columns exist in the CSV, and then categorizes each valid
-    USV as 'male', 'female', or 'unassigned' based on the session's metadata.
+    This function first filters out any noise rows, with ``usv_only`` keeps only
+    the segments ``detect_usv_squeaks`` classed as pure USVs (``usv &
+    ~squeak``; squeaks and segments holding both a squeak and a USV are left out,
+    since the USV QLVM maps were trained on USVs only), ensures the target
+    category and embedding columns exist in the CSV, and then categorizes each
+    valid USV as 'male', 'female', or 'unassigned' based on the session's metadata.
     Rows with missing coordinate data are dropped to ensure clean downstream plotting.
 
     Parameters
@@ -101,10 +115,13 @@ def extract_category_embedding_data(
         Whether to drop the segments ``detect_usv_noise`` flagged as holding no vocalization.
     usv_category_col : str
         The name of the column containing the integer category/cluster ID
-        (e.g., 'qlvm_supercategory').
+        (e.g., 'qlvm_category').
     usv_continuous_cols : tuple[str, str]
         A tuple of two strings specifying the column names for the 2D embedding
         coordinates (e.g., ('qlvm1', 'qlvm2')).
+    usv_only : bool
+        Keep only pure USVs, ``usv & ~squeak`` (default ``True``); a summary
+        without the ``usv`` / ``squeak`` booleans then raises a KeyError naming the session.
 
     Returns
     -------
@@ -119,12 +136,10 @@ def extract_category_embedding_data(
     for session_root in session_roots:
         try:
             metadata = extract_session_metadata(session_root)
-            # Strip null-byte padding / whitespace off the H5 track names so the
-            # emitter match below is normalized on both sides (matching
-            # build_master_usv_dataframe); a padded ID would otherwise send every
-            # USV to 'unassigned'.
-            male_id = str(metadata['male_id']).strip('\x00').strip()
-            female_id = str(metadata['female_id']).strip('\x00').strip()
+            # Each animal's sex comes from the session metadata, matched to its
+            # (stripped) track name; the slot a track occupies says nothing about
+            # sex. A track the metadata cannot resolve raises instead of being guessed.
+            animal_sex = extract_animal_sexes(session_root, metadata['track_names'])
 
             # Filter noise
             usv_info = load_and_filter_usv_data(
@@ -132,19 +147,17 @@ def extract_category_embedding_data(
                 frame_rate=metadata['frame_rate'],
                 exclude_noise_usvs=exclude_noise_usvs
             )
+            if usv_only:
+                usv_info = usv_info.filter(call_class_mask(usv_info, ("usv",), session_root))
 
             # Ensure the required columns actually exist in this session's CSV
             req_cols = [usv_category_col, usv_continuous_cols[0], usv_continuous_cols[1]]
             if not all(col in usv_info.columns for col in req_cols):
                 continue
 
-            # Map sex and select target columns
-            emitter_norm = pls.col("emitter").cast(pls.Utf8).str.strip_chars('\x00').str.strip_chars()
+            # Map sex (stripped emitter -> metadata sex) and select target columns
             usv_processed = usv_info.with_columns([
-                pls.when(emitter_norm == male_id).then(pls.lit("male"))
-                .when(emitter_norm == female_id).then(pls.lit("female"))
-                .otherwise(pls.lit("unassigned"))
-                .alias("sex")
+                emitter_sex_expression(animal_sex)
             ]).select([
                 "sex",
                 pls.col(usv_category_col).alias("category"),
@@ -274,7 +287,8 @@ def build_master_usv_dataframe(
     usv_category_col: str,
     distance_suffix: str,
     mf_angle_suffix: str,
-    fm_angle_suffix: str
+    fm_angle_suffix: str,
+    usv_only: bool = True,
 ) -> tuple[pls.DataFrame, pls.DataFrame, int]:
     """
     Description
@@ -285,7 +299,11 @@ def build_master_usv_dataframe(
     comprehensive pass over all session directories.
 
     For each session it reads metadata from the H5 tracking file, loads and
-    noise-filters the USV summary CSV, maps emitters to a 'sex' column, and
+    noise-filters the USV summary CSV, with ``usv_only`` keeps only the segments
+    ``detect_usv_squeaks`` classed as pure USVs (``usv & ~squeak``: squeaks and
+    segments holding both a squeak and a USV are left out, so every count and
+    rate built on this frame is a USV count; the number left out is printed),
+    maps emitters to a 'sex' column, and
     attempts to join in frame-by-frame spatial behavioral features (nose-nose
     distance and relative angles). All data is returned as two tidy Polars
     DataFrames that can be filtered, grouped, and aggregated for any downstream
@@ -325,6 +343,10 @@ def build_master_usv_dataframe(
     fm_angle_suffix (str)
         The string suffix used to identify the female-to-male angle column in the
         behavioral features CSV (e.g., 'nose-allo_yaw').
+    usv_only (bool)
+        Keep only pure USVs, ``usv & ~squeak`` (default ``True``). A summary without
+        the ``usv`` / ``squeak`` booleans (not yet scored by ``detect-usv-squeaks``) then raises a
+        KeyError naming the file, rather than counting its squeaks as USVs.
 
     Returns
     -------
@@ -351,6 +373,7 @@ def build_master_usv_dataframe(
     all_usv_rows: list[pls.DataFrame] = []
     all_bg_rows: list[pls.DataFrame] = []
     total_noise_filtered = 0
+    total_squeak_rows_dropped = 0
     skipped_sessions: collections.Counter[str] = collections.Counter()
 
     for session_root in session_roots:
@@ -362,10 +385,11 @@ def build_master_usv_dataframe(
             skipped_sessions['missing or invalid tracking file'] += 1
             continue
 
-        raw_male_id = metadata['male_id']
-        raw_female_id = metadata['female_id']
-        male_id = str(raw_male_id).strip('\x00').strip()
-        female_id = str(raw_female_id).strip('\x00').strip()
+        # Sexes come from the session metadata (never the track slot); male_id /
+        # female_id are the session's single male and single female, None when the
+        # session does not hold exactly one animal of that sex (e.g. female-female).
+        animal_sex = extract_animal_sexes(session_root, metadata['track_names'])
+        male_id, female_id = sex_track_ids(animal_sex)
         frame_rate = metadata['frame_rate']
         experiment_code = metadata['experiment_code']
 
@@ -381,6 +405,10 @@ def build_master_usv_dataframe(
         raw_data = pls.read_csv(str(usv_file))
         usv_clean, n_dropped = drop_noise_usvs(raw_data, usv_file.name) if exclude_noise_usvs else (raw_data, 0)
         total_noise_filtered += n_dropped
+        if usv_only:
+            n_before_class = usv_clean.height
+            usv_clean = usv_clean.filter(call_class_mask(usv_clean, ("usv",), usv_file.name))
+            total_squeak_rows_dropped += n_before_class - usv_clean.height
         usv_info = usv_clean.with_columns(
             (pls.col('start') * frame_rate).floor().cast(pls.UInt32).alias('frame_index')
         )
@@ -393,12 +421,6 @@ def build_master_usv_dataframe(
         date_str = session_id.split('_')[0]
         hour_int = int(session_id.split('_')[1][0:2])
 
-        # Match the emitter against the *normalized* IDs: H5 track names can carry
-        # trailing null-byte padding / whitespace (hence the strip on the stored
-        # *_id columns), so strip the CSV emitter the same way before comparing --
-        # otherwise a padded ID silently sends every USV to 'unassigned'.
-        emitter_norm = pls.col('emitter').cast(pls.Utf8).str.strip_chars('\x00').str.strip_chars()
-
         # Carry every continuous acoustic feature present in this CSV; null-fill the
         # rest so the master schema is identical across sessions.
         acoustic_exprs = [
@@ -408,15 +430,14 @@ def build_master_usv_dataframe(
         ]
 
         usv_processed = usv_info.with_columns([
-            pls.when(emitter_norm == male_id).then(pls.lit('male'))
-            .when(emitter_norm == female_id).then(pls.lit('female'))
-            .otherwise(pls.lit('unassigned'))
-            .alias('sex'),
+            # The emitter is stripped of null-byte padding / whitespace inside
+            # emitter_sex_expression, so a padded ID cannot send every USV to 'unassigned'.
+            emitter_sex_expression(animal_sex),
             pls.lit(session_id).alias('session_id'),
             pls.lit(date_str).alias('date'),
             pls.lit(hour_int).cast(pls.Int32).alias('hour'),
-            pls.lit(male_id).alias('male_id'),
-            pls.lit(female_id).alias('female_id'),
+            pls.lit(male_id, dtype=pls.Utf8).alias('male_id'),
+            pls.lit(female_id, dtype=pls.Utf8).alias('female_id'),
             pls.lit(experiment_code).alias('experiment_code'),
             pls.col(usv_category_col).alias('category'),
             *acoustic_exprs,
@@ -432,6 +453,13 @@ def build_master_usv_dataframe(
             dist_col = next((c for c in behavioral_features.columns if c.endswith(distance_suffix)), None)
             mf_col = next((c for c in behavioral_features.columns if c.endswith(mf_angle_suffix)), None)
             fm_col = next((c for c in behavioral_features.columns if c.endswith(fm_angle_suffix)), None)
+            # The dyadic columns are named '<first>-<second>.<feature>' in track order, and
+            # the mf / fm suffixes read the first animal as the male. When the metadata puts
+            # the female first, '<female>-<male>.<mf suffix>' is the female-to-male angle, so
+            # the two columns are swapped to keep 'mf_angle' the male's angle to the female.
+            if (mf_col and fm_col and male_id is not None and female_id is not None
+                    and mf_col.split('.')[0] == f"{female_id}-{male_id}"):
+                mf_col, fm_col = fm_col, mf_col
 
             if dist_col and mf_col and fm_col:
                 has_behavioral = True
@@ -467,6 +495,11 @@ def build_master_usv_dataframe(
         all_usv_rows.append(usv_processed)
 
     # Report skipped sessions once, by reason, rather than dropping them silently.
+    if usv_only:
+        print(
+            f"build_master_usv_dataframe kept pure USVs only (usv true, squeak false): "
+            f"{total_squeak_rows_dropped} squeak / both / unclassed segment(s) left out."
+        )
     if skipped_sessions:
         reason_summary = ', '.join(
             f"{count}x {reason}" for reason, count in skipped_sessions.items()
@@ -2119,6 +2152,7 @@ def plot_category_prevalence_and_embedding(
     male_color: str,
     female_color: str,
     unassigned_color: str,
+    qlvm_map: str,
     plot_type: str = 'density',
     boundary_color: str = '#00FF00',
     log_scale_bars: bool = False,
@@ -2135,8 +2169,17 @@ def plot_category_prevalence_and_embedding(
     each USV category. The right column visualizes the 2D embedding space using either
     a density heatmap ('imshow' with white_base_cmap) OR a scatter plot.
 
-    Global territorial boundaries are calculated using nearest-neighbor interpolation
-    across ALL valid USVs and are overlaid prominently on top of every embedding plot.
+    The category boundaries are the QLVM category bundle's label grid
+    (``os_utils.load_qlvm_category_bundle``, the partition the summaries'
+    ``qlvm_category`` was assigned from), overlaid on top of every embedding plot
+    when the embedding is the map the bundle is defined on (the regular map
+    ``qlvm``). Each category is outlined as the 0.5 contour of its own binary mask
+    (``auxiliary_plot_functions.draw_category_outlines``, the method the embedding
+    explorer uses), not by contouring the integer grid at half-integer levels, which
+    would stack lines wherever non-consecutive categories touch. On a conditional map (``qlvm_duration``, ``qlvm_entropy``,
+    ``qlvm_bandwidth``, ``qlvm_loudness``) the bundle does not partition the torus the calls sit on, so no boundaries are drawn and the
+    embedding titles say so; the bars still count the calls' ``qlvm_category``.
+    Boundaries are never estimated from the data.
 
     Parameters
     ----------
@@ -2148,15 +2191,19 @@ def plot_category_prevalence_and_embedding(
         Hex color string used for the female bar chart and scatter plot.
     unassigned_color : str
         Hex color string used for the unassigned bar chart and scatter plot.
+    qlvm_map : str
+        The QLVM map whose coordinates ``dim1`` / ``dim2`` hold (one of
+        ``os_utils.QLVM_MAPS``, e.g. ``'qlvm'`` for ``qlvm1`` / ``qlvm2``);
+        boundaries are drawn only for ``os_utils.QLVM_CATEGORY_MAP``.
     plot_type : str, default 'density'
         Visual style for the embedding space. Must be 'density' or 'scatter'.
     boundary_color : str, default '#00FF00'
-        Hex color for the territorial boundary lines overlaid on the embedding.
+        Hex color for the category boundary lines overlaid on the embedding.
     log_scale_bars : bool, default False
         If True, applies a base-10 logarithmic scale to the y-axis of the raw count bar charts.
     grid_res : int, default 300
-        The resolution of the internal meshgrid. Higher values produce smoother
-        global boundary lines and KDE maps, but increase computation time.
+        The resolution of the meshgrid the density (KDE) maps are evaluated
+        on. Higher values produce smoother maps but increase computation time.
 
     Returns
     -------
@@ -2169,14 +2216,24 @@ def plot_category_prevalence_and_embedding(
     if plot_type not in ['density', 'scatter']:
         error_msg = "plot_type must be either 'density' or 'scatter'."
         raise ValueError(error_msg)
+    if qlvm_map not in QLVM_MAPS:
+        error_msg = f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}."
+        raise ValueError(error_msg)
 
     df_pd = df_embedding.to_pandas()
 
-    # 1. Prepare global boundaries (griddata over all valid USVs)
-    print("Computing global acoustic territorial boundaries...")
+    # 1. Category boundaries: the category bundle's label grid on the map it is
+    # defined on; none on a conditional map (the bundle does not partition it).
+    if qlvm_map == QLVM_CATEGORY_MAP:
+        category_bundle = load_qlvm_category_bundle()
+        boundary_axis = category_bundle['axis']
+        boundary_grid = category_bundle['label_grid']
+        boundary_note = ''
+    else:
+        boundary_grid = None
+        boundary_note = f' - no boundaries ({QLVM_CATEGORY_MAP} map categories)'
     dim1_all = df_pd['dim1'].to_numpy()
     dim2_all = df_pd['dim2'].to_numpy()
-    cats_all = df_pd['category'].to_numpy()
 
     x_min, x_max = dim1_all.min(), dim1_all.max()
     y_min, y_max = dim2_all.min(), dim2_all.max()
@@ -2190,17 +2247,6 @@ def plot_category_prevalence_and_embedding(
         np.linspace(x_min, x_max, grid_res),
         np.linspace(y_min, y_max, grid_res)
     )
-
-    # Interpolate boundaries based on nearest neighbor category. Interpolate the
-    # ordinal CODES (0..N-1), not the raw category values: the contour levels below
-    # are `np.arange(len(unique_cats)+1) - 0.5`, tied to the category COUNT, so they
-    # only land on the boundaries between adjacent categories when the codes are
-    # contiguous. Raw IDs can be non-contiguous (e.g. {0, 2, 5, 11}), which would
-    # place the level lines off the actual boundaries (wrong/missing). `Z` is used
-    # only by the two ax.contour() calls below, so the remap is safe.
-    unique_cats = np.unique(cats_all)
-    cat_codes = np.searchsorted(unique_cats, cats_all)
-    Z = griddata((dim1_all, dim2_all), cat_codes, (xx, yy), method='nearest')
 
     # Build a custom "white-base" gradient by taking the project-wide
     # default colormap (`figures.sequential_cmap`) and pre-pending a smooth ramp
@@ -2258,13 +2304,15 @@ def plot_category_prevalence_and_embedding(
                     alpha=0.7, edgecolors='none', zorder=2
                 )
 
-        # Draw global background boundaries ON TOP
-        ax_emb.contour(
-            xx, yy, Z, levels=np.arange(len(unique_cats)+1)-0.5,
-            colors=boundary_color, linewidths=2.5, zorder=10
-        )
+        # Draw the category boundaries ON TOP (regular map only): one 0.5
+        # outline per category (uniform width where non-consecutive categories touch).
+        if boundary_grid is not None:
+            draw_category_outlines(
+                ax_emb, boundary_axis, boundary_axis, boundary_grid,
+                colors=boundary_color, linewidths=2.5, zorder=10
+            )
 
-        ax_emb.set_title(f"{title_prefix} Embedding Space ({plot_type.capitalize()})", fontsize=12)
+        ax_emb.set_title(f"{title_prefix} Embedding Space ({plot_type.capitalize()}){boundary_note}", fontsize=12)
         ax_emb.set_xlim(x_min, x_max)
         ax_emb.set_ylim(y_min, y_max)
         ax_emb.set_xticks([])
@@ -2330,13 +2378,14 @@ def plot_category_prevalence_and_embedding(
                 alpha=0.7, edgecolors='none', zorder=2
             )
 
-    # Global boundaries on top
-    ax_sum_emb.contour(
-        xx, yy, Z, levels=np.arange(len(unique_cats)+1)-0.5,
-        colors=boundary_color, linewidths=2.5, zorder=10
-    )
+    # Category boundaries on top (regular map only), one outline per category
+    if boundary_grid is not None:
+        draw_category_outlines(
+            ax_sum_emb, boundary_axis, boundary_axis, boundary_grid,
+            colors=boundary_color, linewidths=2.5, zorder=10
+        )
 
-    ax_sum_emb.set_title(f"Global Summary Embedding Space ({plot_type.capitalize()})", fontsize=12)
+    ax_sum_emb.set_title(f"Global Summary Embedding Space ({plot_type.capitalize()}){boundary_note}", fontsize=12)
     ax_sum_emb.set_xlim(x_min, x_max)
     ax_sum_emb.set_ylim(y_min, y_max)
     ax_sum_emb.set_xticks([])
@@ -3154,17 +3203,24 @@ def plot_session_squeak_time_heatmap(
     vmax_percent: float,
     zero_tint: float,
     nodata_color: str,
+    squeak_class: str = 'squeak+both',
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes, plt.Axes, plt.Axes], dict[str, Any]]:
     """
     Description
     -----------
     Plots, one row per session, where in the recording the session's squeaks sit.
 
-    A squeak is a broadband vocalization (3-8 kHz fundamental) that the squeak classifier
-    (``detect_usv_squeaks``, the v3 BBV classifier) flags in a segment of the USV summary. Each
-    session's summary is read from ``<session>/audio/*_usv_summary.csv``; when
-    ``exclude_noise_usvs`` is set, the segments the noise classifier flagged are dropped first,
-    so the rate is squeaks among vocal segments.
+    A squeak is a broadband vocalization (3-8 kHz fundamental). The call classifier
+    (``detect_usv_squeaks``) gives every segment of the USV summary that is not noise two
+    booleans, ``usv`` and ``squeak``: a pure USV (``usv & ~squeak``), a pure squeak
+    (``squeak & ~usv``) or both in one segment (``usv & squeak``). ``squeak_class`` picks which segments count as squeaks here: ``"squeak"``
+    (pure squeaks), ``"both"`` (the mixed segments) or ``"squeak+both"`` (either; the default,
+    every segment that holds a squeak). Each session's summary is read from
+    ``<session>/audio/*_usv_summary.csv``; when ``exclude_noise_usvs`` is set, the segments the
+    noise classifier flagged are dropped first, so the rate is selected squeaks among vocal
+    segments (every remaining segment, whatever its class, is a vocal segment of the
+    denominator; a segment with a null class -- too short to classify -- counts as a vocal
+    segment that is not a squeak).
 
     The share is estimated continuously in time rather than in bins, the way a kernel-smoothed
     firing rate replaces a binned histogram: every segment contributes a Gaussian of width
@@ -3232,6 +3288,10 @@ def plot_session_squeak_time_heatmap(
         colour); must be above 0 so 0 % differs from ``nodata_color``.
     nodata_color (str)
         Hex colour where no vocalization is near (white, ``#FFFFFF``, draws it as empty).
+    squeak_class (str)
+        Which call classes count as squeaks: ``"squeak"``, ``"both"`` or ``"squeak+both"``
+        (``os_utils.SQUEAK_CLASS_SELECTIONS``); default ``"squeak+both"``. A summary without
+        the ``usv`` / ``squeak`` booleans raises a KeyError naming the file.
 
     Returns
     -------
@@ -3246,9 +3306,15 @@ def plot_session_squeak_time_heatmap(
         n_segments counts the segments left after the noise filter; ``'n_drawn'``;
         ``'n_no_squeak'``, the drawn sessions without any squeak; ``'n_too_few'``; ``'rate_matrix'``, the drawn sessions x grid
         squeak share in [0, 1] (NaN where the vocal density is below ``min_vocal_density``);
-        and ``'grid_s'``, the grid times in seconds.
+        ``'grid_s'``, the grid times in seconds; and ``'squeak_class'``, the selection used.
     """
 
+    squeak_classes = squeak_class_selection(squeak_class)
+    squeak_class_label = {
+        'squeak': 'squeaks',
+        'both': "squeak + USV ('both') segments",
+        'squeak+both': "squeaks (incl. 'both' segments)",
+    }[squeak_class]
     session_condition: dict[str, str] = {}
     session_roots: dict[str, str] = {}
     for condition, list_paths in condition_session_lists.items():
@@ -3275,7 +3341,7 @@ def plot_session_squeak_time_heatmap(
         if not summaries:
             msg = f"No *_usv_summary.csv in {Path(root) / 'audio'}."
             raise FileNotFoundError(msg)
-        summary = pls.read_csv(str(summaries[0]), columns=['start', 'squeak', 'noise'])
+        summary = pls.read_csv(str(summaries[0]))
         n_noise_dropped = 0
         if exclude_noise_usvs:
             # One line per session would flood the output over a cohort; the counts are
@@ -3283,7 +3349,7 @@ def plot_session_squeak_time_heatmap(
             summary, n_noise_dropped = drop_noise_usvs(summary, summaries[0].name,
                                                        message_output=lambda _message: None)
         start = summary['start'].to_numpy().astype(float)
-        is_squeak = summary['squeak'].fill_null(False).to_numpy().astype(bool)
+        is_squeak = call_class_mask(summary, squeak_classes, summaries[0].name).to_numpy().astype(bool)
         segment_starts[session_id] = start
         segment_is_squeak[session_id] = is_squeak
         n_segments = int(start.size)
@@ -3372,7 +3438,7 @@ def plot_session_squeak_time_heatmap(
     # The overflow arrow only when the scale is capped below 100 %, where a value can exceed it.
     ax_colorbar_column.set_axis_off()
     ax_colorbar = ax_colorbar_column.inset_axes((0.2, 0.68, 0.6, 0.32))
-    colorbar = fig.colorbar(key, cax=ax_colorbar, label="% of nearby vocalizations that are squeaks",
+    colorbar = fig.colorbar(key, cax=ax_colorbar, label=f"% of nearby vocalizations that are {squeak_class_label}",
                             extend='max' if vmax_percent < 100.0 else 'neither')
     colorbar.ax.yaxis.set_ticks_position('left')
     colorbar.ax.yaxis.set_label_position('left')
@@ -3399,9 +3465,10 @@ def plot_session_squeak_time_heatmap(
         fontsize=10, loc='center left', bbox_to_anchor=(0.0, 0.5), frameon=False, handlelength=1.2)
     legend.set_in_layout(False)
 
-    fig.suptitle("Squeak distributions and timing within sessions", fontsize=10.5)
+    fig.suptitle(f"Squeak distributions and timing within sessions: {squeak_class_label}", fontsize=10.5)
 
     return fig, (ax_colorbar, ax_heat, ax_strip, ax_rate), {
         'sessions': sessions, 'n_drawn': n_drawn, 'n_no_squeak': n_no_squeak,
         'n_too_few': n_too_few, 'rate_matrix': rate_matrix, 'grid_s': grid_s,
+        'squeak_class': squeak_class,
     }

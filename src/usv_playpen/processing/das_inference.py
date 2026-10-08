@@ -25,7 +25,9 @@ from tqdm import tqdm
 from ..os_utils import (
     atomic_output_path,
     configure_path,
+    find_audio_mmap,
     first_match_or_raise,
+    order_usv_summary_columns,
     wait_for_subprocesses,
 )
 from ..time_utils import is_gui_context, smart_wait
@@ -263,7 +265,9 @@ def _write_usv_summary_csv(merged: list, out_path: pathlib.Path) -> None:
     -------
     (None)
     """
-    pls.DataFrame({
+    # Written in the canonical column order (os_utils.USV_SUMMARY_COLUMN_ORDER), so
+    # the emitter placeholder sits between the DAS event and its channel statistics.
+    order_usv_summary_columns(pls.DataFrame({
         # Zero-padded to six digits. The padding is what keeps the column a
         # STRING through every read/write cycle -- bare 0, 1, 2 round-trip as
         # Int64 and the atomic rewrites silently retype the column -- and a
@@ -281,7 +285,7 @@ def _write_usv_summary_csv(merged: list, out_path: pathlib.Path) -> None:
         "chs_count": [float(u['chs_count']) for u in merged],
         "chs_detected": [str(u['chs_detected']) for u in merged],
         "emitter": [None] * len(merged),
-    }).write_csv(file=out_path)
+    })).write_csv(file=out_path)
 
 
 def _ladder_gap_leading_stops(
@@ -773,11 +777,9 @@ class FindMouseVocalizations:
             # Phase 4: amplitude + spectrogram quality checks
             # (skipped entirely when filter_putative_noise_bool is False)
             if filter_putative_noise_bool and n_usv > 0:
-                audio_file_loc = first_match_or_raise(
-                    root=pathlib.Path(self.root_directory) / "audio" / "hpss_filtered",
-                    pattern="*.mmap",
-                    label="concatenated audio mmap",
-                )
+                # The 30 kHz high-passed ('ultrasonic' band) memmap only: exact folder,
+                # exact name, exactly one match (never the broadband memmap).
+                audio_file_loc = find_audio_mmap(root_directory=self.root_directory, band="ultrasonic")
                 audio_file_name = audio_file_loc.name
                 # The mmap filename encodes its array metadata as the last four
                 # underscore-separated tokens, in the trailing layout
@@ -1355,7 +1357,7 @@ class FindMouseVocalizations:
                 pls.Series(name="duration", values=durations),
             )
             with atomic_output_path(summary_path) as tmp_summary:
-                summary_df.write_csv(file=str(tmp_summary))
+                order_usv_summary_columns(summary_df).write_csv(file=str(tmp_summary))
 
         with atomic_output_path(report_path) as tmp_report, tmp_report.open("w") as report_file:
             json.dump(report, report_file, indent=1)

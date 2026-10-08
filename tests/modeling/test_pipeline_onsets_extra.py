@@ -563,22 +563,20 @@ class TestPygamEngine:
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
-    def test_pygam_missing_params_uses_hardcoded_fallback(self, tmp_path):
+    def test_pygam_missing_params_raises(self, tmp_path):
         """
-        Removing the ``pygam`` hyperparameter block makes the param read raise
-        ``KeyError``, so the runner falls back to its hard-coded defaults
-        (8/5 splines, lam=0.6, 100 iters). Tiny data keeps the fallback fit
-        bounded; asserts the run completes.
+        The pyGAM hyperparameters always come from the settings: removing the
+        ``pygam`` block raises ``KeyError`` instead of falling back to
+        hard-coded values.
         """
 
         pipeline = _pipeline(tmp_path, model_engine='pygam', split_strategy='mixed', split_num=1)
         del pipeline.modeling_settings['hyperparameters']['classical']['pygam']
         feature_data = _make_feature_data(['session_0', 'session_1'], n_usv=14, n_no_usv=28)
-        feat_name, results = pipeline._run_model_for_feature_pygam(
-            feature_name='self.speed', feature_data=feature_data, basis_matrix=None,
-        )
-        assert feat_name == 'self.speed'
-        assert results['actual']['filter_shapes'].shape == (1, HISTORY_FRAMES)
+        with pytest.raises(KeyError, match='pygam'):
+            pipeline._run_model_for_feature_pygam(
+                feature_name='self.speed', feature_data=feature_data, basis_matrix=None,
+            )
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     def test_pygam_no_valid_splits_reports_empty(self, tmp_path):
@@ -771,9 +769,9 @@ class TestExtractionGuards:
         ``onset_target_category`` set, the saved input pickle's filename and
         ``_input_metadata`` carry a category-aware ``analysis_tag`` that embeds
         BOTH the category column name and the index (so VAE-vs-QLVM and
-        category-vs-supercategory are unambiguous downstream), and
+        one category column vs another are unambiguous downstream), and
         ``analysis_specific`` records the category provenance. The synthetic
-        summaries write ``qlvm_supercategory == 1`` for every USV, so targeting
+        summaries write ``qlvm_category == 1`` for every USV, so targeting
         category 1 keeps every onset and both sessions survive.
         """
 
@@ -806,7 +804,7 @@ class TestExtractionGuards:
 
         pkls = list(save_dir.glob('modeling_*.pkl'))
         assert len(pkls) == 1
-        expected_tag = 'individual_cat_qlvm_supercategory_1'
+        expected_tag = 'individual_cat_qlvm_category_1'
         assert expected_tag in pkls[0].name
 
         with pkls[0].open('rb') as fh:
@@ -814,7 +812,7 @@ class TestExtractionGuards:
         md = artifact['_input_metadata']
         assert md['analysis_tag'] == expected_tag
         assert md['analysis_specific']['onset_target_category'] == 1
-        assert md['analysis_specific']['usv_category_column_name'] == 'qlvm_supercategory'
+        assert md['analysis_specific']['usv_category_column_name'] == 'qlvm_category'
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
@@ -840,7 +838,7 @@ class TestExtractionGuards:
         )
         for root in session_roots:
             csv_path = next((Path(root) / 'audio').glob('*_usv_summary.csv'))
-            pls.read_csv(csv_path).with_columns(pls.lit(True).alias('squeak')).write_csv(csv_path)
+            pls.read_csv(csv_path).with_columns(pls.lit(False).alias('usv'), pls.lit(True).alias('squeak')).write_csv(csv_path)
         list_file = write_session_list_file(session_roots, tmp_path / 'session_list.txt')
         save_dir = tmp_path / 'out'
         save_dir.mkdir(parents=True, exist_ok=True)
@@ -871,7 +869,7 @@ class TestExtractionGuards:
 @pytest.mark.parametrize('usv_predictor_type', [None, 'categories_rate'])
 def test_onset_target_category_without_labels_fails_before_loading(tmp_path, mocker, usv_predictor_type):
     """
-    With no category label column (the shipped ``usv_category_column_name``
+    With no category label column (``usv_category_column_name`` set to
     null, QLVM labels unavailable) the single-category onset target stops with the labels-unavailable
     error before any session list or behavioral file is read.
     """

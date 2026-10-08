@@ -335,3 +335,15 @@ def test_wound_recovery_beats_coordinate_model():
     assert r2_torus > 0.85, f"embedding ridge should recover the wound target, got {r2_torus:.3f}"
     assert r2_coord < 0.2, f"coordinate model should be wound-blind (no signal), got {r2_coord:.3f}"
     assert r2_torus - r2_coord > 0.6
+
+
+def test_order2_penalty_without_reflective_edges_is_the_plain_second_difference():
+    """``smoothness_reflective_edges=False`` drops the edge-slope rows: the order-2
+    penalty is ``D2^T D2`` of the interior second-difference operator per feature,
+    pyGAM's P-spline penalty; the default keeps the reflective rows."""
+
+    open_model = SmoothTorusManifoldRegression(**{**_torus_kwargs(2, 6), "smoothness_reflective_edges": False})
+    d2 = np.diff(np.eye(6), n=2, axis=0)
+    np.testing.assert_allclose(open_model._smoothness_penalty(), block_diag(d2.T @ d2, d2.T @ d2))
+    reflective_model = SmoothTorusManifoldRegression(**_torus_kwargs(2, 6))
+    assert not np.allclose(reflective_model._smoothness_penalty(), open_model._smoothness_penalty())

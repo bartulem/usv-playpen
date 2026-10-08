@@ -17,6 +17,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from usv_playpen import os_utils
 from usv_playpen.modeling.manifold_metric import _geodesic_distance_matrix
 from usv_playpen.modeling.modeling_torus_geodesics import (
     _snap_to_grid,
@@ -27,6 +28,7 @@ from usv_playpen.modeling.modeling_torus_geodesics import (
     make_qlvm_decode_fn_from_model_cell,
     make_qlvm_decode_fn_from_source,
     resolve_geodesic_decoder_source,
+    resolve_manifold_column_names,
     per_event_geodesic_error,
     pullback_geodesic_matrix,
     pullback_metric_at_nodes,
@@ -34,7 +36,7 @@ from usv_playpen.modeling.modeling_torus_geodesics import (
     torus_grid,
     torus_kde_density,
 )
-from usv_playpen.processing.qlvm_latents import load_model_cell
+from usv_playpen.processing.qlvm_latents import condition_quantile_value, load_model_cell
 from usv_playpen.processing.qlvm_model import decode_lattice_atlas, decoder_forward, torus_basis_forward
 from tests.processing.test_qlvm_latents import _make_model_cell, _phase11_bins
 
@@ -267,7 +269,8 @@ class TestModelCellDecoder:
         assert np.isfinite(pullback_metric_at_nodes(points[:2], decode_fn)).all()
 
     def test_conditional_cell_is_refused(self, tmp_path):
-        """A conditional cell's decoder is not a function of z alone, so it is refused."""
+        """A conditional cell's decoder is not a function of z alone, so without a
+        condition quantile that fixes its conditioning value it is refused."""
 
         rng = np.random.default_rng(32)
         grid = np.ones((8, 8), dtype=np.int64)
@@ -277,16 +280,79 @@ class TestModelCellDecoder:
         with pytest.raises(ValueError, match="conditional cell"):
             make_qlvm_decode_fn_from_model_cell(str(cell))
 
-    def test_source_resolution(self):
-        """The settings block resolves to its model package cell, or to nothing when
-        decoder_model_cell_directory is empty; the retired npz source is gone, so the
-        legacy decoder_weights_npz_path key a user's older settings may still carry
-        is ignored."""
+    def test_conditional_cell_decodes_at_the_corpus_quantile(self, tmp_path):
+        """With a condition quantile, a conditional cell decodes every z at the one
+        conditioning value that quantile of its training distribution gives (here
+        the exact-decode median 0.5 of edges 0.05 / 0.5 / 0.95 with equal rows),
+        appended to the torus basis exactly as the embedding appends it; the
+        pullback metric is finite and differs from a decode at another quantile."""
 
-        assert resolve_geodesic_decoder_source({'decoder_model_cell_directory': '/c'}) == ('model_cell', '/c')
-        assert resolve_geodesic_decoder_source({'decoder_model_cell_directory': ''}) is None
+        rng = np.random.default_rng(34)
+        grid = np.ones((8, 8), dtype=np.int64)
+        bins = _phase11_bins("bandwidth", 0.05, 0.95, 0.01)
+        cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid,
+                                condition={"name": "bandwidth", "decode": "exact"}, bins=bins)
+        decode_fn = make_qlvm_decode_fn_from_model_cell(str(cell), condition_quantile=0.5)
+        model = load_model_cell(str(cell))
+        c = condition_quantile_value(model['condition_bins'], "exact", 0.5)
+        assert float(c) == pytest.approx(0.5, abs=1e-6)
+        z = jnp.asarray([0.3, 0.7])
+        basis = jnp.concatenate([torus_basis_forward(z[None, :]), jnp.full((1, 1), c)], axis=-1)
+        expected = np.asarray(decoder_forward(basis, model['params'])).reshape(-1)
+        np.testing.assert_allclose(np.asarray(decode_fn(z)), expected, atol=1e-6)
+        nodes = np.array([[0.3, 0.7], [0.6, 0.2]])
+        median_metric = pullback_metric_at_nodes(nodes, decode_fn)
+        assert np.isfinite(median_metric).all()
+        low_fn = make_qlvm_decode_fn_from_model_cell(str(cell), condition_quantile=0.0)
+        assert not np.allclose(pullback_metric_at_nodes(nodes, low_fn), median_metric)
+
+    def test_source_resolution(self):
+        """With pullback_metric on, the decoder is the production cell of the map the
+        manifold columns name, from the os_utils constants (no settings path the
+        experimenter re-keying could rewrite): the regular, a conditional or the
+        squeak cell, carried with the condition quantile; off, there is no pullback
+        decoder. A path key a user's older settings may still carry
+        (decoder_model_cell_directory, the retired decoder_weights_npz_path) is
+        ignored; a block without pullback_metric or pullback_condition_quantile is a
+        settings error, as are columns naming no QLVM map and a quantile outside
+        [0, 1]."""
+
+        on = {'pullback_metric': True, 'pullback_condition_quantile': 0.5}
+        regular = f"{os_utils.QLVM_MODEL_PACKAGE_ROOT}/{os_utils.QLVM_PRODUCTION_MODEL_CELLS['qlvm']}"
+        duration = f"{os_utils.QLVM_MODEL_PACKAGE_ROOT}/{os_utils.QLVM_PRODUCTION_MODEL_CELLS['qlvm_duration']}"
+        squeak = f"{os_utils.QLVM_SQUEAK_PACKAGE_ROOT}/{os_utils.QLVM_SQUEAK_PRODUCTION_CELL}"
+        assert resolve_geodesic_decoder_source(on, ['qlvm1', 'qlvm2']) == ('model_cell', regular, 0.5)
         assert resolve_geodesic_decoder_source(
-            {'decoder_weights_npz_path': '/w.npz', 'decoder_model_cell_directory': ''}) is None
+            on, ['qlvm_duration1', 'qlvm_duration2']) == ('model_cell', duration, 0.5)
+        assert resolve_geodesic_decoder_source(
+            {**on, 'pullback_condition_quantile': 0.25},
+            ['qlvm_squeak1', 'qlvm_squeak2']) == ('model_cell', squeak, 0.25)
+        for prefix in os_utils.QLVM_MAPS:
+            source = resolve_geodesic_decoder_source(on, [f"{prefix}1", f"{prefix}2"])
+            assert source[1] == os_utils.qlvm_production_cell_directory(prefix)
+        assert resolve_geodesic_decoder_source({'pullback_metric': False}, ['qlvm1', 'qlvm2']) is None
+        assert resolve_geodesic_decoder_source({'pullback_metric': False}, ['vae1', 'vae2']) is None
+        assert resolve_geodesic_decoder_source(
+            {**on, 'decoder_model_cell_directory': '/elsewhere'}, ['qlvm1', 'qlvm2']) == ('model_cell', regular, 0.5)
+        with pytest.raises(KeyError):
+            resolve_geodesic_decoder_source({'decoder_model_cell_directory': '/c'}, ['qlvm1', 'qlvm2'])
+        with pytest.raises(KeyError):
+            resolve_geodesic_decoder_source({'pullback_metric': True}, ['qlvm1', 'qlvm2'])
+        with pytest.raises(ValueError, match="has no decoder"):
+            resolve_geodesic_decoder_source(on, ['vae1', 'vae2'])
+        with pytest.raises(ValueError, match="must be in"):
+            resolve_geodesic_decoder_source({**on, 'pullback_condition_quantile': -0.1}, ['qlvm1', 'qlvm2'])
+
+    def test_manifold_columns_prefer_the_pickle_record(self):
+        """The input pickle's recorded manifold columns win over the settings; a
+        pickle without that record falls back to the current setting."""
+
+        vocal = {'usv_manifold_column_names': ['qlvm1', 'qlvm2']}
+        recorded = {'analysis_specific': {'usv_manifold_column_names': ['qlvm_entropy1', 'qlvm_entropy2']}}
+        assert resolve_manifold_column_names(recorded, vocal) == ['qlvm_entropy1', 'qlvm_entropy2']
+        assert resolve_manifold_column_names(None, vocal) == ['qlvm1', 'qlvm2']
+        assert resolve_manifold_column_names({'analysis_specific': {}}, vocal) == ['qlvm1', 'qlvm2']
+        assert resolve_manifold_column_names({}, vocal) == ['qlvm1', 'qlvm2']
 
     def test_source_builder_uses_the_cell(self, tmp_path):
         """Building from a model-cell source gives the cell's decoder; any other
@@ -296,9 +362,9 @@ class TestModelCellDecoder:
         grid = np.ones((8, 8), dtype=np.int64)
         cell = _make_model_cell(tmp_path, rng, masking_type="none", floor=0.2, fine_grid=grid, coarse_grid=grid)
         z = jnp.asarray([0.3, 0.7])
-        from_source = np.asarray(make_qlvm_decode_fn_from_source(('model_cell', str(cell)))(z))
+        from_source = np.asarray(make_qlvm_decode_fn_from_source(('model_cell', str(cell), 0.5))(z))
         from_cell = np.asarray(make_qlvm_decode_fn_from_model_cell(str(cell))(z))
         np.testing.assert_allclose(from_source, from_cell, atol=1e-7)
         for kind in ('npz', 'zip'):
             with pytest.raises(ValueError, match="unknown decoder source"):
-                make_qlvm_decode_fn_from_source((kind, 'x'))
+                make_qlvm_decode_fn_from_source((kind, 'x', 0.5))

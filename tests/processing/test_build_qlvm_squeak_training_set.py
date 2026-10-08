@@ -2,13 +2,14 @@
 @author: bartulem
 Tests for processing/build_qlvm_squeak_training_set.
 
-The frame count, the candidate selection from the USV summary, the crop gates of
-both crop windows, the per-session/stratum cap, the natural and uniform
-duration-stratified draws and the crop normalizations are tested directly; the
-end-to-end build runs on synthetic sessions (a metadata YAML and a USV summary
-with squeak columns) with the audio spectrogram rebuild mocked by a deterministic
-function of the row, so the crops, the draw, the split and the written columns
-can be checked without wav files.
+The frame count, the candidate selection from the USV summary (squeak true:
+pure squeaks and both, the crop window that widens a segment to hold a squeak running
+past it), the crop gates of both crop windows, the per-session/stratum cap, the
+natural and uniform duration-stratified draws and the crop normalizations are
+tested directly; the end-to-end build runs on synthetic sessions (a metadata YAML
+and a USV summary with the call-class columns) with the audio spectrogram rebuild
+mocked by a deterministic function of the window, so the crops, the draw, the
+split and the written columns can be checked without wav files.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ import pytest
 import yaml
 
 from usv_playpen.processing import build_qlvm_squeak_training_set as squeak_set
+from usv_playpen.processing.detect_usv_squeaks import FRAME_DT_S, squeak_window_n_frames
 
 _CFG = {
     "draw_mode": "natural",
@@ -40,32 +42,42 @@ _CFG = {
 }
 
 
-def test_squeak_segment_n_frames():
+def test_squeak_window_n_frames():
     """1 + n_samples // 512 frames, and none below one 2048-sample window."""
     start = np.array([0.0, 0.0, 1.0])
     stop = np.array([0.1, 0.008, 1.0 + 2048 / 250000])
-    assert squeak_set.squeak_segment_n_frames(start, stop).tolist() == [1 + 25000 // 512, 0, 5]
+    assert squeak_window_n_frames(start, stop).tolist() == [1 + 25000 // 512, 0, 5]
 
 
 def test_squeak_candidates_from_summary():
-    """Squeak rows with an extent and a spectrogram are candidates; noise is left
-    out on request; extents become frame indices."""
+    """squeak and both rows with an envelope are candidates (usv rows and rows without an
+    envelope are not); noise is left out on request; the window grows to hold a squeak
+    that starts before its segment; extents become frame indices of the window; the
+    probability is p_squeak + p_both."""
+    dt = FRAME_DT_S
     summary = pls.DataFrame({
-        "start": [0.0, 1.0, 2.0, 3.0],
-        "stop": [0.1, 1.1, 2.1, 3.001],
-        "squeak": [True, False, True, True],
-        "squeak_probability": [0.9, None, 0.8, 0.7],
-        "squeak_start": [0.0 + 3 * 0.002048, None, 2.0, 3.0],
-        "squeak_end": [0.0 + 20 * 0.002048, None, 2.0 + 9 * 0.002048, 3.0],
-        "noise": [False, False, True, False],
+        "start": [1.0, 2.0, 3.0, 4.0, 5.0],
+        "stop": [1.1, 2.1, 3.1, 4.1, 5.1],
+        "usv": [False, True, True, True, False],
+        "squeak": [True, False, True, True, True],
+        "p_squeak": [0.8, 0.1, 0.3, 0.2, 0.6],
+        "p_both": [0.1, 0.0, 0.6, 0.7, 0.3],
+        "squeak_start": [1.0 + 3 * dt, None, 3.0 - 5 * dt, 4.0 + 2 * dt, None],
+        "squeak_end": [1.0 + 20 * dt, None, 3.0 + 9 * dt, 4.0 + 30 * dt, None],
+        "noise": [False, False, False, True, False],
     })
     candidates = squeak_set.squeak_candidates_from_summary(summary, exclude_noise=False)
-    assert candidates["row"].tolist() == [0, 2]
-    assert candidates["first_raw"].tolist() == [3, 0]
-    assert candidates["last_raw"].tolist() == [20, 9]
-    assert squeak_set.squeak_candidates_from_summary(summary, exclude_noise=True)["row"].tolist() == [0]
+    assert candidates["row"].tolist() == [0, 2, 3]
+    assert candidates["start_s"].tolist() == pytest.approx([1.0, 3.0 - 7 * dt, 4.0])
+    assert candidates["stop_s"].tolist() == pytest.approx([1.1, 3.1, 4.1])
+    assert candidates["first_raw"].tolist() == [3, 2, 2]
+    assert candidates["last_raw"].tolist() == [20, 16, 30]
+    assert candidates["probability"].tolist() == pytest.approx([0.9, 0.9, 0.9])
+    assert squeak_set.squeak_candidates_from_summary(summary, exclude_noise=True)["row"].tolist() == [0, 2]
     with pytest.raises(ValueError, match="column"):
         squeak_set.squeak_candidates_from_summary(summary.drop("squeak_end"), exclude_noise=False)
+    with pytest.raises(ValueError, match="usv"):
+        squeak_set.squeak_candidates_from_summary(summary.drop("usv"), exclude_noise=False)
 
 
 def test_squeak_crop_gates_windows():
@@ -126,8 +138,9 @@ def test_normalize_crop():
 def _write_session(tmp_path, session_id, sexes, n_squeaks):
     """
     Create a synthetic session root with ``<session>_metadata.yaml`` and
-    ``audio/<session>_usv_summary.csv``: ``n_squeaks`` squeak rows of 0.2 s
-    (98 frames) whose extents span 6 + 4 * (row % 6) frames, plus one non-squeak row.
+    ``audio/<session>_usv_summary.csv``: ``n_squeaks`` rows of 0.2 s (98 frames), squeak
+    and both alternating, whose envelopes cover frames 5 .. 10 + 4 * (row % 6) (inside the
+    segment with its context, so the window is the segment), plus one usv row.
     """
     root = tmp_path / session_id
     (root / "audio").mkdir(parents=True)
@@ -139,25 +152,28 @@ def _write_session(tmp_path, session_id, sexes, n_squeaks):
         "usv_id": [f"{i:06d}" for i in range(n)],
         "start": start,
         "stop": start + 0.2,
+        "usv": [(i % 2 == 0) if i < n_squeaks else True for i in range(n)],
         "squeak": [i < n_squeaks for i in range(n)],
-        "squeak_probability": [0.9 if i < n_squeaks else None for i in range(n)],
-        "squeak_start": [start[i] + 5 * 0.002048 if i < n_squeaks else None for i in range(n)],
-        "squeak_end": [start[i] + (10 + 4 * (i % 6)) * 0.002048 if i < n_squeaks else None for i in range(n)],
+        "p_squeak": [0.5 if i < n_squeaks else 0.0 for i in range(n)],
+        "p_both": [0.4 if i < n_squeaks else 0.0 for i in range(n)],
+        "squeak_start": [start[i] + 5 * FRAME_DT_S if i < n_squeaks else None for i in range(n)],
+        "squeak_end": [start[i] + (10 + 4 * (i % 6)) * FRAME_DT_S if i < n_squeaks else None for i in range(n)],
     }).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")
     return root
 
 
-def _fake_spectrograms(row_indices, **_kwargs):
-    """A deterministic (128, 98) dB 'spectrogram' per row, the row number in every cell
-    of column t plus t, standing in for the audio rebuild."""
-    return [np.tile(np.arange(98, dtype=np.float32), (128, 1)) - 60.0 + float(row) for row in row_indices]
+def _fake_spectrograms(window_start_s, window_stop_s, **_kwargs):
+    """A deterministic (128, n_frames) dB 'spectrogram' per window, the window start in
+    every cell of column t plus t, standing in for the audio rebuild."""
+    n_frames = squeak_window_n_frames(window_start_s, window_stop_s)
+    return [np.tile(np.arange(n, dtype=np.float32), (128, 1)) - 60.0 + float(start) for start, n in zip(window_start_s, n_frames, strict=True)]
 
 
 @pytest.fixture
 def cohort(tmp_path, mocker):
     """Three MF sessions and two FF sessions, with the spectrogram rebuild mocked."""
     mocker.patch("usv_playpen.processing.build_qlvm_squeak_training_set.smart_wait")
-    mocker.patch("usv_playpen.processing.build_qlvm_squeak_training_set.squeak_segment_spectrograms", side_effect=_fake_spectrograms)
+    mocker.patch("usv_playpen.processing.build_qlvm_squeak_training_set.squeak_window_spectrograms", side_effect=_fake_spectrograms)
     return [
         _write_session(tmp_path, "20230101_120000", ["male", "female"], 9),
         _write_session(tmp_path, "20230101_100000", ["male", "female"], 7),

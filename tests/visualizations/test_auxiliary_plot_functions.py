@@ -2,13 +2,15 @@
 @author: bartulem
 Unit tests for visualizations/auxiliary_plot_functions.py — the pure colour
 helpers (`luminance_equalizer`, `create_colormap`) that back every per-mouse
-colormap and luminance-matched palette in the figure suite.
+colormap and luminance-matched palette in the figure suite, and the
+per-category outline helper (`draw_category_outlines`).
 """
 
 from __future__ import annotations
 
 import colorsys
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 from matplotlib.colors import ListedColormap
@@ -16,6 +18,7 @@ from matplotlib.colors import ListedColormap
 from usv_playpen.visualizations.auxiliary_plot_functions import (
     luminance_equalizer,
     create_colormap,
+    draw_category_outlines,
 )
 
 
@@ -224,3 +227,38 @@ def test_create_colormap_unknown_type_raises():
 
     with pytest.raises(ValueError, match="unrecognized cm_type"):
         create_colormap(_cm_params(cm_type="rainbow", equalize_luminance=False))
+
+
+def test_draw_category_outlines_puts_a_shared_border_at_one_position():
+    """
+    Description
+    -----------
+    Two NON-consecutive categories (1 and 3) side by side: contouring the integer
+    grid at half-integer levels would cross the border twice (levels 1.5 and 2.5, at
+    a quarter and three quarters of the pixel gap), drawing a doubled, thicker line.
+    `draw_category_outlines` outlines each category as the 0.5 contour of its own
+    mask, so both categories' outlines sit exactly half-way between the pixel
+    centres, one contour set per category, each at level 0.5 in the given colour.
+    NaN pixels belong to no category.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    label_grid = np.array([[1.0, 1.0, 3.0, 3.0]] * 4)
+    axis = np.arange(4) + 0.5
+    fig, ax = plt.subplots()
+    contour_sets = draw_category_outlines(ax, axis, axis, label_grid, colors="#00FF00", linewidths=2.0, zorder=5)
+    assert len(contour_sets) == 2
+    for contour_set in contour_sets:
+        assert list(contour_set.levels) == [0.5]
+        x_coordinates = np.concatenate([segment[:, 0] for segment in contour_set.allsegs[0]])
+        np.testing.assert_allclose(x_coordinates, 2.0)
+    nan_grid = label_grid.copy()
+    nan_grid[:, :2] = np.nan
+    assert len(draw_category_outlines(ax, axis, axis, nan_grid, colors="#000000", linewidths=1.0, zorder=1)) == 1
+    plt.close(fig)

@@ -20,7 +20,7 @@ from sklearn.mixture import GaussianMixture
 # Headless matplotlib for the mixture_model_utils plotting smoke tests.
 matplotlib.use("Agg")
 
-from usv_playpen.analyses.analyze_data import Analyst
+from usv_playpen.analyses.analyze_data import Analyst, generate_beh_features_cli
 from usv_playpen.analyses.decode_experiment_label import extract_information
 from usv_playpen.analyses.compute_behavioral_features import (
     FeatureZoo,
@@ -1680,6 +1680,9 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
         # `tracks.shape[0]` to derive session duration in seconds.
         f.create_dataset("tracks", data=np.zeros((n_frames, 1, 1, 3), dtype=float))
 
+    # Session metadata: the vocal sides read each animal's sex from its Subjects entry.
+    (root / "session_metadata.yaml").write_text("Subjects:\n- subject_id: 'm1'\n  sex: male\n")
+
     # Audio sync JSON
     duration_s = float(n_frames / fps)
     sync_json = root / "audio" / "sync" / "audio_triggerbox_sync_info.json"
@@ -1696,14 +1699,12 @@ def _make_synthetic_session(tmp_path, *, n_frames=1500, n_usvs=120, fps=150.0):
         "emitter": ["m1"] * n_usvs,
         # Every synthetic call is real; the tuning-curve loader drops noise-flagged rows.
         "noise": [False] * n_usvs,
-        # No squeaks: the vocal tuning drops squeak anchors, so the flag is required.
+        # No squeaks: the vocal tuning keeps pure-USV anchors (usv true, squeak false), so the
+        # two booleans are required.
+        "usv": [True] * n_usvs,
         "squeak": [False] * n_usvs,
-        "qlvm_supercategory": rng.integers(1, 4, size=n_usvs).tolist(),
-        "qlvm_category":     rng.integers(1, 6, size=n_usvs).tolist(),
-        # the four conditional QLVM maps' labels (every map is tuned)
-        **{f"{qlvm_map}_{suffix}": rng.integers(1, 4, size=n_usvs).tolist()
-           for qlvm_map in ("qlvm_dur", "qlvm_mf", "qlvm_bw", "qlvm_loud")
-           for suffix in ("category", "supercategory")},
+        # the only QLVM category column (R-1..R-4 of the regular map)
+        "qlvm_category":     rng.integers(1, 5, size=n_usvs).tolist(),
         "mean_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
         "peak_freq_hz":      rng.uniform(40000, 90000, n_usvs).tolist(),
         "freq_bandwidth_hz": rng.uniform(5000, 30000, n_usvs).tolist(),
@@ -1854,10 +1855,31 @@ def test_load_vocal_inputs_returns_expected_keys(synthetic_compute_session):
     nt = _make_neuronal_tuning(root)
     bundle = nt._load_vocal_inputs()
     assert bundle is not None
-    for k in ("usv_df", "track_names", "male", "duration_seconds",
+    for k in ("usv_df", "track_names", "animal_sex", "duration_seconds",
               "starts", "stops", "emitters"):
         assert k in bundle
-    assert bundle["male"] == "m1"
+    assert "male" not in bundle and "female" not in bundle
+    assert bundle["animal_sex"] == {"m1": "male"}
+
+
+def test_vocal_sides_take_sex_from_metadata_not_track_slot(synthetic_compute_session):
+    """A female in track slot 0 (here the only track) is labelled female on its vocal
+    side; a slot-0-is-male rule would have called it male."""
+    root, _ = synthetic_compute_session
+    (root / "session_metadata.yaml").write_text("Subjects:\n- subject_id: 'm1'\n  sex: female\n")
+    nt = _make_neuronal_tuning(root)
+    voc_inputs = nt._load_vocal_inputs()
+    assert voc_inputs["animal_sex"] == {"m1": "female"}
+    precompute = nt._build_vocal_side_precompute(voc_inputs)
+    assert precompute["self"]["side"]["sex"] == "female"
+
+
+def test_load_vocal_inputs_unmatched_track_raises(synthetic_compute_session):
+    """A track with no metadata subject raises instead of defaulting to its slot."""
+    root, _ = synthetic_compute_session
+    (root / "session_metadata.yaml").write_text("Subjects:\n- subject_id: 'other'\n  sex: male\n")
+    with pytest.raises(ValueError, match="'m1' has no subject"):
+        _make_neuronal_tuning(root)._load_vocal_inputs()
 
 
 def test_load_vocal_inputs_returns_none_when_no_inputs(tmp_path):
@@ -1924,48 +1946,74 @@ def test_load_behavioral_inputs_drops_excluded_features(synthetic_compute_sessio
 
 
 def test_squeaks_are_dropped_from_self_anchors_and_never_categorised(synthetic_compute_session):
-    """With exclude_squeaks_self (default) the self side's squeak calls are not
-    anchors; with it off they are anchors but still carry no QLVM category (every
-    map's category tuning is squeak-free), and a category held only by squeaks
-    does not appear."""
+    """With exclude_squeaks_self (default) the self side's anchors are its pure USVs only (usv
+    true AND squeak false): pure squeaks AND segments with both flags true are dropped alike, so
+    usv being true is not enough. With it off they are anchors but
+    still carry no QLVM category (the qlvm_category tuning is usv-only), and a category held
+    only by squeak / both segments does not appear."""
     root, _ = synthetic_compute_session
     usv_csv = next(root.rglob("*_usv_summary.csv"))
     df = pls.read_csv(usv_csv)
+    usv = np.ones(df.height, dtype=bool)
     squeak = np.zeros(df.height, dtype=bool)
-    squeak[:10] = True
-    # category 99 only on squeaks
+    usv[:5] = False
+    squeak[:5] = True
+    squeak[5:10] = True
+    not_usv = squeak
+    # category 99 only on squeak / both segments
     df.with_columns(
-        pls.Series("squeak", squeak),
-        pls.when(pls.Series(squeak)).then(99).otherwise(pls.col("qlvm_category")).alias("qlvm_category"),
+        pls.Series("usv", usv.tolist(), dtype=pls.Boolean),
+        pls.Series("squeak", squeak.tolist(), dtype=pls.Boolean),
+        pls.when(pls.Series(not_usv)).then(99).otherwise(pls.col("qlvm_category")).alias("qlvm_category"),
     ).write_csv(usv_csv)
 
     nt = _make_neuronal_tuning(root)
     voc_inputs = nt._load_vocal_inputs()
+    np.testing.assert_array_equal(voc_inputs["is_usv"], ~not_usv)
     excluded = nt._build_vocal_side_precompute(voc_inputs)["self"]
     assert excluded["side"]["n"] == df.height - 10
-    assert not voc_inputs["is_squeak"][excluded["anchor_idx"]].any()
+    assert excluded["side"]["n_usv"] == df.height - 10
+    assert voc_inputs["is_usv"][excluded["anchor_idx"]].all()
 
     nt.tuning_parameters_dict["exclude_squeaks_self"] = False
     kept = nt._build_vocal_side_precompute(voc_inputs)["self"]
     assert kept["side"]["n"] == df.height
     categorical = kept["anchor_categorical"]["qlvm_category"]
     assert 99 not in categorical["unique_cats"].tolist()
-    assert (categorical["anchor_cat_idx_dense"][voc_inputs["is_squeak"][kept["anchor_idx"]]] == -1).all()
+    assert (categorical["anchor_cat_idx_dense"][~voc_inputs["is_usv"][kept["anchor_idx"]]] == -1).all()
 
 
-def test_load_vocal_inputs_requires_the_squeak_column(synthetic_compute_session):
-    """A summary without a squeak column raises instead of tuning to squeaks."""
+def test_unscored_rows_are_not_usv_anchors(synthetic_compute_session):
+    """A non-noise row with null booleans (a segment too short to score) is not a USV: it is
+    dropped from the anchors when squeaks are excluded, like a squeak or a both segment."""
     root, _ = synthetic_compute_session
     usv_csv = next(root.rglob("*_usv_summary.csv"))
-    pls.read_csv(usv_csv).drop("squeak").write_csv(usv_csv)
-    with pytest.raises(KeyError, match="no 'squeak' column"):
+    df = pls.read_csv(usv_csv)
+    usv = [True] * df.height
+    squeak = [False] * df.height
+    usv[0] = None
+    squeak[0] = None
+    df.with_columns(pls.Series("usv", usv, dtype=pls.Boolean), pls.Series("squeak", squeak, dtype=pls.Boolean)).write_csv(usv_csv)
+
+    nt = _make_neuronal_tuning(root)
+    voc_inputs = nt._load_vocal_inputs()
+    assert not voc_inputs["is_usv"][0]
+    assert nt._build_vocal_side_precompute(voc_inputs)["self"]["side"]["n"] == df.height - 1
+
+
+def test_load_vocal_inputs_requires_the_vocal_flags(synthetic_compute_session):
+    """A summary without the usv / squeak booleans raises instead of tuning to squeaks."""
+    root, _ = synthetic_compute_session
+    usv_csv = next(root.rglob("*_usv_summary.csv"))
+    pls.read_csv(usv_csv).drop("usv").write_csv(usv_csv)
+    with pytest.raises(KeyError, match=r"no \['usv'\] column"):
         _make_neuronal_tuning(root)._load_vocal_inputs()
 
 
 def test_build_vocal_side_precompute_notices_missing_qlvm_labels(synthetic_compute_session):
-    """Without some QLVM label columns (e.g. a summary embedded before infer-qlvm-latents
-    wrote them) the precompute prints a one-line notice naming them, instead of leaving
-    those outputs empty without a word; with every map's labels present nothing is
+    """Without the qlvm_category column (e.g. a summary assign-qlvm-categories has not
+    labelled yet) the precompute prints a one-line notice naming it, instead of leaving
+    the category outputs empty without a word; with the column present nothing is
     printed."""
     root, _ = synthetic_compute_session
     nt = _make_neuronal_tuning(root)
@@ -1976,12 +2024,38 @@ def test_build_vocal_side_precompute_notices_missing_qlvm_labels(synthetic_compu
     assert nt._build_vocal_side_precompute(voc_inputs) is not None
     assert not any("QLVM category tuning skipped" in m for m in messages)
 
-    voc_inputs["usv_df"] = voc_inputs["usv_df"].drop(["qlvm_category", "qlvm_supercategory"])
+    voc_inputs["usv_df"] = voc_inputs["usv_df"].drop(["qlvm_category"])
     assert nt._build_vocal_side_precompute(voc_inputs) is not None
     notices = [m for m in messages if "QLVM category tuning skipped" in m]
     assert len(notices) == 1
-    assert "qlvm_category, qlvm_supercategory" in notices[0]
+    assert "(qlvm_category)" in notices[0]
     assert "labels are unavailable" in notices[0]
+
+
+def test_generate_beh_features_cli_derivative_bins_is_one_integer():
+    """--derivative-bins is the single integer calculate_derivatives slices with (the settings
+    value derivative_bins is an int); declared as a multiple string option it reached the
+    slice as the tuple ('10',) and raised TypeError."""
+    option = next(param for param in generate_beh_features_cli.params if param.name == "derivative_bins")
+    assert not option.multiple
+    assert option.type.name == "integer"
+    assert option.type.convert("10", option, None) == 10
+
+
+def test_build_vocal_side_precompute_takes_an_all_null_property_column(synthetic_compute_session):
+    """A continuous property with no value in the session (e.g. loudness_db never measured) is
+    read from CSV as an all-null String column; the precompute casts it to Float64 and bins it as
+    all-NaN (every anchor out of range) instead of raising inside np.isfinite."""
+    root, _ = synthetic_compute_session
+    nt = _make_neuronal_tuning(root)
+    voc_inputs = nt._load_vocal_inputs()
+    voc_inputs["usv_df"] = voc_inputs["usv_df"].with_columns(
+        pls.lit(None, dtype=pls.String).alias("loudness_db")
+    )
+    precompute = nt._build_vocal_side_precompute(voc_inputs)
+    assert precompute is not None
+    assert "self" in precompute
+    assert (precompute["self"]["anchor_property_bin_idx"]["loudness_db"] == -1).all()
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -2414,7 +2488,7 @@ def test_compute_session_usv_intervals_basic_pairs(monkeypatch):
     import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
 
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
-        "male_id": "M", "female_id": "F", "frame_rate": 150.0,
+        "track_names": ["M", "F"], "frame_rate": 150.0,
     })
     monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
         "M": "male", "F": "female",
@@ -2444,7 +2518,7 @@ def test_compute_session_usv_intervals_empty_usv_returns_empty_arrays(monkeypatc
     """Zero rows in the USV CSV → empty interval arrays, not a crash."""
     import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
-        "male_id": "M", "female_id": "F", "frame_rate": 150.0,
+        "track_names": ["M", "F"], "frame_rate": 150.0,
     })
     monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
         "M": "male", "F": "female",
@@ -2467,7 +2541,7 @@ def test_compute_session_usv_intervals_e2s_drops_overlapping(monkeypatch):
     """e2s mode: stop[0]=0.6, start[1]=0.5 → -0.1 interval, dropped, counted."""
     import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
-        "male_id": "M", "female_id": "F", "frame_rate": 150.0,
+        "track_names": ["M", "F"], "frame_rate": 150.0,
     })
     monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
         "M": "male", "F": "female",
@@ -2499,7 +2573,7 @@ def test_compute_session_usv_intervals_same_sex_session_pairs_per_animal(monkeyp
     """
     import usv_playpen.analyses.compute_inter_usv_interval_distributions as cmod
     monkeypatch.setattr(cmod, "extract_session_metadata", lambda _root: {
-        "male_id": "A", "female_id": "B", "frame_rate": 150.0,
+        "track_names": ["A", "B"], "frame_rate": 150.0,
     })
     monkeypatch.setattr(cmod, "extract_animal_sexes", lambda _root, _names: {
         "A": "female", "B": "female",

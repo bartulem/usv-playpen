@@ -666,7 +666,7 @@ class TestPooledCacheMisalignment:
             )
 
 
-CATEGORY_COLUMN = 'vae_supercategory'
+CATEGORY_COLUMN = 'qlvm_category'
 TARGET_CATEGORY = 1
 
 

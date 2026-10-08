@@ -376,7 +376,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         target_vocal_type = self.modeling_settings['model_params']['model_target_vocal_type']
         mixture_model_idx = self.modeling_settings['model_params']['mixture_model_component_index']
 
-        # Optional single-category onset target (e.g. qlvm_supercategory 3;
+        # Optional single-category onset target (e.g. qlvm_category 3;
         # squeaks are targeted with onset_target_type instead). The category COLUMN is the existing
         # `usv_category_column_name`; only the integer index lives in
         # `onset_target_category`. Category filtering is honoured in
@@ -403,10 +403,10 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # model-selection consolidated). Keep it tight. When a single onset
         # target category is active, embed BOTH the category column name and
         # the index (mirrors the binomial category pipeline's
-        # `category_<col>_<idx>` convention), so the QLVM map and
-        # category-vs-supercategory are unambiguous in every downstream
+        # `category_<col>_<idx>` convention), so the QLVM category column
+        # is unambiguous in every downstream
         # artifact name and provenance block.
-        # The onset target type ('usv' default, 'squeak', 'all') joins the tag whenever it
+        # The onset target type ('usv' default, 'usv_with_both', 'squeak', 'all') joins the tag whenever it
         # is not the default, so a squeak-onset run and a USV-onset run of the same
         # cohort never share an artifact name.
         onset_target_type = self.modeling_settings['model_params']['onset_target_type']
@@ -1229,9 +1229,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             fits a single, smooth 2D *surface* that represents the log-odds
             contribution based on the *interaction* between the feature's value
             (axis 0) and the time lag (axis 1). This is a non-linear filter.
-        2.  The `pygam` library automatically applies a
-            smoothness penalty (penalizing the "wiggleness" of the 2D surface)
-            and finds the optimal penalty strength using Generalized Cross-Validation (GCV).
+        2.  The surface is fitted under pyGAM's smoothness penalty (penalizing
+            the "wiggliness" of the 2D surface) at a FIXED strength: the
+            `lam` of the settings' `hyperparameters.classical.pygam.lam_penalty`
+            (0.6), or, when that is null, pyGAM's own per-term default (also
+            0.6). The strength is never tuned: pyGAM selects it (by GCV/UBRE)
+            only in `gridsearch()`, which this pipeline does not call.
         3.  It calculates metrics for both the 'actual' data
             and a 'null' (label-shuffled) model. Note: For evaluation, the tiled
             probabilities from the test set are averaged per-epoch before
@@ -1283,15 +1286,12 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         n_splits = self.modeling_settings['model_validation']['n_cv_folds']
         history_frames = self.history_frames
 
-        try:
-            pygam_params = self.modeling_settings['hyperparameters']['classical']['pygam']
-            n_splines_time = pygam_params['n_splines_time']
-            n_splines_value = pygam_params['n_splines_value']
-            lam_penalty = pygam_params['lam_penalty']
-            max_iterations = pygam_params['max_iterations']
-            tol_val = pygam_params['tol_val']
-        except KeyError:
-            n_splines_time, n_splines_value, lam_penalty, max_iterations, tol_val = 8, 5, 0.6, 100, 1e-4
+        pygam_params = self.modeling_settings['hyperparameters']['classical']['pygam']
+        n_splines_time = pygam_params['n_splines_time']
+        n_splines_value = pygam_params['n_splines_value']
+        lam_penalty = pygam_params['lam_penalty']
+        max_iterations = pygam_params['max_iterations']
+        tol_val = pygam_params['tol_val']
 
         gam_kwargs_actual = {
             'max_iter': max_iterations,
@@ -1302,7 +1302,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             gam_kwargs_actual['lam'] = lam_penalty
             print(f"  Using FIXED smoothness penalty: lam={lam_penalty}")
         else:
-            print("  Using GCV to find optimal smoothness (lam=None)")
+            print("  Using pyGAM's default smoothness penalty (lam_penalty is null; not tuned)")
 
         gam_kwargs_shuffled = {
             'max_iter': max_iterations,

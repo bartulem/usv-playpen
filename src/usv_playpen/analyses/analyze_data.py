@@ -285,8 +285,8 @@ def generate_naturalistic_usv_playback_cli(ctx, exp_id, **kwargs) -> None:
 @click.option('--n-usv-min-partner', 'n_usv_min_partner', type=int, default=None, required=False, help='Minimum partner-side USV count to compute partner plots.')
 @click.option('--n-usv-min-category', 'n_usv_min_category', type=int, default=None, required=False, help='Minimum per-category USV count to retain that category.')
 @click.option('--include-partner-tuning/--no-include-partner-tuning', 'include_partner_vocalization_tuning_bool', default=None, required=False, help='If set, also compute partner-side vocal tuning when partner threshold is met.')
-@click.option('--exclude-squeaks-self/--keep-squeaks-self', 'exclude_squeaks_self', default=None, required=False, help='Leave the self side\'s squeaks out of its vocal tuning anchors (default: exclude). QLVM category tuning never uses squeaks.')
-@click.option('--exclude-squeaks-partner/--keep-squeaks-partner', 'exclude_squeaks_partner', default=None, required=False, help='Leave the partner side\'s squeaks out of its vocal tuning anchors (default: keep). QLVM category tuning never uses squeaks.')
+@click.option('--exclude-squeaks-self/--keep-squeaks-self', 'exclude_squeaks_self', default=None, required=False, help='Leave the self side\'s squeak and both (squeak + USV) segments out of its vocal tuning anchors (default: exclude). QLVM category tuning uses pure USVs (usv true, squeak false) only.')
+@click.option('--exclude-squeaks-partner/--keep-squeaks-partner', 'exclude_squeaks_partner', default=None, required=False, help='Leave the partner side\'s squeak and both (squeak + USV) segments out of its vocal tuning anchors (default: keep). QLVM category tuning uses pure USVs (usv true, squeak false) only.')
 @click.option('--excluded-behavioral-features', 'excluded_behavioral_features', multiple=True, type=str, default=None, required=False, help='Behavioral base features (derivatives included) left out of tuning; repeat once per feature (default: nose-nose, allo_yaw-nose, nose-allo_yaw, allo_pitch-nose, nose-allo_pitch).')
 @click.option('--behavioral-min-occupancy-seconds', 'behavioral_min_occupancy_seconds', type=float, default=None, required=False, help='Minimum behavioral occupancy per bin (in s) for that bin to be rendered in the 1D feature line plots; persisted into behavioral_metadata of each cluster pkl.')
 @click.option('--smoothing-sd', 'smoothing_sd', type=float, default=None, required=False, help='Standard deviation (in bins) of the Gaussian smoothing applied to ratemaps and shuffle distributions; 0 disables smoothing.')
@@ -329,7 +329,7 @@ def generate_rm_files_cli(ctx, root_directory, **kwargs) -> None:
 @click.option('--head-points', 'head_points', nargs=4, type=str, default=None, required=False, help='Skeleton head nodes.')
 @click.option('--tail-points', 'tail_points',  nargs=5, type=str, default=None, required=False, help='Skeleton tail nodes.')
 @click.option('--back-root-points', 'back_root_points', nargs=3, type=str, default=None, required=False, help='Skeleton back nodes.')
-@click.option('--derivative-bins', 'derivative_bins', multiple=True, type=str, default=None, required=False, help='Number of bins for derivative calculation.')
+@click.option('--derivative-bins', 'derivative_bins', type=int, default=None, required=False, help='Number of bins for derivative calculation.')
 @click.pass_context
 def generate_beh_features_cli(ctx, root_directory, **kwargs) -> None:
     """

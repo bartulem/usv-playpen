@@ -5,6 +5,8 @@ Different functions for modifying files:
 (1b) perform harmonic-percussive source separation
 (1c) perform band-pass filtering
 (1d) concatenate single channel audio (e.g., wav) files
+(1e) broadband filter: remove line-noise tones, high-pass at 2 kHz and
+     write the channels straight into one broadband memmap
 (2a) concatenate video (e.g., mp4) files
 (2b) change video (e.g., mp4) sampling rate (fps)
 (3a) concatenate e-phys binary files
@@ -13,25 +15,36 @@ Different functions for modifying files:
 
 from __future__ import annotations
 
+import concurrent.futures
 import configparser
+import csv
 import json
+import multiprocessing
 import os
 import pathlib
 import re
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
 from datetime import datetime
+from importlib import metadata
 
 import librosa
 import numpy as np
 import polars as pls
+import soundfile as sf
 from imgstore import new_for_filename
+from scipy import signal
+from scipy.ndimage import median_filter
 from scipy.io import wavfile
 from spikeinterface.curation.curation_tools import find_duplicated_spikes
 from tqdm import tqdm
 
 from ..os_utils import (
+    AUDIO_MMAP_BAND_FOLDERS,
+    atomic_output_path,
+    audio_mmap_name_regex,
     configure_path,
     ephys_base_for_data_root,
     first_match_or_raise,
@@ -40,6 +53,719 @@ from ..os_utils import (
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import load_session_metadata, save_session_metadata
 from .load_audio_files import DataLoader
+
+# Name of the per-session report the broadband filter writes next to its memmap.
+BROADBAND_REPORT_NAME = "line_noise.json"
+
+# Settings of the broadband filter that change WHAT is written (and so decide
+# whether an existing output is still valid); the remaining keys (chunk length,
+# thread count) only change how fast it is written. The removed band
+# ``filter_freq_bounds`` enters as its upper edge, ``highpass_cutoff_hz`` (see
+# broadband_output_settings).
+BROADBAND_OUTPUT_SETTINGS = (
+    "source_dir",
+    "source_glob",
+    "transition_width_hz",
+    "stopband_attenuation_db",
+    "line_noise_search_bands_hz",
+    "line_noise_min_height_db",
+    "line_noise_estimation_windows",
+    "line_noise_estimation_window_s",
+    "line_noise_max_tones_per_band",
+    "line_noise_min_separation_hz",
+    "line_noise_floor_window_hz",
+    "line_noise_block_s",
+    "line_noise_smoothing_blocks",
+)
+
+# Frequencies (Hz) at which the high-pass response is evaluated and recorded in
+# the report (the design targets: stopband <= 1.5 kHz, -6 dB at 2 kHz, flat from
+# 2.5 kHz, plus the two line-noise frequencies and the USV band).
+BROADBAND_RESPONSE_PROBES_HZ = (1000, 1500, 1652.5, 2000, 2122.5, 2500, 3000, 8000, 30000)
+
+# Columns of the per-session report CSV the batch runner appends to.
+BROADBAND_BATCH_REPORT_COLUMNS = (
+    "session_root",
+    "status",
+    "runtime_s",
+    "n_channels",
+    "n_samples",
+    "output_bytes",
+    "tones_kept",
+    "error",
+    "finished_at",
+)
+
+
+def design_broadband_highpass(sampling_rate: int,
+                              cutoff_hz: float,
+                              transition_width_hz: float,
+                              stopband_attenuation_db: float) -> tuple[np.ndarray, float]:
+    """
+    Description
+    -----------
+    Designs the linear-phase high-pass FIR of the broadband filter: a
+    Kaiser-windowed sinc (``scipy.signal.firwin``) whose length and Kaiser beta
+    come from ``scipy.signal.kaiserord`` for the requested stopband attenuation
+    and transition width, the same construction sox's ``sinc -t <width> <cutoff>``
+    effect uses. With the defaults (2 kHz cutoff, 1 kHz transition, 120 dB) at
+    250 kHz the filter has 1953 taps and measures -6.02 dB at 2 kHz, below
+    -120 dB at 1.5 kHz and below, -0.32 dB at 2.25 kHz and 0.00 dB from 2.5 kHz
+    up (sox's own ``sinc -t 1000 2k``, measured with an impulse: 1861 taps,
+    -6.02 dB at 2 kHz, -154.6 dB at 1.5 kHz, -0.31 dB at 2.25 kHz, 0.00 dB from
+    2.5 kHz).
+
+    The filter is applied centred (zero delay), so the output sample ``n`` lines
+    up with the input sample ``n``.
+
+    Parameters
+    ----------
+    sampling_rate (int)
+        Audio sampling rate (Hz).
+    cutoff_hz (float)
+        -6 dB point of the high-pass (Hz); the transition band is centred on it.
+    transition_width_hz (float)
+        Width of the transition band (Hz), from the stopband edge
+        ``cutoff_hz - transition_width_hz / 2`` to the passband edge
+        ``cutoff_hz + transition_width_hz / 2``.
+    stopband_attenuation_db (float)
+        Minimum stopband attenuation (dB) the Kaiser design targets.
+
+    Returns
+    -------
+    taps (np.ndarray)
+        Odd-length, symmetric float64 FIR coefficients.
+    kaiser_beta (float)
+        The Kaiser window beta used.
+    """
+
+    numtaps, kaiser_beta = signal.kaiserord(stopband_attenuation_db, transition_width_hz / (sampling_rate / 2))
+    # a high-pass FIR must have an odd number of taps (a type-I filter); this
+    # also gives an integer group delay, so the output can be centred exactly
+    numtaps = int(numtaps) | 1
+    taps = signal.firwin(numtaps, cutoff_hz, window=("kaiser", kaiser_beta), pass_zero=False, fs=sampling_rate)
+    return taps, float(kaiser_beta)
+
+
+def highpass_response_db(taps: np.ndarray, sampling_rate: int, frequencies_hz) -> dict:
+    """
+    Description
+    -----------
+    Magnitude response (dB) of an FIR at a few frequencies, for the report.
+
+    Parameters
+    ----------
+    taps (np.ndarray)
+        FIR coefficients.
+    sampling_rate (int)
+        Audio sampling rate (Hz).
+    frequencies_hz (iterable of float)
+        Frequencies (Hz) at which to evaluate the response.
+
+    Returns
+    -------
+    response (dict)
+        ``{str(frequency): gain in dB rounded to 3 decimals}``.
+    """
+
+    frequencies = np.asarray(list(frequencies_hz), dtype=np.float64)
+    _, response = signal.freqz(taps, worN=frequencies, fs=sampling_rate)
+    gains = 20 * np.log10(np.maximum(np.abs(response), 1e-300))
+    return {f"{frequency:g}": round(float(gain), 3) for frequency, gain in zip(frequencies, gains, strict=True)}
+
+
+def unit_phasor(frequency_hz: float, sampling_rate: int, start: int, length: int, sign: int = 1) -> np.ndarray:
+    """
+    Description
+    -----------
+    Returns ``exp(sign * 1j * 2 * pi * frequency_hz * n / sampling_rate)`` for
+    the ABSOLUTE sample indices ``n = start, ..., start + length - 1``.
+
+    The phase is referenced to sample 0 of the recording, so phasors computed
+    for different chunks of one recording join without a phase jump. To keep
+    the phase exact at sample indices of ~3e8 (a 20 min recording at 250 kHz)
+    the phase of ``start`` is reduced modulo one turn, and the remaining offsets
+    ``m = a * R + b`` are built as the outer product of two short tables
+    ``exp(i w a R)`` and ``exp(i w b)``, which is also much cheaper than one
+    complex exponential per sample.
+
+    Parameters
+    ----------
+    frequency_hz (float)
+        Tone frequency (Hz).
+    sampling_rate (int)
+        Audio sampling rate (Hz).
+    start (int)
+        Absolute index of the first sample.
+    length (int)
+        Number of samples.
+    sign (int)
+        +1 for ``exp(+i w n)``, -1 for ``exp(-i w n)``.
+
+    Returns
+    -------
+    phasor (np.ndarray)
+        complex128 array of shape ``(length,)``.
+    """
+
+    if length <= 0:
+        return np.zeros(0, dtype=np.complex128)
+    cycles_per_sample = frequency_hz / sampling_rate
+    row_length = 1024
+    n_rows = -(-length // row_length)
+    start_turns = np.mod(cycles_per_sample * float(start), 1.0)
+    row_turns = np.mod(cycles_per_sample * row_length * np.arange(n_rows, dtype=np.float64), 1.0)
+    column_turns = cycles_per_sample * np.arange(row_length, dtype=np.float64)
+    rows = np.exp(sign * 2j * np.pi * (row_turns + start_turns))
+    columns = np.exp(sign * 2j * np.pi * column_turns)
+    return np.outer(rows, columns).ravel()[:length]
+
+
+def block_mean_phasors(samples: np.ndarray, frequency_hz: float, sampling_rate: int, start: int, block_length: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    Complex demodulation of a stretch of audio at one frequency: the mean of
+    ``x[n] * exp(-i w n)`` over consecutive blocks of ``block_length`` samples
+    (the last block may be shorter), with ``n`` the ABSOLUTE sample index. For a
+    tone ``A cos(w n + phi)`` the block mean is ``(A / 2) exp(i phi)``; everything
+    more than ~``1 / block duration`` Hz away from ``frequency_hz`` averages out.
+
+    Each block is computed as ``exp(-i w k L) * (x_block @ exp(-i w j)) / L`` (block
+    start ``k L``, offsets ``j < L``), a matrix-vector product instead of a
+    complex exponential per sample.
+
+    Parameters
+    ----------
+    samples (np.ndarray)
+        Real samples, the first one at absolute index ``start``.
+    frequency_hz (float)
+        Demodulation frequency (Hz).
+    sampling_rate (int)
+        Audio sampling rate (Hz).
+    start (int)
+        Absolute index of ``samples[0]``.
+    block_length (int)
+        Block length in samples.
+
+    Returns
+    -------
+    phasors (np.ndarray)
+        complex128 array, one value per block.
+    """
+
+    samples = np.asarray(samples, dtype=np.float64)
+    n_full = samples.shape[0] // block_length
+    offsets = unit_phasor(frequency_hz, sampling_rate, 0, block_length, sign=-1)
+    phasors = []
+    if n_full > 0:
+        blocks = samples[:n_full * block_length].reshape(n_full, block_length)
+        sums = blocks @ offsets.real + 1j * (blocks @ offsets.imag)
+        block_starts = start + block_length * np.arange(n_full, dtype=np.float64)
+        rotation = np.exp(-2j * np.pi * np.mod(frequency_hz / sampling_rate * block_starts, 1.0))
+        phasors.append(rotation * sums / block_length)
+    remainder = samples[n_full * block_length:]
+    if remainder.shape[0] > 0:
+        tail_start = start + n_full * block_length
+        tail = remainder @ unit_phasor(frequency_hz, sampling_rate, tail_start, remainder.shape[0], sign=-1)
+        phasors.append(np.array([tail / remainder.shape[0]]))
+    if not phasors:
+        return np.zeros(0, dtype=np.complex128)
+    return np.concatenate(phasors)
+
+
+def estimate_line_noise(wav_path: str | pathlib.Path,
+                        search_bands_hz: list,
+                        min_height_db: float,
+                        n_windows: int,
+                        window_s: float,
+                        max_tones_per_band: int,
+                        min_separation_hz: float,
+                        floor_window_hz: float) -> list[dict]:
+    """
+    Description
+    -----------
+    Finds the narrow line-noise tones of one channel. For every search band
+    ``[lo, hi]`` the channel is read in ``n_windows`` windows of ``window_s``
+    seconds spread evenly over the recording; each window is demodulated at the
+    band centre and decimated to ~1 kHz (block means of ``sampling_rate // 1000``
+    samples, flat to within 0.04 dB over +-50 Hz), Hann-windowed and Fourier
+    transformed with 8x zero padding, and the power spectra of the windows are
+    averaged (frequency grid ``1 / (8 window_s)`` Hz, resolution ``~2 / window_s``
+    Hz).
+
+    The averaged spectrum is whitened by its running median over
+    ``floor_window_hz`` (the local floor), so a sloping background (the HPSS
+    spectrum rises steeply between 1.5 and 2.6 kHz) neither inflates the height
+    of a band edge nor hides a line next to a stronger background. Within the
+    band, peaks of the whitened spectrum are taken greedily, highest first, while
+    they stand at least ``min_height_db`` above the local floor, are local maxima
+    of the power, and lie at least ``max(min_separation_hz, 2 / window_s)`` Hz
+    (so outside the Hann main lobe) from every peak already taken, up to
+    ``max_tones_per_band`` peaks; these are KEPT (later subtracted). Several
+    peaks per band are needed because the low lines come as combs and close
+    doublets (e.g. 2090.05 / 2090.31, 2120.06 / 2120.42 and 2150.05 Hz on the slave
+    channels of one session). Each frequency is refined by parabolic
+    interpolation of the log power. The frequencies are estimated per channel
+    because the lines follow each recording device's clock (e.g. 8000.17 Hz on the
+    master and 8000.67 Hz on the slave device of one session). A band without any
+    kept peak reports its highest whitened peak with ``kept`` False.
+
+    Parameters
+    ----------
+    wav_path (str | pathlib.Path)
+        Single-channel int16 wav.
+    search_bands_hz (list)
+        ``[[lo, hi], ...]`` search bands (Hz), each at most 100 Hz wide.
+    min_height_db (float)
+        Minimum peak height above the local floor (dB) to keep a tone.
+    n_windows (int)
+        Number of analysis windows.
+    window_s (float)
+        Length of each window (s).
+    max_tones_per_band (int)
+        Maximum number of tones kept per band.
+    min_separation_hz (float)
+        Minimum distance (Hz) between two kept tones of a band.
+    floor_window_hz (float)
+        Width (Hz) of the running median that estimates the local floor.
+
+    Returns
+    -------
+    tones (list of dict)
+        Per search band, its kept tones (or its best candidate when none is
+        kept), each with ``search_band_hz`` ([lo, hi]), ``frequency_hz`` (float),
+        ``height_db`` (float) and ``kept`` (bool).
+    """
+
+    info = sf.info(str(wav_path))
+    sampling_rate = int(info.samplerate)
+    n_frames = int(info.frames)
+    decimation = max(1, sampling_rate // 1000)
+    window_length = min(n_frames, int(round(window_s * sampling_rate)))
+    window_length -= window_length % decimation
+    decimated_rate = sampling_rate / decimation
+    n_decimated = window_length // decimation
+    n_fft = 8 * n_decimated
+    hann = np.hanning(n_decimated)
+    frequency_offsets = np.fft.fftshift(np.fft.fftfreq(n_fft, d=1.0 / decimated_rate))
+    bin_hz = frequency_offsets[1] - frequency_offsets[0]
+    window_starts = np.unique(np.linspace(0, n_frames - window_length, max(1, n_windows)).astype(np.int64))
+    spectra = [np.zeros(n_fft, dtype=np.float64) for _ in search_bands_hz]
+    with sf.SoundFile(str(wav_path)) as sound_file:
+        for window_start in window_starts:
+            sound_file.seek(int(window_start))
+            window = sound_file.read(window_length, dtype="int16").astype(np.float64)
+            for band_index, (low_hz, high_hz) in enumerate(search_bands_hz):
+                centre_hz = 0.5 * (low_hz + high_hz)
+                decimated = block_mean_phasors(window, centre_hz, sampling_rate, int(window_start), decimation)
+                spectrum = np.fft.fftshift(np.fft.fft(decimated * hann, n=n_fft))
+                spectra[band_index] += np.abs(spectrum) ** 2
+    main_lobe_hz = 2.0 * decimated_rate / n_decimated
+    separation_bins = int(np.ceil(max(min_separation_hz, main_lobe_hz) / bin_hz))
+    lobe_bins = max(1, int(np.ceil(main_lobe_hz / bin_hz)))
+    floor_bins = max(3, int(round(floor_window_hz / bin_hz)) | 1)
+    tones = []
+    for band_index, (low_hz, high_hz) in enumerate(search_bands_hz):
+        centre_hz = 0.5 * (low_hz + high_hz)
+        power = spectra[band_index] / len(window_starts)
+        in_band = np.flatnonzero((frequency_offsets >= low_hz - centre_hz) & (frequency_offsets <= high_hz - centre_hz))
+        context_low = max(0, int(in_band[0]) - floor_bins)
+        context_high = min(n_fft, int(in_band[-1]) + floor_bins + 1)
+        floor = median_filter(power[context_low:context_high], size=floor_bins, mode='nearest')[in_band - context_low]
+        whitened = power[in_band] / np.maximum(floor, np.finfo(np.float64).tiny)
+        candidates = []
+        for position in np.argsort(whitened)[::-1]:
+            peak = int(in_band[position])
+            height_db = float(10 * np.log10(max(whitened[position], np.finfo(np.float64).tiny)))
+            n_kept = sum(candidate['kept'] for candidate in candidates)
+            if candidates and (height_db < min_height_db or n_kept >= max_tones_per_band):
+                break
+            if power[peak] < power[max(0, peak - lobe_bins):peak + lobe_bins + 1].max():
+                continue
+            if any(abs(peak - candidate['bin']) < separation_bins for candidate in candidates):
+                continue
+            frequency_hz = centre_hz + frequency_offsets[peak]
+            if 0 < peak < n_fft - 1 and np.all(power[peak - 1:peak + 2] > 0):
+                left, middle, right = np.log(power[peak - 1:peak + 2])
+                curvature = left - 2 * middle + right
+                if curvature < 0:
+                    frequency_hz += 0.5 * (left - right) / curvature * bin_hz
+            candidates.append({'bin': peak, 'kept': bool(height_db >= min_height_db),
+                               'frequency_hz': round(float(frequency_hz), 4), 'height_db': round(height_db, 2)})
+            if not candidates[-1]['kept']:
+                break
+        kept = [candidate for candidate in candidates if candidate['kept']]
+        for candidate in (kept if kept else candidates[:1]):
+            tones.append({
+                "search_band_hz": [float(low_hz), float(high_hz)],
+                "frequency_hz": candidate['frequency_hz'],
+                "height_db": candidate['height_db'],
+                "kept": candidate['kept'],
+            })
+    return tones
+
+
+class _BroadbandChannelStream:
+    """
+    Description
+    -----------
+    Streams one single-channel wav through the broadband filter, chunk by chunk
+    in time order, reading every sample exactly once.
+
+    For every kept line-noise tone it keeps the complex demodulation of each
+    ``block_length`` block (absolute block grid ``k * block_length``), smooths it
+    with a running median over ``2 * half_window + 1`` blocks (real and imaginary
+    parts separately, the window truncated at the recording edges; the median
+    ignores short transients such as a call crossing the tone frequency),
+    interpolates the smoothed complex envelope linearly between block centres
+    and subtracts the tone ``2 Re(envelope(n) exp(i w n))``. The cleaned signal is
+    then convolved with the centred high-pass FIR (zero padding beyond the
+    recording edges) and rounded to int16 (round half to even, clipped, no
+    dither). Because the block grid, the median windows and the FIR are all
+    defined on absolute sample indices, the output does not depend on the chunk
+    length (up to float rounding of the FFT convolution).
+    """
+
+    def __init__(self, wav_path: pathlib.Path, n_samples: int, sampling_rate: int,
+                 taps: np.ndarray, tone_frequencies_hz: list,
+                 block_length: int, half_window: int) -> None:
+        """
+        Description
+        -----------
+        Opens the wav and prepares the per-tone state.
+
+        Parameters
+        ----------
+        wav_path (pathlib.Path)
+            Single-channel int16 wav.
+        n_samples (int)
+            Number of samples in the wav.
+        sampling_rate (int)
+            Audio sampling rate (Hz).
+        taps (np.ndarray)
+            Odd-length high-pass FIR, applied centred.
+        tone_frequencies_hz (list of float)
+            Frequencies (Hz) of the tones to subtract (may be empty).
+        block_length (int)
+            Demodulation block length (samples).
+        half_window (int)
+            Half-width (blocks) of the running median.
+
+        Returns
+        -------
+        None
+        """
+
+        self.sound_file = sf.SoundFile(str(wav_path))
+        self.n_samples = n_samples
+        self.sampling_rate = sampling_rate
+        self.taps = taps
+        self.half_taps = (taps.shape[0] - 1) // 2
+        self.tone_frequencies_hz = list(tone_frequencies_hz)
+        self.block_length = block_length
+        self.half_window = half_window
+        self.n_blocks = -(-n_samples // block_length)
+        block_starts = block_length * np.arange(self.n_blocks, dtype=np.float64)
+        block_lengths = np.minimum(block_starts + block_length, n_samples) - block_starts
+        self.block_centres = block_starts + (block_lengths - 1) / 2
+        self.raw_phasors = [np.zeros(self.n_blocks, dtype=np.complex128) for _ in self.tone_frequencies_hz]
+        self.blocks_done = 0
+        self.buffer = np.zeros(0, dtype=np.int16)
+        self.buffer_start = 0
+        self.read_upto = 0
+
+    def close(self) -> None:
+        """
+        Description
+        -----------
+        Closes the wav.
+
+        Returns
+        -------
+        None
+        """
+
+        self.sound_file.close()
+
+    def _read_until(self, end_sample: int) -> None:
+        """
+        Description
+        -----------
+        Extends the sample buffer up to ``end_sample`` (exclusive, clipped to the
+        recording) and demodulates every block that became complete.
+
+        Parameters
+        ----------
+        end_sample (int)
+            Absolute sample index to read up to.
+
+        Returns
+        -------
+        None
+        """
+
+        end_sample = min(end_sample, self.n_samples)
+        if end_sample > self.read_upto:
+            self.sound_file.seek(self.read_upto)
+            new_samples = self.sound_file.read(end_sample - self.read_upto, dtype="int16")
+            if new_samples.shape[0] != end_sample - self.read_upto:
+                raise OSError(f"Short read from '{self.sound_file.name}': expected {end_sample - self.read_upto} samples, got {new_samples.shape[0]}.")
+            self.buffer = np.concatenate([self.buffer, new_samples])
+            self.read_upto = end_sample
+        if not self.tone_frequencies_hz:
+            return
+        first_block = self.blocks_done
+        last_block = self.n_blocks if self.read_upto >= self.n_samples else self.read_upto // self.block_length
+        if last_block > first_block:
+            block_start = first_block * self.block_length
+            block_end = min(last_block * self.block_length, self.n_samples)
+            stretch = self.buffer[block_start - self.buffer_start:block_end - self.buffer_start]
+            for tone_index, frequency_hz in enumerate(self.tone_frequencies_hz):
+                self.raw_phasors[tone_index][first_block:last_block] = block_mean_phasors(
+                    stretch, frequency_hz, self.sampling_rate, block_start, self.block_length)
+            self.blocks_done = last_block
+
+    def smoothed_phasors(self, tone_index: int, first_block: int, last_block: int) -> np.ndarray:
+        """
+        Description
+        -----------
+        Running-median smoothed envelope of one tone for blocks
+        ``first_block .. last_block`` (inclusive); the median window is
+        ``[k - half_window, k + half_window]`` truncated to the recording.
+
+        Parameters
+        ----------
+        tone_index (int)
+            Index of the tone.
+        first_block, last_block (int)
+            Block range (inclusive).
+
+        Returns
+        -------
+        envelope (np.ndarray)
+            complex128 array of length ``last_block - first_block + 1``.
+        """
+
+        raw = self.raw_phasors[tone_index]
+        envelope = np.empty(last_block - first_block + 1, dtype=np.complex128)
+        for out_index, block in enumerate(range(first_block, last_block + 1)):
+            window = raw[max(0, block - self.half_window):min(self.n_blocks, block + self.half_window + 1)]
+            envelope[out_index] = np.median(window.real) + 1j * np.median(window.imag)
+        return envelope
+
+    def process(self, start: int, end: int) -> np.ndarray:
+        """
+        Description
+        -----------
+        Returns the filtered int16 output for samples ``[start, end)``; must be
+        called with consecutive, non-overlapping ranges in time order.
+
+        Parameters
+        ----------
+        start, end (int)
+            Absolute output sample range.
+
+        Returns
+        -------
+        output (np.ndarray)
+            int16 array of length ``end - start``.
+        """
+
+        need_low = max(0, start - self.half_taps)
+        need_high = min(self.n_samples, end + self.half_taps)
+        offset = (self.block_length - 1) / 2
+        first_block = max(0, int(np.floor((need_low - offset) / self.block_length)))
+        last_block = min(self.n_blocks - 1, int(np.floor((need_high - 1 - offset) / self.block_length)) + 1)
+        if self.tone_frequencies_hz:
+            last_needed_block = min(self.n_blocks - 1, last_block + self.half_window)
+            self._read_until((last_needed_block + 1) * self.block_length)
+        else:
+            self._read_until(need_high)
+
+        segment = self.buffer[need_low - self.buffer_start:need_high - self.buffer_start].astype(np.float64)
+        if self.tone_frequencies_hz:
+            sample_index = np.arange(need_low, need_high, dtype=np.float64)
+            centres = self.block_centres[first_block:last_block + 1]
+            for tone_index, frequency_hz in enumerate(self.tone_frequencies_hz):
+                envelope = self.smoothed_phasors(tone_index, first_block, last_block)
+                envelope_at_samples = np.interp(sample_index, centres, envelope.real) + 1j * np.interp(sample_index, centres, envelope.imag)
+                carrier = unit_phasor(frequency_hz, self.sampling_rate, need_low, need_high - need_low, sign=1)
+                segment -= 2.0 * (envelope_at_samples * carrier).real
+
+        padded = np.zeros(end - start + 2 * self.half_taps, dtype=np.float64)
+        pad_left = need_low - (start - self.half_taps)
+        padded[pad_left:pad_left + segment.shape[0]] = segment
+        filtered = signal.oaconvolve(padded, self.taps, mode="valid")
+        output = np.clip(np.rint(filtered), -32768, 32767).astype(np.int16)
+
+        # keep only what the next chunk can still need (its FIR margin and the
+        # blocks not yet demodulated)
+        keep_from = max(0, end - self.half_taps)
+        if self.tone_frequencies_hz:
+            keep_from = min(keep_from, self.blocks_done * self.block_length)
+        keep_from = max(keep_from, self.buffer_start)
+        self.buffer = self.buffer[keep_from - self.buffer_start:]
+        self.buffer_start = keep_from
+        return output
+
+
+def broadband_source_files(root_directory: str | pathlib.Path, settings: dict) -> list[pathlib.Path]:
+    """
+    Description
+    -----------
+    The single-channel source wavs of the broadband filter, sorted by name:
+    ``<root>/audio/<source_dir>/<source_glob>`` (by default the 24 full-band
+    HPSS wavs ``audio/hpss/*_cropped_to_video_hpss.wav``). The sorted order is
+    the memmap column order, the same order ``concatenate_audio_files`` uses for
+    the ``hpss_filtered`` memmap (master channels 1-12, then slave 1-12). Stray
+    files in the folder (e.g. an empty ``output.wav``) do not match the glob.
+
+    Parameters
+    ----------
+    root_directory (str | pathlib.Path)
+        Session root directory.
+    settings (dict)
+        The ``broadband_filter_audio`` settings block.
+
+    Returns
+    -------
+    wav_paths (list of pathlib.Path)
+        Sorted source wavs.
+    """
+
+    source_dir = pathlib.Path(root_directory) / "audio" / settings["source_dir"]
+    return sorted(source_dir.glob(settings["source_glob"]), key=lambda path: path.name)
+
+
+def broadband_highpass_cutoff(settings: dict) -> float:
+    """
+    Description
+    -----------
+    The high-pass cutoff of the broadband filter, read from its removed band
+    ``filter_freq_bounds`` = ``[low, high]`` (Hz), the same convention as the
+    ``filter_audio_files`` block: the band between ``low`` and ``high`` is
+    filtered out, so ``[0, 30000]`` there is the 30 kHz high-pass of the USV
+    wavs and ``[0, 2000]`` here is the 2 kHz high-pass of the broadband memmap.
+    The broadband filter is a high-pass only, so ``low`` must be 0; ``high`` is
+    the -6 dB point of the filter.
+
+    Parameters
+    ----------
+    settings (dict)
+        The ``broadband_filter_audio`` settings block.
+
+    Returns
+    -------
+    cutoff_hz (float)
+        The -6 dB point of the high-pass (Hz), ``filter_freq_bounds[1]``.
+
+    Raises
+    ------
+    ValueError
+        ``filter_freq_bounds`` is not two numbers ``[0, high]`` with ``high > 0``.
+    """
+
+    bounds = settings['filter_freq_bounds']
+    if len(bounds) != 2 or bounds[0] != 0 or not bounds[1] > 0:
+        error_message = f"broadband filter_freq_bounds must be [0, high] with high > 0 (the filter is a high-pass), got {bounds}."
+        raise ValueError(error_message)
+    return float(bounds[1])
+
+
+def broadband_output_settings(settings: dict) -> dict:
+    """
+    Description
+    -----------
+    The subset of the broadband settings that decides the written output
+    (``BROADBAND_OUTPUT_SETTINGS``, plus the high-pass cutoff as
+    ``highpass_cutoff_hz``, the upper edge of ``filter_freq_bounds``, see
+    :func:`broadband_highpass_cutoff`), JSON-normalised (tuples become lists) so
+    it compares equal to the copy stored in ``line_noise.json``. The cutoff is
+    recorded as one number under ``highpass_cutoff_hz`` because that is the
+    form every report written so far holds, so a report stays current as long
+    as the filter it describes is unchanged.
+
+    Parameters
+    ----------
+    settings (dict)
+        The ``broadband_filter_audio`` settings block.
+
+    Returns
+    -------
+    output_settings (dict)
+        The output-defining settings.
+    """
+
+    broadband_highpass_cutoff(settings)
+    output_settings = {key: settings[key] for key in BROADBAND_OUTPUT_SETTINGS}
+    output_settings['highpass_cutoff_hz'] = settings['filter_freq_bounds'][1]
+    return json.loads(json.dumps(output_settings))
+
+
+def validate_broadband_output(root_directory: str | pathlib.Path, settings: dict) -> tuple[bool, str]:
+    """
+    Description
+    -----------
+    Checks whether a session already holds a complete, current broadband
+    memmap: the expected memmap (name from the sources' recording id, sampling
+    rate, sample count and channel count) exists with the exact byte size, it is
+    the only broadband memmap in the folder, and ``line_noise.json`` exists,
+    is marked complete, names that memmap, lists the same source files with the
+    same byte sizes, and records the same output-defining settings.
+
+    Parameters
+    ----------
+    root_directory (str | pathlib.Path)
+        Session root directory.
+    settings (dict)
+        The ``broadband_filter_audio`` settings block.
+
+    Returns
+    -------
+    valid (bool)
+        True if the existing output can be kept as is.
+    reason (str)
+        Why it is (not) valid.
+    """
+
+    wav_paths = broadband_source_files(root_directory, settings)
+    if not wav_paths:
+        return False, "no source wavs"
+    infos = [sf.info(str(path)) for path in wav_paths]
+    output_dir = pathlib.Path(root_directory) / "audio" / AUDIO_MMAP_BAND_FOLDERS["broadband"]
+    expected_name = (f"{wav_paths[0].name.split('_')[1]}_concatenated_audio_{AUDIO_MMAP_BAND_FOLDERS['broadband']}_"
+                     f"{int(infos[0].samplerate)}_{int(infos[0].frames)}_{len(wav_paths)}_int16.mmap")
+    mmap_path = output_dir / expected_name
+    report_path = output_dir / BROADBAND_REPORT_NAME
+    if not mmap_path.is_file():
+        return False, f"missing {expected_name}"
+    if mmap_path.stat().st_size != int(infos[0].frames) * len(wav_paths) * 2:
+        return False, f"{expected_name} has {mmap_path.stat().st_size} bytes, expected {int(infos[0].frames) * len(wav_paths) * 2}"
+    regex = audio_mmap_name_regex("broadband")
+    others = [path.name for path in output_dir.iterdir() if regex.match(path.name) and path.name != expected_name]
+    if others:
+        return False, f"other broadband memmaps present: {others}"
+    if not report_path.is_file():
+        return False, f"missing {BROADBAND_REPORT_NAME}"
+    try:
+        with open(report_path, encoding="utf-8") as report_file:
+            report = json.load(report_file)
+    except (OSError, ValueError) as report_error:
+        return False, f"unreadable {BROADBAND_REPORT_NAME}: {report_error}"
+    current_sources = [{"column": column, "file": path.name, "bytes": path.stat().st_size} for column, path in enumerate(wav_paths)]
+    try:
+        if report["complete"] is not True:
+            return False, "report not marked complete"
+        if report["output"]["file"] != expected_name:
+            return False, "report names another memmap"
+        if report["sources"] != current_sources:
+            return False, "source files changed"
+        if report["settings"] != broadband_output_settings(settings):
+            return False, "settings changed"
+    except (KeyError, TypeError) as report_error:
+        return False, f"malformed {BROADBAND_REPORT_NAME}: missing {report_error}"
+    return True, "complete and current"
 
 
 class Operator:
@@ -752,6 +1478,204 @@ class Operator:
                 self.message_output(f"There are <2 audio files per provided directory: '{pathlib.Path(self.root_directory) / 'audio' / 'cropped_to_video'}', "
                                     f"so concatenation impossible.")
 
+    def broadband_filter_audio(self) -> dict:
+        """
+        Description
+        -----------
+        Writes the session's BROADBAND audio memmap
+        ``audio/broadband_filtered/<id>_concatenated_audio_broadband_filtered_<sr>_<n>_<ch>_int16.mmap``
+        straight from the full-band HPSS wavs (``audio/hpss``), with no
+        per-channel wavs stored. It is the 2 kHz+ counterpart of the
+        ``hpss_filtered`` (30 kHz+) memmap the USV pipeline reads; readers ask
+        for it explicitly with ``os_utils.find_audio_mmap(root, 'broadband')``,
+        so no USV reader can pick it up by accident.
+
+        Per channel (memmap column = position of the wav in the sorted wav
+        names, the same order ``concatenate_audio_files`` uses):
+        1. line-noise tones are estimated (``estimate_line_noise``) in the
+           ``line_noise_search_bands_hz`` bands (by default around 8 kHz, its
+           16 kHz harmonic, the line near 1.65 kHz and the comb of lines ~30 Hz
+           apart around 2.09-2.15 kHz), up to ``line_noise_max_tones_per_band``
+           per band, and kept only where they stand at least
+           ``line_noise_min_height_db`` above the running-median spectral
+           floor; the frequencies are estimated per channel because they follow
+           each recording device's clock;
+        2. each kept tone is subtracted as a sinusoid with a slowly varying
+           amplitude and phase (complex demodulation over
+           ``line_noise_block_s`` blocks, running median over
+           ``line_noise_smoothing_blocks`` blocks, linear interpolation);
+        3. the result is high-passed with a linear-phase Kaiser FIR equivalent to
+           sox ``sinc -t 1000 2k`` (``filter_freq_bounds`` = ``[0, 2000]`` is
+           the band removed, the ``filter_audio_files`` convention; -6 dB at its
+           upper edge, the cutoff, stopband below ``cutoff - transition_width_hz / 2``,
+           flat above ``cutoff + transition_width_hz / 2``), in float, without
+           dither, then rounded to int16 (round half to even) and clipped.
+
+        The work runs in time chunks of ``chunk_s`` seconds across all channels
+        (each wav sample is read once; only ~``chunk_s`` plus a few seconds of
+        lookahead of every channel is ever held in memory), with the channels of
+        a chunk spread over ``n_threads`` threads. The memmap is written to a
+        hidden temporary sibling and renamed into place when complete; then
+        ``audio/broadband_filtered/line_noise.json`` is written (per channel: the
+        tones searched, found and removed, with frequency, height and amplitude;
+        the filter specification and its measured response; the source files and
+        their sizes; the output-defining settings; the code version). A session
+        whose memmap and report already exist and validate
+        (``validate_broadband_output``) is skipped, so the step is idempotent and
+        a batch can be resumed.
+
+        Parameters
+        ----------
+
+        Returns
+        -------
+        summary (dict)
+            ``status`` ('written' or 'skipped'), ``reason``, ``mmap_path``,
+            ``runtime_s``, ``n_channels``, ``n_samples``, ``output_bytes`` and
+            ``tones_kept`` (total number of tones subtracted over all channels).
+        """
+
+        settings = self.input_parameter_dict['broadband_filter_audio']
+        root = pathlib.Path(self.root_directory)
+        started = time.perf_counter()
+        self.message_output(f"Broadband filtering of {root} started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
+
+        wav_paths = broadband_source_files(root, settings)
+        if not wav_paths:
+            raise FileNotFoundError(f"No '{settings['source_glob']}' files in '{root / 'audio' / settings['source_dir']}'.")
+        infos = [sf.info(str(path)) for path in wav_paths]
+        sampling_rate = int(infos[0].samplerate)
+        n_samples = int(infos[0].frames)
+        n_channels = len(wav_paths)
+        for path, info in zip(wav_paths, infos, strict=True):
+            if int(info.samplerate) != sampling_rate or int(info.frames) != n_samples or int(info.channels) != 1 or info.subtype != 'PCM_16':
+                raise ValueError(f"'{path.name}' is {info.channels} ch {info.subtype} at {info.samplerate} Hz with {info.frames} samples; "
+                                 f"every source must be 1 ch PCM_16 at {sampling_rate} Hz with {n_samples} samples.")
+
+        output_dir = root / 'audio' / AUDIO_MMAP_BAND_FOLDERS['broadband']
+        mmap_name = f"{wav_paths[0].name.split('_')[1]}_concatenated_audio_{AUDIO_MMAP_BAND_FOLDERS['broadband']}_{sampling_rate}_{n_samples}_{n_channels}_int16.mmap"
+        mmap_path = output_dir / mmap_name
+        output_bytes = n_samples * n_channels * 2
+
+        valid, reason = validate_broadband_output(root, settings)
+        if valid:
+            self.message_output(f"Broadband memmap of {root} is {reason}; skipping.")
+            return {'status': 'skipped', 'reason': reason, 'mmap_path': str(mmap_path), 'runtime_s': round(time.perf_counter() - started, 2),
+                    'n_channels': n_channels, 'n_samples': n_samples, 'output_bytes': output_bytes, 'tones_kept': -1}
+        self.message_output(f"Broadband memmap of {root} will be (re)written ({reason}).")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        # temporaries of an interrupted earlier run (atomic_output_path names them '.<final>.tmp-<pid>')
+        for stale_temporary in output_dir.glob('.*.tmp-*'):
+            stale_temporary.unlink()
+
+        taps, kaiser_beta = design_broadband_highpass(sampling_rate=sampling_rate,
+                                                      cutoff_hz=broadband_highpass_cutoff(settings),
+                                                      transition_width_hz=settings['transition_width_hz'],
+                                                      stopband_attenuation_db=settings['stopband_attenuation_db'])
+        block_length = int(round(settings['line_noise_block_s'] * sampling_rate))
+        if settings['line_noise_smoothing_blocks'] < 1 or settings['line_noise_smoothing_blocks'] % 2 != 1:
+            raise ValueError(f"line_noise_smoothing_blocks must be a positive odd integer, got {settings['line_noise_smoothing_blocks']}.")
+        half_window = (settings['line_noise_smoothing_blocks'] - 1) // 2
+        chunk_length = max(1, int(round(settings['chunk_s'] * sampling_rate)))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=settings['n_threads']) as executor:
+            channel_tones = list(executor.map(
+                lambda path: estimate_line_noise(wav_path=path,
+                                                 search_bands_hz=settings['line_noise_search_bands_hz'],
+                                                 min_height_db=settings['line_noise_min_height_db'],
+                                                 n_windows=settings['line_noise_estimation_windows'],
+                                                 window_s=settings['line_noise_estimation_window_s'],
+                                                 max_tones_per_band=settings['line_noise_max_tones_per_band'],
+                                                 min_separation_hz=settings['line_noise_min_separation_hz'],
+                                                 floor_window_hz=settings['line_noise_floor_window_hz']),
+                wav_paths))
+            tones_kept = sum(tone['kept'] for tones in channel_tones for tone in tones)
+            self.message_output(f"Line-noise tones kept for subtraction: {tones_kept} over {n_channels} channels.")
+
+            streams = [_BroadbandChannelStream(wav_path=path, n_samples=n_samples, sampling_rate=sampling_rate, taps=taps,
+                                               tone_frequencies_hz=[tone['frequency_hz'] for tone in tones if tone['kept']],
+                                               block_length=block_length, half_window=half_window)
+                       for path, tones in zip(wav_paths, channel_tones, strict=True)]
+            try:
+                with atomic_output_path(mmap_path) as temporary_path:
+                    with open(temporary_path, 'wb') as output_file:
+                        next_report = 0.1
+                        for chunk_start in range(0, n_samples, chunk_length):
+                            chunk_end = min(n_samples, chunk_start + chunk_length)
+                            columns = list(executor.map(lambda stream, s=chunk_start, e=chunk_end: stream.process(s, e), streams))
+                            output_file.write(np.ascontiguousarray(np.stack(columns, axis=1)).tobytes())
+                            if chunk_end / n_samples >= next_report:
+                                self.message_output(f"Broadband filtering: {100 * chunk_end / n_samples:.0f}% done ({time.perf_counter() - started:.0f} s).")
+                                next_report += 0.1
+                        output_file.flush()
+                        os.fsync(output_file.fileno())
+                    if temporary_path.stat().st_size != output_bytes:
+                        raise OSError(f"Broadband memmap has {temporary_path.stat().st_size} bytes, expected {output_bytes}.")
+                    # exactly one broadband memmap may exist: drop any older one with another name
+                    regex = audio_mmap_name_regex('broadband')
+                    for older in output_dir.iterdir():
+                        if regex.match(older.name) and older.name != mmap_name:
+                            older.unlink()
+                channel_reports = []
+                for column, (path, tones, stream) in enumerate(zip(wav_paths, channel_tones, streams, strict=True)):
+                    kept_index = 0
+                    for tone in tones:
+                        if tone['kept']:
+                            amplitude = 2 * np.abs(stream.smoothed_phasors(kept_index, 0, stream.n_blocks - 1))
+                            tone['amplitude_median_lsb'] = round(float(np.median(amplitude)), 4)
+                            tone['amplitude_p05_lsb'] = round(float(np.percentile(amplitude, 5)), 4)
+                            tone['amplitude_p95_lsb'] = round(float(np.percentile(amplitude, 95)), 4)
+                            kept_index += 1
+                    channel_reports.append({'column': column, 'file': path.name, 'tones': tones})
+            finally:
+                for stream in streams:
+                    stream.close()
+
+        runtime_s = round(time.perf_counter() - started, 2)
+        try:
+            code_version = metadata.version('usv-playpen')
+        except metadata.PackageNotFoundError:
+            code_version = 'unknown'
+        report = {
+            'complete': True,
+            'code_version': code_version,
+            'created': datetime.now().isoformat(timespec='seconds'),
+            'runtime_s': runtime_s,
+            'output': {'file': mmap_name, 'folder': f"audio/{AUDIO_MMAP_BAND_FOLDERS['broadband']}", 'dtype': 'int16',
+                       'sampling_rate': sampling_rate, 'n_samples': n_samples, 'n_channels': n_channels, 'bytes': output_bytes,
+                       'column_order': 'sorted source wav names'},
+            'sources': [{'column': column, 'file': path.name, 'bytes': path.stat().st_size} for column, path in enumerate(wav_paths)],
+            'filter': {'type': 'linear-phase Kaiser-windowed sinc FIR high-pass (scipy.signal.kaiserord + firwin), applied centred (zero delay)',
+                       'equivalent_of': f"sox sinc -t {settings['transition_width_hz']:g} {broadband_highpass_cutoff(settings):g}",
+                       'cutoff_hz': broadband_highpass_cutoff(settings),
+                       'transition_width_hz': settings['transition_width_hz'],
+                       'stopband_attenuation_db': settings['stopband_attenuation_db'],
+                       'numtaps': int(taps.shape[0]),
+                       'kaiser_beta': round(kaiser_beta, 4),
+                       'edges': 'zero padding beyond the recording',
+                       'dither': 'none',
+                       'rounding': 'round half to even, clipped to int16',
+                       'response_db': highpass_response_db(taps, sampling_rate, BROADBAND_RESPONSE_PROBES_HZ)},
+            'line_noise': {'method': ('per channel: tone frequency and height from the averaged zero-padded spectrum of '
+                                      f"{settings['line_noise_estimation_windows']} windows of {settings['line_noise_estimation_window_s']} s "
+                                      'demodulated at each search-band centre, whitened by its running median over '
+                                      f"{settings['line_noise_floor_window_hz']} Hz, up to {settings['line_noise_max_tones_per_band']} peaks per band "
+                                      f"at least {settings['line_noise_min_separation_hz']} Hz apart; a kept tone is subtracted as 2 Re(a(n) exp(i w n)) with a(n) the "
+                                      f"{settings['line_noise_block_s']} s block complex demodulation, running median over "
+                                      f"{settings['line_noise_smoothing_blocks']} blocks, linearly interpolated; amplitudes in int16 LSB (peak)"),
+                           'min_height_db': settings['line_noise_min_height_db'],
+                           'channels': channel_reports},
+            'settings': broadband_output_settings(settings),
+        }
+        with atomic_output_path(output_dir / BROADBAND_REPORT_NAME) as temporary_report:
+            with open(temporary_report, 'w', encoding='utf-8') as report_file:
+                json.dump(report, report_file, indent=2)
+
+        self.message_output(f"Broadband filtering of {root} finished in {runtime_s:.0f} s: {mmap_path}")
+        return {'status': 'written', 'reason': reason, 'mmap_path': str(mmap_path), 'runtime_s': runtime_s,
+                'n_channels': n_channels, 'n_samples': n_samples, 'output_bytes': output_bytes, 'tones_kept': int(tones_kept)}
+
     def concatenate_video_files(self) -> None:
         """
         Description
@@ -1015,3 +1939,174 @@ class Operator:
             camera_frame_count_dict['median_empirical_camera_sr'] = round(number=np.nanmedian(empirical_camera_sr), ndigits=4)
         with open(video_dir / f'{date_joint}_camera_frame_count_dict.json', 'w') as frame_count_outfile:
             json.dump(camera_frame_count_dict, frame_count_outfile, indent=4)
+
+
+def read_broadband_session_list(sessions_file: str | None = None,
+                                usv_counts_csv: str | None = None,
+                                tag: str = 'ok') -> list[str]:
+    """
+    Description
+    -----------
+    Builds the list of session roots for a broadband backfill, from either a
+    plain sessions file (one session root per line; blank lines and lines
+    starting with '#' are ignored) or a session table with ``dir`` and ``tag``
+    columns (e.g. ``noise_labelling/session_usv_counts.csv``), keeping the rows
+    whose ``tag`` equals ``tag``. Paths are passed through ``configure_path`` so
+    the same list works on every OS. Order is preserved; duplicates are dropped.
+
+    Parameters
+    ----------
+    sessions_file (str | None)
+        Plain sessions file.
+    usv_counts_csv (str | None)
+        Session table with ``dir`` and ``tag`` columns.
+    tag (str)
+        The ``tag`` value to keep from ``usv_counts_csv``.
+
+    Returns
+    -------
+    session_roots (list of str)
+        Session root directories.
+    """
+
+    if (sessions_file is None) == (usv_counts_csv is None):
+        raise ValueError("Give exactly one of sessions_file and usv_counts_csv.")
+    if sessions_file is not None:
+        with open(sessions_file, encoding='utf-8') as session_list:
+            entries = [line.strip() for line in session_list if line.strip() and not line.strip().startswith('#')]
+    else:
+        table = pls.read_csv(usv_counts_csv)
+        entries = table.filter(pls.col('tag') == tag)['dir'].to_list()
+    session_roots = []
+    for entry in entries:
+        session_root = configure_path(entry)
+        if session_root not in session_roots:
+            session_roots.append(session_root)
+    return session_roots
+
+
+def _broadband_filter_session_worker(session_root: str, processing_settings: dict, log_path: str) -> dict:
+    """
+    Description
+    -----------
+    Runs ``Operator.broadband_filter_audio`` on one session inside a batch
+    worker process, appending its progress messages (timestamped, prefixed with
+    the session name) to the shared batch log, and turns any failure into a
+    ``failed`` result row instead of an exception so one bad session does not
+    stop the batch.
+
+    Parameters
+    ----------
+    session_root (str)
+        Session root directory.
+    processing_settings (dict)
+        Full processing settings (``modify_files`` and ``synchronize_files``
+        blocks are read by ``Operator``).
+    log_path (str)
+        Batch log file (appended to).
+
+    Returns
+    -------
+    row (dict)
+        One report row (keys ``BROADBAND_BATCH_REPORT_COLUMNS``).
+    """
+
+    session_name = pathlib.Path(session_root).name
+
+    def log_message(message: str) -> None:
+        """
+        Description
+        -----------
+        Appends one timestamped line to the batch log.
+
+        Parameters
+        ----------
+        message (str)
+            Message text.
+
+        Returns
+        -------
+        None
+        """
+
+        with open(log_path, 'a', encoding='utf-8') as log_file:
+            log_file.write(f"{datetime.now().isoformat(timespec='seconds')} [{session_name}] {message}\n")
+
+    started = time.perf_counter()
+    try:
+        summary = Operator(root_directory=session_root, input_parameter_dict=processing_settings,
+                           message_output=log_message).broadband_filter_audio()
+        row = {'session_root': session_root, 'status': summary['status'], 'runtime_s': summary['runtime_s'],
+               'n_channels': summary['n_channels'], 'n_samples': summary['n_samples'], 'output_bytes': summary['output_bytes'],
+               'tones_kept': summary['tones_kept'], 'error': ''}
+    except Exception as session_error:  # batch robustness: record the failure and continue with the next session
+        log_message(f"FAILED: {type(session_error).__name__}: {session_error}")
+        row = {'session_root': session_root, 'status': 'failed', 'runtime_s': round(time.perf_counter() - started, 2),
+               'n_channels': '', 'n_samples': '', 'output_bytes': '', 'tones_kept': '', 'error': f"{type(session_error).__name__}: {session_error}"}
+    row['finished_at'] = datetime.now().isoformat(timespec='seconds')
+    return row
+
+
+def broadband_filter_sessions(session_roots: list[str],
+                              processing_settings: dict,
+                              n_workers: int,
+                              log_path: str,
+                              report_csv_path: str,
+                              message_output: Callable | None = None) -> list[dict]:
+    """
+    Description
+    -----------
+    Batch runner for the broadband backfill: runs
+    ``Operator.broadband_filter_audio`` on many sessions, ``n_workers`` sessions
+    at a time in separate processes (each session additionally spreads its
+    channels over the ``n_threads`` threads of its settings block). It is
+    resumable: sessions whose broadband memmap and report already validate are
+    skipped by the step itself (status ``skipped``), and an interrupted session
+    leaves only a hidden temporary file that the next run removes. Every
+    finished session appends one row to ``report_csv_path`` (columns
+    ``BROADBAND_BATCH_REPORT_COLUMNS``; the header is written when the file is
+    new) and its messages go to ``log_path``.
+
+    Parameters
+    ----------
+    session_roots (list of str)
+        Session root directories.
+    processing_settings (dict)
+        Full processing settings (the ``modify_files.Operator.broadband_filter_audio``
+        block configures the step).
+    n_workers (int)
+        Number of sessions processed in parallel.
+    log_path (str)
+        Batch log file (appended to; created if absent).
+    report_csv_path (str)
+        Per-session report CSV (appended to; created with a header if absent).
+    message_output (Callable | None)
+        Progress messages; defaults to print.
+
+    Returns
+    -------
+    rows (list of dict)
+        The report rows of this run, in completion order.
+    """
+
+    message_output = message_output if message_output is not None else print
+    pathlib.Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    pathlib.Path(report_csv_path).parent.mkdir(parents=True, exist_ok=True)
+    message_output(f"Broadband backfill: {len(session_roots)} sessions, {n_workers} parallel, "
+                   f"{processing_settings['modify_files']['Operator']['broadband_filter_audio']['n_threads']} threads each; "
+                   f"log '{log_path}', report '{report_csv_path}'.")
+    rows = []
+    with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context('spawn')) as pool:
+        futures = {pool.submit(_broadband_filter_session_worker, session_root, processing_settings, log_path): session_root
+                   for session_root in session_roots}
+        for done_index, future in enumerate(concurrent.futures.as_completed(futures), start=1):
+            row = future.result()
+            write_header = not pathlib.Path(report_csv_path).is_file()
+            with open(report_csv_path, 'a', newline='', encoding='utf-8') as report_file:
+                writer = csv.DictWriter(report_file, fieldnames=list(BROADBAND_BATCH_REPORT_COLUMNS))
+                if write_header:
+                    writer.writeheader()
+                writer.writerow(row)
+            rows.append(row)
+            message_output(f"[{done_index}/{len(session_roots)}] {row['session_root']}: {row['status']} ({row['runtime_s']} s){' ' + row['error'] if row['error'] else ''}")
+    return rows

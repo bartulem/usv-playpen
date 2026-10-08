@@ -11,13 +11,14 @@ import json
 import os
 import pathlib
 import platform
+import re
 import subprocess
 import time as _time
 from collections.abc import Callable, Iterable, Iterator
 from typing import Any, Optional
 
+import numpy as np
 import toml
-
 
 # The lab CUP shares are defined ONCE, in the ``lab_shares`` / ``file_server``
 # entries of the host config (``_config/behavioral_experiments_settings.toml``),
@@ -369,61 +370,374 @@ def rebase_experimenter_in_paths(obj: object = None,
     return obj
 
 
-# The QLVM model package the production usv_summary.csv columns come from (the
-# v3 package; read-only). A module constant rather than a processing_settings.json
-# key: the GUI and the CLI re-key every experimenter name in those settings to the
-# active experimenter (`rebase_experimenter_in_paths`), which would rewrite this
-# path under another experimenter's directory to the active one's, where no
-# package exists.
-QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3"
+# The folder holding the production QLVM model cells the usv_summary.csv torus
+# columns come from (read-only). A module constant rather than a
+# processing_settings.json key: the GUI and the CLI re-key every experimenter name
+# in those settings to the active experimenter (`rebase_experimenter_in_paths`),
+# which would rewrite this path under another experimenter's directory to the
+# active one's, where no cell exists. The cells do not live under
+# `spectrograms_root`, so they are not derived from it either (see
+# `derive_spectrogram_model_paths`). The folder is not a full model package: it has
+# no SESSION_H5_BASELINE.tsv, MANIFEST.sha256 or corpus embedding, so
+# infer-qlvm-latents always infers (the package route needs the baseline).
+QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/masked_clean"
 
-# The production embedding: column prefix -> cell of the package above. The
-# unconditional phase 6 regular model gives qlvm1/qlvm2; the four phase 11
-# tail-bin conditional models give qlvm_dur1/2, qlvm_mf1/2, qlvm_bw1/2 and
-# qlvm_loud1/2. Every cell is the natural_5strata_N29000 design, unmasked, floored.
+# The production embedding: column prefix -> cell under the folder above. The
+# unconditional regular model gives qlvm1/qlvm2; the duration, spectral-entropy,
+# bandwidth and loudness conditional models give qlvm_duration1/2, qlvm_entropy1/2,
+# qlvm_bandwidth1/2 and qlvm_loudness1/2. Every cell was trained on
+# SAM-masked, time-stretched 128 x 128 spectrograms (training_contract.json:
+# masking_type "sam", time_stretch true, length_threshold 128, no floor) and
+# carries no cluster label grid: the regular map's category column qlvm_category
+# is written by assign-qlvm-categories from a build-qlvm-categories directory, and
+# the conditional maps carry coordinates only.
 QLVM_PRODUCTION_MODEL_CELLS = {
-    "qlvm": "phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor",
-    "qlvm_dur": "phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor",
-    "qlvm_mf": "phase11_cond_mean_freq_floor/natural_5strata_N29000_unmasked_floor",
-    "qlvm_bw": "phase11_cond_bandwidth_floor/natural_5strata_N29000_unmasked_floor",
-    "qlvm_loud": "phase11_cond_loudness_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm": "cell/masked",
+    "qlvm_duration": "conditionals/cell/duration",
+    "qlvm_entropy": "conditionals/cell/spectral_entropy",
+    "qlvm_bandwidth": "conditionals/cell/bandwidth",
+    "qlvm_loudness": "conditionals/cell/loudness",
 }
 
-# The production squeak (broadband vocalization) embedding: the phase 3 BBV package
-# and its natural_session cell (natural draw over the duration bins, per-session bin
-# cap; the production choice since 2026-09-30), written by infer-qlvm-squeak-latents as
-# qlvm_squeak1/qlvm_squeak2. A constant for the same reason as the package root above.
-QLVM_SQUEAK_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/phase3_BBVs_qlvm"
-QLVM_SQUEAK_PRODUCTION_CELL = "natural_session_N11000_nomask"
+# The production squeak (broadband vocalization) embedding, written by
+# infer-qlvm-squeak-latents as qlvm_squeak1/qlvm_squeak2: the train-qlvm cell
+# stretch_nofloor of the squeak package (11,000 class-balanced squeak crops, 3-30 kHz,
+# 128 linear bins, envelope +/- 2 frames, time-stretched to 128 frames, unmasked, no
+# loudness floor; its config/training_contract.json records masking_type "none",
+# time_stretch true and floor null, and infer-qlvm-squeak-latents reads and checks
+# them). It replaces the phase 3 BBV cell natural_session_N11000_nomask (zero-padded,
+# un-stretched), which the step still reads in its old package layout when named
+# explicitly. A constant for the same reason as the package root above.
+QLVM_SQUEAK_PACKAGE_ROOT = "/mnt/falkner/Bartul/PC_transfer/qlvm_final/squeaks"
+QLVM_SQUEAK_PRODUCTION_CELL = "cell/stretch_nofloor"
 
 # The spectrogram preprocessing every production cell was trained with (their
-# training_contract.json `masking_type`): raw, unmasked spectrograms.
-QLVM_PRODUCTION_MASKING_TYPE = "none"
+# training_contract.json `masking_type` and `time_stretch`): SAM-masked
+# spectrograms, time-stretched to the target shape.
+QLVM_PRODUCTION_MASKING_TYPE = "sam"
+QLVM_PRODUCTION_TIME_STRETCH = True
 
-# The QLVM maps a visualization can draw, one per production model: the column
-# prefix of QLVM_PRODUCTION_MODEL_CELLS. A map `P` places calls at `P1`/`P2` and
-# labels them `P_category` (fine) / `P_supercategory` (coarse); the visualizations
-# pick one with `shared_resources.qlvm_map` in visualizations_settings.json.
+# The QLVM maps a visualization or analysis can use, one per production model: the
+# column prefix of QLVM_PRODUCTION_MODEL_CELLS. A map `P` places calls at `P1`/`P2`;
+# the visualizations pick one with `shared_resources.qlvm_map` in
+# visualizations_settings.json.
 QLVM_MAPS = tuple(QLVM_PRODUCTION_MODEL_CELLS)
 
-# The folder under the spectrograms base directory (`shared_resources.spectrograms_dir`)
-# holding the QLVM reference arrays the visualizations draw, one subfolder per map
-# (`<map>/arrays_fine.npz` / `<map>/arrays_coarse.npz`: label grids, cluster
-# centres, corpus coordinates, density heatmap). Each subfolder is its production
-# cell's clustering (QLVM_PRODUCTION_MODEL_CELLS[<map>] under
-# QLVM_MODEL_PACKAGE_ROOT), written by `export-qlvm-reference-arrays`
-# (processing.qlvm_latents.export_model_cell_arrays), so a map sits on the same torus
-# and carries the same fine / coarse labels as its `<map>1`/`<map>2`,
-# `<map>_category` and `<map>_supercategory` summary columns (15 / 9 clusters for
-# the regular map). The folder is versioned by name: the old in-house model's
-# arrays lived in `<dir>/qlvm/`.
-QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME = "qlvm_v3"
+# How the GUI names each QLVM map: the regular map as 'QLVM', a conditional map by the
+# property it is conditioned on (the setting itself stores the column prefix).
+QLVM_MAP_DISPLAY_NAMES = {
+    "qlvm": "QLVM",
+    "qlvm_duration": "duration",
+    "qlvm_entropy": "entropy",
+    "qlvm_bandwidth": "bandwidth",
+    "qlvm_loudness": "loudness",
+}
+
+# The regular (unconditional) QLVM map: the map the category bundle is defined on.
+# It and the squeak map are the maps whose decoder is a function of the torus
+# position alone; a conditional map's decoder also takes one conditioning value,
+# so a decode on it (the geodesic pullback metric, the manifold filter atlas)
+# fixes that value (processing.qlvm_latents.condition_quantile_value).
+QLVM_REGULAR_MAP = "qlvm"
+
+# The squeak (broadband vocalization) map: the column prefix of qlvm_squeak1 /
+# qlvm_squeak2, decoded by the production squeak cell QLVM_SQUEAK_PRODUCTION_CELL
+# under QLVM_SQUEAK_PACKAGE_ROOT (unconditional, c_dim 0).
+QLVM_SQUEAK_MAP = "qlvm_squeak"
+
+# Every map whose decoder a consumer of torus coordinates can load: the USV maps
+# of QLVM_MAPS plus the squeak map (qlvm_map_cell_directory).
+QLVM_DECODER_MAPS = QLVM_MAPS + (QLVM_SQUEAK_MAP,)
+
+# The QLVM category bundle: the content-ridge categories of the regular map, written
+# once by build-qlvm-categories (processing.qlvm_categories) from the regular map's
+# corpus embedding (read-only). It holds `category_grids.npz` (the periodic label
+# grid of the categories, 1..k meaning R-1..R-k, indexed [y, x] over the unit torus,
+# plus the per-pixel bootstrap agreement, the full-data reference grid, the
+# content-change field, the watershed basins and the smoothed call density),
+# `category_nomenclature.json` (names, descriptions, call counts and shares, label
+# positions), `category_call_labels.csv` and `build_config.json` (the settings and
+# inputs of the build). It is the ONE source of category geometry: every consumer
+# that draws category boundaries, places category centres or reads region arrays
+# (the neuronal tuning watersheds, the sequence figure, the embedding thumbnails and
+# explorer, the torus-traversal video, the manifold filter atlas, the category
+# embedding panel) loads it through `load_qlvm_category_bundle`, and
+# assign-qlvm-categories labels the summaries with it by default
+# (`derive_spectrogram_model_paths`). A module constant rather than a settings path
+# for the reason given at QLVM_MODEL_PACKAGE_ROOT: the GUI and the CLI re-key every
+# experimenter folder in the settings to the active experimenter.
+QLVM_CATEGORY_BUNDLE_DIRECTORY = "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/regions/clustering_clean/category_bundle"
+
+# The files of a category bundle (build-qlvm-categories writes them, every reader
+# finds them by these names).
+QLVM_CATEGORY_GRIDS_NAME = "category_grids.npz"
+QLVM_CATEGORY_NOMENCLATURE_NAME = "category_nomenclature.json"
+QLVM_CATEGORY_CALL_LABELS_NAME = "category_call_labels.csv"
+QLVM_CATEGORY_BUILD_CONFIG_NAME = "build_config.json"
+
+# The QLVM map the category bundle is defined on: the regular map. Its grid is a
+# partition of THAT torus only, so it draws boundaries / centres on the regular map
+# alone; a conditional map (qlvm_duration, qlvm_entropy, qlvm_bandwidth,
+# qlvm_loudness) places the same calls elsewhere, so
+# a figure of a conditional map draws no category boundaries and shows each call's
+# category through its qlvm_category label instead.
+QLVM_CATEGORY_MAP = QLVM_REGULAR_MAP
+
+# The one categorical QLVM label column of the summary, qlvm_category: the
+# category-bundle category of each call's position on the regular map (1..k meaning
+# R-1..R-k; 4 in production), written by assign-qlvm-categories. There is no coarse
+# level and no category column of the conditional maps: an analysis of ANY map
+# (qlvm, qlvm_duration, qlvm_entropy, qlvm_bandwidth, qlvm_loudness) that needs a
+# per-call region / category label reads
+# this column.
+QLVM_CATEGORY_COLUMN = f"{QLVM_CATEGORY_MAP}_category"
+QLVM_CATEGORY_COLUMNS = (QLVM_CATEGORY_COLUMN,)
 
 # File name of the cohort pooled-embeddings parquet cache under
-# `<spectrograms_dir>/embeddings/`. Versioned by the QLVM model its qlvm1/qlvm2 and
-# qlvm_category / qlvm_supercategory columns come from, so the cache built from the
-# v3 summaries never overwrites the one pooled from the old model's summaries.
+# `<spectrograms_dir>/embeddings/`. Its summaries fingerprint makes a cache pooled
+# from older summaries rebuild when the summaries change.
 POOLED_EMBEDDINGS_CACHE_NAME = "pooled_embeddings_qlvmv3.parquet"
+
+
+def qlvm_production_cell_directory(qlvm_map: str) -> str:
+    """
+    Description
+    -----------
+    The production QLVM model package cell of one map, in its canonical
+    ``/mnt/falkner`` form: ``QLVM_PRODUCTION_MODEL_CELLS[qlvm_map]`` under
+    ``QLVM_MODEL_PACKAGE_ROOT`` (``.../masked_clean/cell/masked`` for the regular
+    map). Every reader of a production cell that is not
+    ``infer-qlvm-latents`` (the torus geodesic pullback metric and the manifold
+    filter atlas decoder through :func:`qlvm_map_cell_directory`, the
+    torus-traversal video's provenance check) takes it from here,
+    so no settings path the experimenter re-keying rewrites can point them at
+    another cell. Callers translate it to the host mount with ``configure_path``.
+
+    Parameters
+    ----------
+    qlvm_map (str)
+        One of ``QLVM_MAPS``.
+
+    Returns
+    -------
+    cell_directory (str)
+        The canonical cell path (not checked for existence).
+
+    Raises
+    ------
+    ValueError
+        ``qlvm_map`` is not one of ``QLVM_MAPS``.
+    """
+
+    if qlvm_map not in QLVM_MAPS:
+        error_message = f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}."
+        raise ValueError(error_message)
+    return f"{QLVM_MODEL_PACKAGE_ROOT}/{QLVM_PRODUCTION_MODEL_CELLS[qlvm_map]}"
+
+
+def qlvm_map_cell_directory(qlvm_map: str) -> str:
+    """
+    Description
+    -----------
+    The production model cell whose decoder defines the torus of one map, in its
+    canonical ``/mnt/falkner`` form, for every map a consumer of torus coordinates
+    can work on (``QLVM_DECODER_MAPS``): a USV map of ``QLVM_MAPS`` resolves
+    through :func:`qlvm_production_cell_directory` (``qlvm`` ->
+    ``.../masked_clean/cell/masked``, ``qlvm_duration`` ->
+    ``.../masked_clean/conditionals/cell/duration``, and so on), the squeak map
+    ``QLVM_SQUEAK_MAP`` (``qlvm_squeak``) to ``QLVM_SQUEAK_PRODUCTION_CELL`` under
+    ``QLVM_SQUEAK_PACKAGE_ROOT``. The torus geodesic pullback metric and the
+    manifold filter atlas decode with the cell this returns for the map of the
+    coordinates they work on, so a decode never mixes one map's coordinates with
+    another map's decoder. Callers translate it to the host mount with
+    ``configure_path`` (``processing.qlvm_latents.load_model_cell`` does).
+
+    Parameters
+    ----------
+    qlvm_map (str)
+        One of ``QLVM_DECODER_MAPS``: a column prefix (``qlvm1`` / ``qlvm2`` ->
+        ``qlvm``).
+
+    Returns
+    -------
+    cell_directory (str)
+        The canonical cell path (not checked for existence).
+
+    Raises
+    ------
+    ValueError
+        ``qlvm_map`` is not one of ``QLVM_DECODER_MAPS``.
+    """
+
+    if qlvm_map == QLVM_SQUEAK_MAP:
+        return f"{QLVM_SQUEAK_PACKAGE_ROOT}/{QLVM_SQUEAK_PRODUCTION_CELL}"
+    if qlvm_map not in QLVM_MAPS:
+        error_message = f"qlvm_map must be one of {QLVM_DECODER_MAPS}, got {qlvm_map!r}."
+        raise ValueError(error_message)
+    return qlvm_production_cell_directory(qlvm_map)
+
+
+def qlvm_cell_model_id(cell_directory: str | pathlib.Path) -> str:
+    """
+    Description
+    -----------
+    The identifier of a QLVM model package cell: the last three components of its
+    path (``<package>/<phase>/<cell>``; ``masked_clean/cell/masked`` for the
+    production regular cell), the ``model_id`` that
+    ``processing.qlvm_latents.load_model_cell`` reports for the same directory.
+    Mount-independent, so a cell read on one host compares equal to the same cell
+    named in canonical form.
+
+    Parameters
+    ----------
+    cell_directory (str | pathlib.Path)
+        The cell directory, canonical or host-translated.
+
+    Returns
+    -------
+    model_id (str)
+        ``"<package>/<phase>/<cell>"``.
+    """
+
+    return "/".join(pathlib.PurePosixPath(str(cell_directory).replace("\\", "/")).parts[-3:])
+
+
+def read_qlvm_category_bundle(category_directory: str | pathlib.Path) -> dict:
+    """
+    Description
+    -----------
+    Reads and checks a category bundle written by ``build-qlvm-categories``
+    (``processing.qlvm_categories.QLVMCategoryBuilder``): ``category_grids.npz``,
+    ``category_nomenclature.json`` and ``build_config.json``. The checks keep a
+    malformed or mismatched bundle from being drawn silently: the label grid must
+    be square and hold exactly the labels ``1..k`` of the nomenclature's ``k``
+    categories (``grid_label`` ``1..k`` in order), and the agreement and density
+    grids must have its shape. Light (NumPy and JSON only), so figures and
+    notebooks can read it without the JAX stack ``processing.qlvm_categories``
+    imports.
+
+    Parameters
+    ----------
+    category_directory (str | pathlib.Path)
+        The bundle directory (canonical or host form; run through
+        ``configure_path``).
+
+    Returns
+    -------
+    bundle (dict)
+        * ``directory`` (str) -- the host-resolved bundle directory;
+        * ``label_grid`` (``(res, res)`` int64, ``1..k``, indexed ``[y, x]``:
+          pixel ``[y, x]`` covers torus positions
+          ``[x / res, (x + 1) / res) x [y / res, (y + 1) / res)``, the pixel
+          rule assign-qlvm-categories labels a call with);
+        * ``agreement`` (``(res, res)`` float64) -- the consensus share of every
+          pixel's category over the session resamples;
+        * ``density`` (``(res, res)`` float64) -- the smoothed corpus call count
+          per pixel (the regular map's density landscape);
+        * ``resolution`` (int);
+        * ``axis`` (``(res,)`` float64) -- the pixel centres ``(i + 0.5) / res``,
+          the ``X`` / ``Y`` of a contour over the grid;
+        * ``centers`` (``(k, 2)`` float64) -- each category's label position
+          ``(label_x, label_y)`` (the pixel farthest from its boundary on the
+          torus), row ``i`` for category ``i + 1``;
+        * ``names`` / ``descriptions`` (list[str]) -- ``R-1`` ... ``R-k`` and their
+          short descriptions;
+        * ``nomenclature`` / ``build_config`` (dict) -- the two JSON files;
+        * ``map`` (str) -- ``QLVM_CATEGORY_MAP``, the map the grid partitions;
+        * ``model_id`` (str) -- that map's production cell
+          (:func:`qlvm_cell_model_id` of :func:`qlvm_production_cell_directory`);
+        * ``identity`` (str) -- a one-line provenance of the bundle (directory,
+          build time, positions file SHA-256 and call count from
+          ``build_config.json``), for logs and figure records.
+
+    Raises
+    ------
+    FileNotFoundError
+        A bundle file is missing.
+    ValueError
+        The grids or the nomenclature fail the checks above.
+    """
+
+    directory = pathlib.Path(configure_path(str(category_directory)))
+    for name in (QLVM_CATEGORY_GRIDS_NAME, QLVM_CATEGORY_NOMENCLATURE_NAME, QLVM_CATEGORY_BUILD_CONFIG_NAME):
+        if not (directory / name).is_file():
+            error_message = (
+                f"QLVM category bundle {directory} has no {name}; point os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY at a "
+                f"build-qlvm-categories output directory."
+            )
+            raise FileNotFoundError(error_message)
+    with np.load(directory / QLVM_CATEGORY_GRIDS_NAME, allow_pickle=False) as grids:
+        label_grid = grids['label_grid'].astype(np.int64)
+        agreement = grids['agreement'].astype(np.float64)
+        density = grids['density'].astype(np.float64)
+    with (directory / QLVM_CATEGORY_NOMENCLATURE_NAME).open() as handle:
+        nomenclature = json.load(handle)
+    with (directory / QLVM_CATEGORY_BUILD_CONFIG_NAME).open() as handle:
+        build_config = json.load(handle)
+    resolution = label_grid.shape[0]
+    if label_grid.ndim != 2 or label_grid.shape[1] != resolution:
+        error_message = f"{directory}: label_grid {label_grid.shape} must be a square grid."
+        raise ValueError(error_message)
+    if agreement.shape != label_grid.shape or density.shape != label_grid.shape:
+        error_message = (
+            f"{directory}: agreement {agreement.shape} and density {density.shape} must have the label grid's "
+            f"shape {label_grid.shape}."
+        )
+        raise ValueError(error_message)
+    categories = nomenclature['categories']
+    n_categories = int(nomenclature['n_categories'])
+    grid_labels = [int(category['grid_label']) for category in categories]
+    if grid_labels != list(range(1, n_categories + 1)):
+        error_message = f"{directory}: the nomenclature's grid labels {grid_labels} are not 1..{n_categories}."
+        raise ValueError(error_message)
+    present = np.unique(label_grid).tolist()
+    if present != list(range(1, n_categories + 1)):
+        error_message = f"{directory}: the label grid holds the labels {present}, not 1..{n_categories}."
+        raise ValueError(error_message)
+    built = build_config['built']
+    positions_sha = build_config['positions_file_sha256']
+    return {
+        'directory': str(directory),
+        'label_grid': label_grid,
+        'agreement': agreement,
+        'density': density,
+        'resolution': resolution,
+        'axis': (np.arange(resolution) + 0.5) / resolution,
+        'centers': np.array([[float(category['label_x']), float(category['label_y'])] for category in categories]),
+        'names': [str(category['name']) for category in categories],
+        'descriptions': [str(category['description']) for category in categories],
+        'nomenclature': nomenclature,
+        'build_config': build_config,
+        'map': QLVM_CATEGORY_MAP,
+        'model_id': qlvm_cell_model_id(qlvm_production_cell_directory(QLVM_CATEGORY_MAP)),
+        'identity': (
+            f"{directory} (built {built}, positions sha256 {positions_sha[:12]}, "
+            f"{int(build_config['n_calls'])} calls, {n_categories} categories)"
+        ),
+    }
+
+
+def load_qlvm_category_bundle() -> dict:
+    """
+    Description
+    -----------
+    Loads THE category bundle, ``QLVM_CATEGORY_BUNDLE_DIRECTORY``, with
+    :func:`read_qlvm_category_bundle`. The one entry point every category-grid
+    consumer goes through, so they all draw the partition the summaries'
+    ``qlvm_category`` column was assigned from. The directory is read from the
+    module attribute at call time.
+
+    Parameters
+    ----------
+    None
+
+    Returns
+    -------
+    bundle (dict)
+        See :func:`read_qlvm_category_bundle`.
+    """
+
+    return read_qlvm_category_bundle(QLVM_CATEGORY_BUNDLE_DIRECTORY)
 
 
 def cell_cluster_directory(cell: pathlib.Path, level: str) -> pathlib.Path:
@@ -433,8 +747,8 @@ def cell_cluster_directory(cell: pathlib.Path, level: str) -> pathlib.Path:
     Locates one cluster level of a QLVM model package cell in either package layout:
     ``inference/clusters_<level>/`` (v3) or ``cluster/<level>/`` (v2 / v2.1). Kept
     here, free of the JAX stack ``processing.qlvm_latents`` imports, so light
-    readers of a cell's ``label_grid.npy`` (e.g. the neuronal tuning figures) can
-    find it too.
+    readers of a cell's ``label_grid.npy`` (e.g. ``consolidate-spectrogram-store``)
+    can find it too.
 
     Parameters
     ----------
@@ -474,7 +788,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     * ``generate_masks.sam2_model_dir``  -> ``<root>/sam``
     * ``generate_masks.sam2_model_path`` -> ``<root>/sam/checkpoint.pt``
     * ``generate_masks.yolo_weights``    -> ``<root>/sam/best.pt``
-    * ``detect_usv_squeaks.squeak_model_path`` -> ``<root>/squeak/mil_absdb_final.pt``
+    * ``detect_usv_squeaks.squeak_model_path`` -> ``<root>/squeak/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt``
     * ``detect_usv_noise.noise_model_path`` -> ``<root>/noise/noise_timemil_ens5_n4680_20260926.pt``
 
     A granular key is filled only when it is empty, so an explicit path set in
@@ -491,26 +805,34 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     its ``arrays_{fine,coarse}.npz`` watershed grids) would re-embed sessions on
     a different torus and write its own ``qlvm_category`` / ``qlvm_supercategory``,
     and ``infer-qlvm-latents`` no longer reads such a decoder at all (model
-    package cells are its only models). Instead, when ``infer_qlvm_latents``
-    names no model (``model_cells`` empty), ``infer_qlvm_latents.model_cells``
-    is filled with the production
-    mapping ``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``
-    (prefixes ``qlvm``, ``qlvm_dur``, ``qlvm_mf``, ``qlvm_bw``, ``qlvm_loud``),
-    and ``infer_qlvm_latents.masking_type`` is set to the cells' trained
-    ``QLVM_PRODUCTION_MASKING_TYPE`` (``"none"``). The masking type is part of
-    the derived model, not a separate choice: ``infer-qlvm-latents`` checks it
-    against each cell's training contract and refuses to embed on a mismatch
-    (the shipped default is already ``"none"``; this keeps a derived run correct
-    when a user's settings still say ``"sam"``). An
-    explicitly configured ``model_cells`` is left entirely alone,
-    ``masking_type`` included. ``infer_qlvm_latents.model_cell_label_levels`` is
-    never touched: its shipped ``{}`` already gives the production label columns
-    (``qlvm_category`` and ``qlvm_supercategory`` for ``qlvm``, ``P_category`` and
-    ``P_supercategory`` for every other prefix ``P``). Likewise an empty
+    package cells are its only models). The production cells do not live under
+    ``spectrograms_root`` at all: they are the module constants
+    ``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``. When
+    ``infer_qlvm_latents`` names no model (``model_cells`` empty),
+    ``infer_qlvm_latents.model_cells`` is filled with that mapping (prefixes
+    ``qlvm``, ``qlvm_duration``, ``qlvm_entropy``, ``qlvm_bandwidth``,
+    ``qlvm_loudness``), ``infer_qlvm_latents.masking_type`` is
+    set to the cells' trained ``QLVM_PRODUCTION_MASKING_TYPE`` (``"sam"``) and
+    ``infer_qlvm_latents.time_stretch`` to their ``QLVM_PRODUCTION_TIME_STRETCH``
+    (true). Both are part of the derived model, not separate choices:
+    ``infer-qlvm-latents`` checks them against each cell's training contract and
+    refuses to embed on a mismatch (the shipped defaults already match; this keeps
+    a derived run correct when a user's settings still carry the earlier
+    ``"none"`` / false). An explicitly configured ``model_cells`` is left entirely
+    alone, ``masking_type`` and ``time_stretch`` included. ``infer-qlvm-latents``
+    writes coordinates only, which is the production layout (``qlvm_category``
+    comes from ``assign-qlvm-categories``). Likewise an empty
     ``infer_qlvm_squeak_latents.model_cell_directory`` is filled with the
     production squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under
-    ``QLVM_SQUEAK_PACKAGE_ROOT`` (the phase 3 BBV ``natural_session`` cell); an
-    explicitly configured squeak cell is left alone.
+    ``QLVM_SQUEAK_PACKAGE_ROOT`` (the time-stretched, unmasked, unfloored
+    ``train-qlvm`` cell ``squeaks/cell/stretch_nofloor``); an
+    explicitly configured squeak cell is left alone. An empty
+    ``assign_qlvm_categories.category_directory`` is filled with the category
+    bundle ``QLVM_CATEGORY_BUNDLE_DIRECTORY`` and an empty
+    ``assign_qlvm_categories.coordinate_prefix`` with the map it is defined on,
+    ``QLVM_CATEGORY_MAP`` (``qlvm``), so the summaries' ``qlvm_category`` is
+    assigned from the same bundle every figure draws; an explicitly configured
+    directory or prefix is left alone.
 
     Parameters
     ----------
@@ -519,8 +841,8 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         absent or empty the dictionary is returned unchanged (legacy settings
         files that set the granular ``generate_masks`` paths and
         ``infer_qlvm_latents.model_cells`` directly keep working); otherwise the ``generate_masks``,
-        ``infer_qlvm_latents``, ``infer_qlvm_squeak_latents``, ``detect_usv_squeaks``
-        and ``detect_usv_noise`` blocks must exist.
+        ``infer_qlvm_latents``, ``infer_qlvm_squeak_latents``, ``assign_qlvm_categories``,
+        ``detect_usv_squeaks`` and ``detect_usv_noise`` blocks must exist.
 
     Returns
     -------
@@ -534,12 +856,14 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     sam_dir = f'{root}/sam'
     squeak_dir = f'{root}/squeak'
     # The noise model file name carries its training: TimeMIL, 5-seed ensemble, 3,562 labels, build date.
+    # The call-class (usv / squeak / both) model's likewise: 5-member ensemble, 2,476 non-unsure labels,
+    # build date, and "_reviewed" for the label set with the review overrides applied.
     noise_dir = f'{root}/noise'
     derived = (
         ('generate_masks', 'sam2_model_dir', sam_dir),
         ('generate_masks', 'sam2_model_path', f'{sam_dir}/checkpoint.pt'),
         ('generate_masks', 'yolo_weights', f'{sam_dir}/best.pt'),
-        ('detect_usv_squeaks', 'squeak_model_path', f'{squeak_dir}/mil_absdb_final.pt'),
+        ('detect_usv_squeaks', 'squeak_model_path', f'{squeak_dir}/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt'),
         ('detect_usv_noise', 'noise_model_path', f'{noise_dir}/noise_timemil_ens5_n4680_20260926.pt'),
     )
     for block, key, derived_path in derived:
@@ -547,13 +871,17 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
             settings[block][key] = derived_path
     qlvm_cfg = settings['infer_qlvm_latents']
     if not qlvm_cfg['model_cells']:
-        qlvm_cfg['model_cells'] = {
-            prefix: f'{QLVM_MODEL_PACKAGE_ROOT}/{cell}' for prefix, cell in QLVM_PRODUCTION_MODEL_CELLS.items()
-        }
+        qlvm_cfg['model_cells'] = {prefix: qlvm_production_cell_directory(prefix) for prefix in QLVM_PRODUCTION_MODEL_CELLS}
         qlvm_cfg['masking_type'] = QLVM_PRODUCTION_MASKING_TYPE
+        qlvm_cfg['time_stretch'] = QLVM_PRODUCTION_TIME_STRETCH
     squeak_qlvm_cfg = settings['infer_qlvm_squeak_latents']
     if not squeak_qlvm_cfg['model_cell_directory']:
         squeak_qlvm_cfg['model_cell_directory'] = f'{QLVM_SQUEAK_PACKAGE_ROOT}/{QLVM_SQUEAK_PRODUCTION_CELL}'
+    category_cfg = settings['assign_qlvm_categories']
+    if not category_cfg['category_directory']:
+        category_cfg['category_directory'] = QLVM_CATEGORY_BUNDLE_DIRECTORY
+    if not category_cfg['coordinate_prefix']:
+        category_cfg['coordinate_prefix'] = QLVM_CATEGORY_MAP
     return settings
 
 
@@ -1089,36 +1417,83 @@ def wait_for_subprocesses(
     return status
 
 
-# Canonical column order of a session's ``*_usv_summary.csv``: the DAS event
-# (written by das_summarize), the call-level labels (emitter from vocal assignment,
-# the squeak columns and squeak_frame_runs from detect_usv_squeaks), the acoustic descriptors
-# (compute_usv_acoustic_features, including the absolute loudness_db) and the QLVM torus coordinates and cluster labels of
-# the production models (infer_qlvm_latents with model_cells: the phase 6 regular
-# model's qlvm1/qlvm2 with its fine and coarse labels qlvm_category /
-# qlvm_supercategory, then the duration, mean-frequency, bandwidth and loudness
-# conditional models, each with its fine and coarse labels P_category /
-# P_supercategory), and last the squeak torus coordinates qlvm_squeak1/qlvm_squeak2
-# (infer_qlvm_squeak_latents; kept with the other torus coordinates rather than with
-# the squeak columns, and reserved, so no model_cells prefix can write them). The
-# legacy column qlvm_model (written by the retired single-model run) is not listed:
-# production summaries do not carry it, and infer_qlvm_latents drops it from older
-# summaries it rewrites.
-# Steps that re-append their own columns reorder to this before writing, so a
-# column's position no longer depends on which step ran last.
+# Canonical column order of a session's ``*_usv_summary.csv`` -- the single source of
+# truth every step that writes the summary reorders to (order_usv_summary_columns), so
+# a column's position never depends on which step ran last. Six blocks:
+#   1. the DAS event: usv_id, start, stop, duration (das_summarize);
+#   2. the call-level class labels: noise / noise_probability (detect_usv_noise), then
+#      the vocal-class block of detect_usv_squeaks -- the usv / squeak booleans, the
+#      three class probabilities p_usv / p_squeak / p_both and the squeak extent
+#      squeak_start / squeak_end;
+#   3. the emitter (vocal assignment) and the DAS channel statistics peak_amp_ch,
+#      mean_amp_ch, chs_count, chs_detected (das_summarize);
+#   4. the acoustic descriptors (compute_usv_acoustic_features, including the absolute
+#      loudness_db, the spectral_entropy and the SAM mask_number);
+#   5. the QLVM maps (infer_qlvm_latents): the regular map qlvm1 / qlvm2 with its
+#      content-ridge category qlvm_category (assign_qlvm_categories; 1..k meaning
+#      R-1..R-k), then the duration, spectral-entropy, bandwidth and loudness
+#      conditional maps qlvm_duration1 / qlvm_duration2, qlvm_entropy1 /
+#      qlvm_entropy2, qlvm_bandwidth1 / qlvm_bandwidth2 and qlvm_loudness1 /
+#      qlvm_loudness2 (coordinates only);
+#   6. the squeak torus coordinates qlvm_squeak1 / qlvm_squeak2
+#      (infer_qlvm_squeak_latents; reserved, so no model_cells prefix can write them).
+# A column a session does not carry yet is simply absent; a column not listed here
+# (an obsolete one, or a new one not yet placed) is kept after the listed ones, in its
+# existing order, so a reorder never loses data. USV_SUMMARY_OBSOLETE_COLUMNS lists the
+# columns tidy_usv_summary_columns removes from older summaries.
 USV_SUMMARY_COLUMN_ORDER = (
-    "usv_id", "start", "stop", "duration", "peak_amp_ch", "mean_amp_ch", "chs_count", "chs_detected",
-    "emitter",
-    "noise", "noise_probability",
-    "squeak", "squeak_probability", "squeak_start", "squeak_end", "squeak_frame_runs",
+    "usv_id", "start", "stop", "duration",
+    "noise", "noise_probability", "usv", "squeak", "p_usv", "p_squeak", "p_both", "squeak_start", "squeak_end",
+    "emitter", "peak_amp_ch", "mean_amp_ch", "chs_count", "chs_detected",
     "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "loudness_db",
     "spectral_entropy", "mask_number",
-    "qlvm1", "qlvm2", "qlvm_category", "qlvm_supercategory",
+    "qlvm1", "qlvm2", "qlvm_category",
+    "qlvm_duration1", "qlvm_duration2", "qlvm_entropy1", "qlvm_entropy2",
+    "qlvm_bandwidth1", "qlvm_bandwidth2", "qlvm_loudness1", "qlvm_loudness2",
+    "qlvm_squeak1", "qlvm_squeak2",
+)
+
+# The column prefixes of the QLVM maps the summary holds (block 5 above): the regular
+# map ``qlvm`` and its duration (``qlvm_duration``), spectral-entropy
+# (``qlvm_entropy``), bandwidth (``qlvm_bandwidth``) and loudness (``qlvm_loudness``)
+# conditional maps. infer_qlvm_latents may write ``<prefix>1`` / ``<prefix>2`` of these
+# prefixes (and of the QLVM_PRODUCTION_MODEL_CELLS prefixes); every other canonical
+# column is reserved for the step that owns it.
+QLVM_SUMMARY_MAP_PREFIXES = ("qlvm", "qlvm_duration", "qlvm_entropy", "qlvm_bandwidth", "qlvm_loudness")
+
+# Columns older summaries carry that the canonical layout no longer has, removed by
+# tidy_usv_summary_columns (the tidy-usv-summary-columns command): the coarse cluster
+# level of the regular map (qlvm_supercategory), the short-prefix duration and
+# spectral-entropy maps qlvm_dur / qlvm_ent that the qlvm_duration / qlvm_entropy
+# maps replace, with the cluster labels of the duration map (conditional maps carry
+# no category columns), the retired v3 mean-frequency (qlvm_mf), bandwidth (qlvm_bw)
+# and loudness (qlvm_loud) conditional maps with their labels, the legacy provenance
+# column qlvm_model of the retired single-model run, the per-call category
+# agreement / uncertain flag of the regular map (kept outside the summary), and the
+# columns of the retired squeak detectors that the usv / squeak booleans, the class
+# probabilities and the one squeak_start / squeak_end extent replace: the binary
+# detector's squeak_probability / squeak_frame_runs and the first three-class
+# encoding's call_class / squeak_spans / n_squeaks. ``squeak`` itself is not listed:
+# it is a current column (the squeak boolean of detect_usv_squeaks). The names are
+# matched EXACTLY (never as prefixes or globs), so the current qlvm_bandwidth1/2 and
+# qlvm_loudness1/2 are never taken for the retired qlvm_bw* / qlvm_loud* columns.
+USV_SUMMARY_OBSOLETE_COLUMNS = (
+    "qlvm_supercategory",
     "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category", "qlvm_dur_supercategory",
+    "qlvm_ent1", "qlvm_ent2", "qlvm_ent_category", "qlvm_ent_supercategory",
     "qlvm_mf1", "qlvm_mf2", "qlvm_mf_category", "qlvm_mf_supercategory",
     "qlvm_bw1", "qlvm_bw2", "qlvm_bw_category", "qlvm_bw_supercategory",
     "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category", "qlvm_loud_supercategory",
-    "qlvm_squeak1", "qlvm_squeak2",
+    "qlvm_model",
+    "qlvm_category_agreement", "qlvm_category_uncertain",
+    "squeak_probability", "squeak_frame_runs",
+    "call_class", "squeak_spans", "n_squeaks",
 )
+
+# Suffixes of the per-call category agreement / uncertain columns an earlier
+# assign_qlvm_categories wrote for a prefix P (P_category_agreement,
+# P_category_uncertain); they never belong in the summary, whatever the prefix.
+CATEGORY_CONFIDENCE_SUFFIXES = ("_category_agreement", "_category_uncertain")
 
 
 # Column `detect_usv_noise` writes: True when the segment holds no vocalization at all.
@@ -1162,11 +1537,297 @@ def drop_noise_usvs(usv_summary: Any, source: str, message_output: Callable = pr
             f"every detection."
         )
         raise KeyError(error_message)
-    kept = usv_summary.filter(~usv_summary[NOISE_COLUMN].fill_null(False))
+    kept = usv_summary.filter(~noise_mask(usv_summary, source))
     n_dropped = usv_summary.height - kept.height
     if n_dropped:
         message_output(f"    {source}: dropped {n_dropped} noise segment(s) of {usv_summary.height}.")
     return kept, n_dropped
+
+
+# Columns `detect_usv_squeaks` writes: two booleans per segment that is not noise -- `usv` (the
+# segment holds an ultrasonic call) and `squeak` (it holds a broadband squeak) -- both null on noise
+# rows and on rows too short to score. A pure USV is (true, false), a pure squeak (false, true), and a
+# segment holding both is (true, true). `usv` alone is NOT "USV only": a pure-USV filter must also
+# require `squeak` false, which is what `call_class_mask` / `pure_usv_mask` do.
+USV_FLAG_COLUMN = "usv"
+SQUEAK_FLAG_COLUMN = "squeak"
+VOCAL_FLAG_COLUMNS = (USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN)
+
+# The three call classes the two booleans encode: "usv" = pure USV (usv & ~squeak), "squeak" = pure
+# squeak (squeak & ~usv), "both" = a squeak and a USV in one segment (usv & squeak).
+CALL_CLASSES = ("usv", "squeak", "both")
+
+# The three selections every squeak-side consumer (squeak figures, the explorer's squeak map)
+# offers: pure squeaks, segments holding a squeak and a USV, or both kinds together (squeak true).
+SQUEAK_CLASS_SELECTIONS = {
+    "squeak": ("squeak",),
+    "both": ("both",),
+    "squeak+both": ("squeak", "both"),
+}
+
+
+def require_vocal_flags(usv_summary: Any, source: str) -> None:
+    """
+    Description
+    -----------
+    Checks that a USV summary table carries the ``usv`` and ``squeak`` booleans ``detect-usv-squeaks``
+    writes, so a consumer that splits USVs from squeaks never silently treats every row as one class.
+    A summary scored only by the retired binary squeak detector has a ``squeak`` column but no ``usv``
+    (and its ``squeak`` meant something else), so it fails here too.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table (or any table holding its columns).
+    source (str)
+        What the table came from (a session id or file name), named in the error.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    KeyError
+        The table lacks ``usv`` or ``squeak``.
+    """
+
+    missing = [column for column in VOCAL_FLAG_COLUMNS if column not in usv_summary.columns]
+    if missing:
+        error_message = (
+            f"{source} has no {missing} column(s), so its USVs cannot be told from its squeaks. "
+            f"Run detect-usv-squeaks on the session (after detect-usv-noise)."
+        )
+        raise KeyError(error_message)
+
+
+def _vocal_flag(usv_summary: Any, column: str) -> Any:
+    """
+    Description
+    -----------
+    One of the summary's boolean flags (``usv``, ``squeak`` or ``noise``) as a null-free boolean
+    Series (null -> False). The column is cast through text, so a flag read from CSV as Boolean, as
+    the strings "true" / "false", or as an all-null column of any type all give the same answer.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A table holding ``column``.
+    column (str)
+        ``"usv"``, ``"squeak"`` or ``"noise"``.
+
+    Returns
+    -------
+    flag (polars.Series)
+        Boolean, False where the value is null.
+    """
+
+    return usv_summary[column].cast(str).str.to_lowercase().eq("true").fill_null(False)
+
+
+def noise_mask(usv_summary: Any, source: str) -> Any:
+    """
+    Description
+    -----------
+    Marks the rows of a USV summary that ``detect-usv-noise`` flagged as noise (``noise`` true), as
+    a null-free boolean Series: a null ``noise`` (a segment too short to score) counts as not noise.
+    The column is read through text exactly like the ``usv`` / ``squeak`` booleans
+    (:func:`_vocal_flag`), so the answer is the same whether the CSV reader typed ``noise`` as
+    Boolean, as the strings ``"true"`` / ``"false"`` (which ``polars.read_csv`` does when the rows it
+    infers the schema from hold no value) or as an all-null column. A plain
+    ``.cast(polars.Boolean)`` raises on a string column, which is why every noise reader goes
+    through here (or through :func:`drop_noise_usvs`, which uses it).
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table (or any table holding ``noise``).
+    source (str)
+        What the table came from (a session id or file name), named in the error.
+
+    Returns
+    -------
+    mask (polars.Series)
+        Boolean, one value per row, True on noise rows.
+
+    Raises
+    ------
+    KeyError
+        The table has no ``noise`` column.
+    """
+
+    if NOISE_COLUMN not in usv_summary.columns:
+        error_message = f"{source} has no '{NOISE_COLUMN}' column; run detect-usv-noise on the session first."
+        raise KeyError(error_message)
+    return _vocal_flag(usv_summary, NOISE_COLUMN).alias(NOISE_COLUMN)
+
+
+def call_class_mask(usv_summary: Any, classes: Iterable[str], source: str) -> Any:
+    """
+    Description
+    -----------
+    Marks the rows of a USV summary whose call class -- derived from the two booleans, never from
+    ``usv`` alone -- is one of ``classes``: ``"usv"`` = pure USV (``usv & ~squeak``), ``"squeak"`` =
+    pure squeak (``squeak & ~usv``), ``"both"`` = ``usv & squeak``. A null flag counts as false, so a
+    noise row (both null) is in no selection and a mask built here never admits noise.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table (or any table holding ``usv`` and ``squeak``).
+    classes (Iterable[str])
+        Call classes to keep, each one of ``CALL_CLASSES``.
+    source (str)
+        What the table came from, named in the error when a flag is missing.
+
+    Returns
+    -------
+    mask (polars.Series)
+        Boolean, one value per row.
+
+    Raises
+    ------
+    KeyError
+        The table lacks ``usv`` or ``squeak``.
+    ValueError
+        A requested class is not one of ``CALL_CLASSES``.
+    """
+
+    classes = list(classes)
+    unknown = [value for value in classes if value not in CALL_CLASSES]
+    if unknown:
+        error_message = f"call_class_mask: unknown call class(es) {unknown}; the classes are {list(CALL_CLASSES)}."
+        raise ValueError(error_message)
+    require_vocal_flags(usv_summary, source)
+    usv = _vocal_flag(usv_summary, USV_FLAG_COLUMN)
+    squeak = _vocal_flag(usv_summary, SQUEAK_FLAG_COLUMN)
+    by_class = {"usv": usv & ~squeak, "squeak": squeak & ~usv, "both": usv & squeak}
+    mask = usv & ~usv
+    for value in classes:
+        mask = mask | by_class[value]
+    return mask.alias("call_class_mask")
+
+
+def pure_usv_mask(usv_summary: Any, source: str) -> Any:
+    """
+    Description
+    -----------
+    Rows holding an ultrasonic call and no squeak (``usv & ~squeak``): what every USV-only consumer
+    keeps. Shorthand for ``call_class_mask(usv_summary, ("usv",), source)``.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A table holding ``usv`` and ``squeak``.
+    source (str)
+        What the table came from, named in the error when a flag is missing.
+
+    Returns
+    -------
+    mask (polars.Series)
+        Boolean, one value per row.
+    """
+
+    return call_class_mask(usv_summary, ("usv",), source)
+
+
+def pure_squeak_mask(usv_summary: Any, source: str) -> Any:
+    """
+    Description
+    -----------
+    Rows holding a squeak and no ultrasonic call (``squeak & ~usv``). Shorthand for
+    ``call_class_mask(usv_summary, ("squeak",), source)``.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A table holding ``usv`` and ``squeak``.
+    source (str)
+        What the table came from, named in the error when a flag is missing.
+
+    Returns
+    -------
+    mask (polars.Series)
+        Boolean, one value per row.
+    """
+
+    return call_class_mask(usv_summary, ("squeak",), source)
+
+
+def both_mask(usv_summary: Any, source: str) -> Any:
+    """
+    Description
+    -----------
+    Rows holding a squeak and an ultrasonic call (``usv & squeak``). Shorthand for
+    ``call_class_mask(usv_summary, ("both",), source)``.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A table holding ``usv`` and ``squeak``.
+    source (str)
+        What the table came from, named in the error when a flag is missing.
+
+    Returns
+    -------
+    mask (polars.Series)
+        Boolean, one value per row.
+    """
+
+    return call_class_mask(usv_summary, ("both",), source)
+
+
+def squeak_bearing_mask(usv_summary: Any, source: str) -> Any:
+    """
+    Description
+    -----------
+    Rows holding a squeak, with or without an ultrasonic call (``squeak`` true: pure squeaks and
+    "both"): the rows the squeak QLVM embedding, its training-set builder and the squeak spectrogram
+    store take. Shorthand for ``call_class_mask(usv_summary, ("squeak", "both"), source)``.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A table holding ``usv`` and ``squeak``.
+    source (str)
+        What the table came from, named in the error when a flag is missing.
+
+    Returns
+    -------
+    mask (polars.Series)
+        Boolean, one value per row.
+    """
+
+    return call_class_mask(usv_summary, ("squeak", "both"), source)
+
+
+def squeak_class_selection(selection: str) -> tuple[str, ...]:
+    """
+    Description
+    -----------
+    Resolves a squeak-class selection name (``"squeak"``, ``"both"`` or ``"squeak+both"``) to
+    the call classes it covers.
+
+    Parameters
+    ----------
+    selection (str)
+        One of the keys of ``SQUEAK_CLASS_SELECTIONS``.
+
+    Returns
+    -------
+    classes (tuple[str, ...])
+        The call classes the selection keeps.
+
+    Raises
+    ------
+    ValueError
+        The name is not a known selection.
+    """
+
+    if selection not in SQUEAK_CLASS_SELECTIONS:
+        error_message = f"Unknown squeak class selection {selection!r}; choose one of {list(SQUEAK_CLASS_SELECTIONS)}."
+        raise ValueError(error_message)
+    return SQUEAK_CLASS_SELECTIONS[selection]
 
 
 def order_usv_summary_columns(usv_summary: Any) -> Any:
@@ -1194,6 +1855,77 @@ def order_usv_summary_columns(usv_summary: Any) -> Any:
     canonical = [column for column in USV_SUMMARY_COLUMN_ORDER if column in present]
     extra = [column for column in usv_summary.columns if column not in USV_SUMMARY_COLUMN_ORDER]
     return usv_summary.select(canonical + extra)
+
+
+def obsolete_usv_summary_columns(columns: Iterable[str]) -> list[str]:
+    """
+    Description
+    -----------
+    Picks, from a USV summary's column names, the columns the canonical layout no
+    longer has: every name in ``USV_SUMMARY_OBSOLETE_COLUMNS`` and every per-call
+    category confidence column (a name ending in one of
+    ``CATEGORY_CONFIDENCE_SUFFIXES``, e.g. ``qlvm_category_agreement``). A
+    canonical column (``USV_SUMMARY_COLUMN_ORDER``) is never picked.
+
+    Parameters
+    ----------
+    columns (Iterable[str])
+        The summary's column names, in file order.
+
+    Returns
+    -------
+    obsolete (list[str])
+        The obsolete column names, in the order given.
+    """
+
+    obsolete = []
+    for column in columns:
+        if column in USV_SUMMARY_COLUMN_ORDER:
+            continue
+        if column in USV_SUMMARY_OBSOLETE_COLUMNS or column.endswith(CATEGORY_CONFIDENCE_SUFFIXES):
+            obsolete.append(column)
+    return obsolete
+
+
+def tidy_usv_summary_columns(usv_summary: Any) -> tuple[Any, dict]:
+    """
+    Description
+    -----------
+    Brings an existing USV summary table to the canonical layout: drops its
+    obsolete columns (:func:`obsolete_usv_summary_columns`) and reorders the rest
+    with :func:`order_usv_summary_columns` (canonical columns first, any other
+    column after them in its existing order). No row or value of a kept column is
+    touched, and no column is created. Used by the ``tidy-usv-summary-columns``
+    command to migrate summaries written before the layout was fixed.
+
+    Parameters
+    ----------
+    usv_summary (polars.DataFrame)
+        A session's USV summary table.
+
+    Returns
+    -------
+    tidied (polars.DataFrame)
+        The table without its obsolete columns, in canonical column order.
+    report (dict)
+        What the tidy changes: ``dropped`` (list of the removed columns),
+        ``unknown`` (list of the kept columns the canonical order does not list,
+        which end up last), ``columns_before`` / ``columns_after`` (lists of the
+        column names) and ``changed`` (bool, True when the columns or their order
+        differ).
+    """
+
+    dropped = obsolete_usv_summary_columns(usv_summary.columns)
+    tidied = order_usv_summary_columns(usv_summary.drop(dropped))
+    unknown = [column for column in tidied.columns if column not in USV_SUMMARY_COLUMN_ORDER]
+    report = {
+        'dropped': dropped,
+        'unknown': unknown,
+        'columns_before': list(usv_summary.columns),
+        'columns_after': list(tidied.columns),
+        'changed': list(usv_summary.columns) != list(tidied.columns),
+    }
+    return tidied, report
 
 
 def first_match_or_raise(
@@ -1250,6 +1982,141 @@ def first_match_or_raise(
             f"{label or pattern}: no match for {kind} pattern '{pattern}' under '{root}'."
         )
     return matches[0]
+
+
+# The concatenated multi-channel audio memmaps of a session, one per frequency
+# band, each in its own exact folder under ``<root>/audio``: ``usv`` is the
+# 30 kHz high-passed HPSS audio every USV reader (DAS summary, spectrograms,
+# loudness, vocalocator, figures, videos) was built and trained on; ``broadband``
+# is the 2 kHz high-passed, line-noise-cleaned HPSS audio written by
+# ``Operator.broadband_filter_audio``.
+AUDIO_MMAP_BAND_FOLDERS = {"ultrasonic": "hpss_filtered", "broadband": "broadband_filtered"}
+
+
+def audio_mmap_name_regex(band: str) -> re.Pattern:
+    """
+    Description
+    -----------
+    Compiled regular expression matching the exact file name of a session's
+    concatenated audio memmap for one band:
+    ``<id>_concatenated_audio_<folder>_<sampling rate>_<samples>_<channels>_int16.mmap``,
+    where ``<folder>`` is the band's folder (``hpss_filtered`` for ``usv``,
+    ``broadband_filtered`` for ``broadband``) and ``<id>`` the recording id token
+    of the source wav names (no underscore). The pattern is anchored at both
+    ends, so temporary siblings (``.<name>.tmp-<pid>``), copies with a suffix and
+    the memmap of another band never match.
+
+    Parameters
+    ----------
+    band (str)
+        ``'ultrasonic'`` or ``'broadband'``.
+
+    Returns
+    -------
+    regex (re.Pattern)
+        Pattern with the named groups ``id``, ``sr``, ``n_samples`` and ``n_ch``.
+    """
+
+    if band not in AUDIO_MMAP_BAND_FOLDERS:
+        raise ValueError(f"Unknown audio band {band!r}; expected one of {sorted(AUDIO_MMAP_BAND_FOLDERS)}.")
+    folder = AUDIO_MMAP_BAND_FOLDERS[band]
+    return re.compile(
+        rf"^(?P<id>[^_]+)_concatenated_audio_{folder}_(?P<sr>\d+)_(?P<n_samples>\d+)_(?P<n_ch>\d+)_int16\.mmap$"
+    )
+
+
+def find_audio_mmap(root_directory: str | pathlib.Path, band: str) -> pathlib.Path:
+    """
+    Description
+    -----------
+    Returns the ONE concatenated audio memmap of a session for the requested
+    band, searched in that band's exact folder (``<root>/audio/hpss_filtered``
+    for ``'ultrasonic'``, ``<root>/audio/broadband_filtered`` for ``'broadband'``, never
+    recursively) with the exact name pattern of :func:`audio_mmap_name_regex`.
+
+    This replaces the older ``first_match_or_raise`` lookups with a ``*.mmap``
+    glob (some of them recursive), which returned the alphabetically first memmap
+    anywhere under ``audio/`` and so silently picked up any second memmap (a
+    stray unfiltered file in ``cropped_to_video``, or a memmap of another band
+    in a folder that sorts first). Here a reader of one band can never be handed
+    the file of another band, and an ambiguous session fails loudly.
+
+    Parameters
+    ----------
+    root_directory (str | pathlib.Path)
+        Session root directory (contains ``audio``).
+    band (str)
+        ``'ultrasonic'`` (the 30 kHz high-passed HPSS memmap the USV pipeline reads) or
+        ``'broadband'`` (the 2 kHz high-passed, line-noise-cleaned memmap).
+
+    Returns
+    -------
+    mmap_path (pathlib.Path)
+        Path of the single matching memmap.
+
+    Raises
+    ------
+    ValueError
+        If ``band`` is not a known band.
+    FileNotFoundError
+        If the band folder does not exist or holds no matching memmap.
+    RuntimeError
+        If the band folder holds more than one matching memmap.
+    """
+
+    regex = audio_mmap_name_regex(band)
+    folder = pathlib.Path(root_directory) / "audio" / AUDIO_MMAP_BAND_FOLDERS[band]
+    if not folder.is_dir():
+        raise FileNotFoundError(f"{band} audio memmap: folder '{folder}' does not exist.")
+    matches = sorted(path for path in folder.iterdir() if path.is_file() and regex.match(path.name))
+    if not matches:
+        raise FileNotFoundError(f"{band} audio memmap: no file matching '{regex.pattern}' in '{folder}'.")
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"{band} audio memmap: {len(matches)} files match in '{folder}' "
+            f"({', '.join(path.name for path in matches)}); exactly one is required."
+        )
+    return matches[0]
+
+
+def parse_audio_mmap_name(mmap_path: str | pathlib.Path) -> dict:
+    """
+    Description
+    -----------
+    Reads the layout a concatenated audio memmap encodes in its file name
+    (``<id>_concatenated_audio_<folder>_<sr>_<n_samples>_<n_ch>_int16.mmap``),
+    for either band.
+
+    Parameters
+    ----------
+    mmap_path (str | pathlib.Path)
+        Path (or name) of the memmap.
+
+    Returns
+    -------
+    layout (dict)
+        ``band`` (str), ``id`` (str), ``sampling_rate`` (int), ``n_samples``
+        (int), ``n_channels`` (int) and ``dtype`` (``'int16'``).
+
+    Raises
+    ------
+    ValueError
+        If the name matches no band's pattern.
+    """
+
+    name = pathlib.Path(mmap_path).name
+    for band in AUDIO_MMAP_BAND_FOLDERS:
+        match = audio_mmap_name_regex(band).match(name)
+        if match is not None:
+            return {
+                "band": band,
+                "id": match["id"],
+                "sampling_rate": int(match["sr"]),
+                "n_samples": int(match["n_samples"]),
+                "n_channels": int(match["n_ch"]),
+                "dtype": "int16",
+            }
+    raise ValueError(f"'{name}' is not a concatenated audio memmap name of any band.")
 
 
 def newest_match_or_raise(
@@ -1310,55 +2177,12 @@ def newest_match_or_raise(
 # Embedding-landscape resolution. The visualization layer reads its precomputed
 # cohort artifacts from a single base directory (``shared_resources.spectrograms_dir``)
 # by convention, rather than from several hard-coded file paths:
-#   <dir>/qlvm_v3/<map>/arrays_{coarse,fine}.npz  QLVM torus density + label grids +
-#                                             centres of one map (QLVM_MAPS;
-#                                             QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME)
 #   <dir>/spectrograms_*.h5                   consolidated spectrogram/mask/latent store
 #   <dir>/squeak_spectrograms_*.h5            2-125 kHz log-frequency squeak spectrogram store
 #   <dir>/embeddings/pooled_embeddings_qlvmv3.parquet  pooled cohort embeddings cache
 #                                             (POOLED_EMBEDDINGS_CACHE_NAME)
-def resolve_embedding_arrays_path(spectrograms_dir: str, qlvm_map: str, clustering: str) -> str:
-    """
-    Description
-    -----------
-    Build the path to a precomputed embedding-landscape ``.npz`` under the
-    spectrograms base directory, by convention --
-    ``<dir>/<QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME>/<qlvm_map>/arrays_{coarse,fine}.npz``
-    (``<dir>/qlvm_v3/qlvm/...`` for the regular map: the production v3 cell's
-    clustering of that map, exported by ``export-qlvm-reference-arrays``; the old
-    in-house model's ``<dir>/qlvm/`` arrays are not read). This is a pure path
-    builder (run through ``configure_path``); whether the file exists is the
-    caller's concern (the sequence figure falls back to a bare panel, the torus
-    video requires it).
-
-    Parameters
-    ----------
-    spectrograms_dir (str)
-        Base directory where the ``qlvm_v3`` subdirectory branches off.
-    qlvm_map (str)
-        One of ``QLVM_MAPS`` (e.g. ``"qlvm"`` for the regular model,
-        ``"qlvm_dur"`` for the duration-conditional one).
-    clustering (str)
-        ``"fine"`` selects the fine map; anything else selects the coarse map.
-
-    Returns
-    -------
-    path (str)
-        The OS-resolved ``.npz`` path (not checked for existence).
-
-    Raises
-    ------
-    ValueError
-        If ``qlvm_map`` is not one of ``QLVM_MAPS``.
-    """
-
-    if qlvm_map not in QLVM_MAPS:
-        raise ValueError(f"qlvm_map must be one of {QLVM_MAPS}, got {qlvm_map!r}.")
-    base = pathlib.Path(configure_path(spectrograms_dir))
-    tag = "fine" if clustering == "fine" else "coarse"
-    return str(base / QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME / qlvm_map / f"arrays_{tag}.npz")
-
-
+# The QLVM category geometry (label grid, density, centres) is not under it: it is
+# the category bundle, QLVM_CATEGORY_BUNDLE_DIRECTORY (load_qlvm_category_bundle).
 def resolve_consolidated_h5_path(spectrograms_dir: str) -> str:
     """
     Description

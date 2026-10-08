@@ -22,7 +22,7 @@ from scipy.io import wavfile
 import matplotlib
 matplotlib.use("Agg")
 
-from usv_playpen.visualizations import make_neuronal_tuning_figures as tuning_figures
+from usv_playpen import os_utils
 from usv_playpen.visualizations.make_neuronal_tuning_figures import (
     NeuronalTuningFigureMaker,
     _decide_strip_xscale,
@@ -98,13 +98,23 @@ def test_fig_maker_sex_color_resolves_male_and_female(tmp_path):
     assert maker._sex_color("unknown") == "#d62728"
 
 
-def test_fig_maker_load_segmentation_caches_empty_when_package_missing(tmp_path, monkeypatch):
-    """_load_segmentation returns {} (and caches it) when the QLVM model package
-    is missing — without raising."""
+def test_fig_maker_load_segmentation_raises_when_bundle_missing(tmp_path, monkeypatch):
+    """_load_segmentation raises when the QLVM category bundle is missing: the
+    section-(c) watersheds are drawn only over the partition the calls were
+    labelled with, never over placeholders."""
     maker, _ = _make_fig_maker(str(tmp_path))
-    monkeypatch.setattr(tuning_figures, "QLVM_MODEL_PACKAGE_ROOT", str(tmp_path / "no_package"))
+    monkeypatch.setattr(os_utils, "QLVM_CATEGORY_BUNDLE_DIRECTORY", str(tmp_path / "no_bundle"))
+    with pytest.raises(FileNotFoundError):
+        maker._load_segmentation()
+
+
+@pytest.mark.usefixtures("qlvm_category_bundle")
+def test_fig_maker_load_segmentation_caches_the_bundle_block(tmp_path):
+    """_load_segmentation returns the bundle's qlvm_category block and caches it."""
+    maker, _ = _make_fig_maker(str(tmp_path))
     seg = maker._load_segmentation()
-    assert seg == {}
+    assert set(seg) == {"qlvm_category"}
+    assert seg["qlvm_category"]["label_grid"].ndim == 2
     # Second call must return the cached dict (same object identity).
     seg2 = maker._load_segmentation()
     assert seg2 is seg
@@ -125,7 +135,7 @@ def test_fig_maker_skips_when_tuning_dir_empty(tmp_path):
     assert any("no tuning pkls" in m for m in msgs)
 
 
-def test_fig_maker_skips_pkl_with_no_payload(tmp_path, mocker):
+def test_fig_maker_skips_pkl_with_no_payload(tmp_path, mocker, qlvm_category_bundle):
     """A pkl with neither beh_offset= nor vocal_q keys is silently skipped
     (no save attempted), so the run finishes without errors."""
     import pickle as _pickle
@@ -212,12 +222,14 @@ def test_find_region_by_channel_returns_other_for_unknown_channel():
 
 
 def test_load_audio_data_reads_mmap_with_correct_shape(tmp_path):
-    """Filename encodes (sample_rate, n_samples, n_channels, dtype)."""
+    """Filename encodes (sample_rate, n_samples, n_channels, dtype); the file is
+    the 'ultrasonic' band memmap in its exact folder ``audio/hpss_filtered``."""
     n_samples = 100
     n_channels = 4
     sample_rate = 250000
-    fname = f"sess_{sample_rate}_{n_samples}_{n_channels}_int16.mmap"
-    audio_path = tmp_path / fname
+    fname = f"sess_concatenated_audio_hpss_filtered_{sample_rate}_{n_samples}_{n_channels}_int16.mmap"
+    (tmp_path / "audio" / "hpss_filtered").mkdir(parents=True)
+    audio_path = tmp_path / "audio" / "hpss_filtered" / fname
     arr = np.arange(n_samples * n_channels, dtype=np.int16).reshape(n_samples, n_channels)
     arr.tofile(audio_path)
 

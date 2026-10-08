@@ -345,6 +345,26 @@ class TestLoadSelectionResults:
         assert name == 'selection_new.pkl'
         assert out_steps == [{'step_idx': 99}]
 
+    def test_directory_finds_the_consolidator_output_names(self, tmp_path):
+        """A directory load finds the names the consolidator actually
+        writes (``model_selection_final_...pkl`` and
+        ``legacy_selection_...pkl``), which ``selection_*.pkl`` never
+        matched, and still picks the newest; the step files next to them
+        are not taken."""
+
+        final = tmp_path / 'model_selection_final_male_cohort_manifold_qlvm_session_20260101_000000Z.pkl'
+        legacy = tmp_path / 'legacy_selection_20250101_000000Z.pkl'
+        _write_consolidated(final, [{'step_idx': 7}])
+        _write_consolidated(legacy, [{'step_idx': 3}])
+        _write_consolidated(tmp_path / 'model_selection_male_step_1.pkl', [{'step_idx': 1}])
+        os.utime(legacy, (1_000, 1_000))
+        os.utime(final, (2_000, 2_000))
+        out_steps, name, _ = load_selection_results(str(tmp_path))
+        assert name == final.name
+        assert out_steps == [{'step_idx': 7}]
+        final.unlink()
+        assert load_selection_results(str(tmp_path))[1] == legacy.name
+
     def test_non_consolidated_pickle_raises_value_error(self, tmp_path):
         """A pickle without a ``steps`` list is not a consolidated
         artifact -> ``ValueError``."""
@@ -526,6 +546,8 @@ def _full_modeling_settings(model_engine='sklearn',
                     'random_state': 7,
                     'use_lax_loop': True,
                     'tune_regularization_bool': tune_regularization,
+                    'temporal_basis': {'type': 'none', 'n_splines': 8, 'spline_order': 3,
+                                       'lambda_smooth_fixed': 1.0, 'lambda_smooth_decades_each_side': 3},
                     'focal_loss_gamma': 2.0,
                     'balance_predictions_bool': True,
                     'balance_train_bool': False,
@@ -549,6 +571,8 @@ def _full_modeling_settings(model_engine='sklearn',
                     'random_state': 11,
                     'use_lax_loop': False,
                     'tune_regularization_bool': tune_regularization,
+                    'temporal_basis': {'type': 'bspline', 'n_splines': 8, 'spline_order': 3,
+                                       'lambda_smooth_fixed': 0.6, 'lambda_smooth_decades_each_side': 2},
                     'tune_regularization_params': {
                         'lambda_smooth_decades_each_side': 4,
                         'l2_reg_decades_each_side': 3,
@@ -944,6 +968,11 @@ class TestBuildRunMetadata:
         assert 'tune_regularization_params' not in jax
         assert 'focal_loss_gamma' not in jax
         assert 'balance_predictions_bool' not in jax
+        # The fixture's manifold block fits B-splines: the recorded penalty is the
+        # GAM-mirroring P-spline one, not the block's full-resolution settings.
+        assert jax['temporal_basis']['type'] == 'bspline'
+        assert jax['effective_penalty'] == {'lambda_smooth': 0.6, 'l2_reg': 0.0,
+                                            'smoothness_derivative_order': 2, 'smoothness_reflective_edges': False}
 
     def test_continuous_jax_block_with_tuning(self, mocker):
         """``continuous`` with tuning on emits the bivariate inner-CV
@@ -955,7 +984,10 @@ class TestBuildRunMetadata:
         settings = _full_modeling_settings(tune_regularization=True)
         md = self._build(settings, 'continuous', mocker)
         tp = md['jax_hyperparameters']['tune_regularization_params']
-        assert tp['lambda_smooth_decades_each_side'] == 4
+        # B-spline fixture: lambda_smooth is tuned over the temporal_basis decades
+        # and the L2 grid is pinned to 0.
+        assert tp['lambda_smooth_decades_each_side'] == 2
+        assert tp['l2_reg_decades_each_side'] == 0
         assert tp['inner_cv_scoring_metric'] == 'vm_logscore'
         assert tp['inner_cv_use_one_se_rule'] is False
 
@@ -968,6 +1000,9 @@ class TestBuildRunMetadata:
         jax = md['jax_hyperparameters']
         assert jax['focal_loss_gamma'] == 2.0
         assert 'tune_regularization_params' not in jax
+        assert jax['temporal_basis']['type'] == 'none'
+        assert jax['effective_penalty'] == {'lambda_smooth': 0.01, 'l2_reg': 0.001,
+                                            'smoothness_derivative_order': 2, 'smoothness_reflective_edges': True}
 
 
 # build_selection_metadata

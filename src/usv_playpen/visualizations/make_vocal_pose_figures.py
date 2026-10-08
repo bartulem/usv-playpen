@@ -55,8 +55,8 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from PIL import Image
 from scipy.ndimage import gaussian_filter1d
 
-from ..analyses.decode_experiment_label import extract_information
-from ..os_utils import drop_noise_usvs, first_match_or_raise
+from ..os_utils import drop_noise_usvs, first_match_or_raise, noise_mask, pure_usv_mask, squeak_bearing_mask
+from ..yaml_utils import extract_animal_sexes
 from .auxiliary_plot_functions import choose_animal_colors
 from .figure_io import resolve_save_path
 from .make_behavioral_videos import (
@@ -247,21 +247,24 @@ def load_session_poses(root_directory: pathlib.Path, visualizations_parameter_di
     session (dict)
         ``tracks`` (frames, animals, nodes, 3), ``names`` (track names), ``nodes`` (node names), ``fps``,
         ``sex_of`` (track name -> ``'male'`` / ``'female'``), ``colors`` (hex per animal, in track order).
+
+    Notes
+    -----
+    Track names are stripped of null-byte padding and whitespace, and each animal's sex is read
+    from the session metadata (``yaml_utils.extract_animal_sexes``: the ``Subjects`` entry whose
+    ``subject_id`` matches the track name), never from the order of the tracks or of the sexes
+    in the experimental code. A track the metadata cannot resolve raises.
     """
     h5_path = first_match_or_raise(root=root_directory / 'video', pattern='[!speaker]*_points3d_translated_rotated_metric.h5',
                                    recursive=True, label='translated/rotated mouse points3d .h5')
     with h5py.File(h5_path, 'r') as h5_file:
         tracks = np.array(h5_file['tracks'])
-        names = [item.decode('utf-8') for item in h5_file['track_names']]
+        names = [item.decode('utf-8').strip('\x00').strip() for item in h5_file['track_names']]
         nodes = [item.decode('utf-8') for item in h5_file['node_names']]
         fps = float(h5_file['recording_frame_rate'][()])
-        experimental_code = h5_file['experimental_code'][()].decode('utf-8')
-    experiment_info = extract_information(experiment_code=experimental_code)
-    if experiment_info is None:
-        message = f'The experimental code {experimental_code!r} of {h5_path} could not be decoded.'
-        raise ValueError(message)
-    sex_of = dict(zip(names, experiment_info['mouse_sex'], strict=True))
-    colors = choose_animal_colors(exp_info_dict=experiment_info, visualizations_parameter_dict=visualizations_parameter_dict)
+    sex_of = extract_animal_sexes(str(root_directory), names)
+    colors = choose_animal_colors(exp_info_dict={'mouse_sex': [sex_of[name] for name in names]},
+                                  visualizations_parameter_dict=visualizations_parameter_dict)
     return {'tracks': tracks, 'names': names, 'nodes': nodes, 'fps': fps, 'sex_of': sex_of, 'colors': list(colors)}
 
 
@@ -326,6 +329,9 @@ def emitter_spectrogram(root_directory: pathlib.Path, calls: pls.DataFrame, sex_
     column_owner = np.full(times.size, 'none', dtype=object)
     inside_window = calls.filter((pls.col('stop') >= t0) & (pls.col('start') <= end_seconds))
     pad = float(spectrogram['call_pad_seconds'])
+    # Read through os_utils (text-cast, null -> False): a squeak flag CSV-typed as the strings
+    # "true" / "false" would otherwise be truthy for "false" too.
+    inside_window = inside_window.with_columns(squeak_bearing_mask(inside_window, 'the USV summary').alias('_squeak_bearing'))
     for row in inside_window.iter_rows(named=True):
         emitter = row['emitter']
         sex = sex_of[emitter] if emitter is not None and emitter in sex_of else None
@@ -336,7 +342,7 @@ def emitter_spectrogram(root_directory: pathlib.Path, calls: pls.DataFrame, sex_
         column_rgb[inside] = hex_to_rgb(sex_color[sex])
         column_deep[inside] = hex_to_rgb(sex_color[sex]) * deep
         column_split[inside] = float(spectrogram['ramp_split']) if deep < 1.0 else 1.0
-        column_owner[inside] = f"{sex} {'squeak' if row['squeak'] else 'USV'}"
+        column_owner[inside] = f"{sex} {'squeak' if row['_squeak_bearing'] else 'USV'}"
     audible = (freqs >= spectrogram['freq_range_khz'][0]) & (freqs <= spectrogram['freq_range_khz'][1])
     if spectrogram['db_floor'] == 'adaptive':
         db_floor = float(np.median(power_db[audible])) + float(spectrogram['adaptive_floor_above_median_db'])
@@ -1351,13 +1357,16 @@ def find_vocal_pose_windows(root_directory: str, visualizations_parameter_dict: 
     session = load_session_poses(root, visualizations_parameter_dict)
     summary_path = first_match_or_raise(root=root / 'audio', pattern='*_usv_summary.csv', recursive=False, label='USV summary')
     all_calls = pls.read_csv(summary_path, schema_overrides={'emitter': pls.Utf8})
-    noise_rows = all_calls.filter(pls.col('noise') == True)  # noqa: E712
+    noise_rows = all_calls.filter(noise_mask(all_calls, summary_path.name))
     noise_start, noise_stop = noise_rows['start'].to_numpy(), noise_rows['stop'].to_numpy()
     calls = read_session_calls(root, sink)
     start, stop = calls['start'].to_numpy(), calls['stop'].to_numpy()
     duration, bandwidth = calls['duration'].to_numpy(), calls['freq_bandwidth_hz'].to_numpy()
-    is_male_usv = np.array([(emitter in session['sex_of'] and session['sex_of'][emitter] == 'male') and not bool(squeak)
-                            for emitter, squeak in zip(calls['emitter'].to_list(), calls['squeak'].to_list(), strict=True)])
+    # A male USV is a pure USV (usv true, squeak false; os_utils.pure_usv_mask): an unscored row
+    # (null booleans) or a segment holding a squeak does not count, whatever its CSV typing.
+    is_pure_usv = pure_usv_mask(calls, summary_path.name).to_list()
+    is_male_usv = np.array([(emitter in session['sex_of'] and session['sex_of'][emitter] == 'male') and pure_usv
+                            for emitter, pure_usv in zip(calls['emitter'].to_list(), is_pure_usv, strict=True)])
     tracks, fps = session['tracks'], session['fps']
     body = [i for i, name in enumerate(session['nodes']) if not name.startswith('Tail')]
     tracked = np.isfinite(tracks).all(axis=(1, 2, 3))

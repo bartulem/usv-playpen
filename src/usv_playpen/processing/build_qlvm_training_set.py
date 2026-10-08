@@ -16,11 +16,17 @@ sessions and writes the same spectrograms (see ``docs/Process.rst``). The steps:
    ``mask/<session>/spectrogram_index``, from which each row's mask count is
    taken), its type is read from the ``Subjects[].sex`` entries of its metadata
    YAML (:func:`session_type_from_metadata`: ``MF``, ``FF``, ``MM``,
-   ``lone_male``, ...), and the rows its ``*_usv_summary.csv`` flags as squeaks
-   (``exclude_squeaks``; with ``strict_squeak_exclusion`` also every row with
-   at least one run of 3 above-threshold classifier frames, ``squeak_frame_runs
-   >= 1``, the reference squeak index's strict rule) or noise
-   (``exclude_noise``) are marked. A row is
+   ``lone_male``, ...), and the rows that are not ultrasonic calls alone are
+   marked: with ``exclude_squeaks`` every row whose ``*_usv_summary.csv``
+   ``squeak`` (written by ``detect-usv-squeaks``) is true -- a pure squeak or a
+   segment holding both a squeak and a USV -- so the set holds pure USVs only
+   (``usv & ~squeak``) (with
+   ``strict_squeak_exclusion`` the squeak rows come instead from the reference
+   squeak index at ``reference_squeak_index_path``, by its strict rule, to
+   reproduce the shipped sets), with ``exclude_noise`` every row flagged as
+   noise, and every row a ``row_exclusion_table`` lists (a CSV of ``session_id``
+   + H5 ``row``, for exclusions kept outside the summaries;
+   :func:`load_row_exclusion_table`). A row is
    eligible when ``0 < duration < length_threshold``, it is not marked, and, with
    ``require_mask``, it has at least one SAM mask instance
    (:func:`eligible_rows`).
@@ -103,7 +109,13 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.ndimage import zoom
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import first_match_or_raise
+from ..os_utils import (
+    VOCAL_FLAG_COLUMNS,
+    configure_path,
+    first_match_or_raise,
+    noise_mask,
+    squeak_bearing_mask,
+)
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import load_session_metadata
 
@@ -695,27 +707,134 @@ def apply_loudness_floor(spectrograms: np.ndarray, floor: float) -> np.ndarray:
     return np.clip((normalized - floor) / (1.0 - floor), 0.0, 1.0).astype(np.float32)
 
 
+def read_reference_squeak_index(reference_squeak_index_path: str) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """
+    Description
+    -----------
+    Reads the reference squeak index (the per-segment table of the classifier the
+    shipped USV training sets were curated with, ``bbv_segment_index.csv``) and
+    applies its strict squeak rule: a segment is a squeak when its segment flag
+    ``is_bbv`` is true OR it holds at least one run of three above-threshold frames
+    (``n_bouts_min3 >= 1``). By this rule the reference USV training sets left
+    broadband calls out, so a rebuild of those sets has to exclude exactly these
+    rows. Only the four needed columns are read, ``session_id`` as a string.
+
+    Parameters
+    ----------
+    reference_squeak_index_path (str)
+        Path to the index CSV (columns ``session_id``, ``seg_index`` -- the 0-based
+        row of the session's USV summary and spectrogram H5 --, ``is_bbv`` and
+        ``n_bouts_min3``, among others).
+
+    Returns
+    -------
+    index (dict[str, tuple[np.ndarray, np.ndarray]])
+        Session id -> (``seg_index`` (int64), strict squeak flag (bool)), row-aligned.
+
+    Raises
+    ------
+    FileNotFoundError
+        The index does not exist.
+    ValueError
+        A needed column is missing.
+    """
+
+    path = pathlib.Path(configure_path(reference_squeak_index_path))
+    if not path.is_file():
+        error_message = f"Reference squeak index not found: {path}."
+        raise FileNotFoundError(error_message)
+    needed = ["session_id", "seg_index", "is_bbv", "n_bouts_min3"]
+    header = pls.read_csv(str(path), n_rows=0).columns
+    missing = [column for column in needed if column not in header]
+    if missing:
+        error_message = f"{path} lacks the column(s) {missing}; the strict squeak rule reads {needed}."
+        raise ValueError(error_message)
+    table = pls.read_csv(
+        str(path),
+        columns=needed,
+        schema_overrides={"session_id": pls.String, "seg_index": pls.Int64, "is_bbv": pls.String, "n_bouts_min3": pls.Int64},
+    )
+    strict = table["is_bbv"].str.to_lowercase().eq("true").fill_null(False) | (table["n_bouts_min3"].fill_null(0) >= 1)
+    table = table.with_columns(strict.alias("strict"))
+    return {
+        str(session_id): (group["seg_index"].to_numpy().astype(np.int64), group["strict"].to_numpy().astype(bool))
+        for (session_id,), group in table.group_by("session_id", maintain_order=True)
+    }
+
+
+def reference_strict_squeak_rows(index: dict[str, tuple[np.ndarray, np.ndarray]], session_id: str, n_rows: int) -> np.ndarray:
+    """
+    Description
+    -----------
+    One session's rows that the reference squeak index's strict rule marks as
+    squeaks (:func:`read_reference_squeak_index`), as a boolean over the
+    session's spectrogram H5 rows. A row the index does not list is not marked.
+
+    Parameters
+    ----------
+    index (dict[str, tuple[np.ndarray, np.ndarray]])
+        The read index.
+    session_id (str)
+        The session (its spectrogram H5 group name).
+    n_rows (int)
+        Row count of the session's spectrogram H5.
+
+    Returns
+    -------
+    squeak (np.ndarray)
+        ``(n_rows,)`` boolean.
+
+    Raises
+    ------
+    ValueError
+        The session is not in the index (its strict exclusions are unknown), or the
+        index lists a row outside ``0 .. n_rows - 1`` (the session's rows changed
+        since the index was written).
+    """
+
+    if session_id not in index:
+        error_message = (
+            f"Session {session_id} is not in the reference squeak index, so its strict squeak exclusions are "
+            f"unknown; leave it out or turn strict_squeak_exclusion off."
+        )
+        raise ValueError(error_message)
+    rows, strict = index[session_id]
+    if rows.size and (rows.min() < 0 or rows.max() >= n_rows):
+        error_message = (
+            f"The reference squeak index lists rows {int(rows.min())}..{int(rows.max())} for session {session_id}, "
+            f"whose spectrogram H5 has {n_rows} rows; the index does not describe this session's rows."
+        )
+        raise ValueError(error_message)
+    squeak = np.zeros(n_rows, dtype=bool)
+    squeak[rows[strict]] = True
+    return squeak
+
+
 def usv_summary_exclusions(
     root_directory: str,
     n_rows: int,
     exclude_squeaks: bool,
     exclude_noise: bool,
-    strict_squeak_exclusion: bool = False,
+    reference_squeak_rows: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Description
     -----------
-    The rows of a session's ``*_usv_summary.csv`` to leave out of a USV training
-    set: squeaks (``squeak`` true, written by ``detect-usv-squeaks``) when
-    ``exclude_squeaks``, and noise (``noise`` true, written by
-    ``detect-usv-noise``) when ``exclude_noise``; a null value counts as false.
-    With ``strict_squeak_exclusion`` (which needs ``exclude_squeaks``) a row is
-    also a squeak when ``squeak_frame_runs >= 1`` (at least one run of 3
-    consecutive above-threshold frames in the classifier's 128-frame window, also
-    written by ``detect-usv-squeaks``; a null counts as 0): the strict rule of the
-    reference squeak index (segment probability >= 0.385 OR ``n_bouts_min3 >=
-    1``), by which the reference USV training sets left broadband calls out.
-    The summary rows are 1:1 with the spectrogram H5 rows, which is checked.
+    The rows of a session to leave out of a USV training set, which holds
+    ultrasonic calls alone. With ``exclude_squeaks`` every row whose
+    ``*_usv_summary.csv`` ``squeak`` (written by ``detect-usv-squeaks``) is true --
+    a squeak alone or a squeak and a USV in one segment -- is left out
+    (:func:`os_utils.squeak_bearing_mask`), so only pure USVs (``usv & ~squeak``)
+    can be drawn; null booleans (a noise row, or a segment too short to score) do
+    not mark a squeak -- noise is left out by ``exclude_noise`` and the unscorable segments by the
+    duration gate (:func:`eligible_rows`). With ``exclude_noise`` every row whose
+    ``noise`` (written by ``detect-usv-noise``) is true is left out; a null counts
+    as false. When ``reference_squeak_rows`` is given (``strict_squeak_exclusion``,
+    which needs ``exclude_squeaks``) it REPLACES the ``squeak`` rule: the
+    squeak rows are those the reference squeak index marks by its strict rule
+    (:func:`reference_strict_squeak_rows`), the exclusions the shipped USV training
+    sets were drawn with. The summary is read only when a rule needs it, and its
+    rows must be 1:1 with the spectrogram H5 rows, which is checked.
 
     Parameters
     ----------
@@ -724,12 +843,12 @@ def usv_summary_exclusions(
     n_rows (int)
         Row count of the session's spectrogram H5.
     exclude_squeaks (bool)
-        Leave out squeak rows.
+        Leave out squeak and both rows.
     exclude_noise (bool)
         Leave out noise rows.
-    strict_squeak_exclusion (bool)
-        Also leave out rows with ``squeak_frame_runs >= 1`` (the reference squeak
-        index's strict rule); only meaningful with ``exclude_squeaks``.
+    reference_squeak_rows (np.ndarray | None)
+        ``(n_rows,)`` boolean squeak rows of the reference squeak index, used
+        instead of the summary's ``squeak``; None uses ``squeak``.
 
     Returns
     -------
@@ -740,17 +859,23 @@ def usv_summary_exclusions(
     ------
     ValueError
         The summary's row count differs from the H5's, a needed column is missing
-        (``squeak_frame_runs`` under ``strict_squeak_exclusion``: a summary
-        written before ``detect-usv-squeaks`` recorded it), or
-        ``strict_squeak_exclusion`` is requested without ``exclude_squeaks``.
+        (``usv`` / ``squeak`` or ``noise``), or ``reference_squeak_rows`` is given without
+        ``exclude_squeaks`` or with the wrong shape.
     """
 
-    if strict_squeak_exclusion and not exclude_squeaks:
-        error_message = "strict_squeak_exclusion widens the squeak exclusion, so it needs exclude_squeaks."
+    if reference_squeak_rows is not None and not exclude_squeaks:
+        error_message = "strict_squeak_exclusion replaces the squeak exclusion, so it needs exclude_squeaks."
         raise ValueError(error_message)
 
     excluded = np.zeros(n_rows, dtype=bool)
-    if not exclude_squeaks and not exclude_noise:
+    if reference_squeak_rows is not None:
+        reference_squeak_rows = np.asarray(reference_squeak_rows, dtype=bool)
+        if reference_squeak_rows.shape != (n_rows,):
+            error_message = f"reference_squeak_rows has shape {reference_squeak_rows.shape}, the H5 has {n_rows} rows."
+            raise ValueError(error_message)
+        excluded |= reference_squeak_rows
+    use_squeak_flag = exclude_squeaks and reference_squeak_rows is None
+    if not use_squeak_flag and not exclude_noise:
         return excluded
     usv_summary_path = first_match_or_raise(
         root=pathlib.Path(root_directory) / "audio",
@@ -765,21 +890,17 @@ def usv_summary_exclusions(
             f"the summary flags cannot be joined to the spectrograms by row."
         )
         raise ValueError(error_message)
-    for enabled, column, producer in ((exclude_squeaks, "squeak", "detect-usv-squeaks"), (exclude_noise, "noise", "detect-usv-noise")):
-        if not enabled:
-            continue
-        if column not in usv_summary.columns:
-            error_message = f"{usv_summary_path} has no '{column}' column; run {producer} on the session first."
+    if use_squeak_flag:
+        missing = [column for column in VOCAL_FLAG_COLUMNS if column not in usv_summary.columns]
+        if missing:
+            error_message = f"{usv_summary_path} has no {missing} column(s); run detect-usv-squeaks on the session first."
             raise ValueError(error_message)
-        excluded |= usv_summary[column].cast(pls.Boolean).fill_null(False).to_numpy()
-    if strict_squeak_exclusion:
-        if "squeak_frame_runs" not in usv_summary.columns:
-            error_message = (
-                f"{usv_summary_path} has no 'squeak_frame_runs' column, which strict_squeak_exclusion needs; "
-                f"re-run detect-usv-squeaks on the session (summaries scored before the column existed lack it)."
-            )
+        excluded |= squeak_bearing_mask(usv_summary, usv_summary_path.name).to_numpy()
+    if exclude_noise:
+        if "noise" not in usv_summary.columns:
+            error_message = f"{usv_summary_path} has no 'noise' column; run detect-usv-noise on the session first."
             raise ValueError(error_message)
-        excluded |= usv_summary["squeak_frame_runs"].cast(pls.Int64).fill_null(0).to_numpy() >= 1
+        excluded |= noise_mask(usv_summary, usv_summary_path.name).to_numpy()
     return excluded
 
 
@@ -1091,6 +1212,77 @@ def parse_optional_float(value: str) -> float | None:
         raise click.BadParameter(error_message) from error
 
 
+def parse_optional_path(value: str) -> str | None:
+    """
+    Description
+    -----------
+    Decodes an option that takes a file path or ``none`` (``--row-exclusion-table``):
+    ``"none"`` / ``"null"`` / an empty string become None (written to the settings
+    as JSON null), anything else is returned stripped of surrounding blanks.
+
+    Parameters
+    ----------
+    value (str)
+        The raw option value.
+
+    Returns
+    -------
+    parsed (str | None)
+        The path, or None.
+    """
+
+    if value.strip().lower() in ("", "none", "null"):
+        return None
+    return value.strip()
+
+
+def load_row_exclusion_table(table_path: str) -> dict[str, np.ndarray]:
+    """
+    Description
+    -----------
+    Reads a row-exclusion table: a CSV with one row per call to leave out of the
+    set, columns ``session_id`` (the session id that names the spectrogram H5
+    groups) and ``row`` (the call's row in that session's spectrogram H5, which is
+    also its ``*_usv_summary.csv`` row and the number after the last underscore of
+    its ``spec_id``). Other columns are ignored. It carries exclusions that live
+    outside the USV summaries, e.g. a hand-curated list of calls to drop, or the
+    reference squeak index's strict rows for a set that also needs the summary
+    ``squeak`` flag (``strict_squeak_exclusion`` replaces that flag rather than
+    adding to it). The table's rows are added on top of every other exclusion.
+
+    Parameters
+    ----------
+    table_path (str)
+        Path to the CSV.
+
+    Returns
+    -------
+    rows_by_session (dict[str, np.ndarray])
+        Session id -> sorted unique int64 H5 rows to leave out.
+
+    Raises
+    ------
+    ValueError
+        The table lacks a ``session_id`` or ``row`` column, or holds a negative or
+        non-integer row.
+    """
+
+    table = pls.read_csv(table_path, schema_overrides={"session_id": pls.String}, infer_schema_length=0)
+    missing = [column for column in ("session_id", "row") if column not in table.columns]
+    if missing:
+        error_message = f"{table_path} has no {missing} column(s); a row-exclusion table needs session_id and row."
+        raise ValueError(error_message)
+    rows = table["row"].str.strip_chars().cast(pls.Int64, strict=False)
+    if rows.null_count() or (rows < 0).any():
+        error_message = f"{table_path}: every row must be a non-negative integer H5 row index."
+        raise ValueError(error_message)
+    table = table.with_columns(rows.alias("row"))
+    rows_by_session = {}
+    for (session_id,), group in table.group_by(["session_id"], maintain_order=True):
+        rows_by_session[str(session_id)] = np.unique(group["row"].to_numpy().astype(np.int64))
+    return rows_by_session
+
+
 def parse_int_list(value: str) -> list[int]:
     """
     Description
@@ -1157,9 +1349,10 @@ class QLVMTrainingSetBuilder:
         row_exclusions (dict[str, np.ndarray] | None)
             Python-API only: per session id, a boolean ``(n_rows,)`` array of rows to
             leave out that REPLACES the ``exclude_squeaks`` / ``exclude_noise`` /
-            ``strict_squeak_exclusion`` flags of the USV summary for that session (e.g. an external squeak
-            index, to rebuild a set whose exclusions came from elsewhere). None (the
-            default) uses the summary flags for every session.
+            ``strict_squeak_exclusion`` rules for that session (e.g. exclusions computed
+            elsewhere, to rebuild a set whose exclusions came from outside the summary
+            and the reference squeak index). None (the default) applies the settings'
+            rules to every session.
 
         Returns
         -------
@@ -1210,6 +1403,7 @@ class QLVMTrainingSetBuilder:
         exclude_squeaks = cfg['exclude_squeaks']
         exclude_noise = cfg['exclude_noise']
         strict_squeak_exclusion = cfg['strict_squeak_exclusion']
+        reference_squeak_index_path = cfg['reference_squeak_index_path']
         masking_type = cfg['masking_type']
         apply_mask = cfg['apply_mask']
         floor = None if cfg['floor'] is None else float(cfg['floor'])
@@ -1218,6 +1412,7 @@ class QLVMTrainingSetBuilder:
         full_dataset = cfg['full_dataset']
         target_shape = tuple(int(v) for v in cfg['target_shape'])
         time_stretch = cfg['time_stretch']
+        row_exclusion_table = cfg['row_exclusion_table']
 
         problems = []
         if not 0.0 < validation_split < 1.0:
@@ -1240,14 +1435,23 @@ class QLVMTrainingSetBuilder:
         if not session_type_targets:
             problems.append("session_type_targets is empty; list at least one session type")
         if strict_squeak_exclusion and not exclude_squeaks:
-            problems.append("strict_squeak_exclusion widens the squeak exclusion, so it needs exclude_squeaks")
+            problems.append("strict_squeak_exclusion replaces the squeak exclusion, so it needs exclude_squeaks")
+        if strict_squeak_exclusion and not reference_squeak_index_path:
+            problems.append("strict_squeak_exclusion reads the reference squeak index, but reference_squeak_index_path is empty")
         if problems:
             error_message = "build_qlvm_training_set settings are inconsistent:\n  " + "\n  ".join(problems)
             raise ValueError(error_message)
 
+        # Calls listed in the row-exclusion table are left out on top of the summary
+        # flags (or of the Python-API row_exclusions that replace them).
+        table_exclusions = None if row_exclusion_table is None else load_row_exclusion_table(row_exclusion_table)
+        table_excluded_rows = 0
+
         output_dir = pathlib.Path(self.output_directory)
         output_dir.mkdir(parents=True, exist_ok=True)
         bin_labels = mask_count_bin_labels(bin_edges)
+        # The reference squeak index is one cohort-wide table: read once, looked up per session.
+        reference_index = read_reference_squeak_index(reference_squeak_index_path) if strict_squeak_exclusion else None
 
         # Phase 1: per-session metadata. The H5 pattern is session-keyed rather
         # than "*_spectrograms.h5" because a session can hold other files ending in
@@ -1280,7 +1484,19 @@ class QLVMTrainingSetBuilder:
                     error_message = f"row_exclusions[{session_id!r}] has shape {excluded.shape}, the H5 has {durations.size} rows."
                     raise ValueError(error_message)
             else:
-                excluded = usv_summary_exclusions(root_directory, durations.size, exclude_squeaks, exclude_noise, strict_squeak_exclusion)
+                reference_rows = None if reference_index is None else reference_strict_squeak_rows(reference_index, session_id, durations.size)
+                excluded = usv_summary_exclusions(root_directory, durations.size, exclude_squeaks, exclude_noise, reference_rows)
+            if table_exclusions is not None and session_id in table_exclusions:
+                table_rows = table_exclusions[session_id]
+                if table_rows.size and table_rows[-1] >= durations.size:
+                    error_message = (
+                        f"{row_exclusion_table} names row {int(table_rows[-1])} of {session_id}, whose spectrogram H5 "
+                        f"has {durations.size} rows; the table was made for another version of the H5."
+                    )
+                    raise ValueError(error_message)
+                excluded = excluded.copy()
+                table_excluded_rows += int(np.count_nonzero(~excluded[table_rows]))
+                excluded[table_rows] = True
             rows = eligible_rows(durations, mask_counts, excluded, length_threshold, require_mask)
             without_exclusion = eligible_rows(durations, mask_counts, np.zeros_like(excluded), length_threshold, require_mask)
             excluded_by_type[session_type] = excluded_by_type.get(session_type, 0) + int(without_exclusion.size - rows.size)
@@ -1303,6 +1519,11 @@ class QLVMTrainingSetBuilder:
             f"{len(sessions)} sessions; eligible rows removed by the summary exclusions: "
             + (", ".join(f"{session_type}={count:,}" for session_type, count in sorted(excluded_by_type.items())) or "none") + "."
         )
+        if table_exclusions is not None:
+            self.message_output(
+                f"The row-exclusion table {row_exclusion_table} added {table_excluded_rows:,} rows (of any duration or "
+                f"mask count) to those exclusions."
+            )
         if not sessions:
             self.message_output("No session of a listed type; nothing written.")
             return
@@ -1452,7 +1673,11 @@ class QLVMTrainingSetBuilder:
             exclude_squeaks=exclude_squeaks,
             exclude_noise=exclude_noise,
             strict_squeak_exclusion=strict_squeak_exclusion,
+            reference_squeak_index_path=str(reference_squeak_index_path) if strict_squeak_exclusion else "",
             row_exclusions_override=self.row_exclusions is not None,
+            row_exclusion_table="" if row_exclusion_table is None else str(row_exclusion_table),
+            row_exclusion_table_sha256="" if row_exclusion_table is None else file_sha256(row_exclusion_table),
+            row_exclusion_table_rows_added=table_excluded_rows,
             excluded_by_type=json.dumps(excluded_by_type),
             n_train=written["train_data.npz"],
             n_val=written["val_data.npz"],
@@ -1472,9 +1697,11 @@ class QLVMTrainingSetBuilder:
 @click.option('--mask-count-bin-edges', 'mask_count_bin_edges', type=str, default=None, required=False, help='Comma-separated inclusive lower bounds of the mask-count strata above 0, the last open-ended, e.g. 1,2,3,4,5 (strata 0/1/2/3/4/5+).')
 @click.option('--length-threshold', 'length_threshold', type=float, default=None, required=False, help='Drop spectrograms with duration >= threshold (time bins).')
 @click.option('--require-mask/--no-require-mask', 'require_mask', default=None, required=False, help='Leave out calls without a SAM mask instance.')
-@click.option('--exclude-squeaks/--no-exclude-squeaks', 'exclude_squeaks', default=None, required=False, help='Leave out rows the USV summary flags as squeaks (detect-usv-squeaks).')
-@click.option('--strict-squeak-exclusion/--no-strict-squeak-exclusion', 'strict_squeak_exclusion', default=None, required=False, help='With --exclude-squeaks, also leave out rows with squeak_frame_runs >= 1 (the reference squeak index\'s strict rule); needs a summary scored by a detect-usv-squeaks that writes squeak_frame_runs.')
+@click.option('--exclude-squeaks/--no-exclude-squeaks', 'exclude_squeaks', default=None, required=False, help='Leave out rows whose USV summary squeak flag is true (pure squeaks and squeak + USV segments; detect-usv-squeaks), so the set holds pure USVs (usv true, squeak false) only.')
+@click.option('--strict-squeak-exclusion/--no-strict-squeak-exclusion', 'strict_squeak_exclusion', default=None, required=False, help='With --exclude-squeaks, take the squeak rows from the reference squeak index (--reference-squeak-index-path) by its strict rule (is_bbv or n_bouts_min3 >= 1) instead of the summary squeak flag, to reproduce the shipped sets.')
+@click.option('--reference-squeak-index-path', 'reference_squeak_index_path', type=str, default=None, required=False, help='The reference squeak index CSV (session_id, seg_index, is_bbv, n_bouts_min3) read by --strict-squeak-exclusion.')
 @click.option('--exclude-noise/--no-exclude-noise', 'exclude_noise', default=None, required=False, help='Leave out rows the USV summary flags as noise (detect-usv-noise).')
+@click.option('--row-exclusion-table', 'row_exclusion_table', type=str, default=None, required=False, help='CSV with columns session_id and row (spectrogram-H5 row) of further calls to leave out, on top of the summary flags (e.g. a hand-curated list of calls to drop), or "none".')
 @click.option('--masking-type', 'masking_type', type=click.Choice(['sam', 'none']), default=None, required=False, help='Read SAM masks from the mask/<session> groups ("sam") or none ("none").')
 @click.option('--apply-mask/--no-apply-mask', 'apply_mask', default=None, required=False, help='Multiply the binarized SAM mask into the stored spectrograms (masked set) or keep them unmasked.')
 @click.option('--floor', 'floor', type=str, default=None, required=False, help='Loudness floor baked into unmasked spectrograms after a per-spectrogram min-max (e.g. 0.2), or "none".')
@@ -1500,7 +1727,8 @@ def build_qlvm_training_set_cli(ctx, root_directories, output_directory, **kwarg
     """
 
     provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
-    for key, parser in (('session_type_targets', parse_session_type_targets), ('mask_count_bin_edges', parse_int_list), ('floor', parse_optional_float)):
+    for key, parser in (('session_type_targets', parse_session_type_targets), ('mask_count_bin_edges', parse_int_list), ('floor', parse_optional_float),
+                        ('row_exclusion_table', parse_optional_path)):
         if key in provided_params:
             ctx.params[key] = parser(ctx.params[key])
 

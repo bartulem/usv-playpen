@@ -192,6 +192,35 @@ def test_modify_settings_block_emits_no_ambiguity_warning(capsys):
     assert "ambiguous" not in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("block", "other_block", "bounds"),
+    [
+        ("modify_files.Operator.broadband_filter_audio", "filter_audio_files", [0, 3000]),
+        ("modify_files.Operator.filter_audio_files", "broadband_filter_audio", [0, 25000]),
+    ],
+)
+def test_modify_settings_dotted_block_scopes_nested_shared_key(capsys, block, other_block, bounds):
+    """``filter_freq_bounds`` names the removed band of BOTH audio filters, the
+    30 kHz ``filter_audio_files`` block and the 2 kHz ``broadband_filter_audio``
+    block, which sit side by side under ``modify_files.Operator``. A dotted
+    ``block`` path must write a filter command's ``--freq-bounds`` into its own
+    nested block only, leave the other filter's bounds as shipped and print no
+    ambiguity warning."""
+    ctx = SimpleNamespace(params={"filter_freq_bounds": tuple(bounds)})
+    shipped = modify_settings_json_for_cli(ctx, provided_params=[], settings_dict="processing_settings")
+    result = modify_settings_json_for_cli(
+        ctx,
+        provided_params=["filter_freq_bounds"],
+        parameters_lists=["filter_freq_bounds"],
+        settings_dict="processing_settings",
+        block=block,
+    )
+    operator = result["modify_files"]["Operator"]
+    assert operator[block.split(".")[-1]]["filter_freq_bounds"] == bounds
+    assert operator[other_block]["filter_freq_bounds"] == shipped["modify_files"]["Operator"][other_block]["filter_freq_bounds"]
+    assert "ambiguous" not in capsys.readouterr().err
+
+
 def test_modify_settings_block_warns_when_key_absent_from_block(capsys):
     """A provided param that is not a key of the named block is skipped with a
     block-specific 'did not match' warning, instead of leaking into another block."""

@@ -7,8 +7,8 @@ inside a log bin, interpolation where none does, rows summing to 1), the
 channel-averaged log spectrogram of pure tones, the dB quantization round trip,
 the display-window placement and the explorer's tile reader are tested
 directly. The builder runs end to end on a synthetic session (per-channel
-PCM_16 wavs under ``audio/hpss`` plus a ``*_usv_summary.csv`` with squeak and
-noise columns) and the written store is read back: which rows it holds, their
+PCM_16 wavs under ``audio/hpss`` plus a ``*_usv_summary.csv`` with the usv / squeak
+booleans and noise column) and the written store is read back: which rows it holds, their
 frame counts, the window of a segment longer than the stored window, the
 quantized values against a direct recomputation, the attrs, and the resolver
 that finds it without matching the consolidated store's pattern.
@@ -75,10 +75,11 @@ def _build_session(tmp_path: pathlib.Path, excluded_channels: list[str] | None =
     -----------
     Creates a synthetic session: four PCM_16 HPSS wavs (two master, two slave
     channels) of 2 s of noise plus a 5 kHz tone, and a summary with a 50 ms
-    squeak (row 0), a 0.6 s squeak whose extent lies late in the segment
-    (row 1, longer than the 64-frame test window), a squeak flagged as noise
-    (row 2), a non-squeak (row 3) and a 4 ms squeak too short for one STFT
-    frame (row 4). Optionally writes session metadata excluding channels.
+    squeak (row 0), a 0.6 s both segment whose squeak lies late in the segment
+    (row 1, longer than the 64-frame test window), a noise row without a call
+    class (row 2), a usv row (row 3) and a 4 ms squeak without a squeak
+    envelope, too short for one STFT frame (row 4). Optionally writes session
+    metadata excluding channels.
 
     Parameters
     ----------
@@ -111,16 +112,15 @@ def _build_session(tmp_path: pathlib.Path, excluded_channels: list[str] | None =
             "usv_id": ["0000", "0001", "0002", "0003", "0004"],
             "start": [0.10, 0.30, 1.00, 1.20, 1.50],
             "stop": [0.15, 0.90, 1.05, 1.25, 1.504],
-            "squeak": [True, True, True, False, True],
-            "squeak_probability": [0.9, 0.8, 0.7, None, 0.6],
-            "squeak_start": [0.11, 0.70, 1.01, None, None],
-            "squeak_end": [0.14, 0.80, 1.04, None, None],
+            "usv": [False, True, None, True, False],
+            "squeak": [True, True, None, False, True],
+            "squeak_start": [0.11, 0.70, None, None, None],
+            "squeak_end": [0.14, 0.80, None, None, None],
             "noise": [False, None, True, False, False],
         },
         schema={
-            "usv_id": pls.String, "start": pls.Float64, "stop": pls.Float64, "squeak": pls.Boolean,
-            "squeak_probability": pls.Float64, "squeak_start": pls.Float64, "squeak_end": pls.Float64,
-            "noise": pls.Boolean,
+            "usv_id": pls.String, "start": pls.Float64, "stop": pls.Float64, "usv": pls.Boolean, "squeak": pls.Boolean,
+            "squeak_start": pls.Float64, "squeak_end": pls.Float64, "noise": pls.Boolean,
         },
     ).write_csv(root / "audio" / f"{SESSION_ID}_usv_summary.csv")
     if excluded_channels is not None:
@@ -214,7 +214,8 @@ def test_display_window_first():
 
 
 def test_builder_writes_the_squeak_rows_of_every_session(tmp_path):
-    """The store holds the squeak rows that are not noise, their frames, the centred long window and the attrs."""
+    """The store holds the squeak and both rows that are not noise, their frames, the centred long window,
+    the audio window starts and the attrs."""
     root = _build_session(tmp_path, excluded_channels=["s_ch02"])
     output = tmp_path / "spectrograms"
     output.mkdir()
@@ -253,12 +254,13 @@ def test_builder_writes_the_squeak_rows_of_every_session(tmp_path):
         np.testing.assert_array_equal(group["durations"][:], [expected_frames[0], 64, 0])
 
         first, last = squeak_crop_frames(
-            segment_start_s=np.array([0.30]), squeak_start_s=np.array([0.70]), squeak_end_s=np.array([0.80]),
+            window_start_s=np.array([0.30]), squeak_start_s=np.array([0.70]), squeak_end_s=np.array([0.80]),
             n_frames=np.array([expected_frames[1]]),
         )
         expected_first = store.display_window_first(int(expected_frames[1]), int(first[0]), int(last[0]), 64)
         assert expected_first > 0
         np.testing.assert_array_equal(group["window_first"][:], [0, expected_first, 0])
+        np.testing.assert_allclose(group["audio_start_s"][:], [0.10, 0.30, 0.0])
         assert np.all(group["spectrograms"][0, :, expected_frames[0]:] == 0)
         assert np.all(group["spectrograms"][2] == 0)
 

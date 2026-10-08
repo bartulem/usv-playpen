@@ -1,9 +1,9 @@
 """
 @author: bartulem
-Module for continuous UMAP-position USV modelling (JAX, assumes GPU usage).
+Module for continuous manifold-position USV modelling (JAX, assumes GPU usage).
 
 This module provides a pipeline for mapping behavioural kinematics onto the
-continuous 2-D UMAP manifold of the vocal repertoire. It predicts the
+continuous 2-D acoustic manifold of the vocal repertoire. It predicts the
 deterministic `(x, y)` location of an upcoming vocalisation from a short
 history window of behavioural features. Earlier revisions fitted a full
 bivariate-Gaussian density with globally shared variance parameters; we
@@ -18,7 +18,7 @@ learned linear map, the temporal smoothness penalty, and the inverse-
 density sample weighting — and drops only the density head.
 
 Key scientific capabilities:
-1.  Continuous target extraction: extracts `(x, y)` UMAP coordinate pairs
+1.  Continuous target extraction: extracts `(x, y)` manifold coordinate pairs
     for every valid bout, enabling the model to learn a continuous mapping
     from behavioural history to acoustic outcomes.
 2.  Geographic fairness (inverse density weighting): computes a Gaussian
@@ -80,6 +80,7 @@ from .modeling_utils import (
     manifold_tag_segment,
 )
 from .manifold_torus_regression import resolve_manifold_regressor_cls
+from .modeling_bases_functions import basis_coefficients_to_frames, project_history_onto_basis, resolve_temporal_basis
 from .manifold_metric import (
     signed_diff,
     circular_mean,
@@ -94,6 +95,7 @@ from .modeling_torus_geodesics import (
     geodesic_mae_columns,
     make_qlvm_decode_fn_from_source,
     resolve_geodesic_decoder_source,
+    resolve_manifold_column_names,
 )
 from ..analyses.compute_behavioral_features import FeatureZoo
 from ..os_utils import resolve_modeling_setting
@@ -111,7 +113,7 @@ def compute_inverse_density_weights(Y: np.ndarray,
     """
     Computes inverse density sample weights using Gaussian Kernel Density Estimation (KDE).
 
-    This neutralizes the topographical bias of the UMAP space. Rare "satellite"
+    This neutralizes the topographical bias of the manifold space. Rare "satellite"
     vocalizations receive mathematically higher weights than syllables in the
     dense manifold core, ensuring the optimizer treats all geographic regions equally.
 
@@ -133,7 +135,7 @@ def compute_inverse_density_weights(Y: np.ndarray,
     Parameters
     ----------
     Y : np.ndarray
-        Array of shape (N, 2) containing continuous UMAP coordinates.
+        Array of shape (N, 2) containing continuous manifold coordinates.
     clip_percentile : float, default 95.0
         The percentile at which to cap maximum weights, preventing single extreme
         outliers from mathematically dominating the loss landscape.
@@ -194,9 +196,9 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
                                          metric: str = 'euclidean',
                                          period: float = 1.0) -> List[Tuple[np.ndarray, np.ndarray]]:
     """
-    Generates deterministic folds ensuring spatial geographic fairness across the UMAP manifold.
+    Generates deterministic folds ensuring spatial geographic fairness across the acoustic manifold.
 
-    Uses K-Means to temporarily partition the continuous UMAP space into micro-neighborhoods
+    Uses K-Means to temporarily partition the continuous manifold space into micro-neighborhoods
     (proxy labels). Depending on the `split_strategy`, it then splits the dataset to ensure
     the dense core and rare satellite clusters are proportionally represented in both train
     and test sets.
@@ -206,7 +208,7 @@ def get_stratified_spatial_splits_stable(groups: np.ndarray,
     groups : np.ndarray
         Array of session IDs. Used strictly when split_strategy='session'.
     Y : np.ndarray
-        Array of shape (N, 2) containing continuous UMAP coordinates.
+        Array of shape (N, 2) containing continuous manifold coordinates.
     split_strategy : str, default 'session'
         Determines the data leakage constraint:
         - 'session': Strict cross-session prediction. Samples from the same session
@@ -404,6 +406,9 @@ def _log_spaced_grid(center: float, decades_each_side: int) -> np.ndarray:
         Sorted 1-D array of length `2 * decades_each_side + 1`.
     """
 
+    if decades_each_side == 0:
+        # No tuning: the fixed value itself (0 allowed, e.g. the pinned L2 of a B-spline fit).
+        return np.array([float(center)])
     if decades_each_side < 0:
         raise ValueError(f"decades_each_side must be >= 0, got {decades_each_side}.")
     if center <= 0:
@@ -426,6 +431,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                                   n_time_bins: int,
                                   spatial_cluster_num: int,
                                   smoothness_derivative_order: int,
+                                  smoothness_reflective_edges: bool = True,
                                   huber_delta: float,
                                   learning_rate: float,
                                   inner_max_iter: int,
@@ -482,7 +488,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     Parameters
     ----------
     X_train, Y_train, w_train, groups_train : np.ndarray
-        Training-fold design matrix, UMAP targets, inverse-density weights,
+        Training-fold design matrix, manifold targets, inverse-density weights,
         and session IDs.
     lambda_smooth_grid, l2_reg_grid : np.ndarray
         1-D candidate grids, typically log-spaced.
@@ -515,6 +521,10 @@ def _tune_manifold_regularization(X_train: np.ndarray,
     smoothness_derivative_order : int
         Order of the discrete time derivative penalised by the smoothness
         term; forwarded unchanged to `regressor_cls` on every inner fit.
+    smoothness_reflective_edges : bool
+        Whether an order-2 penalty also penalises the filter's edge slopes
+        (False for a B-spline temporal basis: the plain P-spline penalty);
+        forwarded unchanged to `regressor_cls` on every inner fit.
     use_lax_loop : bool
         Whether the estimator's fused `lax`-scan training loop is enabled;
         forwarded unchanged to `regressor_cls` on every inner fit.
@@ -623,6 +633,7 @@ def _tune_manifold_regularization(X_train: np.ndarray,
                         lambda_smooth=float(lam_sm),
                         l2_reg=float(lam_l2),
                         smoothness_derivative_order=smoothness_derivative_order,
+                        smoothness_reflective_edges=smoothness_reflective_edges,
                         huber_delta=huber_delta,
                         learning_rate=learning_rate,
                         max_iter=inner_max_iter,
@@ -835,7 +846,7 @@ class ContinuousModelingPipeline(FeatureZoo):
 
         Process Outline:
         1. Target extraction: Identifies all valid USVs across specified sessions, verifies they
-           meet the historical time constraints, and extracts their continuous 2D UMAP coordinates (Y).
+           meet the historical time constraints, and extracts their continuous 2D manifold coordinates (Y).
         2. Geographic fairness (KDE weights): Computes a global Gaussian Kernel Density Estimate
            across the universal Y manifold to generate normalized inverse-density sample weights (w).
            This mathematically neutralizes the topographical bias of the dense acoustic core.
@@ -853,7 +864,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             `data[feature_name][session_id] = {'X': array, 'Y': array, 'w': array}`
 
             - 'X': Predictor history matrix of shape (n_samples, history_frames).
-            - 'Y': Target spatial matrix of shape (n_samples, 2) containing (umap_x, umap_y).
+            - 'Y': Target spatial matrix of shape (n_samples, 2) containing (x, y).
             - 'w': Inverse-density sample weights of shape (n_samples,).
         """
 
@@ -929,18 +940,14 @@ class ContinuousModelingPipeline(FeatureZoo):
             if onsets is None or targets is None:
                 continue
 
-            # Per-USV cluster labels (supercategory + category) aligned 1:1
-            # with onsets/targets. Surfaced by `find_usv_categories` when the
-            # corresponding columns exist in the source USV CSV (the manifold
-            # prefix tells the loader which columns to read). Absent label
-            # arrays signal "this USV summary predates labelling"; downstream
+            # Per-USV category labels (the regular map's qlvm_category, the
+            # label of every map's calls, conditional maps included) aligned
+            # 1:1 with onsets/targets. Surfaced by `find_usv_categories` when
+            # the column exists in the source USV CSV. Absent label arrays
+            # signal "this USV summary carries no categories yet"; downstream
             # region-conditional analyses (e.g. CNN saliency cluster filters)
             # raise a clear error in that case rather than silently passing.
             sess_targ_pkt = usv_data_dict[sess_id][targ_name]
-            if 'continuous_supercategory' in sess_targ_pkt:
-                super_labels_all = sess_targ_pkt['continuous_supercategory']
-            else:
-                super_labels_all = None
             if 'continuous_category' in sess_targ_pkt:
                 cat_labels_all = sess_targ_pkt['continuous_category']
             else:
@@ -951,7 +958,6 @@ class ContinuousModelingPipeline(FeatureZoo):
 
             valid_onsets = []
             valid_targets = []
-            valid_super = []
             valid_cat = []
 
             frame_indices = np.round(onsets * fps).astype(int)
@@ -959,8 +965,6 @@ class ContinuousModelingPipeline(FeatureZoo):
                 if self.history_frames <= f_idx <= max_frame_idx:
                     valid_onsets.append(f_idx)
                     valid_targets.append(targets[i])
-                    if super_labels_all is not None:
-                        valid_super.append(super_labels_all[i])
                     if cat_labels_all is not None:
                         valid_cat.append(cat_labels_all[i])
 
@@ -972,15 +976,13 @@ class ContinuousModelingPipeline(FeatureZoo):
                     'onsets': valid_onsets_arr,
                     'targets': valid_targets_arr,
                 }
-                if valid_super:
-                    packet['supercategory'] = np.asarray(valid_super, dtype=np.float32)
                 if valid_cat:
                     packet['category'] = np.asarray(valid_cat, dtype=np.float32)
                 continuous_targets_dict[sess_id] = packet
                 all_valid_Y_list.append(valid_targets_arr)
 
         if not all_valid_Y_list:
-            raise ValueError("No valid continuous targets extracted. Check UMAP data.")
+            raise ValueError("No valid continuous targets extracted. Check manifold data.")
 
         global_Y_matrix = np.vstack(all_valid_Y_list)
         # Manifold-metric configuration. On torus the KDE uses the 3x3
@@ -1060,14 +1062,15 @@ class ContinuousModelingPipeline(FeatureZoo):
         )
 
         cohort_condition = derive_experimental_condition(self.modeling_settings)
-        # Tag carries the USV category column the UMAP target derives
-        # from (e.g. `qlvm_supercategory`, `qlvm_category`) so every
-        # downstream filename — modeling input pickle, univariate pkls,
-        # model-selection step pkls, consolidated artifact — makes the
-        # source clustering explicit.
-        # Without a label column the tag names the embedding instead (e.g.
-        # `manifold_qlvm`), see `manifold_tag_segment`.
-        analysis_tag = f"manifold_{manifold_tag_segment(column_name_cats, manifold_cols)}"
+        # Tag carries the QLVM map the target comes from (the manifold columns'
+        # prefix: `qlvm1` / `qlvm2` -> `manifold_qlvm`, `qlvm_duration1` /
+        # `qlvm_duration2` -> `manifold_qlvm_duration`) into every downstream
+        # filename — modeling input pickle, univariate pkls, model-selection step
+        # pkls, consolidated artifact — whether or not a label column is
+        # configured; see `manifold_tag_segment`. The label column (the regular
+        # map's `qlvm_category` for every map) is recorded in
+        # `_input_metadata.analysis_specific.usv_category_column_name`.
+        analysis_tag = f"manifold_{manifold_tag_segment(manifold_cols)}"
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         fname = f"modeling_{analysis_tag}_{cohort_condition}_{ts}.pkl"
 
@@ -1144,8 +1147,8 @@ class ContinuousModelingPipeline(FeatureZoo):
                 'usv_manifold_column_names': list(manifold_cols),
                 'manifold_metric': str(voc_settings['usv_manifold_metric']),
                 'manifold_period': float(voc_settings['usv_manifold_period']),
-                # Pins the USV category column (e.g. `qlvm_supercategory`,
-                # `qlvm_category`) the manifold targets were derived
+                # Pins the USV category column (e.g. `qlvm_category`)
+                # the manifold targets were derived
                 # from so the selector can route per-step filenames +
                 # the consolidated artifact through the same tag.
                 'usv_category_column_name': column_name_cats,
@@ -1220,15 +1223,13 @@ class ContinuousModelingPipeline(FeatureZoo):
                 # Labels carry through to every feature's per-session
                 # entry for symmetry with X/Y/w (the CNN runner reads them
                 # from `features[0]` just as it does Y/w). Absent when the
-                # source CSV predates supercategory/category labelling —
-                # downstream consumers handle that case explicitly.
+                # source CSV carries no qlvm_category yet — downstream
+                # consumers handle that case explicitly.
                 session_entry = {
                     'X': X_arr,
                     'Y': Y_targets,
                     'w': weights,
                 }
-                if 'supercategory' in data_packet:
-                    session_entry['supercategory'] = data_packet['supercategory']
                 if 'category' in data_packet:
                     session_entry['category'] = data_packet['category']
                 final_data[feat_key][sess_id] = session_entry
@@ -1279,7 +1280,7 @@ class ContinuousModelingPipeline(FeatureZoo):
 
 class ContinuousModelRunner:
     """
-    Orchestrates the training and statistical evaluation of continuous UMAP-
+    Orchestrates the training and statistical evaluation of continuous manifold-
     position USV regression models.
 
     This class serves as the execution engine for the continuous modelling
@@ -1322,7 +1323,7 @@ class ContinuousModelRunner:
       `manifold_metric.dcor_prediction_truth`). **Selection score on Euclidean
       manifolds**; `nan` on the torus (uninformative there).
     - `euclidean_mae` — mean Euclidean distance between snapped predictions
-      and truth, in native UMAP units. Interpretable headline error.
+      and truth, in native manifold units. Interpretable headline error.
     - `euclidean_rmse` — root-mean-squared Euclidean distance; a large
       `RMSE / MAE` ratio flags heavy-tailed outlier folds.
     - `euclidean_mae_weighted` — MAE on the Euclidean residual weighted by
@@ -1334,7 +1335,7 @@ class ContinuousModelRunner:
       off-manifold.
     - `mahalanobis_mae` — mean standardized residual distance using the
       inverse-density-weighted training covariance of `Y_train`. Removes
-      the UMAP axis-scale arbitrariness; dimensionless, lower is better.
+      the manifold axis-scale arbitrariness; dimensionless, lower is better.
     - `mae_x`, `mae_y` — per-axis absolute error on snapped predictions.
     - `pearson_x`, `pearson_y`, `spearman_x`, `spearman_y` — per-axis
       linear and rank correlations between predictions and truth.
@@ -1367,9 +1368,13 @@ class ContinuousModelRunner:
         ----------
         pipeline_instance : ContinuousModelingPipeline
             An instance of the extraction class which holds the
-            'modeling_settings' dictionary and calculated attributes.
+            'modeling_settings' dictionary and calculated attributes
+            (including `history_frames`).
         """
         self.modeling_settings = pipeline_instance.modeling_settings
+        # History-window length in frames (the pipeline derives it from the camera
+        # rate and `filter_history`); a temporal basis spans exactly this window.
+        self.history_frames = int(pipeline_instance.history_frames)
 
         if hasattr(pipeline_instance, 'feature_boundaries'):
             self.feature_boundaries = pipeline_instance.feature_boundaries
@@ -1377,7 +1382,8 @@ class ContinuousModelRunner:
     @staticmethod
     def load_univariate_data_blocks(pkl_path: str,
                                     bin_size: int = 1,
-                                    feature_filter=None) -> dict:
+                                    feature_filter=None,
+                                    basis: np.ndarray | None = None) -> dict:
         """
         Loads extracted feature data from disk and applies temporal downsampling (binning).
 
@@ -1409,6 +1415,12 @@ class ContinuousModelRunner:
             pass the feature(s) actually needed to skip the rest. The
             default (`None`) retains the behaviour of binning every
             feature in the pickle.
+        basis : np.ndarray or None, optional
+            ``(history_frames, n_basis)`` temporal basis
+            (``modeling_bases_functions.resolve_temporal_basis``). When given,
+            every session's history is projected onto it after any binning, so
+            each feature contributes ``n_basis`` columns and ``n_time_bins`` is
+            ``n_basis``. ``None`` (default) keeps the frame columns.
 
         Returns
         -------
@@ -1418,13 +1430,20 @@ class ContinuousModelRunner:
             - 'X' : np.ndarray (n_samples, n_binned_time)
                 The flattened and binned behavioral history matrix.
             - 'Y' : np.ndarray (n_samples, 2)
-                The continuous (x, y) UMAP targets.
+                The continuous (x, y) manifold targets.
             - 'w' : np.ndarray (n_samples,)
                 The inverse-density sample weights.
             - 'groups' : np.ndarray (n_samples,)
                 String IDs used for session-aware splitting and null shuffling.
             - 'n_time_bins' : int
                 The final count of temporal predictors after binning.
+            - 'held_out_session_ids' : list
+                The reserved held-out sessions of the pickle.
+            - 'input_metadata' : dict | None
+                The pickle's `_input_metadata` block (None when it has none);
+                its `analysis_specific.usv_manifold_column_names` names the QLVM
+                map whose decoder the torus geodesics use
+                (`resolve_manifold_column_names`).
         """
 
         print(f"Loading and binning continuous data (bin_size={bin_size}) from: {pkl_path}")
@@ -1439,6 +1458,9 @@ class ContinuousModelRunner:
         _held_out_session_ids = held_out_session_ids_from_metadata(
             raw_data['_input_metadata'] if '_input_metadata' in raw_data else {}
         )
+        # The pickle's metadata travels with the blocks: the columns `Y` was read
+        # from name the map (and so the decoder) of the torus pullback geodesic.
+        _input_metadata = raw_data['_input_metadata'] if '_input_metadata' in raw_data else None
 
         # Strip metadata blocks before iterating features. Without this
         # filter, the underscore-prefixed reserved keys
@@ -1462,13 +1484,14 @@ class ContinuousModelRunner:
                 X_sess = raw_data[feat][sess_id]['X']
                 Y_sess = raw_data[feat][sess_id]['Y']
                 w_sess = raw_data[feat][sess_id]['w']
-                # Per-event acoustic-region label (supercategory), row-aligned to
-                # Y; NaN when the source pickle carried no labels (legacy pickle),
+                # Per-event acoustic-region label (the QLVM category, packet key
+                # 'category'), row-aligned to Y; NaN when the source pickle carried
+                # no labels (summaries without qlvm_category),
                 # which makes the torus von Mises macro score fall back to the
                 # pooled form and the equal-region reweighting fall back to
                 # uniform. Read via `in` (not `.get`) per the strict-lookup style.
-                if 'supercategory' in raw_data[feat][sess_id]:
-                    region_sess = np.asarray(raw_data[feat][sess_id]['supercategory'], dtype=np.float32)
+                if 'category' in raw_data[feat][sess_id]:
+                    region_sess = np.asarray(raw_data[feat][sess_id]['category'], dtype=np.float32)
                 else:
                     region_sess = np.full(len(Y_sess), np.nan, dtype=np.float32)
 
@@ -1489,6 +1512,8 @@ class ContinuousModelRunner:
                     # last column = frame onset-1, so truncating the tail instead would
                     # discard the frames closest to onset and misalign the filter time axis.
                     X_sess = X_sess[:, T - new_T * bin_size:].reshape(N, new_T, bin_size).mean(axis=2)
+                if basis is not None:
+                    X_sess = project_history_onto_basis(X_sess, basis)
 
                 X_list.append(X_sess)
                 Y_list.append(Y_sess)
@@ -1504,12 +1529,14 @@ class ContinuousModelRunner:
                 'region': np.concatenate(region_list),
                 'n_time_bins': X_list[0].shape[1],
                 'held_out_session_ids': _held_out_session_ids,
+                'input_metadata': _input_metadata,
             }
 
         return data_blocks
 
     def _resolve_geodesic_context(self, pkl_path: str, Y: np.ndarray,
-                                  manifold_metric: str, manifold_period: float):
+                                  manifold_metric: str, manifold_period: float,
+                                  input_metadata: dict | None):
         """
         Description
         -----------
@@ -1521,7 +1548,11 @@ class ContinuousModelRunner:
 
         The map holds the density-ratio and decoder-Jacobian pullback geodesic
         geometries over a regular torus grid, precomputed from all embedded `Y`
-        plus the frozen QLVM decoder. It is fold-independent AND feature-
+        plus the frozen decoder of the QLVM map `Y` comes from (the map prefix
+        of the pickle's manifold columns: the regular, a conditional or the squeak
+        cell; a conditional decoder at the configured
+        `pullback_condition_quantile` of its training conditioning
+        distribution). It is fold-independent AND feature-
         independent -- it depends only on the acoustic positions `Y` (identical
         across every behavioural feature of one input pickle) and the decoder --
         so it is built a single time per input pickle and cached on the runner,
@@ -1531,7 +1562,7 @@ class ContinuousModelRunner:
 
         Torus-only. Any failure mode -- the metric is not `'torus'`, the
         `usv_manifold_geodesic_metrics` block is absent or its `compute` flag is
-        False, or the decoder `.npz` is missing/unreadable -- degrades the
+        False, or the map's decoder is unreadable -- degrades the
         affected column(s) to `NaN` and never aborts the run (the pullback column
         alone degrades when only the decoder is unavailable).
 
@@ -1549,6 +1580,13 @@ class ContinuousModelRunner:
             `'torus'` (any other value returns `None`, yielding NaN columns).
         manifold_period (float)
             The torus period (wrap length) the geodesic grid is defined over.
+        input_metadata (dict | None)
+            The input pickle's `_input_metadata` block (None when it has none).
+            The summary columns `Y` was read from
+            (`resolve_manifold_column_names`: its
+            `analysis_specific.usv_manifold_column_names`, else the current
+            setting) select the decoder of the pullback metric by their map
+            prefix (`resolve_geodesic_decoder_source`).
 
         Returns
         -------
@@ -1568,8 +1606,11 @@ class ContinuousModelRunner:
             _geo_cfg = _vf_settings['usv_manifold_geodesic_metrics']
             if _geo_cfg['compute']:
                 # Resolved outside the soft-failure block: a settings block without
-                # decoder_model_cell_directory is a settings error, not a NaN column.
-                _geo_decoder_source = resolve_geodesic_decoder_source(_geo_cfg)
+                # pullback_metric is a settings error, not a NaN column. The decoder
+                # is the production cell of the map `Y` comes from (os_utils
+                # constants), never a path.
+                _geo_decoder_source = resolve_geodesic_decoder_source(
+                    _geo_cfg, resolve_manifold_column_names(input_metadata, _vf_settings))
                 try:
                     _geo_decode_fn = None
                     if _geo_decoder_source is not None:
@@ -1602,7 +1643,7 @@ class ContinuousModelRunner:
         single feature.
 
         This method applies `SmoothBivariateRegression` to the temporal
-        kinematics `X` to predict the UMAP position `Y`. Performance is
+        kinematics `X` to predict the manifold position `Y`. Performance is
         evaluated across three strategies:
 
         1. `actual` — fits the true kinematic-to-acoustic mapping.
@@ -1680,8 +1721,10 @@ class ContinuousModelRunner:
         Data persistence
         -----------------
         Saves full-resolution tracking data (`test_indices`, `y_true`,
-        `y_pred_xy` — manifold-snapped, `weights`, `intercepts`,
-        convergence diagnostics, `w_test`) for every strategy so
+        `y_pred_xy` — manifold-snapped, `weights` on the frame axis,
+        `basis_coefficients` — the raw spline coefficients when a temporal
+        basis is used, else None — `intercepts`, convergence diagnostics,
+        `w_test`) for every strategy so
         downstream comparative scatter plotting and manifold
         visualisation can be regenerated without re-training.
 
@@ -1708,7 +1751,10 @@ class ContinuousModelRunner:
 
         print(f"--- Starting Univariate Training: {feat_name} ---")
 
-        hp = self.modeling_settings['hyperparameters']['linear_models']['manifold_regression']
+        # The temporal representation (full-resolution frames or a B-spline basis)
+        # decides the penalty settings the fit uses; `hp` is that effective block.
+        temporal_basis, hp = resolve_temporal_basis(
+            self.modeling_settings['hyperparameters']['linear_models']['manifold_regression'], self.history_frames)
         bin_size = hp['bin_resizing_factor']
 
         # Only bin the feature we're about to train. Mirrors the multinomial
@@ -1716,7 +1762,7 @@ class ContinuousModelRunner:
         # invocations don't pay the binning cost for every other feature
         # in the pickle.
         data_blocks = self.load_univariate_data_blocks(
-            pkl_path, bin_size=bin_size, feature_filter=feat_name,
+            pkl_path, bin_size=bin_size, feature_filter=feat_name, basis=temporal_basis,
         )
         if feat_name not in data_blocks:
             raise KeyError(f"Feature '{feat_name}' not found in {pkl_path}.")
@@ -1752,6 +1798,7 @@ class ContinuousModelRunner:
         lam_smooth_fixed = hp['lambda_smooth_fixed']
         lam_l2_fixed = hp['l2_reg_fixed']
         smoothness_order = hp['smoothness_derivative_order']
+        reflective_edges = hp['smoothness_reflective_edges']
         huber_delta = hp['huber_delta']
         lr = hp['learning_rate']
         max_iter = hp['max_iter']
@@ -1862,7 +1909,8 @@ class ContinuousModelRunner:
         # and cached on the runner (fold- and feature-independent); torus-only,
         # NaN columns on any disabled / missing-decoder path (see the helper).
         geodesic_ctx = self._resolve_geodesic_context(
-            pkl_path, Y, manifold_metric, manifold_period
+            pkl_path, Y, manifold_metric, manifold_period,
+            feat_data['input_metadata'],
         )
 
         results = {}
@@ -1917,13 +1965,17 @@ class ContinuousModelRunner:
                     # Learned linear map and bias (None for `null_model_free`,
                     # which has no trainable parameters).
                     'weights': [],
+                    # Raw spline coefficients (n_splines per feature) when a temporal
+                    # basis is used; None per fold otherwise. `weights` holds the
+                    # same filters mapped back onto the frame axis.
+                    'basis_coefficients': [],
                     'intercepts': [],
                     'test_indices': [],
                     'y_true': [],
                     'w_test': [],
                     # Deterministic (x, y) predictions for every test trial —
                     # shape `(n_test, 2)`. Predictions are manifold-snapped
-                    # to the nearest training UMAP point for the active and
+                    # to the nearest training manifold point for the active and
                     # `null` strategies; `null_model_free` predicts a uniform
                     # draw from the training `Y` (an on-manifold sample).
                     'y_pred_xy': [],
@@ -2024,6 +2076,7 @@ class ContinuousModelRunner:
                     )
 
                     fold_weights, fold_intercepts = None, None
+                    fold_basis_coefficients = None
                     # The draw "fit" is closed-form and instantaneous.
                     fold_n_iter = 0
                     fold_converged = True
@@ -2061,6 +2114,7 @@ class ContinuousModelRunner:
                             n_time_bins=n_time_bins,
                             spatial_cluster_num=n_clusters,
                             smoothness_derivative_order=smoothness_order,
+                            smoothness_reflective_edges=reflective_edges,
                             huber_delta=huber_delta,
                             learning_rate=lr,
                             inner_max_iter=inner_max_iter,
@@ -2101,6 +2155,7 @@ class ContinuousModelRunner:
                         lambda_smooth=fold_lambda_smooth,
                         l2_reg=fold_l2_reg,
                         smoothness_derivative_order=smoothness_order,
+                        smoothness_reflective_edges=reflective_edges,
                         huber_delta=huber_delta,
                         learning_rate=lr,
                         max_iter=max_iter,
@@ -2119,6 +2174,10 @@ class ContinuousModelRunner:
 
                     y_pred_xy = model.predict(X_test, snap=True).astype(np.float32)
                     fold_weights = model.coef_
+                    fold_basis_coefficients = None
+                    if temporal_basis is not None:
+                        fold_basis_coefficients = np.asarray(model.coef_)
+                        fold_weights = basis_coefficients_to_frames(fold_weights, temporal_basis, n_features=1, axis=0)
                     fold_intercepts = model.intercept_
                     fold_n_iter = int(model.n_iter_)
                     fold_converged = bool(model.converged_)
@@ -2134,6 +2193,7 @@ class ContinuousModelRunner:
                     results[strategy]['folds']['metrics'][m_key].append(m_val)
 
                 results[strategy]['folds']['weights'].append(fold_weights)
+                results[strategy]['folds']['basis_coefficients'].append(fold_basis_coefficients)
                 results[strategy]['folds']['intercepts'].append(fold_intercepts)
                 results[strategy]['folds']['test_indices'].append(test_idx)
                 results[strategy]['folds']['y_true'].append(Y_test)
@@ -2214,6 +2274,7 @@ class ContinuousModelRunner:
                     region_labels=region_held, min_region_events=min_region_events,
                 )
                 h_weights, h_intercepts = None, None
+                h_basis_coefficients = None
                 h_n_iter, h_converged, h_fit_time = 0, True, 0.0
                 h_lambda_smooth = float('nan')
                 h_l2_reg = float('nan')
@@ -2241,6 +2302,7 @@ class ContinuousModelRunner:
                         n_time_bins=n_time_bins,
                         spatial_cluster_num=n_clusters,
                         smoothness_derivative_order=smoothness_order,
+                        smoothness_reflective_edges=reflective_edges,
                         huber_delta=huber_delta,
                         learning_rate=lr,
                         inner_max_iter=inner_max_iter,
@@ -2272,6 +2334,7 @@ class ContinuousModelRunner:
                     lambda_smooth=h_lambda_smooth,
                     l2_reg=h_l2_reg,
                     smoothness_derivative_order=smoothness_order,
+                    smoothness_reflective_edges=reflective_edges,
                     huber_delta=huber_delta,
                     learning_rate=lr,
                     max_iter=max_iter,
@@ -2289,6 +2352,10 @@ class ContinuousModelRunner:
                 )
                 yh_pred_xy = model_h.predict(Xh_test, snap=True).astype(np.float32)
                 h_weights = model_h.coef_
+                h_basis_coefficients = None
+                if temporal_basis is not None:
+                    h_basis_coefficients = np.asarray(model_h.coef_)
+                    h_weights = basis_coefficients_to_frames(h_weights, temporal_basis, n_features=1, axis=0)
                 h_intercepts = model_h.intercept_
                 h_n_iter = int(model_h.n_iter_)
                 h_converged = bool(model_h.converged_)
@@ -2301,6 +2368,7 @@ class ContinuousModelRunner:
             results[strategy]['heldout'] = {
                 'metrics': metrics_h,
                 'weights': h_weights,
+                'basis_coefficients': h_basis_coefficients,
                 'intercepts': h_intercepts,
                 'test_indices': _held_positions,
                 'y_true': Yh_test,

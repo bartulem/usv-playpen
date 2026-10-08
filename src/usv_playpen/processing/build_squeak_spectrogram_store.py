@@ -21,13 +21,20 @@ tables, so neither of those modules is a natural home; adding it to
 :mod:`detect_usv_squeaks` (per-session summary writers) would mix a cohort
 store into a per-session step.
 
-Rows. Per session, the rows of ``*_usv_summary.csv`` with ``squeak`` true and
-``noise`` not true (:func:`detect_usv_squeaks.squeak_qlvm_rows`), the rows
+Rows. Per session, the rows of ``*_usv_summary.csv`` with ``squeak`` true (pure
+squeaks and segments holding both a squeak and a USV) and ``noise`` not true
+(:func:`detect_usv_squeaks.squeak_qlvm_rows`), the rows
 ``infer-qlvm-squeak-latents`` considers; every row that carries
-``qlvm_squeak1`` / ``qlvm_squeak2`` is among them.
+``qlvm_squeak1`` / ``qlvm_squeak2`` is among them. The store holds every call
+class the squeak map can show, so the explorer's squeak-class filter
+(squeak / both / squeak + both) needs no rebuild.
 
-Spectrogram. The audio of a row spans ``round(start * 250000)`` to
-``round(stop * 250000)`` samples on every unfiltered HPSS channel
+Spectrogram. The audio of a row is its squeak crop window
+(:func:`detect_usv_squeaks.squeak_crop_window`: the segment, widened where needed
+to hold the squeak envelope ``squeak_start`` .. ``squeak_end`` plus the
+embedding's two context frames, because a squeak often runs past the segment the
+ultrasonic segmenter cut; the segment alone when the row has no envelope), from
+``round(window_start * 250000)`` to ``round(window_stop * 250000)`` samples on every unfiltered HPSS channel
 (``audio/hpss/*_cropped_to_video_hpss.wav``), dropping the channels the session
 metadata marks as excluded when ``exclude_metadata_audio_channels`` is on
 (:func:`detect_usv_squeaks.squeak_wav_channels`, the same selection
@@ -37,8 +44,8 @@ window, ``nperseg`` 2048 (8.19 ms, 122 Hz bin spacing), hop 512 (2.048 ms per
 frame), centred (``detect_usv_squeaks.SQUEAK_SPEC_PARAMS``). That window is
 long enough to separate harmonics 3 kHz apart at the low end (main lobe about
 1 kHz wide) and short enough to follow a 20-50 ms squeak, and it keeps frame
-``t`` centred at ``start + t * 0.002048`` s, so the frames line up with
-``squeak_start`` / ``squeak_end`` and with the classifier's crops. The linear
+``t`` centred at ``window_start + t * 0.002048`` s, so the frames line up with
+the squeak envelope and with the embedding's crops. The linear
 bins are mapped onto ``n_frequency_bins`` log-spaced bins between ``min_freq``
 and ``max_freq`` (geometric edges; the power of a log bin is the mean power of
 the linear bins whose centres fall inside it, or, where a log bin is narrower
@@ -52,11 +59,12 @@ weights equal to each channel's audio variance (the rule of
 Time extent. As in the consolidated store, every call sits in a fixed window
 (``window_frames``, 256 frames = 524 ms by default) from column 0 with its
 native frame count in ``durations``, so a thumbnail padded to the window shows
-the call's true duration. A segment longer than the window keeps the
-``window_frames`` frames centred on the squeak's crop (its ``squeak_start`` ..
-``squeak_end`` frames plus the classifier's two context frames,
-:func:`detect_usv_squeaks.squeak_crop_frames`), clipped to the segment;
-``window_first`` records the first kept frame.
+the call's true duration. An audio window longer than the display window keeps
+the ``window_frames`` frames centred on the squeak's crop (the frames inside its
+envelope plus the embedding's two context frames,
+:func:`detect_usv_squeaks.squeak_crop_frames`), clipped to the audio window;
+``window_first`` records the first kept frame and ``audio_start_s`` the session
+time of the audio window's frame 0.
 
 Storage. dB values are clipped to ``[db_floor, db_ceil]`` and quantized to
 uint8 (0 = ``db_floor``, 255 = ``db_ceil``; :func:`quantize_db` /
@@ -71,7 +79,9 @@ reads a call without decompressing its neighbours. Layout:
 * ``spectrogram/<session>/durations`` -- ``(n,)`` int32 frames of the call in
   the window (0 when the segment is shorter than one STFT window);
 * ``spectrogram/<session>/n_frames`` -- ``(n,)`` int32 native frames of the
-  whole segment; ``window_first`` -- ``(n,)`` int32 first kept frame;
+  whole audio window; ``window_first`` -- ``(n,)`` int32 first kept frame;
+  ``audio_start_s`` -- ``(n,)`` float64 session time (s) of the audio window's
+  frame 0;
 * ``sessions`` -- one row per session: id, root directory, summary SHA-256,
   summary rows and stored squeaks.
 
@@ -112,6 +122,7 @@ from .detect_usv_squeaks import (
     SQUEAK_SAMPLING_RATE,
     SQUEAK_SPEC_PARAMS,
     squeak_crop_frames,
+    squeak_crop_window,
     squeak_qlvm_rows,
     squeak_wav_channels,
 )
@@ -483,10 +494,13 @@ def session_squeak_spectrograms(session_root: str, cfg: dict) -> dict:
     Description
     -----------
     Builds the store entries of one session (runs inside a worker process): the
-    squeak rows that are not noise (:func:`detect_usv_squeaks.squeak_qlvm_rows`),
-    each rebuilt from the session's HPSS wavs as a log-frequency absolute-dB
-    spectrogram (:func:`log_frequency_spectrogram`), cut to the display window
-    (:func:`display_window_first`) and quantized (:func:`quantize_db`).
+    ``squeak`` / ``both`` rows that are not noise
+    (:func:`detect_usv_squeaks.squeak_qlvm_rows`), each rebuilt from the session's
+    HPSS wavs over its squeak crop window
+    (:func:`detect_usv_squeaks.squeak_crop_window`) as a log-frequency
+    absolute-dB spectrogram (:func:`log_frequency_spectrogram`), cut to the
+    display window (:func:`display_window_first`) and quantized
+    (:func:`quantize_db`).
 
     Parameters
     ----------
@@ -501,7 +515,8 @@ def session_squeak_spectrograms(session_root: str, cfg: dict) -> dict:
         ``session_id``, ``root_directory``, ``usv_summary_sha256``,
         ``n_summary_rows``, ``row_index`` (``(n,)`` int64), ``spectrograms``
         (``(n, F, window_frames)`` uint8), ``durations`` / ``n_frames`` /
-        ``window_first`` (``(n,)`` int32) and ``messages`` (log lines).
+        ``window_first`` (``(n,)`` int32), ``audio_start_s`` (``(n,)`` float64)
+        and ``messages`` (log lines).
     """
 
     root = pathlib.Path(session_root)
@@ -524,6 +539,7 @@ def session_squeak_spectrograms(session_root: str, cfg: dict) -> dict:
     durations = np.zeros(rows.size, dtype=np.int32)
     n_frames_all = np.zeros(rows.size, dtype=np.int32)
     window_first_all = np.zeros(rows.size, dtype=np.int32)
+    audio_start_all = np.zeros(rows.size, dtype=np.float64)
     if rows.size:
         wav_paths = squeak_wav_channels(root, cfg['exclude_metadata_audio_channels'], messages.append)
         starts = usv_summary["start"].to_numpy()
@@ -533,8 +549,16 @@ def session_squeak_spectrograms(session_root: str, cfg: dict) -> dict:
         handles = [sf.SoundFile(str(wav_path), mode="r") for wav_path in wav_paths]
         try:
             for position, row_index in enumerate(rows):
-                first_sample = round(float(starts[row_index]) * SQUEAK_SAMPLING_RATE)
-                last_sample = round(float(stops[row_index]) * SQUEAK_SAMPLING_RATE)
+                has_extent = bool(np.isfinite(squeak_start[row_index]) and np.isfinite(squeak_end[row_index]))
+                audio_start, audio_stop = float(starts[row_index]), float(stops[row_index])
+                if has_extent:
+                    window_start, window_stop = squeak_crop_window(
+                        np.array([starts[row_index]]), np.array([stops[row_index]]),
+                        np.array([squeak_start[row_index]]), np.array([squeak_end[row_index]]),
+                    )
+                    audio_start, audio_stop = float(window_start[0]), float(window_stop[0])
+                first_sample = round(audio_start * SQUEAK_SAMPLING_RATE)
+                last_sample = round(audio_stop * SQUEAK_SAMPLING_RATE)
                 channel_audio = []
                 for handle in handles:
                     handle.seek(first_sample)
@@ -543,9 +567,9 @@ def session_squeak_spectrograms(session_root: str, cfg: dict) -> dict:
                 if spectrogram_db is None:
                     continue
                 crop_first, crop_last = None, None
-                if np.isfinite(squeak_start[row_index]) and np.isfinite(squeak_end[row_index]):
+                if has_extent:
                     first, last = squeak_crop_frames(
-                        segment_start_s=np.array([starts[row_index]]),
+                        window_start_s=np.array([audio_start]),
                         squeak_start_s=np.array([squeak_start[row_index]]),
                         squeak_end_s=np.array([squeak_end[row_index]]),
                         n_frames=np.array([n_frames]),
@@ -557,6 +581,7 @@ def session_squeak_spectrograms(session_root: str, cfg: dict) -> dict:
                 durations[position] = kept.shape[1]
                 n_frames_all[position] = n_frames
                 window_first_all[position] = window_first
+                audio_start_all[position] = audio_start
         finally:
             for handle in handles:
                 handle.close()
@@ -570,6 +595,7 @@ def session_squeak_spectrograms(session_root: str, cfg: dict) -> dict:
         "durations": durations,
         "n_frames": n_frames_all,
         "window_first": window_first_all,
+        "audio_start_s": audio_start_all,
         "messages": messages,
     }
 
@@ -764,7 +790,7 @@ class SqueakSpectrogramStoreBuilder:
                     compression="gzip",
                     compression_opts=4,
                 )
-                for name in ("row_index", "durations", "n_frames", "window_first"):
+                for name in ("row_index", "durations", "n_frames", "window_first", "audio_start_s"):
                     group.create_dataset(name, data=entry[name])
             _polars_to_h5(store_h5, "sessions", pls.DataFrame({
                 "session_id": [entry['session_id'] for entry in entries],

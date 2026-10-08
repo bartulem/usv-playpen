@@ -5,7 +5,7 @@ Pipeline for fitting a GLM-HMM over latent vocal states and selecting the number
 of states.
 
 Consumes the same continuous-manifold modeling input pickle the acoustic-manifold
-selection uses (``D[feature][session] = {'X', 'Y', 'w', 'supercategory'}``, rows
+selection uses (``D[feature][session] = {'X', 'Y', 'w', 'category'}``, rows
 already in temporal USV-onset order) and turns each session into one observation
 sequence: the emission design matrix ``X`` is the horizontal stack of the
 configured behavioural features' history windows, and the target is the shared
@@ -39,10 +39,12 @@ from .glm_hmm import (
     resolve_emission_cls,
 )
 from .modeling_metadata import (
+    CONSOLIDATED_SELECTION_PATTERNS,
     compute_settings_sha256,
     get_git_commit_info,
     get_package_version,
     inject_metadata,
+    load_selection_results,
 )
 from .modeling_utils import held_out_session_ids_from_metadata
 
@@ -60,9 +62,13 @@ def _read_selected_features(model_selection_path: str) -> list:
     output rather than configured, so it can never silently drift from the model
     that produced it.
 
-    Accepts either the final step pickle directly, or the selection output
-    directory (the highest-numbered ``*_step_*.pkl`` is the final model, the one
-    that carries ``final_model_features``).
+    Accepts the final step pickle, the consolidated artifact
+    ``consolidate_model_selection_results`` writes from the steps
+    (``model_selection_final_*.pkl``: its last entry of ``steps`` is the final
+    step), or a directory. A directory holding a consolidated artifact is read
+    through :func:`modeling_metadata.load_selection_results` (the newest one);
+    otherwise its highest-numbered ``*_step_*.pkl`` is the final model, the
+    one that carries ``final_model_features``.
 
     Parameters
     ----------
@@ -75,17 +81,25 @@ def _read_selected_features(model_selection_path: str) -> list:
         The selected behavioural feature names, in selection order.
     """
     path = Path(model_selection_path)
-    if path.is_dir():
-        step_files = sorted(path.glob('*_step_*.pkl'),
-                            key=lambda p: int(p.stem.rsplit('_', 1)[1]))
-        if not step_files:
-            raise ValueError(
-                f"No '*_step_*.pkl' selection files found in {model_selection_path!r}; "
-                "point model_selection_path at a manifold model-selection output."
-            )
-        path = step_files[-1]
-    with open(path, 'rb') as handle:
-        selection = pickle.load(handle)
+    if path.is_dir() and any(candidate for pattern in CONSOLIDATED_SELECTION_PATTERNS for candidate in path.glob(pattern)):
+        steps, consolidated_name, _metadata = load_selection_results(path)
+        path = path / consolidated_name
+        selection = steps[-1] if steps else {}
+    else:
+        if path.is_dir():
+            step_files = sorted(path.glob('*_step_*.pkl'),
+                                key=lambda p: int(p.stem.rsplit('_', 1)[1]))
+            if not step_files:
+                raise ValueError(
+                    f"No '*_step_*.pkl' selection files or consolidated selection artifact found in "
+                    f"{model_selection_path!r}; point model_selection_path at a manifold model-selection output."
+                )
+            path = step_files[-1]
+        with open(path, 'rb') as handle:
+            selection = pickle.load(handle)
+        # A consolidated artifact holds the steps in order; the last one is final.
+        if 'steps' in selection and isinstance(selection['steps'], list):
+            selection = selection['steps'][-1] if selection['steps'] else {}
     if 'final_model_features' not in selection:
         raise ValueError(
             f"{path} does not carry 'final_model_features'; it is not a finalized "
@@ -121,7 +135,7 @@ def _build_session_sequences(raw_data: dict, emission_features: list,
     BIC state penalty) in check. The target is read from ``target_key`` of the
     first feature's session entry (identical across features): ``'Y'`` (2-D
     position) for the manifold emission, the categorical label column (e.g.
-    ``'supercategory'``) for the multinomial. Rows are already in temporal
+    ``'category'``, the QLVM category) for the multinomial. Rows are already in temporal
     USV-onset order in the input pickle, so no re-sort is needed.
 
     Parameters
@@ -174,7 +188,7 @@ def _build_session_sequences(raw_data: dict, emission_features: list,
         if target_key not in session_entry:
             # A categorical target is a label packet the extraction stage writes only
             # when a label column is configured and the summaries carry it (e.g.
-            # 'supercategory'); a pickle extracted without one has none.
+            # 'category'); a pickle extracted without one has none.
             error_message = (
                 f"GLM-HMM target '{target_key}' is missing for session {session_id}: QLVM category labels "
                 f"are not available in this modeling input pickle. The multinomial emission needs a label "
@@ -383,7 +397,7 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
     # Emission-type-specific target column and per-state emission factory. The
     # manifold emission predicts the 2-D position 'Y' (no NaNs); the multinomial
     # emission predicts a categorical label column (configured `multinomial_target`,
-    # e.g. 'supercategory'), dropping events whose label is NaN.
+    # e.g. 'category'), dropping events whose label is NaN.
     if emission_type == 'manifold':
         target_key = 'Y'
         drop_nan_target = False
@@ -424,10 +438,26 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
     input_driven = transition_mode == 'input_driven'
     factory = None
     n_classes = None
+    class_labels = None
     if input_driven:
         if emission_type == 'multinomial':
+            # The reference-coded engine reads each emission as a class index 0..C-1
+            # (class 0 the fixed zero baseline), but the QLVM category labels are
+            # 1..k (R-1..R-k). Sizing the engine by `max + 1` would add a phantom
+            # class 0 that no call carries and make it the reference, so the observed
+            # labels are mapped onto contiguous indices in sorted order instead
+            # (index i is label class_labels[i]); the mapping is stored in the
+            # metadata. The static engine keeps the raw labels: its per-state
+            # classifier carries them in `classes_`.
             all_labels = np.concatenate([target for _, target in dev_xy + held_xy])
-            n_classes = int(np.asarray(all_labels).max()) + 1
+            class_labels = np.unique(np.asarray(all_labels))
+            n_classes = int(class_labels.size)
+            dev_xy = [(x_seq, np.searchsorted(class_labels, target_seq))
+                      for x_seq, target_seq in dev_xy]
+            held_xy = [(x_seq, np.searchsorted(class_labels, target_seq))
+                       for x_seq, target_seq in held_xy]
+            dev_sequences = [(session_id, x_seq, np.searchsorted(class_labels, target_seq))
+                             for session_id, x_seq, target_seq in dev_sequences]
         # The input-driven manifold engine reads the torus target directly (no factory).
     elif emission_type == 'manifold':
         factory = _manifold_emission_factory(
@@ -568,6 +598,7 @@ def run_glm_hmm_state_selection(input_data_path: str, settings_path: str,
             'n_lbfgs': n_lbfgs,
             'n_restarts': n_restarts,
             'n_classes': n_classes,
+            'class_labels': None if class_labels is None else class_labels.tolist(),
             'n_dev_sessions': len(dev_xy),
             'n_held_out_sessions': len(held_xy),
             'held_out_session_ids': held_ids,

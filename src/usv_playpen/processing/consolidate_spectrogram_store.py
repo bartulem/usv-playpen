@@ -8,9 +8,9 @@ Each session's ``audio/spectrograms/<session>_spectrograms.h5`` (written by
 consolidated-store layout -- a shared top-level ``frequency_bins`` axis plus
 per-session ``spectrogram/<session>`` and ``mask/<session>`` groups -- so those
 groups are group-copied, one session at a time. Next to them the store carries
-everything the QLVM model package v3 (``os_utils.QLVM_MODEL_PACKAGE_ROOT``)
-contributed to the sessions' ``*_usv_summary.csv``, plus the package tables
-needed to interpret it:
+everything the QLVM model package v3 (``V3_PACKAGE_ROOT``, with the cells
+``V3_MODEL_CELLS``) contributed to the sessions' ``*_usv_summary.csv``, plus the
+package tables needed to interpret it:
 
 * ``spectrogram/<session>/qlvm_dim`` -- ``(n, 2)`` float64 coordinates of the
   regular (phase 6) model, ``qlvm1`` / ``qlvm2``, NaN where a call was not
@@ -30,6 +30,14 @@ needed to interpret it:
   ``fine_to_coarse``) and ``label_grid_<level>`` grids;
 * ``sessions`` -- one row per session: id, session type, the SHA-256 of its
   spectrogram H5 and of its USV summary, its row count and embedded count.
+
+The store is a v3 archive and stays pinned to that package: the production QLVM
+cells (``os_utils.QLVM_PRODUCTION_MODEL_CELLS``: masked, time-stretched regular,
+duration, spectral-entropy, bandwidth and loudness conditional cells) have no ``SESSION_H5_BASELINE.tsv``,
+``MANIFEST.sha256``, ``recon_mse_breakdown.npz`` or cluster tables, which every
+step below needs, and summaries migrated to the canonical layout no longer carry
+the v3 ``qlvm_mf*`` / ``qlvm_bw*`` / ``qlvm_loud*`` columns, so such summaries are
+refused (missing QLVM columns) rather than mixed into a v3 store.
 
 The store is meant for the package's corpus sessions (``--package-corpus``
 resolves them from the package's ``SESSION_H5_BASELINE.tsv``). Every session is
@@ -61,8 +69,6 @@ from click.core import ParameterSource
 from ..analyses.usv_interval_archive import _polars_to_h5, git_sha_for_provenance
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
-    QLVM_MODEL_PACKAGE_ROOT,
-    QLVM_PRODUCTION_MODEL_CELLS,
     atomic_output_path,
     cell_cluster_directory,
     configure_path,
@@ -71,18 +77,107 @@ from ..os_utils import (
 from ..time_utils import is_gui_context, smart_wait
 from .build_qlvm_training_set import file_sha256
 from .qlvm_latents import (
-    LABEL_LEVELS,
     PACKAGE_BASELINE_NAME,
-    REGULAR_MODEL_PREFIX,
     cell_file,
     load_package_baseline,
-    model_cell_label_column,
-    model_cell_label_columns,
     package_baseline_path,
 )
 
+# Cluster-label levels a v3 model package cell holds (inference/clusters_<level>/), and
+# the column-name suffix each carries in the summaries this store archives:
+# <prefix>_category for the fine level, <prefix>_supercategory for the coarse one
+# (qlvm_category / qlvm_supercategory for the regular model's prefix, see
+# model_cell_label_column). Kept here: infer-qlvm-latents no longer writes package
+# cluster labels, and this store is the only reader of those columns.
+LABEL_LEVELS = ("fine", "coarse")
+LABEL_LEVEL_SUFFIXES = {"fine": "category", "coarse": "supercategory"}
+
+# The prefix of the regular (unconditional) model: its label columns keep the
+# historical names qlvm_category / qlvm_supercategory.
+REGULAR_MODEL_PREFIX = "qlvm"
+
+
+def model_cell_label_column(prefix: str, level: str) -> str:
+    """
+    Description
+    -----------
+    Names the cluster-label column a model prefix carries for one label level in
+    the summaries this store archives. The regular model's prefix ``"qlvm"`` keeps
+    the historical names -- ``"fine"`` -> ``qlvm_category``, ``"coarse"`` ->
+    ``qlvm_supercategory`` -- and every other prefix ``P`` gets ``P_category``
+    (fine) and ``P_supercategory`` (coarse), e.g. ``qlvm_dur_category``.
+
+    Parameters
+    ----------
+    prefix (str)
+        The column prefix (a key of ``V3_MODEL_CELLS``).
+    level (str)
+        ``"fine"`` or ``"coarse"`` (``LABEL_LEVELS``).
+
+    Returns
+    -------
+    column (str)
+        The label column name.
+    """
+    suffix = LABEL_LEVEL_SUFFIXES[level]
+    if prefix == REGULAR_MODEL_PREFIX:
+        return f"qlvm_{suffix}"
+    return f"{prefix}_{suffix}"
+
+
+def model_cell_label_columns(model_cells: dict[str, str], label_levels: dict[str, list[str]]) -> dict[str, dict[str, str]]:
+    """
+    Description
+    -----------
+    Resolves which cluster-label columns each model prefix must carry: the levels
+    ``label_levels`` lists for the prefix (a prefix it does not list carries none,
+    so ``{}`` asks for no label column), named by :func:`model_cell_label_column`.
+
+    Parameters
+    ----------
+    model_cells (dict[str, str])
+        Prefix -> model cell directory; only the prefixes (and their order) are used.
+    label_levels (dict[str, list[str]])
+        Prefix -> list of levels among ``LABEL_LEVELS``.
+
+    Returns
+    -------
+    label_columns (dict[str, dict[str, str]])
+        Prefix -> (level -> label column), for every prefix of ``model_cells`` in
+        its order, levels in the order ``LABEL_LEVELS`` lists them.
+
+    Raises
+    ------
+    ValueError
+        A listed level is not one of ``LABEL_LEVELS``.
+    """
+    label_columns = {}
+    for prefix in model_cells:
+        levels = label_levels[prefix] if prefix in label_levels else []
+        invalid = [level for level in levels if level not in LABEL_LEVELS]
+        if invalid:
+            error_message = f"prefix {prefix!r}: invalid label level(s) {invalid} (allowed: {list(LABEL_LEVELS)})."
+            raise ValueError(error_message)
+        label_columns[prefix] = {level: model_cell_label_column(prefix, level) for level in LABEL_LEVELS if level in levels}
+    return label_columns
+
 # File-name stem of the stores this module writes (the store's layout version).
 STORE_NAME_PREFIX = "spectrograms_qlvmv3"
+
+# The QLVM model package v3 the store archives (read-only) and its cells: the
+# unconditional phase 6 regular model (qlvm1/qlvm2) and the four phase 11 tail-bin
+# conditional models (qlvm_dur, qlvm_mf, qlvm_bw, qlvm_loud), every one the
+# natural_5strata_N29000 design, unmasked, floored. Kept here, not in os_utils: the
+# production embedding has moved to other cells (os_utils.QLVM_PRODUCTION_MODEL_CELLS)
+# that this store's v3 provenance checks cannot describe.
+V3_PACKAGE_ROOT = "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3"
+V3_MODEL_CELLS = {
+    "qlvm": "phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm_dur": "phase11_cond_duration_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm_mf": "phase11_cond_mean_freq_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm_bw": "phase11_cond_bandwidth_floor/natural_5strata_N29000_unmasked_floor",
+    "qlvm_loud": "phase11_cond_loudness_floor/natural_5strata_N29000_unmasked_floor",
+}
 
 # Per-call embedding status codes of qlvm/<session>/status (bit 0: too long, bit 1: no SAM mask).
 STATUS_EMBEDDED = 0
@@ -114,7 +209,7 @@ def package_corpus_root_directories(package_root: str | pathlib.Path) -> list[st
     Parameters
     ----------
     package_root (str | pathlib.Path)
-        The package root (e.g. ``os_utils.QLVM_MODEL_PACKAGE_ROOT``).
+        The package root (e.g. ``V3_PACKAGE_ROOT``).
 
     Returns
     -------
@@ -209,7 +304,7 @@ def model_cell_metadata(package_root: pathlib.Path, relative_cell: str, manifest
         The package root.
     relative_cell (str)
         The cell path relative to the package root (a value of
-        ``os_utils.QLVM_PRODUCTION_MODEL_CELLS``).
+        ``V3_MODEL_CELLS``).
     manifest_sha256 (str)
         SHA-256 of the package's ``MANIFEST.sha256``.
 
@@ -296,8 +391,8 @@ class SpectrogramStoreConsolidator:
             Defines output messages; defaults to ``print``.
         package_root (str | None)
             The QLVM model package whose models' columns and tables the store
-            carries; defaults to ``os_utils.QLVM_MODEL_PACKAGE_ROOT``. Its cells
-            are the production cells ``os_utils.QLVM_PRODUCTION_MODEL_CELLS``.
+            carries; defaults to ``V3_PACKAGE_ROOT``. Its cells are
+            ``V3_MODEL_CELLS``.
 
         Returns
         -------
@@ -307,7 +402,7 @@ class SpectrogramStoreConsolidator:
         self.root_directories = root_directories if root_directories is not None else []
         self.input_parameter_dict = input_parameter_dict if input_parameter_dict is not None else {}
         self.message_output = message_output
-        self.package_root = package_root if package_root is not None else QLVM_MODEL_PACKAGE_ROOT
+        self.package_root = package_root if package_root is not None else V3_PACKAGE_ROOT
         self.app_context_bool = is_gui_context()
 
     def consolidate_spectrogram_store(self) -> pathlib.Path | None:
@@ -327,7 +422,7 @@ class SpectrogramStoreConsolidator:
         (``<prefix>1`` / ``<prefix>2`` of every production prefix) or a default
         label column (``qlvm_category`` and ``qlvm_supercategory`` for ``qlvm``,
         ``<prefix>_category`` and ``<prefix>_supercategory`` for the others,
-        :func:`default_model_cell_label_levels`); a session without a session type
+        :func:`model_cell_label_columns`); a session without a session type
         in the package; and an embedding that disagrees with the package's rules
         -- the per-call status (:func:`embedding_status`, from the H5 durations
         and the bincount of ``mask/<session>/spectrogram_index``, against the
@@ -367,12 +462,12 @@ class SpectrogramStoreConsolidator:
         manifest_sha256 = file_sha256(package_root / PACKAGE_MANIFEST_NAME)
         models = {
             prefix: model_cell_metadata(package_root, relative_cell, manifest_sha256)
-            for prefix, relative_cell in QLVM_PRODUCTION_MODEL_CELLS.items()
+            for prefix, relative_cell in V3_MODEL_CELLS.items()
         }
         length_threshold = float(models[REGULAR_MODEL_PREFIX]['contract']['length_threshold'])
-        session_types = package_session_types(package_root / QLVM_PRODUCTION_MODEL_CELLS[REGULAR_MODEL_PREFIX])
+        session_types = package_session_types(package_root / V3_MODEL_CELLS[REGULAR_MODEL_PREFIX])
         default_label_columns = model_cell_label_columns(
-            {prefix: str(package_root / relative_cell) for prefix, relative_cell in QLVM_PRODUCTION_MODEL_CELLS.items()},
+            {prefix: str(package_root / relative_cell) for prefix, relative_cell in V3_MODEL_CELLS.items()},
             {},
         )
         coordinate_columns = [f"{prefix}{axis}" for prefix in models for axis in (1, 2)]
@@ -634,7 +729,7 @@ class SpectrogramStoreConsolidator:
 @click.command(name="consolidate-spectrogram-store")
 @click.option('--root-directories', type=str, default=None, required=False, help='Comma-separated string of session root directory paths, in store order. Give this or --package-corpus.')
 @click.option('--package-corpus', 'package_corpus', is_flag=True, default=False, help='Consolidate exactly the QLVM model package\'s corpus sessions, in the order of its SESSION_H5_BASELINE.tsv. Give this or --root-directories.')
-@click.option('--package-root', 'package_root', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='QLVM model package root whose models\' columns and tables the store carries; defaults to the production v3 package.')
+@click.option('--package-root', 'package_root', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='QLVM model package root whose models\' columns and tables the store carries; defaults to the v3 package (qlvm_models_latest/v3).')
 @click.option('--spectrograms-root', 'spectrograms_root', type=click.Path(exists=True, file_okay=False, dir_okay=True), default=None, required=False, help='Output directory the consolidated store is written to.')
 @click.pass_context
 def consolidate_spectrogram_store_cli(ctx, root_directories, package_corpus, package_root, **kwargs) -> None:
@@ -666,7 +761,7 @@ def consolidate_spectrogram_store_cli(ctx, root_directories, package_corpus, pac
         settings_dict='processing_settings'
     )
 
-    resolved_package_root = package_root if package_root is not None else QLVM_MODEL_PACKAGE_ROOT
+    resolved_package_root = package_root if package_root is not None else V3_PACKAGE_ROOT
     if package_corpus:
         all_paths = package_corpus_root_directories(configure_path(resolved_package_root))
     else:

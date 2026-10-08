@@ -280,7 +280,7 @@ def _write_synthetic_manifold_pickle(path, feature_names, history_frames, rng):
     Build a small continuous-manifold input pickle with a 2-state torus GLM-HMM
     structure: six sessions (one reserved held-out), each a Markov chain over two
     manifold positions, stored in the `D[feature][session]={'X','Y','w',
-    'supercategory'}` shape the pipeline consumes.
+    'category'}` shape the pipeline consumes.
     """
     positions = np.array([[0.2, 0.2], [0.75, 0.75]])
     transition = np.array([[0.9, 0.1], [0.1, 0.9]])
@@ -298,7 +298,7 @@ def _write_synthetic_manifold_pickle(path, feature_names, history_frames, rng):
                 'X': rng.standard_normal((seq_len, history_frames)),
                 'Y': y,
                 'w': np.ones(seq_len),
-                'supercategory': states.astype(np.float64),
+                'category': states.astype(np.float64),
             }
     raw['_input_metadata'] = {
         'analysis_type': 'continuous',
@@ -373,7 +373,7 @@ def test_glm_hmm_pipeline_runs_and_selects_states(tmp_path):
 def test_glm_hmm_pipeline_runs_multinomial(tmp_path):
     """
     The pipeline also runs end-to-end with the multinomial emission: it reads the
-    categorical target ('supercategory'), holds out the reserved session, selects
+    categorical target ('category'), holds out the reserved session, selects
     a state count, and writes results whose metadata records the categorical run.
     """
     rng = np.random.default_rng(8)
@@ -398,10 +398,10 @@ def test_glm_hmm_pipeline_runs_multinomial(tmp_path):
     )
 
     assert results['metadata']['emission_type'] == 'multinomial'
-    assert results['metadata']['target_key'] == 'supercategory'
+    assert results['metadata']['target_key'] == 'category'
     assert 1 <= results['selected_n_states'] <= 2
     assert set(results['state_paths']) == {'s0', 's1', 's2', 's3', 's4'}
-    assert list(out_dir.glob('glm_hmm_states_multinomial_supercategory_*.pkl'))
+    assert list(out_dir.glob('glm_hmm_states_multinomial_category_*.pkl'))
 
 
 def test_glm_hmm_pipeline_rejects_unknown_emission(tmp_path):
@@ -446,6 +446,22 @@ def test_read_selected_features_from_directory_and_error_paths(tmp_path):
     _write_model_selection_file(empty, [])
     with pytest.raises(ValueError, match="kept no features"):
         _read_selected_features(str(empty))
+
+
+def test_read_selected_features_from_the_consolidated_artifact(tmp_path):
+    """The consolidated artifact (``model_selection_final_*.pkl``: the steps in order, the last
+    one carrying ``final_model_features``) is read both as a file and through its directory,
+    where it wins over leftover step pickles of other runs."""
+    consolidated = tmp_path / 'model_selection_final_male_cohort_manifold_qlvm_session.pkl'
+    with open(consolidated, 'wb') as handle:
+        pickle.dump({
+            'steps': [{'step_idx': 0, 'current_features': []},
+                      {'step_idx': 1, 'final_model_features': ['neck', 'nose']}],
+            '_input_metadata': {},
+        }, handle)
+    _write_model_selection_file(tmp_path / 'other_run_step_9.pkl', ['stale'])
+    assert _read_selected_features(str(consolidated)) == ['neck', 'nose']
+    assert _read_selected_features(str(tmp_path)) == ['neck', 'nose']
 
 
 # Input-driven-transition engine (direct-marginal, reference-coded)
@@ -701,7 +717,7 @@ def test_input_driven_manifold_glmhmm_macro_score_finite_and_region_gated():
                                       n_time_bins=n_time_bins, period=1.0,
                                       lambda_smooth=0.05, n_restarts=2, n_lbfgs=200,
                                       random_state=0).fit(sequences)
-    # Two supercategory regions, split by the first torus axis (near each true state).
+    # Two category regions, split by the first torus axis (near each true state).
     region_labels = [np.where(y[:, 0] < 0.5, 0.0, 1.0) for _, y in sequences]
     score = model.macro_score(sequences, region_labels, min_region_events=1)
     assert np.isfinite(score)
@@ -749,7 +765,49 @@ def test_glm_hmm_pipeline_runs_input_driven_multinomial(tmp_path):
     assert transition.shape == (results['selected_n_states'], results['selected_n_states'])
     assert np.allclose(transition.sum(axis=1), 1.0, atol=1e-5)
     assert set(results['state_paths']) == {'s0', 's1', 's2', 's3', 's4'}
-    assert list(out_dir.glob('glm_hmm_states_multinomial_supercategory_*.pkl'))
+    assert list(out_dir.glob('glm_hmm_states_multinomial_category_*.pkl'))
+
+
+def test_glm_hmm_pipeline_input_driven_maps_one_based_category_labels(tmp_path):
+    """
+    The QLVM category labels are 1..k, not 0..k-1. The input-driven categorical
+    engine reads class indices 0..C-1 with class 0 as its reference, so the pipeline
+    maps the observed labels onto contiguous indices: two observed categories (1, 2)
+    give a two-class engine (no phantom class 0) and the mapping index -> label is
+    recorded in the metadata.
+    """
+    rng = np.random.default_rng(12)
+    feature_names = ['featA', 'featB']
+    input_pkl = tmp_path / 'manifold_input.pkl'
+    _write_synthetic_manifold_pickle(input_pkl, feature_names, 3, rng)
+    with open(input_pkl, 'rb') as handle:
+        raw = pickle.load(handle)
+    for feat in feature_names:
+        for session_entry in raw[feat].values():
+            session_entry['category'] = session_entry['category'] + 1.0
+    with open(input_pkl, 'wb') as handle:
+        pickle.dump(raw, handle)
+    settings_json = tmp_path / 'settings.json'
+    _write_glm_hmm_settings(settings_json)
+    settings = json.loads(settings_json.read_text())
+    settings['glm_hmm']['emission_type'] = 'multinomial'
+    settings['glm_hmm']['transition_mode'] = 'input_driven'
+    settings['glm_hmm']['n_states_max'] = 2
+    settings['glm_hmm']['n_lbfgs'] = 120
+    settings_json.write_text(json.dumps(settings))
+    selection_pkl = tmp_path / 'model_selection_final.pkl'
+    _write_model_selection_file(selection_pkl, feature_names)
+
+    results = run_glm_hmm_state_selection(
+        input_data_path=str(input_pkl),
+        settings_path=str(settings_json),
+        output_directory=str(tmp_path / 'glm_hmm_out'),
+        model_selection_path=str(selection_pkl),
+    )
+
+    assert results['metadata']['n_classes'] == 2
+    assert results['metadata']['class_labels'] == [1, 2]
+    assert set(results['state_paths']) == {'s0', 's1', 's2', 's3', 's4'}
 
 
 def test_glm_hmm_pipeline_runs_input_driven_manifold(tmp_path):
@@ -814,4 +872,4 @@ def test_session_sequences_missing_label_target_raises():
     rng = np.random.default_rng(1)
     raw = {'self.speed': {'s0': {'X': rng.random((4, 5)), 'Y': rng.random((4, 2))}}}
     with pytest.raises(ValueError, match="QLVM category labels"):
-        _build_session_sequences(raw, ['self.speed'], ['s0'], 'supercategory', True, 3)
+        _build_session_sequences(raw, ['self.speed'], ['s0'], 'category', True, 3)

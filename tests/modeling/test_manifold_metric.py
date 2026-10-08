@@ -757,7 +757,7 @@ class TestInverseRegionFrequencyWeights:
 
 
 class TestRegionLabelFallbackIsLoud:
-    """Without region (supercategory) labels the torus macro score and the
+    """Without region (qlvm_category) labels the torus macro score and the
     equal-region reweighting fall back; the fallback is printed, never silent."""
 
     def test_warns_on_torus_without_labels(self, capsys):

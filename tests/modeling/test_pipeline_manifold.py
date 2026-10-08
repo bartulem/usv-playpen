@@ -1,6 +1,6 @@
 """
 @author: bartulem
-End-to-end smoke tests for the continuous USV-MANIFOLD-POSITION (2-D UMAP)
+End-to-end smoke tests for the continuous USV-MANIFOLD-POSITION (2-D acoustic manifold)
 modeling pipeline and its JAX `SmoothBivariateRegression` model-selection path,
 driven entirely on tiny synthetic data.
 
@@ -59,6 +59,7 @@ import pytest
 
 matplotlib.use('Agg')
 
+from usv_playpen.modeling.modeling_bases_functions import gam_bspline_basis
 from tests.modeling._synth import (
     build_modeling_settings,
     build_session_tree,
@@ -307,7 +308,7 @@ class TestContinuousInputExtraction:
         ``modeling_manifold_*.pkl`` whose structure matches the documented
         continuous contract: a nested ``{feature: {session: {X, Y, w}}}`` dict
         carrying a reserved ``_input_metadata`` block. Every per-event window
-        is ``HISTORY_FRAMES`` wide, every target is the 2-D UMAP coordinate
+        is ``HISTORY_FRAMES`` wide, every target is the 2-D manifold coordinate
         pair, the inverse-density weights are finite with unit global mean, and
         the per-session event counts are identical across features (the
         intra-session alignment invariant).
@@ -365,20 +366,22 @@ class TestContinuousInputExtraction:
 
         md = artifact['_input_metadata']
         assert md['analysis_type'] == 'continuous'
-        assert md['analysis_tag'] == 'manifold_qlvm_supercategory'
+        # the tag names the map the target comes from (qlvm1 / qlvm2), not the
+        # category column, which stays recorded in analysis_specific
+        assert md['analysis_tag'] == 'manifold_qlvm'
         spec = md['analysis_specific']
         assert spec['manifold_metric'] == 'torus'
-        assert spec['usv_category_column_name'] == 'qlvm_supercategory'
+        assert spec['usv_category_column_name'] == 'qlvm_category'
         assert list(spec['usv_manifold_column_names']) == ['qlvm1', 'qlvm2']
 
     def test_extraction_without_labels_drops_unplaced_calls(self, tmp_path, capsys):
         """
-        With the shipped label-free setting (``usv_category_column_name`` null)
-        on summaries that carry torus coordinates only -- no ``qlvm_category`` /
-        ``qlvm_supercategory`` -- and some calls the embedding could not place
+        With the label-free setting (``usv_category_column_name`` null)
+        on summaries that carry torus coordinates only -- no ``qlvm_category`` --
+        and some calls the embedding could not place
         (null ``qlvm1`` / ``qlvm2``), extraction still runs: the unplaced calls
         are dropped before the inverse-density KDE (counts printed), no
-        supercategory packet is written, the tag names the embedding
+        category packet is written, the tag names the embedding
         (``manifold_qlvm``).
         """
 
@@ -386,7 +389,7 @@ class TestContinuousInputExtraction:
         n_nulled = 0
         for summary_path in sorted((tmp_path / 'sessions').glob('*/audio/**/*_usv_summary.csv')):
             table = pls.read_csv(summary_path)
-            table = table.drop([c for c in ('qlvm_category', 'qlvm_supercategory') if c in table.columns])
+            table = table.drop([c for c in ('qlvm_category',) if c in table.columns])
             row_index = np.arange(table.height)
             unplaced = (row_index % 4) == 0
             n_nulled += int(unplaced.sum())
@@ -457,7 +460,7 @@ class TestContinuousInputExtraction:
     def test_more_than_two_manifold_columns_raises(self, tmp_path):
         """
         A 3-D ``usv_manifold_column_names`` list trips the second guard: the
-        continuous pipeline currently assumes a strictly 2-D UMAP target.
+        continuous pipeline currently assumes a strictly 2-D manifold target.
         """
 
         settings, _ = _build_manifold_settings(tmp_path)
@@ -504,7 +507,7 @@ class TestContinuousModelRunner:
                 assert len(metrics[key]) == n_splits
             assert len(folds['y_pred_xy']) == n_splits
             assert len(folds['test_indices']) == n_splits
-            # Every fold's prediction is the (n_test, 2) UMAP coordinate pair.
+            # Every fold's prediction is the (n_test, 2) manifold coordinate pair.
             for pred in folds['y_pred_xy']:
                 assert pred.ndim == 2 and pred.shape[1] == 2
 
@@ -512,6 +515,38 @@ class TestContinuousModelRunner:
         # empirical-density-draw baseline records a zero-iteration "fit".
         assert len(results['actual']['folds']['converged']) == n_splits
         assert all(it == 0 for it in results['null_model_free']['folds']['n_iter'])
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_run_univariate_training_bspline_basis_stores_frame_filters(self, tmp_path):
+        """
+        With ``temporal_basis.type = 'bspline'`` the continuous runner fits the
+        B-spline coefficients under the GAM-mirroring penalty and stores every
+        fold's weights converted back to the frame axis (``HISTORY_FRAMES`` rows
+        per output column), each column in the span of pyGAM's lag basis.
+        """
+
+        settings, save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='mixed', split_num=2, test_proportion=0.3,
+        )
+        settings['hyperparameters']['linear_models']['manifold_regression']['temporal_basis'] = {
+            'type': 'bspline', 'n_splines': 8, 'spline_order': 3, 'lambda_smooth_fixed': 0.6,
+            'lambda_smooth_decades_each_side': 1}
+        settings['hyperparameters']['linear_models']['manifold_regression']['bin_resizing_factor'] = 1
+        pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
+        pipeline.extract_and_save_continuous_data()
+        input_pkl = str(next(save_dir.glob('modeling_manifold_*.pkl')))
+        results = ContinuousModelRunner(pipeline).run_univariate_training(input_pkl, 'self.speed')
+
+        basis = gam_bspline_basis(HISTORY_FRAMES, 8, 3) / HISTORY_FRAMES
+        folds = results['actual']['folds']
+        pairs = [(np.asarray(w), np.asarray(c)) for w, c in zip(folds['weights'], folds['basis_coefficients'])
+                 if w is not None]
+        assert pairs
+        for weights, coefficients in pairs:
+            assert weights.shape[0] == HISTORY_FRAMES
+            # The raw spline coefficients are stored too, and reproduce the frame filters.
+            assert coefficients.shape == (8, weights.shape[1])
+            np.testing.assert_allclose(basis @ coefficients, weights, rtol=1e-5, atol=1e-9)
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_run_univariate_training_with_regularization_tuning(self, tmp_path):
@@ -610,8 +645,8 @@ class TestContinuousModelRunner:
         to every per-fold metric bundle across all three strategies, mirroring the
         acoustic-manifold selection stage so the screen reports the same torus
         metrics it will later be selected on. The reference map is built once and
-        cached on the runner. With no decoder cell supplied (empty
-        ``decoder_model_cell_directory``), the density-ratio geodesic is still computed
+        cached on the runner. With the pullback metric switched off
+        (``pullback_metric`` false), the density-ratio geodesic is still computed
         from the embedded ``Y`` (finite), while the decoder-Jacobian pullback
         column degrades to ``NaN`` -- the documented graceful fallback. The two
         columns carry one entry per fold, in lockstep with every other metric.
@@ -628,7 +663,7 @@ class TestContinuousModelRunner:
             'grid_n_per_dim': 12,
             'graph_k': 6,
             'density_exponent': 1.0,
-            'decoder_model_cell_directory': '',
+            'pullback_metric': False,
         }
         pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
         pipeline.extract_and_save_continuous_data()
@@ -681,11 +716,11 @@ class TestManifoldModelSelection:
 
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_qlvm_supercategory',
+            'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'qlvm_supercategory',
+                'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'euclidean',
                 'manifold_period': 1.0,
             },
@@ -761,7 +796,9 @@ class TestManifoldModelSelection:
         held-out session set and refits/scores each accepted model on it — the
         held-out evaluation branch skipped when the proportion is 0. Asserts the
         run reserves a non-empty held-out session set (which means the held-out
-        refit/score branch executed)."""
+        refit/score branch executed). The input pickle is tagged with a
+        conditional map (``manifold_qlvm_duration``), and every step file is named
+        after that tag."""
         gate_n_sessions = 25
         settings, _save_dir = _build_manifold_settings(
             tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
@@ -776,12 +813,12 @@ class TestManifoldModelSelection:
         held_out_ids = session_ids[:5]
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_qlvm_supercategory',
+            'analysis_tag': 'manifold_qlvm_duration',
             'session_ids': session_ids,
             'held_out_session_ids': held_out_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'qlvm_supercategory',
+                'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'euclidean',
                 'manifold_period': 1.0,
             },
@@ -822,6 +859,8 @@ class TestManifoldModelSelection:
         knobs = final_step['_run_metadata']['extra_knobs']
         assert knobs['n_held_out_sessions'] > 0
         assert len(knobs['held_out_session_ids']) == knobs['n_held_out_sessions']
+        # the step-file prefix carries the input pickle's map-prefix tag verbatim
+        assert all(path.name.startswith('model_selection_continuous_manifold_qlvm_duration_') for path in step_pkls)
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_metric_runs_forward_search(self, tmp_path):
@@ -856,11 +895,11 @@ class TestManifoldModelSelection:
 
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_qlvm_supercategory',
+            'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'qlvm_supercategory',
+                'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus',
                 'manifold_period': 1.0,
             },
@@ -919,6 +958,85 @@ class TestManifoldModelSelection:
         assert final_step['_run_metadata']['selection_metric'] == 'vm_logscore'
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_selection_torus_bspline_basis_stores_frame_filters(self, tmp_path):
+        """
+        The torus forward search with ``temporal_basis.type = 'bspline'``: the
+        univariate ranking and every candidate fit project the histories onto
+        pyGAM's lag basis and fit under the GAM-mirroring penalty, the selector
+        still picks up the signal feature, every stored candidate weight matrix
+        is back on the frame axis (``n_features * HISTORY_FRAMES`` rows, 4 torus
+        embedding columns), and the run metadata records the basis.
+        """
+
+        gate_n_sessions = 25
+        settings, _save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'torus'
+        block = settings['hyperparameters']['linear_models']['manifold_regression']
+        block['bin_resizing_factor'] = 1
+        block['temporal_basis'] = {'type': 'bspline', 'n_splines': 8, 'spline_order': 3,
+                                   'lambda_smooth_fixed': 0.6, 'lambda_smooth_decades_each_side': 1}
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
+        input_md = {
+            'analysis_type': 'continuous',
+            'analysis_tag': 'manifold_qlvm_category',
+            'session_ids': session_ids,
+            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'analysis_specific': {
+                'usv_category_column_name': 'qlvm_category',
+                'manifold_metric': 'torus',
+                'manifold_period': 1.0,
+            },
+        }
+        input_pkl = str(_build_signal_continuous_pickle(
+            save_path=tmp_path / 'manifold_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            input_metadata=input_md,
+            target_kind='wound_torus',
+        ))
+        runner = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings))
+        combined = {feature: runner.run_univariate_training(input_pkl, feature) for feature in feature_names}
+        combined['_input_metadata'] = input_md
+        combined_path = tmp_path / 'univariate_combined.pkl'
+        with combined_path.open('wb') as fh:
+            pickle.dump(combined, fh)
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        continuous_vocal_manifold_model_selection(
+            univariate_results_path=str(combined_path), input_data_path=input_pkl, output_directory=str(ms_dir),
+            settings_path=str(settings_json), use_top_rank_as_anchor=True, p_val=0.5,
+        )
+
+        step_pkls = sorted(ms_dir.glob('model_selection_continuous_manifold_*_step_*.pkl'))
+        assert len(step_pkls) >= 2
+        checked = 0
+        for path in step_pkls:
+            with path.open('rb') as fh:
+                step = pickle.load(fh)
+            assert 'temporal_basis' in json.dumps(step['_run_metadata'], default=str)
+            for name, candidate in step['candidates_summary'].items():
+                if name == 'null_model_free':
+                    continue
+                for weights, coefficients in zip(candidate['folds']['weights'],
+                                                 candidate['folds']['basis_coefficients']):
+                    if weights is not None:
+                        n_inputs, n_outputs = np.asarray(weights).shape
+                        assert n_outputs == 4
+                        assert n_inputs % HISTORY_FRAMES == 0 and n_inputs >= HISTORY_FRAMES
+                        assert np.asarray(coefficients).shape == (8 * (n_inputs // HISTORY_FRAMES), 4)
+                        checked += 1
+        assert checked > 0
+        with step_pkls[-1].open('rb') as fh:
+            final_step = pickle.load(fh)
+        assert 'self.speed' in final_step['current_features']
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_frozen_kappa_runs(self, tmp_path, capsys):
         """
         With ``vocal_features.freeze_selection_kappa=True`` on a torus run, the
@@ -941,11 +1059,11 @@ class TestManifoldModelSelection:
         session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_qlvm_supercategory',
+            'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'qlvm_supercategory',
+                'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus',
                 'manifold_period': 1.0,
             },
@@ -1054,11 +1172,11 @@ class TestManifoldModelSelection:
         session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
         input_md = {
             'analysis_type': 'continuous',
-            'analysis_tag': 'manifold_qlvm_supercategory',
+            'analysis_tag': 'manifold_qlvm_category',
             'session_ids': session_ids,
             'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
             'analysis_specific': {
-                'usv_category_column_name': 'qlvm_supercategory',
+                'usv_category_column_name': 'qlvm_category',
                 'manifold_metric': 'torus', 'manifold_period': 1.0,
             },
         }

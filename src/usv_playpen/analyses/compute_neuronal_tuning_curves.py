@@ -16,8 +16,9 @@ Behavioral path (driven by `*_behavioral_features.csv` + tracking H5):
   - per-cluster, per-animal 2D spatial ratemap
 
 Vocal path (driven by `*_usv_summary.csv` + tracking H5 + audio sync;
-noise segments are always dropped, squeaks per `exclude_squeaks_self` /
-`exclude_squeaks_partner`):
+noise segments are always dropped; segments that are not pure USVs
+(`usv & ~squeak`) -- pure squeaks, segments holding both a squeak and a
+USV, and unscored rows -- per `exclude_squeaks_self` / `exclude_squeaks_partner`):
   `usv_peth`              pooled peri-USV-onset PETH per emitter side
                           (default [-2, +0.5] s window, 50 ms bins)
   `usv_property_tuning`   within-USV firing rate vs each continuous
@@ -25,9 +26,11 @@ noise segments are always dropped, squeaks per `exclude_squeaks_self` /
                           frequency, bandwidth, mean / max amplitude,
                           absolute loudness_db, spectral entropy, mask
                           number)
-  `usv_category_tuning`   per-category within-USV firing rate for every
-                          QLVM map (`<map>_category` and
-                          `<map>_supercategory`; squeaks never enter)
+  `usv_category_tuning`   per-category within-USV firing rate for the
+                          QLVM category column (`qlvm_category`, the
+                          content-ridge categories R-1..R-k of the
+                          regular map; only pure USVs, `usv & ~squeak`,
+                          enter)
   `usv_category_peth`     per-category time-resolved peri-USV PETH
                           (computed and saved; not plotted)
 
@@ -54,10 +57,16 @@ import polars as pls
 from scipy import ndimage, stats
 from tqdm import tqdm
 
-from ..os_utils import QLVM_MAPS, atomic_output_path, drop_noise_usvs, first_match_or_raise
+from ..os_utils import (
+    QLVM_CATEGORY_COLUMNS,
+    atomic_output_path,
+    call_class_mask,
+    drop_noise_usvs,
+    first_match_or_raise,
+)
 from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import extract_animal_sexes
 from .compute_behavioral_features import FeatureZoo
-
 
 CONTINUOUS_PROPERTIES = (
     "duration",
@@ -71,16 +80,10 @@ CONTINUOUS_PROPERTIES = (
     "mask_number",
 )
 
-# The per-USV cluster labels of every QLVM map (os_utils.QLVM_MAPS: the regular
-# model and the four conditional ones), fine (`<map>_category`) then coarse
-# (`<map>_supercategory`) per map, in map order.
-CATEGORICAL_FEATURES = tuple(
-    f"{qlvm_map}_{suffix}" for qlvm_map in QLVM_MAPS for suffix in ("category", "supercategory")
-)
-
-# Column `detect_usv_squeaks` writes into usv_summary.csv: True when the segment
-# holds a squeak (broadband vocalization).
-SQUEAK_COLUMN = "squeak"
+# The per-USV QLVM category columns (os_utils.QLVM_CATEGORY_COLUMNS: the regular
+# map's qlvm_category only, the category label of every call whatever map it is
+# drawn on; there is no coarse level and no category column of the conditional maps).
+CATEGORICAL_FEATURES = QLVM_CATEGORY_COLUMNS
 
 # Derivative suffixes a behavioral feature column may carry; a column is matched
 # against `excluded_behavioral_features` on its base name with these stripped.
@@ -525,7 +528,7 @@ def _anchor_bin_validity_grid(
            [anchor + Δt_min, anchor + Δt_lo].
 
       (iv) always, for a post-onset bin: the bin ends no later than the
-           onset of the next USV (any emitter, squeaks included) after the
+           onset of the next USV (any emitter, squeaks and both included) after the
            anchor's onset, so the post-onset PETH covers the anchor call and
            the silence after it, never a following call.
 
@@ -1333,8 +1336,8 @@ class NeuronalTuning(FeatureZoo):
         metadata), validates and stashes the keyword arguments as attributes,
         and records GUI-vs-CLI execution context. The categorical vocal
         compute reads its category labels straight from the
-        `qlvm_*` columns of the `*_usv_summary.csv`, not from any
-        bundled segmentation file.
+        `qlvm_category` column of the `*_usv_summary.csv` (written by
+        `assign-qlvm-categories`), not from the category bundle itself.
 
         Parameters
         ----------
@@ -1483,9 +1486,13 @@ class NeuronalTuning(FeatureZoo):
         Description
         -----------
         Locate `*_usv_summary.csv` and the tracking H5; filter the USV
-        summary to non-noise rows (raising when it has no ``squeak``
-        column, which the squeak exclusion needs), read sex assignment from h5
-        `track_names`, and derive session duration from the H5 as
+        summary to non-noise rows (raising when it has no ``usv`` /
+        ``squeak`` columns, which the squeak and category exclusions need), read the animals
+        from h5 `track_names` and each animal's sex from the session metadata
+        (``yaml_utils.extract_animal_sexes``: the ``Subjects`` entry whose ``subject_id``
+        matches the stripped track name -- never the track slot, so a female-female session
+        has two female sides and a male-male session two male sides; a track the metadata
+        cannot resolve raises), and derive session duration from the H5 as
         `tracks.shape[0] / recording_frame_rate` (same time base the
         spikes are aligned to). Returns None if either required file
         is missing or the filtered USV table is empty.
@@ -1498,10 +1505,13 @@ class NeuronalTuning(FeatureZoo):
         -------
         bundle (dict | None)
             None if any required input is missing; otherwise a dict with
-            keys: `usv_df` (filtered pls.DataFrame), `track_names`,
-            `male`, `female`, `duration_seconds`, `starts`, `stops`,
-            `emitters`, `is_squeak` (bool per row; the squeak flag, null
-            read as False).
+            keys: `usv_df` (filtered pls.DataFrame), `track_names`
+            (stripped, file order), `animal_sex` (stripped track name ->
+            'male' / 'female', from the session metadata),
+            `duration_seconds`, `starts`, `stops`,
+            `emitters`, `is_usv` (bool per row; True only on pure USVs,
+            ``usv & ~squeak``, so pure squeaks, segments holding both and
+            null booleans are False).
         """
 
         root = pathlib.Path(self.root_directory)
@@ -1522,17 +1532,12 @@ class NeuronalTuning(FeatureZoo):
         df = drop_noise_usvs(df, usv_csv.name)[0]
         if df.shape[0] == 0:
             return None
-        # Squeaks are dropped from the anchors per side (exclude_squeaks_self /
-        # exclude_squeaks_partner) and always from the QLVM category tuning, so the
-        # squeak flag is required; a summary without it raises rather than silently
+        # Segments that are not pure USVs (usv & ~squeak: pure squeaks, segments holding both,
+        # unscored nulls) are dropped from the anchors per side (exclude_squeaks_self /
+        # exclude_squeaks_partner) and always from the QLVM category tuning, so the two booleans
+        # are required; a summary without them raises (call_class_mask) rather than silently
         # tuning to squeaks.
-        if SQUEAK_COLUMN not in df.columns:
-            error_message = (
-                f"{usv_csv.name} has no '{SQUEAK_COLUMN}' column, so squeaks cannot be kept out of the vocal "
-                f"tuning. Run detect-usv-squeaks on the session."
-            )
-            raise KeyError(error_message)
-        is_squeak = df[SQUEAK_COLUMN].cast(pls.Boolean, strict=False).fill_null(False).to_numpy()
+        is_usv = call_class_mask(df, ("usv",), usv_csv.name).to_numpy()
 
         emitters = [
             (e.strip() if e is not None else None) for e in df["emitter"].to_list()
@@ -1555,23 +1560,22 @@ class NeuronalTuning(FeatureZoo):
         # spike data is aligned to (and that the behavioral compute
         # uses), so circular shuffles wrap modulo the right interval.
         with h5py.File(h5_path, mode="r") as f:
-            track_names = [t.decode("utf-8").strip() for t in f["track_names"]]
+            track_names = [t.decode("utf-8").strip("\x00").strip() for t in f["track_names"]]
             n_frames = int(f["tracks"].shape[0])
             recording_fr = float(f["recording_frame_rate"][()])
         duration_seconds = float(n_frames) / recording_fr
-        male = track_names[0] if len(track_names) >= 1 else None
-        female = track_names[1] if len(track_names) >= 2 else None
+        # Sex per animal from the session metadata, never from the track slot.
+        animal_sex = extract_animal_sexes(str(root), track_names)
 
         return {
             "usv_df": df,
             "track_names": track_names,
-            "male": male,
-            "female": female,
+            "animal_sex": animal_sex,
             "duration_seconds": duration_seconds,
             "starts": starts,
             "stops": stops,
             "emitters": np.array(emitters, dtype=object),
-            "is_squeak": is_squeak,
+            "is_usv": is_usv,
         }
 
     # main entry point
@@ -1916,31 +1920,38 @@ class NeuronalTuning(FeatureZoo):
         per-anchor bookkeeping that is independent of any spike train
         and can therefore be reused across observed + n_shuffles
         iterations and across clusters within a session. When the
-        summary lacks ``qlvm_category`` / ``qlvm_supercategory`` (e.g. a
-        session embedded before ``infer-qlvm-latents`` wrote the labels), a
+        summary lacks ``qlvm_category`` (e.g. a session whose categories
+        ``assign-qlvm-categories`` has not written yet), a
         one-line notice says the QLVM category tuning is skipped; those
         features then yield no categories, as before.
 
         Side selection
         --------------
-        - `male` = `track_names[0]`, `female` = `track_names[1]` (locked
-          convention).
-        - Sort sides by their count of non-squeak USVs; the more-vocal
-          side is `self`, the less-vocal side is `partner` (counting
-          squeaks would make a squeak-heavy female `self`).
-        - A side's anchors are its USVs, without its squeaks when
-          `exclude_squeaks_self` (self) / `exclude_squeaks_partner`
-          (partner) is set. Every noise-filtered USV, squeaks included,
-          still counts as another call in the overlap / cleanliness
-          checks.
+        - One candidate side per tracked animal (`track_names`, file
+          order), labelled with that animal's sex from the session
+          metadata (`animal_sex`), never with its track slot: a
+          female-female session yields two female sides, a male-male
+          session two male sides.
+        - Sort sides by their count of pure USVs (``usv & ~squeak``
+          only); the more-vocal side is `self`, the less-vocal side is
+          `partner` (counting squeaks would make a squeak-heavy female
+          `self`).
+        - A side's anchors are its calls, restricted to pure USVs
+          (``usv & ~squeak``) when `exclude_squeaks_self` (self) /
+          `exclude_squeaks_partner` (partner) is set: a segment holding both
+          a squeak and a USV is treated like a squeak. Every
+          noise-filtered segment, squeaks and both included, still counts
+          as another call in the overlap / cleanliness checks.
         - `self` included iff its anchor count >= `n_usv_min_self`.
         - `partner` included iff
           `include_partner_vocalization_tuning_bool` AND its anchor count
           >= `n_usv_min_partner`.
-        - The QLVM category tuning (every map of `CATEGORICAL_FEATURES`)
-          never uses squeak anchors, whatever the knobs: the QLVM models
-          were trained without squeaks (they get their own embedding), so a
-          squeak's label is not a USV category.
+        - The QLVM category tuning (the `qlvm_category` column,
+          `CATEGORICAL_FEATURES`) uses pure-USV anchors only, whatever the
+          knobs: the
+          QLVM models were trained on pure USVs (squeaks get their own
+          embedding), so the label of a squeak or of a segment holding both is not
+          a USV category.
 
         Parameters
         ----------
@@ -1977,14 +1988,14 @@ class NeuronalTuning(FeatureZoo):
         starts = voc_inputs["starts"]
         stops = voc_inputs["stops"]
         emitters = voc_inputs["emitters"]
-        male = voc_inputs["male"]
-        female = voc_inputs["female"]
+        track_names = voc_inputs["track_names"]
+        animal_sex = voc_inputs["animal_sex"]
         duration_seconds = voc_inputs["duration_seconds"]
         usv_df = voc_inputs["usv_df"]
-        is_squeak = voc_inputs["is_squeak"]
+        is_usv = voc_inputs["is_usv"]
 
-        # A summary embedded before infer-qlvm-latents wrote the QLVM cluster labels
-        # lacks them; say so once per session instead of leaving the QLVM category
+        # A summary that assign-qlvm-categories has not labelled yet lacks
+        # qlvm_category; say so once per session instead of leaving the QLVM category
         # tuning empty without a word (the categorical loop below yields no categories
         # for a missing column).
         missing_qlvm_labels = [
@@ -2006,11 +2017,10 @@ class NeuronalTuning(FeatureZoo):
         rel_bin_centers = 0.5 * (rel_bin_lo + rel_bin_hi)
 
         sides_to_run: list[dict] = []
-        for emitter_str, sex_label in ((male, "male"), (female, "female")):
-            if emitter_str is None:
-                continue
+        for emitter_str in track_names:
+            sex_label = animal_sex[emitter_str]
             emitter_mask = np.array([e == emitter_str for e in emitters])
-            n_usv = int((emitter_mask & ~is_squeak).sum())
+            n_usv = int((emitter_mask & is_usv).sum())
             if int(emitter_mask.sum()) == 0:
                 continue
             sides_to_run.append(
@@ -2024,9 +2034,9 @@ class NeuronalTuning(FeatureZoo):
         if len(sides_to_run) > 1:
             roles_to_run.append(("partner", sides_to_run[1]))
         for role, side in roles_to_run:
-            # A side's anchors: its calls, minus its squeaks when that role excludes them.
+            # A side's anchors: its calls, restricted to pure USVs when that role excludes squeaks.
             side["mask"] = (
-                side["emitter_mask"] & ~is_squeak if exclude_squeaks_by_role[role] else side["emitter_mask"]
+                side["emitter_mask"] & is_usv if exclude_squeaks_by_role[role] else side["emitter_mask"]
             )
             side["n"] = int(side["mask"].sum())
         self_side = roles_to_run[0][1]
@@ -2069,10 +2079,13 @@ class NeuronalTuning(FeatureZoo):
             anchor_property_occ_seconds: dict[str, np.ndarray] = {}
             for prop in CONTINUOUS_PROPERTIES:
                 if prop in usv_df.columns:
-                    values = usv_df[prop].to_numpy()[anchor_idx]
+                    # Cast to Float64: a column with no value in the rows polars infers
+                    # the CSV schema from (e.g. an all-null loudness_db) is read as
+                    # String, whose object array np.isfinite cannot take.
+                    values = usv_df[prop].cast(pls.Float64).to_numpy()[anchor_idx]
                 else:
-                    # Optional feature column absent for this session (e.g. a QLVM /
-                    # spectral property not produced when QLVM wasn't run); treat it as
+                    # Optional feature column absent for this session (e.g. an acoustic
+                    # property its summary was never given); treat it as
                     # all-NaN so it yields empty occupancy and NaN tuning instead of
                     # raising ColumnNotFoundError and aborting the whole run.
                     values = np.full(anchor_durations.shape[0], np.nan, dtype=float)
@@ -2094,22 +2107,22 @@ class NeuronalTuning(FeatureZoo):
                 if cat_feat in usv_df.columns:
                     cat_values = usv_df[cat_feat].to_numpy()[anchor_idx]
                 else:
-                    # Optional categorical column absent (e.g. a session never run through
-                    # QLVM inference); all-NaN -> the null-drop below yields an empty category set
+                    # Optional categorical column absent (e.g. a session assign-qlvm-categories
+                    # has not labelled); all-NaN -> the null-drop below yields an empty category set
                     # (n_cats == 0), so this feature produces no tuning instead of crashing.
                     cat_values = np.full(anchor_durations.shape[0], np.nan, dtype=float)
-                # Squeak anchors (kept on a side that does not exclude them) carry no
-                # USV category: blank their label before the category set is built, so
-                # neither the category tuning nor the per-category PETH uses them and a
-                # category held only by squeaks does not appear.
-                anchor_is_squeak = is_squeak[anchor_idx]
-                if anchor_is_squeak.any():
+                # Anchors that are not pure USVs (squeak / both segments kept on a side
+                # that does not exclude them) carry no USV category: blank their label
+                # before the category set is built, so neither the category tuning nor the
+                # per-category PETH uses them and a category held only by them does not appear.
+                anchor_not_usv = ~is_usv[anchor_idx]
+                if anchor_not_usv.any():
                     # An integer column with nulls arrives as an object array holding None,
                     # which astype(float) refuses; map None to NaN explicitly.
                     cat_values = np.array(
                         [np.nan if c is None else float(c) for c in cat_values.tolist()], dtype=float
                     )
-                    cat_values[anchor_is_squeak] = np.nan
+                    cat_values[anchor_not_usv] = np.nan
                 # Drop null sentinels regardless of dtype before building the
                 # category set: polars `.to_numpy()` on an integer column that
                 # contains nulls yields a float (NaN) or object (None) array,
@@ -2997,7 +3010,7 @@ class NeuronalTuning(FeatureZoo):
                     n_cats = cat_info["unique_cats"].size
                     if n_cats == 0:
                         # No categories (the label column is absent, or every label is
-                        # null or a squeak's): nothing to accumulate, and the rows of
+                        # null or a non-USV anchor's): nothing to accumulate, and the rows of
                         # q3w_rates / q3p_rates are already zero-width.
                         continue
                     occ_per_cat = cat_info["occ_seconds_per_cat"]

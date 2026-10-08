@@ -499,7 +499,7 @@ def _make_summary_fixture(tmp_path: Path,
     """Builds the on-disk inputs that summarize_das_findings expects:
 
     1. <root>/audio/das_annotations/m_<ts>_<chN>_annotations.csv — one per channel.
-    2. <root>/audio/hpss_filtered/<sess>_<sr>_<n_samples>_<n_ch>_int16.mmap —
+    2. <root>/audio/hpss_filtered/sess_concatenated_audio_hpss_filtered_<sr>_<n_samples>_<n_ch>_int16.mmap —
        a memmap audio file whose name encodes the sample rate, sample count,
        channel count, and dtype.
     """
@@ -535,7 +535,7 @@ def _make_summary_fixture(tmp_path: Path,
         s = int((0.1 + i * 0.5) * sampling_rate)
         e = int((0.15 + i * 0.5) * sampling_rate)
         audio[s:e, :] = rng.integers(-10000, 10000, size=(e - s, 1), dtype=np.int16)
-    fname = f"sess_{sampling_rate}_{n_samples}_{n_audio_channels}_int16.mmap"
+    fname = f"sess_concatenated_audio_hpss_filtered_{sampling_rate}_{n_samples}_{n_audio_channels}_int16.mmap"
     audio.tofile(hpss_dir / fname)
     return tmp_path
 
@@ -777,7 +777,7 @@ def _run_merge_only(tmp_path, mocker, processing_settings, channel_intervals: di
     hpss_dir.mkdir(parents=True)
     n_samples = int(sampling_rate * 5)
     np.zeros((n_samples, n_audio_channels), dtype=np.int16).tofile(
-        hpss_dir / f"sess_{sampling_rate}_{n_samples}_{n_audio_channels}_int16.mmap")
+        hpss_dir / f"sess_concatenated_audio_hpss_filtered_{sampling_rate}_{n_samples}_{n_audio_channels}_int16.mmap")
 
     processing_settings["usv_inference"]["FindMouseVocalizations"][
         "summarize_das_findings"]["filter_putative_noise_bool"] = False
@@ -900,7 +900,7 @@ def _make_gate_fixture(tmp_path: Path, channels: tuple, audio: np.ndarray,
         ]).write_csv(annot_dir / f"m_20260101_{ch}_annotations.csv")
     hpss_dir = tmp_path / "audio" / "hpss_filtered"
     hpss_dir.mkdir(parents=True)
-    fname = f"sess_{sampling_rate}_{audio.shape[0]}_{audio.shape[1]}_int16.mmap"
+    fname = f"sess_concatenated_audio_hpss_filtered_{sampling_rate}_{audio.shape[0]}_{audio.shape[1]}_int16.mmap"
     audio.tofile(hpss_dir / fname)
 
 
@@ -991,7 +991,7 @@ def _build_prepare_for_vocalocator_layout(tmp_path, settings, subjects=(("mouse_
     point the settings' arena `calibration_file_loc` at a synthetic arena
     session:
 
-      <root>/audio/sess_concatenated_audio_<sr>_<n>_<ch>_<dtype>.mmap
+      <root>/audio/hpss_filtered/sess_concatenated_audio_hpss_filtered_<sr>_<n>_<ch>_int16.mmap
       <root>/audio/sess_usv_summary.csv          (start/stop columns)
       <root>/video/track/<date>_points3d_translated_rotated_metric.h5
       <root>/video/track/sess_camera_frame_count_dict.json
@@ -1015,8 +1015,8 @@ def _build_prepare_for_vocalocator_layout(tmp_path, settings, subjects=(("mouse_
 
     sr, n_samples, n_chan = 250000, 4800, 4
     audio_dir = tmp_path / "audio"
-    audio_dir.mkdir()
-    mmap_path = audio_dir / f"sess_concatenated_audio_{sr}_{n_samples}_{n_chan}_int16.mmap"
+    (audio_dir / "hpss_filtered").mkdir(parents=True)
+    mmap_path = audio_dir / "hpss_filtered" / f"sess_concatenated_audio_hpss_filtered_{sr}_{n_samples}_{n_chan}_int16.mmap"
     np.zeros((n_samples, n_chan), dtype=np.int16).tofile(mmap_path)
 
     pls.DataFrame({
@@ -1095,6 +1095,81 @@ def test_prepare_for_vocalocator_writes_dset_h5(tmp_path, processing_settings, m
         # Two USVs -> length_idx is a cumulative-sum of length 3 ([0, l0, l0+l1]).
         assert f["length_idx"].shape == (3,)
         assert float(f.attrs["audio_sr"]) == 250000.0
+
+
+@pytest.mark.parametrize("band", ["ultrasonic", "broadband"])
+def test_prepare_for_vocalocator_reads_the_configured_audio_band(tmp_path, processing_settings, mocker, band):
+    """
+    Description
+    -----------
+    ``vocalocator.vcl_audio_band`` picks the memmap the vocalocator dataset is cut
+    from: ``ultrasonic`` the 30 kHz high-passed ``audio/hpss_filtered`` memmap (the shipped
+    default, the band the current models were trained on), ``broadband`` the 2 kHz
+    high-passed ``audio/broadband_filtered`` one. With both present, the dataset
+    must carry the configured file's samples.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op the interactive ``smart_wait``.
+    band (str)
+        The configured band.
+
+    Returns
+    -------
+    None
+    """
+
+    assert processing_settings['vocalocator']['vcl_audio_band'] == 'ultrasonic'
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    _build_prepare_for_vocalocator_layout(tmp_path, processing_settings)
+    usv_mmap = next((tmp_path / "audio" / "hpss_filtered").glob("*.mmap"))
+    broadband_dir = tmp_path / "audio" / "broadband_filtered"
+    broadband_dir.mkdir()
+    broadband_mmap = broadband_dir / usv_mmap.name.replace("hpss_filtered", "broadband_filtered")
+    np.full(usv_mmap.stat().st_size // 2, 7, dtype=np.int16).tofile(broadband_mmap)
+    processing_settings['vocalocator']['vcl_audio_band'] = band
+
+    _make_vocalocator(tmp_path, processing_settings).prepare_for_vocalocator()
+
+    with h5py.File(tmp_path / "audio" / "sound_localization" / "dset.h5", "r") as f:
+        audio = f["audio"][()]
+    # the dataset stores int16 audio scaled to [-1, 1]: the broadband file holds 7s,
+    # the usv file zeros
+    expected = 7 / 32768 if band == "broadband" else 0.0
+    assert np.allclose(audio.astype(np.float64), expected, atol=1e-6)
+
+
+def test_prepare_for_vocalocator_rejects_an_unknown_audio_band(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    A ``vocalocator.vcl_audio_band`` other than ``ultrasonic`` / ``broadband`` raises
+    before any file is read.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory used as the session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Used to no-op the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.assign_vocalizations.smart_wait")
+    # the band's former name, no longer accepted
+    processing_settings['vocalocator']['vcl_audio_band'] = 'usv'
+    with pytest.raises(ValueError, match="vcl_audio_band"):
+        _make_vocalocator(tmp_path, processing_settings).prepare_for_vocalocator()
 
 
 def test_prepare_for_vocalocator_skips_when_dset_exists(tmp_path, processing_settings, mocker):

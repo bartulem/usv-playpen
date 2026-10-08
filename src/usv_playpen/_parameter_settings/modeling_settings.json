@@ -79,7 +79,7 @@
     "usv_predictor_type": "categories_rate",
     "usv_predictor_partner_only": true,
     "usv_predictor_smoothing_sd": 1,
-    "usv_category_column_name": "qlvm_supercategory",
+    "usv_category_column_name": "qlvm_category",
     "exclude_noise_usvs": true,
     "usv_manifold_column_names": ["qlvm1", "qlvm2"],
     "usv_manifold_metric": "torus",
@@ -92,7 +92,8 @@
       "grid_n_per_dim": 40,
       "graph_k": 8,
       "density_exponent": 1.0,
-      "decoder_model_cell_directory": "/mnt/falkner/Dexter/vocal_beh/models/qlvm_models/qlvm_models_latest/v3/phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor"
+      "pullback_metric": true,
+      "pullback_condition_quantile": 0.5
     }
   },
 
@@ -159,7 +160,7 @@
         "use_hybrid_flatten": false,
         "saliency": {
           "enable": true,
-          "segmentation": "supercategory",
+          "segmentation": "category",
           "alpha": 0.5,
           "radius_mode": "adaptive"
         }
@@ -171,6 +172,13 @@
         "lambda_smooth_fixed": 1.0,
         "l2_reg_fixed": 0.01,
         "smoothness_derivative_order": 1,
+        "temporal_basis": {
+          "type": "none",
+          "n_splines": 8,
+          "spline_order": 3,
+          "lambda_smooth_fixed": 1e-8,
+          "lambda_smooth_decades_each_side": 2
+        },
         "huber_delta": 1.0,
         "learning_rate": 0.005,
         "max_iter": 20000,
@@ -194,6 +202,13 @@
         "lambda_smooth_fixed": 1.0,
         "l2_reg_fixed": 0.01,
         "smoothness_derivative_order": 1,
+        "temporal_basis": {
+          "type": "none",
+          "n_splines": 8,
+          "spline_order": 3,
+          "lambda_smooth_fixed": 1e-5,
+          "lambda_smooth_decades_each_side": 2
+        },
         "learning_rate": 0.005,
         "max_iter": 20000,
         "tol": 1e-3,
@@ -270,7 +285,7 @@
     "lambda_smooth": 100.0,
     "input_driven_lambda_smooth": 0.05,
     "l2_reg": 0.1,
-    "multinomial_target": "supercategory",
+    "multinomial_target": "category",
     "focal_gamma": 0.0,
     "multinomial_max_iter": 2000
   },

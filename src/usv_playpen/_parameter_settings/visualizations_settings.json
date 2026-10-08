@@ -108,9 +108,9 @@
     "auto_open_figure": true,
     "sequence": {
       "draw_boundaries": true,
-      "boundary_clustering": "coarse",
       "annotate_right": false,
-      "mark_usv_segments": true
+      "mark_usv_segments": true,
+      "exclude_squeaks": true
     }
   },
   "make_behavioral_videos": {
@@ -204,7 +204,6 @@
     }
   },
   "qlvm_torus_traversal_video": {
-    "clustering": "coarse",
     "fps": 20,
     "dpi": 100,
     "m": 36,
@@ -222,6 +221,54 @@
     "spec_cache_size": 2048,
     "apply_mask": true,
     "accent_color": "#00FFFF"
+  },
+  "qlvm_figures": {
+    "n_usvs": 100000,
+    "usvs_per_session": 200,
+    "sample_cache_file": "/mnt/falkner/Bartul/spectrograms/embeddings/qlvm_figure_sample.npz",
+    "seed_cell_directories": [
+      "/mnt/falkner/Bartul/PC_transfer/qlvm_final/validation/cells/seed7",
+      "/mnt/falkner/Bartul/PC_transfer/qlvm_final/validation/cells/seed1234"
+    ],
+    "watershed_levels_file": "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/regions/clustering_clean/masked_levels.npz",
+    "category_colors": ["#4E79A7", "#F28E2B", "#59A14F", "#E15759"],
+    "overview": {
+      "n_examples": 10,
+      "spiral_radius": 0.03,
+      "spiral_turns": 3,
+      "density_bandwidth": 0.01
+    },
+    "quality": {
+      "n_pcs": 50,
+      "umap_n_neighbors": 30,
+      "umap_min_dist": 0.1,
+      "readout_neighbors": 20,
+      "readout_folds": 5,
+      "neighborhood_k": 20,
+      "n_neighborhood_subsets": 5,
+      "neighborhood_subset_size": 9000,
+      "distance_sample_size": 3000,
+      "n_distance_samples": 5,
+      "pullback_grid": 48,
+      "embed_lattice_batch_size": 2048,
+      "embed_data_batch_size": 1024
+    },
+    "categories": {
+      "n_shifts": 1000,
+      "histogram_bins": 30,
+      "similarity_downsample": 2,
+      "similarity_max_shift": 4,
+      "balanced_per_category": 2000,
+      "balanced_reference_per_category": 1000,
+      "closest_matches": 100,
+      "closest_log2_limit": 2.0,
+      "partition_sample_size": 8000,
+      "partition_reference_size": 4000,
+      "average_size": 1000,
+      "align_max_shift": 8,
+      "align_iterations": 5,
+      "average_time_ms": 150.0
+    }
   },
   "vocal_pose_figures": {
     "window": {
@@ -397,7 +444,6 @@
     }
   },
   "embedding_thumbnails": {
-    "category_col_suffix": "supercategory",
     "exclude_squeaks": true,
     "n_samples_per_category": 8,
     "tile_orientation": "vertical",
@@ -406,10 +452,6 @@
     "category_colors": null,
     "sampling_method": "spiral",
     "draw_cluster_boundaries": true,
-    "knn_boundary_neighbors": 15,
-    "knn_boundary_resolution": 200,
-    "knn_boundary_density_min_count": 0.05,
-    "knn_boundary_density_smoothing_sigma": 3.0,
     "draw_spiral_overlay": false,
     "spiral_show_only_for": null,
     "spiral_color": "#000000",

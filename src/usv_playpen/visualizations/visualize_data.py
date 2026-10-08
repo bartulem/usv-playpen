@@ -143,9 +143,10 @@ class Visualizer:
                 self.message_output(traceback.format_exc())
                 failed_directories.append((one_directory, f"{type(exc).__name__}: {exc}"))
 
-        # # # # cohort-level (run-once) QLVM torus-traversal video: reads a model's
-        # arrays + provenance pickle + the consolidated H5 from settings (not a
-        # session directory), so it runs ONCE outside the per-session loop.
+        # # # # cohort-level (run-once) QLVM torus-traversal video: reads the QLVM
+        # category bundle (os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY) + the consolidated
+        # H5 resolved from settings (not a session directory), so it runs ONCE
+        # outside the per-session loop.
         if self.input_parameter_dict['visualize_booleans']['make_qlvm_torus_traversal_video_bool']:
             try:
                 QLVMTorusTraversalVideo(output_path=None,
@@ -309,9 +310,10 @@ def generate_rm_figures_cli(ctx, root_directory, **kwargs) -> None:
     -----------
     A command-line tool to render the per-cluster combined neuronal tuning
     figures. Each output bundles the behavioral feature pages (one per
-    temporal offset, per plot-feature group) and the vocal pages (Page 1
-    raster + Q1 peri-onset PETH + Q2 grid; Page 2 Q3-within watersheds, one
-    row per QLVM map; the per-category PETH stays in the pkl, not drawn). Behavioral and vocal sections are emitted only when the
+    temporal offset, per plot-feature group) and one vocal page per emitter
+    (raster + Q1 peri-onset PETH, the Q2 grid, and the Q3-within row of the
+    QLVM category's watersheds at the bottom; the per-category PETH stays in
+    the pkl, not drawn). Behavioral and vocal sections are emitted only when the
     cluster pkl carries the corresponding payload; pkls with neither are
     skipped silently.
 

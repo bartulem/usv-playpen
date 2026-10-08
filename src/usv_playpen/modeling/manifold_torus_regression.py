@@ -153,7 +153,10 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
         the whole filter, edges included, without the ends blowing up. This is a
         deliberate torus-path divergence from the coordinate model's open-boundary
         ``jnp.diff`` penalty. Order 1 (already a first-difference operator) is
-        left unchanged.
+        left unchanged. With ``smoothness_reflective_edges=False`` the edge rows
+        are left out and the penalty is the plain open-boundary second difference
+        of a P-spline, the GAM's penalty on spline coefficients (the choice when
+        the time axis holds B-spline coefficients rather than frames).
 
         Parameters
         ----------
@@ -167,7 +170,7 @@ class SmoothTorusManifoldRegression(SmoothBivariateRegression):
         p = int(self.n_time_bins)
         order = int(self.smoothness_derivative_order)
         d_k = np.diff(np.eye(p), n=order, axis=0)   # interior operator, (p - order, p)
-        if order == 2 and p >= 2:
+        if order == 2 and p >= 2 and self.smoothness_reflective_edges:
             # Reflective (Neumann) edge rows: penalise the filter SLOPE at each
             # end (first difference). Mirroring the filter at the boundary makes
             # the edge second difference equal the edge slope, so this is the

@@ -11,7 +11,7 @@ path validation, error reporting, and specific argument routing for:
 2. Vocal Category: Selection for One-vs-Rest classification (Logistic/GAM).
 3. Vocal Params: Selection for continuous bout characteristics (Gamma Regression).
 4. Multinomial: Selection for flat USV category probability (JAX/Soft-Hierarchy).
-5. Continuous: Selection for continuous UMAP manifold coordinates (JAX/Gaussian).
+5. Continuous: Selection for continuous acoustic-manifold coordinates (JAX/Gaussian).
 
 Computational Strategy:
 -----------------------

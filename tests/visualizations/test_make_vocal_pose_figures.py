@@ -150,13 +150,16 @@ def _write_session(root: pathlib.Path) -> pathlib.Path:
         h5_file.create_dataset("node_names", data=np.array([name.encode("utf-8") for name in _NODES]))
         h5_file.create_dataset("recording_frame_rate", data=_FPS)
         h5_file.create_dataset("experimental_code", data=b"BCL2MGFGd")
+    # each animal's sex is read from the session metadata, matched to its track name
+    (session / f"{session.name}_metadata.yaml").write_text(
+        "Subjects:\n- subject_id: '100_1'\n  sex: male\n- subject_id: '200_2'\n  sex: female\n")
     rows = []
     for start in np.concatenate([np.arange(3.0, 5.0, 0.2), np.arange(9.0, 11.0, 0.2)]):
-        rows.append({"start": start, "stop": start + 0.08, "duration": 0.08, "peak_amp_ch": 0, "emitter": "100_1", "noise": False,
+        rows.append({"start": start, "stop": start + 0.08, "duration": 0.08, "peak_amp_ch": 0, "emitter": "100_1", "noise": False, "usv": True,
                      "squeak": False, "freq_bandwidth_hz": 20000.0})
-    rows.append({"start": 7.0, "stop": 7.2, "duration": 0.2, "peak_amp_ch": 0, "emitter": "200_2", "noise": False, "squeak": True,
+    rows.append({"start": 7.0, "stop": 7.2, "duration": 0.2, "peak_amp_ch": 0, "emitter": "200_2", "noise": False, "usv": False, "squeak": True,
                  "freq_bandwidth_hz": 60000.0})
-    rows.append({"start": 8.0, "stop": 8.05, "duration": 0.05, "peak_amp_ch": 0, "emitter": None, "noise": True, "squeak": False,
+    rows.append({"start": 8.0, "stop": 8.05, "duration": 0.05, "peak_amp_ch": 0, "emitter": None, "noise": True, "usv": None, "squeak": None,
                  "freq_bandwidth_hz": 5000.0})
     pls.DataFrame(rows).with_columns(pls.col("emitter").cast(pls.Utf8)).write_csv(session / "audio" / "20240101_120000_usv_summary.csv")
     audio_times = np.arange(int(_SESSION_SECONDS * _WAV_RATE)) / _WAV_RATE
@@ -291,6 +294,28 @@ class TestOnSyntheticSession:
         assert 1 <= len(fig.axes) <= min(settings["vocal_pose_figures"]["candidates"]["n_shown"], windows.height)
         starts = sorted(float(axis.get_title(loc="left").split()[1]) for axis in fig.axes)
         assert all(later - earlier >= settings["vocal_pose_figures"]["candidates"]["window_seconds"] for earlier, later in itertools.pairwise(starts))
+
+    def test_find_windows_needs_pure_usvs_whatever_the_flag_typing(self, tmp_path):
+        """A male call detect-usv-squeaks left unscored (null booleans, not noise) is not a pure USV,
+        so no window holding it qualifies; with the flags written as text the clean windows are found
+        unchanged."""
+
+        session = _write_session(tmp_path)
+        settings = _settings(tmp_path / "figures")
+        summary_path = session / "audio" / "20240101_120000_usv_summary.csv"
+        summary = pls.read_csv(summary_path)
+        clean = find_vocal_pose_windows(str(session), settings, message_output=lambda *_: None)
+        as_text = summary.with_columns(pls.col("usv").cast(pls.Utf8), pls.col("squeak").cast(pls.Utf8))
+        as_text.write_csv(summary_path)
+        assert find_vocal_pose_windows(str(session), settings, message_output=lambda *_: None).height == clean.height
+        unscored = summary.with_columns(
+            pls.when(pls.col("start") == pls.col("start").min()).then(None).otherwise(pls.col("usv")).alias("usv"),
+            pls.when(pls.col("start") == pls.col("start").min()).then(None).otherwise(pls.col("squeak")).alias("squeak"),
+        )
+        unscored.write_csv(summary_path)
+        first_call = float(summary["start"].min())
+        for row in find_vocal_pose_windows(str(session), settings, message_output=lambda *_: None).iter_rows(named=True):
+            assert not (row["start"] <= first_call < row["end"]), "a window holding an unscored call qualified"
 
     def test_still_writes_png_and_svg(self, tmp_path):
         """The still maker renders the synthetic session and writes both files where the figures block points."""

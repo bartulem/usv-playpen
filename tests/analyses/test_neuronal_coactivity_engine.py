@@ -343,9 +343,10 @@ def _write_tone_mmap(
     """
     Description
     -----------
-    Writes a synthetic concatenated int16 audio memmap under ``<tmp_path>/audio``
-    whose filename encodes the ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` metadata the
-    helper parses. The loud channel carries a pure ``f0`` tone of int16 amplitude
+    Writes a synthetic concatenated int16 audio memmap at the canonical 'ultrasonic'
+    band location ``<tmp_path>/audio/hpss_filtered`` whose canonical filename
+    encodes the ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` metadata the helper
+    parses. The loud channel carries a pure ``f0`` tone of int16 amplitude
     ``loud_amp`` ONLY within ``[tone_lo_s, tone_hi_s)`` (silence elsewhere on it);
     every other channel carries a quieter ``f0`` tone (amplitude ``quiet_amp``)
     throughout. This lets the test exercise channel selection, the onset-anchored
@@ -372,8 +373,8 @@ def _write_tone_mmap(
         ``tmp_path`` (the directory containing ``audio/``).
     """
 
-    audio_dir = tmp_path / "audio"
-    audio_dir.mkdir()
+    audio_dir = tmp_path / "audio" / "hpss_filtered"
+    audio_dir.mkdir(parents=True)
     t = np.arange(n_samples) / sampling_rate
     arr = np.zeros((n_samples, n_channels), dtype=np.int16)
     quiet = (quiet_amp * np.sin(2 * np.pi * f0 * t)).astype(np.int16)
@@ -383,7 +384,7 @@ def _write_tone_mmap(
     loud = (loud_amp * np.sin(2 * np.pi * f0 * t)).astype(np.int16)
     arr[:, loud_channel] = 0
     arr[s_lo:s_hi, loud_channel] = loud[s_lo:s_hi]
-    name = f"sess_concatenated_audio_{sampling_rate}_{n_samples}_{n_channels}_int16.mmap"
+    name = f"sess_concatenated_audio_hpss_filtered_{sampling_rate}_{n_samples}_{n_channels}_int16.mmap"
     arr.tofile(audio_dir / name)
     return tmp_path
 
@@ -558,18 +559,18 @@ def test_extract_snippet_acoustics_unparseable_mmap_name_raises(tmp_path):
     """
     Description
     -----------
-    When an ``*_int16.mmap*`` file exists but its name lacks the
-    ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` metadata segment, the metadata regex
-    returns ``None`` and the helper raises a ``ValueError`` quoting the offending
-    file name. Exercises the malformed-filename branch.
+    When an ``*_int16.mmap*`` file exists but its name lacks the canonical
+    ``<id>_concatenated_audio_hpss_filtered_<sr>_<n_samples>_<n_ch>_int16.mmap``
+    form, the exact-name 'ultrasonic' band lookup never selects it and the helper raises
+    a ``FileNotFoundError`` naming the band, instead of mis-parsing the file.
     """
 
-    audio_dir = tmp_path / "audio"
-    audio_dir.mkdir()
-    # A file matching the glob ('*_int16.mmap*') but NOT the metadata regex.
+    audio_dir = tmp_path / "audio" / "hpss_filtered"
+    audio_dir.mkdir(parents=True)
+    # A file with an int16 memmap suffix but NOT the canonical name.
     bad_name = "session_audio_int16.mmap"
     (audio_dir / bad_name).write_bytes(b"\x00\x00")
-    with pytest.raises(ValueError, match=r"Could not parse.*int16\.mmap.*segment"):
+    with pytest.raises(FileNotFoundError, match=r"ultrasonic audio memmap"):
         engine.extract_snippet_acoustics(
             str(tmp_path), np.array([0.10]), np.array([0.0]), 0.030,
         )
@@ -627,7 +628,7 @@ def _write_session_dir(
     other_emitter="mouse_other",
     n_frames=300,
     frame_rate=120.0,
-    category_column="qlvm_supercategory",
+    category_column="qlvm_category",
     rows=None,
     with_peak_amp_ch=True,
 ):
@@ -690,11 +691,18 @@ def _write_session_dir(
         track_file.create_dataset("tracks", data=np.zeros((n_frames, 2, 3), dtype=np.float64))
 
     if rows is None:
+        # Three focal pure USVs (two in category 1, one in category 3), one partner pure USV,
+        # a focal segment holding both a squeak and a USV (category 1, which DOES enter a
+        # group: it carries a USV), and two focal rows that carry a category label but must
+        # never enter a group: a noise segment and a pure squeak.
         rows = [
-            {"emitter": emitter,       "start": 1.0, category_column: "USV", "peak_amp_ch": 2},
-            {"emitter": emitter,       "start": 2.0, category_column: "USV", "peak_amp_ch": 0},
-            {"emitter": emitter,       "start": 3.0, category_column: "WHISTLE", "peak_amp_ch": 1},
-            {"emitter": other_emitter, "start": 4.0, category_column: "USV", "peak_amp_ch": 2},
+            {"emitter": emitter,       "start": 1.0, "noise": False, "usv": True,  "squeak": False, category_column: 1, "peak_amp_ch": 2},
+            {"emitter": emitter,       "start": 2.0, "noise": False, "usv": True,  "squeak": False, category_column: 1, "peak_amp_ch": 0},
+            {"emitter": emitter,       "start": 3.0, "noise": False, "usv": True,  "squeak": False, category_column: 3, "peak_amp_ch": 1},
+            {"emitter": other_emitter, "start": 4.0, "noise": False, "usv": True,  "squeak": False, category_column: 1, "peak_amp_ch": 2},
+            {"emitter": emitter,       "start": 5.0, "noise": True,  "usv": None,  "squeak": None,  category_column: 1, "peak_amp_ch": 2},
+            {"emitter": emitter,       "start": 6.0, "noise": False, "usv": True,  "squeak": True,  category_column: 1, "peak_amp_ch": 2},
+            {"emitter": emitter,       "start": 7.0, "noise": False, "usv": False, "squeak": True,  category_column: 3, "peak_amp_ch": 2},
         ]
     frame = pls.DataFrame(rows)
     if not with_peak_amp_ch and "peak_amp_ch" in frame.columns:
@@ -717,9 +725,9 @@ def test_load_animal_sessions_empty_session_names_returns_empty():
         [],
         data_root=pathlib.Path("/nonexistent"),
         catalog={},
-        category_column="qlvm_supercategory",
-        group_a_ids=["USV"],
-        group_b_ids=["WHISTLE"],
+        category_column="qlvm_category",
+        group_a_ids=[1],
+        group_b_ids=[3],
         cluster_group="good",
         require_somatic=False,
         brain_areas=set(),
@@ -741,7 +749,7 @@ def test_load_animal_sessions_picks_richest_day_and_builds_entries(tmp_path):
     """
 
     animal_id = "mouse_focal"
-    category_column = "qlvm_supercategory"
+    category_column = "qlvm_category"
     # Day 1: one session, one good unit. Day 2: one session, two good units.
     day1 = tmp_path / "20240101_run0"
     day2 = tmp_path / "20240102_run0"
@@ -767,8 +775,8 @@ def test_load_animal_sessions_picks_richest_day_and_builds_entries(tmp_path):
         data_root=tmp_path,
         catalog=catalog,
         category_column=category_column,
-        group_a_ids=["USV"],
-        group_b_ids=["WHISTLE"],
+        group_a_ids=[1],
+        group_b_ids=[3],
         cluster_group="good",
         require_somatic=True,
         brain_areas={"PAG"},
@@ -783,12 +791,50 @@ def test_load_animal_sessions_picks_richest_day_and_builds_entries(tmp_path):
     assert entry["fs"] == pytest.approx(150.0)
     assert entry["total_duration"] == pytest.approx(300 / 150.0)
     assert set(entry["neural_data"]) == {"u_a_good", "u_b_good"}
-    # Focal-only calls split by category; group A = USV (2 focal rows), B = WHISTLE (1).
-    assert entry["group_a_df"].height == 2
+    # Focal-only USV-bearing segments split by category; group A = category 1 (2 focal pure
+    # USVs + the focal squeak+USV "both" segment), B = category 3 (1). The labelled noise and
+    # pure-squeak rows enter neither group.
+    assert entry["group_a_df"].height == 3
     assert entry["group_b_df"].height == 1
+    assert sorted(entry["group_a_df"]["start"].to_list()) == [1.0, 2.0, 6.0]
+    assert entry["group_b_df"]["start"].to_list() == [3.0]
+    # The noise drop is logged through the supplied sink.
+    assert any("dropped 1 noise segment" in line for line in messages)
     # Both diagnostic lines were emitted and name the chosen day.
     assert any("20240102" in line and "picked day" in line for line in messages)
     assert any("common filtered units" in line for line in messages)
+
+
+def test_load_animal_sessions_strips_track_names_and_logs_unattributed_sessions(tmp_path):
+    """
+    Description
+    -----------
+    A track H5 whose names carry stray whitespace (' mouse_focal') still matches the
+    summary's emitter, as in every other track-name reader; a session whose emitter
+    column is empty (vcl-assign not run since the last das-summarize) yields empty
+    groups and a log line naming the cause instead of passing silently.
+    """
+
+    animal_id = "mouse_focal"
+    catalog = {(animal_id, "20240101", "u_a_good"): {"cluster_group": "good", "somatic": "True", "brain_area": "PAG"}}
+    session = tmp_path / "20240101_run0"
+    _write_session_dir(session, unit_stems=["u_a_good"])
+    with h5py.File(name=session / "sess_translated_rotated_metric.h5", mode="r+") as track_file:
+        del track_file["track_names"]
+        track_file.create_dataset("track_names", data=np.array([b" mouse_focal", b"mouse_other "]))
+    load_kwargs = dict(
+        data_root=tmp_path, catalog=catalog, category_column="qlvm_category", group_a_ids=[1], group_b_ids=[3],
+        cluster_group="good", require_somatic=True, brain_areas={"PAG"},
+    )
+    out = engine.load_animal_sessions(animal_id, ["20240101_run0"], message_output=lambda *_a: None, **load_kwargs)
+    assert out[0]["group_a_df"].height == 3
+
+    summary_path = session / "sess_usv_summary.csv"
+    pls.read_csv(summary_path).with_columns(pls.lit(None, dtype=pls.String).alias("emitter")).write_csv(summary_path)
+    messages: list[str] = []
+    out = engine.load_animal_sessions(animal_id, ["20240101_run0"], message_output=messages.append, **load_kwargs)
+    assert out[0]["group_a_df"].height == 0
+    assert any("no USV is attributed to mouse_focal" in line for line in messages)
 
 
 @pytest.mark.parametrize("category_column", [None, ""])
@@ -819,8 +865,8 @@ def test_load_animal_sessions_absent_category_column_raises(tmp_path):
     """
     Description
     -----------
-    A summary without the configured category column (the production summaries
-    carry qlvm1/qlvm2 but no qlvm_supercategory) raises a ValueError naming the
+    A summary without the configured category column (one that carries qlvm1/qlvm2
+    but that assign-qlvm-categories has not labelled yet) raises a ValueError naming the
     column and saying QLVM labels are unavailable, instead of polars'
     ColumnNotFoundError.
     """
@@ -836,13 +882,13 @@ def test_load_animal_sessions_absent_category_column_raises(tmp_path):
             "cluster_group": "good", "somatic": "True", "brain_area": "PAG",
         },
     }
-    with pytest.raises(ValueError, match="'qlvm_supercategory' is absent") as excinfo:
+    with pytest.raises(ValueError, match="'qlvm_category' is absent") as excinfo:
         engine.load_animal_sessions(
             animal_id,
             ["20240101_run0"],
             data_root=tmp_path,
             catalog=catalog,
-            category_column="qlvm_supercategory",
+            category_column="qlvm_category",
             group_a_ids=[1],
             group_b_ids=[7],
             cluster_group="good",

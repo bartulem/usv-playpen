@@ -36,7 +36,7 @@ The *Root directories* field enables you to list the directories containing the 
 
 Plot neuronal tuning figures
 ----------------------------
-Once the *Compute neuronal tuning curves* function from the *Analyze* section has completed, you have the ability to plot its results. Output is one combined multi-page document per cluster: a behavioral page per temporal offset and per plot-feature group (``individual.<mouse>`` and ``social``) followed by two vocal pages — the first (bout raster + pooled peri-onset (ultrasonic vocalization) ``usv_peth`` on top, ``usv_property_tuning`` continuous-property grid below) and the second (``usv_category_tuning`` watersheds (the watershed segmentation algorithm): one row per QLVM map — the regular model then the duration-, mean-frequency-, bandwidth- and loudness-conditional ones — each with its fine and coarse clusters drawn on that map's label grid). The per-category PETH (peri-event time histogram, ``usv_category_peth``) stays in the pickle but is not drawn. 1D ratemaps are drawn as a line spanning the plot, colored by the per-mouse palette (or the social color for social features). The 99% CI (confidence interval) of the shuffled distribution is shown as a shaded band around the line.
+Once the *Compute neuronal tuning curves* function from the *Analyze* section has completed, you have the ability to plot its results. Output is one combined multi-page document per cluster: a behavioral page per temporal offset and per plot-feature group (``individual.<mouse>`` and ``social``) followed by one vocal page per emitter: the bout raster + pooled peri-onset (ultrasonic vocalization) ``usv_peth`` on top, the ``usv_property_tuning`` continuous-property grid in the middle, and at the bottom the single ``usv_category_tuning`` row of the QLVM category ``qlvm_category`` (rate and occupancy maps over the category bundle's R-1 … R-k regions, ``os_utils.load_qlvm_category_bundle``, and the tuning-vs-shuffle strip), drawn on the property grid's columns so no page carries a lone figure row. The per-category PETH (peri-event time histogram, ``usv_category_peth``) stays in the pickle but is not drawn. 1D ratemaps are drawn as a line spanning the plot, colored by the per-mouse palette (or the social color for social features). The 99% CI (confidence interval) of the shuffled distribution is shown as a shaded band around the line.
 
 To obtain this visualization, list the root directories of interest, select *Plot neuronal tuning figures* in the GUI and click *Next* and then *Visualize*:
 
@@ -64,7 +64,7 @@ Running this function results in the population of the *tuning_curves* subdirect
     │   └── video
     │       ...
 
-For non-PDF formats, each page is written to a separate file with a ``_p{N}_{label}`` suffix (e.g. ``..._p1_behavioral_beh_offset=0s_individual.<mouse>.png``, ``..._p3_vocal_a_male.png``). PDF emits a single multi-page file.
+For non-PDF formats, each page is written to a separate file with a ``_p{N}_{label}`` suffix (e.g. ``..._p1_behavioral_beh_offset=0s_individual.<mouse>.png``, ``..._p3_vocal_male.png``). PDF emits a single multi-page file. Each emitter gets one vocal page: the bout raster and pooled peri-USV PETH on top, the 5 x 4 USV-property tuning grid in the middle, and the QLVM category tuning row (rate and occupancy watersheds over the category bundle's R-1 … R-k regions, ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``, and the tuning-vs-shuffle strip) at the bottom, on the property grid's columns, so no page carries a lone figure row; an unreadable category bundle stops the rendering rather than drawing placeholder panels.
 
 The rendering-side knobs live in the project-wide ``figures`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (compute-side knobs such as ``smoothing_sd`` and ``behavioral_min_occupancy_seconds`` live in *analyses_settings.json* under ``calculate_neuronal_tuning_curves`` — see the *Analyze* page):
 
@@ -96,7 +96,7 @@ whole figure family can be recoloured in one place. Sex / emitter colours are
 lists (index ``0`` primary, ``1`` secondary) while the grouped palettes are named
 maps.
 
-* **male_colors** / **female_colors** / **unassigned_colors** : per-emitter USV colours (male / female / no-emitter-assigned), used by the USV-timeline, spectrogram-overlay, embedding-scatter and modeling figures.
+* **male_colors** / **female_colors** / **unassigned_colors** : per-emitter USV colours (male / female / no-emitter-assigned), used by the USV-timeline, spectrogram-overlay, embedding-scatter and modeling figures. An emitter's sex is always read from the ``Subjects`` block of the session's ``*_metadata.yaml`` (the ``subject_id`` matching the emitter / track name, ``yaml_utils.extract_animal_sexes``), never from the slot its track occupies, so same-sex sessions are coloured correctly; a tracked animal the metadata cannot resolve raises.
 * **session_condition_styles** : per-condition ``color`` and ``label`` of the session types (courtship intact partners, courtship mute female, female-female, male-male, isolated male), used by the per-session squeak-timing heatmap (``plot_session_squeak_time_heatmap``): female-female takes ``female_colors[0]``, male-male ``male_colors[0]``, courtship intact partners the channel-wise mean of the two (``#CD928A``) and courtship mute female the same at 50 % opacity; isolated male is ``#2A9D8F``. Colours may carry an alpha channel (8-digit hex).
 * **social_colors** : the single colour for social / dyadic features (e.g. the social-feature ratemaps and the timescale-audit "social" trace).
 * **manifold_colors** : the two torus output-coordinate colours (manifold-x / manifold-y, index ``0`` / ``1``) for the last-bin manifold-filter bars; deliberately far from the male / female / social colours so a manifold axis never reads as an animal identity.
@@ -351,15 +351,15 @@ Parameters specific to subplots include:
 
 Render the QLVM torus-traversal
 -------------------------------
-The ``usv_playpen.visualizations.qlvm_torus_traversal_video`` module renders a two-panel toroidal (doughnut-shaped) "torus walkthrough" animation (the in-house, torch-free port of ``qmc_deep_gen``'s ``inference_latents_video.py``). The **left** panel is the QLVM (the in-house quasi-Monte Carlo latent variable model) latent map — the density heatmap with watershed cluster contours (no axes/ticks) and a recency-coloured trajectory trail (cyan at the current position, fading to white going back, built with ``create_colormap``); the **right** panel is a phase-specific spectrogram board. All spectrograms have their SAM2 (Segment Anything Model 2) mask applied (``apply_mask``) and the call centred in its window with equal padding on both sides (so duration is preserved, not stretched). It runs in three parts, each introduced by a title card:
+The ``usv_playpen.visualizations.qlvm_torus_traversal_video`` module renders a two-panel toroidal (doughnut-shaped) "torus walkthrough" animation (the in-house, torch-free port of ``qmc_deep_gen``'s ``inference_latents_video.py``). The **left** panel is the QLVM (the in-house quasi-Monte Carlo latent variable model) latent map of the regular map — the QLVM category bundle's density heatmap with its R-1 … R-k category contours (no axes/ticks) and a recency-coloured trajectory trail (cyan at the current position, fading to white going back, built with ``create_colormap``); the **right** panel is a phase-specific spectrogram board. All spectrograms have their SAM2 (Segment Anything Model 2) mask applied (``apply_mask``) and the call centred in its window with equal padding on both sides (so duration is preserved, not stretched). It runs in three parts, each introduced by a title card:
 
-- **Part 1 — Cluster peaks**: one phase per cluster, the right panel showing that cluster's peak spectrogram surrounded by its ``m`` nearest USVs in concentric rings; on the left the active cluster is outlined in a thick **pulsating cyan** contour with a cyan dot at its centre.
-- **Part 2 — Peak-to-peak walks**: shortest-torus-path walks between random cluster peaks; the right 5×15 grid fills row-major with the nearest USV at each visited position (the current tile bordered in cyan).
+- **Part 1 — Category peaks**: one phase per category, the right panel showing the spectrogram nearest its peak (the category's label position in the bundle, the pixel farthest from its boundary) surrounded by its ``m`` nearest USVs in concentric rings; on the left the active category is outlined in a thick **pulsating cyan** contour with a cyan dot at its centre.
+- **Part 2 — Peak-to-peak walks**: shortest-torus-path walks between random category peaks; the right 5×15 grid fills row-major with the nearest USV at each visited position (the current tile bordered in cyan).
 - **Part 3 — Boundary crossings**: curved walks that wrap the torus edges/corners; the right grid's columns are trajectory positions and rows are nearest neighbours (the current trajectory tile bordered in cyan).
 
-It is **cohort-level** — it reads one model's analysis arrays + the consolidated store, not a session directory — and is exposed both as the ``qlvm-torus-traversal-video`` CLI and in the GUI *Visualize* window (third column): "Render QLVM demo video" (Yes/No), a **QLVM clustering type borders** selector (``coarse`` = 7 clusters / ``fine`` = 12), and a **Video sampling rate (fps)** slider. A single **Spectrograms directory** **Browse** field lives in the left column under **Credentials directory** (the shared ``shared_resources.spectrograms_dir`` base, under which the QLVM arrays and the consolidated store are resolved by convention).
+It is **cohort-level** — it reads the QLVM category bundle + the consolidated store, not a session directory — and is exposed both as the ``qlvm-torus-traversal-video`` CLI and in the GUI *Visualize* window (third column): "Render QLVM demo video" (Yes/No) and a **Video sampling rate (fps)** slider (the category grid has one level, so there is no clustering selector). A single **Spectrograms directory** **Browse** field lives in the left column under **Credentials directory** (the shared ``shared_resources.spectrograms_dir`` base, under which the consolidated store is resolved by convention).
 
-To render it, list a root directory, set the *Spectrograms directory*, select *Render QLVM demo video*, choose the clustering and *Video sampling rate (fps)*, click *Next* and then *Visualize*:
+To render it, list a root directory, set the *Spectrograms directory*, select *Render QLVM demo video*, choose the *Video sampling rate (fps)*, click *Next* and then *Visualize*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_3.png
    :align: center
@@ -369,16 +369,18 @@ To render it, list a root directory, set the *Spectrograms directory*, select *R
 
    <br>
 
-**Which QLVM map.** Every QLVM figure — this video, the USV sequence figure and the embedding thumbnails — draws ONE QLVM map, chosen by ``shared_resources.qlvm_map`` in */usv-playpen/_parameter_settings/visualizations_settings.json* (the GUI's **QLVM map (all QLVM figures)** selector at the top of the third column; the embedding explorer starts on it too). The maps are the production models of ``os_utils.QLVM_MAPS``: ``qlvm`` (the phase 6 regular model, the default), ``qlvm_dur``, ``qlvm_mf``, ``qlvm_bw`` and ``qlvm_loud`` (the phase 11 duration-, mean-frequency-, bandwidth- and loudness-conditional models). A map ``P`` places calls at the summary columns ``P1`` / ``P2`` and labels them ``P_category`` (fine) / ``P_supercategory`` (coarse).
+**Which QLVM map.** The USV sequence figure and the embedding thumbnails draw ONE QLVM map, chosen by ``shared_resources.qlvm_map`` in */usv-playpen/_parameter_settings/visualizations_settings.json* (the GUI's **QLVM map (all QLVM figures)** selector at the top of the third column, whose tooltip says the same; the embedding explorer starts on it too). This video is the exception: it always uses the regular map ``qlvm`` and ignores ``shared_resources.qlvm_map`` (a conditional choice there is reported in a message and passed over, not refused), because the category bundle it draws exists on the regular map only. The maps are the production models of ``os_utils.QLVM_MAPS``: ``qlvm`` (the regular model, the default), ``qlvm_duration``, ``qlvm_entropy``, ``qlvm_bandwidth`` and ``qlvm_loudness`` (the duration-, spectral-entropy-, bandwidth- and loudness-conditional models; all five masked and time-stretched, ``os_utils.QLVM_PRODUCTION_MODEL_CELLS``). A map ``P`` places calls at the summary columns ``P1`` / ``P2``. There is one category column, ``qlvm_category`` (R-1 … R-k, written by ``assign-qlvm-categories``): the categories are defined on the regular map and label the call, so every map's figure colours or groups calls by ``qlvm_category``.
 
-Inputs — both resolved by convention via ``configure_path`` from the single ``shared_resources.spectrograms_dir`` base (shared with the USV sequence figure and the stitched spectrogram):
+**Where the category geometry comes from.** Every QLVM figure that draws category boundaries, places category centres or shows a density landscape — this video, the USV sequence figure, the embedding thumbnails, the embedding explorer, the neuronal tuning watersheds, the manifold filter atlas and the category-embedding panel — reads it from ONE place, the QLVM category bundle ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY`` (``/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/regions/clustering_clean/category_bundle``, written by ``build-qlvm-categories``; a module constant, not a setting, because the settings' experimenter folders are re-keyed to the active experimenter), through ``os_utils.load_qlvm_category_bundle``: its periodic ``label_grid`` (the partition the summaries' ``qlvm_category`` is assigned from), its smoothed corpus ``density`` and its category label positions (``category_nomenclature.json``). The bundle partitions the regular map's torus, so it is drawn on ``qlvm`` only: a figure of a conditional map draws no category boundaries (it colours the calls by their ``qlvm_category`` instead) and says so, and no figure estimates boundaries from the data. The earlier ``<spectrograms_dir>/qlvm_v3/<map>/arrays_{coarse,fine}.npz`` reference arrays are no longer read.
 
-- ``<spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_{coarse,fine}.npz`` — the QLVM reference arrays of the map's production v3 cell (for ``qlvm``: ``phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor``, the model of the ``qlvm1`` / ``qlvm2`` / ``qlvm_category`` / ``qlvm_supercategory`` summary columns; 9 coarse / 15 fine clusters), written by ``export-qlvm-reference-arrays`` (once per map) and resolved by ``os_utils.resolve_embedding_arrays_path`` (the folder name is ``os_utils.QLVM_REFERENCE_ARRAYS_DIRECTORY_NAME``). They are used ONLY for the ``heatmap`` background, ``ws_labels_periodic`` cluster contours, and ``centers`` (the cluster peaks / path waypoints); the **QLVM clustering type borders** selector picks which one. The old in-house model's ``<spectrograms_dir>/qlvm/`` arrays sit on a different torus and are no longer read.
-- ``<spectrograms_dir>/spectrograms_*.h5`` (newest match) — the consolidated per-session spectrogram/SAM2 store. It supplies BOTH the per-USV latent coords (per-session ``qlvm/<key>/<qlvm_map>``, the map's ``P1`` / ``P2``) for the nearest-neighbour lookup AND the spectrograms (``spectrogram/<key>/spectrograms``) shown on the right. No latents pickle is read at render time, and coverage spans all sessions in the store.
+Inputs of the video:
 
-**Prerequisite** — the consolidated H5 must carry the per-session ``qlvm/<key>/<qlvm_map>`` (n, 2) coordinates; ``consolidate-spectrogram-store`` writes them for every production map (see :doc:`Process`). If the video is run on a store without them it raises a clear error naming the map.
+- the QLVM category bundle (above) — the ``density`` background, the ``label_grid`` contours and the category label positions (the peaks / path waypoints). It is defined on the regular map, so the video always renders ``qlvm`` whatever ``shared_resources.qlvm_map`` says.
+- ``<spectrograms_dir>/spectrograms_*.h5`` (newest match) — the consolidated per-session spectrogram/SAM2 store. It supplies BOTH the per-USV latent coords (per-session ``qlvm/<key>/qlvm``, the regular map's ``qlvm1`` / ``qlvm2``) for the nearest-neighbour lookup AND the spectrograms (``spectrogram/<key>/spectrograms``) shown on the right. No latents pickle is read at render time, and coverage spans all sessions in the store.
 
-Because it is cohort-level, the output is not written next to a session; the ``.mp4`` lands in the project-wide ``figures.save_directory`` with a render-timestamped name (``qlvm_torus_traversal_<qlvm_map>_<YYYYMMDD_HHMMSS>.mp4``) unless an explicit ``--output-path`` is given:
+**Prerequisite** — the consolidated H5 must carry the per-session ``qlvm/<key>/qlvm`` (n, 2) coordinates of the production regular cell the bundle is defined on, recorded in its ``qlvm_models/qlvm`` provenance (``package_root`` / ``cell``). The video checks the provenance first: a store of another cell (the current ``consolidate-spectrogram-store`` writes a v3 archive whose regular map is the v3 phase 6 cell, see :doc:`Process`) places the calls on another torus, where the bundle's regions would mislabel them, and is refused; a store without the coordinates raises a clear error naming the map.
+
+Because it is cohort-level, the output is not written next to a session; the ``.mp4`` lands in the project-wide ``figures.save_directory`` with a render-timestamped name (``qlvm_torus_traversal_qlvm_<YYYYMMDD_HHMMSS>.mp4``; always the regular map) unless an explicit ``--output-path`` is given:
 
 .. parsed-literal::
 
@@ -388,11 +390,10 @@ Because it is cohort-level, the output is not written next to a session; the ``.
 
 The render parameters live in the ``qlvm_torus_traversal_video`` block of */usv-playpen/_parameter_settings/visualizations_settings.json*:
 
-* **clustering** : which cluster set to traverse — ``coarse`` or ``fine`` (9 / 15 clusters on the regular map); set by the GUI **QLVM clustering type borders** selector.
 * **fps** : output frame rate.
 * **dpi** : raster resolution of each rendered frame.
-* **m** : number of nearest-neighbour USVs shown in the concentric rings around each cluster peak (Part 1).
-* **cluster_hold_frames** : frames each cluster peak is held on screen (Part 1).
+* **m** : number of nearest-neighbour USVs shown in the concentric rings around each category peak (Part 1).
+* **cluster_hold_frames** : frames each category peak is held on screen (Part 1).
 * **peak_traverse_frames** : frames spent on each peak-to-peak walk (Part 2).
 * **boundary_traverse_frames** : frames spent on each boundary-crossing walk (Part 3).
 * **title_card_frames** : frames each of the three title cards is shown.
@@ -402,7 +403,7 @@ The render parameters live in the ``qlvm_torus_traversal_video`` block of */usv-
 * **boundary_positions_per_walk** : number of positions revealed along each boundary walk.
 * **boundary_neighbors** : nearest neighbours shown per boundary position (the Part-3 grid rows).
 * **seed** : RNG (random-number-generator) seed for the walks / jitter (reproducible renders).
-* **peaks_only** : when ``true``, render Part 1 (cluster peaks) only.
+* **peaks_only** : when ``true``, render Part 1 (category peaks) only.
 * **spec_cache_size** : number of spectrograms held in the in-memory LRU cache during rendering.
 * **apply_mask** : apply the SAM2 mask to each spectrogram.
 * **accent_color** : hex highlight color for the trail / head marker / cluster outline + dot / current-tile borders.
@@ -410,7 +411,6 @@ The render parameters live in the ``qlvm_torus_traversal_video`` block of */usv-
 .. code-block:: json
 
     "qlvm_torus_traversal_video": {
-        "clustering": "coarse",
         "fps": 20,
         "dpi": 100,
         "m": 36,
@@ -444,12 +444,14 @@ To render it, list a session root, select *Render USV sequence figure*, set the 
 
    <br>
 
-- **Left** — the precomputed cohort landscape of the QLVM map ``shared_resources.qlvm_map`` (see *Which QLVM map* above), drawn with no ticks/ticklabels. The window's USVs are placed at the map's ``P1`` / ``P2``, colored by emitter (``male_colors[0]`` / ``female_colors[0]`` / ``unassigned_colors[0]``), sized by call duration, numbered ``1..n`` in time order, and joined by a connecting line whose color runs white → male color along the bout and whose per-segment width tracks the inter-USV silent gap (``start`` of the next minus ``stop`` of the previous; the line takes the short wrap-around route across a torus edge when that is closer). The map draws a gray_r density heatmap and, when ``draw_boundaries`` is on, overlays black category boundaries selected by ``boundary_clustering`` (``coarse`` / ``fine``), both from ``<spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_{coarse,fine}.npz`` (the map's v3 cell label grids, on the unit torus; for ``qlvm`` **coarse** = the 9 ``qlvm_supercategory`` and **fine** = the 15 ``qlvm_category`` regions). A session whose ``usv_summary`` lacks the map's ``P1`` / ``P2`` raises a clear error; when the resolved npz is absent (the map's arrays were never exported) the panel falls back to a bare (tick-free) scatter.
+- **Left** — the precomputed cohort landscape of the QLVM map ``shared_resources.qlvm_map`` (see *Which QLVM map* above), drawn with no ticks/ticklabels. The window's USVs are placed at the map's ``P1`` / ``P2``, colored by emitter (``male_colors[0]`` / ``female_colors[0]`` / ``unassigned_colors[0]``), sized by call duration, numbered ``1..n`` in time order, and joined by a connecting line whose color runs white → male color along the bout and whose per-segment width tracks the inter-USV silent gap (``start`` of the next minus ``stop`` of the previous; the line takes the short wrap-around route across a torus edge when that is closer). On the regular map the panel draws the QLVM category bundle's gray_r density heatmap and, when ``draw_boundaries`` is on, the bundle's black category boundaries (R-1 … R-k on the unit torus; see *Where the category geometry comes from* above). On a conditional map the bundle does not describe the torus, so the panel is a bare (tick-free) square with a note saying the categories are defined on the regular map. A session whose ``usv_summary`` lacks the map's ``P1`` / ``P2`` raises a clear error.
 - **Right** — ONE continuous spectrogram over the same window: the per-USV averaged spectrograms are SAM2-masked (when ``apply_mask``) and stitched at their true times onto a **black** background, so only the calls are lit and the gaps are black; an optional raw-audio trace can sit on top (``plot_raw_audio``), taken from the channel that is loudest across the window's USVs (the most-frequent per-USV ``peak_amp_ch``; raw waveforms are NOT averaged across mics — the per-mic phase delays would interfere destructively). Each USV can also be marked with a horizontal emitter-colored bar along the top of the spectrogram (``mark_usv_segments``). The left-panel numbers match the time order of the calls along the right time axis.
 
-The GUI section leads with a **Save created figure in format** selector (writes ``make_usv_spectrograms.fig_format``); **Clustering type borders** is greyed out unless **Draw embedding boundaries** is on; the map itself is the shared **QLVM map** selector.
+The window's calls never include noise: every segment the noise classifier flagged (``noise`` true; ``os_utils.drop_noise_usvs``, the shared noise rule) is dropped before the figure is drawn, and a summary without the ``noise`` column raises (run ``detect-usv-noise`` first). With the sequence setting ``exclude_squeaks`` on (the default) the squeak-bearing segments are left out too — the same rule as ``embedding_thumbnails.exclude_squeaks``: only the pure USVs (``usv`` true and ``squeak`` false) are placed on the map, numbered, stitched into the spectrogram and marked, while pure squeaks, segments holding both a squeak and a USV and unclassed rows are not; a summary without the ``usv`` / ``squeak`` booleans then raises (run ``detect-usv-squeaks`` first).
 
-The QLVM arrays and the consolidated store are both resolved by convention from the single ``shared_resources.spectrograms_dir`` base (``qlvm_v3/<qlvm_map>/arrays_{coarse,fine}.npz``, the newest ``spectrograms_*.h5``). Being per-session, the figure is written to ``save_dir`` — or, when that is empty, to the ``data_animation_examples`` subdirectory of the session (the same per-session output folder the behavioral videos use) — and, when ``auto_open_figure`` is on AND running in a GUI context, opened in the OS default viewer (headless / batch runs never spawn a viewer; the plotter closes each figure after saving so a per-session run does not accumulate open figures):
+The GUI section leads with a **Save created figure in format** selector (writes ``make_usv_spectrograms.fig_format``) and a **Draw embedding boundaries** toggle, and ends with an **Exclude squeaks** toggle (writes ``make_usv_spectrograms.sequence.exclude_squeaks``); the map itself is the shared **QLVM map** selector. The category boundaries exist on the regular map only, so the **Draw embedding boundaries** toggle is greyed out (disabled) whenever a conditional map is selected in the **QLVM map** box and enabled again for the regular map (``QLVM``); the stored ``draw_boundaries`` value is kept, so switching back restores it.
+
+The consolidated store is resolved by convention from the single ``shared_resources.spectrograms_dir`` base (the newest ``spectrograms_*.h5``); the landscape is the category bundle. Being per-session, the figure is written to ``save_dir`` — or, when that is empty, to the ``data_animation_examples`` subdirectory of the session (the same per-session output folder the behavioral videos use) — and, when ``auto_open_figure`` is on AND running in a GUI context, opened in the OS default viewer (headless / batch runs never spawn a viewer; the plotter closes each figure after saving so a per-session run does not accumulate open figures):
 
 .. parsed-literal::
 
@@ -488,10 +490,10 @@ Settings live in the ``make_usv_spectrograms`` block of */usv-playpen/_parameter
 
 plus the ``sequence`` sub-dict:
 
-* **draw_boundaries** : overlay category boundaries on the left panel.
-* **boundary_clustering** : which boundary set — ``coarse`` / ``fine``.
+* **draw_boundaries** : overlay the category bundle's boundaries on the left panel (regular map only).
 * **annotate_right** : annotate the stitched (right) spectrogram.
 * **mark_usv_segments** : draw an emitter-colored bar along the top of the spectrogram for each USV.
+* **exclude_squeaks** : keep only the pure USVs (``usv`` true and ``squeak`` false) in the sequence, leaving out pure squeaks, segments holding both and unclassed rows (default ``true``; same meaning as ``embedding_thumbnails.exclude_squeaks``). Noise segments are dropped regardless of this setting.
 
 .. code-block:: json
 
@@ -515,9 +517,9 @@ plus the ``sequence`` sub-dict:
         "auto_open_figure": true,
         "sequence": {
             "draw_boundaries": true,
-            "boundary_clustering": "coarse",
             "annotate_right": false,
-            "mark_usv_segments": true
+            "mark_usv_segments": true,
+            "exclude_squeaks": true
         }
     }
 
@@ -525,9 +527,9 @@ Render embedding thumbnails
 ---------------------------
 The ``usv_playpen.visualizations.make_usv_spectrograms`` module's remaining cohort-level helper, ``plot_embedding_with_category_thumbnails``, is GUI-exposed (its pooled summary helpers — ``plot_usv_property_histograms``, ``plot_session_type_usv_counts``, ``plot_session_usv_timeline`` — are notebook-driven; see :doc:`Notebooks`):
 
-- ``plot_embedding_with_category_thumbnails`` — a two-panel figure pairing a QLVM map scatter (the torus of ``shared_resources.qlvm_map``) — colored by call category and overlaid with kNN (k-nearest-neighbors) cluster boundaries — against a per-category grid of spectrogram thumbnails sampled from the consolidated SAM2 + spectrogram store. Unlike the helpers above it is **cohort-level** and exposed in the GUI: enabling *Render embedding thumbnails* in the *Visualize* window (third column, with **clustering type borders** (coarse / fine), **thumbnails per category**, **thumbnail layout**, **draw cluster boundaries**, **apply SAM2 mask** and **per-cluster sampling** selectors) pools every cohort session list under ``shared_resources.input_files_directory`` (playback lists excluded, as in the embedding explorer) and resolves the store from ``shared_resources.spectrograms_dir``, then runs ONCE (the same run-once dispatch as the QLVM torus video, via ``render_embedding_thumbnails_for_cohort``). Its layout / sampling knobs all live in the ``embedding_thumbnails`` settings block (documented below); the figure DPI and the sampling seed are taken from the general ``figures`` block (``dpi`` / ``seed``); the QLVM cluster centers (for cluster-ID labels / spiral centers) are the ``centers`` (cluster peaks, row ``i`` = label ``i + 1``) of the map's v3 reference arrays ``<spectrograms_dir>/qlvm_v3/<qlvm_map>/arrays_fine.npz`` (``category``; 15 centres for ``qlvm``) or ``arrays_coarse.npz`` (``supercategory``; 9), passed as ``cluster_centers_npz_path`` (a pooled label outside ``1..K`` raises, since centres and labels would come from different clusterings; missing arrays fall back to data-derived centres); the categories themselves are the summaries' ``<qlvm_map>_category`` / ``<qlvm_map>_supercategory``; and the cohort scatter is read from the precomputed pooled-embeddings cache ``<spectrograms_dir>/embeddings/pooled_embeddings_qlvmv3.parquet`` (``os_utils.POOLED_EMBEDDINGS_CACHE_NAME``; one parquet holding every QLVM map's coordinates and coarse + fine labels, fingerprinted against the summaries it was pooled from and rebuilt when they change) — built once on a fast mount via ``build_pooled_embeddings_df`` so the figure does not re-read every session's ``usv_summary.csv``.
+- ``plot_embedding_with_category_thumbnails`` — a two-panel figure pairing a QLVM map scatter (the torus of ``shared_resources.qlvm_map``) — colored by the calls' ``qlvm_category`` and, on the regular map, overlaid with the category bundle's boundaries — against a per-category grid of spectrogram thumbnails sampled from the consolidated SAM2 + spectrogram store. Unlike the helpers above it is **cohort-level** and exposed in the GUI: enabling *Render embedding thumbnails* in the *Visualize* window (third column, with **exclude squeaks** (``embedding_thumbnails.exclude_squeaks``), **thumbnails per category**, **thumbnail layout**, **draw cluster boundaries**, **apply SAM2 mask** and **per-cluster sampling** selectors) pools every cohort session list under ``shared_resources.input_files_directory`` (playback lists excluded, as in the embedding explorer) and resolves the store from ``shared_resources.spectrograms_dir``, then runs ONCE (the same run-once dispatch as the QLVM torus video, via ``render_embedding_thumbnails_for_cohort``). Its layout / sampling knobs all live in the ``embedding_thumbnails`` settings block (documented below); the figure DPI and the sampling seed are taken from the general ``figures`` block (``dpi`` / ``seed``); the category boundaries and centers (for cluster-ID labels / spiral centers) are the category bundle's ``label_grid`` and label positions (row ``i`` = category ``i + 1``; a pooled ``qlvm_category`` outside ``1..k`` raises, since the summaries and the bundle would be different partitions), on the regular map only; the categories themselves are the summaries' ``qlvm_category`` on every map, so a conditional ``qlvm_map`` colours and groups its calls by ``qlvm_category`` with no boundaries, the spiral sampler walks without a boundary filter, and the centres are the per-category means of that map's calls (a message says so); and the cohort scatter is read from the precomputed pooled-embeddings cache ``<spectrograms_dir>/embeddings/pooled_embeddings_qlvmv3.parquet`` (``os_utils.POOLED_EMBEDDINGS_CACHE_NAME``; one parquet holding every QLVM map's coordinates and the ``qlvm_category`` labels, fingerprinted against the summaries it was pooled from and rebuilt when they change) — built once on a fast mount via ``build_pooled_embeddings_df`` so the figure does not re-read every session's ``usv_summary.csv``.
 
-To render it, select *Render embedding thumbnails* in the *Visualize* window, choose the clustering / layout options (the map is the shared **QLVM map** selector), click *Next* and then *Visualize*:
+To render it, select *Render embedding thumbnails* in the *Visualize* window, choose the squeak filter / layout / sampling options (the map is the shared **QLVM map** selector), click *Next* and then *Visualize*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/visualize_step_5.png
    :align: center
@@ -537,33 +539,28 @@ To render it, select *Render embedding thumbnails* in the *Visualize* window, ch
 
    <br>
 
-Being cohort-level, the figure is written to the project-wide ``figures.save_directory`` with a name built from the QLVM map and label column (plus a ``_YYYYMMDD_HHMMSS`` stamp when ``figures.timestamp_in_name`` is set):
+Being cohort-level, the figure is written to the project-wide ``figures.save_directory`` with a name built from the QLVM map alone, ``embedding_thumbnails_<qlvm_map>`` (``qlvm_category`` is the one category column, so the name carries no label-column part; plus a ``_YYYYMMDD_HHMMSS`` stamp when ``figures.timestamp_in_name`` is set):
 
 .. parsed-literal::
 
     ├── ...  (the ``figures.save_directory`` cohort output folder)
-    │   ├── **embedding_thumbnails_qlvm_supercategory_20250430_145017.png**
+    │   ├── **embedding_thumbnails_qlvm_20250430_145017.png**
     │   ...
 
 The layout / sampling knobs live in the ``embedding_thumbnails`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (the figure DPI and the sampling seed come from the general ``figures`` block). Core keys:
 
-* **category_col_suffix** : the label column that colors / groups the scatter and thumbnail rows — ``category`` or ``supercategory``.
-* **exclude_squeaks** : leave out the segments ``detect-usv-squeaks`` flagged as squeaks (``squeak`` True) from the scatter, the four small maps and the thumbnails (default ``true``). The QLVM models were trained without squeaks, so squeaks sit wherever the decoder places them.
+* **exclude_squeaks** : keep only the segments ``detect-usv-squeaks`` classed as pure USVs (``usv`` true and ``squeak`` false) in the scatter, the four small maps and the thumbnails, leaving out pure squeaks, segments holding both a squeak and a USV (``usv`` and ``squeak`` both true) and unclassed rows (default ``true``). The USV QLVM models were trained on USVs only, so squeak-bearing segments sit wherever the decoder places them. A pooled embeddings table without the ``usv`` / ``squeak`` booleans (built from summaries ``detect-usv-squeaks`` has not classified) raises; a cache written before the booleans existed is rebuilt automatically.
 * **n_samples_per_category** : number of thumbnail spectrograms sampled per category.
 * **tile_orientation** : thumbnail grid orientation — ``vertical`` / ``horizontal``.
 * **apply_mask** : apply the SAM2 mask to each thumbnail spectrogram.
-* **mask_excluded_categories** : categories to omit from the thumbnail grid.
-* **category_colors** : optional explicit per-category color map (``null`` = auto).
+* **mask_excluded_categories** : categories whose thumbnails are shown WITHOUT the SAM2 mask even when ``apply_mask`` is on (for call types SAM2 masks poorly); every category stays in the grid.
+* **category_colors** : optional explicit per-category color map, ``{"1": "#RRGGBB", ...}`` keyed by the ``qlvm_category`` number (``null`` = auto).
 * **scatter_max_points** : downsampling cap for the embedding scatter.
 
 Sampling / boundaries:
 
 * **sampling_method** : how thumbnails are drawn per category (e.g. ``spiral``).
-* **draw_cluster_boundaries** : overlay kNN cluster boundaries on the scatter.
-* **knn_boundary_neighbors** : k for the kNN boundary field.
-* **knn_boundary_resolution** : grid resolution of the boundary field.
-* **knn_boundary_density_min_count** : minimum density (fraction) below which no boundary is drawn.
-* **knn_boundary_density_smoothing_sigma** : Gaussian smoothing sigma of the boundary density.
+* **draw_cluster_boundaries** : overlay the category bundle's boundaries on the scatter (regular map only).
 
 Spiral overlay:
 
@@ -582,13 +579,12 @@ Annotations / layout:
 * **annotate_cluster_ids** : label each cluster with its id.
 * **cluster_id_fontsize** : font size of the cluster-id labels.
 * **thumbnail_hspace** / **thumbnail_wspace** : vertical / horizontal spacing between thumbnails.
-* **unstretched_specs** : keep thumbnails at their native aspect (no stretch).
+* **unstretched_specs** : zero-pad every thumbnail to the longest pick's duration (call centred, equal borders) so all thumbnails share one time scale; ``false`` stretches each call to fill its slot.
 * **fig_size** : figure size in inches (``[width, height]``).
 
 .. code-block:: json
 
     "embedding_thumbnails": {
-        "category_col_suffix": "supercategory",
         "exclude_squeaks": true,
         "n_samples_per_category": 8,
         "tile_orientation": "vertical",
@@ -597,10 +593,6 @@ Annotations / layout:
         "category_colors": null,
         "sampling_method": "spiral",
         "draw_cluster_boundaries": true,
-        "knn_boundary_neighbors": 15,
-        "knn_boundary_resolution": 200,
-        "knn_boundary_density_min_count": 0.05,
-        "knn_boundary_density_smoothing_sigma": 3.0,
         "draw_spiral_overlay": false,
         "spiral_show_only_for": null,
         "spiral_color": "#000000",

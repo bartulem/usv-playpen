@@ -6,7 +6,6 @@ bootstrapping and circular shuffle controls for statistical validation.
 """
 
 import pathlib
-import re
 from collections import defaultdict
 from typing import Any
 
@@ -15,7 +14,7 @@ import librosa
 import numpy as np
 import polars as pls
 
-from ..os_utils import first_match_or_raise
+from ..os_utils import call_class_mask, drop_noise_usvs, find_audio_mmap, first_match_or_raise, parse_audio_mmap_name
 
 
 def extract_snippet_matrix(
@@ -119,8 +118,8 @@ def extract_snippet_acoustics(
     Parameters
     ----------
     session_root : str
-        Session root directory; the ``*_int16.mmap`` audio is found recursively
-        beneath it.
+        Session root directory; the ``*_int16.mmap`` audio is the 'ultrasonic' band
+        memmap in its ``audio/hpss_filtered`` folder (``os_utils.find_audio_mmap``).
     onsets : np.ndarray
         1D array of call onset times in seconds.
     peak_channels : np.ndarray
@@ -168,26 +167,17 @@ def extract_snippet_acoustics(
         )
         raise ValueError(msg)
 
-    # Locate + memmap the concatenated int16 audio (searched recursively under the
-    # session root, matching the spectrogram pipeline); the per-OS sample rate,
-    # sample count and channel count are encoded in the trailing
+    # Locate + memmap the concatenated int16 audio: the 30 kHz high-passed ('ultrasonic'
+    # band) memmap in the exact folder 'audio/hpss_filtered' with the exact name
+    # pattern and exactly one match, matching the spectrogram pipeline (a recursive
+    # glob could pick a stray or broadband memmap that sorts first); the sample
+    # rate, sample count and channel count are encoded in the trailing
     # ``_<sr>_<n_samples>_<n_ch>_int16.mmap`` filename segment.
-    audio_path = first_match_or_raise(
-        root=pathlib.Path(session_root),
-        pattern="*_int16.mmap*",
-        recursive=True,
-        label="concatenated int16 audio memmap",
-    )
-    meta = re.search(r"_(?P<sr>\d+)_(?P<n_samples>\d+)_(?P<n_ch>\d+)_int16\.mmap", audio_path.name)
-    if meta is None:
-        msg = (
-            f"Could not parse the '_<sr>_<n_samples>_<n_ch>_int16.mmap' segment from "
-            f"audio memmap name {audio_path.name!r}."
-        )
-        raise ValueError(msg)
-    sampling_rate = int(meta["sr"])
-    n_samples = int(meta["n_samples"])
-    n_channels = int(meta["n_ch"])
+    audio_path = find_audio_mmap(root_directory=session_root, band="ultrasonic")
+    layout = parse_audio_mmap_name(audio_path)
+    sampling_rate = layout["sampling_rate"]
+    n_samples = layout["n_samples"]
+    n_channels = layout["n_channels"]
     handle = np.memmap(audio_path, dtype=np.int16, mode="r", shape=(n_samples, n_channels), order="C")
 
     window_samples = round(window_s * sampling_rate)
@@ -940,7 +930,10 @@ def load_animal_sessions(
 
     Each returned entry carries the session id + root, the recording frame rate, the
     total session duration, per-call onsets split into the two category groups (as
-    polars dataframes), and spike-time arrays for the filtered unit set common to all
+    polars dataframes; only the focal mouse's USV-bearing segments -- pure USVs,
+    ``usv & ~squeak``, and segments holding both a squeak and a USV, ``usv & squeak``
+    -- enter a group: noise segments, pure squeaks and unscored rows are dropped first,
+    and a summary without the ``noise`` / ``usv`` / ``squeak`` columns raises), and spike-time arrays for the filtered unit set common to all
     of the chosen day's sessions. The tracks array is not materialised -- only its
     leading dimension is read so ``total_duration = n_frames / fs`` is cheap.
 
@@ -960,9 +953,9 @@ def load_animal_sessions(
         Output of :func:`load_unit_catalog`.
     category_column : str
         ``usv_summary`` column used to split calls into groups
-        (e.g. ``"qlvm_supercategory"``). A None / empty value, or a column absent
-        from a session's summary (e.g. one embedded before ``infer-qlvm-latents``
-        wrote ``qlvm_category`` / ``qlvm_supercategory``), raises ValueError
+        (e.g. ``"qlvm_category"``). A None / empty value, or a column absent
+        from a session's summary (e.g. one whose categories ``assign-qlvm-categories``
+        has not written yet), raises ValueError
         before any spike train is loaded.
     group_a_ids, group_b_ids : list
         Category id values defining group A and group B.
@@ -988,8 +981,8 @@ def load_animal_sessions(
     if not category_column:
         error_message = (
             f"load_animal_sessions: category_column is {category_column!r}. The group comparison splits "
-            f"calls by a per-USV category label, and QLVM category labels are not available; set the "
-            f"category column to an existing label column."
+            f"calls by a per-USV category label, so without a column the QLVM category labels are not "
+            f"available; set the category column to the QLVM category column, 'qlvm_category'."
         )
         raise ValueError(error_message)
 
@@ -1035,23 +1028,40 @@ def load_animal_sessions(
     sessions_data = []
     for session_name in chosen_session_names:
         directory = data_root / session_name
-        tracking_file = next(directory.glob("**/*_translated_rotated_metric.h5"))
+        tracking_file = first_match_or_raise(root=directory, pattern="*_translated_rotated_metric.h5", recursive=True, label="tracking H5")
         with h5py.File(name=tracking_file, mode="r") as track_file:
-            mouse_track_names = [t.decode("utf-8") for t in list(track_file["track_names"])]
+            # Stripped like every other track-name reader: some track H5 files carry stray
+            # whitespace in the names (e.g. ' 158800_0'), which would then match no emitter.
+            mouse_track_names = [t.decode("utf-8").strip() for t in list(track_file["track_names"])]
             recording_frame_rate = float(track_file["recording_frame_rate"][()])
             n_frames = int(track_file["tracks"].shape[0])
 
-        usv_summary_file = next(directory.glob("**/*_usv_summary.csv"))
-        usv_summary_data = pls.read_csv(usv_summary_file)
+        usv_summary_file = first_match_or_raise(root=directory, pattern="*_usv_summary.csv", recursive=True, label="USV summary CSV")
+        usv_summary_data = pls.read_csv(usv_summary_file, schema_overrides={"usv_id": pls.String})
         if category_column not in usv_summary_data.columns:
             error_message = (
                 f"load_animal_sessions: the category column '{category_column}' is absent from "
                 f"{usv_summary_file}. QLVM category labels are not available in it (re-run "
-                f"infer-qlvm-latents to write qlvm_category / qlvm_supercategory), so calls "
+                f"assign-qlvm-categories to write qlvm_category), so calls "
                 f"cannot be split into groups; set the category column to an existing label column."
             )
             raise ValueError(error_message)
-        focal_usvs = usv_summary_data.filter(pls.col("emitter") == mouse_track_names[0])
+        # Only USV-bearing segments of the focal mouse enter a category group: noise segments
+        # are dropped (os_utils.drop_noise_usvs, the one shared definition; a summary without
+        # the `noise` column raises), and so are pure squeaks and unscored rows
+        # (os_utils.call_class_mask with the "usv" and "both" classes, i.e. `usv & ~squeak`
+        # plus `usv & squeak`; a summary without the `usv` / `squeak` booleans raises). A
+        # segment holding both a squeak and a USV is kept because it carries a USV;
+        # assign-qlvm-categories labels every row with a regular-map position, noise and
+        # pure squeaks included, but those rows hold no USV, so their labels are not USV
+        # categories.
+        usv_summary_data = drop_noise_usvs(usv_summary_data, usv_summary_file.name, message_output=log)[0]
+        usv_summary_data = usv_summary_data.filter(
+            call_class_mask(usv_summary_data, ("usv", "both"), usv_summary_file.name))
+        focal_usvs = usv_summary_data.filter(pls.col("emitter").cast(pls.String).str.strip_chars() == mouse_track_names[0])
+        if focal_usvs.height == 0:
+            log(f"  {directory.name}: no USV is attributed to {mouse_track_names[0]} (an empty emitter column means "
+                f"vcl-assign has not run since the last das-summarize).")
         group_a_df = focal_usvs.filter(pls.col(category_column).is_in(group_a_ids))
         group_b_df = focal_usvs.filter(pls.col(category_column).is_in(group_b_ids))
 

@@ -360,7 +360,7 @@ class VocalCategoryModelingPipeline(FeatureZoo):
         # hist) live in `_input_metadata`.
         cohort_condition = derive_experimental_condition(self.modeling_settings)
         # Tag carries both the active USV category column (e.g.
-        # `qlvm_supercategory`) and the specific target category index
+        # `qlvm_category`) and the specific target category index
         # within it, so every downstream filename — modeling input
         # pickle, univariate pkls, model-selection step pkls,
         # consolidated artifact — pins both axes of the choice.
@@ -428,8 +428,8 @@ class VocalCategoryModelingPipeline(FeatureZoo):
             analysis_specific={
                 'target_category': int(target_category),
                 'category_self_exclude': list(category_self_exclude),
-                # Pins the USV category column (e.g. `qlvm_supercategory`,
-                # `qlvm_category`) used to derive the binary target so
+                # Pins the USV category column (e.g. `qlvm_category`)
+                # used to derive the binary target so
                 # the selector can route per-step filenames + the
                 # consolidated artifact through the same tag.
                 'usv_category_column_name': column_name_cats,

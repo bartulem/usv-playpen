@@ -172,34 +172,32 @@ def prepare_modeling_sessions(modeling_settings: dict) -> list:
     return txt_modeling_sessions
 
 
-def manifold_tag_segment(category_column: str | None, manifold_column_names: list) -> str:
+def manifold_tag_segment(manifold_column_names: list) -> str:
     """
     Description
     -----------
-    Names the source of a continuous-manifold run in its analysis tag and in the
-    model-selection step-file prefix. With a category label column configured
-    the segment is that column (e.g. ``'qlvm_supercategory'``), as before; with
-    none (``usv_category_column_name`` null) it is the embedding the
-    coordinates come from, the first manifold
-    column without its trailing digits (``['qlvm1', 'qlvm2']`` -> ``'qlvm'``), so
-    the tag never reads ``manifold_None``. The extraction pipeline and the
-    selector both call this, so the two always agree on the name.
+    Names the source of a continuous-manifold run in its analysis tag
+    (``manifold_<segment>``), which the model-selection step-file prefix and the
+    consolidated artifact's name carry on. The segment is the QLVM map the target
+    coordinates come from: the first manifold column without its trailing digits
+    (``['qlvm1', 'qlvm2']`` -> ``'qlvm'``, ``['qlvm_duration1', 'qlvm_duration2']``
+    -> ``'qlvm_duration'``), so runs on different maps never share a name. It is
+    NOT the category column: ``qlvm_category`` is the regular map's category for
+    every map, so naming runs after it gave a ``qlvm_duration`` run and a ``qlvm``
+    run the same tag. The label column, when configured, is still recorded in the
+    run's ``_input_metadata.analysis_specific.usv_category_column_name``.
 
     Parameters
     ----------
-    category_column (str | None)
-        The configured ``vocal_features.usv_category_column_name``.
     manifold_column_names (list)
         The configured ``vocal_features.usv_manifold_column_names``.
 
     Returns
     -------
     segment (str)
-        The column name, or the manifold prefix when no column is configured.
+        The map prefix of the manifold columns.
     """
 
-    if category_column:
-        return category_column
     return re.sub(r'\d+$', '', manifold_column_names[0])
 
 

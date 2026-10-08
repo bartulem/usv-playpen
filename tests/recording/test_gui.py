@@ -1,5 +1,6 @@
 import pytest
 
+import threading
 from importlib import metadata
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -769,3 +770,90 @@ def test_subject_completer_refreshes_after_repository_change(qtbot, monkeypatch,
     model = win.subject_completer.model()
     listed = [model.data(model.index(i, 0)) for i in range(model.rowCount())]
     assert 'NEW_1' in listed
+
+
+def test_available_playback_contexts_lists_each_sex_folder_once(tmp_path, monkeypatch):
+    """
+    Description
+    -----------
+    The playback-context dropdown offers only contexts with a built repository.
+    Each sex folder of the repository root is listed once (the share can take
+    seconds per listing), every context of that sex is matched in memory, a
+    missing sex folder counts as empty, and nothing found falls back to every
+    context.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Temporary repository root.
+    monkeypatch (pytest.MonkeyPatch)
+        Points the repository root at ``tmp_path`` and counts the listings.
+
+    Returns
+    -------
+    None
+    """
+
+    (tmp_path / 'male').mkdir()
+    (tmp_path / 'female').mkdir()
+    (tmp_path / 'male' / 'naturalistic_usv_repository_courtship_20260101.h5').touch()
+    (tmp_path / 'male' / 'notes.txt').touch()
+    (tmp_path / 'female' / 'naturalistic_usv_repository_lone_20260101.h5').touch()
+    monkeypatch.setattr(usv_playpen_gui, 'resolve_data_root', lambda key: tmp_path)
+    listed = []
+    original_iterdir = Path.iterdir
+
+    def counting_iterdir(self):
+        listed.append(self.name)
+        return original_iterdir(self)
+
+    monkeypatch.setattr(Path, 'iterdir', counting_iterdir)
+    available = usv_playpen_gui.USVPlaypenWindow._available_playback_contexts(None)
+    assert available == ['courtship_male', 'lone_female']
+    assert sorted(listed) == ['female', 'male', 'mixed']
+
+    for path in (tmp_path / 'male').iterdir():
+        path.unlink()
+    for path in (tmp_path / 'female').iterdir():
+        path.unlink()
+    assert usv_playpen_gui.USVPlaypenWindow._available_playback_contexts(None) == list(usv_playpen_gui._PLAYBACK_CONTEXTS)
+
+
+def test_analyze_window_opens_without_listing_and_narrows_contexts_later(app, qtbot, preserve_all_settings, monkeypatch):
+    """
+    Description
+    -----------
+    Building the analyses window must not wait on the playback-repository listing
+    (a network share, seconds per listing when the link is busy): the dropdown
+    opens with every context and is narrowed to the built ones once the
+    background listing returns.
+
+    Parameters
+    ----------
+    app (USVPlaypenWindow)
+        The main GUI window fixture.
+    qtbot (pytestqt.qtbot.QtBot)
+        Qt test driver.
+    preserve_all_settings (None)
+        Fixture backing up / restoring the package config files.
+    monkeypatch (pytest.MonkeyPatch)
+        Replaces the listing with one that blocks until released.
+
+    Returns
+    -------
+    None
+    """
+
+    release = threading.Event()
+
+    def slow_listing(self):
+        release.wait(10)
+        return ['lone_female']
+
+    monkeypatch.setattr(usv_playpen_gui.USVPlaypenWindow, '_available_playback_contexts', slow_listing)
+    qtbot.mouseClick(app.button_map['Analyze'], Qt.MouseButton.LeftButton)
+    assert app.playback_context_cb.count() == len(usv_playpen_gui._PLAYBACK_CONTEXTS)
+    release.set()
+    qtbot.waitUntil(lambda: app.playback_context_cb.count() == 1, timeout=5000)
+    assert app.playback_context_cb.itemText(0) == 'lone_female'
+    assert app.playback_context == 'lone_female'

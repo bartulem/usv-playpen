@@ -31,10 +31,30 @@ from usv_playpen.modeling.load_input_files import (
     find_variable_length_bouts,
     load_behavioral_feature_data,
     load_pickle_modeling_data,
+    read_usv_summary_table,
     require_labels_for_vocal_predictors,
     require_usv_category_column,
 )
 from tests.modeling._synth import _SETTINGS_JSON
+
+
+def test_read_usv_summary_table_infers_types_from_every_row_and_warns_on_no_emitter(tmp_path, capsys):
+    """A category label empty in the first 100 rows is still read as an integer (default
+    100-row inference would give String, and ``col == k`` would raise), usv_id keeps its
+    padding, and an all-empty emitter column prints a warning naming vcl-assign."""
+    n_rows = 150
+    summary_path = tmp_path / 's_usv_summary.csv'
+    pls.DataFrame({
+        'usv_id': [f"{i:06d}" for i in range(n_rows)],
+        'start': np.arange(n_rows, dtype=float),
+        'emitter': pls.Series([None] * n_rows, dtype=pls.String),
+        'qlvm_category': [None] * 120 + [2] * 30,
+    }).write_csv(summary_path)
+    table = read_usv_summary_table(summary_path, ',')
+    assert table['qlvm_category'].dtype == pls.Int64
+    assert table.filter(pls.col('qlvm_category') == 2).height == 30
+    assert table['usv_id'][0] == '000000'
+    assert 'no assigned emitter' in capsys.readouterr().out
 
 # The message every label-dependent path raises when its label column is null or absent.
 _LABELS_UNAVAILABLE = 'QLVM category labels are not available'
@@ -59,9 +79,10 @@ def _write_usv_summary(session_root, rows: dict, csv_sep: str = ',') -> None:
     rows (dict)
         Column-name -> value-list mapping passed straight to
         ``polars.DataFrame``; must include at least the ``emitter``, ``start``
-        and ``stop`` columns the loaders rely on. ``noise`` and ``squeak``
-        columns of all-False are added when the caller does not supply them, since
-        the loaders filter on both and raise when either is missing.
+        and ``stop`` columns the loaders rely on. An all-False ``noise`` column and
+        pure-USV ``usv`` (all True) / ``squeak`` (all False) columns are added when the
+        caller does not supply them, since the loaders filter on them and raise when any
+        is missing.
     csv_sep (str)
         Field separator written into the CSV (mirrors the loaders' ``csv_sep``).
 
@@ -75,8 +96,9 @@ def _write_usv_summary(session_root, rows: dict, csv_sep: str = ',') -> None:
     csv_path = audio_dir / f'{session_root.name}_usv_summary.csv'
     if 'noise' not in rows:
         rows = {**rows, 'noise': [False] * len(next(iter(rows.values())))}
-    if 'squeak' not in rows:
-        rows = {**rows, 'squeak': [False] * len(next(iter(rows.values())))}
+    if 'usv' not in rows and 'squeak' not in rows:
+        n_rows = len(next(iter(rows.values())))
+        rows = {**rows, 'usv': [True] * n_rows, 'squeak': [False] * n_rows}
     pls.DataFrame(rows).write_csv(file=csv_path, separator=csv_sep)
 
 
@@ -318,7 +340,6 @@ class TestFindBoutEpochs:
             'start': [2.0, 2.1, 2.2],
             'stop': [2.05, 2.15, 2.25],
             'usv_category': [1, 1, 1],
-            'usv_supercategory': [1, 1, 1],
         }
         kwargs = self._build(tmp_path, rows)
         out = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
@@ -345,7 +366,6 @@ class TestFindBoutEpochs:
             'start': [0.5, 2.0],
             'stop': [0.55, 2.05],
             'usv_category': [1, 1],
-            'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
         out = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
@@ -363,7 +383,6 @@ class TestFindBoutEpochs:
             'start': [0.5, 2.0, 3.0],
             'stop': [0.55, 2.05, 3.05],
             'usv_category': [1, 2, 1],
-            'usv_supercategory': [1, 1, 1],
         }
         kwargs = self._build(tmp_path, rows)
         out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
@@ -384,7 +403,6 @@ class TestFindBoutEpochs:
             'start': [2.0],
             'stop': [2.9],
             'usv_category': [1],
-            'usv_supercategory': [1],
         }
         kwargs = self._build(tmp_path, rows, n_frames=600, fps=100.0)
         out = find_onset_epochs(prediction_mode='state', filter_history=1.0,
@@ -405,8 +423,7 @@ class TestFindBoutEpochs:
             'emitter': ['male', 'male'],
             'start': [2.0, 3.0],
             'stop': [2.05, 3.05],
-            'usv_category': [1, 7],
-            'usv_supercategory': [1, 1],
+            'usv_category': [1, 4],
         }
         kwargs = self._build(tmp_path, rows)
         out = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
@@ -417,7 +434,7 @@ class TestFindBoutEpochs:
         signals = out['sess_B']['male']['continuous_vocal_signals']
         assert 'usv_rate' in signals
         assert 'usv_cat_1' in signals
-        assert 'usv_cat_7' in signals
+        assert 'usv_cat_4' in signals
         assert signals['usv_rate'].shape == (600,)
 
     def test_pooled_binary_output(self, tmp_path):
@@ -429,7 +446,6 @@ class TestFindBoutEpochs:
             'start': [2.0, 2.1],
             'stop': [2.05, 2.15],
             'usv_category': [1, 1],
-            'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
         out = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
@@ -470,17 +486,16 @@ class TestFindBoutEpochs:
             'emitter': ['male', 'male', 'male'],
             'start': [2.0, 3.0, 4.0],
             'stop': [2.05, 3.05, 4.05],
-            'usv_category': [6, 2, 6],
-            'usv_supercategory': [1, 1, 1],
+            'usv_category': [3, 2, 3],
         }
         kwargs = self._build(tmp_path, rows)
         out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
-                               target_category=6,
+                               target_category=3,
                                **kwargs)
         male = out['sess_B']['male']
-        # Only the category-6 onsets (2.0, 4.0) survive; the cat-2 onset (3.0) is gone.
+        # Only the category-3 onsets (2.0, 4.0) survive; the cat-2 onset (3.0) is gone.
         np.testing.assert_allclose(male['positive_events'], [2.0, 4.0])
 
     def test_target_category_negatives_unchanged(self, tmp_path):
@@ -491,8 +506,7 @@ class TestFindBoutEpochs:
             'emitter': ['male', 'male', 'male'],
             'start': [2.0, 3.0, 4.0],
             'stop': [2.05, 3.05, 4.05],
-            'usv_category': [6, 2, 6],
-            'usv_supercategory': [1, 1, 1],
+            'usv_category': [3, 2, 3],
         }
         kwargs = self._build(tmp_path, rows)
         common = dict(prediction_mode='individual', filter_history=1.0,
@@ -500,7 +514,7 @@ class TestFindBoutEpochs:
                       proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
         # Both calls read the same (read-only) session tree.
         out_all = find_onset_epochs(target_category=None, **common, **kwargs)
-        out_cat = find_onset_epochs(target_category=6, **common, **kwargs)
+        out_cat = find_onset_epochs(target_category=3, **common, **kwargs)
         np.testing.assert_allclose(out_all['sess_B']['male']['negative_events'],
                                    out_cat['sess_B']['male']['negative_events'])
 
@@ -512,8 +526,7 @@ class TestFindBoutEpochs:
             'emitter': ['male', 'male', 'male'],
             'start': [2.0, 3.0, 4.0],
             'stop': [2.05, 3.05, 4.05],
-            'usv_category': [6, 2, 6],
-            'usv_supercategory': [1, 1, 1],
+            'usv_category': [3, 2, 3],
         }
         kwargs = self._build(tmp_path, rows)
         out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
@@ -524,37 +537,68 @@ class TestFindBoutEpochs:
         np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0, 3.0, 4.0])
 
     def test_target_type_selects_the_positive_onsets(self, tmp_path):
-        """The ``squeak`` column decides which onsets are positive: 'usv' (the
-        default) keeps the ultrasonic calls only, 'squeak' the squeaks only, 'all'
-        both; the silent-epoch negatives are the same in all three because they are
-        sampled against every call of the mouse."""
+        """The ``usv`` / ``squeak`` booleans decide which onsets are positive: 'usv' (the
+        default) keeps pure USVs only (usv true, squeak false), 'usv_with_both' pure USVs
+        plus the segments with both flags true, 'squeak' pure squeaks only, 'all' every
+        row; a segment with both flags true is dropped by 'usv' (usv being true is not
+        enough) and null flags are in none of the three typed selections; the
+        silent-epoch negatives are the same in all four because they are sampled
+        against every call of the mouse."""
 
         rows = {
-            'emitter': ['male', 'male', 'male'],
-            'start': [2.0, 3.0, 4.0],
-            'stop': [2.05, 3.05, 4.05],
-            'usv_category': [1, 1, 1],
-            'usv_supercategory': [1, 1, 1],
-            'squeak': [False, True, False],
+            'emitter': ['male', 'male', 'male', 'male', 'male'],
+            'start': [2.0, 3.0, 4.0, 5.0, 6.0],
+            'stop': [2.05, 3.05, 4.05, 5.05, 6.05],
+            'usv_category': [1, 1, 1, 1, 1],
+            'usv': [True, False, True, True, None],
+            'squeak': [False, True, False, True, None],
         }
         kwargs = self._build(tmp_path, rows)
         common = dict(prediction_mode='individual', filter_history=1.0,
                       usv_bout_time=0.5, min_usv_per_bout=2,
                       proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
         out = {kind: find_onset_epochs(target_type=kind, **common, **kwargs)['sess_B']['male']
-               for kind in ('usv', 'squeak', 'all')}
+               for kind in ('usv', 'usv_with_both', 'squeak', 'all')}
         np.testing.assert_allclose(out['usv']['positive_events'], [2.0, 4.0])
+        np.testing.assert_allclose(out['usv_with_both']['positive_events'], [2.0, 4.0, 5.0])
         np.testing.assert_allclose(out['squeak']['positive_events'], [3.0])
-        np.testing.assert_allclose(out['all']['positive_events'], [2.0, 3.0, 4.0])
+        np.testing.assert_allclose(out['all']['positive_events'], [2.0, 3.0, 4.0, 5.0, 6.0])
         np.testing.assert_allclose(out['usv']['negative_events'], out['squeak']['negative_events'])
+        np.testing.assert_allclose(out['usv']['negative_events'], out['usv_with_both']['negative_events'])
         np.testing.assert_allclose(out['usv']['negative_events'], out['all']['negative_events'])
         # the default is 'usv'
         default = find_onset_epochs(**common, **kwargs)['sess_B']['male']
         np.testing.assert_allclose(default['positive_events'], [2.0, 4.0])
 
+    def test_usv_with_both_keeps_both_segments_in_bouts(self, tmp_path):
+        """In a bout mode a "both" segment (usv and squeak true) between two pure USVs is
+        a bout member under 'usv_with_both', so the three calls form one bout with one
+        onset; under the default 'usv' it is dropped and the two pure USVs, now farther
+        apart than the inter-bout threshold, are two bouts of one call each, below the
+        two-call floor (no positive; the inter-bout threshold of these parameters is
+        1 s). The negatives do not depend on the target type."""
+
+        rows = {
+            'emitter': ['male', 'male', 'male'],
+            'start': [2.0, 2.7, 3.4],
+            'stop': [2.01, 2.71, 3.41],
+            'usv_category': [1, 1, 1],
+            'usv': [True, True, True],
+            'squeak': [False, True, False],
+        }
+        kwargs = self._build(tmp_path, rows)
+        common = dict(prediction_mode='bout_onset', filter_history=1.0, usv_bout_time=0.5,
+                      min_usv_per_bout=2, proportion_smoothing_sd=None,
+                      mixture_model_params=_mixture_model_params())
+        with_both = find_onset_epochs(target_type='usv_with_both', **common, **kwargs)['sess_B']['male']
+        pure = find_onset_epochs(target_type='usv', **common, **kwargs)['sess_B']['male']
+        np.testing.assert_allclose(with_both['positive_events'], [2.0])
+        assert len(pure['positive_events']) == 0
+        np.testing.assert_allclose(with_both['negative_events'], pure['negative_events'])
+
     def test_target_type_refuses_what_it_cannot_do(self, tmp_path):
         """Squeak onsets outside 'individual' mode, an unknown call type, and a
-        summary without a ``squeak`` column (unless 'all') all raise rather than
+        summary without the ``usv`` / ``squeak`` columns (unless 'all') all raise rather than
         silently falling back to every call."""
 
         rows = {
@@ -562,7 +606,7 @@ class TestFindBoutEpochs:
             'start': [2.0, 3.0],
             'stop': [2.05, 3.05],
             'usv_category': [1, 1],
-            'usv_supercategory': [1, 1],
+            'usv': [True, False],
             'squeak': [False, True],
         }
         kwargs = self._build(tmp_path, rows)
@@ -575,10 +619,10 @@ class TestFindBoutEpochs:
 
         bare = tmp_path / 'bare'
         bare_kwargs = self._build(bare, {'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
-                                         'usv_category': [1], 'usv_supercategory': [1]})
+                                         'usv_category': [1]})
         csv_path = next((bare / 'sess_B' / 'audio').glob('*_usv_summary.csv'))
-        pls.read_csv(csv_path).drop('squeak').write_csv(csv_path)
-        with pytest.raises(ValueError, match="no 'squeak' column"):
+        pls.read_csv(csv_path).drop('usv', 'squeak').write_csv(csv_path)
+        with pytest.raises(ValueError, match=r"no \['usv', 'squeak'\] columns"):
             find_onset_epochs(prediction_mode='individual', target_type='usv', **common, **bare_kwargs)
         out = find_onset_epochs(prediction_mode='individual', target_type='all', **common, **bare_kwargs)
         np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0])
@@ -594,23 +638,22 @@ class TestFindBoutEpochs:
             'emitter': ['male', 'male'],
             'start': [2.0, 3.0],
             'stop': [2.05, 3.05],
-            'usv_category': [6, 7],
-            'usv_supercategory': [1, 1],
+            'usv_category': [3, 4],
         }
         kwargs = self._build(tmp_path, rows)
         out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
                                usv_bout_time=0.5, min_usv_per_bout=2,
                                proportion_smoothing_sd=2.0, mixture_model_params=_mixture_model_params(),
-                               vocal_output_type='all_rate', target_category=6,
+                               vocal_output_type='all_rate', target_category=3,
                                **kwargs)
         male = out['sess_B']['male']
-        # Positives restricted to the cat-6 onset ...
+        # Positives restricted to the cat-3 onset ...
         np.testing.assert_allclose(male['positive_events'], [2.0])
-        # ... yet the predictor signals still carry the non-target cat-7 trace
+        # ... yet the predictor signals still carry the non-target cat-4 trace
         # and a pooled rate computed over BOTH USVs.
         signals = male['continuous_vocal_signals']
-        assert 'usv_cat_6' in signals
-        assert 'usv_cat_7' in signals
+        assert 'usv_cat_3' in signals
+        assert 'usv_cat_4' in signals
         assert signals['usv_rate'].sum() > 0
         assert male['usv_count'].sum() > 0
 
@@ -623,15 +666,14 @@ class TestFindBoutEpochs:
             'emitter': ['male', 'male', 'male'],
             'start': [2.0, 2.1, 2.2],
             'stop': [2.05, 2.15, 2.25],
-            'usv_category': [6, 2, 6],
-            'usv_supercategory': [1, 1, 1],
+            'usv_category': [3, 2, 3],
         }
         kwargs = self._build(tmp_path, rows)
         common = dict(prediction_mode='bout_onset', filter_history=1.0, usv_bout_time=0.5,
                       min_usv_per_bout=2, proportion_smoothing_sd=None,
                       mixture_model_params=_mixture_model_params())
         out_all = find_onset_epochs(target_category=None, **common, **kwargs)
-        out_cat = find_onset_epochs(target_category=6, **common, **kwargs)
+        out_cat = find_onset_epochs(target_category=3, **common, **kwargs)
         np.testing.assert_allclose(out_all['sess_B']['male']['positive_events'],
                                    out_cat['sess_B']['male']['positive_events'])
         # The pooled 3-syllable cluster still forms exactly one bout onset.
@@ -647,20 +689,19 @@ class TestFindBoutEpochs:
             'emitter': ['male', 'male'],
             'start': [2.0, 3.0],
             'stop': [2.05, 3.05],
-            'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
         with pytest.raises(ValueError, match=_LABELS_UNAVAILABLE) as excinfo:
             find_onset_epochs(prediction_mode='individual', filter_history=1.0,
                               usv_bout_time=0.5, min_usv_per_bout=2,
                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
-                              category_column='vae_supercategory', target_category=6,
+                              category_column='qlvm_category', target_category=3,
                               **kwargs)
-        assert 'onset_target_category 6' in str(excinfo.value)
-        assert "'vae_supercategory'" in str(excinfo.value)
+        assert 'onset_target_category 3' in str(excinfo.value)
+        assert "'qlvm_category'" in str(excinfo.value)
 
     def test_target_category_null_column_raises(self, tmp_path):
-        """A null category column (the shipped setting) with a single-category
+        """A null category column (the label-free setting) with a single-category
         onset target raises before any summary is read."""
 
         kwargs = self._build(tmp_path, {'emitter': ['male'], 'start': [2.0], 'stop': [2.05]})
@@ -668,7 +709,7 @@ class TestFindBoutEpochs:
             find_onset_epochs(prediction_mode='individual', filter_history=1.0,
                               usv_bout_time=0.5, min_usv_per_bout=2,
                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
-                              category_column=None, target_category=6,
+                              category_column=None, target_category=3,
                               **kwargs)
 
     @pytest.mark.parametrize('vocal_output_type', ['categories_rate', 'all_rate'])
@@ -736,7 +777,7 @@ class TestFindBoutEpochs:
         sess = tmp_path / 'sess_C'
         _write_usv_summary(sess, {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
-            'usv_category': [1], 'usv_supercategory': [1],
+            'usv_category': [1],
         })
         out = find_onset_epochs(root_directories=[str(sess)],
                                mouse_ids_dict={},
@@ -753,7 +794,7 @@ class TestFindBoutEpochs:
 
         kwargs = self._build(tmp_path, {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
-            'usv_category': [1], 'usv_supercategory': [1],
+            'usv_category': [1],
         })
         with pytest.raises(ValueError, match='Unknown prediction_mode'):
             find_onset_epochs(prediction_mode='bogus', filter_history=1.0,
@@ -766,7 +807,7 @@ class TestFindBoutEpochs:
 
         kwargs = self._build(tmp_path, {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
-            'usv_category': [1], 'usv_supercategory': [1],
+            'usv_category': [1],
         })
         with pytest.raises(ValueError, match='Invalid mixture_model_component_index'):
             find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
@@ -784,7 +825,6 @@ class TestFindBoutEpochs:
             'start': [2.0, 2.5, 2.6],
             'stop': [2.05, 2.55, 2.65],
             'usv_category': [1, 1, 1],
-            'usv_supercategory': [1, 1, 1],
         }
         kwargs = self._build(tmp_path, rows)
         # IBI threshold ~ exp(log(0.3)) so the first USV breaks into its own
@@ -808,7 +848,6 @@ class TestFindBoutEpochs:
             'start': [2.0, 3.0],
             'stop': [2.05, 3.05],
             'usv_category': ['noise', 'noise'],
-            'usv_supercategory': [1, 1],
         }
         kwargs = self._build(tmp_path, rows)
         out = find_onset_epochs(prediction_mode='individual', filter_history=1.0,
@@ -826,7 +865,7 @@ class TestFindBoutEpochs:
 
         rows = {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
-            'usv_category': [1], 'usv_supercategory': [1],
+            'usv_category': [1],
         }
         kwargs = self._build(tmp_path, rows)
         out = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0,
@@ -841,7 +880,7 @@ class TestFindBoutEpochs:
 
         rows = {
             'emitter': ['male'], 'start': [0.1], 'stop': [0.15],
-            'usv_category': [1], 'usv_supercategory': [1],
+            'usv_category': [1],
         }
         # n_frames=50 at 100 fps -> 0.5 s session; filter_history=2.0 > 0.5.
         kwargs = self._build(tmp_path, rows, n_frames=50, fps=100.0)
@@ -882,7 +921,6 @@ class TestFindUsvCategories:
             'start': [2.0, 3.0, 4.0],
             'stop': [2.05, 3.05, 4.05],
             'usv_category': [1, 2, 1],
-            'usv_supercategory': [1, 1, 1],
         }
         out = find_usv_categories(target_category=1, filter_history=1.0,
                                   **self._kwargs(tmp_path, rows))
@@ -901,44 +939,68 @@ class TestFindUsvCategories:
             'emitter': ['male', 'male'],
             'start': [2.0, 3.0],
             'stop': [2.05, 3.05],
-            'usv_category': [5, 8],
-            'usv_supercategory': [1, 1],
+            'usv_category': [2, 4],
         }
         out = find_usv_categories(target_category=None, filter_history=1.0,
                                   **self._kwargs(tmp_path, rows))
         male = out['sess_D']['male']
         assert male['target_events'] is None
-        assert set(male['events_by_category'].keys()) == {5, 8}
+        assert set(male['events_by_category'].keys()) == {2, 4}
 
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
-    def test_continuous_targets_from_manifold_columns(self, tmp_path):
-        """When ``manifold_column_names`` are present, continuous onsets,
-        stacked targets and the derived super/category label arrays are
-        written."""
+    @pytest.mark.parametrize("prefix", ["qlvm", "qlvm_duration", "qlvm_entropy"])
+    def test_continuous_targets_from_manifold_columns(self, tmp_path, prefix):
+        """When ``manifold_column_names`` are present, continuous onsets, stacked
+        targets and the region label array are written. The label is the regular
+        map's ``qlvm_category`` for EVERY map, the conditional ones included (the
+        categories are defined on the regular map and label the call); a
+        ``<prefix>_category`` / ``<prefix>_supercategory`` column of the manifold's
+        own prefix is never read."""
 
         rows = {
             'emitter': ['male', 'male'],
             'start': [2.0, 3.0],
             'stop': [2.05, 3.05],
             'usv_category': [1, 2],
-            'usv_supercategory': [1, 1],
-            'vae1': [0.1, 0.2],
-            'vae2': [0.3, 0.4],
-            'vae_supercategory': [10, 11],
-            'vae_category': [20, 21],
+            f'{prefix}1': [0.1, 0.2],
+            f'{prefix}2': [0.3, 0.4],
+            'qlvm_category': [3, 4],
         }
+        if prefix != 'qlvm':
+            rows[f'{prefix}_category'] = [20, 21]
+            rows[f'{prefix}_supercategory'] = [10, 11]
         out = find_usv_categories(target_category=None, filter_history=1.0,
                                   vocal_output_type='all_rate',
                                   proportion_smoothing_sd=2.0,
-                                  manifold_column_names=['vae1', 'vae2'],
+                                  manifold_column_names=[f'{prefix}1', f'{prefix}2'],
                                   **self._kwargs(tmp_path, rows))
         male = out['sess_D']['male']
         np.testing.assert_allclose(male['continuous_onsets'], [2.0, 3.0])
         assert male['continuous_targets'].shape == (2, 2)
-        np.testing.assert_allclose(male['continuous_supercategory'], [10, 11])
-        np.testing.assert_allclose(male['continuous_category'], [20, 21])
+        assert 'continuous_supercategory' not in male
+        np.testing.assert_allclose(male['continuous_category'], [3, 4])
         assert 'usv_rate' in male['continuous_vocal_signals']
         assert 'usv_cat_1' in male['continuous_vocal_signals']
+
+    @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
+    def test_continuous_targets_without_qlvm_category_carry_no_labels(self, tmp_path):
+        """A summary whose categories were not assigned yet (no ``qlvm_category``)
+        yields manifold targets without a region label array."""
+
+        rows = {
+            'emitter': ['male', 'male'],
+            'start': [2.0, 3.0],
+            'stop': [2.05, 3.05],
+            'usv_category': [1, 2],
+            'qlvm_duration1': [0.1, 0.2],
+            'qlvm_duration2': [0.3, 0.4],
+        }
+        out = find_usv_categories(target_category=None, filter_history=1.0,
+                                  manifold_column_names=['qlvm_duration1', 'qlvm_duration2'],
+                                  **self._kwargs(tmp_path, rows))
+        male = out['sess_D']['male']
+        assert male['continuous_targets'].shape == (2, 2)
+        assert 'continuous_category' not in male
 
     def test_missing_category_column_raises(self, tmp_path):
         """A CSV lacking ``category_column`` raises the labels-unavailable
@@ -946,7 +1008,6 @@ class TestFindUsvCategories:
 
         rows = {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
-            'usv_supercategory': [1],
         }
         with pytest.raises(ValueError, match=_LABELS_UNAVAILABLE) as excinfo:
             find_usv_categories(target_category=1, filter_history=1.0,
@@ -966,7 +1027,7 @@ class TestFindUsvCategories:
 
     def test_manifold_path_without_category_column(self, tmp_path):
         """On the continuous manifold path a null category column is allowed: the
-        manifold targets are returned, with no category / supercategory packets
+        manifold targets are returned, with no category packet
         and no category events."""
 
         rows = {
@@ -1012,7 +1073,7 @@ class TestFindUsvCategories:
             'stop': [2.05, 3.05, 4.05, 5.05],
             'qlvm1': [0.1, None, 0.3, 0.4],
             'qlvm2': [0.5, 0.6, None, 0.8],
-            'qlvm_supercategory': [1, 2, 3, 4],
+            'qlvm_category': [1, 2, 3, 4],
         }
         out = find_usv_categories(target_category=None, filter_history=1.0,
                                   category_column=None, manifold_column_names=['qlvm1', 'qlvm2'],
@@ -1021,7 +1082,7 @@ class TestFindUsvCategories:
         np.testing.assert_allclose(male['continuous_onsets'], [2.0, 5.0])
         np.testing.assert_allclose(male['continuous_targets'], [[0.1, 0.5], [0.4, 0.8]])
         assert np.isfinite(male['continuous_targets']).all()
-        np.testing.assert_allclose(male['continuous_supercategory'], [1, 4])
+        np.testing.assert_allclose(male['continuous_category'], [1, 4])
         printed = capsys.readouterr().out
         assert 'sess_D (male): dropped 2 of 4 calls with null/NaN manifold coordinates' in printed
         assert 'dropped 2 calls with null/NaN coordinates in total' in printed
@@ -1053,7 +1114,6 @@ class TestFindUsvCategories:
             'start': [0.5, 3.0],
             'stop': [0.55, 3.05],
             'usv_category': [1, 1],
-            'usv_supercategory': [1, 1],
         }
         out = find_usv_categories(target_category=1, filter_history=1.0,
                                   **self._kwargs(tmp_path, rows))
@@ -1068,7 +1128,6 @@ class TestFindUsvCategories:
             'start': [2.0, 3.0],
             'stop': [2.05, 3.05],
             'usv_category': [1, 1],
-            'usv_supercategory': [1, 1],
         }
         out = find_usv_categories(target_category=None, filter_history=1.0,
                                   vocal_output_type='pooled_binary',
@@ -1083,7 +1142,7 @@ class TestFindUsvCategories:
 
         rows = {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
-            'usv_category': [1], 'usv_supercategory': [1],
+            'usv_category': [1],
         }
         kwargs = self._kwargs(tmp_path, rows)
         kwargs['mouse_ids_dict'] = {}
@@ -1097,7 +1156,7 @@ class TestFindUsvCategories:
 
         rows = {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
-            'usv_category': [1], 'usv_supercategory': [1],
+            'usv_category': [1],
         }
         kwargs = self._kwargs(tmp_path, rows)
         kwargs['features_dict'] = {}
@@ -1125,7 +1184,7 @@ class TestFindUsvCategories:
 
         rows = {
             'emitter': ['male'], 'start': [0.3], 'stop': [0.35],
-            'usv_category': [1], 'usv_supercategory': [1],
+            'usv_category': [1],
         }
         out = find_usv_categories(target_category=1, filter_history=1.0,
                                   **self._kwargs(tmp_path, rows))
@@ -1155,7 +1214,7 @@ class TestFindUsvCategories:
         rows = {
             'emitter': ['male', 'male'],
             'start': [2.0, 3.0], 'stop': [2.05, 3.05],
-            'usv_category': ['p', 'p'], 'usv_supercategory': [1, 1],
+            'usv_category': ['p', 'p'],
         }
         out = find_usv_categories(target_category=None, filter_history=1.0,
                                   vocal_output_type='categories_rate',
@@ -1170,7 +1229,7 @@ class TestFindUsvCategories:
 
         rows = {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
-            'usv_category': ['weird'], 'usv_supercategory': [1],
+            'usv_category': ['weird'],
         }
         out = find_usv_categories(target_category=None, filter_history=1.0,
                                   **self._kwargs(tmp_path, rows))
@@ -1206,7 +1265,6 @@ class TestFindVariableLengthBouts:
             'start': [2.0, 2.1, 2.2],
             'stop': [2.05, 2.15, 2.25],
             'usv_category': [1, 1, 1],
-            'usv_supercategory': [1, 1, 1],
             'mask_number': [2, 3, 5],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
@@ -1226,7 +1284,7 @@ class TestFindVariableLengthBouts:
         rows = {
             'emitter': ['male'],
             'start': [2.0], 'stop': [2.05],
-            'usv_category': [1], 'usv_supercategory': [1], 'mask_number': [1],
+            'usv_category': [1], 'mask_number': [1],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
                                          mixture_model_params=_mixture_model_params(),
@@ -1240,7 +1298,7 @@ class TestFindVariableLengthBouts:
         rows = {
             'emitter': ['male', 'male'],
             'start': [2.0, 2.1], 'stop': [2.05, 2.15],
-            'usv_category': [1, 1], 'usv_supercategory': [1, 1],
+            'usv_category': [1, 1],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
                                          mixture_model_params=_mixture_model_params(),
@@ -1278,7 +1336,7 @@ class TestFindVariableLengthBouts:
 
         rows = {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
-            'usv_category': [1], 'usv_supercategory': [1], 'mask_number': [1],
+            'usv_category': [1], 'mask_number': [1],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
                                          mixture_model_params=_mixture_model_params(),
@@ -1291,7 +1349,7 @@ class TestFindVariableLengthBouts:
 
         rows = {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
-            'usv_category': [1], 'usv_supercategory': [1], 'mask_number': [1],
+            'usv_category': [1], 'mask_number': [1],
         }
         with pytest.raises(ValueError, match='Invalid mixture_model_component_index'):
             find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
@@ -1318,7 +1376,7 @@ class TestFindVariableLengthBouts:
 
         rows = {
             'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
-            'usv_category': [1], 'usv_supercategory': [1], 'mask_number': [1],
+            'usv_category': [1], 'mask_number': [1],
         }
         kwargs = self._kwargs(tmp_path, rows)
         kwargs['mouse_ids_dict'] = {}
@@ -1334,7 +1392,7 @@ class TestFindVariableLengthBouts:
         rows = {
             'emitter': ['male', 'male'],
             'start': [2.0, 2.1], 'stop': [2.05, 2.15],
-            'usv_category': [1, 1], 'usv_supercategory': [1, 1],
+            'usv_category': [1, 1],
             'mask_number': [1, 1],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
@@ -1353,7 +1411,7 @@ class TestFindVariableLengthBouts:
         rows = {
             'emitter': ['male', 'male'],
             'start': [2.0, 2.1], 'stop': [2.05, 2.15],
-            'usv_category': ['x', 'x'], 'usv_supercategory': [1, 1],
+            'usv_category': ['x', 'x'],
             'mask_number': [1, 1],
         }
         out = find_variable_length_bouts(min_vocalizations=2, filter_history=1.0,
@@ -1423,7 +1481,6 @@ class TestBoutOffsetEpochs:
             'start': starts,
             'stop': [round(t + 0.05, 6) for t in starts],
             'usv_category': [1] * len(starts),
-            'usv_supercategory': [1] * len(starts),
         }
 
     def _run(self, tmp_path, rows, **offset_kwargs):
@@ -1463,7 +1520,7 @@ class TestBoutOffsetEpochs:
         starts = [2.0, 2.1, 2.2, 4.0, 4.1, 4.2, 6.0, 6.1, 6.2, 8.0, 8.2, 8.4, 8.6, 8.8, 9.0]
         rows = {'emitter': ['male'] * len(starts), 'start': starts,
                 'stop': [round(t + 0.05, 6) for t in starts],
-                'usv_category': [1] * len(starts), 'usv_supercategory': [1] * len(starts)}
+                'usv_category': [1] * len(starts)}
         kwargs = dict(n_frames=1200)
         sess_kwargs = self._build(tmp_path, rows, **kwargs)
         common = dict(prediction_mode='bout_offset', filter_history=1.0, usv_bout_time=0.5, min_usv_per_bout=2,
@@ -1528,7 +1585,7 @@ class TestCategoryLabelRequirement:
     def test_present_column_passes(self):
         """A set column present in the summary passes silently."""
 
-        require_usv_category_column('vae_supercategory', 'x', summary_columns=['vae_supercategory'], source='s.csv')
+        require_usv_category_column('qlvm_category', 'x', summary_columns=['qlvm_category'], source='s.csv')
 
     @pytest.mark.parametrize('predictor_type, raises', [
         ('categories_rate', True), ('all_rate', True),
@@ -1544,17 +1601,17 @@ class TestCategoryLabelRequirement:
         else:
             require_labels_for_vocal_predictors(voc)
 
-    def test_shipped_vocal_defaults_use_the_qlvm_supercategory(self):
-        """The usv_summary.csv files carry the QLVM labels (qlvm_category /
-        qlvm_supercategory of the v3 regular model), so the shipped settings build the
-        per-category rate predictors over qlvm_supercategory, and the settings-level
+    def test_shipped_vocal_defaults_use_the_qlvm_category(self):
+        """The usv_summary.csv files carry the QLVM category (qlvm_category, R-1..R-k of
+        the regular map), so the shipped settings build the per-category rate
+        predictors over qlvm_category, and the settings-level
         label check passes on them; the check (and its error) still guards a summary
         that genuinely lacks the column."""
 
         with open(_SETTINGS_JSON, 'r') as fh:
             voc = json.load(fh)['vocal_features']
         assert voc['usv_predictor_type'] == 'categories_rate'
-        assert voc['usv_category_column_name'] == 'qlvm_supercategory'
+        assert voc['usv_category_column_name'] == 'qlvm_category'
         require_labels_for_vocal_predictors(voc)
         with pytest.raises(ValueError, match='absent from s.csv'):
             require_usv_category_column(voc['usv_category_column_name'], 'x', summary_columns=['qlvm1'], source='s.csv')

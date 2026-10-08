@@ -34,7 +34,11 @@ repertoire structure, or centroid-to-centroid paths):
     (``jax.jacfwd``; 2 latent inputs << spectrogram outputs). The pullback core is
     written decoder-agnostically (it takes any ``decode_fn``), so it is unit-
     testable against an analytic linear map; ``make_qlvm_decode_fn`` wires the
-    real decoder.
+    real decoder. The decoder is always the one of the map the coordinates come
+    from (``resolve_geodesic_decoder_source``: the regular, a conditional or the
+    squeak cell); a conditional decoder is evaluated at one fixed conditioning
+    value, the ``pullback_condition_quantile`` of its training corpus's
+    conditioning distribution, so ``G`` stays a function of ``z`` alone.
 
 Geometries (2) and (3) share one k-NN-graph + Dijkstra core and differ only in
 the edge-weight source (density ratio vs local G-length). All shortest paths are
@@ -54,9 +58,11 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 from scipy.stats import gaussian_kde
 
-from ..processing.qlvm_latents import load_model_cell
+from ..os_utils import QLVM_DECODER_MAPS, qlvm_map_cell_directory
+from ..processing.qlvm_latents import load_model_cell, model_decode_condition
 from ..processing.qlvm_model import decoder_forward, torus_basis_forward
 from .manifold_metric import _geodesic_distance_matrix, signed_diff
+from .modeling_utils import manifold_tag_segment
 
 _DENSITY_FLOOR = 1e-12
 
@@ -361,7 +367,7 @@ def pullback_geodesic_matrix(nodes: np.ndarray, decode_fn, *,
     return _dijkstra_from_edges(nodes.shape[0], rows, cols, weights, sources)
 
 
-def make_qlvm_decode_fn(params: dict):
+def make_qlvm_decode_fn(params: dict, condition: float = None):
     """
     Build the differentiable QLVM decode function ``z -> flattened spectrogram``.
 
@@ -370,6 +376,10 @@ def make_qlvm_decode_fn(params: dict):
     ``z (2,) -> (128*128,)`` JAX function suitable for
     :func:`pullback_metric_at_nodes`. The QLVM torus is native period 1.0, so the
     latent is reduced mod 1 before the basis (matching ``decode_lattice_atlas``).
+    A conditional decoder (``c_dim`` 1) takes its conditioning value appended to
+    the basis, exactly as ``qlvm_model.decode_shifted_lattice`` appends it; the
+    value is a constant of the function, so the Jacobian is taken with respect to
+    the torus position only.
 
     Parameters
     ----------
@@ -377,6 +387,10 @@ def make_qlvm_decode_fn(params: dict):
         Decoder weights as returned by
         ``processing.qlvm_latents.load_decoder_params`` (the ``params`` entry of
         ``processing.qlvm_latents.load_model_cell``).
+    condition : float | None, default None
+        The conditioning value of a conditional decoder (e.g.
+        ``processing.qlvm_latents.model_decode_condition``); None for an
+        unconditional decoder.
 
     Returns
     -------
@@ -384,39 +398,53 @@ def make_qlvm_decode_fn(params: dict):
         ``z (2,) -> g(z) (16384,)`` differentiable decode function.
     """
 
+    condition_row = None if condition is None else jnp.full((1, 1), float(condition), dtype=jnp.float32)
+
     def decode_fn(z: jnp.ndarray) -> jnp.ndarray:
         basis = torus_basis_forward((z % 1.0)[None, :])   # (1, 4)
+        if condition_row is not None:
+            basis = jnp.concatenate([basis, condition_row.astype(basis.dtype)], axis=-1)   # (1, 5)
         rec = decoder_forward(basis, params)              # (1, 1, 128, 128)
         return rec.reshape(-1)                            # (16384,)
 
     return decode_fn
 
 
-def make_qlvm_decode_fn_from_model_cell(model_cell_directory: str):
+def make_qlvm_decode_fn_from_model_cell(model_cell_directory: str, condition_quantile: float = None):
     """
     Description
     -----------
     Loads the decoder of one QLVM model package cell and returns its decode
     function, so the pullback metric is computed with the same decoder whose
-    torus the ``qlvm1`` / ``qlvm2`` coordinates live on (for the production
-    summaries: the v3 phase 6 regular cell
-    ``phase6_USVs_unmasked_floor/natural_5strata_N29000_unmasked_floor``). The
-    cell is read by :func:`processing.qlvm_latents.load_model_cell` (its
-    ``checkpoint.tar`` without torch, plus its training contract), and the
-    weights go through :func:`make_qlvm_decode_fn`, whose
-    ``qlvm_model.decoder_forward`` runs either decoder head (``"legacy"`` or
-    ``"relu"``) exactly as the embedding's lattice decode does.
+    torus the manifold coordinates live on (for the production summaries, the
+    cell of the coordinates' map, ``os_utils.qlvm_map_cell_directory``:
+    ``qlvm1`` / ``qlvm2`` -> ``.../masked_clean/cell/masked``,
+    ``qlvm_duration1`` / ``qlvm_duration2`` ->
+    ``.../masked_clean/conditionals/cell/duration``, ``qlvm_squeak1`` /
+    ``qlvm_squeak2`` -> the squeak cell). The cell is read by
+    :func:`processing.qlvm_latents.load_model_cell` (its ``checkpoint.tar``
+    without torch, plus its training contract), and the weights go through
+    :func:`make_qlvm_decode_fn`, whose ``qlvm_model.decoder_forward`` runs either
+    decoder head (``"legacy"`` or ``"relu"``) exactly as the embedding's lattice
+    decode does.
 
-    Only unconditional cells (``c_dim`` 0) are accepted: a conditional cell's
-    decoder takes one extra condition value per call, so ``z -> spectrogram``
-    is not a function of the torus position alone and the pullback metric is
-    undefined without fixing that value.
+    A conditional cell (``c_dim`` 1) decodes ``(z, c)``, so ``z -> spectrogram``
+    is a function of the torus position only once ``c`` is fixed: it is decoded
+    at ``processing.qlvm_latents.condition_quantile_value`` of
+    ``condition_quantile`` (the corpus quantile of the cell's own training
+    conditioning distribution, decoded by the cell's exact / grid rule), and
+    without a ``condition_quantile`` it is refused. An unconditional cell ignores
+    ``condition_quantile``.
 
     Parameters
     ----------
     model_cell_directory (str)
         Path to the package cell (routed through ``configure_path`` by
         ``load_model_cell``).
+    condition_quantile (float | None)
+        The training-corpus quantile of the conditioning value a conditional
+        cell is decoded at, in ``[0, 1]``; None (the default) refuses a
+        conditional cell.
 
     Returns
     -------
@@ -425,46 +453,129 @@ def make_qlvm_decode_fn_from_model_cell(model_cell_directory: str):
     """
 
     model = load_model_cell(model_cell_directory)
-    if model['contract']['c_dim'] != 0:
+    if model['contract']['c_dim'] != 0 and condition_quantile is None:
         error_message = (
             f"make_qlvm_decode_fn_from_model_cell: {model['model_id']} is a conditional cell "
             f"(c_dim {model['contract']['c_dim']}, condition {model['contract']['condition']!r}); the "
-            f"pullback metric needs an unconditional decoder, e.g. the phase 6 regular cell."
+            f"pullback metric needs the conditioning value fixed, so pass condition_quantile."
         )
         raise ValueError(error_message)
-    return make_qlvm_decode_fn(model['params'])
+    condition = model_decode_condition(model, condition_quantile) if model['contract']['c_dim'] else None
+    if condition is not None:
+        print(f"    [geodesic] {model['model_id']} decoded at {model['contract']['condition']['name']} "
+              f"c = {float(condition):.4f} (training-corpus quantile {float(condition_quantile):.3g})")
+    return make_qlvm_decode_fn(model['params'], condition=condition)
 
 
-def resolve_geodesic_decoder_source(geodesic_settings: dict) -> tuple[str, str] | None:
+def resolve_manifold_column_names(input_metadata: dict | None, vocal_feature_settings: dict) -> list:
     """
     Description
     -----------
-    Reads which decoder the pullback geodesic metric uses from the
-    ``vocal_features.usv_manifold_geodesic_metrics`` block: the QLVM model
-    package cell ``decoder_model_cell_directory`` (the only decoder source; the
-    legacy in-house decoder ``.npz`` is retired). An empty directory means no
-    pullback metric (``pullback_geodesic_mae`` is NaN). This is read before any
-    geometry is built, so a configuration error is not swallowed by the
-    geometry's soft-failure handling.
+    The two summary columns the manifold target ``Y`` of a modeling input pickle
+    was read from, which name the QLVM map (and so the decoder) the torus
+    geodesics work on. The pickle's own record comes first
+    (``_input_metadata.analysis_specific.usv_manifold_column_names``, written by
+    the extraction), because it describes the coordinates actually in ``Y`` even
+    if the settings were edited after the extraction; a pickle written before
+    that record existed falls back to the current
+    ``vocal_features.usv_manifold_column_names`` setting.
+
+    Parameters
+    ----------
+    input_metadata (dict | None)
+        The input pickle's ``_input_metadata`` block, or None when it has none.
+    vocal_feature_settings (dict)
+        The ``vocal_features`` settings block.
+
+    Returns
+    -------
+    manifold_column_names (list)
+        The manifold column names (e.g. ``['qlvm_duration1', 'qlvm_duration2']``).
+    """
+
+    if input_metadata is not None and 'analysis_specific' in input_metadata:
+        analysis_specific = input_metadata['analysis_specific']
+        if analysis_specific is not None and 'usv_manifold_column_names' in analysis_specific:
+            return list(analysis_specific['usv_manifold_column_names'])
+    return list(vocal_feature_settings['usv_manifold_column_names'])
+
+
+def resolve_geodesic_decoder_source(geodesic_settings: dict,
+                                    manifold_column_names: list) -> tuple[str, str, float] | None:
+    """
+    Description
+    -----------
+    Reads whether the pullback geodesic metric is computed from the
+    ``vocal_features.usv_manifold_geodesic_metrics`` block and, when it is, which
+    decoder defines it. The decoder is not a settings path: it is the production
+    cell of the map the manifold coordinates come from, the map prefix of
+    ``manifold_column_names`` (``modeling_utils.manifold_tag_segment``) resolved
+    by ``os_utils.qlvm_map_cell_directory`` (``qlvm`` ->
+    ``.../masked_clean/cell/masked``, ``qlvm_duration`` / ``qlvm_entropy`` /
+    ``qlvm_bandwidth`` / ``qlvm_loudness`` -> the conditional cells under
+    ``.../masked_clean/conditionals/cell``, ``qlvm_squeak`` -> the squeak cell).
+    A pullback metric of one map's coordinates under another map's decoder would
+    measure distances on a torus the coordinates do not live on. Taking the cell
+    from the code constants keeps the GUI / CLI experimenter re-keying of settings
+    paths from ever pointing the metric at another experimenter's folder (where no
+    cell exists).
+
+    ``pullback_metric`` (bool) switches the pullback metric: false means no
+    pullback metric (``pullback_geodesic_mae`` is NaN), the density-ratio
+    geodesic is unaffected. ``pullback_condition_quantile`` (float in ``[0, 1]``)
+    fixes the conditioning value of a conditional map's decoder: the decoder is
+    evaluated at that quantile of its training corpus's conditioning distribution
+    (``processing.qlvm_latents.condition_quantile_value``; ``0.5`` is the corpus
+    median call), the same value for every grid node, so the metric is one
+    Riemannian metric of the torus; the regular and squeak decoders take no
+    conditioning value and ignore it. This is read before any geometry is built,
+    so a configuration error (a missing key, a manifold whose columns name no QLVM
+    map) is not swallowed by the geometry's soft-failure handling.
 
     Parameters
     ----------
     geodesic_settings (dict)
-        The ``usv_manifold_geodesic_metrics`` settings block.
+        The ``usv_manifold_geodesic_metrics`` settings block; its
+        ``pullback_metric`` flag and ``pullback_condition_quantile`` are read.
+    manifold_column_names (list)
+        The manifold columns of the run (:func:`resolve_manifold_column_names`).
 
     Returns
     -------
-    source (tuple[str, str] | None)
-        ``('model_cell', <directory>)``, or None when no decoder is configured.
+    source (tuple[str, str, float] | None)
+        ``('model_cell', <cell of the map, canonical form>,
+        <pullback_condition_quantile>)``, or None when ``pullback_metric`` is
+        false.
+
+    Raises
+    ------
+    ValueError
+        ``pullback_metric`` is on, but the manifold columns name no map of
+        ``os_utils.QLVM_DECODER_MAPS`` (no decoder defines their torus), or
+        ``pullback_condition_quantile`` is outside ``[0, 1]``.
     """
 
-    cell_directory = geodesic_settings['decoder_model_cell_directory']
-    if cell_directory:
-        return 'model_cell', cell_directory
-    return None
+    if not geodesic_settings['pullback_metric']:
+        return None
+    condition_quantile = float(geodesic_settings['pullback_condition_quantile'])
+    if not 0.0 <= condition_quantile <= 1.0:
+        error_message = (
+            f"usv_manifold_geodesic_metrics.pullback_condition_quantile must be in [0, 1], "
+            f"got {condition_quantile!r}."
+        )
+        raise ValueError(error_message)
+    qlvm_map = manifold_tag_segment(list(manifold_column_names))
+    if qlvm_map not in QLVM_DECODER_MAPS:
+        error_message = (
+            f"usv_manifold_geodesic_metrics.pullback_metric is on, but the manifold columns "
+            f"{list(manifold_column_names)} name the map {qlvm_map!r}, which has no decoder (one of "
+            f"{QLVM_DECODER_MAPS}); switch pullback_metric off for this manifold."
+        )
+        raise ValueError(error_message)
+    return 'model_cell', qlvm_map_cell_directory(qlvm_map), condition_quantile
 
 
-def make_qlvm_decode_fn_from_source(source: tuple[str, str]):
+def make_qlvm_decode_fn_from_source(source: tuple[str, str, float]):
     """
     Description
     -----------
@@ -473,8 +584,10 @@ def make_qlvm_decode_fn_from_source(source: tuple[str, str]):
 
     Parameters
     ----------
-    source (tuple[str, str])
-        ``('model_cell', <directory>)``.
+    source (tuple[str, str, float])
+        ``('model_cell', <directory>, <condition quantile>)``; the quantile fixes
+        the conditioning value of a conditional cell and is ignored by an
+        unconditional one.
 
     Returns
     -------
@@ -482,9 +595,9 @@ def make_qlvm_decode_fn_from_source(source: tuple[str, str]):
         ``z (2,) -> g(z) (16384,)`` differentiable decode function.
     """
 
-    kind, location = source
+    kind, location, condition_quantile = source
     if kind == 'model_cell':
-        return make_qlvm_decode_fn_from_model_cell(location)
+        return make_qlvm_decode_fn_from_model_cell(location, condition_quantile=condition_quantile)
     error_message = f"make_qlvm_decode_fn_from_source: unknown decoder source kind {kind!r}."
     raise ValueError(error_message)
 

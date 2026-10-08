@@ -8,13 +8,16 @@ Naturalistic playback should use real vocalizations played in their natural sequ
 effort -- the repository builder. For every assigned USV in a courtship session it
 reconstructs clean audio (recompute the complex STFT of the raw ``hpss_filtered``
 segment, apply the stored SAM mask with true phase kept, inverse-STFT), segments the
-emitter's USVs into natural bouts, and writes -- per sex -- a single timestamped H5
+emitter's USVs into natural bouts (noise-flagged segments are dropped before the
+bouts are segmented, so they neither enter the repository nor break bouts), and writes -- per sex -- a single timestamped H5
 containing the concatenated int16 audio plus the per-USV and per-bout metadata a
 playback function needs to replay real sequences with real timing.
 
-Only courtship (male-female) sessions are used, because the male/female mapping
-(``track_names[0]``/``[1]``) is a positional convention that is only reliable there
-(same-sex sessions would mislabel sex). Bouts are segmented by the same inter-bout
+A courtship build keeps the USVs attributed to the target sex's animal. That animal is
+found through the session metadata (``yaml_utils.extract_animal_sexes``: the ``Subjects``
+whose ``subject_id`` matches a track name), never through the slot its track occupies, and
+a courtship session whose metadata does not name exactly one animal of the target sex is
+skipped with a log line rather than read by position. Bouts are segmented by the same inter-bout
 interval (IBI) rule the modeling layer uses. All gaps stored are the REAL recorded
 values: within-bout inter-USV gaps and the real pause preceding each bout.
 
@@ -39,10 +42,10 @@ from click.core import ParameterSource
 from scipy.ndimage import binary_dilation, gaussian_filter
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import first_match_or_raise, resolve_experimenter_path
+from ..os_utils import drop_noise_usvs, find_audio_mmap, first_match_or_raise, resolve_experimenter_path
 from ..processing.build_qlvm_training_set import build_session_masks
 from ..time_utils import is_gui_context, smart_wait
-from ._usv_io import extract_session_metadata
+from ._usv_io import extract_animal_sexes, extract_session_metadata, sex_track_ids
 from .compute_inter_usv_interval_distributions import _read_session_lists
 
 _INT16_INFO = np.iinfo(np.int16)
@@ -306,7 +309,12 @@ class NaturalisticUsvRepositoryBuilder:
         USVs to keep (a courtship build keeps only the target sex's attributed emitter, while
         same-sex / lone / mixed builds keep every USV without attribution), the output
         directory (the target sex's, or the mixed dir), and the filename context token. For
-        each session root it segments the selected USVs into natural bouts, reconstructs
+        each session root it first drops the segments the noise classifier flagged
+        (``os_utils.drop_noise_usvs``; the count is logged through ``message_output``, and a
+        summary without the ``noise`` column raises, so that session is skipped and logged),
+        so noise neither enters the repository nor bridges or splits a bout; squeak and
+        squeak+USV segments are not filtered here. It then segments the selected USVs into
+        natural bouts, reconstructs
         every USV of each complete bout, and accumulates audio + per-USV/per-bout metadata;
         after all sessions it writes one timestamped H5 that also records the input session
         lists as provenance. A session that cannot be read is skipped and logged so a large
@@ -374,11 +382,9 @@ class NaturalisticUsvRepositoryBuilder:
         for root_directory in root_directories:
             root = pathlib.Path(root_directory)
             try:
-                audio_file_loc = first_match_or_raise(
-                    root=root / "audio" / "hpss_filtered",
-                    pattern="*.mmap",
-                    label="concatenated audio mmap",
-                )
+                # The 30 kHz high-passed ('ultrasonic' band) memmap the spectrograms and
+                # masks were built from (exact folder, exact name, exactly one).
+                audio_file_loc = find_audio_mmap(root_directory=root, band="ultrasonic")
 
                 usv_summary_loc = first_match_or_raise(
                     root=root / "audio",
@@ -409,22 +415,54 @@ class NaturalisticUsvRepositoryBuilder:
                     filename=audio_file_loc, mode="r", dtype=data_type, shape=(sample_num, channel_num)
                 )
 
-                usv_summary_df = pls.read_csv(source=str(usv_summary_loc))
+                usv_summary_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
                 starts_all = usv_summary_df["start"].to_numpy()
                 stops_all = usv_summary_df["stop"].to_numpy()
+
+                # Segments the noise classifier flagged (os_utils.drop_noise_usvs, the one
+                # shared definition) are dropped BEFORE bouts are segmented, so a noise row
+                # neither enters the repository nor bridges / splits a bout. The summary
+                # itself stays unfiltered: its row numbers index the spectrogram H5
+                # (durations, masks) and are stored as each USV's ``usv_row``.
+                not_noise_rows = drop_noise_usvs(
+                    usv_summary_df.with_row_index(name="summary_row"),
+                    usv_summary_loc.name,
+                    message_output=self.message_output,
+                )[0]["summary_row"].to_numpy().astype(np.int64)
+                is_not_noise = np.zeros(len(starts_all), dtype=bool)
+                is_not_noise[not_noise_rows] = True
 
                 with h5py.File(str(h5_loc), "r") as h5_file:
                     session_id = next(iter(h5_file["spectrogram"].keys()))
                     durations = h5_file[f"spectrogram/{session_id}"]["durations"][:]
+                    # Summary rows index the H5 rows (durations, masks) and are stored as
+                    # usv_row, so a summary re-curated after the spectrograms were made would
+                    # attach every mask to the wrong call; such a session is skipped and logged.
+                    if durations.size != usv_summary_df.height:
+                        error_message = (
+                            f"{usv_summary_loc.name} has {usv_summary_df.height} rows but {h5_loc.name} holds "
+                            f"{durations.size} spectrograms; re-run generate-usv-spectrograms and generate-usv-masks."
+                        )
+                        raise ValueError(error_message)
 
                     # Select this build's USV rows: a courtship build keeps only the target
                     # sex's attributed emitter; same-sex / lone / mixed builds keep every
                     # USV (no attribution) labelled by the build's sex.
                     if emitter_mode == "emitter":
-                        # Courtship: the two animals differ in sex; read the target sex's
-                        # track id and keep only USVs attributed to it.
+                        # Courtship: the two animals differ in sex; the target sex's track
+                        # is the one the session metadata records with that sex (never the
+                        # track slot), and only USVs attributed to it are kept.
                         metadata = extract_session_metadata(str(root))
-                        stored_emitter = _normalize_emitter(metadata[f'{target_sex}_id'])
+                        animal_sex = extract_animal_sexes(str(root), metadata['track_names'])
+                        male_track, female_track = sex_track_ids(animal_sex)
+                        target_track = male_track if target_sex == "male" else female_track
+                        if target_track is None:
+                            error_message = (
+                                f"the session metadata does not name exactly one {target_sex} among "
+                                f"the tracks {animal_sex}; a courtship build needs one."
+                            )
+                            raise ValueError(error_message)
+                        stored_emitter = _normalize_emitter(target_track)
                         emitters_all = [_normalize_emitter(e) for e in usv_summary_df["emitter"].to_list()]
                         emitter_rows = np.array(
                             [r for r in range(len(emitters_all)) if emitters_all[r] == stored_emitter],
@@ -434,7 +472,14 @@ class NaturalisticUsvRepositoryBuilder:
                         # Same-sex / lone / mixed: no attribution; keep every USV.
                         stored_emitter = target_sex if target_sex is not None else "mixed"
                         emitter_rows = np.arange(len(starts_all), dtype=np.int64)
+                    emitter_rows = emitter_rows[is_not_noise[emitter_rows]]
                     if emitter_rows.size == 0:
+                        # the message names the session only: the target animal and its sex come from the
+                        # session metadata's subject records, which are not written to logs
+                        self.message_output(
+                            f"Skipping {root.name}: no non-noise USV is attributed to the target animal "
+                            f"(an empty emitter column means vcl-assign has not run since the last das-summarize)."
+                        )
                         continue
 
                     order = np.argsort(starts_all[emitter_rows], kind="stable")
@@ -605,7 +650,7 @@ class NaturalisticUsvRepositoryBuilder:
             prev_bout_last_stop = float(bout_stops[-1])
 
         if dropped:
-            self.message_output(f"{session_id} [{sex}]: dropped {dropped} incomplete bout(s).")
+            self.message_output(f"{session_id}: dropped {dropped} incomplete bout(s).")
 
     def _write_repository(self, acc, sex, context_token, context_label, output_dir, timestamp,
                           ibi_z_score, ibi_component_index, session_lists, root_directories) -> None:

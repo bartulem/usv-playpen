@@ -105,9 +105,9 @@ def derive_cluster_centers_empirically(Y: np.ndarray,
         so the quantisation floor on the centre is `range / grid_resolution`.
     kde_bandwidth : float or str or None, default None
         Forwarded to `scipy.stats.gaussian_kde`'s `bw_method`. `None`
-        selects Scott's rule. To reproduce the QLVM watershed pipeline's
-        seeding, pass `0.8` (matches the `params_bandwidth` attribute on
-        the precomputed QLVM cluster H5).
+        selects Scott's rule; a float fixes the bandwidth factor (e.g.
+        `0.8`, the value the retired pre-category-bundle QLVM cluster H5
+        recorded as `params_bandwidth`).
     metric : str, default 'euclidean'
         `'euclidean'` for flat-plane manifolds or `'torus'` for
         periodic ones (e.g. the QLVM torus). Controls the

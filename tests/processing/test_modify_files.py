@@ -14,6 +14,10 @@ methods without performing heavy real I/O:
 (3) rectify_video_fps - the `conduct_concat=False` copy-from-camera-subdir
     path, the metadata session_duration write, and the calibration-camera
     move/cleanup branch, with imgstore + ffmpeg invocation mocked out.
+(4) broadband_filter_audio - line-noise tone removal, the 2 kHz linear-phase
+    high-pass response, memmap column order, chunk-length independence,
+    idempotency / revalidation, and the batch runner, on small synthetic
+    250 kHz sessions.
 
 All external heavy tools (imgstore frame reads, ffmpeg) are mocked; only the
 bundled `static_sox`/`cat`/`copy` real binaries are exercised where they are
@@ -28,10 +32,24 @@ import pathlib
 
 import numpy as np
 import pytest
+from scipy import signal
 from scipy.io import wavfile
 
 import usv_playpen
-from usv_playpen.processing.modify_files import Operator
+from usv_playpen.os_utils import find_audio_mmap
+from usv_playpen.processing.modify_files import (
+    BROADBAND_BATCH_REPORT_COLUMNS,
+    BROADBAND_REPORT_NAME,
+    Operator,
+    block_mean_phasors,
+    broadband_filter_sessions,
+    broadband_highpass_cutoff,
+    broadband_output_settings,
+    design_broadband_highpass,
+    estimate_line_noise,
+    read_broadband_session_list,
+    unit_phasor,
+)
 
 
 @pytest.fixture
@@ -728,3 +746,461 @@ def test_rectify_video_fps_no_concat_copies_and_handles_calibration(tmp_path, pr
 
     # camera frame count JSON written for the session.
     assert (video_dir / f"{date_joint}_camera_frame_count_dict.json").is_file()
+
+
+_BB_SR = 250000
+_BB_SECONDS = 6.0
+_BB_TONES = {0: (8000.17, 200.0), 1: (8000.67, 100.0)}
+
+
+def _broadband_settings(processing_settings, chunk_s=2.0):
+    """
+    Description
+    -----------
+    Shrinks the broadband settings to a 6 s synthetic session: three 2 s
+    line-noise estimation windows and one thread, the rest as shipped.
+
+    Parameters
+    ----------
+    processing_settings (dict)
+        Package processing-settings fixture (mutated in place).
+    chunk_s (float)
+        Processing chunk length (s).
+
+    Returns
+    -------
+    settings (dict)
+        The mutated ``broadband_filter_audio`` block.
+    """
+
+    settings = processing_settings['modify_files']['Operator']['broadband_filter_audio']
+    settings['line_noise_estimation_windows'] = 3
+    settings['line_noise_estimation_window_s'] = 2.0
+    settings['chunk_s'] = chunk_s
+    settings['n_threads'] = 1
+    return settings
+
+
+def _write_broadband_session(root):
+    """
+    Description
+    -----------
+    Writes three full-band HPSS wavs (``audio/hpss/[ms]_230101120000_chNN_cropped_to_video_hpss.wav``,
+    250 kHz, 6 s) plus a stray empty ``output.wav``. Every channel carries white
+    noise (sd 300) and a 500 Hz sine (amplitude 3000, below the high-pass);
+    master channel 1 adds an 8000.17 Hz line (amplitude 200), master channel 2 an
+    8000.67 Hz line (amplitude 100), and slave channel 1 a 30 kHz marker tone
+    (amplitude 1000) that only its own memmap column may contain.
+
+    Parameters
+    ----------
+    root (pathlib.Path)
+        Session root.
+
+    Returns
+    -------
+    signals (list of np.ndarray)
+        The int16 channel signals, in sorted file-name (memmap column) order.
+    """
+
+    hpss_dir = root / "audio" / "hpss"
+    hpss_dir.mkdir(parents=True)
+    n_samples = int(_BB_SECONDS * _BB_SR)
+    t = np.arange(n_samples) / _BB_SR
+    rng = np.random.default_rng(7)
+    names = ["m_230101120000_ch01_cropped_to_video_hpss.wav", "m_230101120000_ch02_cropped_to_video_hpss.wav",
+             "s_230101120000_ch01_cropped_to_video_hpss.wav"]
+    signals = []
+    for column, name in enumerate(names):
+        x = rng.normal(0.0, 300.0, n_samples) + 3000.0 * np.sin(2 * np.pi * 500.0 * t)
+        if column in _BB_TONES:
+            frequency, amplitude = _BB_TONES[column]
+            x += amplitude * np.cos(2 * np.pi * frequency * t + 0.3 * column)
+        if column == 2:
+            x += 1000.0 * np.sin(2 * np.pi * 30000.0 * t)
+        x = np.clip(np.rint(x), -32768, 32767).astype(np.int16)
+        wavfile.write(hpss_dir / name, _BB_SR, x)
+        signals.append(x)
+    (hpss_dir / "output.wav").write_bytes(b"")
+    return signals
+
+
+def _tone_amplitude(x, frequency):
+    """
+    Description
+    -----------
+    Amplitude of a tone of known frequency in a signal (complex demodulation
+    over the whole signal).
+
+    Parameters
+    ----------
+    x (np.ndarray)
+        Signal.
+    frequency (float)
+        Tone frequency (Hz).
+
+    Returns
+    -------
+    amplitude (float)
+        Estimated peak amplitude.
+    """
+
+    return float(2 * np.abs(block_mean_phasors(np.asarray(x, dtype=np.float64), frequency, _BB_SR, 0, x.shape[0])[0]))
+
+
+def _read_broadband(root):
+    """
+    Description
+    -----------
+    Opens the session's broadband memmap through the exact-one lookup.
+
+    Parameters
+    ----------
+    root (pathlib.Path)
+        Session root.
+
+    Returns
+    -------
+    audio (np.ndarray)
+        ``(n_samples, n_channels)`` int16 copy of the memmap.
+    """
+
+    path = find_audio_mmap(root, "broadband")
+    n_samples, n_channels = (int(token) for token in path.name.split("_")[-3:-1])
+    return np.array(np.memmap(path, dtype=np.int16, mode="r", shape=(n_samples, n_channels)))
+
+
+def test_broadband_highpass_cutoff_reads_the_upper_edge_of_the_removed_band(processing_settings):
+    """
+    The broadband block's ``filter_freq_bounds`` follows the ``filter_audio_files``
+    convention (the band between the two bounds is removed): the shipped
+    ``[0, 2000]`` is the 2 kHz high-pass, whose -6 dB point is the upper edge.
+    """
+    settings = processing_settings['modify_files']['Operator']['broadband_filter_audio']
+    assert settings['filter_freq_bounds'] == [0, 2000]
+    assert broadband_highpass_cutoff(settings) == 2000.0
+
+
+@pytest.mark.parametrize("bounds", [[500, 2000], [0, 0], [0, -10], [2000]])
+def test_broadband_highpass_cutoff_rejects_bounds_that_are_not_a_highpass(bounds):
+    """
+    The broadband filter is a high-pass only: a nonzero lower bound (a
+    band-stop), a non-positive upper bound or a wrong length must raise rather
+    than silently filter something else.
+    """
+    with pytest.raises(ValueError, match="filter_freq_bounds"):
+        broadband_highpass_cutoff({'filter_freq_bounds': bounds})
+
+
+def test_broadband_output_settings_record_the_cutoff_as_one_number(processing_settings):
+    """
+    The settings stored in line_noise.json (and compared to decide whether an
+    output is current) hold the cutoff as ``highpass_cutoff_hz``, the upper
+    edge of ``filter_freq_bounds``, and not the bounds themselves: that is the
+    form of every report written before the bounds setting existed, so those
+    outputs stay current while the filter is unchanged.
+    """
+    settings = processing_settings['modify_files']['Operator']['broadband_filter_audio']
+    recorded = broadband_output_settings(settings)
+    assert recorded['highpass_cutoff_hz'] == 2000
+    assert 'filter_freq_bounds' not in recorded
+    changed = dict(settings, filter_freq_bounds=[0, 3000])
+    assert broadband_output_settings(changed)['highpass_cutoff_hz'] == 3000
+    assert broadband_output_settings(changed) != recorded
+
+
+def test_design_broadband_highpass_matches_sox_sinc_t1000_2k():
+    """
+    Description
+    -----------
+    The FIR equivalent of sox ``sinc -t 1000 2k`` at 250 kHz: odd length,
+    symmetric (linear phase), -6 dB at 2 kHz, >= 100 dB down at and below
+    1.5 kHz, within 0.01 dB of unity from 2.5 kHz up.
+
+    Returns
+    -------
+    None
+    """
+
+    taps, kaiser_beta = design_broadband_highpass(_BB_SR, 2000, 1000, 120)
+    assert taps.shape[0] % 2 == 1
+    np.testing.assert_allclose(taps, taps[::-1], atol=1e-15)
+    assert kaiser_beta > 10
+    _, response = signal.freqz(taps, worN=np.array([500.0, 1000.0, 1500.0, 2000.0, 2500.0, 3000.0, 30000.0, 100000.0]), fs=_BB_SR)
+    gains = 20 * np.log10(np.abs(response))
+    assert np.all(gains[:3] <= -100)
+    assert abs(gains[3] + 6.02) < 0.05
+    assert np.all(np.abs(gains[4:]) < 0.01)
+
+
+def test_unit_phasor_matches_direct_exponential_at_large_offsets():
+    """
+    Description
+    -----------
+    The outer-product phasor equals the direct complex exponential, also at
+    absolute sample indices of a 20 min recording.
+
+    Returns
+    -------
+    None
+    """
+
+    start = 299_000_000
+    n = np.arange(start, start + 5000, dtype=np.float64)
+    direct = np.exp(2j * np.pi * np.mod(8000.17 / _BB_SR * n, 1.0))
+    np.testing.assert_allclose(unit_phasor(8000.17, _BB_SR, start, 5000), direct, atol=1e-9)
+
+
+def test_estimate_line_noise_finds_comb_and_doublet_on_a_sloping_floor(tmp_path):
+    """
+    Description
+    -----------
+    In one search band the estimator keeps every line of a comb, including a
+    doublet 0.26 Hz apart (2090.05 / 2090.31 Hz plus 2150.00 Hz), at the right
+    frequencies, on a background that drops by ~80 dB inside the band (noise
+    low-passed at 2125 Hz with a steep elliptic filter), and keeps no band-edge
+    or slope artefact.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test directory.
+
+    Returns
+    -------
+    None
+    """
+
+    n_samples = 32 * _BB_SR
+    t = np.arange(n_samples) / _BB_SR
+    rng = np.random.default_rng(3)
+    steep = signal.ellip(8, 0.1, 80, 2125.0, btype="lowpass", fs=_BB_SR, output="sos")
+    x = signal.sosfilt(steep, rng.normal(0.0, 2000.0, n_samples)) + rng.normal(0.0, 2.0, n_samples)
+    for frequency in (2090.05, 2090.31, 2150.00):
+        x += 30.0 * np.cos(2 * np.pi * frequency * t)
+    path = tmp_path / "m_230101120000_ch01_cropped_to_video_hpss.wav"
+    wavfile.write(path, _BB_SR, np.clip(np.rint(x), -32768, 32767).astype(np.int16))
+
+    tones = estimate_line_noise(wav_path=path, search_bands_hz=[[2080, 2165]], min_height_db=8.0, n_windows=3, window_s=10.0,
+                                max_tones_per_band=6, min_separation_hz=0.25, floor_window_hz=4.0)
+    kept = sorted(tone['frequency_hz'] for tone in tones if tone['kept'])
+    assert len(kept) == 3, tones
+    np.testing.assert_allclose(kept, [2090.05, 2090.31, 2150.00], atol=0.02)
+
+
+def test_broadband_filter_removes_tones_highpasses_and_keeps_column_order(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    On a synthetic session: the memmap lands at the exact broadband path with
+    columns in sorted wav order (the 30 kHz marker of slave channel 1 is only in
+    column 2, at unchanged amplitude); the per-device 8 kHz lines are found on
+    their own channels at their own frequencies and removed (residual < 5 % of
+    the line), and no line is kept on the channel without one; the 500 Hz sine
+    is removed by the high-pass; the stray empty ``output.wav`` is ignored; and
+    the line-free channel equals the input convolved with the FIR within 1 LSB.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    _broadband_settings(processing_settings)
+    signals = _write_broadband_session(tmp_path)
+    messages = []
+    summary = _make_operator(str(tmp_path), processing_settings, messages).broadband_filter_audio()
+
+    assert summary['status'] == 'written'
+    n_samples = signals[0].shape[0]
+    expected = tmp_path / "audio" / "broadband_filtered" / f"230101120000_concatenated_audio_broadband_filtered_{_BB_SR}_{n_samples}_3_int16.mmap"
+    assert find_audio_mmap(tmp_path, "broadband") == expected
+    output = _read_broadband(tmp_path)
+
+    with open(tmp_path / "audio" / "broadband_filtered" / BROADBAND_REPORT_NAME, encoding="utf-8") as report_file:
+        report = json.load(report_file)
+    assert report['complete'] is True
+    assert [source['file'] for source in report['sources']] == [
+        "m_230101120000_ch01_cropped_to_video_hpss.wav", "m_230101120000_ch02_cropped_to_video_hpss.wav",
+        "s_230101120000_ch01_cropped_to_video_hpss.wav"]
+    for column, (frequency, amplitude) in _BB_TONES.items():
+        line = report['line_noise']['channels'][column]['tones'][0]
+        assert line['kept'] is True
+        assert abs(line['frequency_hz'] - frequency) < 0.02
+        assert abs(line['amplitude_median_lsb'] - amplitude) / amplitude < 0.1
+        assert _tone_amplitude(signals[column], frequency) > 0.9 * amplitude
+        assert _tone_amplitude(output[:, column], frequency) < 0.05 * amplitude
+    assert report['line_noise']['channels'][2]['tones'][0]['kept'] is False
+
+    for column in range(3):
+        assert _tone_amplitude(output[:, column], 500.0) < 1.0
+    assert abs(_tone_amplitude(output[:, 2], 30000.0) - 1000.0) < 10.0
+    assert _tone_amplitude(output[:, 0], 30000.0) < 5.0
+    assert _tone_amplitude(output[:, 1], 30000.0) < 5.0
+
+    taps, _ = design_broadband_highpass(_BB_SR, 2000, 1000, 120)
+    reference = np.convolve(signals[2].astype(np.float64), taps, mode="same")
+    assert np.max(np.abs(output[:, 2].astype(np.float64) - reference)) <= 1.0
+
+
+def test_broadband_filter_is_independent_of_chunk_length(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    The output does not depend on the processing chunk length (block grid,
+    median windows and FIR are all on absolute sample indices): 0.37 s and 2 s
+    chunks agree within 1 LSB (FFT-convolution rounding only).
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test directory (two session roots).
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    outputs = []
+    for chunk_s in (0.37, 2.0):
+        root = tmp_path / f"chunk_{chunk_s}"
+        _write_broadband_session(root)
+        _broadband_settings(processing_settings, chunk_s=chunk_s)
+        _make_operator(str(root), processing_settings, []).broadband_filter_audio()
+        outputs.append(_read_broadband(root).astype(np.int32))
+    assert np.max(np.abs(outputs[0] - outputs[1])) <= 1
+
+
+def test_broadband_filter_is_idempotent_and_revalidates(tmp_path, processing_settings, mocker):
+    """
+    Description
+    -----------
+    A second run on a complete, current output is skipped without touching the
+    memmap; a stale temporary of an interrupted run is removed; changing an
+    output-defining setting, or deleting the report, makes the next run rewrite
+    the memmap; the exactly-one broadband lookup holds throughout.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive ``smart_wait``.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    settings = _broadband_settings(processing_settings)
+    _write_broadband_session(tmp_path)
+    first = _make_operator(str(tmp_path), processing_settings, []).broadband_filter_audio()
+    mmap_path = find_audio_mmap(tmp_path, "broadband")
+    first_mtime = mmap_path.stat().st_mtime_ns
+
+    second = _make_operator(str(tmp_path), processing_settings, []).broadband_filter_audio()
+    assert first['status'] == 'written'
+    assert second['status'] == 'skipped'
+    assert mmap_path.stat().st_mtime_ns == first_mtime
+
+    stale = mmap_path.parent / f".{mmap_path.name}.tmp-99999"
+    stale.write_bytes(b"partial")
+    settings['line_noise_min_height_db'] = 7.0
+    third = _make_operator(str(tmp_path), processing_settings, []).broadband_filter_audio()
+    assert third['status'] == 'written'
+    assert third['reason'] == 'settings changed'
+    assert not stale.exists()
+    assert find_audio_mmap(tmp_path, "broadband") == mmap_path
+
+    (mmap_path.parent / BROADBAND_REPORT_NAME).unlink()
+    fourth = _make_operator(str(tmp_path), processing_settings, []).broadband_filter_audio()
+    assert fourth['status'] == 'written'
+    assert (mmap_path.parent / BROADBAND_REPORT_NAME).is_file()
+
+
+def test_broadband_batch_runner_reports_and_resumes(tmp_path, processing_settings):
+    """
+    Description
+    -----------
+    The batch runner processes every listed session (one of them missing its
+    wavs, which must fail without stopping the batch), appends one report row
+    per session under the documented header, logs, and on a second run skips
+    the already written session.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test directory.
+    processing_settings (dict)
+        Package processing-settings fixture.
+
+    Returns
+    -------
+    None
+    """
+
+    _broadband_settings(processing_settings)
+    good = tmp_path / "good"
+    _write_broadband_session(good)
+    bad = tmp_path / "bad"
+    (bad / "audio" / "hpss").mkdir(parents=True)
+    sessions_file = tmp_path / "sessions.txt"
+    sessions_file.write_text(f"# backfill\n{good}\n\n{bad}\n{good}\n")
+    session_roots = read_broadband_session_list(sessions_file=str(sessions_file))
+    assert session_roots == [str(good), str(bad)]
+
+    log_path = tmp_path / "logs" / "batch.log"
+    report_path = tmp_path / "logs" / "report.csv"
+    rows = broadband_filter_sessions(session_roots, processing_settings, n_workers=2, log_path=str(log_path),
+                                     report_csv_path=str(report_path), message_output=lambda *_args: None)
+    status = {row['session_root']: row['status'] for row in rows}
+    assert status == {str(good): 'written', str(bad): 'failed'}
+    rows_again = broadband_filter_sessions([str(good)], processing_settings, n_workers=1, log_path=str(log_path),
+                                           report_csv_path=str(report_path), message_output=lambda *_args: None)
+    assert rows_again[0]['status'] == 'skipped'
+    with open(report_path, encoding="utf-8") as report_file:
+        lines = report_file.read().splitlines()
+    assert lines[0] == ",".join(BROADBAND_BATCH_REPORT_COLUMNS)
+    assert len(lines) == 4
+    assert "FAILED" in log_path.read_text()
+
+
+def test_read_broadband_session_list_from_usv_counts_table(tmp_path):
+    """
+    Description
+    -----------
+    From a session table only the rows with the requested tag are kept, in
+    order.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test directory.
+
+    Returns
+    -------
+    None
+    """
+
+    table = tmp_path / "session_usv_counts.csv"
+    table.write_text(f"session_id,dir,n_usv,tag\na,{tmp_path / 'a'},3,ok\nb,{tmp_path / 'b'},0,playback\nc,{tmp_path / 'c'},9,ok\n")
+    assert read_broadband_session_list(usv_counts_csv=str(table)) == [str(tmp_path / 'a'), str(tmp_path / 'c')]
+    with pytest.raises(ValueError, match="exactly one"):
+        read_broadband_session_list()

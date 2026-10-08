@@ -30,7 +30,6 @@ from click.testing import CliRunner
 
 from usv_playpen.analyses.usv_interval_archive import _h5_to_polars
 from usv_playpen.os_utils import (
-    QLVM_PRODUCTION_MODEL_CELLS,
     configure_path,
     resolve_consolidated_h5_path,
 )
@@ -39,6 +38,7 @@ from usv_playpen.processing.build_qlvm_training_set import file_sha256
 from usv_playpen.visualizations.qlvm_torus_traversal_video import pool_latents_from_h5
 
 SESSIONS = ("20260101_120000", "20260102_120000")
+QLVM_PRODUCTION_MODEL_CELLS = css.V3_MODEL_CELLS
 PREFIXES = tuple(QLVM_PRODUCTION_MODEL_CELLS)
 # Five calls per session: durations and SAM-mask counts give statuses 0, 1, 2, 3, 0.
 DURATIONS = np.array([10, 200, 10, 200, 10], dtype=np.int64)
@@ -257,11 +257,12 @@ def test_session_outside_the_package_corpus_is_refused(tmp_path, mocker, corpus)
 
 
 def test_missing_qlvm_columns_are_refused(tmp_path, mocker, corpus):
-    """A summary without the production QLVM columns refuses the build, listing them."""
+    """A summary without a v3 coordinate column refuses the build, listing it (label
+    columns are not required: infer-qlvm-latents writes none by default)."""
     roots, package = corpus
     summary_path = roots[0] / "audio" / f"{SESSIONS[0]}_usv_summary.csv"
     pls.read_csv(summary_path).drop("qlvm_bw1", "qlvm_loud_category", "qlvm_loud_supercategory").write_csv(summary_path)
-    with pytest.raises(ValueError, match=r"lacks the QLVM column\(s\) \['qlvm_bw1', 'qlvm_loud_category', 'qlvm_loud_supercategory'\]"):
+    with pytest.raises(ValueError, match=r"lacks the QLVM column\(s\) \['qlvm_bw1'\]"):
         _consolidate(tmp_path, roots, package, mocker)
     assert list((tmp_path / "store").iterdir()) == []
 

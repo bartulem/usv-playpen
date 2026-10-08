@@ -225,7 +225,7 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
     """
     Generates training indices that uniformly sample the 2D continuous acoustic manifold.
 
-    The UMAP projection of vocalizations typically features an overwhelmingly dense
+    The acoustic manifold of vocalizations typically features an overwhelmingly dense
     central core and sparse "satellite" clusters. Standard random mini-batching
     would cause the network to exclusively optimize for the dense core, entirely
     ignoring rare vocal states. This function imposes spatial fairness.
@@ -243,7 +243,7 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
     Parameters
     ----------
     Y_vals : np.ndarray
-        A 2D array of shape (N, 2) containing the continuous UMAP targets.
+        A 2D array of shape (N, 2) containing the continuous manifold targets.
     grid_size : int, default 25
         The number of bins to divide both the X and Y spatial axes into.
     base_samples : int, default 40
@@ -300,7 +300,7 @@ def get_grid_balanced_indices(Y_vals: np.ndarray, grid_size: int = 25,
 
 # Number of manifold axes the CNN regresses. The whole pipeline (Y,
 # Y_center, Y_scale, fold metrics, saliency centroids) is hard-coded
-# around two-axis manifolds (`(umap1, umap2)`), but pulling the value
+# around two-axis manifolds (`(qlvm1, qlvm2)`), but pulling the value
 # through a single helper keeps the output-head plumbing explicit and
 # leaves a single place to revisit if a future modality ever ships a
 # D != 2 manifold.
@@ -308,7 +308,7 @@ def _output_axes_count(hp: Dict[str, Any]) -> int:
     """
     Returns the number of manifold axes the CNN predicts. The CNN
     pipeline assumes a 2-D acoustic manifold (e.g. `qlvm{1,2}` /
-    `qlvm_dur{1,2}`); this helper centralises that constant so the
+    `qlvm_duration{1,2}`); this helper centralises that constant so the
     output-head sizing logic doesn't sprinkle bare `2`s through
     `init_cnn_params_and_state`, `cnn_forward`, and the loss block.
 
@@ -934,7 +934,7 @@ class NeuralContinuousCNNRunner:
         groups : np.ndarray
             Array of session IDs.
         Y : np.ndarray
-            Array of shape `(N, 2)` containing continuous UMAP coordinates.
+            Array of shape `(N, 2)` containing continuous manifold coordinates.
         split_strategy : str, default 'session'
             `'session'` (whole-session holdout) or `'mixed'` (epoch-level
             stratified shuffling).
@@ -992,7 +992,7 @@ class NeuralContinuousCNNRunner:
         data_blocks : dict
             A dictionary configured for the JAX engine, containing:
             - 'X_seq': (Batch, Features, Bins) array of stacked kinematic sequences.
-            - 'Y': (Batch, 2) array of continuous UMAP coordinates.
+            - 'Y': (Batch, 2) array of continuous manifold coordinates.
             - 'w': (Batch, ) array of KDE inverse-density sample weights.
             - 'groups': (Batch, ) array of session IDs.
             - 'features': Sorted list of the kinematic feature names.
@@ -1013,7 +1013,7 @@ class NeuralContinuousCNNRunner:
         num_frames = self.history_frames
 
         X_seq_list, Y_list, w_list, groups_list = [], [], [], []
-        super_list, cat_list = [], []
+        cat_list = []
         sessions = sorted(list(raw_data[features[0]].keys()))
 
         for sess in sessions:
@@ -1035,13 +1035,11 @@ class NeuralContinuousCNNRunner:
             w_list.append(w_sess)
             groups_list.append(np.full(len(Y_sess), sess))
 
-            # Optional per-USV cluster labels (supercategory + category).
-            # Persisted by the extract-pipeline when the source USV CSV
-            # carried them; absent on legacy pickles built before that
-            # change shipped, in which case the saliency phase will raise
-            # a clear "re-extract with the updated pipeline" message.
-            if 'supercategory' in sess_dict:
-                super_list.append(sess_dict['supercategory'])
+            # Optional per-USV category labels (the regular map's
+            # qlvm_category, whatever map the manifold target is drawn
+            # from). Persisted by the extract-pipeline when the
+            # source USV CSV carried them; absent otherwise, in which case
+            # the saliency phase raises a clear "re-extract" message.
             if 'category' in sess_dict:
                 cat_list.append(sess_dict['category'])
 
@@ -1064,8 +1062,6 @@ class NeuralContinuousCNNRunner:
         }
         # Surface labels only when every session provided them — partial
         # coverage would corrupt the alignment to Y / X_seq.
-        if super_list and len(super_list) == len(sessions):
-            block['supercategory'] = np.concatenate(super_list)
         if cat_list and len(cat_list) == len(sessions):
             block['category'] = np.concatenate(cat_list)
         return block
@@ -1164,7 +1160,7 @@ class NeuralContinuousCNNRunner:
         Extracts kinematic drivers for a specific manifold region via Contrastive Centroid-Gradient Saliency.
 
         This method identifies the precise, millisecond-resolution behavioral motifs that causally
-        drive the network's prediction into a specific acoustic cluster on the continuous UMAP manifold.
+        drive the network's prediction into a specific acoustic cluster on the continuous acoustic manifold.
         It adapts the legacy directional MLP gradient attribution to a point-attractor framework,
         suitable for the 1D-CNN.
 
@@ -1380,12 +1376,12 @@ class NeuralContinuousCNNRunner:
                 f"{_held_positions.size} event(s) excluded from CV; scored once after Phase 1."
             )
 
-        # Per-USV cluster labels surfaced by the modeling pickle when it
-        # carries them (the extract pipeline persists supercategory and
-        # category alongside X/Y/w for every USV). The saliency phase
-        # below consumes whichever the user selected via
-        # `settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['segmentation']`.
-        cluster_labels_super = data_blocks['supercategory'] if 'supercategory' in data_blocks else None
+        # Per-USV category labels surfaced by the modeling pickle when it
+        # carries them (the extract pipeline persists the QLVM category
+        # alongside X/Y/w for every USV). The saliency phase below segments
+        # by them when
+        # `settings['hyperparameters']['deep_learning']['cnn_continuous']['saliency']['segmentation']`
+        # is 'category', the only segmentation (there is no coarse level).
         cluster_labels_cat = data_blocks['category'] if 'category' in data_blocks else None
 
         # Pre-flight: if Phase 3 (saliency) is enabled, validate the
@@ -1398,15 +1394,12 @@ class NeuralContinuousCNNRunner:
         saliency_cfg = self.hp['saliency']
         if saliency_cfg['enable']:
             preflight_seg = saliency_cfg['segmentation']
-            if preflight_seg not in ('supercategory', 'category'):
+            if preflight_seg != 'category':
                 raise ValueError(
-                    f"saliency.segmentation must be 'supercategory' or 'category'; "
-                    f"got {preflight_seg!r}"
+                    f"saliency.segmentation must be 'category' (the QLVM category; there is no "
+                    f"coarse level); got {preflight_seg!r}"
                 )
-            preflight_labels = (
-                cluster_labels_super if preflight_seg == 'supercategory'
-                else cluster_labels_cat
-            )
+            preflight_labels = cluster_labels_cat
             if preflight_labels is None:
                 raise RuntimeError(
                     f"saliency.enable=true and saliency.segmentation="
@@ -2060,14 +2053,12 @@ class NeuralContinuousCNNRunner:
             print("  [skip] saliency.enable=False; leaving saliency_maps empty")
         else:
             segmentation = saliency_cfg['segmentation']
-            if segmentation == 'supercategory':
-                labels_all = cluster_labels_super
-            elif segmentation == 'category':
+            if segmentation == 'category':
                 labels_all = cluster_labels_cat
             else:
                 raise ValueError(
-                    f"saliency.segmentation must be 'supercategory' or 'category'; "
-                    f"got {segmentation!r}"
+                    f"saliency.segmentation must be 'category' (the QLVM category; there is no "
+                    f"coarse level); got {segmentation!r}"
                 )
 
             if labels_all is None:

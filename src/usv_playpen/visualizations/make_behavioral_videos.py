@@ -25,10 +25,10 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from numba import njit
 from scipy.io import wavfile
 
-from ..analyses.decode_experiment_label import extract_information
 from ..analyses.generate_audio_files import AudioGenerator
-from ..os_utils import first_match_or_raise
+from ..os_utils import drop_noise_usvs, find_audio_mmap, first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
+from ..yaml_utils import extract_animal_sexes
 from .auxiliary_plot_functions import choose_animal_colors, create_colormap
 from .figure_io import save_figure
 from .plot_style import apply_plot_style
@@ -399,7 +399,9 @@ def load_audio_data(root_directory: str) -> tuple[np.ndarray, int]:
     Description
     -----------
     Returns audio data w/ sampling rate.
-    NB: Audio is loaded from mmap file!
+    NB: Audio is loaded from the 30 kHz high-passed ('ultrasonic' band) mmap file in
+    the exact folder 'audio/hpss_filtered' (os_utils.find_audio_mmap: exact
+    name, exactly one match, never the broadband memmap)!
 
     Parameters
     ----------
@@ -412,12 +414,7 @@ def load_audio_data(root_directory: str) -> tuple[np.ndarray, int]:
        Audio data and audio sampling rate.
     """
 
-    audio_loc = first_match_or_raise(
-        root=pathlib.Path(root_directory),
-        pattern='*_int16.mmap*',
-        recursive=True,
-        label="concatenated int16 audio memmap",
-    )
+    audio_loc = find_audio_mmap(root_directory=root_directory, band='ultrasonic')
     channel_num = int(audio_loc.name.split('_')[-2])
     sample_num = int(audio_loc.name.split('_')[-3])
     sampling_rate = int(audio_loc.name.split('_')[-4])
@@ -1579,15 +1576,19 @@ class Create3DVideo:
         putative_save_directory = pathlib.Path(self.root_directory) / 'data_animation_examples'
         putative_save_directory.mkdir(exist_ok=True, parents=True)
 
-        experiment_info_dict = extract_information(experiment_code=mouse_experimental_code)
+        # Each animal's sex comes from the session metadata (the Subjects entry
+        # matched to its stripped track name), never from the track slot or the
+        # order of the sexes in the experimental code; an unmatched track raises.
+        animal_sex = extract_animal_sexes(self.root_directory, mouse_track_names, logger=self.message_output)
+        mouse_sexes = [animal_sex[mouse_name.strip('\x00').strip()] for mouse_name in mouse_track_names]
         # Plain Unicode (not mathtext "$\u2642$"): Helvetica lacks the \u2642 / \u2640
         # signs, so the symbols resolve through the silent Helvetica -> DejaVu
         # Sans text-fallback chain. Wrapping them in mathtext instead would
         # route them through the custom math fontset and emit the noisy
         # "Font family ['cursive'] not found" findfont message.
-        animal_id_sex_dict = {mouse_name: "\u2642" if mouse_sex == 'male' else "\u2640" for mouse_name, mouse_sex in zip(mouse_track_names, experiment_info_dict['mouse_sex'], strict=True)}
+        animal_id_sex_dict = {mouse_name: "\u2642" if mouse_sex == 'male' else "\u2640" for mouse_name, mouse_sex in zip(mouse_track_names, mouse_sexes, strict=True)}
 
-        animal_colors = choose_animal_colors(exp_info_dict=experiment_info_dict, visualizations_parameter_dict=self.visualizations_parameter_dict)
+        animal_colors = choose_animal_colors(exp_info_dict={'mouse_sex': mouse_sexes}, visualizations_parameter_dict=self.visualizations_parameter_dict)
         animal_colors_dict = {mouse_name: animal_colors[mouse_idx] for mouse_idx, mouse_name in enumerate(mouse_track_names)}
 
         # The GUI / JSON default for "raster_special_units" is [""] (a lone
@@ -1850,7 +1851,11 @@ class Create3DVideo:
                         pattern='*_usv_summary.csv',
                         label="USV summary CSV",
                     )
-                    usv_summary_df = pls.read_csv(str(usv_summary_file))
+                    usv_summary_df = pls.read_csv(str(usv_summary_file), schema_overrides={'usv_id': pls.String})
+                    # Segments the noise classifier flagged hold no vocalization, so they are not
+                    # drawn as USVs (os_utils.drop_noise_usvs, the shared noise rule; a summary
+                    # without the noise column raises: run detect-usv-noise first).
+                    usv_summary_df = drop_noise_usvs(usv_summary_df, usv_summary_file.name, message_output=self.message_output)[0]
                     usv_summary_df = usv_summary_df.filter((pls.col('stop') >= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] - half_window_size_sec) &
                                                            (pls.col('start') <= self.visualizations_parameter_dict['make_behavioral_videos']['video_start_time'] + self.visualizations_parameter_dict['make_behavioral_videos']['video_duration'] + half_window_size_sec))
 

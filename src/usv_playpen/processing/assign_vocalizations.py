@@ -16,9 +16,9 @@ import numpy as np
 import polars as pls
 from tqdm import tqdm
 
-from ..os_utils import configure_path, first_match_or_raise
+from ..os_utils import AUDIO_MMAP_BAND_FOLDERS, atomic_output_path, configure_path, find_audio_mmap, first_match_or_raise, order_usv_summary_columns
 from ..time_utils import is_gui_context, smart_wait
-from ..yaml_utils import load_session_metadata, save_session_metadata
+from ..yaml_utils import extract_animal_sexes, load_session_metadata, save_session_metadata
 from .assign_vocalizations_utils import (
     are_points_in_conf_set,
     get_arena_dimensions,
@@ -85,12 +85,19 @@ class Vocalocator:
         self.message_output(f"Preparing data for vocal assignment started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}")
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-        audio_file_path = first_match_or_raise(
-            root=pathlib.Path(self.root_directory) / 'audio',
-            pattern='*_concatenated_audio_*.mmap',
-            recursive=True,
-            label="concatenated audio mmap",
-        )
+        # The audio band the vocalocator model was trained on, the setting
+        # vocalocator.vcl_audio_band: 'ultrasonic' (default) is the 30 kHz high-passed memmap
+        # (audio/hpss_filtered) the current models were trained on, 'broadband' the
+        # 2 kHz high-passed one (audio/broadband_filtered), for a model trained on
+        # 2-125 kHz audio. The lookup takes the exact folder and name and needs exactly
+        # one match (a recursive glob here used to pick the alphabetically first memmap
+        # anywhere under 'audio', e.g. a stray unfiltered one in 'cropped_to_video').
+        vcl_audio_band = self.input_parameter_dict['vocalocator']['vcl_audio_band']
+        if vcl_audio_band not in AUDIO_MMAP_BAND_FOLDERS:
+            error_message = f"vocalocator.vcl_audio_band must be one of {sorted(AUDIO_MMAP_BAND_FOLDERS)}, got {vcl_audio_band!r}."
+            raise ValueError(error_message)
+        audio_file_path = find_audio_mmap(root_directory=self.root_directory, band=vcl_audio_band)
+        self.message_output(f"Vocalocator audio: the {vcl_audio_band!r} band memmap {audio_file_path.name}.")
         usv_segments_path = first_match_or_raise(
             root=pathlib.Path(self.root_directory) / 'audio',
             pattern='*_usv_summary.csv',
@@ -181,45 +188,23 @@ class Vocalocator:
             # np.arange only coincidentally produced the right codes for
             # male/female (courtship) sessions; female-female sessions need
             # [1, 1] and male-male [0, 0], so the codes are derived from the
-            # session metadata's Subjects, matched to the track names.
+            # session metadata's Subjects, matched to the track names
+            # (yaml_utils.extract_animal_sexes, the package's one sex lookup).
             with h5py.File(track_file_path, mode='r') as track_file:
                 # some track h5 files carry stray whitespace in track names
                 # (e.g. ' 158800_0'); strip before matching against Subjects
-                track_names = [item.decode('utf-8').strip() for item in list(track_file['track_names'])]
+                track_names = [item.decode('utf-8').strip('\x00').strip() for item in list(track_file['track_names'])]
             if len(track_names) != tracks.shape[1]:
                 err_msg = (
                     f"Track h5 '{track_file_path}' is inconsistent: {len(track_names)} track_names "
                     f"but {tracks.shape[1]} animals on the tracks array."
                 )
                 raise ValueError(err_msg)
-            session_metadata, _ = load_session_metadata(self.root_directory, logger=self.message_output)
-            if session_metadata is None or 'Subjects' not in session_metadata or not session_metadata['Subjects']:
-                err_msg = (
-                    f"Session metadata of '{self.root_directory}' has no Subjects; cannot derive "
-                    f"the per-animal sex codes Vocalocator's animal_id field requires."
-                )
-                raise ValueError(err_msg)
-            subject_sex_by_id = {
-                str(subject['subject_id']): subject['sex']
-                for subject in session_metadata['Subjects']
-            }
+            # Raises (FileNotFoundError / ValueError) on missing metadata, a track with no
+            # matching subject_id, or a sex other than male / female: never a guess.
+            animal_sex = extract_animal_sexes(self.root_directory, track_names, logger=self.message_output)
             sex_to_code = {'male': 0, 'female': 1}
-            animal_id_codes = []
-            for track_name in track_names:
-                if track_name not in subject_sex_by_id:
-                    err_msg = (
-                        f"Track '{track_name}' has no matching subject_id in the session metadata "
-                        f"Subjects of '{self.root_directory}'; cannot derive its sex code."
-                    )
-                    raise ValueError(err_msg)
-                subject_sex = subject_sex_by_id[track_name]
-                if subject_sex not in sex_to_code:
-                    err_msg = (
-                        f"Unrecognized sex '{subject_sex}' for subject '{track_name}' in the session "
-                        f"metadata of '{self.root_directory}'; expected 'male' or 'female'."
-                    )
-                    raise ValueError(err_msg)
-                animal_id_codes.append(sex_to_code[subject_sex])
+            animal_id_codes = [sex_to_code[animal_sex[track_name]] for track_name in track_names]
             animal_ids = np.array(animal_id_codes, dtype=np.int32)
             self.message_output(
                 "Vocalocator animal_id sex codes (0=male, 1=female): "
@@ -370,7 +355,10 @@ class Vocalocator:
             emitter_expression.alias('emitter')
         )
 
-        usv_summary_df.write_csv(file=usv_summary_file_path, separator=',', include_header=True)
+        # usv_summary.csv holds every other per-USV column too: publish atomically, in
+        # the canonical column order (os_utils.USV_SUMMARY_COLUMN_ORDER).
+        with atomic_output_path(usv_summary_file_path) as tmp_summary_path:
+            order_usv_summary_columns(usv_summary_df).write_csv(file=str(tmp_summary_path), separator=',', include_header=True)
 
         # load metadata
         metadata, metadata_path = load_session_metadata(
@@ -504,7 +492,10 @@ class Vocalocator:
             emitter_expression.alias('emitter')
         )
 
-        usv_summary_df.write_csv(file=usv_summary_file_path, separator=',', include_header=True)
+        # usv_summary.csv holds every other per-USV column too: publish atomically, in
+        # the canonical column order (os_utils.USV_SUMMARY_COLUMN_ORDER).
+        with atomic_output_path(usv_summary_file_path) as tmp_summary_path:
+            order_usv_summary_columns(usv_summary_df).write_csv(file=str(tmp_summary_path), separator=',', include_header=True)
 
         # load metadata
         metadata, metadata_path = load_session_metadata(

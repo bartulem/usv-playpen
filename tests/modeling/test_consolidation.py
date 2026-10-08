@@ -305,11 +305,11 @@ class TestSelectionHelpers:
         md_in = {'target_mouse_sex': 'female',
                  'experimental_condition': 'intact_partners_female',
                  'analysis_tag': 'category_3',
-                 'analysis_specific': {'usv_category_column_name': 'vae_supercategory'}}
+                 'analysis_specific': {'usv_category_column_name': 'qlvm_category'}}
         md_run = {'split_strategy': 'session'}
         out = cms._build_default_output_filename(md_in, md_run, step_prefix='')
         assert out == ('model_selection_final_female_intact_partners_'
-                       'category_vae_supercategory_3_session.pkl')
+                       'category_qlvm_category_3_session.pkl')
 
     def test_build_default_output_filename_grafts_bare_tag(self):
         """A non-``category_`` bare tag (e.g. ``multinomial``) gets the
@@ -318,11 +318,25 @@ class TestSelectionHelpers:
         md_in = {'target_mouse_sex': 'male',
                  'experimental_condition': 'male_mute_partner',
                  'analysis_tag': 'multinomial',
-                 'analysis_specific': {'usv_category_column_name': 'vae_supercategory'}}
+                 'analysis_specific': {'usv_category_column_name': 'qlvm_category'}}
         md_run = {'split_strategy': 'mixed'}
         out = cms._build_default_output_filename(md_in, md_run, step_prefix='')
         assert out == ('model_selection_final_male_male_mute_partner_'
-                       'multinomial_vae_supercategory_mixed.pkl')
+                       'multinomial_qlvm_category_mixed.pkl')
+
+    @pytest.mark.parametrize('analysis_tag', ['manifold_qlvm', 'manifold_qlvm_duration', 'manifold_qlvm_category'])
+    def test_build_default_output_filename_keeps_manifold_map_tag(self, analysis_tag):
+        """A map-prefixed manifold tag (and a legacy ``manifold_qlvm_category``
+        one) is embedded verbatim: the category column recorded in
+        ``analysis_specific`` is never appended to it."""
+
+        md_in = {'target_mouse_sex': 'male',
+                 'experimental_condition': 'intact_partners_male',
+                 'analysis_tag': analysis_tag,
+                 'analysis_specific': {'usv_category_column_name': 'qlvm_category'}}
+        md_run = {'split_strategy': 'session'}
+        out = cms._build_default_output_filename(md_in, md_run, step_prefix='')
+        assert out == f'model_selection_final_male_intact_partners_{analysis_tag}_session.pkl'
 
     def test_diff_metadata_reports_leaf_and_missing(self):
         """The selection consolidator's ``_diff_metadata`` (duplicated

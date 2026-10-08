@@ -15,13 +15,21 @@ no spectrogram H5, no SAM masks, no mask-count strata. It shares the session spl
 the resize (:func:`build_qlvm_training_set.stretch_specs`). The steps:
 
 1. **Candidates.** Every row of every session's ``*_usv_summary.csv`` that
-   ``detect-usv-squeaks`` flagged as a squeak (``squeak`` true; with
-   ``exclude_noise`` also not ``noise``) and gave an extent (``squeak_start`` /
-   ``squeak_end``) is a candidate. Its first and last squeak frames are the frames
-   centred at those times, ``round((t - start) / 0.002048)``, and its frame count
-   is that of its full-length sonic spectrogram (``1 + n_samples // 512``,
-   :func:`squeak_segment_n_frames`). Sessions are taken in sorted id order and
-   rows in summary order, whatever the order of the session list.
+   ``detect-usv-squeaks`` marked ``squeak`` true (pure squeaks and segments
+   holding both a squeak and a USV; with ``exclude_noise`` also not ``noise``, a
+   guard, since noise rows carry null booleans) and gave a squeak extent
+   (``squeak_start`` / ``squeak_end``, the envelope of the segment's
+   above-threshold squeak frames) is a candidate; a row with several squeaks is
+   ONE candidate, cropped to that envelope, as
+   ``infer-qlvm-squeak-latents`` embeds it. Its audio window is the segment
+   widened to hold the envelope plus the context frames
+   (:func:`detect_usv_squeaks.squeak_crop_window`: a squeak often extends past its
+   segment), its first and last squeak frames are the window frames whose centres
+   lie inside the envelope (:func:`detect_usv_squeaks.squeak_extent_frames`), and
+   its frame count is that of the window's sonic spectrogram
+   (``1 + n_samples // 512``, :func:`detect_usv_squeaks.squeak_window_n_frames`).
+   Sessions are taken in sorted id order and rows in summary order, whatever the
+   order of the session list.
 2. **Crop gates** (:func:`squeak_crop_gates`). With ``crop_window``
    ``"full_length"`` (the default, and the rule ``infer-qlvm-squeak-latents``
    embeds with) the crop may lie anywhere in the segment; with
@@ -41,8 +49,8 @@ the resize (:func:`build_qlvm_training_set.stretch_specs`). The steps:
    :func:`stratified_duration_draw`). ``full_dataset`` takes every row that passed
    the gates instead and also writes ``full_data.npz``.
 4. **Spectrograms.** The drawn rows' sonic spectrograms are rebuilt from the
-   session audio (:func:`detect_usv_squeaks.squeak_segment_spectrograms`, the
-   front end that reproduces the reference ``_sonic_wav_`` store), each crop is
+   session audio over their windows (:func:`detect_usv_squeaks.squeak_window_spectrograms`,
+   the front end that reproduces the reference ``_sonic_wav_`` store), each crop is
    normalized (``crop_normalization``: ``"per_crop"``,
    ``(x - min) / (max - min + 1e-6)``, or ``"absolute"``,
    ``(clip(x_dB, -100, 50) + 25) / 75``), written from column 0 of a 128-frame
@@ -52,16 +60,19 @@ the resize (:func:`build_qlvm_training_set.stretch_specs`). The steps:
    (then ``full_data.npz``) and ``metadata.npz`` are written in the format
    ``train-qlvm`` reads: ``spectrograms``, all-zero ``masks`` and ``masks_len``,
    ``durations`` (crop width), ``spec_id`` (``{session}_{row}``), ``session_id``,
-   ``session_type``, ``duration_bin``, ``squeak_probability``, ``crop_first``,
-   ``crop_last``, ``n_frames_original`` and ``apply_mask`` False.
+   ``session_type``, ``duration_bin``, ``squeak_probability`` (the classifier's
+   probability that the segment holds a squeak, ``p_squeak + p_both``),
+   ``crop_first``, ``crop_last`` (frames of the audio window),
+   ``n_frames_original`` (frames of the window) and ``apply_mask`` False.
 
 Reproducing the phase 3 sets needs ``crop_window`` ``"first_128_frames"`` and
 ``exclude_metadata_audio_channels`` false (the setting the bit-identical rebuild
 of ``bbv-natural_dur-26-40-62_session_N11000_seed42`` was verified with), and
-the squeak extents of the reference 128-frame pass for segments longer than 128 frames,
-which the summary does not keep (``detect-usv-squeaks`` writes the extent of a
-full-length pass); :meth:`QLVMSqueakTrainingSetBuilder.build_from_candidates`
-accepts such externally supplied candidates. See ``docs/Process.rst``.
+the candidates of the reference squeak index (the retired binary classifier's
+segment flags and the extents of its 128-frame pass), which no summary keeps any
+more; :meth:`QLVMSqueakTrainingSetBuilder.build_from_candidates` accepts such
+externally supplied candidates (with the segment itself as the audio window). See
+``docs/Process.rst``.
 """
 
 from __future__ import annotations
@@ -77,7 +88,13 @@ import polars as pls
 from click.core import ParameterSource
 
 from ..cli_utils import modify_settings_json_for_cli
-from ..os_utils import first_match_or_raise
+from ..os_utils import (
+    SQUEAK_FLAG_COLUMN,
+    USV_FLAG_COLUMN,
+    first_match_or_raise,
+    noise_mask,
+    squeak_bearing_mask,
+)
 from ..time_utils import is_gui_context, smart_wait
 from .build_qlvm_training_set import (
     parse_int_list,
@@ -86,73 +103,53 @@ from .build_qlvm_training_set import (
     stretch_specs,
 )
 from .detect_usv_squeaks import (
-    FRAME_DT_S,
-    MODEL_WINDOW_FRAMES,
-    SQUEAK_SAMPLING_RATE,
+    SQUEAK_REFERENCE_WINDOW_FRAMES,
     SQUEAK_SPEC_PARAMS,
-    squeak_segment_spectrograms,
+    squeak_crop_window,
+    squeak_extent_frames,
+    squeak_window_n_frames,
+    squeak_window_spectrograms,
 )
 
 # Width (frames) of the frame every crop is written into before the resize: the
 # 128-frame window of the squeak store the phase 3 sets were cut from.
-CROP_FRAME_WIDTH = MODEL_WINDOW_FRAMES
+CROP_FRAME_WIDTH = SQUEAK_REFERENCE_WINDOW_FRAMES
 
 # Epsilon of the per-crop min-max (build_bbv_dataset.py --normalization per-crop).
 CROP_MINMAX_EPSILON = 1e-6
-
-
-def squeak_segment_n_frames(start_s: np.ndarray, stop_s: np.ndarray) -> np.ndarray:
-    """
-    Description
-    -----------
-    Number of frames of each segment's full-length sonic spectrogram
-    (:func:`detect_usv_squeaks.squeak_segment_spectrograms`), without reading
-    audio: the segment spans ``round(stop * 250000) - round(start * 250000)``
-    samples, and the centred STFT (``nperseg`` 2048, hop 512) of ``n`` samples has
-    ``1 + n // 512`` frames; a segment shorter than one window has no spectrogram
-    (0 frames).
-
-    Parameters
-    ----------
-    start_s (np.ndarray)
-        ``(N,)`` segment starts in seconds.
-    stop_s (np.ndarray)
-        ``(N,)`` segment stops in seconds.
-
-    Returns
-    -------
-    n_frames (np.ndarray)
-        ``(N,)`` int64 frame counts.
-    """
-
-    n_samples = (np.round(np.asarray(stop_s, dtype=np.float64) * SQUEAK_SAMPLING_RATE).astype(np.int64)
-                 - np.round(np.asarray(start_s, dtype=np.float64) * SQUEAK_SAMPLING_RATE).astype(np.int64))
-    return np.where(n_samples >= SQUEAK_SPEC_PARAMS["nperseg"], 1 + n_samples // SQUEAK_SPEC_PARAMS["hop_length"], 0).astype(np.int64)
 
 
 def squeak_candidates_from_summary(usv_summary: pls.DataFrame, exclude_noise: bool) -> dict[str, np.ndarray]:
     """
     Description
     -----------
-    The squeak candidates of one session: rows with ``squeak`` true (and, with
-    ``exclude_noise``, ``noise`` not true), a finite ``squeak_start`` /
-    ``squeak_end`` and a spectrogram of at least one frame. Null flags count as
-    false.
+    The squeak candidates of one session: rows with ``squeak`` true (pure squeaks
+    and "both", :func:`os_utils.squeak_bearing_mask`; and, with ``exclude_noise``,
+    ``noise`` not true; noise rows carry null booleans, so this is a guard), with a
+    finite squeak extent
+    (``squeak_start`` / ``squeak_end``) and an audio window of at least one frame.
+    Each candidate's audio window is the segment widened to hold the envelope plus
+    its context (:func:`detect_usv_squeaks.squeak_crop_window`), and its extent
+    frames are the window frames whose centres lie inside the envelope
+    (:func:`detect_usv_squeaks.squeak_extent_frames`). Null flags count as false.
 
     Parameters
     ----------
     usv_summary (pls.DataFrame)
-        The session's USV summary (``start``, ``stop``, the squeak columns and,
-        with ``exclude_noise``, ``noise``).
+        The session's USV summary (``start``, ``stop``, ``usv``, ``squeak``,
+        ``p_squeak``, ``p_both``, ``squeak_start``, ``squeak_end`` and, with
+        ``exclude_noise``, ``noise``).
     exclude_noise (bool)
         Leave out rows flagged as noise.
 
     Returns
     -------
     candidates (dict[str, np.ndarray])
-        Row-aligned arrays: ``row`` (summary row), ``start_s``, ``n_frames``,
-        ``first_raw`` / ``last_raw`` (first and last squeak frame) and
-        ``probability`` (``squeak_probability``).
+        Row-aligned arrays: ``row`` (summary row), ``start_s`` / ``stop_s`` (the
+        audio window, s), ``n_frames`` (frames of the window), ``first_raw`` /
+        ``last_raw`` (first and last squeak frame of the window) and
+        ``probability`` (``p_squeak + p_both``, the probability that the segment
+        holds a squeak).
 
     Raises
     ------
@@ -160,28 +157,37 @@ def squeak_candidates_from_summary(usv_summary: pls.DataFrame, exclude_noise: bo
         A needed column is missing.
     """
 
-    needed = ["start", "stop", "squeak", "squeak_probability", "squeak_start", "squeak_end", *(["noise"] if exclude_noise else [])]
+    needed = ["start", "stop", USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN, "p_squeak", "p_both", "squeak_start", "squeak_end", *(["noise"] if exclude_noise else [])]
     missing = [column for column in needed if column not in usv_summary.columns]
     if missing:
-        error_message = f"The USV summary has no {missing} column(s); run detect-usv-squeaks (and detect-usv-noise) first."
+        error_message = f"The USV summary has no {missing} column(s); run detect-usv-noise and detect-usv-squeaks first."
         raise ValueError(error_message)
-    keep = usv_summary["squeak"].cast(pls.Boolean).fill_null(False).to_numpy().copy()
+    keep = squeak_bearing_mask(usv_summary, "the USV summary").to_numpy().copy()
     if exclude_noise:
-        keep &= ~usv_summary["noise"].cast(pls.Boolean).fill_null(False).to_numpy()
+        keep &= ~noise_mask(usv_summary, "the USV summary").to_numpy()
     start = usv_summary["start"].cast(pls.Float64).to_numpy()
     stop = usv_summary["stop"].cast(pls.Float64).to_numpy()
     squeak_start = usv_summary["squeak_start"].cast(pls.Float64).fill_null(np.nan).to_numpy()
     squeak_end = usv_summary["squeak_end"].cast(pls.Float64).fill_null(np.nan).to_numpy()
-    n_frames = squeak_segment_n_frames(start, stop)
-    keep &= np.isfinite(squeak_start) & np.isfinite(squeak_end) & (n_frames > 0)
+    keep &= np.isfinite(squeak_start) & np.isfinite(squeak_end)
+    window_start = np.full(start.size, np.nan)
+    window_stop = np.full(start.size, np.nan)
+    window_start[keep], window_stop[keep] = squeak_crop_window(start[keep], stop[keep], squeak_start[keep], squeak_end[keep])
+    n_frames = np.zeros(start.size, dtype=np.int64)
+    n_frames[keep] = squeak_window_n_frames(window_start[keep], window_stop[keep])
+    keep &= n_frames > 0
     rows = np.flatnonzero(keep).astype(np.int64)
+    first_raw, last_raw = squeak_extent_frames(window_start[rows], squeak_start[rows], squeak_end[rows])
+    probability = (usv_summary["p_squeak"].cast(pls.Float64).fill_null(np.nan).to_numpy()
+                   + usv_summary["p_both"].cast(pls.Float64).fill_null(np.nan).to_numpy())
     return {
         "row": rows,
-        "start_s": start[rows],
+        "start_s": window_start[rows],
+        "stop_s": window_stop[rows],
         "n_frames": n_frames[rows],
-        "first_raw": np.round((squeak_start[rows] - start[rows]) / FRAME_DT_S).astype(np.int64),
-        "last_raw": np.round((squeak_end[rows] - start[rows]) / FRAME_DT_S).astype(np.int64),
-        "probability": usv_summary["squeak_probability"].cast(pls.Float64).to_numpy()[rows],
+        "first_raw": first_raw,
+        "last_raw": last_raw,
+        "probability": probability[rows],
     }
 
 
@@ -465,7 +471,7 @@ class QLVMSqueakTrainingSetBuilder:
 
         cfg = self.input_parameter_dict['build_qlvm_squeak_training_set']
         session_roots = {pathlib.Path(root).name: root for root in self.root_directories}
-        columns: dict[str, list[np.ndarray]] = {key: [] for key in ("session_id", "row", "start_s", "n_frames", "first_raw", "last_raw", "probability")}
+        columns: dict[str, list[np.ndarray]] = {key: [] for key in ("session_id", "row", "start_s", "stop_s", "n_frames", "first_raw", "last_raw", "probability")}
         session_type_by_key = {}
         for session_id in sorted(session_roots):
             root = session_roots[session_id]
@@ -502,7 +508,7 @@ class QLVMSqueakTrainingSetBuilder:
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
         candidates, session_roots, session_type_by_key = self.collect_candidates()
-        self.build_from_candidates(candidates, session_roots, session_type_by_key, "usv_summary squeak columns")
+        self.build_from_candidates(candidates, session_roots, session_type_by_key, "usv_summary rows with squeak true (pure squeak and both)")
         self.message_output(
             f"QLVM squeak training-set build ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
         )
@@ -528,8 +534,11 @@ class QLVMSqueakTrainingSetBuilder:
         Parameters
         ----------
         candidates (dict[str, np.ndarray])
-            Row-aligned ``session_id``, ``row``, ``start_s``, ``n_frames``,
-            ``first_raw``, ``last_raw`` and ``probability``.
+            Row-aligned ``session_id``, ``row``, ``start_s`` / ``stop_s`` (the
+            audio window the spectrogram is rebuilt over, s; the segment itself
+            for candidates of the reference squeak index), ``n_frames`` (frames of
+            that window), ``first_raw`` / ``last_raw`` (squeak frames of the
+            window) and ``probability``.
         session_roots (dict[str, str])
             Session id -> root directory, for every session in ``candidates``.
         session_type_by_key (dict[str, str])
@@ -592,13 +601,10 @@ class QLVMSqueakTrainingSetBuilder:
         widths = np.empty(n_rows, dtype=np.int64)
         for session_id in dict.fromkeys(drawn["session_id"].tolist()):
             positions = np.flatnonzero(drawn["session_id"] == session_id)
-            root = pathlib.Path(session_roots[session_id])
-            usv_summary_path = first_match_or_raise(root=root / "audio", pattern="*_usv_summary.csv", recursive=True, label="USV summary CSV")
-            usv_summary = pls.read_csv(source=str(usv_summary_path), schema_overrides={"usv_id": pls.String})
-            spectrograms = squeak_segment_spectrograms(
-                session_root=root,
-                usv_summary=usv_summary,
-                row_indices=drawn["row"][positions],
+            spectrograms = squeak_window_spectrograms(
+                session_root=pathlib.Path(session_roots[session_id]),
+                window_start_s=drawn["start_s"][positions],
+                window_stop_s=drawn["stop_s"][positions],
                 exclude_metadata_audio_channels=exclude_metadata_audio_channels,
                 message_output=self.message_output,
             )

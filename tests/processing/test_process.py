@@ -26,6 +26,8 @@ from usv_playpen.processing.preprocess_data import (
     hpss_audio_cli,
     bp_filter_audio_files_cli,
     concatenate_audio_files_cli,
+    broadband_filter_audio_cli,
+    broadband_filter_audio_batch_cli,
     sleap_file_conversion_cli,
     conduct_anipose_calibration_cli,
     conduct_anipose_triangulation_cli,
@@ -636,6 +638,8 @@ def mock_dependencies(mocker):
         'MaskGenerator': mocker.patch('usv_playpen.processing.preprocess_data.MaskGenerator'),
         'USVAcousticFeatureExtractor': mocker.patch('usv_playpen.processing.preprocess_data.USVAcousticFeatureExtractor'),
         'QLVMLatentInference': mocker.patch('usv_playpen.processing.preprocess_data.QLVMLatentInference'),
+        'QLVMCategoryAssigner': mocker.patch('usv_playpen.processing.preprocess_data.QLVMCategoryAssigner'),
+        'USVSqueakQLVMEmbedder': mocker.patch('usv_playpen.processing.preprocess_data.USVSqueakQLVMEmbedder'),
         'USVNoiseDetector': mocker.patch('usv_playpen.processing.preprocess_data.USVNoiseDetector'),
         'USVSqueakDetector': mocker.patch('usv_playpen.processing.preprocess_data.USVSqueakDetector'),
     }
@@ -691,7 +695,10 @@ def test_processing_booleans_has_inhouse_usv_keys(processing_settings):
 
 def test_inhouse_usv_pipeline_dispatch_order(processing_settings, mock_dependencies, tmp_path, mocker):
     """All 4 in-house USV steps run once each, in pipeline order
-    (spectrograms -> masks -> acoustic-features -> QLVM)."""
+    (spectrograms -> masks -> acoustic-features -> QLVM), and the QLVM step
+    labels the categories right after the inference (re-inferring drops
+    qlvm_category, so the two run together under one boolean) and then embeds the
+    squeaks with the squeak QLVM."""
     for key in ('generate_usv_spectrograms', 'generate_usv_masks',
                 'compute_usv_acoustic_features', 'infer_qlvm_latents'):
         processing_settings['processing_booleans'][key] = True
@@ -701,6 +708,8 @@ def test_inhouse_usv_pipeline_dispatch_order(processing_settings, mock_dependenc
     manager.attach_mock(mock_dependencies['MaskGenerator'], 'masks')
     manager.attach_mock(mock_dependencies['USVAcousticFeatureExtractor'], 'features')
     manager.attach_mock(mock_dependencies['QLVMLatentInference'], 'qlvm')
+    manager.attach_mock(mock_dependencies['QLVMCategoryAssigner'], 'categories')
+    manager.attach_mock(mock_dependencies['USVSqueakQLVMEmbedder'], 'squeak_qlvm')
 
     Stylist(
         input_parameter_dict=processing_settings,
@@ -712,11 +721,13 @@ def test_inhouse_usv_pipeline_dispatch_order(processing_settings, mock_dependenc
     mock_dependencies['MaskGenerator'].return_value.generate_session_masks.assert_called_once()
     mock_dependencies['USVAcousticFeatureExtractor'].return_value.merge_features_into_summary.assert_called_once()
     mock_dependencies['QLVMLatentInference'].return_value.infer_and_merge.assert_called_once()
+    mock_dependencies['QLVMCategoryAssigner'].return_value.assign_and_merge.assert_called_once()
+    mock_dependencies['USVSqueakQLVMEmbedder'].return_value.embed_and_merge.assert_called_once()
 
     # constructor call order == pipeline order
     call_names = [c[0] for c in manager.mock_calls]
-    first_idx = {name: call_names.index(name) for name in ('spectrograms', 'masks', 'features', 'qlvm')}
-    assert first_idx['spectrograms'] < first_idx['masks'] < first_idx['features'] < first_idx['qlvm']
+    first_idx = {name: call_names.index(name) for name in ('spectrograms', 'masks', 'features', 'qlvm', 'categories', 'squeak_qlvm')}
+    assert first_idx['spectrograms'] < first_idx['masks'] < first_idx['features'] < first_idx['qlvm'] < first_idx['categories'] < first_idx['squeak_qlvm']
 
 
 def test_squeak_detection_runs_after_das_summarize_only_when_enabled(processing_settings, mock_dependencies, tmp_path, mocker):
@@ -776,6 +787,32 @@ def test_noise_detection_runs_after_das_summarize_and_before_squeaks(processing_
     assert call_names.index('das_summary') < call_names.index('noise') < call_names.index('squeaks')
 
 
+def test_noise_and_squeak_labels_run_after_assignment_and_before_spectrograms(processing_settings, mock_dependencies, tmp_path, mocker):
+    """The noise and squeak labels run after USV assignment (prepare + run) and before the
+    spectrograms, the order the processing GUI lists them in: assignment neither reads nor drops
+    the label columns, and the labels do not read the emitter column."""
+    pb = processing_settings['processing_booleans']
+    for key in ('das_summarize', 'prepare_assign_vocalizations', 'assign_vocalizations',
+                'detect_usv_noise', 'detect_usv_squeaks', 'generate_usv_spectrograms'):
+        pb[key] = True
+    manager = mocker.Mock()
+    manager.attach_mock(mock_dependencies['FindMouseVocalizations'], 'das_summary')
+    manager.attach_mock(mock_dependencies['Vocalocator'], 'assignment')
+    manager.attach_mock(mock_dependencies['USVNoiseDetector'], 'noise')
+    manager.attach_mock(mock_dependencies['USVSqueakDetector'], 'squeaks')
+    manager.attach_mock(mock_dependencies['SpectrogramGenerator'], 'spectrograms')
+
+    Stylist(
+        input_parameter_dict=processing_settings,
+        root_directories=[str(tmp_path)],
+    ).prepare_data_for_analyses()
+
+    call_names = [c[0] for c in manager.mock_calls]
+    last_assignment = max(index for index, name in enumerate(call_names) if name == 'assignment')
+    assert call_names.index('das_summary') < call_names.index('assignment')
+    assert last_assignment < call_names.index('noise') < call_names.index('squeaks') < call_names.index('spectrograms')
+
+
 def test_inhouse_usv_pipeline_subset_gated_by_booleans(processing_settings, mock_dependencies, tmp_path):
     """Each in-house USV step runs only when its boolean is set: enabling
     spectrograms + features (and leaving masks + QLVM off) instantiates exactly
@@ -796,6 +833,8 @@ def test_inhouse_usv_pipeline_subset_gated_by_booleans(processing_settings, mock
     mock_dependencies['USVAcousticFeatureExtractor'].return_value.merge_features_into_summary.assert_called_once()
     mock_dependencies['MaskGenerator'].assert_not_called()
     mock_dependencies['QLVMLatentInference'].assert_not_called()
+    mock_dependencies['QLVMCategoryAssigner'].assert_not_called()
+    mock_dependencies['USVSqueakQLVMEmbedder'].assert_not_called()
 
 
 def test_multiple_directory_looping(processing_settings, mock_dependencies, tmp_path):
@@ -2202,13 +2241,19 @@ def test_vocalocator_prepare_missing_audio_mmap_raises(tmp_path, processing_sett
     (tmp_path / 'audio').mkdir()
 
     voc = _make_vocalocator(tmp_path, processing_settings)
-    with pytest.raises(FileNotFoundError, match=r"concatenated audio mmap"):
+    with pytest.raises(FileNotFoundError, match=r"ultrasonic audio memmap"):
         voc.prepare_for_vocalocator()
 
 
 def test_vocalocator_prepare_missing_video_root_raises(tmp_path, processing_settings):
+    # the 'ultrasonic' band memmap and the USV summary exist, so the lookup that fails
+    # is the one under the (absent) video root
+    (tmp_path / 'audio' / 'hpss_filtered').mkdir(parents=True)
+    np.zeros((10, 2), dtype=np.int16).tofile(
+        tmp_path / 'audio' / 'hpss_filtered' / 'sess_concatenated_audio_hpss_filtered_250000_10_2_int16.mmap')
+    (tmp_path / 'audio' / 'sess_usv_summary.csv').write_text('start,stop\n')
     voc = _make_vocalocator(tmp_path, processing_settings)
-    with pytest.raises(FileNotFoundError, match=r"search root"):
+    with pytest.raises(FileNotFoundError, match=r"search root '.*video' does not exist"):
         voc.prepare_for_vocalocator()
 
 
@@ -2881,7 +2926,8 @@ def test_prepare_data_all_per_directory_steps_dispatch(processing_settings, mock
     Enabling every per-directory processing boolean must dispatch each step to
     its worker class exactly once for the single root directory, covering the
     full per-directory branch ladder (fps change, multichannel split, cropping,
-    AV + ephys sync, HPSS, filtering, mmap stacking, SLEAP/Anipose stages, the
+    AV + ephys sync, HPSS, filtering, mmap stacking, broadband filtering,
+    SLEAP/Anipose stages, the
     translate-rotate-metric match branch, DAS, and vocal preparation + ssl
     assignment).
 
@@ -2907,7 +2953,7 @@ def test_prepare_data_all_per_directory_steps_dispatch(processing_settings, mock
     for key in (
         'conduct_video_fps_change', 'conduct_audio_multichannel_to_single_ch',
         'conduct_audio_cropping', 'conduct_ephys_video_sync', 'conduct_hpss',
-        'conduct_audio_filtering', 'conduct_audio_to_mmap', 'sleap_h5_conversion',
+        'conduct_audio_filtering', 'conduct_audio_to_mmap', 'conduct_broadband_filtering', 'sleap_h5_conversion',
         'anipose_triangulation', 'anipose_trm', 'das_infer', 'das_summarize',
         'prepare_assign_vocalizations', 'assign_vocalizations',
     ):
@@ -2927,6 +2973,7 @@ def test_prepare_data_all_per_directory_steps_dispatch(processing_settings, mock
     op.hpss_audio.assert_called_once()
     op.filter_audio_files.assert_called_once()
     op.concatenate_audio_files.assert_called_once()
+    op.broadband_filter_audio.assert_called_once()
     sync = mock_dependencies['Synchronizer'].return_value
     sync.crop_wav_files_to_video.assert_called_once()
     sync.validate_ephys_video_sync.assert_called_once()
@@ -3075,6 +3122,7 @@ def test_preprocess_cli_commands_dispatch(mock_dependencies, tmp_path):
         (hpss_audio_cli, rd, mock_dependencies['Operator'], 'hpss_audio'),
         (bp_filter_audio_files_cli, rd, mock_dependencies['Operator'], 'filter_audio_files'),
         (concatenate_audio_files_cli, rd, mock_dependencies['Operator'], 'concatenate_audio_files'),
+        (broadband_filter_audio_cli, rd, mock_dependencies['Operator'], 'broadband_filter_audio'),
         (sleap_file_conversion_cli, rd, mock_dependencies['ConvertTo3D'], 'sleap_file_conversion'),
         (conduct_anipose_calibration_cli, rd, mock_dependencies['ConvertTo3D'], 'conduct_anipose_calibration'),
         (conduct_anipose_triangulation_cli, rd, mock_dependencies['ConvertTo3D'], 'conduct_anipose_triangulation'),
@@ -3114,6 +3162,56 @@ def test_preprocess_cli_commands_dispatch(mock_dependencies, tmp_path):
     result = runner.invoke(split_clusters_to_sessions_cli, multi)
     assert result.exit_code == 0, result.output
     mock_dependencies['Operator'].return_value.split_clusters_to_sessions.assert_called()
+
+
+def test_broadband_filter_audio_batch_cli_dispatch(tmp_path, mocker):
+    """
+    Description
+    -----------
+    ``broadband-filter-audio-batch`` reads the session list (``--sessions-file``,
+    or the ``--tag`` rows of ``--usv-counts-csv``) with
+    ``read_broadband_session_list`` and hands it to ``broadband_filter_sessions``
+    with ``--workers`` processes, the ``--log-file`` / ``--report-csv`` paths and
+    the processing settings. A ``--threads`` flag is written into the
+    ``broadband_filter_audio`` block of those settings (its only home), while
+    the batch-only flags (workers, log, report, tag) never touch the settings.
+    Both workers are mocked, so no audio is read or written.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp directory holding the sessions file, log and report.
+    mocker (pytest_mock.MockerFixture)
+        Patches the two module-level batch helpers in ``preprocess_data``.
+
+    Returns
+    -------
+    None
+    """
+
+    sessions_file = tmp_path / "sessions.txt"
+    sessions_file.write_text(f"{tmp_path / 'a'}\n{tmp_path / 'b'}\n", encoding="utf-8")
+    session_roots = [str(tmp_path / 'a'), str(tmp_path / 'b')]
+    read_list = mocker.patch('usv_playpen.processing.preprocess_data.read_broadband_session_list', return_value=session_roots)
+    run_batch = mocker.patch('usv_playpen.processing.preprocess_data.broadband_filter_sessions')
+
+    result = CliRunner().invoke(broadband_filter_audio_batch_cli, [
+        "--sessions-file", str(sessions_file),
+        "--workers", "3",
+        "--threads", "7",
+        "--log-file", str(tmp_path / "batch.log"),
+        "--report-csv", str(tmp_path / "report.csv"),
+    ])
+    assert result.exit_code == 0, f"{result.output}\n{result.exception}"
+
+    read_list.assert_called_once_with(sessions_file=str(sessions_file), usv_counts_csv=None, tag='ok')
+    run_batch.assert_called_once()
+    batch_kwargs = run_batch.call_args.kwargs
+    assert batch_kwargs['session_roots'] == session_roots
+    assert batch_kwargs['n_workers'] == 3
+    assert batch_kwargs['log_path'] == str(tmp_path / "batch.log")
+    assert batch_kwargs['report_csv_path'] == str(tmp_path / "report.csv")
+    assert batch_kwargs['processing_settings']['modify_files']['Operator']['broadband_filter_audio']['n_threads'] == 7
 
 
 def _video_sync_synchronizer(tmp_path, *, tolerance=50, rel_thresh=0.6):

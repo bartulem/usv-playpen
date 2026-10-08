@@ -81,6 +81,13 @@ from pathlib import Path
 RESERVED_METADATA_KEYS = ('_input_metadata', '_run_metadata',
                           '_univariate_metadata', '_consolidation_metadata')
 
+#: File-name globs of a consolidated model-selection artifact, as
+#: `load_selection_results` scans a directory for them: the two names
+#: `consolidate_model_selection_results` writes
+#: (`model_selection_final_...pkl`, `legacy_selection_...pkl`) and the
+#: older `selection_*.pkl`.
+CONSOLIDATED_SELECTION_PATTERNS = ('model_selection_final_*.pkl', 'legacy_selection_*.pkl', 'selection_*.pkl')
+
 #: Schema version per metadata block. Bump the corresponding entry whenever
 #: the on-disk shape of that block changes incompatibly.
 SCHEMA_VERSIONS = {
@@ -435,8 +442,8 @@ def build_input_metadata(modeling_settings: dict,
         The `kinematic_features.dyadic_pose_symmetric` flag that was
         active during extraction.
     noise_usvs_excluded : bool
-        mixture-model-supercategory codes stripped at load time
-        (`vocal_features.exclude_noise_usvs`).
+        Whether the segments `detect-usv-noise` flagged as noise were
+        dropped at load time (`vocal_features.exclude_noise_usvs`).
     vocal_signal_columns_added : list of str
         Vocal-history column names injected into the per-session DFs by
         `build_vocal_signal_columns`. Empty when `usv_predictor_type`
@@ -574,7 +581,13 @@ def build_run_metadata(modeling_settings: dict,
       the JAX path (multinomial, continuous): `bin_resizing_factor`,
       `lambda_smooth_fixed`, `l2_reg_fixed`, `smoothness_derivative_order`,
       `learning_rate`, `max_iter`, `tol`, `random_state`,
-      `use_lax_loop`, `tune_regularization_bool`. Plus
+      `use_lax_loop`, `tune_regularization_bool`, the `temporal_basis`
+      block (`type` "none" or "bspline", `n_splines`, `spline_order`,
+      `lambda_smooth_fixed`, `lambda_smooth_decades_each_side`) and
+      `effective_penalty` (the `lambda_smooth`, `l2_reg`,
+      `smoothness_derivative_order` and `smoothness_reflective_edges` the
+      fit actually uses: the block's own for full-resolution filters, the
+      GAM-mirroring P-spline penalty for B-splines). Plus
       `focal_loss_gamma`, `balance_predictions_bool`, and
       `balance_train_bool` for multinomial only.
     - **Inner-CV grid** — populated when `tune_regularization_bool` is
@@ -672,7 +685,26 @@ def build_run_metadata(modeling_settings: dict,
             'random_state': int(jax_block['random_state']),
             'use_lax_loop': bool(jax_block['use_lax_loop']),
             'tune_regularization_bool': bool(jax_block['tune_regularization_bool']),
+            'temporal_basis': dict(jax_block['temporal_basis']),
         }
+        # The penalty the fit actually uses: the block's own for full-resolution
+        # filters, the GAM-mirroring P-spline penalty (second order, open
+        # boundary, no L2, strength from the temporal_basis block) for B-splines
+        # (modeling_bases_functions.resolve_temporal_basis).
+        if jax_block['temporal_basis']['type'] == 'bspline':
+            metadata['jax_hyperparameters']['effective_penalty'] = {
+                'lambda_smooth': float(jax_block['temporal_basis']['lambda_smooth_fixed']),
+                'l2_reg': 0.0,
+                'smoothness_derivative_order': 2,
+                'smoothness_reflective_edges': False,
+            }
+        else:
+            metadata['jax_hyperparameters']['effective_penalty'] = {
+                'lambda_smooth': float(jax_block['lambda_smooth_fixed']),
+                'l2_reg': float(jax_block['l2_reg_fixed']),
+                'smoothness_derivative_order': int(jax_block['smoothness_derivative_order']),
+                'smoothness_reflective_edges': True,
+            }
         if jax_kind == 'multinomial_logistic':
             metadata['jax_hyperparameters']['focal_loss_gamma'] = float(jax_block['focal_loss_gamma'])
             metadata['jax_hyperparameters']['balance_predictions_bool'] = bool(jax_block['balance_predictions_bool'])
@@ -689,9 +721,13 @@ def build_run_metadata(modeling_settings: dict,
                 _inner_cv_metric = 'vm_logscore' if _manifold_metric == 'torus' else 'dcor_xy'
             else:
                 _inner_cv_metric = tp['inner_cv_scoring_metric']
+            # A B-spline basis tunes lambda_smooth over its own decades and pins
+            # the L2 grid to 0 (resolve_temporal_basis); record the grid in use.
+            _bspline = jax_block['temporal_basis']['type'] == 'bspline'
             metadata['jax_hyperparameters']['tune_regularization_params'] = {
-                'lambda_smooth_decades_each_side': int(tp['lambda_smooth_decades_each_side']),
-                'l2_reg_decades_each_side': int(tp['l2_reg_decades_each_side']),
+                'lambda_smooth_decades_each_side': int(jax_block['temporal_basis']['lambda_smooth_decades_each_side']
+                                                       if _bspline else tp['lambda_smooth_decades_each_side']),
+                'l2_reg_decades_each_side': 0 if _bspline else int(tp['l2_reg_decades_each_side']),
                 'inner_cv_folds': int(tp['inner_cv_folds']),
                 'inner_cv_scoring_metric': _inner_cv_metric,
                 'inner_cv_use_one_se_rule': bool(tp['inner_cv_use_one_se_rule']),
@@ -1077,9 +1113,10 @@ def derive_camera_fps_field(camera_fr_dict: dict):
 
 def load_selection_results(selection_results_path) -> tuple:
     """
-    Load a model-selection result set from a consolidated
-    `selection_*.pkl` artifact produced by
-    `consolidate_model_selection_results`.
+    Load a model-selection result set from a consolidated artifact
+    produced by `consolidate_model_selection_results`
+    (`model_selection_final_<sex>_<cohort>_<tag>_<split>[_<ts>].pkl`,
+    or `legacy_selection_<ts>.pkl` for steps without input metadata).
 
     Accepts either an explicit file path or a directory:
 
@@ -1087,13 +1124,15 @@ def load_selection_results(selection_results_path) -> tuple:
       the directory has several consolidated artifacts (e.g. multiple
       re-runs with different USV-category columns or timestamps) and
       you want to pin a specific one.
-    * **Directory** -- scanned for `selection_*.pkl` and the
-      most-recently-modified match is loaded. Convenient for the
+    * **Directory** -- scanned for the names in
+      `CONSOLIDATED_SELECTION_PATTERNS` (the two consolidator names
+      above, plus `selection_*.pkl` for artifacts renamed by hand) and
+      the most-recently-modified match is loaded. Convenient for the
       "just give me the latest" workflow.
 
     The legacy per-step `*_step_*.pkl` directory layout that this
     function used to fall back to has been removed: every recent
-    selection run consolidates into a single `selection_*.pkl`, and
+    selection run consolidates into a single artifact, and
     carrying two code paths makes the loader harder to reason about
     when both formats happen to coexist in the same directory. If
     you need to plot from an old per-step result set, run the
@@ -1102,8 +1141,8 @@ def load_selection_results(selection_results_path) -> tuple:
     Parameters
     ----------
     selection_results_path : str or pathlib.Path
-        Either a `selection_*.pkl` file or a directory containing
-        one or more such files.
+        Either a consolidated selection `.pkl` file or a directory
+        containing one or more such files.
 
     Returns
     -------
@@ -1130,7 +1169,7 @@ def load_selection_results(selection_results_path) -> tuple:
     ------
     FileNotFoundError
         When `selection_results_path` does not exist, when it points
-        to a directory that contains no `selection_*.pkl`, or when
+        to a directory that contains no consolidated artifact, or when
         the directory holds only legacy `*_step_*.pkl` files (which
         should be re-consolidated before plotting).
     ValueError
@@ -1142,15 +1181,24 @@ def load_selection_results(selection_results_path) -> tuple:
     if path.is_file():
         chosen = path
     elif path.is_dir():
+        # The names `consolidate_model_selection_results` writes:
+        # `model_selection_final_<sex>_<cohort>_<tag>_<split>[_<ts>].pkl`, or
+        # `legacy_selection_<ts>.pkl` for steps without input metadata
+        # (`selection_*.pkl` is kept for artifacts renamed by hand).
         cons_candidates = sorted(
-            path.glob('selection_*.pkl'),
+            {
+                candidate
+                for pattern in CONSOLIDATED_SELECTION_PATTERNS
+                for candidate in path.glob(pattern)
+            },
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
         if not cons_candidates:
             legacy_present = any(path.glob('*_step_*.pkl'))
             msg = (
-                f"No consolidated selection_*.pkl found in {path}."
+                f"No consolidated selection artifact "
+                f"({', '.join(CONSOLIDATED_SELECTION_PATTERNS)}) found in {path}."
                 + (
                     " Legacy *_step_*.pkl files are present; run "
                     "`consolidate_model_selection_results` on them before "

@@ -17,18 +17,18 @@ Key Capabilities:
 6.  Data cleaning: Applying category-based noise filtering and clean-history
     constraints to ensure biological accuracy.
 """
+from __future__ import annotations
+
+import pickle
+from pathlib import Path
 
 import h5py
 import numpy as np
-from scipy.stats import invgauss, norm
-import re
-from pathlib import Path
-import pickle
 import polars as pls
+from astropy.convolution import Gaussian1DKernel, convolve
+from scipy.stats import invgauss, norm
 
-from ..os_utils import drop_noise_usvs
-from astropy.convolution import convolve
-from astropy.convolution import Gaussian1DKernel
+from ..os_utils import QLVM_CATEGORY_COLUMN, VOCAL_FLAG_COLUMNS, call_class_mask, drop_noise_usvs
 
 
 def load_behavioral_feature_data(behavior_file_paths: list = None,
@@ -76,6 +76,62 @@ def load_behavioral_feature_data(behavior_file_paths: list = None,
 # per-call label column; 'pooled_rate' / 'pooled_binary' never read one.
 CATEGORY_PREDICTOR_TYPES = ('categories_rate', 'all_rate')
 
+# The onset target types (`model_params.onset_target_type`): which call classes of
+# the summary's usv / squeak booleans (os_utils.call_class_mask) are the positive
+# onset source. 'usv' keeps pure USVs only, so a segment holding both a squeak and
+# an ultrasonic call is dropped; 'usv_with_both' keeps those "both" segments as
+# USVs too; 'squeak' keeps pure squeaks only. 'all' keeps every row without
+# reading the booleans (None: no class filter).
+ONSET_TARGET_CALL_CLASSES = {
+    'usv': ('usv',),
+    'usv_with_both': ('usv', 'both'),
+    'squeak': ('squeak',),
+    'all': None,
+}
+
+
+def read_usv_summary_table(csv_path: str | Path, csv_sep: str) -> pls.DataFrame:
+    """
+    Description
+    -----------
+    Reads one session's ``*_usv_summary.csv`` for the modeling loaders.
+
+    Every column's type is inferred from ALL rows (``infer_schema_length=None``):
+    with the default 100-row inference a column empty in the first 100 rows (e.g.
+    ``qlvm_category`` or ``mask_number`` of a session that opens with noise or
+    unlabelled rows) is read as String, and the category filters
+    (``pls.col(category_column) == k``) and mask sums then fail. ``usv_id`` stays
+    a zero-padded string.
+
+    The per-mouse selections filter on ``emitter``, so a session whose
+    ``emitter`` column is entirely empty (``vcl-assign`` has not run since the
+    last ``das-summarize``, which rewrites the summary without it) gives every
+    mouse zero calls; a warning names that cause here, before the downstream
+    "no events" errors that would otherwise hide it.
+
+    Parameters
+    ----------
+    csv_path (str | pathlib.Path)
+        Path of the session's USV summary.
+    csv_sep (str)
+        Column separator of the summary.
+
+    Returns
+    -------
+    usv_summary_data (polars.DataFrame)
+        The summary table.
+    """
+
+    usv_summary_data = pls.read_csv(
+        source=csv_path, separator=csv_sep, infer_schema_length=None, schema_overrides={'usv_id': pls.String}
+    )
+    if 'emitter' in usv_summary_data.columns and usv_summary_data.height and usv_summary_data['emitter'].null_count() == usv_summary_data.height:
+        print(
+            f"Warning: {Path(csv_path).name} has no assigned emitter (the emitter column is empty), so no call "
+            f"is attributed to either mouse; run vcl-assign on the session (after das-summarize)."
+        )
+    return usv_summary_data
+
 
 def require_usv_category_column(category_column: str | None,
                                 purpose: str,
@@ -86,10 +142,10 @@ def require_usv_category_column(category_column: str | None,
     -----------
     Fails clearly when a category-dependent analysis has no USV category label
     column to read. The usv_summary.csv files written by ``infer-qlvm-latents``
-    carry the QLVM cluster labels of the regular model (``qlvm_category`` /
-    ``qlvm_supercategory``, the shipped ``vocal_features.usv_category_column_name``
-    being ``qlvm_supercategory``), but a summary embedded before the labels
-    were written, or a setting of ``null``, leaves a path without them. Every
+    carry the QLVM category of the regular model (``qlvm_category``, written by
+    ``assign-qlvm-categories``; the shipped ``vocal_features.usv_category_column_name``),
+    but a summary whose categories were not assigned yet, or a setting of ``null``,
+    leaves a path without them. Every
     path that needs labels (per-category vocal predictors, the multinomial and
     binomial category models, the single-category onset target) calls this
     first, so the run stops with a message naming the setting instead of
@@ -121,7 +177,7 @@ def require_usv_category_column(category_column: str | None,
             f"QLVM category labels are not available; set vocal_features.usv_category_column_name to an "
             f"existing label column. {purpose} needs a per-USV category label, and the setting is "
             f"{category_column!r}. Point the setting at a label column the usv_summary.csv files carry "
-            f"(e.g. 'qlvm_supercategory' or 'qlvm_category', written by infer-qlvm-latents) or use a "
+            f"(e.g. 'qlvm_category', written by assign-qlvm-categories) or use a "
             f"label-free alternative (e.g. usv_predictor_type 'pooled_rate')."
         )
         raise ValueError(error_message)
@@ -594,7 +650,7 @@ def find_onset_epochs(root_directories: list = None,
         vocalization (default True). A summary without the ``noise`` column raises.
     category_column : str, optional
         Name of the per-USV category column in the summary .csv (e.g.
-        'qlvm_supercategory', 'qlvm_category', 'qlvm_dur_category'). Used both for the per-category continuous predictor
+        'qlvm_category'). Used both for the per-category continuous predictor
         signals and, when `target_category` is set, for the onset-target filter.
         May be None when neither of those needs it; a `vocal_output_type` of 'categories_rate' /
         'all_rate', or a `target_category` in 'individual' mode, with a None
@@ -603,7 +659,7 @@ def find_onset_epochs(root_directories: list = None,
     target_category : int, optional
         If set (and `prediction_mode == 'individual'`), restricts the POSITIVE
         onset events to USVs whose `category_column` value equals this category
-        (e.g. `qlvm_supercategory` 3). The predictor
+        (e.g. `qlvm_category` 3). The predictor
         vocal traces ('usv_rate'/'usv_count'/'usv_cat_X') and the silent-epoch
         (negative) reference are still computed over ALL of the mouse's USVs, so
         the category choice changes only which onsets count as positive events.
@@ -613,19 +669,29 @@ def find_onset_epochs(root_directories: list = None,
         sequence; in those modes all categories are pooled as before. If None
         (default), all USV categories are pooled (original behavior).
     target_type : str, optional
-        Which calls are the POSITIVE onset source, read from the summary's boolean
-        ``squeak`` column (written by the squeak classifier): ``'usv'`` (default)
-        keeps the ultrasonic calls only, ``'squeak'`` the squeaks only, ``'all'``
-        both. Applied before `target_category`, in every mode whose positives are
-        call times ('bout_onset', 'individual', 'bout_offset'), so in 'usv' mode bouts are
-        grouped from ultrasonic calls alone -- a squeak between two calls no longer
-        joins or splits a bout -- and squeak onsets are no longer counted as USV
-        onsets. As with `target_category`, the predictor vocal traces and the
-        silent-epoch (negative) reference still use ALL of the mouse's calls, so a
-        negative window is silent of squeaks too. ``'squeak'`` is accepted in
+        Which calls are the POSITIVE onset source, read from the summary's
+        ``usv`` / ``squeak`` booleans (written by the call classifier, ``detect-usv-squeaks``):
+        ``'usv'`` (default) keeps pure USVs only (``usv & ~squeak``),
+        ``'usv_with_both'`` pure USVs and the segments holding both a squeak and an
+        ultrasonic call (``usv``, whatever ``squeak`` is), ``'squeak'`` pure squeaks
+        only (``squeak & ~usv``), ``'all'`` every row (``ONSET_TARGET_CALL_CLASSES``).
+        A segment holding both (a squeak and an ultrasonic call together) is
+        therefore dropped by default and kept only by ``'usv_with_both'`` (or
+        ``'all'``); null booleans (a segment too short to score) are in none of
+        ``'usv'``, ``'usv_with_both'`` and ``'squeak'``. Applied before
+        `target_category`, in every mode whose positives are call times ('bout_onset',
+        'individual', 'bout_offset'), so in 'usv' mode bouts are grouped from pure
+        ultrasonic calls alone -- a squeak or a "both" segment between two calls no
+        longer joins or splits a bout -- and squeak onsets are no longer counted as USV
+        onsets; in 'usv_with_both' mode a "both" segment is a bout member and an
+        onset like any USV. As with `target_category`, the predictor vocal traces and
+        the silent-epoch (negative) reference still use ALL of the mouse's calls
+        (every class, whatever the target type), so a negative window is silent of
+        squeaks and "both" segments too, and the negatives are the same for every
+        target type. ``'squeak'`` is accepted in
         'individual' mode only: bout grouping needs an inter-bout threshold, and
         the per-sex thresholds are calibrated on ultrasonic-call intervals, not on
-        squeaks. A summary without a ``squeak`` column raises unless ``'all'``.
+        squeaks. A summary without the ``usv`` / ``squeak`` columns raises unless ``'all'``.
     negative_scheme : str, optional
         ``'bout_offset'`` mode only. ``'cross_bout'``: each positive (the last
         call's offset of a bout) is paired with an interior call's offset from
@@ -671,8 +737,8 @@ def find_onset_epochs(root_directories: list = None,
             'usv_rate': Gaussian-smoothed density trace over the full per-mouse USV set.
     """
 
-    if target_type not in ('usv', 'squeak', 'all'):
-        raise ValueError(f"Unknown target_type: {target_type!r}. Must be 'usv', 'squeak' or 'all'.")
+    if target_type not in ONSET_TARGET_CALL_CLASSES:
+        raise ValueError(f"Unknown target_type: {target_type!r}. Must be one of {list(ONSET_TARGET_CALL_CLASSES)}.")
     if target_type == 'squeak' and prediction_mode != 'individual':
         raise ValueError(
             f"target_type 'squeak' is supported in 'individual' mode only, not {prediction_mode!r}: "
@@ -707,17 +773,17 @@ def find_onset_epochs(root_directories: list = None,
             print(f"Warning: No USV summary found for {session_id}. Skipping.")
             continue
 
-        usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
+        usv_summary_data = read_usv_summary_table(csv_path, csv_sep)
 
         for category_purpose in category_purposes:
             require_usv_category_column(category_column, category_purpose,
                                         summary_columns=usv_summary_data.columns, source=str(csv_path))
         if exclude_noise_usvs:
             usv_summary_data = drop_noise_usvs(usv_summary_data, Path(csv_path).name)[0]
-        if target_type != 'all' and 'squeak' not in usv_summary_data.columns:
+        if target_type != 'all' and any(column not in usv_summary_data.columns for column in VOCAL_FLAG_COLUMNS):
             raise ValueError(
-                f"{Path(csv_path).name} has no 'squeak' column, so target_type {target_type!r} "
-                "cannot be applied; run the squeak classifier on the session, or use 'all'."
+                f"{Path(csv_path).name} has no {list(VOCAL_FLAG_COLUMNS)} columns, so target_type {target_type!r} "
+                "cannot be applied; run detect-usv-squeaks on the session, or use 'all'."
             )
 
         if session_id not in mouse_ids_dict:
@@ -767,11 +833,14 @@ def find_onset_epochs(root_directories: list = None,
             # drives the predictor vocal traces below, and the all-USV frame
             # still drives the silent-epoch (negative) reference, so neither the
             # predictors nor the negatives are affected by the category choice.
-            # The target type is applied first: ultrasonic calls, squeaks, or both.
-            if target_type == 'usv':
-                typed_source_df = mouse_usvs_df.filter(~pls.col('squeak'))
-            elif target_type == 'squeak':
-                typed_source_df = mouse_usvs_df.filter(pls.col('squeak'))
+            # The target type is applied first: pure ultrasonic calls, pure ultrasonic
+            # calls plus "both" segments, pure squeaks, or every call. Null booleans
+            # match no class; a "both" segment only 'usv_with_both' (and 'all').
+            target_call_classes = ONSET_TARGET_CALL_CLASSES[target_type]
+            if target_call_classes is not None:
+                typed_source_df = mouse_usvs_df.filter(
+                    call_class_mask(mouse_usvs_df, target_call_classes, Path(csv_path).name)
+                )
             else:
                 typed_source_df = mouse_usvs_df
             if target_category is not None and prediction_mode == 'individual':
@@ -1046,12 +1115,13 @@ def find_usv_categories(root_directories: list = None,
             'continuous_onsets': np.array of start times for valid USVs (used for continuous models).
             'continuous_targets': np.array of shape (N, D) stacking the configured
                 manifold columns in the order given by `manifold_column_names`.
-            'continuous_supercategory': np.array of per-USV supercategory labels,
-                aligned 1:1 with 'continuous_onsets'. Present only when the
-                '<manifold_prefix>_supercategory' column exists in the source CSV.
             'continuous_category': np.array of per-USV category labels, aligned 1:1
-                with 'continuous_onsets'. Present only when the
-                '<manifold_prefix>_category' column exists in the source CSV.
+                with 'continuous_onsets': the regular map's QLVM category
+                (os_utils.QLVM_CATEGORY_COLUMN, 'qlvm_category') whatever map the
+                manifold columns come from, because the categories are defined on
+                the regular map only and label each call, not a map. Present only
+                when that column exists in the source CSV (a summary whose
+                categories assign-qlvm-categories has not written yet has none).
     """
 
     # Per-call labels are needed by the categorical paths only: the multinomial /
@@ -1086,7 +1156,7 @@ def find_usv_categories(root_directories: list = None,
             print(f"Warning: No USV summary found for {session_id}. Skipping.")
             continue
 
-        usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
+        usv_summary_data = read_usv_summary_table(csv_path, csv_sep)
 
         # A configured column must exist (an explicit setting that names a missing
         # column is a configuration error on every path, the manifold one included).
@@ -1220,25 +1290,22 @@ def find_usv_categories(root_directories: list = None,
                     usv_data_dict[session_id][mouse_name]['continuous_onsets'] = mouse_usvs['start'].to_numpy()[placed]
                     usv_data_dict[session_id][mouse_name]['continuous_targets'] = manifold_targets[placed]
 
-                    # Per-USV supercategory and category labels. Used by
-                    # downstream region-conditioned analyses (CNN saliency,
-                    # cluster-circle membership). Derived from the manifold
-                    # prefix: e.g., 'qlvm_dur1' -> 'qlvm_dur' -> 'qlvm_dur_supercategory',
-                    # 'qlvm_dur_category'. Stored as plain numpy arrays aligned
-                    # 1:1 with continuous_onsets / continuous_targets above.
-                    # Stored only when the columns are present in the source
-                    # CSV; absent label arrays signal "this USV summary
-                    # predates supercategory/category labelling."
-                    manifold_prefix = re.sub(r'\d+$', '', manifold_column_names[0])
-                    super_col = f"{manifold_prefix}_supercategory"
-                    cat_col = f"{manifold_prefix}_category"
-                    if super_col in mouse_usvs.columns:
-                        usv_data_dict[session_id][mouse_name]['continuous_supercategory'] = (
-                            mouse_usvs[super_col].to_numpy()[placed]
-                        )
-                    if cat_col in mouse_usvs.columns:
+                    # Per-USV category labels, the acoustic regions of
+                    # downstream region-conditioned analyses (torus macro
+                    # score, equal-region reweighting, model selection, CNN
+                    # saliency, GLM-HMM targets). The label is the regular
+                    # map's qlvm_category (R-1..R-k) for EVERY map -- qlvm and
+                    # the four conditional maps alike: the categories are defined
+                    # on the regular map only (os_utils.QLVM_CATEGORY_MAP) and
+                    # are a property of the call, so a conditional map's calls
+                    # carry the same labels. Stored as a plain numpy array
+                    # aligned 1:1 with continuous_onsets / continuous_targets
+                    # above, only when the column is present in the source CSV;
+                    # an absent label array signals "this USV summary carries
+                    # no categories yet" (assign-qlvm-categories not run).
+                    if QLVM_CATEGORY_COLUMN in mouse_usvs.columns:
                         usv_data_dict[session_id][mouse_name]['continuous_category'] = (
-                            mouse_usvs[cat_col].to_numpy()[placed]
+                            mouse_usvs[QLVM_CATEGORY_COLUMN].to_numpy()[placed]
                         )
 
     if manifold_column_names:
@@ -1420,7 +1487,7 @@ def find_variable_length_bouts(root_directories: list = None,
             print(f"Warning: No USV summary found for {session_id}. Skipping.")
             continue
 
-        usv_summary_data = pls.read_csv(source=csv_path, separator=csv_sep)
+        usv_summary_data = read_usv_summary_table(csv_path, csv_sep)
 
         has_mask = 'mask_number' in usv_summary_data.columns
         if category_traces:

@@ -19,7 +19,16 @@ from sklearn.metrics import (log_loss, roc_auc_score, f1_score, recall_score,
                              balanced_accuracy_score, mean_squared_log_error,
                              mean_gamma_deviance, brier_score_loss)
 from .load_input_files import load_pickle_modeling_data
-from .modeling_bases_functions import _normalizecols, bsplines, identity, laplacian_pyramid, raised_cosine
+from .modeling_bases_functions import (
+    _normalizecols,
+    basis_coefficients_to_frames,
+    bsplines,
+    identity,
+    laplacian_pyramid,
+    project_history_onto_basis,
+    raised_cosine,
+    resolve_temporal_basis,
+)
 from .modeling_utils import (
     pool_session_arrays,
     brier_score_multi,
@@ -37,7 +46,6 @@ from .modeling_utils import (
     format_selection_step,
     held_out_session_ids_from_metadata,
     development_heldout_masks,
-    manifold_tag_segment,
 )
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .modeling_vocal_categories_multinomial import (
@@ -70,6 +78,7 @@ from .modeling_torus_geodesics import (
     geodesic_mae_columns,
     make_qlvm_decode_fn_from_source,
     resolve_geodesic_decoder_source,
+    resolve_manifold_column_names,
 )
 from .modeling_metadata import (
     build_selection_metadata, inject_metadata, RESERVED_METADATA_KEYS,
@@ -249,7 +258,7 @@ def _fold_paired_margin_bootstrap(
     random_state (int)
         Seed for the deterministic fold bootstrap.
     event_to_region (np.ndarray)
-        Per-event acoustic-region (supercategory) label, aligned to the same
+        Per-event acoustic-region (QLVM category) label, aligned to the same
         full-event index space as each fold's ``test_indices``. Required for the
         torus macro von Mises score; pass ``None`` to score with the pooled
         (label-free) von Mises log-likelihood (the coarse pre-screen path, which
@@ -1887,7 +1896,7 @@ def vocal_category_model_selection(
 
     # Pin which USV category column generated the binary target so the
     # per-step prefix (and downstream consolidation) carries the choice
-    # forward in the filename — e.g. `qlvm_supercategory`, `qlvm_category`.
+    # forward in the filename — e.g. `qlvm_category`.
     _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
     # `target_category` is the human-readable `category_<idx>` (kept for
     # metadata + console output); strip the redundant prefix when
@@ -2535,9 +2544,10 @@ def bout_parameter_model_selection(
     --------------------------------------
     The tensor-product unroll duplicates each trial's scalar target `y_tr` across `H` history
     frames via `np.repeat(y_tr, H)` and fits as if those `N * H` rows were independent
-    observations. This inflates the effective sample size seen by pyGAM's penalty selection
-    (GCV/REML), nudging it toward under-smoothing relative to a truly i.i.d. fit on `N`
-    observations. Test-time aggregation is performed per-trial so held-out metrics remain on
+    observations. The smoothness penalty is fixed (`lam_penalty`, never tuned: pyGAM's
+    `gridsearch()` is not called), while the data term grows with the `N * H` duplicated rows,
+    so the fixed penalty weighs less than it would on `N` truly i.i.d. observations, nudging
+    the fit toward under-smoothing. Test-time aggregation is performed per-trial so held-out metrics remain on
     the correct `N` scale, and cross-validation is the practical safeguard against the
     resulting optimism; the bias is shared by both engines' multivariate paths and so does
     not confound the sklearn-vs-pyGAM comparison.
@@ -3630,7 +3640,13 @@ def multinomial_vocal_category_model_selection(
     raw_data.pop('_consolidation_metadata', None)
     _univariate_md = _univ_pre_md
 
-    hp = settings['hyperparameters']['linear_models']['multinomial_logistic']
+    # The temporal representation (full-resolution frames or a B-spline basis) decides the
+    # penalty settings the fit uses; `hp` is that effective block. The basis spans the
+    # history window of the input pickle (every feature and session shares its length).
+    _first_feature = raw_data[ranked_features[0]]
+    history_frames = _first_feature[sorted(_first_feature)[0]]['X'].shape[1]
+    temporal_basis, hp = resolve_temporal_basis(
+        settings['hyperparameters']['linear_models']['multinomial_logistic'], history_frames)
     bin_size = hp['bin_resizing_factor']
 
     binned_data = {}
@@ -3648,6 +3664,8 @@ def multinomial_vocal_category_model_selection(
             if bin_size > 1:
                 new_T = T // bin_size
                 X_s = X_s[:, :new_T * bin_size].reshape(N, new_T, bin_size).mean(axis=2)
+            if temporal_basis is not None:
+                X_s = project_history_onto_basis(X_s, temporal_basis)
 
             X_list.append(X_s)
             y_list.append(y_s)
@@ -3752,6 +3770,7 @@ def multinomial_vocal_category_model_selection(
     # the SE band. `focal_loss_gamma` is intentionally not tuned — it is
     # treated as a data-modelling choice.
     smoothness_order = hp['smoothness_derivative_order']
+    reflective_edges = hp['smoothness_reflective_edges']
     tune_regularization_bool = hp['tune_regularization_bool']
     tune_params = hp['tune_regularization_params']
     lambda_smooth_grid_mn = _log_spaced_grid_multinomial(
@@ -3810,6 +3829,7 @@ def multinomial_vocal_category_model_selection(
             n_features=n_feats_,
             n_time_bins=n_time_bins,
             smoothness_derivative_order=smoothness_order,
+            smoothness_reflective_edges=reflective_edges,
             focal_gamma=model_focal_gamma,
             uniform_class_weights=model_uniform_weights,
             learning_rate=hp['learning_rate'],
@@ -3856,8 +3876,7 @@ def multinomial_vocal_category_model_selection(
     target_condition = cond_match.group(1) if cond_match else "unknown"
     # Pin which USV category column generated the multinomial labels so
     # the per-step prefix (and downstream consolidation) carries the
-    # choice forward in the filename — e.g. `qlvm_supercategory`,
-    # `qlvm_category`.
+    # choice forward in the filename — e.g. `qlvm_category`.
     _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
     prefix = f"model_selection_multinomial_{_column_name_cats}_{target_condition}_{split_strategy}_step_"
 
@@ -3878,6 +3897,7 @@ def multinomial_vocal_category_model_selection(
             'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
             'p_val': float(p_val),
             'bin_resizing_factor': int(bin_size),
+            'temporal_basis': dict(hp['temporal_basis']),
             'target_condition': target_condition,
             # Held-out provenance (also in the embedded `_input_metadata` sibling);
             # duplicated here so the selection run-metadata is self-describing.
@@ -4091,7 +4111,7 @@ def multinomial_vocal_category_model_selection(
                 'metrics': {m: [] for m in
                             ['auc', 'score', 'recall', 'f1', 'll',
                              'brier', 'ece', 'mcc']},
-                'weights': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
+                'weights': [], 'basis_coefficients': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
                 'p_train': [], 'p_test': [],
                 'confusion_matrix': [],
                 'n_iter': [], 'converged': [], 'fit_time': [],
@@ -4122,6 +4142,7 @@ def multinomial_vocal_category_model_selection(
                     lambda_smooth=fold_lambda_smooth,
                     l2_reg=fold_l2_reg,
                     smoothness_derivative_order=smoothness_order,
+                    smoothness_reflective_edges=reflective_edges,
                     focal_gamma=model_focal_gamma,
                     uniform_class_weights=model_uniform_weights,
                     learning_rate=hp['learning_rate'],
@@ -4160,7 +4181,8 @@ def multinomial_vocal_category_model_selection(
                     f_met['ece'].append(np.nan)
                 f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
 
-                cand_data['folds']['weights'].append(model.coef_)
+                cand_data['folds']['weights'].append((basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=1, axis=1) if temporal_basis is not None else model.coef_))
+                cand_data['folds']['basis_coefficients'].append((np.asarray(model.coef_) if temporal_basis is not None else None))
                 cand_data['folds']['intercepts'].append(model.intercept_)
                 cand_data['folds']['y_true'].append(y_te)
                 cand_data['folds']['y_pred'].append(y_pred)
@@ -4322,7 +4344,7 @@ def multinomial_vocal_category_model_selection(
                     'metrics': {m: [] for m in
                                 ['auc', 'score', 'recall', 'f1', 'll',
                                  'brier', 'ece', 'mcc']},
-                    'weights': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
+                    'weights': [], 'basis_coefficients': [], 'intercepts': [], 'y_true': [], 'y_pred': [], 'y_probs': [], 'test_indices': [],
                     'p_train': [], 'p_test': [],
                     'confusion_matrix': [],
                     'n_iter': [], 'converged': [], 'fit_time': [],
@@ -4371,6 +4393,7 @@ def multinomial_vocal_category_model_selection(
                         lambda_smooth=fold_lambda_smooth,
                         l2_reg=fold_l2_reg,
                         smoothness_derivative_order=smoothness_order,
+                        smoothness_reflective_edges=reflective_edges,
                         focal_gamma=model_focal_gamma,
                         uniform_class_weights=model_uniform_weights,
                         learning_rate=hp['learning_rate'],
@@ -4410,7 +4433,8 @@ def multinomial_vocal_category_model_selection(
                         f_met['ece'].append(np.nan)
                     f_met['mcc'].append(safe_matthews_corrcoef(y_te, y_pred))
 
-                    cand_data['folds']['weights'].append(model.coef_)
+                    cand_data['folds']['weights'].append((basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=n_trial_feats, axis=1) if temporal_basis is not None else model.coef_))
+                    cand_data['folds']['basis_coefficients'].append((np.asarray(model.coef_) if temporal_basis is not None else None))
                     cand_data['folds']['intercepts'].append(model.intercept_)
                     cand_data['folds']['y_true'].append(y_te)
                     cand_data['folds']['y_pred'].append(y_pred)
@@ -4557,8 +4581,11 @@ def multinomial_vocal_category_model_selection(
                 raw_weights = np.array(weights_list)
                 n_folds, n_classes, _ = raw_weights.shape
                 n_final_feats = len(current_model_features)
+                # The stored weights are on the frame axis (B-spline coefficients are
+                # converted back at storage), so the per-feature length is derived
+                # from them rather than from `n_time_bins` (the fitted column count).
                 reshaped_weights = raw_weights.reshape(
-                    n_folds, n_classes, n_final_feats, n_time_bins,
+                    n_folds, n_classes, n_final_feats, -1,
                 )
         else:
             reshaped_weights = None
@@ -4608,6 +4635,7 @@ def multinomial_vocal_category_model_selection(
                     lambda_smooth=final_lambda_smooth,
                     l2_reg=final_l2_reg,
                     smoothness_derivative_order=smoothness_order,
+                    smoothness_reflective_edges=reflective_edges,
                     focal_gamma=model_focal_gamma,
                     uniform_class_weights=model_uniform_weights,
                     learning_rate=hp['learning_rate'],
@@ -4620,7 +4648,8 @@ def multinomial_vocal_category_model_selection(
                 y_proba = held_model.predict_proba(X_held, balanced=hp['balance_predictions_bool'])
                 y_pred = held_model.predict(X_held, balanced=hp['balance_predictions_bool'])
                 model_classes = held_model.classes_
-                held_weights = held_model.coef_
+                held_weights = (basis_coefficients_to_frames(held_model.coef_, temporal_basis, n_features=n_final_feats, axis=1) if temporal_basis is not None else held_model.coef_)
+                held_basis_coefficients = (np.asarray(held_model.coef_) if temporal_basis is not None else None)
                 held_intercepts = held_model.intercept_
                 held_n_iter = int(held_model.n_iter_)
                 held_converged = bool(held_model.converged_)
@@ -4636,6 +4665,7 @@ def multinomial_vocal_category_model_selection(
                 y_pred = np.full(len(y_held), majority_class)
                 model_classes = unique_classes
                 held_weights = None
+                held_basis_coefficients = None
                 held_intercepts = None
                 held_n_iter = 0
                 held_converged = True
@@ -4683,6 +4713,7 @@ def multinomial_vocal_category_model_selection(
                     'brier': h_brier, 'ece': h_ece, 'mcc': h_mcc,
                 },
                 'weights': held_weights,
+                'basis_coefficients': held_basis_coefficients,
                 'intercepts': held_intercepts,
                 'y_true': y_held,
                 'y_pred': y_pred,
@@ -4835,7 +4866,7 @@ def continuous_vocal_manifold_model_selection(
         Path to the univariate regression results pickle file containing the
         paired actual / null per-fold metric arrays.
     input_data_path : str
-        Path to the extracted UMAP data containing X (history), Y (UMAP),
+        Path to the extracted manifold data containing X (history), Y (manifold position),
         and w (KDE spatial weights).
     output_directory : str
         Directory to save the step-wise state dictionaries.
@@ -5082,7 +5113,13 @@ def continuous_vocal_manifold_model_selection(
     raw_data.pop('_consolidation_metadata', None)
     _univariate_md = _univ_pre_md
 
-    hp = settings['hyperparameters']['linear_models']['manifold_regression']
+    # The temporal representation (full-resolution frames or a B-spline basis) decides the
+    # penalty settings the fit uses; `hp` is that effective block. The basis spans the
+    # history window of the input pickle (every feature and session shares its length).
+    _first_feature = raw_data[ranked_features[0]]
+    history_frames = _first_feature[sorted(_first_feature)[0]]['X'].shape[1]
+    temporal_basis, hp = resolve_temporal_basis(
+        settings['hyperparameters']['linear_models']['manifold_regression'], history_frames)
     bin_size = hp['bin_resizing_factor']
 
     binned_data = {}
@@ -5097,11 +5134,11 @@ def continuous_vocal_manifold_model_selection(
             X_s = raw_data[feat][sess_id]['X']
             y_s = raw_data[feat][sess_id]['Y']
             w_s = raw_data[feat][sess_id]['w']
-            # Per-event acoustic-region (supercategory) labels, row-aligned to Y;
-            # NaN when a pickle carried no labels (torus score then degrades to
-            # the pooled form, reweighting to uniform).
-            if 'supercategory' in raw_data[feat][sess_id]:
-                region_s = np.asarray(raw_data[feat][sess_id]['supercategory'], dtype=np.float32)
+            # Per-event acoustic-region labels (the QLVM category, packet key
+            # 'category'), row-aligned to Y; NaN when a pickle carried no labels
+            # (torus score then degrades to the pooled form, reweighting to uniform).
+            if 'category' in raw_data[feat][sess_id]:
+                region_s = np.asarray(raw_data[feat][sess_id]['category'], dtype=np.float32)
             else:
                 region_s = np.full(len(y_s), np.nan, dtype=np.float32)
 
@@ -5109,6 +5146,8 @@ def continuous_vocal_manifold_model_selection(
             if bin_size > 1:
                 new_T = T // bin_size
                 X_s = X_s[:, :new_T * bin_size].reshape(N, new_T, bin_size).mean(axis=2)
+            if temporal_basis is not None:
+                X_s = project_history_onto_basis(X_s, temporal_basis)
 
             X_list.append(X_s)
             y_list.append(y_s)
@@ -5223,6 +5262,7 @@ def continuous_vocal_manifold_model_selection(
     inner_max_iter = tune_params['inner_max_iter']
     use_lax_loop = hp['use_lax_loop']
     smoothness_order = hp['smoothness_derivative_order']
+    reflective_edges = hp['smoothness_reflective_edges']
 
     print(f"Random Seed: {random_seed} | Num Splits: {n_splits} | Split Strategy: Spatial Proxy ({split_strategy.upper()})")
     if tune_regularization_bool:
@@ -5329,19 +5369,15 @@ def continuous_vocal_manifold_model_selection(
     cond_match = re.search(r'((?:male|female).*?)(?=_splits|_lam|_gmm|\.pkl)', fname)
     target_condition = cond_match.group(1) if cond_match else "unknown"
 
-    # Pin which USV category column the manifold targets were derived
-    # from (e.g. `qlvm_supercategory`, `qlvm_category`) so the per-step
-    # prefix (and downstream consolidation) carries the choice forward
-    # in the filename.
-    # Without a label column (null setting) the segment names the embedding
-    # instead, exactly as the extraction pipeline's tag does. The manifold column
-    # names are read only then: a pickle with a label column needs no other key.
-    _column_name_cats = _input_md['analysis_specific']['usv_category_column_name']
-    if not _column_name_cats:
-        _column_name_cats = manifold_tag_segment(
-            _column_name_cats, _input_md['analysis_specific']['usv_manifold_column_names'],
-        )
-    prefix = f"model_selection_continuous_manifold_{_column_name_cats}_{target_condition}_{split_strategy}_step_"
+    # The per-step prefix (and so the consolidated artifact) carries the input
+    # pickle's analysis tag verbatim: the extraction pipeline minted it from the
+    # QLVM map the manifold targets come from (`manifold_qlvm`,
+    # `manifold_qlvm_duration`, ...; `modeling_utils.manifold_tag_segment`), so
+    # the selector and the extraction always agree on the name, and a pickle
+    # written before the map-prefix tag (`manifold_qlvm_category`) keeps the
+    # step-file name it always had.
+    _analysis_tag = _input_md['analysis_tag']
+    prefix = f"model_selection_continuous_{_analysis_tag}_{target_condition}_{split_strategy}_step_"
 
     _run_md = build_selection_metadata(
         modeling_settings=settings,
@@ -5360,6 +5396,7 @@ def continuous_vocal_manifold_model_selection(
             'use_top_rank_as_anchor': bool(use_top_rank_as_anchor),
             'p_val': float(p_val),
             'bin_resizing_factor': int(bin_size),
+            'temporal_basis': dict(hp['temporal_basis']),
             'screening_metric': SCREENING_METRIC,
             'target_condition': target_condition,
             # Selection-score provenance. On the torus the numeric key `dcor_xy`
@@ -5499,8 +5536,8 @@ def continuous_vocal_manifold_model_selection(
 
     # Precompute the torus geodesic "reference map" ONCE (fold-independent, like
     # the flat metric): the density-ratio and decoder-Jacobian pullback geodesic
-    # geometries over a regular grid, from all embedded `Y` plus the frozen QLVM
-    # decoder. Per fold, each event's (prediction, truth) pair snaps to the grid
+    # geometries over a regular grid, from all embedded `Y` plus the frozen
+    # decoder of the map `Y` comes from. Per fold, each event's (prediction, truth) pair snaps to the grid
     # and looks up its geodesic distance, giving the `density_geodesic_mae` /
     # `pullback_geodesic_mae` columns. Torus-only; any failure (disabled, missing
     # settings block, or unavailable decoder) degrades to NaN columns and never
@@ -5512,8 +5549,11 @@ def continuous_vocal_manifold_model_selection(
         _geo_cfg = _vf_settings['usv_manifold_geodesic_metrics']
         if _geo_cfg['compute']:
             # Resolved outside the soft-failure block: a settings block without
-            # decoder_model_cell_directory is a settings error, not a NaN column.
-            _geo_decoder_source = resolve_geodesic_decoder_source(_geo_cfg)
+            # pullback_metric is a settings error, not a NaN column. The decoder
+            # is the production cell of the map the input pickle's manifold
+            # columns come from (os_utils constants), never a path.
+            _geo_decoder_source = resolve_geodesic_decoder_source(
+                _geo_cfg, resolve_manifold_column_names(_input_md, _vf_settings))
             try:
                 _geo_decode_fn = None
                 if _geo_decoder_source is not None:
@@ -5662,6 +5702,9 @@ def continuous_vocal_manifold_model_selection(
             'folds': {
                 'metrics': {m: [] for m in MANIFOLD_METRIC_KEYS},
                 'weights': [],
+                # Raw spline coefficients when a temporal basis is used (None
+                # otherwise); `weights` holds them mapped onto the frame axis.
+                'basis_coefficients': [],
                 'intercepts': [],
                 'test_indices': [],
                 'y_true': [],
@@ -5746,6 +5789,7 @@ def continuous_vocal_manifold_model_selection(
             n_time_bins=n_time_bins,
             spatial_cluster_num=n_clusters,
             smoothness_derivative_order=smoothness_order,
+            smoothness_reflective_edges=reflective_edges,
             huber_delta=hp['huber_delta'],
             learning_rate=hp['learning_rate'],
             inner_max_iter=inner_max_iter,
@@ -5805,6 +5849,7 @@ def continuous_vocal_manifold_model_selection(
                     n_features=1, n_time_bins=n_time_bins,
                     lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
                     smoothness_derivative_order=smoothness_order,
+                    smoothness_reflective_edges=reflective_edges,
                     huber_delta=hp['huber_delta'],
                     learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
                     tol=hp['tol'], random_state=hp['random_state'] + fold_idx,
@@ -5825,7 +5870,8 @@ def continuous_vocal_manifold_model_selection(
                 for _mk in f_met:
                     f_met[_mk].append(metrics[_mk])
 
-                cand_data['folds']['weights'].append(model.coef_)
+                cand_data['folds']['weights'].append((basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=1, axis=0) if temporal_basis is not None else model.coef_))
+                cand_data['folds']['basis_coefficients'].append((np.asarray(model.coef_) if temporal_basis is not None else None))
                 cand_data['folds']['intercepts'].append(model.intercept_)
                 cand_data['folds']['test_indices'].append(te_idx)
                 cand_data['folds']['y_true'].append(Y_te)
@@ -6002,6 +6048,7 @@ def continuous_vocal_manifold_model_selection(
                         n_features=n_trial_feats, n_time_bins=n_time_bins,
                         lambda_smooth=fold_lambda_smooth, l2_reg=fold_l2_reg,
                         smoothness_derivative_order=smoothness_order,
+                        smoothness_reflective_edges=reflective_edges,
                         huber_delta=hp['huber_delta'],
                         learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
                         tol=hp['tol'], random_state=hp['random_state'] + fold_idx,
@@ -6022,7 +6069,8 @@ def continuous_vocal_manifold_model_selection(
                     for _mk in f_met:
                         f_met[_mk].append(metrics[_mk])
 
-                    cand_data['folds']['weights'].append(model.coef_)
+                    cand_data['folds']['weights'].append((basis_coefficients_to_frames(model.coef_, temporal_basis, n_features=n_trial_feats, axis=0) if temporal_basis is not None else model.coef_))
+                    cand_data['folds']['basis_coefficients'].append((np.asarray(model.coef_) if temporal_basis is not None else None))
                     cand_data['folds']['intercepts'].append(model.intercept_)
                     cand_data['folds']['test_indices'].append(te_idx)
                     cand_data['folds']['y_true'].append(Y_te)
@@ -6198,6 +6246,7 @@ def continuous_vocal_manifold_model_selection(
                     n_features=n_feats_final, n_time_bins=n_time_bins,
                     lambda_smooth=final_lambda_smooth, l2_reg=final_l2_reg,
                     smoothness_derivative_order=smoothness_order,
+                    smoothness_reflective_edges=reflective_edges,
                     huber_delta=hp['huber_delta'],
                     learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
                     tol=hp['tol'], random_state=held_seed,
@@ -6216,7 +6265,8 @@ def continuous_vocal_manifold_model_selection(
                     'model_type': 'manifold_regressor',
                     'features': list(current_model_features),
                     'metrics': {_mk: float(held_metrics[_mk]) for _mk in MANIFOLD_METRIC_KEYS},
-                    'weights': held_model.coef_,
+                    'weights': (basis_coefficients_to_frames(held_model.coef_, temporal_basis, n_features=n_feats_final, axis=0) if temporal_basis is not None else held_model.coef_),
+                    'basis_coefficients': (np.asarray(held_model.coef_) if temporal_basis is not None else None),
                     'intercept': held_model.intercept_,
                     'test_indices': _held_positions,
                     'y_true': Y_held,

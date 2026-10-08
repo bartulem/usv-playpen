@@ -96,7 +96,7 @@ def signed_diff(a: np.ndarray, b: np.ndarray, *,
     ----------
     a, b : np.ndarray
         Same-shape coordinate arrays. Last axis is the per-coordinate
-        axis (typically 2 for `(x, y)` UMAP).
+        axis (typically 2 for the `(x, y)` QLVM torus coordinates).
     metric : str
         `'euclidean'` or `'torus'`.
     period : float
@@ -535,7 +535,7 @@ def macro_von_mises_logscore(Y_pred: np.ndarray, Y_true: np.ndarray,
     correlation.
 
     When ``region_labels`` is given, the per-point log-likelihood is averaged
-    within each acoustic region (a supercategory label) and those per-region
+    within each acoustic region (a QLVM category label) and those per-region
     means are then **macro-averaged with equal weight** across regions that carry
     at least ``min_region_events`` labelled events. This rewards a feature that
     rescues badly-predicted (often rare) regions rather than only sharpening the
@@ -551,7 +551,7 @@ def macro_von_mises_logscore(Y_pred: np.ndarray, Y_true: np.ndarray,
     Y_true : np.ndarray
         ``(n, 2)`` true torus coordinates.
     region_labels : np.ndarray, optional
-        Length-``n`` per-event acoustic-region labels (e.g. supercategory);
+        Length-``n`` per-event acoustic-region labels (e.g. qlvm_category);
         NaN marks an unlabelled event. ``None`` -> pooled (single-region) score.
     metric : str
         Manifold geometry; this score is meaningful only for ``'torus'`` (the
@@ -589,7 +589,7 @@ def macro_von_mises_logscore(Y_pred: np.ndarray, Y_true: np.ndarray,
     region_labels = np.asarray(region_labels, dtype=np.float64)
     labelled = ~np.isnan(region_labels)
     if not labelled.any():
-        # No usable region labels (a pickle extracted without supercategory
+        # No usable region labels (a pickle extracted without category
         # labels) -> degrade to the pooled
         # single-region score rather than returning NaN, so the score stays
         # defined and the run proceeds (identical to `region_labels=None`). The
@@ -619,7 +619,7 @@ def warn_if_no_region_labels(region_labels: np.ndarray, *, metric: str, context:
     -----------
     Announces, once per run, that the torus region-balanced machinery has no
     region labels to balance over. The per-event acoustic-region labels are the
-    supercategory packet the extraction stage writes only when the summaries carry
+    category packet the extraction stage writes only when the summaries carry
     labels; without it (no label column configured, or summaries without one) the
     loaders fill the region array with NaN, and two things fall back: the ``'macro'`` von Mises
     score (:func:`macro_von_mises_logscore`, the torus selection objective
@@ -650,7 +650,7 @@ def warn_if_no_region_labels(region_labels: np.ndarray, *, metric: str, context:
     labels = np.asarray(region_labels, dtype=np.float64)
     if labels.size > 0 and bool((~np.isnan(labels)).any()):
         return False
-    print(f"WARNING [{context}]: no acoustic-region (supercategory) labels in the modeling data (QLVM labels "
+    print(f"WARNING [{context}]: no acoustic-region (QLVM category) labels in the modeling data (QLVM labels "
           f"are unavailable), so the torus 'macro' von Mises score (vm_logscore) fell back to the pooled "
           f"score (identical to vm_logscore_pooled), and the equal-region fit reweighting fell back to "
           f"uniform weights.")
@@ -662,7 +662,7 @@ def inverse_region_frequency_weights(region_labels: np.ndarray) -> np.ndarray:
     Per-row inverse-region-frequency multipliers for equal-region fit reweighting.
 
     Returns a length-``n`` factor array to multiply into a training sample-weight
-    vector so that every acoustic region (supercategory) contributes roughly
+    vector so that every acoustic region (QLVM category) contributes roughly
     equal total weight to the fit, preventing a few dominant regions from drowning
     the rare ones. Each labelled row's factor is ``1 / count[its region]``;
     unlabelled (NaN-region) rows receive the median labelled factor so they are
