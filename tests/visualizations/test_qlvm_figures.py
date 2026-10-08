@@ -249,6 +249,9 @@ def test_figure_sample_reads_images_and_reuses_its_cache(tmp_path, monkeypatch):
     assert np.array_equal(again["row_index"], sample["row_index"])
 
 
+# On the small synthetic sample UMAP's spectral initialisation can fail on some platforms (macOS CI);
+# UMAP then falls back to a random initialisation, which is fine for a render test.
+@pytest.mark.filterwarnings("ignore:Spectral initialisation failed:UserWarning")
 def test_three_figures_render_on_synthetic_sessions(tmp_path, monkeypatch):
     """The overview, the quality figure (stubbed decoder geometry) and the category figure render, and the
     categories of the synthetic data (two tones) score above a band partition orthogonal to them."""
