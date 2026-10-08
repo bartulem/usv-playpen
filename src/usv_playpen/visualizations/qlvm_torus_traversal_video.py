@@ -26,9 +26,10 @@ ignores ``shared_resources.qlvm_map`` (the map the other QLVM figures draw; a
 conditional choice there is reported and passed over, not refused), and the
 store's ``qlvm/<key>/qlvm`` coordinates must come from the production regular
 cell the bundle is defined on (``qlvm_models/qlvm`` provenance attrs of the store,
-checked before rendering): a store of another cell (e.g. the v3 archive written by
-the current ``consolidate-spectrogram-store``) places the calls on another torus,
-and the bundle's regions would mislabel them, so it is refused.
+checked before rendering): a production store (``consolidate-spectrogram-store``
+in production mode) passes, while a store of another cell (e.g. the v3 archive the
+same command writes in v3 mode) places the calls on another torus, and the
+bundle's regions would mislabel them, so it is refused.
 
 Layout:
   left  = [0,1]^2 latent map (heatmap + category-bundle contours, no axes/ticks) with a
@@ -127,8 +128,9 @@ def pool_latents_from_h5(h5, qlvm_map: str) -> tuple[np.ndarray, list[tuple[str,
     Description
     -----------
     Pools every session's per-USV latent coordinates of one QLVM map from the
-    consolidated H5's ``qlvm/<key>/<qlvm_map>`` datasets (the map's v3 cell torus
-    coordinates, written by ``consolidate-spectrogram-store``; row ``i`` is the
+    consolidated H5's ``qlvm/<key>/<qlvm_map>`` datasets (the map's torus
+    coordinates, written by ``consolidate-spectrogram-store`` in either store
+    mode, NaN where a call was not embedded; row ``i`` is the
     session's spectrogram row ``i``) into one array, with a parallel
     ``(session key, spectrogram row)`` list so a nearest-neighbour hit can be
     mapped straight back to a spectrogram. Rows with NaN coords are dropped, and
@@ -258,11 +260,13 @@ def check_store_map_provenance(h5, qlvm_map: str) -> str:
     -----------
     Checks that the consolidated store's coordinates of ``qlvm_map`` come from
     the production cell the category bundle is defined on, so the bundle's
-    regions describe the torus the pooled calls sit on. The store records each
-    model's package root and cell (``qlvm_models/<map>`` attrs ``package_root`` /
-    ``cell``, written by ``consolidate-spectrogram-store``); their
-    ``<package>/<phase>/<cell>`` identifier (``os_utils.qlvm_cell_model_id``)
-    must equal the production cell's.
+    regions describe the torus the pooled calls sit on. A production store
+    (``consolidate-spectrogram-store`` in production mode) records each map's
+    ``<package>/<phase>/<cell>`` identifier as the ``qlvm_models/<map>`` attr
+    ``model_id``; a v3 store records the package root and cell instead (attrs
+    ``package_root`` / ``cell``), whose identifier
+    (``os_utils.qlvm_cell_model_id``) is computed here. Either way it must
+    equal the production cell's.
 
     Parameters
     ----------
@@ -289,7 +293,10 @@ def check_store_map_provenance(h5, qlvm_map: str) -> str:
         )
         raise ValueError(error_message)
     attrs = h5["qlvm_models"][qlvm_map].attrs
-    store_model_id = qlvm_cell_model_id(f"{attrs['package_root']}/{attrs['cell']}")
+    if "model_id" in attrs:
+        store_model_id = str(attrs['model_id'])
+    else:
+        store_model_id = qlvm_cell_model_id(f"{attrs['package_root']}/{attrs['cell']}")
     if store_model_id != expected:
         error_message = (
             f"The consolidated store's {qlvm_map} coordinates come from {store_model_id}, but the QLVM category "
