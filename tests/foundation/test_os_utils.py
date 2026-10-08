@@ -886,7 +886,7 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     # the production squeak QLVM cell (time-stretched, unmasked, no floor)
     assert settings["infer_qlvm_squeak_latents"]["model_cell_directory"] == "/mnt/falkner/Bartul/spectrograms/qlvm/qlvm_squeak"
     assert settings["detect_usv_squeaks"]["squeak_model_path"] == f"{root}/squeak/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt"
-    assert settings["detect_usv_noise"]["noise_model_path"] == f"{root}/noise/noise_timemil_ens5_n4680_broadband_20261008.pt"
+    assert settings["detect_usv_noise"]["noise_model_path"] == f"{root}/noise/noise_timemil_ens5_n4680_20260926.pt"
     # assign-qlvm-categories labels with the category bundle every figure draws, on the regular map
     assert settings["assign_qlvm_categories"] == {
         "category_directory": os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY,
@@ -911,7 +911,7 @@ def test_derive_spectrogram_model_paths_preserves_explicit_overrides():
     # explicit (non-empty) paths win
     assert settings["generate_masks"]["sam2_model_path"] == "/custom/elsewhere/checkpoint.pt"
     assert settings["detect_usv_squeaks"]["squeak_model_path"] == "/custom/squeak.pt"
-    assert settings["detect_usv_noise"]["noise_model_path"] == "/mnt/falkner/Bartul/spectrograms/noise/noise_timemil_ens5_n4680_broadband_20261008.pt"
+    assert settings["detect_usv_noise"]["noise_model_path"] == "/mnt/falkner/Bartul/spectrograms/noise/noise_timemil_ens5_n4680_20260926.pt"
     # empty siblings are still derived from the root
     assert settings["generate_masks"]["sam2_model_dir"] == "/mnt/falkner/Bartul/spectrograms/sam"
     # explicit model cells are left entirely alone, their masking type and time stretch included

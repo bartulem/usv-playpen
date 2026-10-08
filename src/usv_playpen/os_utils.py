@@ -794,7 +794,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     * ``generate_masks.sam2_model_path`` -> ``<root>/sam/checkpoint.pt``
     * ``generate_masks.yolo_weights``    -> ``<root>/sam/best.pt``
     * ``detect_usv_squeaks.squeak_model_path`` -> ``<root>/squeak/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt``
-    * ``detect_usv_noise.noise_model_path`` -> ``<root>/noise/noise_timemil_ens5_n4680_broadband_20261008.pt``
+    * ``detect_usv_noise.noise_model_path`` -> ``<root>/noise/noise_timemil_ens5_n4680_20260926.pt``
 
     A granular key is filled only when it is empty, so an explicit path set in
     the JSON (or via a CLI flag) wins -- the root supplies defaults, it never
@@ -857,7 +857,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     root = settings['spectrograms_root']
     sam_dir = f'{root}/sam'
     squeak_dir = f'{root}/squeak'
-    # The noise model file name carries its training: TimeMIL, 5-seed ensemble, 4,680 labels, broadband input, build date.
+    # The noise model file name carries its training: TimeMIL, 5-seed ensemble, 4,680 labels, build date.
     # The call-class (usv / squeak / both) model's likewise: 5-member ensemble, 2,476 non-unsure labels,
     # build date, and "_reviewed" for the label set with the review overrides applied.
     noise_dir = f'{root}/noise'
@@ -866,7 +866,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
         ('generate_masks', 'sam2_model_path', f'{sam_dir}/checkpoint.pt'),
         ('generate_masks', 'yolo_weights', f'{sam_dir}/best.pt'),
         ('detect_usv_squeaks', 'squeak_model_path', f'{squeak_dir}/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt'),
-        ('detect_usv_noise', 'noise_model_path', f'{noise_dir}/noise_timemil_ens5_n4680_broadband_20261008.pt'),
+        ('detect_usv_noise', 'noise_model_path', f'{noise_dir}/noise_timemil_ens5_n4680_20260926.pt'),
     )
     for block, key, derived_path in derived:
         if not settings[block][key]:
