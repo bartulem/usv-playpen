@@ -449,9 +449,32 @@ def test_squeak_audio_channels_refuses_an_incomplete_record(tmp_path):
     record_path.write_text(json.dumps({**record, "complete": False}))
     with pytest.raises(ValueError, match="incomplete"):
         squeaks.squeak_audio_channels(root, False, print)
+    record_path.write_text(json.dumps({k: v for k, v in record.items() if k != "low_band_variance"}))
+    with pytest.raises(ValueError, match="add-broadband-low-band-variance"):
+        squeaks.squeak_audio_channels(root, False, print)
     record_path.unlink()
     with pytest.raises(FileNotFoundError, match="line_noise.json"):
         squeaks.squeak_audio_channels(root, False, print)
+
+
+def test_readers_carry_the_low_band_variance_and_the_window_input_weights_with_it(tmp_path):
+    """Each reader carries its column's stored low-band variance, and the window input adds it to
+    the window variance when weighting the channels: a dominant stored value makes the input equal
+    that channel's single-channel input."""
+    root = tmp_path / SESSION_ID
+    rng = np.random.default_rng(5)
+    channels = [(f"m_250913193920_ch{channel:02d}_cropped_to_video_hpss.wav", rng.integers(-3000, 3000, size=SAMPLING_RATE, dtype=np.int16))
+                for channel in (1, 2, 3)]
+    write_broadband_audio(root, channels, SAMPLING_RATE, low_band_variance=[0.0, 50.0, 0.0])
+    readers = squeaks.squeak_audio_channels(root, False, lambda *_a, **_kw: None)
+    assert [reader.low_band_variance for reader in readers] == [0.0, 50.0, 0.0]
+    window = squeaks.usv_squeak_window_input(readers, readers[0].frames, 0.30, 0.40, squeaks.USV_SQUEAK_INPUT_CONTRACT)
+    only_second = squeaks.usv_squeak_window_input([readers[1]], readers[1].frames, 0.30, 0.40, squeaks.USV_SQUEAK_INPUT_CONTRACT)
+    np.testing.assert_allclose(window["x"][:2], only_second["x"][:2], atol=1e-4)
+    for reader in readers:
+        reader.low_band_variance = 0.0
+    plain = squeaks.usv_squeak_window_input(readers, readers[0].frames, 0.30, 0.40, squeaks.USV_SQUEAK_INPUT_CONTRACT)
+    assert np.abs(plain["x"][:2] - only_second["x"][:2]).max() > 1e-2
 
 
 def test_detect_and_merge_replaces_the_retired_columns(tmp_path, mocker):

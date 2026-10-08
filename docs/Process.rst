@@ -1029,7 +1029,7 @@ The *hpss_filtered* memory-mapped file above keeps only the band above 30 kHz, w
 2. subtracts each kept tone as a sinusoid whose amplitude and phase may drift slowly (complex demodulation over 0.5 s blocks, median-smoothed over 9 blocks);
 3. high-passes the result with a linear-phase (zero-delay) Kaiser FIR equivalent to sox ``sinc -t 1000 2k`` (-6 dB at 2 kHz, at least 120 dB down at and below 1.5 kHz, flat from 2.5 kHz), in floating point and without dither, then rounds to int16.
 
-The channels go into one memory-mapped file whose columns follow the sorted file names (the same order as the *hpss_filtered* file), next to a *line_noise.json* report (per channel: the tones searched, found and removed, with frequency, height and amplitude; the filter and its measured response; the source files and their sizes; the code version):
+The channels go into one memory-mapped file whose columns follow the sorted file names (the same order as the *hpss_filtered* file), next to a *line_noise.json* report (per channel: the tones searched, found and removed, with frequency, height and amplitude; the filter and its measured response; the source files and their sizes; each column's low-band variance, see below; the code version):
 
 .. parsed-literal::
 
@@ -1061,6 +1061,7 @@ The step takes its parameters from the ``broadband_filter_audio`` block of */usv
 * **line_noise_block_s** / **line_noise_smoothing_blocks** : demodulation block length (s) and running-median length (blocks, odd) of the tone subtraction
 * **chunk_s** : length of the processing chunks (s); does not change the result
 * **n_threads** : threads the channels of a chunk are spread over; does not change the result
+* **low_band_variance_windows** / **low_band_variance_window_s** : number and length (s) of the random windows the per-column *low-band variance* is estimated from (default 25 windows of 0.25 s). The audio classifiers (*Produce noise labels*, *Produce squeak labels*, the squeak QLVM embedding and the squeak spectrogram store) average the channels with weights equal to each channel's **full-band** audio variance, which is what their models were trained on; 88 % of that variance lies below the 2 kHz high-pass, so the broadband audio alone gives different weights, and the noise model's recall falls from 0.99 to 0.73 on it (retraining on the broadband audio does not recover the separation). Since full-band variance = low-band variance + high-band variance and the high band is the broadband audio, the report stores each column's typical low-band variance (the median over the random windows of the source wav's variance minus the broadband column's), and the classifiers add it to a window's broadband variance, which reproduces the full-band weights (Spearman 0.997) and the noise model's scores (r 0.994). Reports written before this field existed get it from ``add-broadband-low-band-variance`` (a few seconds of audio per session; the memmap is not rewritten), and a classifier refuses a report without it
 
 .. code-block:: json
 
@@ -1080,7 +1081,9 @@ The step takes its parameters from the ``broadband_filter_audio`` block of */usv
         "line_noise_block_s": 0.5,
         "line_noise_smoothing_blocks": 9,
         "chunk_s": 10.0,
-        "n_threads": 4
+        "n_threads": 4,
+        "low_band_variance_windows": 25,
+        "low_band_variance_window_s": 0.25
     }
 
 Run DAS inference
@@ -1311,7 +1314,7 @@ The decision is fixed by the model bundle, not by a setting. The ensemble's prob
 
 An earlier bundle (``noise_timemil_ens5_n3562_20260916.pt``) described its calibration as measured on sessions the models never trained on; it was not -- 422 of its 633 calibration segments were training labels -- and on new, cohort-representative labels it reached precision 0.78 and recall 0.95 at its threshold, not the 0.987 / 0.973 it reported. The detector refuses bundles without the validated decision block.
 
-Each segment's input is the two-band absolute-dB spectrogram (30-120 kHz and 3-30 kHz, 128 linear bins each) of the channels of the session's broadband memmap (*audio/broadband_filtered*: the per-channel HPSS audio high-passed at 2 kHz with the line-noise tones removed, written by *Broadband-filter audio*; its ``line_noise.json`` names the channel of every column), averaged across channels by variance with metadata-excluded channels dropped. The audio window extends ~100 ms either side of the segment so the channel weights and STFT edges match the training inputs, and the spectrogram is then cropped back to the segment's own frames: the model judges the segment, not its neighbourhood.
+Each segment's input is the two-band absolute-dB spectrogram (30-120 kHz and 3-30 kHz, 128 linear bins each) of the channels of the session's broadband memmap (*audio/broadband_filtered*: the per-channel HPSS audio high-passed at 2 kHz with the line-noise tones removed, written by *Broadband-filter audio*; its ``line_noise.json`` names the channel of every column), averaged across channels by variance -- each channel's broadband variance over the window plus its stored low-band variance from ``line_noise.json``, which equals the full-band variance the model was trained with (see *Broadband MEMMAP*) -- with metadata-excluded channels dropped. The audio window extends ~100 ms either side of the segment so the channel weights and STFT edges match the training inputs, and the spectrogram is then cropped back to the segment's own frames: the model judges the segment, not its neighbourhood.
 
 Run *Produce noise labels* after *Curate DAS outputs* (re-curating rewrites *usv_summary.csv* with its base columns only) and before *Produce squeak labels*; the processing run places both after USV assignment, which neither reads nor drops their columns. The summary's column layout is fixed regardless of the order. A GPU is used when present but is not required: a 424-USV session takes about 64 s on one and 90 s on the CPU, because most of the time goes on reading and transforming the audio rather than on the network.
 

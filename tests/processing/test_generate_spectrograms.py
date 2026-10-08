@@ -78,6 +78,24 @@ def test_compute_usv_spectrogram_shape_and_range():
     assert n_time > 0
 
 
+def test_compute_usv_spectrogram_channel_variance_offsets_steer_the_weights():
+    """An offset large against the audio variances makes its channel the whole average; offsets of
+    the wrong length are refused."""
+    rng = np.random.default_rng(3)
+    sr = 250000
+    audio = np.stack([rng.normal(0.0, 0.01, 8192), rng.normal(0.0, 0.01, 8192)], axis=1)
+    params = {"num_freq_bins": 32, "num_time_bins": None, "nperseg": 2048, "hop_length": 512, "window": "blackmanharris",
+              "min_freq": 30000, "max_freq": 120000}
+    plain, _ = compute_usv_spectrogram(audio, sr, params, normalize=False, db_ref=1.0, top_db=None)
+    first_only, _ = compute_usv_spectrogram(audio[:, [0]], sr, params, normalize=False, db_ref=1.0, top_db=None)
+    steered, _ = compute_usv_spectrogram(audio, sr, params, normalize=False, db_ref=1.0, top_db=None,
+                                         channel_variance_offsets=np.array([1e6, 0.0]))
+    np.testing.assert_allclose(steered, first_only, atol=1e-3)
+    assert np.abs(plain - first_only).max() > 0.5
+    with pytest.raises(ValueError, match="channel_variance_offsets"):
+        compute_usv_spectrogram(audio, sr, params, channel_variance_offsets=np.array([1.0]))
+
+
 def test_compute_usv_spectrogram_too_short_returns_none():
     """A segment shorter than nperseg on every channel yields no spectrogram."""
     segment = np.zeros((100, 4), dtype=np.float64)

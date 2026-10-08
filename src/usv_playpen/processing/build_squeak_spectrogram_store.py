@@ -245,6 +245,7 @@ def log_frequency_weights(linear_freqs: np.ndarray, edges: np.ndarray) -> np.nda
 def log_frequency_spectrogram(
     audio_segment_channels: np.ndarray,
     weights: np.ndarray,
+    channel_variance_offsets: np.ndarray | None = None,
 ) -> tuple[np.ndarray | None, int]:
     """
     Description
@@ -255,17 +256,22 @@ def log_frequency_spectrogram(
     ``nperseg`` 2048, hop 512, centred), the log-bin map ``weights`` on power
     (:func:`log_frequency_weights`), and ``librosa.power_to_db`` with ``ref``
     1.0 and no ``top_db`` clamp. The channel spectrograms are averaged with
-    weights equal to each channel's audio variance (uniform when every channel
-    is silent), as ``generate_spectrograms.compute_usv_spectrogram`` does.
-    Channels shorter than one STFT window are skipped.
+    weights equal to each channel's audio variance plus its
+    ``channel_variance_offsets`` entry (uniform when every channel is silent),
+    as ``generate_spectrograms.compute_usv_spectrogram`` does. Channels shorter
+    than one STFT window are skipped.
 
     Parameters
     ----------
     audio_segment_channels (np.ndarray)
         ``(n_samples, n_channels)`` float audio of the segment (float64 from
-        soundfile, int16 / 32768).
+        the broadband readers, int16 / 32768).
     weights (np.ndarray)
         ``(F, 1 + nperseg // 2)`` log-bin weights.
+    channel_variance_offsets (np.ndarray | None)
+        One value per channel added to its variance before the channel
+        weighting (the channels' stored low-band variances, so the weights equal
+        the full-band variances of the unfiltered audio); None adds nothing.
 
     Returns
     -------
@@ -295,7 +301,10 @@ def log_frequency_spectrogram(
             )
         ) ** 2
         per_channel_specs.append(librosa.power_to_db(weights @ power_spec, ref=SQUEAK_STORE_DB_REF, top_db=None))
-        per_channel_vars.append(float(np.var(audio_segment)))
+        channel_variance = float(np.var(audio_segment))
+        if channel_variance_offsets is not None:
+            channel_variance += float(channel_variance_offsets[channel_index])
+        per_channel_vars.append(channel_variance)
     if not per_channel_specs:
         return None, 0
     channel_weights = np.asarray(per_channel_vars, dtype=np.float64)
@@ -561,7 +570,9 @@ def session_squeak_spectrograms(session_root: str, cfg: dict) -> dict:
                 for handle in handles:
                     handle.seek(first_sample)
                     channel_audio.append(handle.read(frames=max(0, last_sample - first_sample), dtype="float64", always_2d=False))
-                spectrogram_db, n_frames = log_frequency_spectrogram(np.stack(channel_audio, axis=1), weights)
+                spectrogram_db, n_frames = log_frequency_spectrogram(
+                    np.stack(channel_audio, axis=1), weights,
+                    channel_variance_offsets=np.asarray([handle.low_band_variance for handle in handles], dtype=np.float64))
                 if spectrogram_db is None:
                     continue
                 crop_first, crop_last = None, None

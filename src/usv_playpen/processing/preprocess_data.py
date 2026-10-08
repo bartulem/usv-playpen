@@ -9,6 +9,7 @@ import json
 import pathlib
 import traceback
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from importlib import metadata
 
@@ -29,7 +30,12 @@ from .detect_usv_squeaks import USVSqueakDetector, USVSqueakQLVMEmbedder
 from .extract_phidget_data import Gatherer
 from .generate_masks import MaskGenerator
 from .generate_spectrograms import SpectrogramGenerator
-from .modify_files import Operator, broadband_filter_sessions, read_broadband_session_list
+from .modify_files import (
+    Operator,
+    add_broadband_low_band_variance,
+    broadband_filter_sessions,
+    read_broadband_session_list,
+)
 from .prepare_cluster_job import PrepareClusterJob
 from .preprocessing_plot import SummaryPlotter
 from .qlvm_categories import QLVMCategoryAssigner
@@ -830,6 +836,60 @@ def broadband_filter_audio_cli(ctx, root_directory, **kwargs) -> None:
         root_directory=root_directory,
         input_parameter_dict=processing_settings_dict
     ).broadband_filter_audio()
+
+@click.command(name="add-broadband-low-band-variance")
+@click.option('--root-directories', 'root_directories', type=str, default=None, required=False, help='Comma-separated string of session root directory paths.')
+@click.option('--sessions-file', 'sessions_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Text file with one session root per line.')
+@click.option('--usv-counts-csv', 'usv_counts_csv', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help="Session table with 'dir' and 'tag' columns (e.g. session_usv_counts.csv).")
+@click.option('--tag', 'tag', type=str, default='ok', show_default=True, required=False, help="Tag of the --usv-counts-csv rows to process.")
+@click.option('--workers', 'n_workers', type=int, default=4, show_default=True, required=False, help='Sessions processed in parallel (threads).')
+@click.option('--force', 'force', is_flag=True, default=False, help='Recompute a field that is already present.')
+@click.pass_context
+def add_broadband_low_band_variance_cli(ctx, root_directories, sessions_file, usv_counts_csv, tag, n_workers, force, **kwargs) -> None:
+    """
+    Description
+    -----------
+    A command-line tool to add the per-column low-band variance to the
+    broadband report (audio/broadband_filtered/line_noise.json) of sessions
+    whose broadband memmap was written before the field existed; the audio
+    classifiers need it to weight the channels as their models were trained.
+    Sessions come from --root-directories, --sessions-file or --usv-counts-csv;
+    a session whose report already holds the field is skipped unless --force.
+
+    Parameters
+    ----------
+
+    Returns
+    -------
+    None
+    """
+
+    provided_params = [key for key in kwargs if ctx.get_parameter_source(key) == ParameterSource.COMMANDLINE]
+    processing_settings_dict = modify_settings_json_for_cli(
+        ctx=ctx,
+        provided_params=provided_params,
+        settings_dict='processing_settings',
+        block='modify_files.Operator.broadband_filter_audio'
+    )
+    settings = processing_settings_dict['modify_files']['Operator']['broadband_filter_audio']
+    session_roots = [one_dir.strip() for one_dir in (root_directories or '').split(',') if one_dir.strip()]
+    if sessions_file is not None or usv_counts_csv is not None:
+        session_roots += read_broadband_session_list(sessions_file=sessions_file, usv_counts_csv=usv_counts_csv, tag=tag)
+    session_roots = list(dict.fromkeys(session_roots))
+    if not session_roots:
+        raise click.UsageError("Give --root-directories, --sessions-file or --usv-counts-csv.")
+
+    def one(root: str) -> str:
+        try:
+            result = add_broadband_low_band_variance(root, settings, message_output=lambda *_args, **_kwargs: None, force=force)
+            return f"{root}: {result['status']} ({result['reason']})"
+        except Exception as error:
+            return f"{root}: FAILED ({error})"
+
+    with ThreadPoolExecutor(max_workers=max(1, int(n_workers))) as pool:
+        for line in pool.map(one, session_roots):
+            click.echo(line)
+
 
 @click.command(name="broadband-filter-audio-batch")
 @click.option('--sessions-file', 'sessions_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Text file with one session root per line.')

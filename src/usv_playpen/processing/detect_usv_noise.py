@@ -89,8 +89,19 @@ NOISE_COLUMNS = ("noise", "noise_probability")
 # broadband memmap (the 'broadband' band of os_utils.find_audio_mmap), the per-channel HPSS audio
 # high-passed at 2 kHz with the line-noise tones removed. ``audio/hpss_filtered`` is high-passed above
 # 30 kHz and carries no squeak energy, so it is never used. The broadband filter's record next to the
-# memmap names the source wav of every column.
+# memmap names the source wav of every column and stores each column's LOW-BAND VARIANCE (the typical
+# variance of the channel's audio below the high-pass, estimated from random moments of the session;
+# modify_files.estimate_low_band_variance). The models were trained on inputs whose channels were
+# averaged with weights equal to each channel's full-band variance, 88 % of which is below 2 kHz: that
+# weighting is a ranking of the microphones that the high-passed audio alone cannot reproduce (measured
+# 2026-10-08: the production model's recall falls from 0.99 to 0.73, and retraining on the broadband
+# input does not recover the separation). Full-band variance = low-band variance + high-band variance,
+# and the high band IS the broadband audio, so every reader carries its column's stored low-band
+# variance and the spectrogram average adds it to the window's own variance
+# (compute_usv_spectrogram's channel_variance_offsets), which reproduces the production weights
+# (Spearman 0.997) and scores (r 0.994).
 BROADBAND_RECORD_NAME = "line_noise.json"
+BROADBAND_LOW_BAND_KEY = "low_band_variance"
 
 # Input contract of the trained noise models.
 NOISE_SAMPLING_RATE = 250000
@@ -154,7 +165,7 @@ class BroadbandChannelReader:
     one session; ``close`` only drops the reference.
     """
 
-    def __init__(self, memmap: np.memmap, column: int, sampling_rate: int, name: str) -> None:
+    def __init__(self, memmap: np.memmap, column: int, sampling_rate: int, name: str, low_band_variance: float) -> None:
         """
         Description
         -----------
@@ -170,6 +181,10 @@ class BroadbandChannelReader:
             Sampling rate of the memmap (Hz).
         name (str)
             Source wav name of the column (for messages).
+        low_band_variance (float)
+            The column's stored low-band variance (``line_noise.json``), in the units of the variance of
+            the values ``read`` returns; the spectrogram averages add it to the window's variance as the
+            channel's weight (see ``BROADBAND_LOW_BAND_KEY``).
 
         Returns
         -------
@@ -182,6 +197,7 @@ class BroadbandChannelReader:
         self.frames = int(memmap.shape[0])
         self.samplerate = int(sampling_rate)
         self.name = name
+        self.low_band_variance = float(low_band_variance)
 
     def seek(self, frame: int) -> int:
         """
@@ -261,7 +277,10 @@ def squeak_audio_channels(
     (``Equipment -> audio_Avisoft -> excluded_channels``, names such as ``m_ch02`` / ``s_ch11``). The
     channel of each column is taken from the broadband filter's record next to the memmap
     (``line_noise.json``: ``sources`` lists the source HPSS wav of every column), which must be
-    complete and describe exactly this memmap; the memmap must be sampled at 250 kHz. Every audio
+    complete and describe exactly this memmap, and must hold every column's low-band variance
+    (``low_band_variance.per_column``, written by ``broadband-filter-audio`` or added by
+    ``add-broadband-low-band-variance``), which each reader carries; the memmap must be sampled at
+    250 kHz. Every audio
     classifier of the pipeline averages over exactly these channels: the noise model (this module), the
     call-class model and the squeak QLVM embedding (:mod:`detect_usv_squeaks`) and the squeak
     spectrogram store, at inference and in training. It lives here, in the module every one of them
@@ -286,7 +305,8 @@ def squeak_audio_channels(
     FileNotFoundError
         The session has no broadband memmap or no broadband record (run ``broadband-filter-audio``).
     ValueError
-        The record is incomplete or does not match the memmap, or the memmap is not sampled at 250 kHz.
+        The record is incomplete, does not match the memmap or lacks the low-band variances, or the
+        memmap is not sampled at 250 kHz.
     """
 
     mmap_path = find_audio_mmap(session_root, "broadband")
@@ -304,6 +324,13 @@ def squeak_audio_channels(
     if layout["sampling_rate"] != NOISE_SAMPLING_RATE:
         error_message = f"{mmap_path.name} is sampled at {layout['sampling_rate']} Hz; the audio classifiers need {NOISE_SAMPLING_RATE} Hz."
         raise ValueError(error_message)
+    if BROADBAND_LOW_BAND_KEY not in record or len(record[BROADBAND_LOW_BAND_KEY]["per_column"]) != layout["n_channels"]:
+        error_message = (
+            f"{record_path} holds no low-band variance for its {layout['n_channels']} columns; run "
+            f"add-broadband-low-band-variance on {session_root} (broadband-filter-audio writes it for new sessions)."
+        )
+        raise ValueError(error_message)
+    low_band = [float(value) for value in record[BROADBAND_LOW_BAND_KEY]["per_column"]]
     columns = list(range(layout["n_channels"]))
     names = [str(source["file"]) for source in sources]
     if exclude_metadata_audio_channels:
@@ -312,7 +339,7 @@ def squeak_audio_channels(
             message_output(f"Excluding audio channel(s) {sorted(excluded_channels)} from the spectrogram average per session metadata.")
         columns = [column for column in columns if f"{names[column].split('_')[0]}_{names[column].split('_')[2]}" not in excluded_channels]
     memmap = np.memmap(mmap_path, dtype=np.int16, mode="r", shape=(layout["n_samples"], layout["n_channels"]))
-    return [BroadbandChannelReader(memmap, column, layout["sampling_rate"], names[column]) for column in columns]
+    return [BroadbandChannelReader(memmap, column, layout["sampling_rate"], names[column], low_band[column]) for column in columns]
 
 
 def _conv_block(in_channels: int, out_channels: int, pool: tuple[int, int] | None) -> nn.Sequential:
@@ -539,12 +566,14 @@ def segment_input(
     first_frame: int,
     n_frames: int,
     bundle: dict,
+    channel_variance_offsets: np.ndarray | None = None,
 ) -> tuple[np.ndarray, int] | tuple[None, int]:
     """
     Description
     -----------
     Builds one segment's model input: the two-band absolute-dB spectrogram of the context window
-    (variance-weighted across channels), cropped to the segment's own frames, mapped through the fixed
+    (variance-weighted across channels, each channel's variance raised by its
+    ``channel_variance_offsets`` entry), cropped to the segment's own frames, mapped through the fixed
     affine transform, with the segment-indicator channel appended.
 
     Parameters
@@ -557,6 +586,11 @@ def segment_input(
         The segment's own frame count (its stored ``duration`` in frames).
     bundle (dict)
         Loaded model bundle (dB constants and the frame cap).
+    channel_variance_offsets (np.ndarray | None)
+        One value per channel added to its variance before the channel weighting: the channels' stored
+        low-band variances when ``audio_window`` comes from the broadband memmap (the readers carry
+        them), so the weights equal the full-band variances the models were trained with. None adds
+        nothing (full-band audio).
 
     Returns
     -------
@@ -570,7 +604,7 @@ def segment_input(
     for low, high in bundle["bands_hz"]:
         band, _ = compute_usv_spectrogram(
             audio_window, NOISE_SAMPLING_RATE, {**NOISE_SPEC_BASE, "min_freq": low, "max_freq": high},
-            normalize=False, db_ref=NOISE_DB_REF, top_db=None,
+            normalize=False, db_ref=NOISE_DB_REF, top_db=None, channel_variance_offsets=channel_variance_offsets,
         )
         if band is None:
             return None, 0
@@ -595,7 +629,8 @@ def window_segment_input(
     """
     Description
     -----------
-    Reads one segment's audio window from the open per-channel wavs and builds its model input. The
+    Reads one segment's audio window from the open broadband channel readers and builds its model input,
+    the channels weighted by their stored low-band variance plus the window's own variance. The
     window starts exactly ``context_frames`` hops before the segment's first sample (fewer at the start of
     a recording) and ends ``context_frames`` hops after its last sample (or at the end of the file), so
     with the centred STFT the segment occupies frames ``first_frame .. first_frame + n_frames - 1`` of the
@@ -606,9 +641,10 @@ def window_segment_input(
     Parameters
     ----------
     handles (list[BroadbandChannelReader])
-        Open per-channel wavs (one per averaged channel, all of one length).
+        Open broadband channel readers (one per averaged channel, all of one length, each carrying its
+        ``low_band_variance``).
     n_file (int)
-        Frame count (samples) of the wavs.
+        Frame count (samples) of the channels.
     start (float)
         Segment start (s).
     stop (float)
@@ -636,7 +672,8 @@ def window_segment_input(
         handle.seek(read_start)
         channels.append(handle.read(frames=read_stop - read_start, dtype="float64", always_2d=False))
     window = np.stack(channels, axis=1)
-    return segment_input(window, first_frame, 1 + (last_sample - first_sample) // HOP_SAMPLES, bundle)
+    offsets = np.asarray([handle.low_band_variance for handle in handles], dtype=np.float64)
+    return segment_input(window, first_frame, 1 + (last_sample - first_sample) // HOP_SAMPLES, bundle, channel_variance_offsets=offsets)
 
 
 def noise_scalars(chs_count: float, start: float, stop: float) -> np.ndarray:

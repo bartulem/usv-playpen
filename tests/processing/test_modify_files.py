@@ -32,15 +32,19 @@ import pathlib
 
 import numpy as np
 import pytest
+import soundfile as sf
 from scipy import signal
 from scipy.io import wavfile
 
 import usv_playpen
 from usv_playpen.os_utils import find_audio_mmap
+from tests.conftest import write_broadband_audio
 from usv_playpen.processing.modify_files import (
     BROADBAND_BATCH_REPORT_COLUMNS,
     BROADBAND_REPORT_NAME,
     Operator,
+    add_broadband_low_band_variance,
+    estimate_low_band_variance,
     block_mean_phasors,
     broadband_filter_sessions,
     broadband_highpass_cutoff,
@@ -1050,6 +1054,87 @@ def test_broadband_filter_removes_tones_highpasses_and_keeps_column_order(tmp_pa
     taps, _ = design_broadband_highpass(_BB_SR, 2000, 1000, 120)
     reference = np.convolve(signals[2].astype(np.float64), taps, mode="same")
     assert np.max(np.abs(output[:, 2].astype(np.float64) - reference)) <= 1.0
+
+    # the report stores each column's low-band variance: here the 500 Hz sine (amplitude 3000) the
+    # high-pass removed, (3000 / 32768)^2 / 2 on soundfile's float scale, plus the removed tones
+    low_band = report['low_band_variance']
+    assert low_band['windows'] == processing_settings['modify_files']['Operator']['broadband_filter_audio']['low_band_variance_windows']
+    expected = (3000.0 / 32768.0) ** 2 / 2
+    for column, value in enumerate(low_band['per_column']):
+        assert abs(value - expected) / expected < 0.05, (column, value, expected)
+
+
+def test_estimate_low_band_variance_recovers_the_removed_band(tmp_path):
+    """Wavs = low tone + high tone + noise, memmap = high tone + noise (what a high-pass leaves):
+    the estimate is the low tone's variance on the float scale, per column."""
+    sr = 250000
+    rng = np.random.default_rng(11)
+    t = np.arange(2 * sr) / sr
+    noise = rng.normal(0.0, 100.0, size=(t.size, 2))
+    high = 500.0 * np.sin(2 * np.pi * 40000.0 * t)
+    low_amplitudes = (2000.0, 800.0)
+    hpss = tmp_path / "audio" / "hpss"
+    hpss.mkdir(parents=True)
+    names = ["m_230101120000_ch01_cropped_to_video_hpss.wav", "m_230101120000_ch02_cropped_to_video_hpss.wav"]
+    channels = []
+    for column, (name, amplitude) in enumerate(zip(names, low_amplitudes, strict=True)):
+        low = amplitude * np.sin(2 * np.pi * 300.0 * t)
+        sf.write(str(hpss / name), np.clip(low + high + noise[:, column], -32768, 32767).astype(np.int16), sr, subtype="PCM_16")
+        channels.append((name, np.clip(high + noise[:, column], -32768, 32767).astype(np.int16)))
+    mmap_path = write_broadband_audio(tmp_path, channels, sr)
+    estimate = estimate_low_band_variance([hpss / name for name in names], mmap_path, n_windows=12, window_s=0.2)
+    assert estimate['windows'] == 12 and estimate['unit'] == "(int16 / 32768)^2"
+    for value, amplitude in zip(estimate['per_column'], low_amplitudes, strict=True):
+        expected = (amplitude / 32768.0) ** 2 / 2
+        assert abs(value - expected) / expected < 0.05
+
+
+def test_add_broadband_low_band_variance_fills_an_older_report(tmp_path, processing_settings, mocker):
+    """A report written before the field existed gets it added (everything else kept); a report that
+    has it is skipped unless forced; an incomplete session is refused."""
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    _broadband_settings(processing_settings)
+    _write_broadband_session(tmp_path)
+    _make_operator(str(tmp_path), processing_settings, []).broadband_filter_audio()
+    settings = processing_settings['modify_files']['Operator']['broadband_filter_audio']
+    report_path = tmp_path / "audio" / "broadband_filtered" / BROADBAND_REPORT_NAME
+    with open(report_path, encoding="utf-8") as report_file:
+        written = json.load(report_file)
+    older = {key: value for key, value in written.items() if key != 'low_band_variance'}
+    report_path.write_text(json.dumps(older, indent=2))
+
+    result = add_broadband_low_band_variance(tmp_path, settings, message_output=lambda *_a, **_kw: None)
+    assert result['status'] == 'written'
+    with open(report_path, encoding="utf-8") as report_file:
+        restored = json.load(report_file)
+    assert {key: value for key, value in restored.items() if key != 'low_band_variance'} == older
+    assert restored['low_band_variance']['per_column'] == pytest.approx(written['low_band_variance']['per_column'])
+    assert add_broadband_low_band_variance(tmp_path, settings, message_output=lambda *_a, **_kw: None)['status'] == 'skipped'
+    assert add_broadband_low_band_variance(tmp_path, settings, message_output=lambda *_a, **_kw: None, force=True)['status'] == 'written'
+    report_path.write_text(json.dumps({**restored, 'complete': False}, indent=2))
+    with pytest.raises(ValueError, match="not complete and current"):
+        add_broadband_low_band_variance(tmp_path, settings, message_output=lambda *_a, **_kw: None)
+
+
+def test_add_broadband_low_band_variance_cli_runs_every_listed_session(tmp_path, mocker):
+    """The command collects sessions from --root-directories and --sessions-file (each once) and
+    reports each one's status."""
+    from click.testing import CliRunner
+
+    from usv_playpen.processing import preprocess_data
+
+    added = mocker.patch("usv_playpen.processing.preprocess_data.add_broadband_low_band_variance",
+                         side_effect=lambda root, settings, message_output, force: {'status': 'written', 'reason': 'added'})
+    sessions_file = tmp_path / "sessions.txt"
+    sessions_file.write_text("/data/b\n/data/c\n")
+    result = CliRunner().invoke(preprocess_data.add_broadband_low_band_variance_cli,
+                                ["--root-directories", "/data/a,/data/b", "--sessions-file", str(sessions_file), "--workers", "2", "--force"])
+    assert result.exit_code == 0, result.output
+    assert sorted(call.args[0] for call in added.call_args_list) == ["/data/a", "/data/b", "/data/c"]
+    assert all(call.kwargs["force"] is True for call in added.call_args_list)
+    assert result.output.count("written (added)") == 3
+    result = CliRunner().invoke(preprocess_data.add_broadband_low_band_variance_cli, [])
+    assert result.exit_code == 2
 
 
 def test_broadband_filter_is_independent_of_chunk_length(tmp_path, processing_settings, mocker):

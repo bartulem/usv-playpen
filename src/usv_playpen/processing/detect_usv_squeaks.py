@@ -465,7 +465,8 @@ def usv_squeak_window_input(
     for handle in handles:
         handle.seek(read_start)
         channels.append(handle.read(frames=read_stop - read_start, dtype="float64", always_2d=False))
-    x, n_used = segment_input(np.stack(channels, axis=1), 0, 10 ** 9, contract)
+    offsets = np.asarray([handle.low_band_variance for handle in handles], dtype=np.float64)
+    x, n_used = segment_input(np.stack(channels, axis=1), 0, 10 ** 9, contract, channel_variance_offsets=offsets)
     if x is None:
         return None
     n_segment = min(1 + (last_sample - first_sample) // HOP_SAMPLES, n_used - first_frame)
@@ -1538,6 +1539,7 @@ def squeak_window_spectrograms(
                 normalize=False,
                 db_ref=SQUEAK_DB_REF,
                 top_db=None,
+                channel_variance_offsets=np.asarray([handle.low_band_variance for handle in handles], dtype=np.float64),
             )
             spectrograms.append(None if spectrogram is None or n_frames == 0 else spectrogram.astype(np.float32))
     finally:

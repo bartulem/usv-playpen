@@ -129,7 +129,8 @@ def pytest_collection_modifyitems(config, items):
     items[:] = other_items + integrity_items
 
 
-def write_broadband_audio(root: Path, channels: list[tuple[str, np.ndarray]], sampling_rate: int = 250000) -> Path:
+def write_broadband_audio(root: Path, channels: list[tuple[str, np.ndarray]], sampling_rate: int = 250000,
+                          low_band_variance: list[float] | None = None) -> Path:
     """
     Description
     -----------
@@ -137,7 +138,9 @@ def write_broadband_audio(root: Path, channels: list[tuple[str, np.ndarray]], sa
     ``<root>/audio/broadband_filtered/<id>_concatenated_audio_broadband_filtered_<sr>_<n>_<ch>_int16.mmap``
     (int16, samples x channels, columns in the order given, which must be the sorted source wav names)
     plus the filter's record ``line_noise.json`` (complete, naming the memmap and the source wav of
-    every column), which the audio classifiers read through ``detect_usv_noise.squeak_audio_channels``.
+    every column, and holding every column's low-band variance -- zeros unless ``low_band_variance``
+    is given, so the channel weights are the broadband variances), which the audio classifiers read
+    through ``detect_usv_noise.squeak_audio_channels``.
 
     Parameters
     ----------
@@ -147,6 +150,8 @@ def write_broadband_audio(root: Path, channels: list[tuple[str, np.ndarray]], sa
         ``(source wav name, int16 samples)`` per channel, in sorted name order, all the same length.
     sampling_rate (int)
         Sampling rate in Hz.
+    low_band_variance (list[float] | None)
+        Per-column low-band variance written to the record; zeros when None.
 
     Returns
     -------
@@ -168,6 +173,8 @@ def write_broadband_audio(root: Path, channels: list[tuple[str, np.ndarray]], sa
                    "sampling_rate": sampling_rate, "n_samples": int(data.shape[0]), "n_channels": int(data.shape[1]),
                    "column_order": "sorted source wav names"},
         "sources": [{"column": column, "file": name, "bytes": 0} for column, name in enumerate(names)],
+        "low_band_variance": {"method": "synthetic", "windows": 0, "window_s": 0.0, "seed": 0, "unit": "(int16 / 32768)^2",
+                              "per_column": [float(v) for v in (low_band_variance if low_band_variance is not None else [0.0] * len(names))]},
     }
     (folder / "line_noise.json").write_text(json.dumps(record))
     return mmap_path

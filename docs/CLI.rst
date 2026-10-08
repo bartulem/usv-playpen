@@ -254,7 +254,7 @@ Process
       --dirs                Directory/ies to search for files to concatenate.
 
 ``broadband-filter-audio``
-``broadband-filter-audio`` is the command-line interface for writing a session's broadband (2 kHz+) memmap: it removes the line-noise tones of every full-band HPSS channel, high-passes it at 2 kHz (linear phase, no dither) and writes the channels into ``audio/broadband_filtered/<id>_concatenated_audio_broadband_filtered_<sr>_<n>_<ch>_int16.mmap`` with a ``line_noise.json`` report. A session whose output already exists and validates is skipped.
+``broadband-filter-audio`` is the command-line interface for writing a session's broadband (2 kHz+) memmap: it removes the line-noise tones of every full-band HPSS channel, high-passes it at 2 kHz (linear phase, no dither) and writes the channels into ``audio/broadband_filtered/<id>_concatenated_audio_broadband_filtered_<sr>_<n>_<ch>_int16.mmap`` with a ``line_noise.json`` report, which also stores each column's low-band variance (the audio classifiers add it to a window's broadband variance so their channel weights equal the full-band ones their models were trained with; see *Broadband MEMMAP* in :doc:`Process`). A session whose output already exists and validates is skipped.
 
 .. code-block:: text
 
@@ -274,6 +274,21 @@ Process
       --min-tone-height     Minimum line-noise tone height above the local floor (dB) to subtract it.
       --chunk-s             Length of the processing chunks (s).
       --threads             Threads the channels of a chunk are spread over.
+
+``add-broadband-low-band-variance``
+``add-broadband-low-band-variance`` adds the per-column low-band variance to the ``line_noise.json`` report of sessions whose broadband memmap was written before the field existed, from ``low_band_variance_windows`` random windows of ``low_band_variance_window_s`` seconds of the source wavs and the memmap (the memmap itself is not rewritten). Sessions come from ``--root-directories``, ``--sessions-file`` or ``--usv-counts-csv``; a report that already holds the field is skipped unless ``--force``; a session whose broadband output is not complete and current is reported as failed.
+
+.. code-block:: text
+
+    usage: add-broadband-low-band-variance [-h] [--root-directories TEXT,TEXT,...] [--sessions-file PATH] [--usv-counts-csv PATH] [--tag TEXT] [--workers INTEGER] [--force]
+
+    Options:
+      --root-directories    Comma-separated string of session root directory paths.
+      --sessions-file       Text file with one session root per line.
+      --usv-counts-csv      Session table with 'dir' and 'tag' columns.
+      --tag                 Tag of the --usv-counts-csv rows to process (default ok).
+      --workers             Sessions processed in parallel (default 4).
+      --force               Recompute a field that is already present.
 
 ``broadband-filter-audio-batch``
 ``broadband-filter-audio-batch`` is the command-line interface for backfilling the broadband memmap over many sessions, several sessions at a time. It is resumable (sessions with a valid broadband memmap are skipped), appends one row per finished session to the report CSV and writes all messages to the log file.
