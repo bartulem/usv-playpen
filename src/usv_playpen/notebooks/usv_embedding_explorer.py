@@ -1,4 +1,6 @@
 """
+@author: bartulem
+
 Marimo notebook for interactively exploring USV embeddings (the QLVM maps).
 
 Usage
@@ -19,12 +21,13 @@ spectrogram/SAM2 store.
 
 Architecture
 ------------
-- Cell layout (the practical marimo minimum, 6 cells): imports; settings;
-  widgets; pooled-data load; scatter (prepare + chart); explorer (controls +
-  spectrogram grid). The scatter, the brushable ``mo.ui.altair_chart`` and the
-  cell that reads its selection must stay separate -- marimo forbids reading a
-  UI element's value in its defining cell -- and the load is isolated so a
-  color/sample tweak never rebuilds the pooled DataFrame.
+- Cell layout (8 cells): imports; settings; widgets; the per-session filter
+  (pruned to the loaded lists); pooled-data load; scatter (prepare + chart);
+  the tooltip style; explorer (controls + spectrogram grid). The scatter, the
+  brushable ``mo.ui.altair_chart`` and the cell that reads its selection must
+  stay separate -- marimo forbids reading a UI element's value in its defining
+  cell -- and the load is isolated so a color/sample tweak never rebuilds the
+  pooled DataFrame.
 - Pick one or more session lists; their per-session ``usv_summary.csv`` rows are
   pooled (and cached to a per-selection parquet) by ``build_pooled_embeddings_df``.
 - An altair scatter of the chosen QLVM map's torus (the regular model or the
@@ -75,6 +78,7 @@ use and OS-resolved via ``os_utils.resolve_experimenter_path`` (set the
 ``EXPERIMENTER_ID`` env var to override the host config's experimenter), so the
 app follows whoever launches it and resolves correctly on macOS / Linux.
 """
+
 from __future__ import annotations
 
 import marimo
