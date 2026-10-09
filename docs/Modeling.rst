@@ -208,6 +208,7 @@ cross-validation and held-out-test settings live in their own
         "usv_manifold_period": 1.0,
         "usv_manifold_min_region_events": 20,
         "usv_manifold_selection_score": "macro",
+        "freeze_selection_kappa": false,
         "usv_manifold_geodesic_metrics": {
             "compute": true,
             "grid_n_per_dim": 40,
@@ -228,6 +229,7 @@ cross-validation and held-out-test settings live in their own
 * **usv_manifold_period** — the wrap period for the ``'torus'`` metric.
 * **usv_manifold_min_region_events** — the minimum number of labelled events an acoustic region (a QLVM category) must contain to enter the **macro** (region-balanced) von Mises average and the region-weighted MAE; sparser regions are dropped from those balanced statistics so a single under-sampled corner cannot dominate them (default ``20``). Ignored on euclidean and when no region labels are present. Without region labels (``usv_category_column_name`` ``null``, or a pickle extracted without them) the torus ``'macro'`` score falls back to the pooled score and the equal-region fit reweighting to uniform weights; the univariate and selection runs print a ``WARNING`` saying so, rather than substituting silently.
 * **usv_manifold_selection_score** — on the ``'torus'`` metric, which von Mises log-score the forward selection ranks on: ``'macro'`` (default) uses the region-balanced ``vm_logscore``, ``'micro'`` uses the event-weighted ``vm_logscore_pooled`` twin. Both are always logged per candidate, so this only changes which column drives the greedy ranking and the acceptance gate — the candidate pool, the region-reweighted fit, and every other reported metric are identical — making a macro-vs-micro selection comparison a one-key flip. Ignored on euclidean (which always ranks on ``dcor_xy``); an absent key resolves to ``'macro'``.
+* **freeze_selection_kappa** — on a torus manifold run, ``true`` fits the von Mises concentration ``kappa`` once on the development set and reuses it for every score (baseline, fitted candidates, held-out, and the acceptance-gate bootstrap), so every margin sits on one dispersion scale; ``false`` (shipped) refits ``kappa`` per scored prediction set (see the *Frozen von Mises concentration* note below). Ignored on euclidean.
 * **usv_manifold_geodesic_metrics** — the analysis-only *reference-map* geometry for the two torus **geodesic** prediction-error columns (``density_geodesic_mae``, ``pullback_geodesic_mae``), reported per fold alongside the flat-torus MAE on the ``'torus'`` metric (both ``NaN`` on euclidean). ``compute`` toggles the whole block; ``grid_n_per_dim`` sets the resolution of the regular torus grid the all-pairs geodesic distance matrices are precomputed on once (``40`` → a 40×40 node lattice, so per-event errors are cheap snap-to-grid look-ups); ``graph_k`` is the number of wrap-aware nearest neighbours per node in the k-NN graph the shortest paths run over; ``density_exponent`` is the inverse-aggregate-posterior-density exponent ``α`` weighting the density-ratio geodesic (``0`` recovers the flat graph metric, larger values push paths harder through dense regions); ``pullback_metric`` switches the decoder-Jacobian pullback geodesic on: the frozen decoder whose Jacobian defines the pullback metric ``G = JᵀJ`` is not a setting but the production cell of the map the manifold coordinates come from, ``os_utils.qlvm_map_cell_directory(<map>)`` with ``<map>`` the map prefix of the input pickle's recorded ``usv_manifold_column_names`` (``_input_metadata.analysis_specific``; a pickle without that record falls back to the current setting): ``qlvm1`` / ``qlvm2`` -> the regular cell ``.../spectrograms/qlvm/qlvm``, ``qlvm_duration`` / ``qlvm_entropy`` / ``qlvm_bandwidth`` / ``qlvm_loudness`` -> their cells ``.../spectrograms/qlvm/<map>`` (``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``), ``qlvm_squeak1`` / ``qlvm_squeak2`` -> the squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under ``QLVM_SQUEAK_PACKAGE_ROOT``; each is read without torch from its ``checkpoint.tar``. A pullback metric of one map's coordinates under another map's decoder would measure distances on a torus the coordinates do not live on. Manifold columns that name no QLVM map with ``pullback_metric`` ``true`` are a settings error. The cell comes from the code constants so the CLI / GUI re-keying of experimenter folders in the settings can never point it at another folder; a ``decoder_model_cell_directory`` (or the retired ``decoder_weights_npz_path``) key left in older settings is ignored. ``pullback_condition_quantile`` (in ``[0, 1]``, default ``0.5``) fixes the conditioning value of a conditional map's decoder, which decodes a torus position *and* a per-call conditioning value ``c`` (duration, spectral entropy, bandwidth or loudness): every grid node is decoded at the same ``c``, that quantile of the cell's training corpus's conditioning distribution (read from the cell's ``condition_bins.npz`` bin edges and per-bin training counts, linear inside a bin, then decoded by the cell's own ``condition.decode`` rule: clamped for ``'exact'``, snapped to the decode grid for ``'grid'``; ``processing.qlvm_latents.condition_quantile_value``), so ``G`` is one Riemannian metric of the torus. ``0.5`` measures distances as decoded-spectrogram change for the corpus median call (production medians: duration ``c`` 0.244, entropy 0.595, bandwidth 0.245, loudness 0.545); the value depends only on the cell, not on which calls a run holds. The regular and squeak decoders take no conditioning value and ignore it. ``pullback_metric`` ``false`` (or an unreadable decoder) degrades ``pullback_geodesic_mae`` to ``NaN`` and the run proceeds.
 
 **diagnostics** — the predictor-collinearity and predictor-timescale audits (rendered in :ref:`Predictor diagnostics <modeling-diagnostics>`).
@@ -257,23 +259,111 @@ cross-validation and held-out-test settings live in their own
 * **timescale_signal_floor_seconds** / **timescale_signal_min_run_seconds** — thresholds for calling a horizon significant (minimum above-null run length).
 
 **hyperparameters** — per-engine model tuning, grouped into four sub-blocks:
+``deep_learning`` (the CNN), ``linear_models`` (the two JAX linear models),
+``classical`` (the ``'pygam'`` / ``'sklearn'`` engines) and ``basis_functions``
+(the ``'sklearn'`` engine's temporal bases). Every key is read strictly (a missing
+key raises ``KeyError``; no hard-coded fallback), so each block is enumerated in
+full below.
 
-* **deep_learning.cnn_continuous** — the 1-D ResNet for the continuous manifold target (architecture, optimiser, spatial-CV, saliency), consumed by ``NeuralContinuousCNNRunner``. The ``block_channels`` list sets the per-block channel widths (and therefore the network depth); ``warmup_fraction`` is the fraction of total steps spent warming the learning rate up before the cosine decay. ``saliency.enable`` is shipped ``true`` (``saliency.segmentation`` ``'category'``, the only value): the segmentation groups calls by their per-USV QLVM category, which the modeling pickle carries when it was extracted from summaries holding ``qlvm_category`` (the regular map's categories, the label of every map, the conditional ones included). A pickle without the requested labels stops the run in the saliency pre-flight check, before Phase 1 (a ``RuntimeError`` saying the labels are unavailable); set ``saliency.enable`` to ``false`` for such a pickle.
-* **linear_models.manifold_regression** / **linear_models.multinomial_logistic** — the JAX smooth bivariate regression (continuous manifold position) and multinomial-logistic (vocal categories) models. The multinomial estimator additionally exposes a ``grad_clip_norm`` hyperparameter (global-norm gradient clip, default ``1.0``) that bounds each optimiser step.
-* **classical.pygam** / **classical.logistic_regression** / **classical.ridge_regression** — the ``'pygam'`` / ``'sklearn'`` engine models (GAM splines; logistic-CV for binary targets; and, for the bout-parameter regression, an L2-penalized Gamma GLM whose penalty grid / CV come from the ``ridge_regression`` block — matching the pyGAM engine's Gamma likelihood so fit and Gamma-deviance score agree).
-* **basis_functions.raised_cosine** / **bspline** / **laplacian_pyramid** — parameters for each ``model_basis_function`` choice.
+**hyperparameters.deep_learning.cnn_continuous** — the 1-D ResNet for the
+continuous manifold target, consumed by ``NeuralContinuousCNNRunner`` (see
+:ref:`CNN modeling <modeling-cnn>`):
 
-The regularisation controls (shared by both ``linear_models`` sub-blocks) look like:
+.. code-block:: json
+
+    "cnn_continuous": {
+        "use_kde_weights": true,
+        "loss_function": "huber",
+        "huber_delta": 1.0,
+        "learning_rate": 0.0005,
+        "block_channels": [32, 64, 128, 256],
+        "warmup_fraction": 0.1,
+        "weight_decay": 0.001,
+        "weight_decay_exclude_output_head": true,
+        "cnn_torus_output_encoding": "sin_cos",
+        "epochs": 301,
+        "batch_size": 32,
+        "kernel_size": 15,
+        "use_inception_kernels": false,
+        "inception_kernel_sizes": [3, 15, 31],
+        "dropout_rate": 0.3,
+        "se_reduction": 4,
+        "se_activation": "sigmoid",
+        "hidden_dim": 128,
+        "act_func": "relu",
+        "bn_momentum": 0.99,
+        "bn_eps": 1e-5,
+        "grid_size": 25,
+        "samples_per_cell": 40,
+        "use_scheduler": true,
+        "patience": 12,
+        "null_patience": 3,
+        "warp_range": 0.1,
+        "n_folds": 10,
+        "permutation_iterations": 10,
+        "use_kinematic_masking": true,
+        "masking_prob": 0.15,
+        "masking_length_frames": 60,
+        "use_hybrid_flatten": false,
+        "saliency": {
+            "enable": true,
+            "segmentation": "category",
+            "alpha": 0.5,
+            "radius_mode": "adaptive"
+        }
+    }
+
+* **use_kde_weights** — how each epoch's training rows are drawn: ``true`` samples ``N`` rows with replacement with probability proportional to the pickle's inverse-density KDE weights ``w`` (rare acoustic regions are over-drawn); ``false`` uses the grid-balanced sampler instead (``grid_size`` / ``samples_per_cell`` below).
+* **loss_function** / **huber_delta** — the training loss on the wrap-aware residual (per ``usv_manifold_metric``): ``'huber'`` (quadratic below ``huber_delta``, linear beyond it, so satellite calls cannot dominate the gradient); any other value is plain squared error.
+* **learning_rate** / **use_scheduler** / **warmup_fraction** — the peak Adam(W) step size; with ``use_scheduler`` ``true`` the rate starts at 0, warms up linearly over ``warmup_fraction`` of the total steps to the peak and then cosine-decays to 0 over the rest, with ``false`` it is constant.
+* **block_channels** — output channels of each residual block (the list length is the network depth; every block halves the time axis).
+* **weight_decay** / **weight_decay_exclude_output_head** — AdamW decoupled weight decay; ``true`` exempts the output head (``dense2``), whose collapse to zero would park the torus ``sin_cos`` head at a constant prediction.
+* **cnn_torus_output_encoding** — torus runs only: ``'sin_cos'`` predicts a per-axis ``(sin, cos)`` pair and trains on the chord distance, ``'raw'`` predicts the two coordinates directly. Ignored on euclidean.
+* **epochs** / **batch_size** — the epoch cap per fold and strategy (early stopping usually ends training earlier) and the mini-batch size.
+* **kernel_size** / **use_inception_kernels** / **inception_kernel_sizes** — the depthwise convolution kernel (frames); ``use_inception_kernels`` ``true`` replaces it with parallel depthwise kernels of the listed sizes, so short and long temporal motifs are extracted side by side.
+* **dropout_rate** — dropout before the dense head.
+* **se_reduction** / **se_activation** — the squeeze-and-excitation channel attention of every block: bottleneck width ``channels // se_reduction`` and gate (``'sigmoid'``, anything else a hard sigmoid).
+* **hidden_dim** / **act_func** — the dense head's width and activation (``'relu'``, anything else GELU).
+* **bn_momentum** / **bn_eps** — the batch-normalisation running-statistics momentum and numerical floor.
+* **grid_size** / **samples_per_cell** — the grid-balanced sampler used when ``use_kde_weights`` is ``false`` (it then also sizes the steps per epoch): the manifold is tiled ``grid_size × grid_size`` and every populated cell contributes a density-scaled draw around ``samples_per_cell`` rows, so the dense core cannot monopolise the batches.
+* **patience** / **null_patience** — early-stopping patience in epochs on the held-out error, for the ``actual`` model and for the label-shuffled ``null`` model (which converges to nothing and is stopped sooner).
+* **warp_range** — temporal-warping augmentation: every sequence in a batch is stretched by a factor drawn uniformly from ``[1 - warp_range, 1 + warp_range]`` (centre-anchored).
+* **n_folds** / **permutation_iterations** — the number of spatial-CV folds, and the permutation repeats per feature in the permutation-importance phase.
+* **use_kinematic_masking** / **masking_prob** / **masking_length_frames** — 1-D cutout augmentation: with probability ``masking_prob`` each feature channel of a sequence has a contiguous ``masking_length_frames`` chunk zeroed (the z-score mean), so the network cannot lean on a single dominant feature.
+* **use_hybrid_flatten** — ``true`` concatenates a global-average-pooled channel vector to the flattened final feature map before the dense head, so time-invariant averages reach the head beside the strictly-timed motifs.
+* **saliency** — the regional-saliency phase. ``enable`` toggles it; it is shipped ``true`` with ``segmentation`` ``'category'`` (the only value): the segmentation groups calls by their per-USV QLVM category, which the modeling pickle carries when it was extracted from summaries holding ``qlvm_category`` (the regular map's categories, the label of every map, the conditional ones included). A pickle without the requested labels stops the run in the saliency pre-flight check, before Phase 1 (a ``RuntimeError`` saying the labels are unavailable); set ``enable`` to ``false`` for such a pickle. ``alpha`` scales each category's inclusion circle (radius ``alpha × d_nn / 2``, ``d_nn`` the distance to the nearest other category centre, so circles never overlap for ``alpha <= 1``) and ``radius_mode`` is ``'adaptive'`` (one radius per category from its own ``d_nn``) or ``'uniform'`` (one shared radius from the tightest pair).
+
+**hyperparameters.linear_models** — the two JAX linear models,
+``manifold_regression`` (continuous manifold position: the Huber coordinate
+regression on euclidean, the closed-form torus-embedding regression on the torus)
+and ``multinomial_logistic`` (vocal categories). The two blocks share their core
+keys; the multinomial block adds the class-balance and focal-loss keys and an
+``inner_cv_scoring_metric`` that the manifold block does not carry, because a
+manifold fit's inner-CV objective is geometry-determined (the macro von Mises
+log-score ``vm_logscore`` on the torus, ``dcor_xy`` on euclidean).
 
 .. code-block:: json
 
     "linear_models": {
         "manifold_regression": {
+            "bin_resizing_factor": 1,
             "lambda_smooth_fixed": 1.0,
             "l2_reg_fixed": 0.01,
             "smoothness_derivative_order": 1,
+            "temporal_basis": {
+                "type": "none",
+                "n_splines": 8,
+                "spline_order": 3,
+                "lambda_smooth_fixed": 1e-8,
+                "lambda_smooth_decades_each_side": 2
+            },
+            "huber_delta": 1.0,
             "learning_rate": 0.005,
             "max_iter": 20000,
+            "tol": 1e-3,
+            "random_state": 0,
+            "verbose": false,
+            "use_lax_loop": true,
             "tune_regularization_bool": false,
             "tune_regularization_params": {
                 "lambda_smooth_decades_each_side": 0,
@@ -282,15 +372,53 @@ The regularisation controls (shared by both ``linear_models`` sub-blocks) look l
                 "inner_cv_use_one_se_rule": false,
                 "inner_max_iter": 2500
             }
+        },
+        "multinomial_logistic": {
+            "balance_predictions_bool": false,
+            "balance_train_bool": false,
+            "bin_resizing_factor": 1,
+            "lambda_smooth_fixed": 1.0,
+            "l2_reg_fixed": 0.01,
+            "smoothness_derivative_order": 1,
+            "temporal_basis": {
+                "type": "none",
+                "n_splines": 8,
+                "spline_order": 3,
+                "lambda_smooth_fixed": 1e-5,
+                "lambda_smooth_decades_each_side": 2
+            },
+            "learning_rate": 0.005,
+            "max_iter": 20000,
+            "tol": 1e-3,
+            "random_state": 0,
+            "verbose": false,
+            "use_lax_loop": true,
+            "focal_loss_gamma": 0.5,
+            "tune_regularization_bool": false,
+            "tune_regularization_params": {
+                "lambda_smooth_decades_each_side": 0,
+                "l2_reg_decades_each_side": 4,
+                "inner_cv_folds": 5,
+                "inner_cv_scoring_metric": "auc",
+                "inner_cv_use_one_se_rule": false,
+                "inner_max_iter": 2500
+            }
         }
     }
 
-(The ``multinomial_logistic`` block mirrors this, plus an ``inner_cv_scoring_metric``
-key — e.g. ``"auc"`` — that the manifold block does not carry, because a torus
-manifold fit is always scored by the macro von Mises log-score ``vm_logscore``.)
-
-* **lambda_smooth_fixed** / **l2_reg_fixed** — the fixed smoothness and L2 penalties. These are the operative values for **both** linear models, whose ``tune_regularization_bool`` now defaults to ``false`` (see the note below).
+* **bin_resizing_factor** — temporal binning of the history before the fit: every ``bin_resizing_factor`` consecutive frames are averaged into one bin (``1`` keeps the full frame resolution). Cannot be combined with a ``temporal_basis`` other than ``"none"``.
+* **lambda_smooth_fixed** / **l2_reg_fixed** — the fixed temporal-smoothness and L2 penalties. These are the operative values for **both** linear models, whose ``tune_regularization_bool`` now defaults to ``false`` (see the note below); in model selection the L2 penalty is additionally rescaled by ``1 / sqrt(n_features)`` of the trial model so larger stacks are not over-regularised.
+* **smoothness_derivative_order** — the finite-difference order of the smoothness penalty along the time axis: ``1`` (shipped) penalises squared first differences, zero-cost for a flat filter (the Pillow / Calhoun GLM tradition); ``2`` penalises squared second differences, zero-cost for any straight line (the GAM / smoothing-spline choice). With order ``2`` on full-resolution frames the multinomial loss and the torus solve add reflective (Neumann) edge rows so the filter's end points are constrained like its interior; order ``1`` is already a first-difference operator and needs none.
+* **huber_delta** — ``manifold_regression`` only: the Huber transition point (native manifold units) of the euclidean coordinate regression's loss; the torus solve is closed-form squared error and ignores it.
+* **learning_rate** / **max_iter** / **tol** — the Adam optimiser of the iterative fits (the multinomial model, the euclidean coordinate regression): the initial step size (cosine-decayed to zero over ``max_iter`` steps, with a fixed global-norm gradient clip of ``1.0`` in both estimators), the step cap, and the parameter-change tolerance that ends the loop early. The torus solve is closed-form and ignores all three.
+* **random_state** — the base seed of every fit (offset by the fold index).
+* **verbose** — print per-fit optimiser progress.
+* **use_lax_loop** — run the whole descent inside one compiled ``jax.lax.while_loop`` (``true``, the fast path) instead of a Python loop.
+* **balance_predictions_bool** — ``multinomial_logistic`` only: ``true`` subtracts the training log class priors from the logits before the softmax (``predict_proba(balanced=True)``), so the scored probabilities carry the learned behaviour-to-category evidence as if every category were equally likely a priori; ``false`` scores the raw softmax.
+* **balance_train_bool** — ``multinomial_logistic`` only: ``true`` down-samples every training fold to ``min(class_count)`` rows per class and fits with ``focal_gamma = 0`` and uniform class weights (an already balanced batch must not be re-weighted); ``false`` keeps the natural class prior in the training fold and handles imbalance inside the loss (softened inverse-frequency class weights plus the focal modulation). The test fold always keeps the natural prior.
+* **focal_loss_gamma** — ``multinomial_logistic`` only: the focal-loss focusing exponent ``(1 - p_t) ** gamma`` that down-weights easy examples (``0`` is plain class-weighted cross-entropy).
 * **tune_regularization_bool** — if ``true``, run an inner-loop cross-validation to pick ``lambda_smooth`` / ``l2_reg`` per fold (parameters in ``tune_regularization_params``: the search width in decades, inner-CV folds, scoring metric, and the one-standard-error rule). When ``false``, ``tune_regularization_params`` is not read and the two ``*_fixed`` penalties are used directly.
+* **tune_regularization_params** — the inner-CV search: ``lambda_smooth_decades_each_side`` / ``l2_reg_decades_each_side`` set the log-spaced grid around each ``*_fixed`` centre (``0`` pins that penalty to its centre, ``4`` spans eight decades); ``inner_cv_folds`` is the inner fold count; ``inner_cv_scoring_metric`` (multinomial only; ``'auc'``, the macro one-vs-rest AUC, or any other metric of the per-fold bundle) is the inner objective, which the manifold model derives from its geometry instead; ``inner_cv_use_one_se_rule`` ``true`` picks the smoothest pair within one standard error of the inner argmax rather than the argmax itself; ``inner_max_iter`` caps the inner fits' steps (see the note below on why the multinomial inner CV is under-converged at ``2500``).
 * **temporal_basis** — how each feature's filter over the history window is represented, the same in the univariate screen and model selection:
 
   * ``"type": "none"`` (default) — one free weight per frame, penalised by the block's ``lambda_smooth_fixed``, ``l2_reg_fixed`` and ``smoothness_derivative_order`` (with reflective edge rows for order 2).
@@ -315,7 +443,9 @@ manifold fit is always scored by the macro von Mises log-score ``vm_logscore``.)
    the interpretable filter *looks* (a constant filter scores the same as a
    recent-lag one), never the selection; the torus smoothness penalty uses
    reflective (Neumann) boundary rows so a higher fixed ``lambda_smooth`` cleans the
-   filter's middle without its edges floating free.
+   filter's middle without its edges floating free (that applies to
+   ``smoothness_derivative_order`` ``2``; the shipped order ``1`` is already a
+   first-difference operator and has no edge rows to add).
 
    The multinomial-category model also ships with ``tune_regularization_bool =
    false``, but for a different, more cautionary reason. It is an *iterative* GLM
@@ -339,6 +469,74 @@ manifold fit is always scored by the macro von Mises log-score ``vm_logscore``.)
    the score on weak folds (the ``kappa → 0`` clamp) and corrupts the gate's paired
    per-fold margin; a single frozen ``kappa`` keeps every score on one dispersion
    scale so the margins are a proper scoring rule.
+
+**hyperparameters.classical** — the ``'pygam'`` / ``'sklearn'`` engine models of
+the onset, binomial-category and bout-parameter pipelines (and their model
+selections):
+
+.. code-block:: json
+
+    "classical": {
+        "pygam": {
+            "n_splines_time": 8,
+            "n_splines_value": 5,
+            "lam_penalty": 0.6,
+            "max_iterations": 100,
+            "tol_val": 1e-4,
+            "distribution": "gamma",
+            "link": "log"
+        },
+        "logistic_regression": {
+            "penalty": "l2",
+            "cs": [0.0001, 0.001, 0.01, 0.1],
+            "cv": 10,
+            "solver": "liblinear",
+            "max_iter": 10000
+        },
+        "ridge_regression": {
+            "alphas": [0.1, 1.0, 10.0, 100.0],
+            "cv": 10
+        }
+    }
+
+* **pygam** — the ``'pygam'`` engine's tensor-product-spline GAM, ``te(value, lag)``: ``n_splines_value`` and ``n_splines_time`` are the B-spline counts on the feature-value and lag axes (the lag basis is the same one ``temporal_basis.type = 'bspline'`` reuses for the JAX models); ``lam_penalty`` is the **fixed** smoothness penalty strength (``0.6``). The strength is never tuned: pyGAM chooses it by GCV / UBRE only inside ``gridsearch()``, which no pipeline calls, so a ``null`` value falls back to pyGAM's own per-term default (also ``0.6``), not to a search. ``max_iterations`` and ``tol_val`` are the PIRLS optimiser's iteration cap and convergence tolerance (a fit whose last deviance change is still above ``tol_val`` is recorded as ``converged = 0``). ``distribution`` / ``link`` are recorded in the run metadata (``pygam_hyperparameters``) and read nowhere else: the bout-parameter GAM is always fitted as a Gamma GAM with a log link and the binary pipelines as ``LogisticGAM``, so editing these two keys changes the record, not the fit. The whole block is required: a settings file without it raises ``KeyError`` instead of falling back to hard-coded values.
+* **logistic_regression** — the ``'sklearn'`` engine's ``LogisticRegressionCV`` for the binary targets (onsets, binomial categories): ``penalty`` and ``solver`` as in scikit-learn, ``cs`` the inverse-regularisation grid searched by ``cv``-fold inner cross-validation, ``max_iter`` the iteration cap (a fold that reaches it is recorded as not converged).
+* **ridge_regression** — the ``'sklearn'`` engine's bout-parameter regression, an L2-penalized Gamma GLM (``GammaRegressor``, log link) whose penalty ``alpha`` is chosen from ``alphas`` by a ``cv``-fold ``GridSearchCV`` on the Gamma deviance — the same likelihood the model is scored with, so fit and score agree.
+
+**hyperparameters.basis_functions** — the temporal bases of the ``'sklearn'``
+engine, selected by ``model_params.model_basis_function`` (the ``'pygam'`` engine
+and the JAX models ignore this block; the JAX models' optional spline layer is the
+``temporal_basis`` sub-block above). Each basis spans the ``filter_history`` window
+and the history is projected onto it before the linear fit; the fitted coefficients
+are back-projected onto the frame axis for the stored ``filter_shapes``.
+
+.. code-block:: json
+
+    "basis_functions": {
+        "raised_cosine": {
+            "neye": 0,
+            "ncos": 6,
+            "kpeaks_proportion": 0.95,
+            "b": 96,
+            "plot_bool": true
+        },
+        "bspline": {
+            "n_splines": 32,
+            "degree": 3,
+            "plot_bool": true
+        },
+        "laplacian_pyramid": {
+            "levels": 9.5,
+            "step": 0.5,
+            "fwhm": 10,
+            "plot_bool": true
+        }
+    }
+
+* **raised_cosine** — ``ncos`` raised cosines whose peaks are log-spaced (denser near the event) from the first frame to ``kpeaks_proportion`` of the window, with ``b`` the offset of the log stretch (larger is closer to linear spacing); ``neye`` prepends that many identity (single-frame) columns for dense sampling right before the event.
+* **bspline** — ``n_splines`` B-splines of polynomial ``degree`` on evenly spaced knots (a short window that cannot hold ``n_splines`` distinct knots keeps as many as it can, and raises when fewer than ``degree + 1`` remain).
+* **laplacian_pyramid** — Gaussians at ``levels`` scales spaced ``step`` levels apart, each level doubling the width, the finest with full width at half maximum ``fwhm`` frames.
+* **plot_bool** — every basis block carries it: whether the dispatcher writes the ``basis_verification.png`` figure of the basis columns (once per job array, guarded by a lock file).
 
 **glm_hmm** — the GLM-HMM over latent vocal states (see
 :ref:`Latent vocal states <modeling-glm-hmm>` below).
@@ -408,27 +606,41 @@ is ``'bout_offset'``.
 
     "behavioral_response": {
         "response_mouse_index": 1,
-        "response_feature": "speed",
+        "response_features": ["speed", "neck_elevation", "allo_roll", "allo_pitch",
+                              "ego_yaw", "back_pitch", "back_yaw", "tail_curvature"],
         "history_seconds": 4.0,
         "target_window_seconds": 0.5,
-        "target_gap_seconds": 0.0,
-        "vocal_predictor_type": "pooled_rate",
-        "vocal_smoothing_sd_frames": 1,
-        "likelihood": "gamma",
-        "n_shift_draws": 200,
-        "shift_null_min_seconds": 20.0
+        "target_bin_seconds": 0.05,
+        "post_bout_silence_seconds": 0.5,
+        "deep_silence_margin_seconds": 10.0,
+        "covariate_summary_seconds": [0.5, 4.0],
+        "covariate_transform": "yeo_johnson",
+        "covariate_features": "both",
+        "duration_n_bins": 3,
+        "matched_divergence": {
+            "pre_seconds": 4.0,
+            "post_clean_seconds": 4.0,
+            "window_seconds": 4.0,
+            "pre_window_seconds": 4.0,
+            "baseline_start_seconds": 4.0,
+            "baseline_end_seconds": 0.5,
+            "silence_grid_seconds": 0.5,
+            "match_caliper_sd": 0.1
+        }
     }
 
 * **response_mouse_index** — which mouse's behaviour is predicted, by **absolute slot index** (``0`` is always the male, ``1`` always the female). Deliberately *not* the relative ``self.`` / ``other.`` role keys used elsewhere: those are defined against ``model_params.model_predictor_mouse_index`` and cannot be read on their own. **This is the only mouse index you set.** ``model_params.model_predictor_mouse_index`` decides whose *calls* are ingested and carries the opposite meaning on the same 0/1 axis; since the partner's calls are by definition the other animal's, it is **derived** as ``1 - response_mouse_index`` on a private copy of the settings (the caller's dict is never mutated, and the shipped value the five vocal pipelines read is untouched). So ``response_mouse_index: 1`` predicts the female from the male's calls, with nothing to keep in step by hand.
-* **response_feature** — the behavioural feature used as the regression target (e.g. ``'speed'``). Read from the raw per-session feature table **before** column selection and z-scoring, so it need not belong to the predictor zoo and stays in native units — a Gamma likelihood needs a strictly positive response, and the log link, not standardisation, is what handles its scale.
-* **history_seconds** — seconds of behavioural history preceding each anchor. Block-local rather than shared with ``model_params.filter_history``, mirroring how ``glm_hmm`` carries its own ``history_frames``. Because anchors are tiled non-overlapping, this doubles as the anchor stride: no two rows share a history sample, which keeps the rows close to independent.
-* **target_window_seconds** — width of the forward window the response is averaged over. Averaging suppresses the frame-to-frame differentiation noise in a single 6.7 ms sample and breaks the near-determinism that would otherwise tie the target to the last frame of its own history.
-* **target_gap_seconds** — delay between the end of the history and the start of the target window; ``0.0`` places the target immediately after the history. A non-zero gap is the leakage check: when a baseline predictor is nearly deterministic, misspecification leaves structured residual that a vocal regressor could absorb as a spurious increment.
-* **vocal_predictor_type** — which vocal representation forms the block under test: ``'pooled_binary'`` (a single ``usv_event`` indicator), ``'pooled_rate'`` (a single smoothed ``usv_rate`` trace), ``'categories_rate'`` (one ``usv_cat_<n>`` trace per category) or ``'all_rate'`` (both). This is a **block-local override** of ``vocal_features.usv_predictor_type``, applied to a shallow copy so the shared block the five vocal pipelines read is left untouched. There is deliberately no second setting listing the column names: the block is *derived* from whichever traces this produces, because two keys that must agree can silently disagree, and a disagreement would quietly change what is being tested. The resolved partition is written into the artifact's ``analysis_specific`` metadata so the nested comparison never re-derives it. ``'pooled_rate'`` is the default because the first question is whether calling matters at all, not whether she responds differently to different call types — that is a strictly stronger claim, and splitting first would also mean several tests instead of one.
-* **vocal_smoothing_sd_frames** — sigma of the Gaussian kernel the call train is convolved with, in **frames**, matching the loader's own frame-based sigma (kept as a float, so a fractional kernel stays expressible). A **block-local override** of ``vocal_features.usv_predictor_smoothing_sd``, for the same reason as the predictor type. It matters more here than elsewhere because this is the only pipeline where the vocal trace is the *block under test* rather than one predictor among many: at the default ``1`` the pooled rate is a near-impulse train that is overwhelmingly zero, so the GAM's value-axis splines fit a badly-conditioned distribution. Widening it trades temporal precision — of which there is spare, the lag axis carrying only ``n_splines_time`` knots across the whole history — for better-posed value splines.
-* **likelihood** — ``'gamma'`` (Gamma GAM, log link, native units), ``'lognormal'`` (Gaussian GAM on ``log(y)``, i.e. a lognormal model), or ``'both'``. Defaults to ``'gamma'``: it reuses the machinery ``BoutParameterPipeline`` already validates and keeps ``y`` in native units. Use ``'both'`` to stress-test a result once there is one — it exactly doubles the compute, including the null. The two are scored on different scales and are deliberately **not** made comparable — back-transforming a log-scale fit yields a geometric mean rather than ``E[y]``, the exact fit/score mismatch ``BoutParameterPipeline`` was rewritten to remove — so each arm carries its own baseline and its own null, and only the *increments* are compared across arms.
-* **n_shift_draws** — number of shifted refits forming the increment null. Only the full model is refit per draw (the baseline is identical across draws), so the cost is ``n_shift_draws × n_cv_folds`` fits. The smallest attainable p-value is ``1 / (n_shift_draws + 1)``.
-* **shift_null_min_seconds** — minimum circular-shift offset. Offsets are drawn from ``[min, T − min]``: the floor keeps the shift past the slowest behavioural autocorrelation in the zoo (``nose-nose``, ~6–8 s), and the mirrored ceiling excludes near-full-length shifts, which wrap almost all the way round and are nearly the identity.
+* **response_features** — the behavioural features used as response variables, every one extracted in the same pass (the anchors are identical across features, only the target changes). Each must be one of ``kinematic_features.egocentric``; an unknown name is rejected before any session is read. Read from the raw per-session feature table **before** z-scoring, so the responses stay in native units — the likelihood of each is **derived** from its support (see :ref:`Behavioral response <modeling-behavioral-response>`): a non-negative feature (plain, or folded by ``abs_features`` / ``smooth_abs_features``) is fitted as a Gamma GAM with a log link, a signed one as Gaussian.
+* **history_seconds** — seconds of behavioural history preceding each anchor, the window the covariate summaries are taken over. Block-local rather than shared with ``model_params.filter_history``, mirroring how ``glm_hmm`` carries its own ``history_frames``. It also sets the stride of the deep-silence anchors (below), so no two of those rows share a history sample.
+* **target_window_seconds** — width of the forward window the response is averaged over for the headline (``window``) fit. Averaging suppresses the frame-to-frame differentiation noise in a single 6.7 ms sample and breaks the near-determinism that would otherwise tie the target to the last frame of its own history.
+* **target_bin_seconds** — width of the bins the forward window is tiled into for the time-course fit (``0.05`` → ten bins across a ``0.5`` s window). The window is tiled with rounded bin **edges** rather than a fixed frame count, so at 150 fps the bins alternate between 7 and 8 frames and the last frames of the window are not dropped. Must not exceed ``target_window_seconds``.
+* **post_bout_silence_seconds** — a male bout offset becomes a vocal anchor only when the next bout starts at least this long after it, so the forward window follows the bout rather than straddling the next one. It is set equal to ``target_window_seconds`` on purpose: the requirement selects on the future (bigger bouts are followed sooner by the next bout), so anything longer than the window discards long bouts for cleanliness the analysis never uses (see the note in :ref:`Behavioral response <modeling-behavioral-response>`).
+* **deep_silence_margin_seconds** — the second, *deep-silence* control: anchors tiled every ``history_seconds`` through the stretches with no male bout within this margin on either side. Both controls are extracted in the same pass; ``behavioral_response_contrast`` picks one with its ``control`` argument (``'inter_bout_silence'`` or ``'deep_silence'``). Inter-bout silence keeps the animals inside an ongoing interaction but carries over the previous bout's effect; deep silence escapes the carry-over at the cost of a larger imbalance in social distance (measured ``1.09`` SD in ``nose-nose`` against ``0.74`` SD for inter-bout silence, every other covariate under ``0.32`` SD).
+* **covariate_summary_seconds** — the pre-anchor windows each covariate is averaged over, one column per window per feature (``[0.5, 4.0]`` → ``<feature>__mean_0.5s`` and ``<feature>__mean_4s``). The covariates are summaries rather than lag histories because their job is to hold pre-anchor state fixed, and these features are slow (autocorrelation horizons ~0.75 s for ``speed`` to ~6.8 s for ``nose-nose``), so finer sub-windows would be collinear rather than informative. The responder's own, the caller's and the dyadic features are all stored.
+* **covariate_transform** — how the stored (pooled z-scored) covariates enter the contrast's design, applied at **fit time** (read from the settings, not from the artifact, so an artifact written before the key existed is still valid input): ``'yeo_johnson'`` (shipped) fits one Yeo-Johnson power parameter per covariate by maximum likelihood on its native-scale values and re-standardises; ``'derived'`` applies the response's own support rule (``log`` for a non-negative covariate, identity for a signed one); ``'normal_scores'`` replaces each covariate by the Gaussian quantile of its rank; ``'linear'`` uses the stored z-scores as they are. The non-linear options exist because the response is measured to be linear in the dominant covariate's *rank* and strongly concave in its value, a misfit an order of magnitude larger than the effect under test.
+* **covariate_features** — which animal's pre-anchor kinematics adjust the contrast, also a fit-time choice: ``'self'`` (the responder's), ``'partner'`` (the caller's) or ``'both'`` (shipped). The dyadic columns stay in under every choice.
+* **duration_n_bins** — the number of quantile bands bout duration is cut into; each band is interacted with the vocal indicator so every band gets its own step against silence (``3`` = terciles). Bands rather than a slope because duration is heavily skewed (median ``0.43`` s with a long tail).
+* **matched_divergence** — the design-based companion analysis, ``MatchedDivergencePipeline.extract_and_save_matched_divergence`` (see :ref:`Matched divergence <modeling-matched-divergence>`), which holds pre-anchor state fixed by matching instead of by covariate adjustment. Every duration is in seconds. ``pre_seconds`` — a candidate silent anchor must lie at least this long after the last call of **any** animal; ``post_clean_seconds`` — no call of any animal may start (or still be ongoing) within this long after an anchor, vocal and silent alike (the bout offsets that fail it are dropped); ``window_seconds`` / ``pre_window_seconds`` — the stored per-anchor curve spans ``[-pre_window_seconds, +window_seconds]`` around the anchor; ``baseline_start_seconds`` / ``baseline_end_seconds`` — the matching window is the mean over ``[-baseline_start_seconds, -baseline_end_seconds]`` before the anchor (``start`` must exceed ``end``); it ends ``0.5`` s *before* the anchor because these features are slow (``tau(1/e)`` 0.35–0.54 s), so a window reaching the anchor would already contain the divergence under way; ``silence_grid_seconds`` — spacing of the grid the candidate silent anchors are drawn from; ``match_caliper_sd`` — every silent anchor whose baseline lies within this many pooled standard deviations of a vocal anchor's is averaged into that anchor's control curve (a vocal anchor has a median of 82 eligible controls).
 
 .. _modeling-extract:
 
@@ -790,7 +1002,7 @@ alongside:
 
 * **top-level keys** — one per feature, plus the three ``_*_metadata`` blocks. Each feature holds an ``actual`` and a ``null`` branch of identical shape, plus ``split_sizes`` (per-fold train / test sizes).
 * **``actual`` / ``null``** — the per-fold results for the real fit and its label-shuffle permutation null (:ref:`the significance baseline <modeling-model-selection>`). Each holds ``filter_shapes`` of shape ``(n_folds, filter_history_frames)`` (the reconstructed temporal filters) and the per-fold metric arrays ``(n_folds,)``: ``ll`` (log-loss, the significance gate), ``deviance_explained`` (McFadden's D²), ``auc`` (area under the ROC curve), ``score`` (balanced accuracy), ``f1`` (F1 score), ``recall``, ``brier`` (Brier score), ``ece`` (expected calibration error), ``mcc`` (Matthews correlation coefficient), ``confusion_matrix``, and the optimiser diagnostics ``n_iter`` / ``converged`` / ``fit_time`` (plus, for the ``'sklearn'`` engine, ``coefs_projected`` / ``optimal_C``).
-* **``_run_metadata``** — how the fits ran: ``model_engine``, ``basis_function``, ``null_strategy``, ``n_outer_folds``, ``split_strategy``, ``random_seed_outer``, the engine hyperparameters, and git / settings provenance. **``_consolidation_metadata``** records the merge audit (how many per-feature files, when, and their paths).
+* **``_run_metadata``** — how the fits ran: ``model_engine``, ``basis_function``, ``null_strategy``, ``n_outer_folds``, ``split_strategy``, ``random_seed_outer``, the engine hyperparameters (``pygam_hyperparameters`` / ``sklearn_hyperparameters`` for the CPU engines; ``jax_hyperparameters`` for the multinomial and manifold runs, which records the block's keys, its ``temporal_basis`` sub-block and ``effective_penalty`` — the ``lambda_smooth``, ``l2_reg``, ``smoothness_derivative_order`` and ``smoothness_reflective_edges`` the fit actually used, the block's own on frames and the GAM-mirroring P-spline penalty under a B-spline basis), and git / settings provenance. **``_consolidation_metadata``** records the merge audit (how many per-feature files, when, and their paths).
 * **multinomial / continuous targets** — the per-fold metrics instead live under an ``actual.folds.metrics`` sub-dict (with ``y_true`` / ``y_pred`` / ``classes`` alongside), rather than as flat top-level arrays.
 
 .. _modeling-model-selection:
@@ -799,11 +1011,19 @@ Model selection
 ---------------
 Greedy forward-stepwise selection stacks features on top of the univariate
 ranking, adding at each step the feature whose contribution most improves
-the held-out score, subject to the **fold-grain paired-margin acceptance gate**
-described in the note below (a step is kept only when its per-fold score-margin
-improvement over the shuffle null has a ``selection_ci_level`` bootstrap CI whose
-lower bound exceeds ``0``). ``use_top_rank_as_anchor=True`` seeds step 0 with the
-top univariate feature; ``p_val`` is the per-step acceptance threshold.
+the held-out score, subject to an acceptance gate that compares the candidate
+and the incumbent **paired per fold** (the two models are nested and scored on
+the same folds, so the fold-difficulty term they share cancels in the per-fold
+difference). The onset, binomial-category, bout-parameter and multinomial
+selectors apply the **one-standard-error (1SE) rule** to that paired improvement:
+a step is kept only when the mean per-fold improvement exceeds the standard error
+of the per-fold differences. The acoustic-manifold selector uses the **fold-grain
+paired-margin bootstrap gate** described in the note below instead (a step is kept
+only when its per-fold improvement has a ``selection_ci_level`` fold-bootstrap CI
+whose lower bound exceeds ``0``). ``use_top_rank_as_anchor=True`` seeds step 0 with
+the top univariate feature; ``p_val`` is the significance level of the univariate
+screen that admits candidates (Bonferroni-corrected for the discrete targets,
+the Benjamini–Hochberg ``q`` on the manifold).
 
 .. note::
 
@@ -959,7 +1179,7 @@ hoisted metadata blocks:
     }
 
 * **``steps``** — an ordered list, one entry per forward-selection step. ``step_idx`` is the iteration, ``current_features`` are those already chosen, ``baseline_score`` is their held-out score (the chance floor at step 0), ``baseline_folds`` is the same model's PER-FOLD scores, and ``selected_feature`` is the feature accepted this step (``None`` marks the final, rejected step). ``baseline_folds`` is what the 1SE acceptance test pairs a candidate against: the incumbent and the candidate are nested and scored on the same folds, so the fold-difficulty term they share cancels in the per-fold difference but dominates either score on its own. Checkpoints written before this key existed resume against ``baseline_score`` as a constant, which reproduces the unpaired comparison that wrote them. For the multinomial and manifold selectors, step 0's ``selected_feature`` is the sentinel ``'null_model_free'`` baseline.
-* **``candidates_summary``** — under each step, every candidate feature tested that step mapped to its per-fold metrics. For the discrete / regression targets these are flat per-fold arrays (``ll``, ``auc``, ``score``, ``f1``, ``brier``, ``ece``, ``mcc``, ``confusion_matrix``, ``n_iter`` / ``converged`` / ``fit_time``) plus aggregate ``mean_ll`` / ``se_ll``; the multinomial and manifold selectors nest these under a ``folds.metrics`` sub-dict (with ``y_true`` / ``y_pred`` / ``y_probs`` / ``classes`` and the per-fold ``selected_lambda_smooth`` / ``selected_l2_reg`` regularisation choices — equal to the fixed ``*_fixed`` penalties when ``tune_regularization_bool`` is ``false``).
+* **``candidates_summary``** — under each step, every candidate feature tested that step mapped to its per-fold metrics. For the discrete / regression targets these are flat per-fold arrays (``ll``, ``auc``, ``score``, ``f1``, ``brier``, ``ece``, ``mcc``, ``confusion_matrix``, ``n_iter`` / ``converged`` / ``fit_time``) plus aggregate ``mean_ll`` / ``se_ll``; the multinomial and manifold selectors nest these under a ``folds.metrics`` sub-dict (with ``y_true`` / ``y_pred`` / ``y_probs`` / ``classes``, the per-fold ``weights`` — always on the frame axis, ``n_features × filter_history_frames`` per class / output, whatever the ``temporal_basis`` — beside ``basis_coefficients``, the raw spline coefficients when ``temporal_basis.type`` is ``'bspline'`` and ``None`` otherwise, and the per-fold ``selected_lambda_smooth`` / ``selected_l2_reg`` regularisation choices — equal to the fixed ``*_fixed`` penalties when ``tune_regularization_bool`` is ``false``, and under a B-spline basis to ``temporal_basis.lambda_smooth_fixed`` and ``0``).
 * **last accepted step** — additionally carries ``final_model_features`` (the cumulative selected set) and ``filter_shapes`` (the per-fold refit filters) of the published model.
 * **metadata blocks** — ``_input_metadata`` and ``_univariate_metadata`` carry the upstream extraction / univariate provenance, ``_run_metadata`` the selection config, and ``_consolidation_metadata`` the merge audit.
 
@@ -1007,7 +1227,11 @@ otherwise a ``ValueError`` is raised; the bundle's ``build_config.json`` identit
 printed with the decoder for the figure's record. Colours come from
 ``visualizations_settings.json`` (``sequential_cmap`` / ``diverging_cmap``), and the temporal
 filter's smoothness is governed by the per-observation ``lambda_smooth`` prior (see
-the note above).
+the note above) — or, under ``temporal_basis.type = 'bspline'``, by the spline layer
+itself and its ``temporal_basis.lambda_smooth_fixed``; the stored filters are on the
+frame axis in both cases, so the atlas reads them the same way.
+
+.. _modeling-cnn:
 
 CNN modeling
 ------------
@@ -1262,6 +1486,45 @@ a total loss of rows attributes the loss per covariate, because one non-finite
 covariate drops a whole row and 38 columns multiply that risk; and a
 ``response_features`` entry that is not a known kinematic feature is rejected
 before any session is read.
+
+.. _modeling-matched-divergence:
+
+Matched divergence
+~~~~~~~~~~~~~~~~~~
+``MatchedDivergencePipeline`` is the design-based counterpart of the contrast,
+configured by the ``behavioral_response.matched_divergence`` block. Where the
+contrast holds pre-anchor state fixed with the covariate block, this holds it fixed
+by construction: every vocal anchor is paired with the silent anchors whose
+pre-anchor level in that same feature matches (within ``match_caliper_sd`` pooled
+standard deviations over the ``[-baseline_start_seconds, -baseline_end_seconds]``
+window), and the difference between the two mean curves over
+``[-pre_window_seconds, +window_seconds]`` is read directly. The two answer the same
+question with almost disjoint assumptions — one leans on the functional form of an
+adjustment, the other on the choice of what to match — so a result appearing in
+both is far harder to explain away than one appearing in either.
+
+Its anchors differ from the contrast's on purpose: cleanliness is judged against
+**every** call (his singletons, the partner's calls and unassigned ones included),
+``post_clean_seconds`` ahead of vocal and silent anchors alike, and silent anchors
+are drawn from a ``silence_grid_seconds`` grid at least ``pre_seconds`` after the
+last call of anyone. Controls are matched, not modelled, and all eligible controls
+are averaged into one curve per vocal anchor, so the unit of analysis is the vocal
+anchor. Matching is per feature, on that feature's own baseline, so the panels are
+different anchor sets and are not comparable with one another.
+
+.. code-block:: python
+
+    from usv_playpen.modeling.modeling_behavioral_response import MatchedDivergencePipeline
+
+    MatchedDivergencePipeline(
+        modeling_settings_dict=None
+    ).extract_and_save_matched_divergence()
+
+The artifact (``matched_divergence_<cohort>_<ts>.pkl`` in ``io.save_directory``)
+holds, per feature, the stacked vocal and control curves (``pairs``), their
+sessions and control counts, the anchors rejected for lacking an eligible control,
+the pooled scaling, the ``parameters`` block it was built with and the camera frame
+rate; ``plot_matched_divergence`` draws it.
 
 Notebook
 --------
