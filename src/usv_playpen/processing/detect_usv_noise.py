@@ -40,8 +40,9 @@ model sees the segment only. Values are mapped by the fixed affine ``(clip(x, -1
 
 Run it after ``das_summarize`` (re-summarizing rewrites the CSV with its base columns only) and before
 ``detect_usv_squeaks``, which classifies only the segments this step does not flag as noise (and so
-needs the ``noise`` column); the summary then reads ``emitter``, the two noise columns, then the
-call-class block.
+needs the ``noise`` column); the summary then reads the DAS event (``usv_id``, ``start``, ``stop``,
+``duration``), the two noise columns, the call-class block, then ``emitter`` and the channel statistics
+(the canonical layout, ``os_utils.USV_SUMMARY_COLUMN_ORDER``).
 
 The module also trains the ensemble (``train-noise-model``, :class:`USVNoiseModelTrainer`): from a labels
 CSV it builds every labelled segment's input with the same function scoring uses
@@ -514,7 +515,9 @@ def load_noise_model(noise_model_path: str, device: torch.device) -> dict:
     Description
     -----------
     Loads the noise model bundle: the five seeds' weights in eval mode on ``device``, the scalar
-    standardization and dB constants they were trained with, and the calibration table.
+    standardization and dB constants they were trained with, the calibration table and the decision
+    block (the exclusion cut-offs with their held-out precision and recall); a bundle without the
+    decision block is refused.
 
     Parameters
     ----------
@@ -527,7 +530,8 @@ def load_noise_model(noise_model_path: str, device: torch.device) -> dict:
     -------
     bundle (dict)
         ``models`` (list[NoiseTimeMIL]), ``scalar_mean``, ``scalar_std``, ``db_floor``, ``db_ceil``,
-        ``db_center``, ``db_half``, ``max_frames``, ``context_frames``, ``bands_hz`` and ``calibration``.
+        ``db_center``, ``db_half``, ``max_frames``, ``context_frames``, ``bands_hz``, ``calibration``
+        and ``decision``.
     """
 
     path = pathlib.Path(configure_path(noise_model_path))
@@ -1026,7 +1030,8 @@ def session_noise_training_inputs(
     Description
     -----------
     Builds the model inputs and raw scalars of one session's labelled segments, opening the session's
-    per-channel wavs once. Run in a worker thread by :func:`build_noise_training_inputs`.
+    broadband memmap once (:func:`squeak_audio_channels`). Run in a worker thread by
+    :func:`build_noise_training_inputs`.
 
     Parameters
     ----------
@@ -1261,8 +1266,9 @@ class USVNoiseDetector:
         root_directory (str)
             Session root directory (contains the ``audio`` tree).
         input_parameter_dict (dict)
-            Processing settings; the ``detect_usv_noise`` block supplies the model path, the minimum
-            precision, the channel-exclusion switch and the batch size.
+            Processing settings; the ``detect_usv_noise`` block supplies the model path, the
+            channel-exclusion switch and the batch size (the exclusion threshold comes from the
+            bundle's ``decision`` block, not from a setting).
         message_output (Callable)
             Logging callback; defaults to ``print``.
 

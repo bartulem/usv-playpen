@@ -74,8 +74,8 @@ def _build_session(tmp_path: pathlib.Path, excluded_channels: list[str] | None =
     """
     Description
     -----------
-    Creates a synthetic session: four PCM_16 HPSS wavs (two master, two slave
-    channels) of 2 s of noise plus a 5 kHz tone, and a summary with a 50 ms
+    Creates a synthetic session: a broadband memmap of four channels (two master,
+    two slave) of 2 s of noise plus a 5 kHz tone, and a summary with a 50 ms
     squeak (row 0), a 0.6 s both segment whose squeak lies late in the segment
     (row 1, longer than the 64-frame test window), a noise row without a call
     class (row 2), a usv row (row 3) and a 4 ms squeak without a squeak

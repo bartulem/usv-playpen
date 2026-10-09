@@ -15,8 +15,8 @@ gives the 2-10 kHz harmonics about as much height as the ultrasonic part.
 
 Why a module of its own: it is a cohort step that writes one multi-session H5
 (like :mod:`consolidate_spectrogram_store`), but it reads session AUDIO through
-the squeak front end of :mod:`detect_usv_squeaks` (wav channel selection, row
-selection, crop frames), not per-session spectrogram H5 files and QLVM package
+the squeak front end of :mod:`detect_usv_squeaks` (broadband memmap channel
+selection, row selection, crop frames), not per-session spectrogram H5 files and QLVM package
 tables, so neither of those modules is a natural home; adding it to
 :mod:`detect_usv_squeaks` (per-session summary writers) would mix a cohort
 store into a per-session step.
