@@ -2751,7 +2751,7 @@ from the summaries. The **Map** dropdown names each USV map as the GUI does (``o
   categories of their own: a **Color by** category colours their calls by the regular map's
   ``qlvm_category`` (the categories label the call), and **Boundaries** are skipped, since the
   category bundle partitions the regular map's torus only (the chart title says so).
-* **Squeaks** (``qlvm_squeak``) — the squeak (broadband vocalization) map: the production
+* **squeaks** (``qlvm_squeak``) — the squeak (broadband vocalization) map: the production
   squeak QLVM model's (``os_utils.QLVM_SQUEAK_PRODUCTION_CELL``, the time-stretched ``stretch_nofloor`` cell) coordinates ``qlvm_squeak1`` / ``qlvm_squeak2``, written by
   ``infer-qlvm-squeak-latents`` on the squeak-bearing rows only (``squeak`` true: pure squeaks
   and segments holding both; noise rows have null booleans), so every other row is left off this map. The
@@ -2795,12 +2795,12 @@ The USV maps show only the segments ``detect-usv-squeaks`` classed as pure USVs 
   ``output_max_bytes``.
 * **Apply mask** — multiplies each sampled spectrogram by its SAM2 segmentation mask, so only
   the segmented call shows.
-* **Squeak class** — on the Squeaks map, which squeak-bearing classes are shown: **squeak +
-  both** (the default), **squeak only** (``squeak`` true, ``usv`` false) or **both only** (segments
-  holding a squeak and a USV, both booleans true). The USV maps ignore it.
+* **Squeak class** — on the squeaks map, which squeak-bearing class is shown: **squeak only**
+  (the default; ``squeak`` true, ``usv`` false) or **squeak + USV** (segments holding a squeak and a
+  USV, both booleans true). The USV maps ignore it.
 
-**Hover tooltip.** Hovering a point shows its ``session id``, ``emitter`` (the animal id, or
-``unassigned``), ``mean amplitude``, ``mean frequency`` (kHz), and ``spectral entropy``.
+**Hover tooltip.** Hovering a point shows its ``session``, ``emitter`` (the animal id, or
+``unassigned``), ``duration`` (ms), ``spectral entropy`` (nats) and ``loudness`` (dB).
 
 **Paths.** The session-list directory, the consolidated spectrogram / SAM2 store and the
 squeak spectrogram store come from the ``shared_resources`` block of
