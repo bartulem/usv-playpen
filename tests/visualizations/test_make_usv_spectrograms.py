@@ -2405,15 +2405,51 @@ def test_explorer_map_dropdown_uses_the_gui_display_names(default_qlvm_map):
     the map prefix as its value, and starts on the shared map."""
     _output, definitions = usv_embedding_explorer._widgets.run(
         QLVM_MAPS=os_utils.QLVM_MAPS, QLVM_MAP_DISPLAY_NAMES=os_utils.QLVM_MAP_DISPLAY_NAMES,
-        SQUEAK_CLASS_SELECTIONS=SQUEAK_CLASS_SELECTIONS, available_lists={},
-        default_qlvm_map=default_qlvm_map, mo=mo,
+        available_lists={}, default_qlvm_map=default_qlvm_map, mo=mo,
     )
     map_dropdown = definitions["map_dropdown"]
-    expected = [os_utils.QLVM_MAP_DISPLAY_NAMES[qlvm_map] for qlvm_map in os_utils.QLVM_MAPS] + ["Squeaks"]
+    expected = [os_utils.QLVM_MAP_DISPLAY_NAMES[qlvm_map] for qlvm_map in os_utils.QLVM_MAPS] + ["squeaks"]
     assert list(map_dropdown.options) == expected
     assert map_dropdown.options[os_utils.QLVM_MAP_DISPLAY_NAMES["qlvm_duration"]] == "qlvm_duration"
     assert map_dropdown.value == default_qlvm_map
     assert not any("|" in label for label in map_dropdown.options)
+
+
+
+@pytest.mark.parametrize(
+    ("qlvm_map", "boundaries_enabled", "squeak_class_enabled"),
+    [("qlvm", True, False), ("qlvm_duration", False, False), ("qlvm_squeak", False, True)],
+)
+def test_explorer_greys_out_controls_that_do_not_apply_to_the_map(qlvm_map, boundaries_enabled, squeak_class_enabled):
+    """Boundaries is enabled only on the map the category bundle is defined on and Squeak
+    class only on the squeaks map; a greyed-out Boundaries shows "none" whatever the
+    remembered choice, while the remembered choices come back where they apply."""
+
+    def control(value: object) -> types.SimpleNamespace:
+        """A stand-in for a marimo UI element: only ``.value`` is read."""
+        return types.SimpleNamespace(value=value)
+
+    _output, definitions = usv_embedding_explorer._map_dependent_controls.run(
+        QLVM_CATEGORY_MAP="qlvm", SQUEAK_CLASS_SELECTIONS=SQUEAK_CLASS_SELECTIONS,
+        get_boundary_choice=lambda: "category", get_squeak_class_choice=lambda: "both",
+        map_dropdown=control(qlvm_map), mo=mo,
+        set_boundary_choice=lambda _value: None, set_squeak_class_choice=lambda _value: None,
+    )
+    boundary, squeak_class = definitions["boundary_dropdown"], definitions["squeak_class_dropdown"]
+    assert boundary._args.args["disabled"] is (not boundaries_enabled)
+    assert squeak_class._args.args["disabled"] is (not squeak_class_enabled)
+    assert boundary.value == ("category" if boundaries_enabled else "none")
+    assert squeak_class.value == "both"
+    assert list(squeak_class.options) == ["squeak only", "squeak + USV"]
+
+
+
+def test_explorer_scatter_does_not_depend_on_apply_mask_or_the_sliders():
+    """Toggling Apply mask or moving the examples slider must not rebuild the scatter (it
+    would drop the viewer's brush rectangle): neither the scatter cell nor the cell that
+    builds the dropdowns it depends on may reference those controls."""
+    for cell in (usv_embedding_explorer._scatter_chart, usv_embedding_explorer._map_dependent_controls):
+        assert not set(cell.refs) & {"apply_mask_checkbox", "n_samples_slider"}, cell.name
 
 
 def _explorer_scatter_rows(qlvm_map: str, squeak_class: str) -> list[int]:
@@ -2478,8 +2514,9 @@ def test_explorer_usv_maps_show_pure_usvs_only(squeak_class):
     [("squeak+both", [1, 2]), ("squeak", [1]), ("both", [2])],
 )
 def test_explorer_squeak_map_class_filter(squeak_class, expected_rows):
-    """The squeak map draws the squeak-bearing classes the squeak-class control selects:
-    squeak + both (the default), squeak only, or both only."""
+    """The squeak map draws the squeak-bearing classes a squeak-class selection names: the
+    explorer offers squeak only (the default) and squeak + USV ("both"); the union selection
+    of os_utils.SQUEAK_CLASS_SELECTIONS, used by other figures, still filters correctly."""
     assert _explorer_scatter_rows("qlvm_squeak", squeak_class) == expected_rows
 
 

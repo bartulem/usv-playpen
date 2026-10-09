@@ -21,7 +21,8 @@ spectrogram/SAM2 store.
 
 Architecture
 ------------
-- Cell layout (8 cells): imports; settings; widgets; the per-session filter
+- Cell layout (10 cells): imports; settings; widgets; the map-dependent controls
+  (Boundaries, Squeak class: greyed out off their map); the control-panel layout; the per-session filter
   (pruned to the loaded lists); pooled-data load; scatter (prepare + chart);
   the tooltip style; explorer (controls + spectrogram grid). The scatter, the
   brushable ``mo.ui.altair_chart`` and the cell that reads its selection must
@@ -35,11 +36,11 @@ Architecture
   listed in the Map dropdown by their GUI names, ``os_utils.QLVM_MAP_DISPLAY_NAMES``); the Map dropdown starts at
   ``shared_resources.qlvm_map``; the USV maps show only the segments
   ``detect-usv-squeaks`` classed as pure USVs (``usv & ~squeak``); or the
-  "Squeaks" map, ``qlvm_squeak1`` / ``qlvm_squeak2`` from
+  "squeaks" map, ``qlvm_squeak1`` / ``qlvm_squeak2`` from
   ``infer-qlvm-squeak-latents``, which holds the squeak-bearing classes only,
   filtered by the "Squeak class" dropdown to pure squeaks
-  (``squeak & ~usv``), segments holding both a squeak and a USV (``usv & squeak``), or the two
-  together (the default); the USV and squeak maps therefore never overlap),
+  (``squeak & ~usv``, the default) or segments holding a squeak and a USV
+  (``usv & squeak``, "squeak + USV"); the USV and squeak maps therefore never overlap),
   colored by a categorical label (category / session type / session id / emitter
   sex) OR a continuous metric through the colormap (density, duration,
   frequencies, amplitudes, spectral entropy), with an ``alt.selection_interval``
@@ -63,7 +64,7 @@ Architecture
   fixed window so each call's width reflects its true duration, embedded inline
   as a base64 PNG. The brushed rows are recovered with
   ``chart_widget.apply_selection`` (``.value`` fails on the layered chart).
-- On the Squeaks map the tiles come instead from the squeak spectrogram store
+- On the squeaks map the tiles come instead from the squeak spectrogram store
   (the newest ``<spectrograms_dir>/squeak_spectrograms_*.h5``, written by
   ``build-squeak-spectrogram-store``, resolved by
   ``os_utils.resolve_squeak_spectrogram_store_path``): 2-125 kHz on a log
@@ -207,7 +208,7 @@ def _settings(
 
     # The squeak spectrogram store (newest squeak_spectrograms_*.h5 under
     # `spectrograms_dir`, from build-squeak-spectrogram-store): 2-125 kHz,
-    # log-frequency spectrograms the Squeaks map shows instead of the 30-125 kHz
+    # log-frequency spectrograms the squeaks map shows instead of the 30-125 kHz
     # ultrasonic ones. None when it has not been built (the grid then falls back
     # to the consolidated store with a note). Each squeak tile is scaled over the
     # top SQUEAK_DYNAMIC_RANGE_DB dB below its own peak.
@@ -287,7 +288,7 @@ def _settings(
 
 
 @app.cell
-def _widgets(QLVM_MAPS, QLVM_MAP_DISPLAY_NAMES, SQUEAK_CLASS_SELECTIONS, available_lists, default_qlvm_map, mo):
+def _widgets(QLVM_MAPS, QLVM_MAP_DISPLAY_NAMES, available_lists, default_qlvm_map, mo):
     # Session-list picker: a multiselect dropdown (pick one / some / all),
     # FIXED WIDTH so it never widens, capped height with overflow so extra chips
     # SCROLL inside the box rather than growing the layout. .style() returns a
@@ -336,7 +337,7 @@ def _widgets(QLVM_MAPS, QLVM_MAP_DISPLAY_NAMES, SQUEAK_CLASS_SELECTIONS, availab
     # Built from the two constants, so a map added to or retired from the production
     # set cannot drift out of (or linger in) the dropdown.
     _map_labels = {QLVM_MAP_DISPLAY_NAMES[_qlvm_map]: _qlvm_map for _qlvm_map in QLVM_MAPS}
-    _map_labels["Squeaks"] = "qlvm_squeak"
+    _map_labels["squeaks"] = "qlvm_squeak"
     map_dropdown = mo.ui.dropdown(
         options=_map_labels,
         value=next(_label for _label, _map in _map_labels.items() if _map == default_qlvm_map),
@@ -368,13 +369,12 @@ def _widgets(QLVM_MAPS, QLVM_MAP_DISPLAY_NAMES, SQUEAK_CLASS_SELECTIONS, availab
         value="category",
         label="Color by",
     )
-    # Boundaries draw the category outlines as contour lines over the
-    # scatter -- the discrete structure, without recoloring every point.
-    boundary_dropdown = mo.ui.dropdown(
-        options=["none", "category"],
-        value="none",
-        label="Boundaries",
-    )
+    # The Boundaries and Squeak class choices are kept in state: the two dropdowns
+    # are rebuilt by `_map_dependent_controls` whenever the map changes (so they
+    # can be greyed out on maps they do not apply to), and the state carries the
+    # viewer's last choice across that rebuild.
+    get_boundary_choice, set_boundary_choice = mo.state("none")
+    get_squeak_class_choice, set_squeak_class_choice = mo.state("squeak")
     # Sampled spectrograms shown in the grid beside the scatter (5 columns). The
     # default 50 makes a 5x10 grid whose block is square -- matching the
     # embedding's height exactly.
@@ -395,26 +395,89 @@ def _widgets(QLVM_MAPS, QLVM_MAP_DISPLAY_NAMES, SQUEAK_CLASS_SELECTIONS, availab
         value=True,
         label="Apply mask",
     )
-    # Which squeak-bearing call classes the Squeaks map shows: pure squeaks
-    # (squeak & ~usv), segments holding a squeak and a USV (usv & squeak), or
-    # both kinds together (the default). {display label -> selection name of
+    return (
+        apply_mask_checkbox,
+        color_dropdown,
+        get_boundary_choice,
+        get_loaded_lists,
+        get_squeak_class_choice,
+        map_dropdown,
+        max_points_slider,
+        n_samples_slider,
+        session_row,
+        set_boundary_choice,
+        set_squeak_class_choice,
+    )
+
+
+@app.cell
+def _map_dependent_controls(
+    QLVM_CATEGORY_MAP,
+    SQUEAK_CLASS_SELECTIONS,
+    get_boundary_choice,
+    get_squeak_class_choice,
+    map_dropdown,
+    mo,
+    set_boundary_choice,
+    set_squeak_class_choice,
+):
+    # The two controls that apply to one map only, rebuilt on every map change so
+    # they are greyed out (disabled) elsewhere: Boundaries on the map the category
+    # bundle is defined on (QLVM_CATEGORY_MAP), Squeak class on the squeaks map.
+    # Their values live in the `_widgets` state, so a choice survives a trip to
+    # another map. A greyed-out Boundaries shows (and passes on) "none", so the
+    # scatter draws no outlines and adds no note there. This cell references only
+    # the map (and the remembered choices): the scatter depends on its two
+    # dropdowns, so any other input here (Apply mask, the sliders) would rebuild
+    # the chart on every toggle and drop the viewer's brush rectangle.
+    _boundaries_apply = map_dropdown.value == QLVM_CATEGORY_MAP
+    _squeak_class_applies = map_dropdown.value == "qlvm_squeak"
+    # Boundaries draw the category outlines as contour lines over the
+    # scatter -- the discrete structure, without recoloring every point.
+    boundary_dropdown = mo.ui.dropdown(
+        options=["none", "category"],
+        value=get_boundary_choice() if _boundaries_apply else "none",
+        label="Boundaries",
+        disabled=not _boundaries_apply,
+        on_change=set_boundary_choice if _boundaries_apply else None,
+    )
+    # Which squeak-bearing call class the squeaks map shows: pure squeaks
+    # (squeak & ~usv, the default) or segments holding a squeak and a USV
+    # (usv & squeak). {display label -> selection name of
     # os_utils.SQUEAK_CLASS_SELECTIONS}; .value returns the selection name. The
     # USV maps ignore it: they always show pure USVs only.
     _squeak_class_labels = {
-        "squeak + both": "squeak+both",
         "squeak only": "squeak",
-        "both only": "both",
+        "squeak + USV": "both",
     }
-    if set(_squeak_class_labels.values()) != set(SQUEAK_CLASS_SELECTIONS):
-        raise ValueError("The explorer's squeak-class options must match os_utils.SQUEAK_CLASS_SELECTIONS.")
+    if not set(_squeak_class_labels.values()) <= set(SQUEAK_CLASS_SELECTIONS):
+        raise ValueError("The explorer's squeak-class options must be os_utils.SQUEAK_CLASS_SELECTIONS names.")
     squeak_class_dropdown = mo.ui.dropdown(
         options=_squeak_class_labels,
-        value="squeak + both",
+        value=next(_label for _label, _name in _squeak_class_labels.items() if _name == get_squeak_class_choice()),
         label="Squeak class",
+        disabled=not _squeak_class_applies,
+        on_change=set_squeak_class_choice,
     )
-    # One control per row (label left, input right). `session_row` (the list picker
-    # + Load) and the Sessions filter from `_session_filter` are stacked on top of
-    # `other_controls` by `_explorer`, which owns the final layout.
+    return boundary_dropdown, squeak_class_dropdown
+
+
+@app.cell
+def _controls_layout(
+    apply_mask_checkbox,
+    boundary_dropdown,
+    color_dropdown,
+    map_dropdown,
+    max_points_slider,
+    mo,
+    n_samples_slider,
+    squeak_class_dropdown,
+):
+    # Display only: re-running it (any control changes) rebuilds nothing the
+    # scatter depends on. One control per row (label left, input right).
+    # `session_row` (the list picker + Load) and the Sessions filter from
+    # `_session_filter` are stacked on top of `other_controls` by `_explorer`,
+    # which owns the final layout.
     other_controls = mo.vstack(
         [
             map_dropdown,
@@ -431,18 +494,7 @@ def _widgets(QLVM_MAPS, QLVM_MAP_DISPLAY_NAMES, SQUEAK_CLASS_SELECTIONS, availab
     # NOTE: `session_row` / `other_controls` are pool-independent, so they render
     # before any selection; `_explorer` assembles + displays them (with the Sessions
     # filter between) directly above the plot.
-    return (
-        apply_mask_checkbox,
-        boundary_dropdown,
-        color_dropdown,
-        get_loaded_lists,
-        map_dropdown,
-        max_points_slider,
-        n_samples_slider,
-        other_controls,
-        session_row,
-        squeak_class_dropdown,
-    )
+    return (other_controls,)
 
 
 @app.cell
@@ -625,8 +677,8 @@ def _scatter_chart(
         # No overlap between the USV maps and the squeak map: a USV map shows only
         # the segments detect-usv-squeaks classed as pure USVs (usv & ~squeak;
         # squeak-bearing rows and unclassed rows never), and the squeak map
-        # shows the squeak-bearing classes the "Squeak class" dropdown selects
-        # (squeak, both, or both kinds). A pooled table without the usv / squeak
+        # shows the squeak-bearing class the "Squeak class" dropdown selects
+        # (pure squeaks, or squeak + USV segments). A pooled table without the usv / squeak
         # booleans (older summaries) raises with a message naming the missing columns.
         _classes = SQUEAK_CLASS_SELECTIONS[squeak_class_dropdown.value] if squeak_map else ("usv",)
         pooled = pooled.filter(call_class_mask(pooled, _classes, "the pooled embeddings table"))
@@ -668,7 +720,7 @@ def _scatter_chart(
         # Extra columns carried only to populate the hover tooltip. Guarded so an
         # older cache lacking them neither trips the missing-col check below nor
         # requests a chart field that isn't there.
-        for _tt_src in ("emitter", "mean_amplitude", "mean_freq_hz", "spectral_entropy"):
+        for _tt_src in ("emitter", "duration", "spectral_entropy", "loudness_db"):
             if _tt_src in pooled.columns and _tt_src not in keep:
                 keep.append(_tt_src)
 
@@ -698,13 +750,13 @@ def _scatter_chart(
 
         # Compact per-point tooltip columns, computed from the RAW values before the
         # continuous-color rescaling below can mutate a feature column in place;
-        # rounded to 1 dp to keep the inlined data small (frequency shown in kHz).
-        if "mean_amplitude" in chart_pd.columns:
-            chart_pd["_tt_amp"] = chart_pd["mean_amplitude"].round(1)
-        if "mean_freq_hz" in chart_pd.columns:
-            chart_pd["_tt_freq_khz"] = (chart_pd["mean_freq_hz"] / 1000.0).round(1)
+        # rounded to keep the inlined data small (duration shown in ms).
+        if "duration" in chart_pd.columns:
+            chart_pd["_tt_duration_ms"] = (chart_pd["duration"] * 1000.0).round(1)
         if "spectral_entropy" in chart_pd.columns:
-            chart_pd["_tt_entropy"] = chart_pd["spectral_entropy"].round(1)
+            chart_pd["_tt_entropy"] = chart_pd["spectral_entropy"].round(2)
+        if "loudness_db" in chart_pd.columns:
+            chart_pd["_tt_loudness_db"] = chart_pd["loudness_db"].round(1)
 
         # No axes -- points alone. Keep the scales (data domain) but drop
         # ticks/labels/titles/spines via axis=None. Shared scales so the scatter
@@ -757,19 +809,19 @@ def _scatter_chart(
 
         # Drop the raw feature columns now that the tooltip's compact copies exist;
         # keep the one that is the active color field (the color scale still needs it).
-        _tt_raw = {"mean_amplitude", "mean_freq_hz", "spectral_entropy"}
+        _tt_raw = {"duration", "spectral_entropy", "loudness_db"}
         _drop = [c for c in _tt_raw if c in chart_pd.columns and c != color_field]
         if _drop:
             chart_pd = chart_pd.drop(columns=_drop)
 
-        # Per-point hover tooltip: identity (session / emitter) + the three rounded
-        # acoustic readouts; each entry appears only if its column is present.
-        tooltip = [alt.Tooltip("session_id:N", title="session id")]
+        # Per-point hover tooltip: session, emitter, duration, spectral entropy and
+        # loudness; each entry appears only if its column is present.
+        tooltip = [alt.Tooltip("session_id:N", title="session")]
         for _tip_field, _tip_title in (
             ("emitter:N", "emitter"),
-            ("_tt_amp:Q", "mean amplitude (a.u.)"),
-            ("_tt_freq_khz:Q", "mean frequency (kHz)"),
+            ("_tt_duration_ms:Q", "duration (ms)"),
             ("_tt_entropy:Q", "spectral entropy (nats)"),
+            ("_tt_loudness_db:Q", "loudness (dB)"),
         ):
             if _tip_field.split(":")[0] in chart_pd.columns:
                 tooltip.append(alt.Tooltip(_tip_field, title=_tip_title))
@@ -778,7 +830,7 @@ def _scatter_chart(
         # "Color by" dropdown already names the field, dropping the title also
         # sidesteps Vega-Lite's inability to rotate a legend title, and a left
         # legend keeps the scatter top-aligned with the spectrogram grid.
-        mark_kwargs = dict(size=8, opacity=0.5)
+        mark_kwargs = dict(size=12, opacity=0.5)
         if color_field is None:
             mark_kwargs["color"] = "#9E9E9E"
         scatter = alt.Chart(chart_pd).mark_circle(**mark_kwargs).encode(
@@ -1032,9 +1084,9 @@ def _explorer(
             # several samples come from the same session.
             mask_index_cache: dict = {}
             h5_open_error = None
-            # The Squeaks map reads its tiles from the squeak spectrogram store
+            # The squeaks map reads its tiles from the squeak spectrogram store
             # (2-125 kHz, log-frequency rows, so the imshow below draws a log
-            # frequency axis); every other map, and the Squeaks map when that
+            # frequency axis); every other map, and the squeaks map when that
             # store has not been built, reads the consolidated 30-125 kHz store.
             # The missing-store case is a one-line note above the grid, not
             # mo.stop, which would also hide the controls drawn by this cell.
