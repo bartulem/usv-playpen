@@ -34,6 +34,52 @@ The *Root directories* field enables you to list the directories containing the 
     /mnt/falkner/Bartul/20250430_165730
     /mnt/falkner/Bartul/20250430_182145
 
+Shared settings
+---------------
+Besides the per-analysis blocks documented under each function below, *analyses_settings.json* carries the blocks the Analyze window and every analysis share. The GUI writes the first four from its fields; the ``data_roots`` block is edited in the file only. Every path in the file is stored with the shipped experimenter folder (``Bartul``) and is re-keyed to the experimenter selected on the GUI main display (or, for the CLI, to the ``experimenter`` of *behavioral_experiments_settings.toml* / the ``EXPERIMENTER_ID`` environment variable) and to the host OS mount before it is used:
+
+* **analyses_booleans** : one toggle per analysis, set by the orange fields of the window — ``compute_behavioral_features_bool``, ``compute_neuronal_tuning_bool``, ``frequency_shift_audio_segment_bool``, ``create_usv_playback_wav_bool`` and ``create_naturalistic_usv_playback_wav_bool``. The sixth, ``compute_inter_usv_interval_distributions_bool``, has no GUI field: the inter-USV interval analysis runs from the command line (``generate-usv-interval-distributions``, see :doc:`CLI`) or from its notebook (see :doc:`Notebooks`), and runs in a GUI session only when the boolean is set to ``true`` in the file by hand
+* **analyze_data.root_directories** : the *Root directories* field above (one session root per row)
+* **credentials_directory** : the *Credentials directory* field — the directory holding *email_config.ini*, read to send the PC-usage e-mails
+* **send_email** : ``analyses_pc_list`` (the PC names offered in the *Analyses PC of choice* dropdown), ``analyses_pc_choice`` (the selected one, named in the e-mail subject), ``experimenter`` (the selected experimenter, named in the e-mail body) and ``send_message.receivers`` (the *Notify e-mail(s) of PC usage* field)
+* **data_roots** : the canonical data locations every analysis, figure and notebook resolves through ``os_utils.resolve_data_root`` instead of hard-coding them — ``data_root`` (the ``Data`` tree of session roots) and ``ephys_root`` (its sibling ``EPHYS`` tree of spike-sorted recordings), ``catalog_path`` (the unit catalog CSV) and ``aggregator_out_dir`` (where the :ref:`unit-triage aggregator <unit-triage-aggregator>` writes), ``histology_root``, ``allen_meshes_dir`` and ``converter_path`` (the histology stacks, the Allen atlas meshes and the sites-to-anatomy converter JSON of the :doc:`Neuropixels` tools and the anatomy figures), and ``naturalistic_usv_repository_dir`` / ``naturalistic_usv_playback_dir`` (the naturalistic playback repository root and the playback output directory, see *Build the naturalistic USV repository* and *Create naturalistic playback .WAV* below)
+
+.. code-block:: json
+
+    "analyses_booleans": {
+        "compute_behavioral_features_bool": false,
+        "compute_neuronal_tuning_bool": false,
+        "compute_inter_usv_interval_distributions_bool": false,
+        "create_usv_playback_wav_bool": false,
+        "create_naturalistic_usv_playback_wav_bool": false,
+        "frequency_shift_audio_segment_bool": false
+    },
+    "analyze_data": {
+        "root_directories": []
+    },
+    "credentials_directory": "",
+    "data_roots": {
+        "ephys_root": "/mnt/falkner/Bartul/EPHYS",
+        "histology_root": "/mnt/falkner/Bartul/histology",
+        "data_root": "/mnt/falkner/Bartul/Data",
+        "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
+        "aggregator_out_dir": "/mnt/falkner/Bartul/neuronal_tuning",
+        "allen_meshes_dir": "/mnt/falkner/Bartul/EPHYS/allen_meshes",
+        "converter_path": "/mnt/falkner/Bartul/EPHYS/neuropixels_sites_to_anatomy_converter.json",
+        "naturalistic_usv_repository_dir": "/mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_repositories",
+        "naturalistic_usv_playback_dir": "/mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_files"
+    },
+    "send_email": {
+        "analyses_pc_list": ["A84E Windows", "A84I Linux", "A84I Windows", "165B Audio", "165B Neural"],
+        "analyses_pc_choice": "A84I Linux",
+        "experimenter": "Bartul",
+        "send_message": {
+            "receivers": []
+        }
+    }
+
+The remaining blocks of the file belong to analyses that have no window in the GUI and are documented with them: ``compute_inter_usv_interval_distributions`` (:doc:`CLI`, ``generate-usv-interval-distributions``, and :doc:`Notebooks`), ``detect_interesting_tuning_neurons`` and ``neuronal_coactivity`` (:doc:`Notebooks`), and the ``npx_*`` blocks (:doc:`Neuropixels`).
+
 Compute 3D behavioral features
 ------------------------------
 Once 3D tracking data is available, you can compute behavioral features. These can be *individual features* specific to each mouse (*i.e.*, spatial location, speed, posture, *etc.*) or *social features* (assuming two or more mice) that describe the relationship between the mice (*i.e.*, distance, angle, *etc.*). The output of this analysis are two files: [1] CSV file containing each measured feature in each column, and [2] a PDF file containing graphs for the observed distribution of each feature. To run this analysis in the GUI, you need to list the root directories of interest, select *Compute 3D behavioral features*, click *Next* and then *Analyze*:

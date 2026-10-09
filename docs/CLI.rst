@@ -4,6 +4,16 @@ Command Line Interfaces (CLI)
 =============================
 This page explains how to use the *usv-playpen* CLI (command line interfaces).
 
+GUI
+---
+
+``usv-playpen``
+``usv-playpen`` launches the graphical user interface (the entry point of ``usv_playpen_gui.py``). It takes no options: every setting is edited in the GUI windows, which write the ``*_settings.json`` files the commands below read. On a Wayland desktop see the *Linux / Wayland (COSMIC)* note of :doc:`Requirements`.
+
+.. code-block:: text
+
+    usage: usv-playpen
+
 Record
 ------
 
@@ -1391,6 +1401,9 @@ The options below override the JSON for the extraction and the unconstrained swe
                        [--n-usv-min-self INTEGER] [--n-usv-min-partner INTEGER]
                        [--n-usv-min-category INTEGER]
                        [--include-partner-tuning | --no-include-partner-tuning]
+                       [--exclude-squeaks-self | --keep-squeaks-self]
+                       [--exclude-squeaks-partner | --keep-squeaks-partner]
+                       [--excluded-behavioral-features TEXT]...
                        [--behavioral-min-occupancy-seconds FLOAT]
                        [--smoothing-sd FLOAT]
 
