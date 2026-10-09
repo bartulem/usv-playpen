@@ -1989,7 +1989,7 @@ def first_match_or_raise(
 
 
 # The concatenated multi-channel audio memmaps of a session, one per frequency
-# band, each in its own exact folder under ``<root>/audio``: ``usv`` is the
+# band, each in its own exact folder under ``<root>/audio``: ``ultrasonic`` is the
 # 30 kHz high-passed HPSS audio every USV reader (DAS summary, spectrograms,
 # loudness, vocalocator, figures, videos) was built and trained on; ``broadband``
 # is the 2 kHz high-passed, line-noise-cleaned HPSS audio written by
@@ -2004,7 +2004,7 @@ def audio_mmap_name_regex(band: str) -> re.Pattern:
     Compiled regular expression matching the exact file name of a session's
     concatenated audio memmap for one band:
     ``<id>_concatenated_audio_<folder>_<sampling rate>_<samples>_<channels>_int16.mmap``,
-    where ``<folder>`` is the band's folder (``hpss_filtered`` for ``usv``,
+    where ``<folder>`` is the band's folder (``hpss_filtered`` for ``ultrasonic``,
     ``broadband_filtered`` for ``broadband``) and ``<id>`` the recording id token
     of the source wav names (no underscore). The pattern is anchored at both
     ends, so temporary siblings (``.<name>.tmp-<pid>``), copies with a suffix and
