@@ -111,11 +111,6 @@ NEUTRAL_COLOR = "#D3D3D3"
 MEAN_LINE_COLOR = '#DCB400'
 TEXT_COLOR = '#202020'
 REFERENCE_LINE_COLOR = "#808080"    # dashed zero / chance reference lines (was 'gray')
-# Torus output-coordinate colours (manifold-x / manifold-y). Read from
-# ``manifold_colors`` in visualizations_settings.json; chosen far from the male /
-# female / social animal colours so neither manifold axis reads as an identity.
-MANIFOLD_X_COLOR = _VIZ_SETTINGS["manifold_colors"][0]        # manifold-x (torus output dim 0)
-MANIFOLD_Y_COLOR = _VIZ_SETTINGS["manifold_colors"][1]        # manifold-y (torus output dim 1)
 
 # Timescale-audit palette overrides: zero / axis lines stay black, so
 # social/dyadic gets the canonical social colour (distinct from the
