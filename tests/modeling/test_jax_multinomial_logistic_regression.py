@@ -518,3 +518,56 @@ class TestSmoothnessBoundary:
         expected = 0.5 * lam_smooth * float((first_diff * class_weights).sum())
 
         assert np.isclose(actual, expected, rtol=1e-4, atol=1e-5)
+
+
+class TestFocalSaturation:
+    """The focal modulator's base is clamped at ``1e-7`` so an event whose float32 softmax
+    probability rounds to exactly 1 (logit margin above ~17) no longer poisons the gradient."""
+
+    @staticmethod
+    def _saturated_problem():
+        """Three events, one feature with two frames, four classes; event 0 is separated by a
+        logit margin of 25, so its ``p_t`` is exactly ``1.0`` in float32."""
+
+        X = jnp.array([[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]], dtype=jnp.float32)
+        Y = jnp.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]], dtype=jnp.int32)
+        W = jnp.zeros((2, 4), dtype=jnp.float32).at[0, 0].set(25.0)
+        b = jnp.zeros(4, dtype=jnp.float32)
+        sw = jnp.ones(3, dtype=jnp.float32)
+        cw = jnp.ones(4, dtype=jnp.float32)
+        return X, Y, (W, b), sw, cw
+
+    def test_saturated_event_is_exact_in_float32(self):
+        X, Y, (W, b), _, _ = self._saturated_problem()
+        pt = jnp.sum(jax.nn.softmax(X @ W + b, axis=-1) * Y, axis=1)
+        assert float(pt[0]) == 1.0
+
+    @pytest.mark.parametrize("gamma", [0.5, 1.0, 2.0])
+    def test_gradient_is_finite_at_saturation(self, gamma):
+        """Before the clamp ``gamma = 0.5`` gave ``-inf * 0 = NaN`` here (the per-fold failure of the
+        raw-lag multinomial selection); every exponent must now give a finite gradient."""
+
+        X, Y, params, sw, cw = self._saturated_problem()
+        grads = jax.grad(_multinomial_loss_static)(params, X, Y, sw, 1, 2, 0.0, 0.0, cw, gamma, 1, True)
+        assert bool(jnp.isfinite(grads[0]).all()) and bool(jnp.isfinite(grads[1]).all())
+
+    def test_loss_unchanged_away_from_saturation(self):
+        """For ``p_t < 1 - 1e-7`` the clamp is inactive: the loss equals the unclamped focal formula."""
+
+        X, Y, (W, _), sw, cw = self._saturated_problem()
+        W_mild = W.at[0, 0].set(2.0)
+        b = jnp.zeros(4, dtype=jnp.float32)
+        gamma = 0.5
+        probs = jax.nn.softmax(X @ W_mild + b, axis=-1)
+        pt = jnp.sum(probs * Y, axis=1)
+        expected = jnp.mean((1.0 - pt) ** gamma * -jnp.log(pt + 1e-8))
+        actual = _multinomial_loss_static((W_mild, b), X, Y, sw, 1, 2, 0.0, 0.0, cw, gamma, 1, True)
+        assert float(jnp.abs(actual - expected)) < 1e-6
+
+    def test_fit_with_fractional_gamma_stays_finite(self):
+        """A full fit with the shipped ``focal_gamma = 0.5`` on separable data ends with finite weights."""
+
+        X, y = _make_separable_3class()
+        model = SmoothMultinomialLogisticRegression(**{**_fit_kwargs(X.shape[1]), "focal_gamma": 0.5}).fit(X, y)
+        assert np.all(np.isfinite(model.coef_))
+        assert float(np.mean(model.predict(X) == y)) > 0.9

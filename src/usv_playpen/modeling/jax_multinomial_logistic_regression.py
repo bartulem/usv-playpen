@@ -64,7 +64,11 @@ def _multinomial_loss_static(
     probs = jax.nn.softmax(logits, axis=-1)
     pt = jnp.sum(probs * Y_onehot, axis=1)
     ce_loss = -jnp.log(pt + 1e-8)
-    focal_modulator = (1.0 - pt) ** focal_gamma
+    # The base is clamped: for focal_gamma < 1 the derivative of (1 - pt) ** gamma is
+    # infinite at pt = 1, which float32 reaches exactly once an event's logit margin
+    # exceeds ~17; without the clamp one saturated event turns the whole gradient NaN
+    # and ends the fit. Elsewhere (pt < 1 - 1e-7) loss and gradient are unchanged.
+    focal_modulator = jnp.maximum(1.0 - pt, 1e-7) ** focal_gamma
     alpha_t = jnp.sum(Y_onehot * class_weights, axis=1)
     focal_loss = alpha_t * focal_modulator * ce_loss
     mean_focal_loss = jnp.sum(sample_weight * focal_loss) / (jnp.sum(sample_weight) + 1e-12)
@@ -610,8 +614,11 @@ class SmoothMultinomialLogisticRegression(BaseEstimator, ClassifierMixin):
         # Add a tiny epsilon (1e-8) to prevent log(0) exploding to NaN
         ce_loss = -jnp.log(pt + 1e-8)
 
-        # 4. Calculate the Focal Modulating Factor: (1 - pt)^gamma
-        focal_modulator = (1.0 - pt) ** focal_gamma
+        # 4. Calculate the Focal Modulating Factor: (1 - pt)^gamma, with the base clamped
+        # at 1e-7: for focal_gamma < 1 its derivative is infinite at pt = 1, which float32
+        # reaches exactly once an event's logit margin exceeds ~17, and one saturated event
+        # would turn the whole gradient NaN and end the fit (mirrors _multinomial_loss_static).
+        focal_modulator = jnp.maximum(1.0 - pt, 1e-7) ** focal_gamma
 
         # 5. Extract the specific alpha (class weight) for each sample's true class
         alpha_t = jnp.sum(Y_onehot * class_weights, axis=1)

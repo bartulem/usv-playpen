@@ -316,7 +316,7 @@ def resolve_temporal_basis(model_block: dict, history_frames: int) -> tuple[np.n
       (``lambda_smooth_fixed``, ``l2_reg_fixed``, ``smoothness_derivative_order``,
       reflective edge rows for order 2). The block is returned unchanged apart from
       ``smoothness_reflective_edges = True``.
-    * ``temporal_basis.type == "bspline"`` (the multinomial block's shipped default, since its per-frame multi-feature fits fail to converge on most folds at the shipped learning rate while the spline fits converge with the same score): every feature's history of
+    * ``temporal_basis.type == "bspline"`` (the multinomial block's shipped default: the same selection and score as the per-frame basis on the same inputs, a fiftieth of the fitting time, and no fold lost to float32 softmax saturation of the raw-lag fit): every feature's history of
       ``history_frames`` frames is projected onto ``n_splines`` B-splines of degree
       ``spline_order`` (:func:`gam_bspline_basis`, pyGAM's lag basis, divided by
       ``history_frames`` so each projected column is a weighted average of the
