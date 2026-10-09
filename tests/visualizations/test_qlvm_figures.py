@@ -4,11 +4,14 @@
 Tests for visualizations/qlvm_figures.
 
 Covers the metric helpers (torus neighbors, kNN rank readout, neighborhood
-scores, aligned correlation, normalized similarity, group contrast, aligned
-means), the per-session sample (decoder inputs, masked native-length images,
-the cache served only for the same USVs), and a small end-to-end render of the
-three figures on synthetic sessions (spectrogram H5s written to a temporary
-directory, a two-band category grid, a stubbed decoder geometry).
+scores, standardized property ranks, aligned correlation, normalized
+similarity, group contrast, aligned means), the session-root helpers, the
+category check against the bundle's grid, the masked thumbnail, the seed-cell
+embedding (stubbed decoder), the per-session sample (decoder inputs, masked
+native-length images, the cache served only for the same USVs), and a small
+end-to-end render of the three figures on synthetic sessions (spectrogram H5s
+written to a temporary directory, a two-band category grid, a stubbed decoder
+geometry).
 """
 
 from __future__ import annotations
@@ -219,6 +222,78 @@ def test_group_contrast_is_positive_for_coherent_groups():
     filled = np.where(labels[:, None] == labels[None, :], 0.9, 0.2).astype(np.float32)
     np.fill_diagonal(filled, 0.0)
     assert np.allclose(qf.group_contrast(filled, labels), 0.7)
+
+
+def test_standardized_property_ranks_fills_missing_and_standardizes():
+    """Each property becomes zero-mean, unit-variance ranks; a missing value takes the property's median, so it
+    ties with the median row's rank."""
+    properties = np.array([[1.0, 10.0], [2.0, np.nan], [3.0, 30.0], [4.0, 40.0]])
+    ranks = qf.standardized_property_ranks(properties)
+    assert ranks.shape == (4, 2)
+    assert np.allclose(ranks.mean(axis=0), 0.0) and np.allclose(ranks.std(axis=0), 1.0)
+    assert np.all(np.diff(ranks[:, 0]) > 0)
+    assert ranks[1, 1] == pytest.approx(ranks[2, 1])
+
+
+def test_session_roots_by_id_and_spectrogram_file():
+    """A session is keyed by its root's name, and its spectrogram H5 is <root>/audio/spectrograms/<id>_spectrograms.h5."""
+    roots = qf.session_roots_by_id(["/data/20250101_120000", "/data/other/20250102_120000/"])
+    assert list(roots) == ["20250101_120000", "20250102_120000"]
+    assert roots["20250102_120000"] == pathlib.Path("/data/other/20250102_120000")
+    assert qf.session_spectrogram_file(roots["20250101_120000"]) == pathlib.Path(
+        "/data/20250101_120000/audio/spectrograms/20250101_120000_spectrograms.h5")
+
+
+def test_check_categories_match_bundle_names_the_disagreeing_sessions():
+    """Categories equal to the grid's pixel category pass; a disagreeing call raises naming its session; a table
+    without the category column raises pointing at assign-qlvm-categories."""
+    grid = _two_band_grid()
+    usvs = pls.DataFrame({"session_id": ["a", "a", "b"], "qlvm1": [0.1, 0.9, 0.2], "qlvm2": [0.5, 0.5, 0.5],
+                          "qlvm_category": [1, 2, 1]})
+    qf.check_categories_match_bundle(usvs, grid)
+    wrong = usvs.with_columns(pls.Series("qlvm_category", [1, 1, 1]))
+    with pytest.raises(ValueError, match=r"1 USVs in 1 session\(s\).*e\.g\. a\)"):
+        qf.check_categories_match_bundle(wrong, grid)
+    with pytest.raises(ValueError, match="no qlvm_category column; run assign-qlvm-categories"):
+        qf.check_categories_match_bundle(usvs.drop("qlvm_category"), grid)
+
+
+def test_read_thumbnail_applies_the_mask_union_and_centres_the_call(tmp_path):
+    """The thumbnail is the spectrogram's valid slice times the union of the USV's masks, centred in the window."""
+    h5_path = tmp_path / "20250101_120000_spectrograms.h5"
+    specs = np.zeros((1, 8, 16), dtype=np.float32)
+    specs[0, :, :6] = 1.0
+    masks = np.zeros((2, 8, 16), dtype=bool)
+    masks[0, :4, :6] = True
+    masks[1, 4:6, :6] = True
+    with h5py.File(h5_path, "w") as h5:
+        h5.create_dataset("spectrogram/s/spectrograms", data=specs)
+        h5.create_dataset("spectrogram/s/durations", data=np.array([6]))
+        h5.create_dataset("mask/s/segmentations", data=masks)
+        h5.create_dataset("mask/s/spectrogram_index", data=np.array([0, 0]))
+    with h5py.File(h5_path, "r") as h5:
+        tile = qf.read_thumbnail(h5, "s", 0)
+    assert tile.shape == (8, 16)
+    assert np.all(tile[:, :5] == 0) and np.all(tile[:, 11:] == 0)
+    assert np.all(tile[:6, 5:11] == 1.0) and np.all(tile[6:, 5:11] == 0)
+
+
+def test_embed_with_cells_keys_positions_by_cell_name(monkeypatch):
+    """Each cell embeds the inputs over its own lattice with the given batch sizes; the positions are keyed by
+    the cell directory's name as float64 (n, 2) arrays."""
+    monkeypatch.setattr(qf, "load_model_cell", lambda directory: {"lattice": f"lattice:{directory}", "params": f"params:{directory}"})
+    calls = []
+
+    def _embed(lattice, inputs, params, lattice_batch_size, data_batch_size):
+        calls.append((lattice, inputs.shape, params, lattice_batch_size, data_batch_size))
+        return np.full((inputs.shape[0], 2), 0.25, dtype=np.float32)
+
+    monkeypatch.setattr(qf, "embed_data", _embed)
+    inputs = np.zeros((3, 128, 128), dtype=np.float16)
+    positions = qf.embed_with_cells(inputs, ["/cells/seed7", "/cells/seed1234"], 64, 32, message_output=lambda *_a, **_k: None)
+    assert list(positions) == ["seed7", "seed1234"]
+    assert positions["seed7"].shape == (3, 2) and positions["seed7"].dtype == np.float64
+    assert calls[0] == ("lattice:/cells/seed7", (3, 1, 128, 128), "params:/cells/seed7", 64, 32)
 
 
 def test_aligned_category_mean_recovers_a_jittered_shape():

@@ -175,8 +175,10 @@ def test_make_video_refuses_a_store_of_another_cell(tmp_path, qlvm_category_bund
 
 
 def test_check_store_map_provenance(tmp_path):
-    """The store must record the production regular cell for the map; a store without
-    provenance cannot be shown to match and is refused."""
+    """The store must record the production regular cell for the map, as a v3 store's
+    package_root / cell attrs (any mount form) or a production store's model_id; a
+    production store of another cell is refused, and a store without provenance
+    cannot be shown to match and is refused too."""
     h5_path = tmp_path / "store.h5"
     with h5py.File(h5_path, "w") as h5:
         group = h5.create_group("qlvm_models/qlvm")
@@ -184,6 +186,14 @@ def test_check_store_map_provenance(tmp_path):
         group.attrs["cell"] = "qlvm/qlvm"
     with h5py.File(h5_path, "r") as h5:
         assert check_store_map_provenance(h5, "qlvm") == "spectrograms/qlvm/qlvm"
+    with h5py.File(tmp_path / "production.h5", "w") as h5:
+        h5.create_group("qlvm_models/qlvm").attrs["model_id"] = "spectrograms/qlvm/qlvm"
+    with h5py.File(tmp_path / "production.h5", "r") as h5:
+        assert check_store_map_provenance(h5, "qlvm") == "spectrograms/qlvm/qlvm"
+    with h5py.File(tmp_path / "other_cell.h5", "w") as h5:
+        h5.create_group("qlvm_models/qlvm").attrs["model_id"] = "v3/phase6_USVs_masked/natural_5strata_N29000"
+    with h5py.File(tmp_path / "other_cell.h5", "r") as h5, pytest.raises(ValueError, match="mislabel"):
+        check_store_map_provenance(h5, "qlvm")
     with h5py.File(tmp_path / "bare.h5", "w") as h5:
         h5.create_dataset("qlvm/s/qlvm", data=np.zeros((2, 2)))
     with h5py.File(tmp_path / "bare.h5", "r") as h5, pytest.raises(ValueError, match="no qlvm_models/qlvm"):
