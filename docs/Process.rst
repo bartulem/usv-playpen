@@ -1061,7 +1061,7 @@ The step takes its parameters from the ``broadband_filter_audio`` block of */usv
 * **line_noise_block_s** / **line_noise_smoothing_blocks** : demodulation block length (s) and running-median length (blocks, odd) of the tone subtraction
 * **chunk_s** : length of the processing chunks (s); does not change the result
 * **n_threads** : threads the channels of a chunk are spread over; does not change the result
-* **low_band_variance_windows** / **low_band_variance_window_s** : number and length (s) of the random windows the per-column *low-band variance* is estimated from (default 25 windows of 0.25 s). The audio classifiers (*Produce noise labels*, *Produce squeak labels*, the squeak QLVM embedding and the squeak spectrogram store) average the channels with weights equal to each channel's **full-band** audio variance, which is what their models were trained on; 88 % of that variance lies below the 2 kHz high-pass, so the broadband audio alone gives different weights, and the noise model's recall falls from 0.99 to 0.73 on it (retraining on the broadband audio does not recover the separation). Since full-band variance = low-band variance + high-band variance and the high band is the broadband audio, the report stores each column's typical low-band variance (the median over the random windows of the source wav's variance minus the broadband column's), and the classifiers add it to a window's broadband variance, which reproduces the full-band weights (Spearman 0.997); through this path the noise model keeps its precision and recall (0.988 / 0.993 on 1,118 labelled segments, scores r 0.984 with the wav input) at a cost of about 11 more real calls per 10,000 segments, 9 of them from the tone removal alone, and the call-class and squeak QLVM outputs agree with the wav input at 99.98 % or better. Reports written before this field existed get it from ``add-broadband-low-band-variance`` (a few seconds of audio per session; the memmap is not rewritten), and a classifier refuses a report without it
+* **low_band_variance_windows** / **low_band_variance_window_s** : number and length (s) of the random windows the per-column *low-band variance* is estimated from (default 25 windows of 0.25 s). The audio classifiers (*Produce noise labels*, *Produce squeak labels*, the squeak QLVM embedding and the squeak spectrogram store) average the channels with weights equal to each channel's **full-band** audio variance, which is what their models were trained on; 88 % of that variance lies below the 2 kHz high-pass, so the broadband audio alone gives different weights, and the noise model's recall falls from 0.99 to 0.73 on it (retraining on the broadband audio does not recover the separation). Since full-band variance = low-band variance + high-band variance and the high band is the broadband audio, the report stores each column's typical low-band variance (the median over the random windows of the source wav's variance minus the broadband column's), and the classifiers add it to a window's broadband variance, which reproduces the full-band weights (Spearman 0.997); through this path the noise model keeps its precision and recall (0.988 / 0.993 on 1,118 labelled segments, scores r 0.984 with the wav input) at a cost of about 11 more real calls per 10,000 segments, 9 of them from the tone removal alone, and the call-class and squeak QLVM outputs agree with the wav input at 99.98 % or better. Reports written before this field existed get it from ``add-broadband-low-band-variance`` (a few seconds of audio per session; the memmap is not rewritten), and a classifier refuses a report without it.
 
 .. code-block:: json
 
@@ -1289,6 +1289,16 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains a 
         "noise_corr_cutoff_min": 0.3,
         "coherence_cutoff_min": 0.2,
         "coherence_channel_count": 3,
+        "consensus_remerge_bool": true,
+        "consensus_remerge_min_duration_s": 0.08,
+        "consensus_remerge_span_factor": 2.0,
+        "consensus_remerge_max_dissenting_channels": 2,
+        "consensus_remerge_min_agreeing_channels": 3,
+        "consensus_remerge_max_depth": 4,
+        "consensus_remerge_min_gap_s": 0.015,
+        "consensus_remerge_rescue_dissenting_channels": 4,
+        "max_usv_duration_bool": true,
+        "max_usv_duration_s": 1.0,
         "seam_repair_bool": false,
         "seam_repair_legacy_stride_samples": 8128,
         "seam_repair_max_rung": 6,
@@ -1314,7 +1324,7 @@ The decision is fixed by the model bundle, not by a setting. The ensemble's prob
 
 An earlier bundle (``noise_timemil_ens5_n3562_20260916.pt``) described its calibration as measured on sessions the models never trained on; it was not -- 422 of its 633 calibration segments were training labels -- and on new, cohort-representative labels it reached precision 0.78 and recall 0.95 at its threshold, not the 0.987 / 0.973 it reported. The detector refuses bundles without the validated decision block.
 
-Each segment's input is the two-band absolute-dB spectrogram (30-120 kHz and 3-30 kHz, 128 linear bins each) of the channels of the session's broadband memmap (*audio/broadband_filtered*: the per-channel HPSS audio high-passed at 2 kHz with the line-noise tones removed, written by *Broadband-filter audio*; its ``line_noise.json`` names the channel of every column), averaged across channels by variance -- each channel's broadband variance over the window plus its stored low-band variance from ``line_noise.json``, which equals the full-band variance the model was trained with (see *Broadband MEMMAP*) -- with metadata-excluded channels dropped. The audio window extends ~100 ms either side of the segment so the channel weights and STFT edges match the training inputs, and the spectrogram is then cropped back to the segment's own frames: the model judges the segment, not its neighbourhood.
+Each segment's input is the two-band absolute-dB spectrogram (30-120 kHz and 3-30 kHz, 128 linear bins each) of the channels of the session's broadband memmap (*audio/broadband_filtered*: the per-channel HPSS audio high-passed at 2 kHz with the line-noise tones removed, written by *Broadband MEMMAP* (``broadband-filter-audio``); its ``line_noise.json`` names the channel of every column), averaged across channels by variance -- each channel's broadband variance over the window plus its stored low-band variance from ``line_noise.json``, which equals the full-band variance the model was trained with (see *Broadband MEMMAP*) -- with metadata-excluded channels dropped. The audio window extends ~100 ms either side of the segment so the channel weights and STFT edges match the training inputs, and the spectrogram is then cropped back to the segment's own frames: the model judges the segment, not its neighbourhood.
 
 Run *Produce noise labels* after *Curate DAS outputs* (re-curating rewrites *usv_summary.csv* with its base columns only) and before *Produce squeak labels*; the processing run places both after USV assignment, which neither reads nor drops their columns. The summary's column layout is fixed regardless of the order. A GPU is used when present but is not required: a 424-USV session takes about 64 s on one and 90 s on the CPU, because most of the time goes on reading and transforming the audio rather than on the network.
 
@@ -1544,9 +1554,15 @@ The *20250430_145017_spectrograms.h5* file holds the spectrograms (created by *G
 
 The spectrogram rows are 1:1 with *usv_summary.csv*; each mask row carries a *spectrogram_index* pointing back to the spectrogram (and USV) it segments. Re-running a step overwrites only the group it owns and leaves the rest of the file intact.
 
-**The consolidated store.** ``consolidate-spectrogram-store`` builds the store in one of two modes, chosen by ``--store-mode`` or the ``consolidate_spectrogram_store.store_mode`` setting (``production``, the shipped value, or ``v3``). Both group-copy every session's ``spectrogram/<session>`` and ``mask/<session>`` groups next to one shared ``frequency_bins`` axis, validate every session before anything is written (all problems are reported together), copy one session at a time and publish the file atomically.
+**The consolidated store.** ``consolidate-spectrogram-store`` builds the store in one of two modes, chosen by ``--store-mode`` or the ``consolidate_spectrogram_store.store_mode`` setting (``production``, the shipped value, or ``v3``). Both group-copy every session's ``spectrogram/<session>`` and ``mask/<session>`` groups next to one shared ``frequency_bins`` axis, validate every session before anything is written (all problems are reported together), copy one session at a time and publish the file atomically. The ``consolidate_spectrogram_store`` settings block holds the one setting, the mode a run without ``--store-mode`` uses:
 
-*Production mode* writes ``spectrograms_production_<S>sessions_<N>vocalizations_<UTC timestamp>.h5`` from the current production QLVM maps: the five USV maps of ``os_utils.QLVM_MAPS``, the squeak map ``os_utils.QLVM_SQUEAK_MAP`` (cells resolved by ``os_utils.qlvm_map_cell_directory``) and the category column ``qlvm_category`` of the category bundle (``os_utils.load_qlvm_category_bundle``). Sessions come from ``--root-directories`` or ``--package-corpus`` (the v3 package's session list, the corpus of the current store; no SHA-256 check in this mode), so ``consolidate-spectrogram-store --store-mode production --package-corpus`` rebuilds the store over that corpus. A session is refused when its summary does not have one row per H5 row; lacks a coordinate column of any map, ``qlvm_category`` or the ``usv`` / ``squeak`` flags; when the regular map does not place a call exactly where its status is 0 (the rule ``infer-qlvm-latents`` embeds by: call frames, duration below the regular cell's ``length_threshold``, a SAM mask, not a pure squeak), a conditional map places a call the status excludes, or the squeak map places a call without a squeak; or when ``qlvm_category`` is not present exactly where ``qlvm1`` / ``qlvm2`` are or differs from the bundle's category of the call's pixel (the summary was labelled with another bundle: run ``assign-qlvm-categories`` on it). The regular cell's contract must set ``require_mask``, which the status rule assumes.
+.. code-block:: json
+
+    "consolidate_spectrogram_store": {
+        "store_mode": "production"
+      }
+
+*Production mode* writes ``spectrograms_production_<S>sessions_<N>vocalizations_<UTC timestamp>.h5`` from the current production QLVM maps: the five USV maps of ``os_utils.QLVM_MAPS``, the squeak map ``os_utils.QLVM_SQUEAK_MAP`` (cells resolved by ``os_utils.qlvm_map_cell_directory``) and the category column ``qlvm_category`` of the category bundle (``os_utils.load_qlvm_category_bundle``). Sessions come from ``--root-directories`` and / or ``--session-lists`` (``*.txt`` files, one session root per line, ``#`` comments and blank lines skipped; each root once, in first-seen order) or from ``--package-corpus`` (the v3 package's session list; no SHA-256 check in this mode), so ``consolidate-spectrogram-store --store-mode production --package-corpus`` rebuilds the store over the 402 sessions of the v3 corpus, and ``--session-lists`` with the cohort's session lists builds it over every embedded session. A session is refused when its summary does not have one row per H5 row; lacks a coordinate column of any map, ``qlvm_category`` or the ``usv`` / ``squeak`` flags; when the regular map does not place a call exactly where its status is 0 (the rule ``infer-qlvm-latents`` embeds by: call frames, duration below the regular cell's ``length_threshold``, a SAM mask, not a pure squeak), a conditional map places a call the status excludes, or the squeak map places a call without a squeak; or when ``qlvm_category`` is not present exactly where ``qlvm1`` / ``qlvm2`` are or differs from the bundle's category of the call's pixel (the summary was labelled with another bundle: run ``assign-qlvm-categories`` on it). The regular cell's contract must set ``require_mask``, which the status rule assumes.
 
 .. code-block:: text
 
@@ -1617,7 +1633,20 @@ The status of a call is computed from the H5: bit 0 is set when its duration is 
     └── sessions                                         # session_id, root_directory, usv_summary_sha256,
                                                          # n_summary_rows, n_squeaks
 
-The root attrs record ``created_by``, ``created_date`` (UTC), ``git_commit``, ``n_sessions``, ``n_squeaks``, the settings block (``settings``, JSON), the STFT (``stft``, JSON), ``frame_dt_s``, ``window_frames``, ``db_floor`` / ``db_ceil``, the quantization rule and ``failed_sessions``. Sessions without squeaks are listed in ``sessions`` but get no ``spectrogram`` group. Rebuild the store after *Produce squeak labels* or *Produce noise labels* change a session's rows.
+The root attrs record ``created_by``, ``created_date`` (UTC), ``git_commit``, ``n_sessions``, ``n_squeaks``, the settings block (``settings``, JSON), the STFT (``stft``, JSON), ``frame_dt_s``, ``window_frames``, ``db_floor`` / ``db_ceil``, the quantization rule and ``failed_sessions``. Sessions without squeaks are listed in ``sessions`` but get no ``spectrogram`` group. Rebuild the store after *Produce squeak labels* or *Produce noise labels* change a session's rows. The ``build_squeak_spectrogram_store`` settings block (every key is also a CLI flag, see the CLI reference):
+
+.. code-block:: json
+
+    "build_squeak_spectrogram_store": {
+        "min_freq": 2000.0,
+        "max_freq": 125000.0,
+        "n_frequency_bins": 128,
+        "window_frames": 256,
+        "db_floor": -100.0,
+        "db_ceil": 60.0,
+        "exclude_metadata_audio_channels": true,
+        "n_workers": 6
+      }
 
 The *Compute USV features* and *Infer QLVM latents* steps add columns to *usv_summary.csv* in place. *Compute USV features* adds:
 
@@ -1665,7 +1694,7 @@ A ``model_cells`` run writes torus coordinates only: a package cell's own cluste
 Switching sessions to a QLVM model package cell also changes what these readers see:
 
 * the QLVM visualizations draw the map chosen by ``shared_resources.qlvm_map`` (``visualizations_settings.json``; one of ``os_utils.QLVM_MAPS``, ``qlvm`` by default), and every category grid, boundary, centre or density they draw comes from ONE place, the category bundle ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY`` (``/mnt/falkner/Bartul/spectrograms/categories``, written by ``build-qlvm-categories``), loaded through ``os_utils.load_qlvm_category_bundle``: its ``label_grid`` (R-1 … R-k), the partition the summaries' ``qlvm_category`` is assigned from (``assign-qlvm-categories`` defaults to the same bundle), its smoothed corpus ``density`` and its category label positions. The bundle is a partition of the regular map's torus, so the neuronal tuning watersheds, the sequence figure's landscape, the embedding thumbnails' boundaries and centres, the embedding explorer's boundaries, the torus-traversal video, the manifold filter atlas and the category-embedding panel draw it on the regular map only; on a conditional map they draw no category boundaries and show each call's category by its ``qlvm_category`` colour instead (each says so), and nothing estimates boundaries from the data. A module constant, like the production cells, because the settings' experimenter folders are re-keyed to the active experimenter. The ``<spectrograms_dir>/qlvm_v3/<map>/arrays_{fine,coarse}.npz`` reference arrays, their writer ``export-qlvm-reference-arrays`` and the old in-house model's ``<spectrograms_dir>/qlvm/`` arrays and ``qlvm_clusters_*.h5`` are no longer read or written
-* the torus geodesic pullback metric (``vocal_features.usv_manifold_geodesic_metrics.pullback_metric`` in ``modeling_settings.json``) and the manifold filter atlas decode with the production cell of the map the run's coordinates come from, ``os_utils.qlvm_map_cell_directory(<map>)`` (``qlvm`` -> ``.../spectrograms/qlvm/qlvm``, the conditional maps -> ``.../spectrograms/qlvm/<map>``, ``qlvm_squeak`` -> ``.../qlvm_final/squeaks/cell/stretch_nofloor``; read without torch), a conditional cell at one fixed training-corpus quantile of its conditioning value (``pullback_condition_quantile`` / the atlas's ``condition_quantile``, default ``0.5``), taken from the code constants rather than a settings path the experimenter re-keying could rewrite (the earlier ``decoder_model_cell_directory`` and the legacy ``decoder_weights_npz_path`` settings are ignored)
+* the torus geodesic pullback metric (``vocal_features.usv_manifold_geodesic_metrics.pullback_metric`` in ``modeling_settings.json``) and the manifold filter atlas decode with the production cell of the map the run's coordinates come from, ``os_utils.qlvm_map_cell_directory(<map>)`` (``qlvm`` -> ``.../spectrograms/qlvm/qlvm``, the conditional maps -> ``.../spectrograms/qlvm/<map>``, ``qlvm_squeak`` -> ``.../spectrograms/qlvm/qlvm_squeak``; read without torch), a conditional cell at one fixed training-corpus quantile of its conditioning value (``pullback_condition_quantile`` / the atlas's ``condition_quantile``, default ``0.5``), taken from the code constants rather than a settings path the experimenter re-keying could rewrite (the earlier ``decoder_model_cell_directory`` and the legacy ``decoder_weights_npz_path`` settings are ignored)
 * the pooled-embedding parquet caches record a fingerprint of the summaries they were built from (each summary's path, size and modification time) and rebuild themselves when a summary changes; the cohort cache is ``<spectrograms_dir>/embeddings/pooled_embeddings_production.parquet`` (``os_utils.POOLED_EMBEDDINGS_CACHE_NAME``), and it carries every map's coordinates and the ``qlvm_category`` labels; the consolidated store's ``qlvm/<session>/<map>`` coordinates and labels keep the columns as they were when built, so rebuild it after re-embedding
 * the tuning figures tune to ``qlvm_category`` only and draw its region map and size its per-category axis from the category bundle's ``label_grid``; an unreadable bundle stops the figures (no placeholder panels)
 * the region / category label of every map's analyses (the manifold position models and their torus macro score, the equal-region reweighting, model selection, CNN saliency segments, GLM-HMM targets, tuning, coactivity) is the regular map's ``qlvm_category`` for ``qlvm`` and the four conditional maps (``qlvm_duration``, ``qlvm_entropy``, ``qlvm_bandwidth``, ``qlvm_loudness``) alike; a summary whose categories are not assigned yet gives the label-free fallbacks it always did
@@ -1730,6 +1759,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains th
 * **yolo_conf** : YOLO confidence threshold (lower → more recall)
 * **yolo_iou** : YOLO NMS IoU (raise to keep stacked calls)
 * **yolo_imgsz** : YOLO inference image size (px)
+* **deterministic** : disable cuDNN's autotuner so the masks reproduce across processes (default ``true``). With the autotuner on, the algorithm choice varies with the GPU state at process start and borderline faint calls fall on either side of the detector's confidence gate
 * **mask_cmap** : colormap used to render each spectrogram to RGB before detection
 * **duration_min** : minimum USV duration to segment, in SPECTROGRAM TIME BINS (not milliseconds); shorter rows are skipped without any detection attempt and end up with ``mask_number`` 0. At the shipped spectrogram settings the grid runs at ~0.5 bins/ms, so a value of 10 silently excluded every USV under ~20 ms — well above DAS's own 15 ms ``segment_minlen``, so genuine calls were discarded. Set to 5 (~10 ms)
 * **batch_size** : number of spectrograms per SAM2 batch
@@ -1757,6 +1787,7 @@ The */usv-playpen/_parameter_settings/processing_settings.json* file contains th
         "yolo_conf": 0.25,
         "yolo_iou": 0.7,
         "yolo_imgsz": 128,
+        "deterministic": true,
         "mask_cmap": "viridis",
         "duration_min": 5,
         "batch_size": 12,
@@ -1805,7 +1836,7 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
 
 * **calibration_path** : JSON holding the ``calibration`` table (rows of ``threshold``, ``precision``, ``recall``, ...) and the ``decision`` block (``exclude_at_or_above``, ``noise_at_or_above``, ``held_out_precision``, ``held_out_recall``, ``real_calls_excluded_per_10000`` and any provenance) the bundle carries; ``calibration_source`` and ``calibration_population`` are copied too when present. Training does not measure these, so they must describe this labels set and recipe
 * **exclude_metadata_audio_channels** : drop channels the session metadata marks as excluded from the spectrogram average; keep it as *Produce noise labels* runs
-* **n_workers** : sessions whose audio is read concurrently (threads) while the inputs are built; reading short windows from 24 wavs on the lab share is latency-bound (~14 s per session serially)
+* **n_workers** : sessions whose audio is read concurrently (threads) while the inputs are built; reading short windows of the broadband memmap on the lab share is latency-bound (measured with the earlier 24-wav input: ~14 s per session serially)
 * **seeds** : one seed per ensemble member (the production ensemble's five)
 * **epochs** : training epochs per member
 * **batch_size** : segments per training batch
@@ -1825,6 +1856,88 @@ When left empty (the default) the SAM2/YOLO paths are derived from ``spectrogram
         "learning_rate": 0.001,
         "weight_decay": 0.0001,
         "label_smoothing": 0.05
+      }
+
+*Produce squeak labels* (``detect_usv_squeaks``):
+
+* **squeak_model_path** : path to the call-class (usv / squeak / both) model bundle (``.pt``); left empty it is derived from *Spectrogram models directory* as ``squeak/usv_squeak_timemil_ens5_n2476_20260930_reviewed.pt``. The bundle also fixes the squeak-extent threshold (0.6; see *Produce squeak labels* above) and every input constant, so there is no threshold setting
+* **exclude_metadata_audio_channels** : drop channels the session metadata marks as excluded from the spectrogram average
+* **batch_size** : segments per forward pass at the typical window length; a batch is budgeted at ``batch_size`` x 128 frame slots and padded to its longest window, so one long window never inflates a batch
+
+.. code-block:: json
+
+    "detect_usv_squeaks": {
+        "squeak_model_path": "",
+        "exclude_metadata_audio_channels": true,
+        "batch_size": 64
+      }
+
+*Train call-class model* (``train_usv_squeak_model``, command line only; see *Call-class model* below):
+
+* **label_sets** : the label sets the ensemble is trained on, each with a ``name``, its ``labels_csv`` (``panel_id``, ``label`` 0 usv / 1 squeak / 2 both / 3 unsure, ``squeak_extents_s``) and its ``sample_csv`` (``panel_id``, ``session_dir``, ``row_index``, ``start``, ``stop``); the shipped settings list the production bundle's two labelling rounds
+* **label_overrides** : review CSVs in the labels format whose panels replace those of the named set (``name``, ``override_csv``); the shipped settings list the production bundle's review of the first round
+* **pretrained** : initialize every member's trunk from the noise ensemble (``detect_usv_noise.noise_model_path``; member ``seed mod 5``)
+* **span_threshold** : frame squeak-probability threshold of the squeak-extent rule the bundle carries (0.6, chosen on session-grouped cross-fitted predictions outside the package; not tuned here)
+* **exclude_metadata_audio_channels** : drop channels the session metadata marks as excluded from the spectrogram average; keep it as *Produce squeak labels* runs
+* **n_workers** : sessions whose audio is read concurrently (threads) while the inputs are built
+* **seeds** : one seed per ensemble member (the production ensemble's five)
+* **epochs** : training epochs per member
+* **batch_size** : segments per training batch
+* **learning_rate** : Adam learning rate, cosine-annealed to zero over the run
+* **weight_decay** : Adam weight decay
+* **label_smoothing** : label smoothing of the class cross-entropy
+* **frame_loss_weight** : weight of the frame squeak loss relative to the class loss
+* **class_weighted** : weight the class loss by inverse training class frequency
+
+.. code-block:: json
+
+    "train_usv_squeak_model": {
+        "label_sets": [
+          {
+            "name": "r1",
+            "labels_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling/usv_squeak_labels.csv",
+            "sample_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling/usv_squeak_sample.csv"
+          },
+          {
+            "name": "r2",
+            "labels_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling_r2/usv_squeak_labels_r2.csv",
+            "sample_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling_r2/usv_squeak_sample_r2.csv"
+          }
+        ],
+        "label_overrides": [
+          {
+            "name": "r1",
+            "override_csv": "/mnt/falkner/Bartul/PC_transfer/usv_squeak_labelling/usv_squeak_review_labels.csv"
+          }
+        ],
+        "pretrained": true,
+        "span_threshold": 0.6,
+        "exclude_metadata_audio_channels": true,
+        "n_workers": 16,
+        "seeds": [0, 1, 2, 3, 4],
+        "epochs": 40,
+        "batch_size": 32,
+        "learning_rate": 0.001,
+        "weight_decay": 0.0001,
+        "label_smoothing": 0.05,
+        "frame_loss_weight": 1.0,
+        "class_weighted": false
+      }
+
+*Embed squeaks in a QLVM torus* (``infer_qlvm_squeak_latents``, command line only):
+
+* **model_cell_directory** : the squeak QLVM cell (a ``train-qlvm`` cell with a ``training_contract.json``, or an old-layout ``phase3_BBVs_qlvm`` cell); left empty it is filled with the production cell ``QLVM_SQUEAK_PACKAGE_ROOT/QLVM_SQUEAK_PRODUCTION_CELL`` (``/mnt/falkner/Bartul/spectrograms/qlvm/qlvm_squeak``) whenever ``spectrograms_root`` is set (see *Embed squeaks in a QLVM torus* above)
+* **exclude_metadata_audio_channels** : drop channels the session metadata marks as excluded from the spectrogram average; keep it equal to the *Produce squeak labels* run
+* **lattice_batch_size** : lattice points decoded and scored per block; lower it to cut memory
+* **data_batch_size** : squeaks whose lattice posteriors are computed together; memory grows with this times the lattice size
+
+.. code-block:: json
+
+    "infer_qlvm_squeak_latents": {
+        "model_cell_directory": "",
+        "exclude_metadata_audio_channels": true,
+        "lattice_batch_size": 2048,
+        "data_batch_size": 512
       }
 
 *Infer QLVM latents* (``infer_qlvm_latents``):
@@ -1903,9 +2016,60 @@ The shipped settings are those of the production training set, ``masked_clean/tr
 
 Reproduction (2026-09-30, the 324 sessions of the reference sets, seed 42): the phase 6 ``natural_5strata_N29000`` set (``draw-natural_bins-1-2-3-4-5_N29000_len128_seed42_bbvfree_floor0p2``) and the masked (phase 9 input) ``natural_3strata_N65000``, ``uniform_3strata_N65000`` and ``uniform_5strata_N29000`` sets were rebuilt bit for bit -- the same training / validation rows in the same order (49,411 / 12,629, 106,273 / 27,767, 106,860 / 27,180 and 49,287 / 12,753), the same session types, per-type reports and split sessions, and every ``spectrograms``, ``masks``, ``masks_len``, ``durations`` and ``mask_count`` value identical (maximum absolute difference 0). The reference sets left out broadband calls by a *strict* rule of the reference squeak index (segment probability >= 0.385, or at least one run of three frames above it): 2,597 rows of those sessions that the strict rule drops were not flagged by the *usv_summary*'s former binary ``squeak`` column, which was the segment rule alone. The rebuild therefore passed that index's exclusions through the Python-only ``row_exclusions`` argument of ``QLVMTrainingSetBuilder``; with the summary's own ``squeak`` column, the eligible pool grows by 2,388 rows (MF +1,866, FF +474, MM +27, lone_male +21), and since every quota and every draw position shifts with it, only 24,869 of the phase 6 set's 62,040 rows are drawn again (MF and FF still hold 29,000 rows each; the take-all types grow with their pools). A set built from the summary is therefore an equivalent draw, not the same one. (These counts compare the strict rule with the summary's old binary ``squeak`` column, which *Produce squeak labels* no longer writes; a build from the new booleans differs from the reference draw too.) ``--strict-squeak-exclusion --reference-squeak-index-path <index>`` applies the index's strict rule from the index itself, the same exclusions the rebuild passed through ``row_exclusions``, so with ``--no-exclude-noise`` it reproduces the shipped sets from the command line.
 
+The ``build_qlvm_training_set`` settings block (every key is also a ``build-qlvm-training-set`` flag; ``full_dataset`` takes every eligible row instead of drawing and also writes ``full_data.npz``):
+
+.. code-block:: json
+
+    "build_qlvm_training_set": {
+        "session_type_targets": {
+          "MF": 29000,
+          "FF": 29000,
+          "MM": null,
+          "lone_male": null
+        },
+        "draw_mode": "natural",
+        "mask_count_bin_edges": [1, 2, 3, 4, 5],
+        "length_threshold": 128.0,
+        "require_mask": true,
+        "exclude_squeaks": true,
+        "strict_squeak_exclusion": false,
+        "reference_squeak_index_path": "",
+        "exclude_noise": true,
+        "row_exclusion_table": null,
+        "masking_type": "sam",
+        "apply_mask": true,
+        "floor": null,
+        "validation_split": 0.2,
+        "random_state": 42,
+        "full_dataset": false,
+        "target_shape": [128, 128],
+        "time_stretch": true
+      }
+
 **Squeaks** (``build_qlvm_squeak_training_set`` settings block). The candidates are the rows *Produce squeak labels* marked ``squeak`` true (pure squeaks and segments holding both) that carry a squeak extent (with ``exclude_noise`` also not noise; noise rows carry empty booleans, so this is a guard), sessions in sorted order; a row with several squeaks is one candidate over their envelope (its one extent), as *Embed squeaks in a QLVM torus* embeds it. ``exclude_noise`` is on by default; the shipped squeak sets were drawn without it (``--no-exclude-noise`` to reproduce them). Each candidate's audio window is the segment widened to hold the envelope and its context (the embedding's window), its first and last frames are the window frames whose centres lie inside ``squeak_start`` / ``squeak_end``; the extent is widened by ``context_frames`` (2) either side, clipped to the window, and crops narrower than ``min_trimmed_frames`` (8) or wider than the 128-frame frame are dropped. The written ``squeak_probability`` is ``p_squeak + p_both``, the probability that the segment holds a squeak. ``crop_window`` ``full_length`` (the shipped setting, and the rule *Embed squeaks in a QLVM torus* follows) crops from the whole segment; ``first_128_frames`` cuts every segment to its first 128 frames, as the reference 128-frame spectrogram store did, and drops the squeaks still going at frame 127 (right-censored). The crop width sets the duration stratum (``duration_bin_edges`` 26 / 40 / 62 frames, four strata). With one generator seeded with ``random_state``, ``per_session_bin_cap`` (48, the ``session`` cells; 0 for the ``lumped`` cells) first keeps at most that many squeaks of any one session in any one stratum, and ``n_total`` (11,000) squeaks are then drawn, ``natural`` (uniformly) or ``uniform`` (equal across strata). The drawn squeaks' sonic spectrograms are rebuilt from the session audio with the *Produce squeak labels* front end (``exclude_metadata_audio_channels`` as there), each crop is min-max normalized (``(x - min) / (max - min + 1e-6)``, ``crop_normalization`` ``per_crop``; ``absolute`` is the classifier's fixed dB transform) and centred in a 128 x 128 frame; ``masks`` / ``masks_len`` are zero and ``apply_mask`` false. The split is the USV builder's. The shipped settings are those of the production squeak cell (``natural_session_N11000``) except the two rules squeak embedding follows: full-length crops and the metadata channel exclusion.
 
 Reproduction (2026-09-30, the 324 sessions of the reference sets, 239 of which hold squeaks, seed 42): fed the candidates of the reference squeak index (segment probability >= 0.385 and the extents of its 128-frame pass) through ``QLVMSqueakTrainingSetBuilder.build_from_candidates`` with ``crop_window`` ``first_128_frames`` and ``exclude_metadata_audio_channels`` false, the builder passes the same 15,961 / 14,963 / 14,936 candidates through its gates as the reference builder and draws, crops and splits exactly the reference rows in all five phase 3 sets (natural / uniform x session / lumped, and the full set): the same ``spec_id`` order, ``crop_first`` / ``crop_last``, duration strata and split sessions. For ``bbv-natural_dur-26-40-62_session_N11000_seed42`` (the production cell's set) the spectrograms were rebuilt from the audio too, and all 8,767 / 2,233 training / validation spectrograms are bit-identical to the reference ones (maximum absolute difference 0). The summaries no longer carry the retired classifier's flags and extents (the call-class model replaced them), so a set drawn from the summaries is a new draw over different squeaks; reproducing the shipped sets needs the reference index's candidates fed through ``build_from_candidates`` (with each segment as its own audio window, ``start_s`` / ``stop_s`` = ``start`` / ``stop``).
+
+The ``build_qlvm_squeak_training_set`` settings block (every key is also a ``build-qlvm-squeak-training-set`` flag; ``full_dataset`` takes every squeak that passes the gates, with no cap and no draw, and also writes ``full_data.npz``):
+
+.. code-block:: json
+
+    "build_qlvm_squeak_training_set": {
+        "draw_mode": "natural",
+        "n_total": 11000,
+        "per_session_bin_cap": 48,
+        "duration_bin_edges": [26, 40, 62],
+        "context_frames": 2,
+        "min_trimmed_frames": 8,
+        "crop_window": "full_length",
+        "crop_normalization": "per_crop",
+        "exclude_noise": true,
+        "exclude_metadata_audio_channels": true,
+        "validation_split": 0.2,
+        "random_state": 42,
+        "full_dataset": false,
+        "target_shape": [128, 128]
+      }
 
 QLVM decoder
 ^^^^^^^^^^^^
@@ -1913,6 +2077,29 @@ QLVM decoder
 Defines the shared toroidal latent space (on whose regular map ``build-qlvm-categories`` defines the content-ridge categories) that makes the ``qlvm_*`` columns comparable across every session embedded with the same model. ``build-qlvm-training-set`` (USVs) or ``build-qlvm-squeak-training-set`` (squeaks) builds the training set (see *QLVM training sets* above) → ``train_data.npz`` + ``val_data.npz`` (+ ``full_data.npz``) + ``metadata.npz``. ``train-qlvm`` then trains a decoder on such a set, or on a set in the same format built outside the repository (the QLVM model packages' training sets: ``train_data.npz`` / ``val_data.npz`` with ``spectrograms``, ``masks``, ``masks_len``, ``durations`` and an optional ``apply_mask`` scalar, plus ``metadata.npz``). It is the in-house JAX port of the recipe the shipped models were trained with (qmc_deep_gen's ``bartul_mouse.py`` under the v3 "shipped" protocol), using the same decoder and likelihood code ``infer-qlvm-latents`` embeds with: each spectrogram is min-max normalized on its own (``(x - min) / (max - min + 1e-8)``) and, when the set applies masks (its ``apply_mask``, else ``masking_type`` ``sam``), multiplied by its binarized SAM mask; a loudness floor (phase 6) is already baked into the stored spectrograms and is only recorded. The decoder (``relu`` or ``legacy`` head, torch's default initialization) is trained over a 610-point Fibonacci lattice (``training_fib_m`` 15) with one uniform random torus shift per batch, minimizing the negative QMC log evidence of the batch, with Adam at a constant learning rate of 1e-3, batches of 512, 300 epochs and seed 42; the last epoch's weights are kept. Every ``val_freq`` (10) epochs and after the last one the same loss is computed on a fixed validation subset -- at most ``val_samples_per_mask_count`` (100) calls per ``masks_len`` value, drawn exactly as the reference trainer draws it -- one call at a time against its own shift of a 6,765-point lattice (``validation_fib_m`` 20). The output directory is a v3 model package cell: ``checkpoint.tar`` (torch zip, the structure of a shipped cell's: ``decoder.<index>`` weights, a torch ``Adam`` state and every batch's loss), ``config/training_contract.json`` (``input_normalization`` ``minmax``, ``masking_type`` ``sam`` or ``none`` from the set's mask use, ``floor``, ``target_shape``, ``time_stretch``, ``length_threshold`` (null when the set records none), ``require_mask``, ``embedding_fib_m`` (24), the lattices, ``"condition": null`` for an unconditional decoder), ``config/run_config.json`` and ``metrics/val_diagnostics.npz`` (per-epoch training loss and seconds, the validation losses and subset). The recipes of the shipped cells: phases 6 (unmasked, floor 0.2) and 9 (SAM-masked) are the defaults; phase 3 (BBVs) is ``--decoder-head legacy --n-epochs 2500 --val-freq 80 --val-samples-per-mask-count 1600``. A short run (30 epochs) on the phase 6 ``natural_5strata_N29000`` set reproduced the shipped run's validation subset row for row, its per-epoch training loss to within 0.52 % and its validation loss to within 0.66 % from epoch 3 on, at 3.3 s per epoch (RTX 4080 SUPER); 240 epochs on the phase 3 ``natural_session_N11000`` set matched the shipped validation loss to within 0.07 % at epochs 80, 160 and 240. On a shared GPU, set ``XLA_PYTHON_CLIENT_PREALLOCATE=false`` so JAX does not reserve most of its memory. The run refuses a set without ``metadata.npz``, and a ``train_data.npz`` or ``val_data.npz`` older than a ``full_data.npz`` in the same directory. Cluster submitter: ``train_qlvm_global.sh``. ``infer-qlvm-latents`` embeds with such a cell as with any other (it writes coordinates only), and ``build-qlvm-categories`` / ``assign-qlvm-categories`` (see the CLI reference) label the calls with the torus's content-ridge categories.
 
 **Conditional decoders (phase 11).** With ``conditional`` set to ``duration``, ``mean_freq``, ``bandwidth``, ``loudness`` or ``spectral_entropy`` (``--conditional``; null / ``none`` trains an unconditional decoder), ``train-qlvm`` trains a decoder that takes one conditioning value ``c`` per call, appended to the torus basis of every lattice point (``c_dim`` 1), with the recipe of the v3 package's phase 11 cells (qmc_deep_gen ``bartul_mouse_cond.py``, width-capped bins and a scaled loss). ``c`` per call: ``duration`` is ``(d - d_min) / (d_max - d_min + 1e-8)`` of the pre-resize duration in time bins, ``d_min`` / ``d_max`` the training split's (8 and 127 in the shipped cells); ``mean_freq`` is ``(f - 30000) * 127 / (128 * 90000)`` of the call's mean frequency over its SAM-masked region (the summary's ``mean_freq_hz``; equal to the energy-weighted row centroid of the resized SAM-masked spectrogram that ``infer-qlvm-latents`` computes, to 1.5e-7); ``bandwidth`` is ``clip(freq_bandwidth_hz / 90000, 0, 1)``; ``loudness`` is ``clip((dB - 28.83) / (95.85 - 28.83), 0, 1)`` of the call's absolute masked image-level loudness (the summary's ``loudness_db``, measured by ``compute_usv_loudness``); ``spectral_entropy`` is ``clip((H - H_min) / (H_max - H_min), 0, 1)`` of the call's spectral entropy in nats (the summary's ``spectral_entropy``), with ``H_min`` / ``H_max`` the smallest and largest entropy of the training split, so the training values span exactly ``[0, 1]`` and validation rows (and, at inference, new calls) outside that range are clamped; the two are recorded in the contract as ``entropy_min`` / ``entropy_max``, and a training split of constant entropy stops the run. The raw values come from the split's own ``mean_freq_hz`` / ``freq_bandwidth_hz`` / ``loudness_db`` / ``spectral_entropy`` columns (``build-qlvm-training-set`` copies them), or, with ``condition_table`` (``--condition-table``), from a per-call ``.npz`` with ``spec_id`` and the column (the package's ``corpus/cond_table.npz``, whose loudness column ``image_level_db`` is accepted too) for sets built outside the repository; a row without a finite value stops the run. The training values are cut into ``condition_n_bins`` (32) quantile bins, and with ``condition_bin_scheme`` ``quantile_capped`` (the default) every bin wider than the widest inner bin is split into equal-width pieces no wider than it (in practice the two end bins), kept however few rows they hold. Every batch is drawn from one bin and decoded at its rows' mean ``c`` (bins shuffled internally and batches shuffled together each epoch, the reference sampler's draws as the shipped multi-worker runs made them); with ``condition_scale_loss_by_batch`` (default on) each step's loss is multiplied by ``rows / batch_size``, so a small tail batch steps with its rows' share (short batches are padded with zero-weight rows, which changes neither the loss nor its gradient). Validation decodes each call at its own ``c``. The cell's ``training_contract.json`` then carries ``c_dim`` 1, ``conditional`` and a ``condition`` block in the form of the shipped phase 11 contracts (the constants ``infer-qlvm-latents`` computes ``c`` with, the ``decode`` rule: ``exact`` -- the call's own ``c`` clamped to the training range -- for duration and bandwidth, ``grid`` -- the nearest point of the decode grid -- for mean frequency, loudness and spectral entropy), and ``config/condition_bins.npz`` holds the bin ``edges``, ``group_ids`` / ``group_sizes`` / ``group_means``, ``train_c_min`` / ``train_c_max`` and the ``decode_grid`` (``condition_decode_grid_step`` apart, from ``train_c_min`` to at or just past ``train_c_max``; 0.0025 by default, the step of the shipped grid-decoded cells; the shipped duration and bandwidth cells, which never read it, carry 0.01). ``val_diagnostics.npz`` adds each validation call's ``c`` (``val_diag_c``). Validation (2026-09-30, 30 epochs, seed 42, the shipped phase 11 recipe on the ``natural_5strata_N29000`` floor set): the duration and loudness runs wrote ``condition_bins.npz`` bit-identical to the shipped cells' (edges, groups, means, training range and decode grid, with the step each shipped cell carries; the shipped files add only ``run_decode_grid_step``), reproduced the shipped validation subset row for row and the shipped batch order (from epoch 3 on, each epoch's per-batch losses correlate with the shipped run's same epoch at r >= 0.999), and from epoch 3 on matched the shipped per-epoch training loss to within 0.88 % (duration) and 0.87 % (loudness), and the validation loss at epochs 10, 20 and 30 to within 0.84 % and 0.20 % -- less than the port's own run-to-run spread (the duration run with every JAX key changed moved by up to 0.87 % in training and 1.14 % in validation loss). About 4.1-4.6 s per epoch (RTX 4080 SUPER).
+
+The ``train_qlvm`` settings block (every key is also a ``train-qlvm`` flag): ``n_epochs`` training epochs, ``decoder_head`` (``relu`` or ``legacy``), the Fibonacci indices of the training, validation and embedding lattices (``training_fib_m``, ``validation_fib_m``, ``embedding_fib_m``), ``batch_size``, the constant Adam ``learning_rate``, the validation cadence ``val_freq`` and subset size ``val_samples_per_mask_count``, the ``seed`` of the initialization, shuffling, lattice shifts and validation subset, and the conditional-decoder keys described above (``conditional``, ``condition_n_bins``, ``condition_bin_scheme``, ``condition_scale_loss_by_batch``, ``condition_decode_grid_step``, ``condition_table``):
+
+.. code-block:: json
+
+    "train_qlvm": {
+        "n_epochs": 300,
+        "decoder_head": "relu",
+        "training_fib_m": 15,
+        "validation_fib_m": 20,
+        "embedding_fib_m": 24,
+        "batch_size": 512,
+        "learning_rate": 0.001,
+        "val_freq": 10,
+        "val_samples_per_mask_count": 100,
+        "seed": 42,
+        "conditional": null,
+        "condition_n_bins": 32,
+        "condition_bin_scheme": "quantile_capped",
+        "condition_scale_loss_by_batch": true,
+        "condition_decode_grid_step": 0.0025,
+        "condition_table": null
+      }
 
 QLVM model packages
 ^^^^^^^^^^^^^^^^^^^
@@ -1928,6 +2115,58 @@ A QLVM model package (the ``qlvm_models_latest/v2`` and ``v3`` layout; v3 is v2.
 
 The package's own ``code/selftest.py`` checks every file above against its sources and re-embeds corpus calls; run it on a copy before using it. Runtime is set by the 46,368-point lattice: decoding it takes about 20 s on CPU (JAX, 144 cores; decoding 4,096 points takes 1.5–1.8 s, and ``jax.jit`` barely changes that), so an unconditional cell embeds a session of ~700 USVs in about 25 s, and a phase 10 conditional cell, which decodes the lattice once per distinct bin mean, in about 11–12 minutes (a phase 11 cell decodes it roughly 3–8 times as often). The ``gpu`` extra (JAX with CUDA) shortens both. Embedding a session with a cell reproduces the package's corpus labels: on two sessions per cell (phase 6, 9 and 10 ``natural_3strata_N65000``), the model inputs matched the package's bitwise, and 99.0–100 % of fine labels matched ``cluster_labels.csv``, all of the rest being calls whose posterior mean crossed a pixel edge (conditional cells decode at the frozen bin mean rather than the corpus embedding's batch mean, which moves a few more calls). Phase 11 cells decode at the same value as the package's corpus embedding: on session ``20251003_143416`` (907 USVs, the four ``natural_3strata_N65000`` cells, one L40S with the ``gpu`` extra), the embedded calls were exactly the package's, their conditioning values matched ``condition_decode.npz`` to float32 rounding, 99.7–99.9 % of fine and coarse labels matched, and a session took about 100–115 s (190 s for loudness, which also measures every call's loudness from the audio). The remaining differences are calls with a spread-out posterior, where the float32 embedding here and the package's TF32 embedding round differently.
 
+QLVM categories
+^^^^^^^^^^^^^^^
+
+The content-ridge categories of the regular map, built once from a corpus of embedded calls and then assigned to every session's summary. ``build-qlvm-categories`` (``build_qlvm_categories`` settings block) writes a category directory from a per-call positions file (``spec_id``, ``x``, ``y``) and a per-call properties file (``spec_id``, ``session_id`` and the property columns, e.g. a ``build-qlvm-training-set`` split): each property becomes its rank over all calls, each rank's Gaussian kernel average on a periodic grid is a content field, the root sum of squares of the fields' periodic central differences is the content change, a marker watershed of it gives basins bounded by its ridges, neighbouring basins are joined (under-sized regions first, then the pair across the lowest ridge) down to ``n_categories``, and session resamples rebuild the categories to vote a consensus and a per-pixel agreement. ``assign-qlvm-categories`` (``assign_qlvm_categories`` settings block; the last part of the processing run's *Infer QLVM latents*) labels a session's calls from that directory by the pixel under their coordinates, writing ``<prefix>_category`` only. The production bundle is ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY`` (``/mnt/falkner/Bartul/spectrograms/categories``), the one partition every QLVM figure draws; see the CLI reference for the full description of both commands and *Render spectrograms and latents* above for the column.
+
+* **properties** : the property columns the categories are built on (``mask_count``, ``durations``, ``freq_bandwidth_hz``, ``spectral_entropy``, ``mean_freq_hz``, ``loudness_db``)
+* **grid_resolution** : pixels per side of the periodic grid
+* **field_sigma** : Gaussian smoothing of the property fields (pixels)
+* **change_span** : offset of the central differences of the content-change field (pixels)
+* **marker_sigma** : blur of the content-change field before the watershed (pixels)
+* **marker_distance** : half-width of the window a watershed marker is the minimum of (pixels)
+* **size_floor** : smallest share of the calls a category may hold
+* **n_categories** : number of categories
+* **n_bootstraps** : session resamples of the consensus vote
+* **bootstrap_seed** : seed of the first session resample (resample ``i`` uses ``seed + i``)
+* **uncertain_agreement** : a call whose pixel agreement is below this is flagged uncertain (in ``category_call_labels.csv``; the summaries carry no agreement)
+* **category_order** : the size rank (1 = most calls) of each category, ``R-1`` first; empty keeps the size order. The shipped ``[1, 4, 2, 3]`` numbers the production bundle 1 simple, 2 biphones, 3 intermediate, 4 complex
+* **category_descriptions** : a short description per category, ``R-1`` first
+* **n_jobs** : parallel workers of the session resamples
+* **category_directory** (``assign_qlvm_categories``) : a ``build-qlvm-categories`` directory; left empty it is filled with the production bundle
+* **coordinate_prefix** (``assign_qlvm_categories``) : the prefix ``P`` of the summary columns ``P1`` / ``P2`` the categories were built on; left empty it is filled with ``qlvm``, the regular map
+
+.. code-block:: json
+
+    "build_qlvm_categories": {
+        "properties": [
+          "mask_count",
+          "durations",
+          "freq_bandwidth_hz",
+          "spectral_entropy",
+          "mean_freq_hz",
+          "loudness_db"
+        ],
+        "grid_resolution": 200,
+        "field_sigma": 8.0,
+        "change_span": 8,
+        "marker_sigma": 1.5,
+        "marker_distance": 5,
+        "size_floor": 0.05,
+        "n_categories": 4,
+        "n_bootstraps": 200,
+        "bootstrap_seed": 7,
+        "uncertain_agreement": 0.6,
+        "category_order": [1, 4, 2, 3],
+        "category_descriptions": ["simple", "biphones", "intermediate", "complex"],
+        "n_jobs": 20
+      },
+    "assign_qlvm_categories": {
+        "category_directory": "",
+        "coordinate_prefix": ""
+      }
+
 Mask detector
 ^^^^^^^^^^^^^
 
@@ -1935,17 +2174,49 @@ The YOLO box detector that localizes each call in its spectrogram so SAM2 can se
 
 Box labels are set by ``--label-source`` (or ``export_yolo_dataset.label_source``): ``cc`` (default — pseudo-labels from the connected-component detector; zero manual work, no GPU; the recommended start), ``manual`` (hand-verified ``{spec_id}.txt`` YOLO files in ``--manual-labels-directory``), or ``merge`` (``cc`` pseudo-labels overridden by manual files where present). ``manual`` / ``merge`` require ``--manual-labels-directory``; ``cc`` ignores it. The submitter exposes a ``LABEL_SOURCE`` knob and ``MANUAL_LABELS_DIRECTORY``. Both ``generate-usv-masks`` and ``train-masks`` need the ``sam2`` and ``ultralytics`` packages (usv-playpen core dependencies).
 
+The two settings blocks (every key is also a flag of its command):
+
+* **label_source** (``export_yolo_dataset``) : box label source, ``cc`` pseudo-labels, ``manual`` files or ``merge``
+* **validation_split** : fraction of images held out for validation
+* **random_state** : seed of the reproducible train / validation split permutation
+* **colormap** : Matplotlib colormap the spectrogram images are rendered with (must match the detector's ``generate_masks.mask_cmap``)
+* **manual_labels_directory** : directory of hand-verified ``{spec_id}.txt`` YOLO labels (``manual`` / ``merge``)
+* **base_weights** (``train_masks``) : base YOLO checkpoint to fine-tune from
+* **n_epochs** : training epochs
+* **imgsz** : square image size (px) the detector trains at; 128 is the native spectrogram size
+* **batch_size** : training batch size (images per batch)
+* **device** : compute device, a GPU index (e.g. ``"0"``), ``"cpu"``, or ``null`` for Ultralytics' auto-select
+* **run_name** : Ultralytics run name (the subdirectory under the output directory holding the run artifacts)
+
+.. code-block:: json
+
+    "export_yolo_dataset": {
+        "label_source": "cc",
+        "validation_split": 0.2,
+        "random_state": 42,
+        "colormap": "viridis",
+        "manual_labels_directory": ""
+      },
+    "train_masks": {
+        "base_weights": "yolo11n.pt",
+        "n_epochs": 100,
+        "imgsz": 128,
+        "batch_size": 16,
+        "device": null,
+        "run_name": "usv_yolo_detector"
+      }
+
 Noise model
 ^^^^^^^^^^^
 
 The ensemble *Produce noise labels* scores with. ``train-noise-model`` trains it on a labels CSV and writes a bundle ``detect-usv-noise`` loads unchanged (set it as ``noise_model_path``). Drawing the segments to label, the labelling itself, the cross-fitted calibration and the choice of the decision cut-offs are not part of it: they are done once per labelling round and come in as the labels CSV and the ``calibration_path`` JSON.
 
 * **Labels** -- one row per training example: ``sample_id``, ``session_dir``, ``start`` and ``stop`` (s, as in the session's *usv_summary.csv*), ``chs_count`` (the summary's channel count) and ``noise`` (``1``: the segment holds no vocalization at all, neither a USV nor a squeak; ``0``: it holds one). Unsure answers must be dropped or resolved first. The segment is defined by these columns, not by a summary row, so re-curating a session later cannot change what a label points at. A segment may appear twice (it is then trained on twice, as the production ensemble was); repeats and conflicting repeats are reported.
-* **Inputs** -- built by the same function *Produce noise labels* scores with (same wavs, channel exclusion, ~100 ms context window, crop, dB transform), so a model is trained on exactly the input it will be run on. The scalars (log channel count, log duration) are standardized over the training set, and their mean and standard deviation go into the bundle.
+* **Inputs** -- built by the same function *Produce noise labels* scores with (same broadband memmap channels with their stored low-band variance weights, channel exclusion, ~100 ms context window, crop, dB transform), so a model is trained on exactly the input it will be run on. The scalars (log channel count, log duration) are standardized over the training set, and their mean and standard deviation go into the bundle.
 * **Recipe** -- the production one: per seed, the network is initialized from ``torch.manual_seed(seed)`` and trained for 40 epochs in batches of 32 (a seeded permutation each epoch), with Adam (learning rate 0.001, weight decay 0.0001) under a cosine schedule stepped per batch, binary cross-entropy on targets smoothed by 0.05, and augmentation of the spectrogram channels (gain jitter of up to ±5 dB, a frequency roll of up to ±2 rows, and with probability 0.5 each a time mask of up to 15% of the frames and a frequency mask of 1-10 rows). cuDNN runs in deterministic mode, but GPU training is still not bit-reproducible, so a retrained ensemble matches an earlier one in its decisions, not its weights.
 * **Bundle** -- the five ``state_dicts``, the input contract (bands, dB constants, frame cap, context), the scalar standardization, the calibration table and decision block from the JSON, and the provenance (labels CSV, recipe with every seed, build date). An existing bundle path is refused, never overwritten, and the written bundle is loaded back through the detector's loader before the run ends.
 
-Retraining the production bundle from its 4,680 labels and five seeds (one RTX 4080, 23 min including the input build) reproduced it in its decisions. Every input matched the cached training inputs of the original run bit for bit, as did the scalar standardization, and on the CPU the training loop gives weights identical to the original code's. On the 1,118 consensus-labelled segments the cut-offs were chosen on (all of them training labels of both ensembles), weighted to the cohort, the confident decisions reach precision 0.988 / recall 0.993 (production 0.988 / 0.993) with 0.74% of segments uncertain (production 0.75%), and 99.85% of three-way decisions agree (99.91% of ``noise`` values). No segment moved between confident vocalization and confident noise. Unweighted, 94.8% of decisions agree (58 of 1,118, all between a confident decision and the uncertain band), because the set was drawn heavily from the uncertain score range (22% of it is uncertain).
+Retraining the production bundle from its 4,680 labels and five seeds (one RTX 4080, 23 min including the input build) reproduced it in its decisions. Every input matched the cached training inputs of the original run bit for bit (that check read the full-band HPSS wavs, the input the step took then; on the broadband memmap the inputs differ by the tone removal and the reconstructed channel weights, see *Broadband MEMMAP*), as did the scalar standardization, and on the CPU the training loop gives weights identical to the original code's. On the 1,118 consensus-labelled segments the cut-offs were chosen on (all of them training labels of both ensembles), weighted to the cohort, the confident decisions reach precision 0.988 / recall 0.993 (production 0.988 / 0.993) with 0.74% of segments uncertain (production 0.75%), and 99.85% of three-way decisions agree (99.91% of ``noise`` values). No segment moved between confident vocalization and confident noise. Unweighted, 94.8% of decisions agree (58 of 1,118, all between a confident decision and the uncertain band), because the set was drawn heavily from the uncertain score range (22% of it is uncertain).
 
 Call-class model
 ^^^^^^^^^^^^^^^^
@@ -1953,7 +2224,7 @@ Call-class model
 The ensemble *Produce squeak labels* scores with. ``train-usv-squeak-model`` (``train_usv_squeak_model`` settings block) trains it on the labelling tool's files and writes a bundle ``detect-usv-squeaks`` loads unchanged (set it as ``squeak_model_path``). Drawing the segments to label, the labelling, the session-grouped cross-validation and the choice of the span rule are not part of it: they are done once per labelling round, outside the package, and come in as the label files and the ``span_threshold`` setting.
 
 * **Labels** -- one or more label sets (``label_sets``), each a labels CSV (``panel_id``, ``label``: 0 usv, 1 squeak, 2 both, 3 unsure; ``squeak_extents_s``: the labelled spans as a JSON list of ``[start_s, end_s]``, every squeak in view, the context included; several spans per segment stay separate training targets of the squeak head, the envelope rule being an inference step) with its sample CSV (``panel_id``, ``session_dir``, ``row_index``, ``start``, ``stop``). Sample ids are ``<set name>_<panel_id>``. Review CSVs in the labels format (``label_overrides``) replace the label and spans of the panels they list in the named set; the set's own CSV is never edited. Unsure answers are dropped; a ``usv`` label with spans, or a ``squeak`` / ``both`` label without one, stops the run. Each segment's ``chs_count`` is read from its session's *usv_summary.csv* row, which must still start where the sample says. The shipped settings list the production bundle's two rounds and review override.
-* **Inputs** -- built by the same function *Produce squeak labels* scores with (same wavs, channel exclusion, context window and segment indicator), so a model is trained on exactly the input it will be run on; frame targets are 1 on every frame whose centre lies inside a labelled span. The scalars (log channel count, log duration) are standardized over the training set, and their mean and standard deviation go into the bundle.
+* **Inputs** -- built by the same function *Produce squeak labels* scores with (same broadband memmap channels with their stored low-band variance weights, channel exclusion, context window and segment indicator), so a model is trained on exactly the input it will be run on; frame targets are 1 on every frame whose centre lies inside a labelled span. The scalars (log channel count, log duration) are standardized over the training set, and their mean and standard deviation go into the bundle.
 * **Recipe** -- per seed, the network is initialized from ``torch.manual_seed(seed)``, its trunk loaded from member ``seed mod 5`` of the noise ensemble (``pretrained``; the noise bundle of ``detect_usv_noise.noise_model_path``), and trained with the noise model's recipe (40 epochs, batch 32, Adam 0.001 / weight decay 0.0001 under a cosine schedule, the same augmentation) on the class cross-entropy (label smoothing 0.05) plus the frame binary cross-entropy (weight 1), which supervises every frame of a squeak / both segment but only the segment's own frames of a usv segment (its label says nothing about the context).
 * **Bundle** -- the five ``state_dicts``, the input contract, the scalar standardization, the class names, the extent threshold (``extent_rule``), the recipe with every seed and the label files. An existing bundle path is refused, never overwritten, and the written bundle is loaded back through the detector's loader before the run ends.
 
