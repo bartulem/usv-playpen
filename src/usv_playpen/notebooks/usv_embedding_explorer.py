@@ -362,6 +362,8 @@ def _widgets(QLVM_MAPS, QLVM_MAP_DISPLAY_NAMES, SQUEAK_CLASS_SELECTIONS, availab
             "mean amplitude (a.u.)": "mean_amplitude",
             "max amplitude (a.u.)": "max_amplitude",
             "spectral entropy (nats)": "spectral_entropy",
+            "loudness (dB)": "loudness_db",
+            "mask number (count)": "mask_number",
         },
         value="category",
         label="Color by",

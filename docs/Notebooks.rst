@@ -2778,7 +2778,8 @@ The USV maps show only the segments ``detect-usv-squeaks`` classed as pure USVs 
 * **Map** — one of the five QLVM maps or the squeak map; it starts on ``shared_resources.qlvm_map`` (the map
   the other QLVM figures draw).
 * **Color by** — a categorical label (category, session type, session id, or
-  emitter sex, read from each session's metadata ``Subjects`` so same-sex sessions need no correction) or a continuous metric (point density, or a per-USV acoustic feature), the
+  emitter sex, read from each session's metadata ``Subjects`` so same-sex sessions need no correction) or a continuous metric (point density, or a per-USV acoustic feature: duration, mean / peak frequency,
+  frequency bandwidth, mean / max amplitude, spectral entropy, loudness in dB, or the number of masks the call was built from), the
   latter rendered through the project colormap. The category is the calls' ``qlvm_category``
   on every USV map, the conditional ones included (the categories are defined on the regular
   map and label the call); the squeak map has none and falls back to density, saying so.

@@ -908,10 +908,10 @@ The ``qlvm_figures`` block (the seed is ``figures.seed`` and the colormap ``figu
         "usvs_per_session": 200,
         "sample_cache_file": "/mnt/falkner/Bartul/spectrograms/embeddings/qlvm_figure_sample.npz",
         "seed_cell_directories": [
-            "/mnt/falkner/Bartul/PC_transfer/qlvm_final/validation/cells/seed7",
-            "/mnt/falkner/Bartul/PC_transfer/qlvm_final/validation/cells/seed1234"
+            "/mnt/falkner/Bartul/spectrograms/qlvm/seeds/seed7",
+            "/mnt/falkner/Bartul/spectrograms/qlvm/seeds/seed1234"
         ],
-        "watershed_levels_file": "/mnt/falkner/Bartul/PC_transfer/qlvm_time_stretch/regions/clustering_clean/masked_levels.npz",
+        "watershed_levels_file": "/mnt/falkner/Bartul/spectrograms/qlvm/watershed_levels.npz",
         "category_colors": ["#4E79A7", "#F28E2B", "#59A14F", "#E15759"],
         "overview": {
             "n_examples": 10,
