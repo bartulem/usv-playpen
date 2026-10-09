@@ -4104,7 +4104,7 @@ def render_embedding_thumbnails_for_cohort(
     qlvm_map = visualizations_parameter_dict["shared_resources"]["qlvm_map"]
 
     # Pooled-embeddings cache resolved by convention from the spectrograms dir
-    # (<dir>/embeddings/pooled_embeddings_qlvmv3.parquet, precomputed once on a fast mount);
+    # (<dir>/embeddings/pooled_embeddings_production.parquet, precomputed once on a fast mount);
     # build_pooled_embeddings_df loads it when present instead of re-reading the
     # cohort's CSVs, and otherwise pools + writes it there.
     cache_path = resolve_pooled_embeddings_cache(
