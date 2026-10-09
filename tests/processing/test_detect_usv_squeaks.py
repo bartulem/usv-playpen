@@ -149,7 +149,7 @@ def _build_session(tmp_path: pathlib.Path, excluded_channels: list[str] | None =
     """
     Description
     -----------
-    Creates a synthetic session: the HPSS wavs and a summary with five rows: a 50 ms segment, a 400 ms
+    Creates a synthetic session: a broadband memmap and a summary with five rows: a 50 ms segment, a 400 ms
     segment, a 4 ms segment (too short for one STFT window), a noise segment and a 100 ms segment.
     Optionally writes session metadata excluding channels.
 
@@ -683,7 +683,7 @@ def _build_squeak_embedding_session(tmp_path: pathlib.Path) -> pathlib.Path:
     """
     Description
     -----------
-    Creates a synthetic session for the squeak QLVM embedding: the HPSS wavs and a summary whose rows
+    Creates a synthetic session for the squeak QLVM embedding: a broadband memmap and a summary whose rows
     cover every selection and crop case (``dt`` the frame hop):
 
     * row 0 -- squeak, envelope ``start + 4.5 dt .. start + 20.5 dt`` of a 100 ms segment: the window
