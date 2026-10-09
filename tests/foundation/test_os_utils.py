@@ -997,7 +997,7 @@ def test_resolve_pooled_embeddings_cache_convention(tmp_path):
     the old model's pooled_embeddings.parquet."""
     base = tmp_path / "spectrograms"
     assert os_utils.resolve_pooled_embeddings_cache(str(base)) == str(
-        base / "embeddings" / "pooled_embeddings_qlvmv3.parquet"
+        base / "embeddings" / "pooled_embeddings_production.parquet"
     )
 
 

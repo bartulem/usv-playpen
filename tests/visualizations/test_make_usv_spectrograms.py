@@ -2367,7 +2367,7 @@ def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, m
     assert "cluster_centers_npz_path" not in captured
     # the pooled-embeddings cache is resolved by convention under spectrograms_dir
     assert captured["embeddings_cache_path"] == str(
-        pathlib.Path(spec_dir) / "embeddings" / "pooled_embeddings_qlvmv3.parquet"
+        pathlib.Path(spec_dir) / "embeddings" / "pooled_embeddings_production.parquet"
     )
     # in a GUI context the saved figure is opened at the end
     assert opened == [captured["output_path"]]

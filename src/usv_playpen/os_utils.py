@@ -499,9 +499,11 @@ QLVM_CATEGORY_COLUMN = f"{QLVM_CATEGORY_MAP}_category"
 QLVM_CATEGORY_COLUMNS = (QLVM_CATEGORY_COLUMN,)
 
 # File name of the cohort pooled-embeddings parquet cache under
-# `<spectrograms_dir>/embeddings/`. Its summaries fingerprint makes a cache pooled
-# from older summaries rebuild when the summaries change.
-POOLED_EMBEDDINGS_CACHE_NAME = "pooled_embeddings_qlvmv3.parquet"
+# `<spectrograms_dir>/embeddings/`: the per-USV coordinates of every production
+# QLVM map and the category column, pooled from the cohort's summaries. Its
+# summaries fingerprint makes a cache pooled from older summaries rebuild when
+# the summaries change.
+POOLED_EMBEDDINGS_CACHE_NAME = "pooled_embeddings_production.parquet"
 
 
 def qlvm_production_cell_directory(qlvm_map: str) -> str:
@@ -2181,7 +2183,7 @@ def newest_match_or_raise(
 # by convention, rather than from several hard-coded file paths:
 #   <dir>/spectrograms_*.h5                   consolidated spectrogram/mask/latent store
 #   <dir>/squeak_spectrograms_*.h5            2-125 kHz log-frequency squeak spectrogram store
-#   <dir>/embeddings/pooled_embeddings_qlvmv3.parquet  pooled cohort embeddings cache
+#   <dir>/embeddings/pooled_embeddings_production.parquet  pooled cohort embeddings cache
 #                                             (POOLED_EMBEDDINGS_CACHE_NAME)
 # The QLVM category geometry (label grid, density, centres) is not under it: it is
 # the category bundle, QLVM_CATEGORY_BUNDLE_DIRECTORY (load_qlvm_category_bundle).
@@ -2258,14 +2260,13 @@ def resolve_pooled_embeddings_cache(spectrograms_dir: str) -> str:
     Build the path to the cohort pooled-embeddings parquet cache under the
     spectrograms base directory, by convention:
     ``<dir>/embeddings/<POOLED_EMBEDDINGS_CACHE_NAME>``
-    (``<dir>/embeddings/pooled_embeddings_qlvmv3.parquet``). The name is
-    versioned by the QLVM model, so the cache pooled from the v3 summaries sits
-    beside (and never overwrites) the old model's ``pooled_embeddings.parquet``.
-    This is a pure path builder (run through ``configure_path``); whether the file
+    (``<dir>/embeddings/pooled_embeddings_production.parquet``): the cache of the
+    production QLVM maps, named so that a cache of other maps under another name
+    is never read or overwritten. This is a pure path builder (run through ``configure_path``); whether the file
     exists is the caller's concern -- the embedding figures pass it as
     ``embeddings_cache_path`` so that ``build_pooled_embeddings_df`` loads it when
     present and its summaries fingerprint matches (one combined table that
-    carries the QLVM coordinates and the coarse + fine labels), and
+    carries every map's QLVM coordinates and the category column), and
     otherwise pools the cohort and writes it there.
 
     Parameters
