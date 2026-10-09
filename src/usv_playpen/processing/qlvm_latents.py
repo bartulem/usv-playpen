@@ -394,7 +394,9 @@ def load_model_cell(model_cell_directory: str) -> dict:
     """
     Description
     -----------
-    Loads one cell of a QLVM model package (the ``qlvm_models_latest/v2`` layout):
+    Loads one cell of a QLVM model package (the ``qlvm_models_latest/v2`` and ``v3``
+    layouts, and a ``train-qlvm`` cell such as the production cells under
+    ``os_utils.QLVM_MODEL_PACKAGE_ROOT``; :func:`cell_file` finds each file in either):
     the decoder weights from its torch ``checkpoint.tar`` (read without torch), its
     ``training_contract.json``, the Fibonacci lattice the package embedded its
     corpus on (``embedding_fib_m`` of the contract) and, for a conditional cell,
@@ -404,7 +406,8 @@ def load_model_cell(model_cell_directory: str) -> dict:
     Parameters
     ----------
     model_cell_directory (str)
-        Path to the package cell, e.g.
+        Path to the package cell, e.g. the production regular cell
+        ``/mnt/falkner/Bartul/spectrograms/qlvm/qlvm`` or
         ``.../qlvm_models_latest/v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked``.
 
     Returns

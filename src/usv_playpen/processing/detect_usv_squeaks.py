@@ -423,7 +423,8 @@ def usv_squeak_window_input(
     """
     Description
     -----------
-    Reads one segment's audio window from the open per-channel wavs and builds its call-class input.
+    Reads one segment's audio window from the open broadband channel readers and builds its call-class
+    input, the channels weighted by their stored low-band variance plus the window's own variance.
     The window is the noise model's (:func:`detect_usv_noise.window_segment_input`): it starts exactly
     ``context_frames`` hops before the segment's first sample ``floor(start * fs)`` (fewer at the start
     of a recording) and ends ``context_frames`` hops after its last sample ``ceil(stop * fs)`` (or at the
@@ -436,9 +437,10 @@ def usv_squeak_window_input(
     Parameters
     ----------
     handles (list[BroadbandChannelReader])
-        Open per-channel wavs (one per averaged channel, all of one length).
+        Open broadband channel readers (one per averaged channel, all of one length, each carrying its
+        ``low_band_variance``).
     n_file (int)
-        Frame count (samples) of the wavs.
+        Frame count (samples) of the channels.
     start (float)
         Segment start (s).
     stop (float)
@@ -997,8 +999,9 @@ def session_usv_squeak_training_inputs(
     """
     Description
     -----------
-    Builds the call-class inputs of one session's labelled segments, opening the session's wavs and USV
-    summary once, and reads each segment's ``chs_count`` from the summary row the sample names (checking
+    Builds the call-class inputs of one session's labelled segments, opening the session's broadband
+    memmap (:func:`detect_usv_noise.squeak_audio_channels`) and USV summary once, and reads each
+    segment's ``chs_count`` from the summary row the sample names (checking
     that the row still starts where the sample says). Run in a worker thread by
     :func:`build_usv_squeak_training_inputs`.
 
@@ -1057,8 +1060,8 @@ def build_usv_squeak_training_inputs(
     inference (:func:`usv_squeak_window_input` with ``USV_SQUEAK_INPUT_CONTRACT``, over the same
     broadband memmap channels and channel exclusion). Sessions are processed in ``n_workers``
     threads (the work is the latency of reading short windows on a network share), each
-    session's wavs opened once; results are collected by label row, so the order does not depend on the
-    thread schedule. Segments too short for one STFT window are left out and reported.
+    session's memmap opened once; results are collected by label row, so the order does not depend on
+    the thread schedule. Segments too short for one STFT window are left out and reported.
 
     Parameters
     ----------
