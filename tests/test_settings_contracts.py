@@ -180,6 +180,38 @@ CONTRACTS: tuple[SettingsContract, ...] = (
             ),
         ),
     ),
+    SettingsContract(
+        module="modeling/modeling_bases_functions.py",
+        function="resolve_temporal_basis",
+        dict_expression="model_block",
+        blocks=(
+            FeedingBlock(
+                settings_file="modeling_settings.json",
+                path=("hyperparameters", "linear_models", "manifold_regression"),
+            ),
+            FeedingBlock(
+                settings_file="modeling_settings.json",
+                path=("hyperparameters", "linear_models", "multinomial_logistic"),
+            ),
+        ),
+    ),
+    SettingsContract(
+        module="modeling/modeling_bases_functions.py",
+        function="resolve_temporal_basis",
+        dict_expression="temporal_basis",
+        blocks=(
+            FeedingBlock(
+                settings_file="modeling_settings.json",
+                path=("hyperparameters", "linear_models", "manifold_regression",
+                      "temporal_basis"),
+            ),
+            FeedingBlock(
+                settings_file="modeling_settings.json",
+                path=("hyperparameters", "linear_models", "multinomial_logistic",
+                      "temporal_basis"),
+            ),
+        ),
+    ),
 )
 
 
