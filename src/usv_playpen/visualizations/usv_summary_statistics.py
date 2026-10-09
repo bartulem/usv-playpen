@@ -1,3 +1,23 @@
+"""
+@author: bartulem
+
+Cross-session USV summary statistics and their figures, driven from
+``usv_general_analyses.ipynb`` (see the *Notebooks* page).
+
+The loaders build one master per-USV table over a list of sessions
+(``build_master_usv_dataframe``: the USV summaries joined with the behavioral
+features at each call, the session metadata and the QLVM category
+``qlvm_category``); the plotters draw the descriptive views of that table --
+emitter assignment and per-mouse participation, global and local vocalization
+fatigue (overall and per category), USV duration against spatial behavior,
+estrous-stage USV metrics, spatial (polar KDE) vocalization distributions,
+the category prevalence with the regular QLVM map (its category boundaries
+from the category bundle, ``os_utils.load_qlvm_category_bundle``), and the
+per-session squeak timing heatmap. Every colour is a hex string; the sex
+colours come from the ``male_colors`` / ``female_colors`` /
+``unassigned_colors`` palette of ``visualizations_settings.json``.
+"""
+
 from __future__ import annotations
 
 import collections

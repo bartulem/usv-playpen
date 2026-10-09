@@ -3,11 +3,12 @@
 
 Tests for visualizations/qlvm_property_sweep_video.
 
-Covers the periodic density (additive, seams wrap), the pooling filter of
-load_property_sweep_usvs (through make_usv_spectrograms.load_regular_map_cohort_usvs) (pure USVs with a position and all six properties, the
-temporary cohort session list removed afterwards), the random order within
-tied values, a still-frame render and a short video render (skipped without
-ffmpeg).
+Covers the pooling filter of load_property_sweep_usvs (through
+make_usv_spectrograms.load_regular_map_cohort_usvs: pure USVs with a position
+and all six properties, the temporary cohort session list removed afterwards),
+the random order within tied values, a still-frame render and a short video
+render (skipped without ffmpeg). The periodic density the panels draw is tested
+with its module, in test_auxiliary_plot_functions.
 """
 
 from __future__ import annotations
@@ -20,7 +21,6 @@ import polars as pls
 import pytest
 
 from usv_playpen.visualizations import qlvm_property_sweep_video as sweep
-from usv_playpen.visualizations.auxiliary_plot_functions import periodic_density
 
 
 def _usvs(n: int, seed: int = 0) -> pls.DataFrame:
@@ -75,16 +75,6 @@ def _label_grid(resolution: int = 40) -> np.ndarray:
     grid[half:, :half] = 3
     grid[half:, half:] = 4
     return grid
-
-
-def test_periodic_density_is_additive_and_wraps():
-    """Each USV adds the same kernel (peak 1 at its own pixel), and a USV on the seam spreads to the opposite edge."""
-    single = periodic_density(np.array([0]), np.array([0]), 40, 0.02)
-    assert single[0, 0] == pytest.approx(1.0)
-    assert single[39, 0] == pytest.approx(single[1, 0])
-    assert single[0, 39] == pytest.approx(single[0, 1])
-    triple = periodic_density(np.array([0, 0, 5]), np.array([0, 0, 7]), 40, 0.02)
-    assert triple.sum() == pytest.approx(3 * single.sum())
 
 
 def test_load_property_sweep_usvs_filters_and_cleans_up(tmp_path, monkeypatch):

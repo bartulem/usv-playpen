@@ -25,9 +25,7 @@ from usv_playpen.modeling.acoustic_manifold_geometry import (
 )
 
 
-# ---------------------------------------------------------------------------
 # Synthetic-data builders
-# ---------------------------------------------------------------------------
 
 
 def _make_euclidean_clusters(rng_seed: int = 0,
@@ -77,9 +75,7 @@ def _make_torus_wrap_cluster(rng_seed: int = 0,
     return wrapped, labels, true_centre
 
 
-# ---------------------------------------------------------------------------
 # derive_cluster_centers_empirically
-# ---------------------------------------------------------------------------
 
 
 class TestDeriveClusterCenters:
@@ -221,9 +217,7 @@ class TestDeriveClusterCenters:
             derive_cluster_centers_empirically(Y, labels, metric='spherical')
 
 
-# ---------------------------------------------------------------------------
 # derive_cluster_geometry
-# ---------------------------------------------------------------------------
 
 
 class TestDeriveClusterGeometry:
@@ -339,9 +333,7 @@ class TestDeriveClusterGeometry:
             derive_cluster_geometry({'a': np.array([0.0, 0.0])}, alpha=0.5)
 
 
-# ---------------------------------------------------------------------------
 # usv_in_circle
-# ---------------------------------------------------------------------------
 
 
 class TestUsvInCircle:

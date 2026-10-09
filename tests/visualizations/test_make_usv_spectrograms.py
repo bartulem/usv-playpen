@@ -71,6 +71,7 @@ from usv_playpen.visualizations.make_usv_spectrograms import (
     plot_session_type_usv_counts,
     plot_session_usv_timeline,
     plot_usv_property_histograms,
+    read_cohort_session_roots,
     render_embedding_thumbnails_for_cohort,
 )
 
@@ -1435,8 +1436,8 @@ def test_build_pooled_embeddings_df_rebuilds_when_a_summary_changes(tmp_path):
 
 def test_build_pooled_embeddings_df_rebuilds_a_cache_without_fingerprint(tmp_path):
     """A cache that has every required column but no summaries fingerprint (written
-    before fingerprints existed, e.g. the shared pooled_embeddings.parquet) is
-    treated as stale rather than trusted."""
+    before fingerprints existed, as the first shared cohort cache was) is treated
+    as stale rather than trusted."""
     sess = tmp_path / "20230105_000000"
     _write_embedding_session(sess, "20230105_000000")
     txt = _write_sessions_txt(tmp_path, [sess])
@@ -2278,6 +2279,19 @@ def test_plot_sequence_exclude_squeaks_requires_vocal_flags(tmp_path):
 
 
 # ---- render_embedding_thumbnails_for_cohort (cohort driver) ---------------
+
+def test_read_cohort_session_roots_pools_dedupes_and_needs_a_non_playback_list(tmp_path):
+    """The cohort is every non-playback *sessions_list.txt (sorted by name), roots deduplicated in first-seen order
+    with blank and # lines skipped; a directory with playback lists only raises, naming the caller."""
+    input_dir = tmp_path / "input_files"
+    input_dir.mkdir()
+    (input_dir / "ephys_playback_sessions_list.txt").write_text("/root/sessP\n")
+    with pytest.raises(FileNotFoundError, match="qlvm-figures: no '\\*sessions_list.txt'"):
+        read_cohort_session_roots(str(input_dir), "qlvm-figures")
+    (input_dir / "b_sessions_list.txt").write_text("/root/sessB\n\n# comment\n/root/sessC\n")
+    (input_dir / "a_sessions_list.txt").write_text("/root/sessA\n/root/sessB\n")
+    assert read_cohort_session_roots(str(input_dir), "qlvm-figures") == ["/root/sessA", "/root/sessB", "/root/sessC"]
+
 
 def test_render_embedding_thumbnails_for_cohort_pools_and_dispatches(tmp_path, monkeypatch):
     """The cohort driver pools (deduplicated, first-seen order) roots from every

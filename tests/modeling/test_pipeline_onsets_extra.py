@@ -540,14 +540,16 @@ class TestPygamEngine:
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
-    def test_pygam_gcv_when_lam_none(self, tmp_path):
+    def test_pygam_default_lam_when_none(self, tmp_path, capsys):
         """
-        Setting ``lam_penalty`` to ``None`` selects the GCV branch
-        (``"Using GCV to find optimal smoothness"``) for the actual GAM instead
-        of a fixed smoothness penalty. Uses tiny data + few iterations so GCV
-        stays fast; asserts the run completes. On degenerate tiny data the GCV
-        fit may leave every fold NaN, so the terminal ``np.nanmean`` "Mean of
-        empty slice" ``RuntimeWarning`` is demoted for this test.
+        Setting ``lam_penalty`` to ``None`` leaves ``lam`` out of the GAM kwargs,
+        so pyGAM's own per-term default penalty is used; the penalty is still
+        FIXED (pyGAM tunes it only in ``gridsearch()``, which the pipeline never
+        calls), and the run says so instead of announcing a GCV search. Uses
+        tiny data + few iterations; asserts the run completes. On degenerate
+        tiny data the fit may leave every fold NaN, so the terminal
+        ``np.nanmean`` "Mean of empty slice" ``RuntimeWarning`` is demoted for
+        this test.
         """
 
         pipeline = _pipeline(tmp_path, model_engine='pygam', split_strategy='mixed', split_num=1)
@@ -560,6 +562,9 @@ class TestPygamEngine:
         )
         assert feat_name == 'self.speed'
         assert results['actual']['filter_shapes'].shape == (1, HISTORY_FRAMES)
+        printed = capsys.readouterr().out
+        assert "Using pyGAM's default smoothness penalty (lam_penalty is null; not tuned)" in printed
+        assert 'GCV' not in printed
 
     @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
     @pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")

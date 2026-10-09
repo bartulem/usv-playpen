@@ -565,7 +565,7 @@ def test_parse_audio_mmap_name_reads_layout(tmp_path):
         os_utils.parse_audio_mmap_name("sess_250000_40_3_int16.mmap")
 
 
-def test_usv_readers_get_the_usv_file_when_both_bands_exist(tmp_path):
+def test_usv_readers_get_the_ultrasonic_file_when_both_bands_exist(tmp_path):
     # ultrasonic band = 1, broadband = 2, stray recursive-glob trap = 3
     _write_band_mmap(tmp_path, "ultrasonic", 1)
     _write_band_mmap(tmp_path, "broadband", 2)
@@ -580,7 +580,7 @@ def test_usv_readers_get_the_usv_file_when_both_bands_exist(tmp_path):
     assert np.all(np.asarray(video_audio) == 1)
 
 
-def test_every_audio_mmap_reader_asks_for_the_usv_band():
+def test_every_audio_mmap_reader_asks_for_the_ultrasonic_band():
     # Static guard over the package: no reader may locate a memmap with a glob
     # ('*.mmap' patterns, recursive or not) and every find_audio_mmap call names
     # the 'ultrasonic' band, so no USV reader can be handed the broadband memmap; the
@@ -866,9 +866,10 @@ def test_derive_spectrogram_model_paths_fills_empties_from_root():
     assert settings["generate_masks"]["yolo_weights"] == f"{root}/sam/best.pt"
     # the SAM2 config NAME is never derived
     assert settings["generate_masks"]["sam2_model_cfg"] == "configs/sam2.1/sam2.1_hiera_b+.yaml"
-    # the OLD in-house QLVM model under <root>/qlvm is never derived (no key of it is
-    # written); the production mapping is, with the masking and time stretch its cells
-    # were trained with
+    # the cells are not derived from spectrograms_root (no single-model key is written):
+    # the production mapping comes from the module constants, one folder per prefix
+    # under the lab's spectrograms/qlvm folder, with the masking and time stretch its
+    # cells were trained with
     assert set(settings["infer_qlvm_latents"]) == {"model_cells", "masking_type", "time_stretch"}
     package = "/mnt/falkner/Bartul/spectrograms/qlvm"
     assert settings["infer_qlvm_latents"]["model_cells"] == {
@@ -993,8 +994,9 @@ def test_resolve_consolidated_h5_raises_when_no_store(tmp_path):
 
 
 def test_resolve_pooled_embeddings_cache_convention(tmp_path):
-    """The cache name is versioned by the QLVM model, so the v3 cache never overwrites
-    the old model's pooled_embeddings.parquet."""
+    """The cache is the production maps' pooled_embeddings_production.parquet under
+    embeddings/ (os_utils.POOLED_EMBEDDINGS_CACHE_NAME), so a cache of other maps under
+    another name is never read or overwritten."""
     base = tmp_path / "spectrograms"
     assert os_utils.resolve_pooled_embeddings_cache(str(base)) == str(
         base / "embeddings" / "pooled_embeddings_production.parquet"

@@ -3485,11 +3485,16 @@ def multinomial_vocal_category_model_selection(
         shape (N_samples, N_features * N_time_bins).
     2.  Dynamic architecture: The JAX model is re-instantiated at each step with
         `n_features = len(trial_features)` to ensure the temporal smoothing
-        penalty (2nd derivative) is applied strictly within each feature's bins.
+        penalty (the configured `smoothness_derivative_order`) is applied
+        strictly within each feature's bins.
     3.  Direct filter extraction: Because the model is linear in logit space,
         filter shapes do not require synthetic grid predictions. The learned
         `coef_` matrix is sliced directly to yield the exact temporal filters
-        for every USV category.
+        for every USV category. Under `temporal_basis.type = 'bspline'` the
+        coefficients are mapped back onto the frame axis first
+        (`basis_coefficients_to_frames`), so the stored `weights` keep the
+        full-resolution layout and the raw spline coefficients are stored
+        beside them.
     4.  Model-Free Baseline (Step 0): Computes the Marginal Class Prior (the
         empirical frequency of each USV category in the training set) as the
         absolute baseline. Features must prove they offer predictive power
@@ -3526,7 +3531,11 @@ def multinomial_vocal_category_model_selection(
                   between predicted confidence and empirical accuracy.
                 - `mcc` : Matthews correlation coefficient; chance-corrected
                   [-1, +1] summary of the confusion matrix.
-            * 'weights': The learned JAX coefficient matrix.
+            * 'weights': The learned JAX coefficient matrix, on the frame axis
+              (`n_classes x n_features * n_time_bins`) whatever the temporal basis.
+            * 'basis_coefficients': The raw spline coefficients when a B-spline
+              `temporal_basis` is in use (`n_classes x n_features * n_splines`),
+              else None.
             * 'intercepts': The learned JAX biases.
             * 'y_true', 'y_pred', 'y_probs': Ground truth, hard predictions, and softmax arrays.
             * 'test_indices': The specific dataset rows used in the validation fold.
@@ -4782,13 +4791,13 @@ def continuous_vocal_manifold_model_selection(
     The selector identifies the minimal set of behavioural features that
     jointly predict the `(x, y)` manifold coordinates of upcoming USVs.
     Candidates are ranked by the geometry-appropriate selection score
-    (`SELECTION_SCORE_KEY`): `r2_spatial` (the coefficient of
-    determination pooled across manifold axes — higher is better,
-    interpretable as the fraction of test-fold spatial variance the
-    model explains above the test-fold marginal mean) on Euclidean /
-    Euclidean manifolds, and wrap-aware distance correlation `dcor_xy`
-    on the near-uniform periodic TORUS manifold, where the centroid-
-    referenced `r2_spatial` is structurally inverted.
+    (`SELECTION_SCORE_KEY`, `manifold_metric.resolve_manifold_selection_score_key`):
+    the von Mises log-score on the TORUS manifold — the region-balanced macro
+    `vm_logscore` by default, or the event-weighted `vm_logscore_pooled` twin
+    when `vocal_features.usv_manifold_selection_score` is `'micro'` — and the
+    wrap-aware distance correlation `dcor_xy` on Euclidean manifolds. The
+    centroid-referenced `r2_spatial` is structurally inverted on the
+    near-uniform periodic torus and is a reported descriptor only.
 
     Key algorithmic choices
     -----------------------
@@ -4799,15 +4808,18 @@ def continuous_vocal_manifold_model_selection(
        directly comparable (see `SmoothBivariateRegression.predict`).
        The torus estimator decodes to a coordinate that is always on the
        manifold, so it deliberately does not snap.
-    2. Wilcoxon screening (higher-is-better). Candidates are ranked by a
-       Bonferroni-corrected one-sided Wilcoxon signed-rank test on the
-       paired per-fold selection score of `actual` vs. the within-session
-       Y-permutation `null` (`SCREEN_BASELINE_STRATEGY`) — on both
-       geometries. The permutation removes the session-level confound while
-       leaving the trial-level dependence to test; on the torus it is the
-       only meaningful baseline anyway (a constant prediction's `dcor_xy`
-       is 0 by construction). A separate gate-1 (`score > 0`) keeps the
-       "beats the no-model mean" floor on euclidean.
+    2. Fold-grain paired-margin screening (higher-is-better). For every
+       feature the per-fold margin of `actual` over the within-session
+       Y-permutation `null` (`SCREEN_BASELINE_STRATEGY`) on the selection
+       score is bootstrapped over folds (`_fold_paired_margin_bootstrap`);
+       the one-sided bootstrap p-values are Benjamini-Hochberg controlled
+       at `q = p_val`, and a surviving feature must also clear a relative
+       effect floor (`selection_effect_floor` x the top surviving margin).
+       The permutation removes the session-level confound while leaving
+       the trial-level dependence to test. The screen runs before the
+       input pickle is loaded, so on the torus it uses the pooled
+       (label-free) von Mises score; the greedy gate below uses the
+       per-region macro score once the region labels are available.
     3. Spatial stratification. Folds come from
        `get_stratified_spatial_splits_stable`, which uses deterministic
        K-Means geographic clustering so rare acoustic satellites are
@@ -4828,17 +4840,16 @@ def continuous_vocal_manifold_model_selection(
 
     Joint per-fold hyperparameter tuning
     ------------------------------------
-    On the TORUS manifold the inner-loop CV is unnecessary and is
-    unconditionally disabled (`tune_regularization_bool` is forced to
-    `False`): `dcor_xy` is scale/regularisation-invariant via the `atan2`
-    decode, so the inner-CV score is flat across the grids. Use the advised
-    fixed defaults `lambda_smooth_fixed = 1.0` and `l2_reg_fixed = 0.01`
-    (`lambda_smooth` still shapes the interpretable filter even though it no
-    longer moves the score). On Euclidean manifolds, when
-    `hyperparameters.linear_models.bivariate.tune_regularization_bool` is
-    `true`, every candidate fold (anchor + every forward-selection trial)
-    runs its own joint inner CV over the log-spaced
-    `(lambda_smooth, l2_reg)` grids before the outer fit. The l2 grid is
+    `hyperparameters.linear_models.manifold_regression.tune_regularization_bool`
+    is honoured on BOTH geometries. The inner-CV objective is the geometry's
+    own selection score (`vm_logscore` on the torus, in its pooled label-free
+    form; `dcor_xy` on euclidean), so it responds to the smoothness penalty
+    and the tuner picks a meaningful pair rather than fitting noise on a
+    flat surface. When it is `true`, every candidate fold (anchor + every
+    forward-selection trial) runs its own joint inner CV over the log-spaced
+    `(lambda_smooth, l2_reg)` grids before the outer fit; under a B-spline
+    `temporal_basis` the grid is the basis's own `lambda_smooth` decades with
+    the L2 grid pinned to 0 (`resolve_temporal_basis`). The l2 grid is
     rescaled by `1 / sqrt(n_trial_features)` so the search window tracks
     the same effective regularisation strength as the fixed fallback
     (which is rescaled the same way). The winning pair, the full grid of
@@ -4851,8 +4862,10 @@ def continuous_vocal_manifold_model_selection(
     ---------------------------------------
     Every step persists, for each candidate and fold: the full
     `evaluate_metrics` bundle, the learned `coef_` / `intercept_`
-    matrices, the test coordinates `y_true`, the manifold-snapped
-    predictions `y_pred_xy`, the test-fold weights `w_test`, the per-
+    matrices (`weights`, always on the frame axis; under a B-spline
+    `temporal_basis` the raw spline coefficients are stored beside them as
+    `basis_coefficients`, else None), the test coordinates `y_true`, the
+    manifold-snapped predictions `y_pred_xy`, the test-fold weights `w_test`, the per-
     fold JAX optimiser diagnostics (`n_iter`, `converged`, `fit_time`),
     and the hyperparameter audit trail (`selected_lambda_smooth`,
     `selected_l2_reg`, `hyperparam_grid_audit`, `hyperparams_tuned`).
@@ -4874,10 +4887,10 @@ def continuous_vocal_manifold_model_selection(
         Path to the JSON settings file.
     use_top_rank_as_anchor : bool, default False
         If True, initialises the search by forcing the single highest-ranked
-        Wilcoxon feature as Step 1.
+        screened feature (largest fold-mean paired margin) as Step 1.
     p_val : float, default 0.01
-        The overall alpha level, Bonferroni-corrected by dividing it by the
-        number of evaluated features.
+        The Benjamini-Hochberg false-discovery rate `q` of the screen's
+        one-sided bootstrap p-values.
     """
 
     if settings_path is None:

@@ -53,10 +53,6 @@ from ..os_utils import atomic_output_path, configure_path
 from .mixture_model_utils import IGMixture, TMixture
 
 
-# Internal helpers: polars <-> HDF5 dataset translation
-
-
-
 # Every per-mode table the archive can hold, shared by the writer and the reader so the two cannot
 # drift: the reader once carried its own copy, and tables added to the writer were silently
 # dropped on load. The tied-scale ("peaks plus background") model and its session-corrected

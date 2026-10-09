@@ -427,7 +427,8 @@ class QLVMSqueakTrainingSetBuilder:
         Parameters
         ----------
         root_directories (list[str])
-            Session root directories (each with ``audio/hpss`` wavs, a
+            Session root directories (each with a broadband memmap in
+            ``audio/broadband_filtered`` and its ``line_noise.json``, a
             ``*_usv_summary.csv`` holding the squeak columns and a metadata YAML).
         output_directory (str)
             Directory to write the ``.npz`` outputs + metadata.

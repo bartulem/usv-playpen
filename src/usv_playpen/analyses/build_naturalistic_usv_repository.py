@@ -278,15 +278,20 @@ class NaturalisticUsvRepositoryBuilder:
             the roots are read from the ``session_lists`` text files named in the
             ``build_naturalistic_usv_repository`` settings block (one session root per
             line, via :func:`_read_session_lists`). Each session's
-            ``audio/hpss_filtered/*.mmap``, ``audio/spectrograms/*_spectrograms.h5``
-            and ``audio/*_usv_summary.csv`` are located within it. Sessions lacking the
-            raw ``hpss_filtered`` mmap or (when gated) not decoding to a courtship
-            experiment are skipped.
+            ``audio/hpss_filtered/*.mmap`` (the ``ultrasonic`` band memmap),
+            ``audio/spectrograms/*_spectrograms.h5`` and ``audio/*_usv_summary.csv``
+            are located within it. The session lists are the only selection: nothing is
+            gated on the experiment code. A session lacking the ``ultrasonic`` memmap, the
+            ``noise`` column, or (in a courtship build) a metadata record naming exactly
+            one animal of the target sex is skipped and logged.
         input_parameter_dict (dict)
             Analyses settings; the ``build_naturalistic_usv_repository`` block supplies
-            the output dirs, courtship gate, bout, filter and reconstruction params.
-            The ``generate_spectrograms`` (processing) and ``mixture_model_params``
-            (modeling) blocks are read directly from their canonical settings files.
+            the context label (which drives the emitter handling, the output
+            subdirectory and the filename token), the bout, filter and reconstruction
+            params, and the ``data_roots`` block the repository root
+            (``naturalistic_usv_repository_dir``). The ``generate_spectrograms``
+            (processing) and ``mixture_model_params`` (modeling) blocks are read directly
+            from their canonical settings files.
         message_output (Callable)
             Logging callback; defaults to ``print``.
 

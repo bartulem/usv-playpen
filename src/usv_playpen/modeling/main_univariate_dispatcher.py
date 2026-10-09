@@ -11,8 +11,11 @@ The dispatcher manages five distinct analysis frameworks:
 1.  Vocal Onset: Binary prediction (Logistic/GAM) of bout initiation.
 2.  Vocal Category: One-vs-Rest classification of specific USV types.
 3.  Vocal Params: Gamma-regression of continuous bout duration and complexity.
-4.  Multinomial: JAX-accelerated flat classification of the 5-6 USV repertoire.
-5.  Continuous: Bivariate Gaussian modeling of acoustic manifold coordinates.
+4.  Multinomial: JAX-accelerated classification of the USV categories (the
+    `qlvm_category` labels the cohort holds, fitted jointly).
+5.  Continuous: JAX regression of the 2-D acoustic-manifold coordinates (the
+    Huber coordinate regression on a euclidean manifold, the closed-form
+    torus-embedding regression on the QLVM torus).
 
 Computational & Structural Features:
 ------------------------------------

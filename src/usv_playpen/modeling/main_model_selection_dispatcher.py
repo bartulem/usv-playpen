@@ -10,13 +10,19 @@ path validation, error reporting, and specific argument routing for:
 1. Vocal Onset: Selection for binary onset prediction (Logistic/GAM).
 2. Vocal Category: Selection for One-vs-Rest classification (Logistic/GAM).
 3. Vocal Params: Selection for continuous bout characteristics (Gamma Regression).
-4. Multinomial: Selection for flat USV category probability (JAX/Soft-Hierarchy).
-5. Continuous: Selection for continuous acoustic-manifold coordinates (JAX/Gaussian).
+4. Multinomial: Selection for the joint USV category probabilities (JAX multinomial
+   logistic regression).
+5. Continuous: Selection for continuous acoustic-manifold coordinates (JAX; the
+   Huber coordinate regression on euclidean, the closed-form torus-embedding
+   regression on the torus).
 
 Computational Strategy:
 -----------------------
 - Forward Stepwise Search: Implements a greedy algorithm that iteratively adds
-  features based on the 1-Standard-Error (1SE) rule to prevent over-fitting.
+  features, accepting a step only when the candidate beats the incumbent on the
+  PAIRED per-fold improvement: by the 1-Standard-Error (1SE) rule for the onset,
+  category, params and multinomial targets, by a fold-bootstrap confidence
+  interval on the paired margin for the continuous manifold target.
 - Decoupled Orchestration: The dispatcher handles CLI argument parsing and
   filesystem validation, while the heavy algorithmic logic is imported from
   the project's 'model_selection.py' module.

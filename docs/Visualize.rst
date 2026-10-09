@@ -34,6 +34,35 @@ The *Root directories* field enables you to list the directories containing the 
     /mnt/falkner/Bartul/Data/20250430_165730
     /mnt/falkner/Bartul/Data/20250430_182145
 
+Besides the per-function blocks documented below, *visualizations_settings.json* carries the bookkeeping keys the GUI and ``visualize_data`` read:
+
+* **visualize_booleans** : the on / off switch of every GUI-exposed visualization — ``make_neuronal_tuning_figures_bool``, ``make_behavioral_videos_bool``, ``make_usv_spectrograms_bool``, ``make_qlvm_torus_traversal_video_bool`` and ``make_embedding_thumbnails_bool``. The GUI's Yes / No toggles write them; ``Visualizer.visualize_data`` runs the first three per listed root directory and the two cohort-level ones (the torus-traversal video, the embedding thumbnails) once, after the per-session loop.
+* **visualize_data.root_directories** : the session root directories of the *Root directories* field above (one per row), the default list ``Visualizer`` runs on when no list is passed in.
+* **credentials_directory** : the directory holding ``email_config.ini``, the credentials of the start / completion e-mails.
+* **send_email** : the e-mail notification block — ``visualizations_pc_list`` / ``visualizations_pc_choice`` (the lab PC named in the "PC is busy" / "PC is available again" messages), ``experimenter`` (named in the messages and passed to the behavioral videos as the experimenter id) and ``send_message.receivers`` (the recipients; with the list empty no e-mail is sent). The completion e-mail lists every visualization that failed.
+
+.. code-block:: json
+
+    "visualize_booleans": {
+        "make_neuronal_tuning_figures_bool": false,
+        "make_behavioral_videos_bool": false,
+        "make_usv_spectrograms_bool": false,
+        "make_qlvm_torus_traversal_video_bool": false,
+        "make_embedding_thumbnails_bool": false
+    },
+    "visualize_data": {
+        "root_directories": []
+    },
+    "credentials_directory": "",
+    "send_email": {
+        "visualizations_pc_list": ["A84E Windows", "A84I Linux", "A84I Windows", "165B Audio", "165B Neural"],
+        "visualizations_pc_choice": "A84I Linux",
+        "experimenter": "Bartul",
+        "send_message": {
+            "receivers": []
+        }
+    }
+
 Plot neuronal tuning figures
 ----------------------------
 Once the *Compute neuronal tuning curves* function from the *Analyze* section has completed, you have the ability to plot its results. Output is one combined multi-page document per cluster: a behavioral page per temporal offset and per plot-feature group (``individual.<mouse>`` and ``social``) followed by one vocal page per emitter: the bout raster + pooled peri-onset (ultrasonic vocalization) ``usv_peth`` on top, the ``usv_property_tuning`` continuous-property grid in the middle, and at the bottom the single ``usv_category_tuning`` row of the QLVM category ``qlvm_category`` (rate and occupancy maps over the category bundle's R-1 … R-k regions, ``os_utils.load_qlvm_category_bundle``, and the tuning-vs-shuffle strip), drawn on the property grid's columns so no page carries a lone figure row. The per-category PETH (peri-event time histogram, ``usv_category_peth``) stays in the pickle but is not drawn. 1D ratemaps are drawn as a line spanning the plot, colored by the per-mouse palette (or the social color for social features). The 99% CI (confidence interval) of the shuffled distribution is shown as a shaded band around the line.
@@ -72,9 +101,9 @@ The rendering-side knobs live in the project-wide ``figures`` block of */usv-pla
 * **fig_format** : default output file format. For the per-cluster ratemap PDFs, ``pdf`` produces a single multi-page document; ``png`` / ``jpg`` / ``svg`` write one file per page.
 * **dpi** : default raster resolution applied to every ``fig.savefig`` callsite that goes through ``visualizations.figure_io.save_figure``.
 * **timestamp_in_name** : when ``true``, ``_YYYYMMDD_HHMMSS`` is appended to figure stems by default. Session-bound figures opt out of this with ``timestamp_in_name=false`` since their filenames already embed a session id or unit id.
-* **sequential_cmap** : the sequential (non-negative) colormap used by every heatmap / ratemap / spectrogram / density callsite (one of ``viridis``, ``cividis``, ``plasma``, ``inferno``, ``magma``) — the per-cluster ratemaps and neuronal-tuning densities, the ``make_behavioral_videos`` spectrogram subplot, the ``qlvm_torus_traversal_video`` spectrogram tiles, the USV-summary heatmaps, and the decoded-USV vocal-space atlas in ``plot_manifold_filter_atlas``. This is the colormap the GUI's colormap dropdown edits.
+* **sequential_cmap** : the sequential (non-negative) colormap used by every heatmap / ratemap / spectrogram / density callsite (one of ``viridis``, ``cividis``, ``plasma``, ``inferno``, ``magma``) — the per-cluster ratemaps and neuronal-tuning densities, the ``make_behavioral_videos`` spectrogram subplot, the ``qlvm_torus_traversal_video`` spectrogram tiles, the USV-summary heatmaps, the decoded-USV vocal-space atlas in ``plot_manifold_filter_atlas``, the QLVM figures of ``qlvm_figures`` (maps, fields and spectrograms) and the property colour scales of the ``qlvm_property_sweep_video`` (used from its colormap floor upward). This is the colormap the GUI's colormap dropdown edits.
 * **diverging_cmap** : the diverging (blue-white-red) colormap for **signed** modeling-filter figures — the selection-trajectory difference maps and the ``e(theta).W`` torus affinity fields in the manifold filter atlas (``plot_manifold_filter_atlas``). Any Matplotlib diverging map (``RdBu_r``, ``coolwarm``, ``bwr``, …).
-* **seed** : random seed for figure-side stochastic operations, for reproducibility.
+* **seed** : random seed for figure-side stochastic operations (the embedding-thumbnail sampling, the QLVM figures' draws, folds and spirals), for reproducibility.
 
 .. code-block:: json
 
@@ -99,7 +128,6 @@ maps.
 * **male_colors** / **female_colors** / **unassigned_colors** : per-emitter USV colours (male / female / no-emitter-assigned), used by the USV-timeline, spectrogram-overlay, embedding-scatter and modeling figures. An emitter's sex is always read from the ``Subjects`` block of the session's ``*_metadata.yaml`` (the ``subject_id`` matching the emitter / track name, ``yaml_utils.extract_animal_sexes``), never from the slot its track occupies, so same-sex sessions are coloured correctly; a tracked animal the metadata cannot resolve raises.
 * **session_condition_styles** : per-condition ``color`` and ``label`` of the session types (courtship intact partners, courtship mute female, female-female, male-male, isolated male), used by the per-session squeak-timing heatmap (``plot_session_squeak_time_heatmap``): female-female takes ``female_colors[0]``, male-male ``male_colors[0]``, courtship intact partners the channel-wise mean of the two (``#CD928A``) and courtship mute female the same at 50 % opacity; isolated male is ``#2A9D8F``. Colours may carry an alpha channel (8-digit hex).
 * **social_colors** : the single colour for social / dyadic features (e.g. the social-feature ratemaps and the timescale-audit "social" trace).
-* **manifold_colors** : the two torus output-coordinate colours (manifold-x / manifold-y, index ``0`` / ``1``) for the last-bin manifold-filter bars; deliberately far from the male / female / social colours so a manifold axis never reads as an animal identity.
 * **brain_area_colors** : per-brain-region palette (a seven-bucket map: ``PAG`` / ``MRN`` / ``VTA`` / ``SC`` / ``CENT`` / ``MB`` / ``other``) shared by the behavioral-video overlays and the anatomy / tuning figures.
 * **cell_type_colors** : the mono-grey triad for the per-mouse cell-type stacked bars in the anatomy figures.
 * **coactivity_colors** : the ``group_a`` / ``group_b`` / ``null`` / ``threshold`` colours for the neuronal-coactivity figures (also the defaults the coactivity notebook may override inline).
@@ -378,7 +406,7 @@ Inputs of the video:
 - the QLVM category bundle (above) — the ``density`` background, the ``label_grid`` contours and the category label positions (the peaks / path waypoints). It is defined on the regular map, so the video always renders ``qlvm`` whatever ``shared_resources.qlvm_map`` says.
 - ``<spectrograms_dir>/spectrograms_*.h5`` (newest match) — the consolidated per-session spectrogram/SAM2 store. It supplies BOTH the per-USV latent coords (per-session ``qlvm/<key>/qlvm``, the regular map's ``qlvm1`` / ``qlvm2``) for the nearest-neighbour lookup AND the spectrograms (``spectrogram/<key>/spectrograms``) shown on the right. No latents pickle is read at render time, and coverage spans all sessions in the store.
 
-**Prerequisite** — the consolidated H5 must carry the per-session ``qlvm/<key>/qlvm`` (n, 2) coordinates of the production regular cell the bundle is defined on, recorded in its ``qlvm_models/qlvm`` provenance (``model_id`` in a production store, ``package_root`` / ``cell`` in a v3 store). The video checks the provenance first: a production store (``consolidate-spectrogram-store`` in production mode) passes, while a store of another cell (the v3 archive the same command writes in v3 mode, whose regular map is the v3 phase 6 cell, see :doc:`Process`) places the calls on another torus, where the bundle's regions would mislabel them, and is refused; a store without the coordinates raises a clear error naming the map.
+**Prerequisite** — the consolidated H5 must carry the per-session ``qlvm/<key>/qlvm`` (n, 2) coordinates of the production regular cell the bundle is defined on. The video checks the store's provenance first (``check_store_map_provenance``): the per-map group ``qlvm_models/<map>`` (``qlvm_models/qlvm`` here) records the cell the coordinates come from — as the ``model_id`` attr in a production store, as ``package_root`` / ``cell`` attrs in a v3 store, from which the id is computed — and it must equal the production cell's model id ``spectrograms/qlvm/qlvm`` (``os_utils.qlvm_cell_model_id``, mount-independent). A production store (``consolidate-spectrogram-store`` in production mode) passes, while a store of another cell (the v3 archive the same command writes in v3 mode, whose regular map is the v3 phase 6 cell, see :doc:`Process`) places the calls on another torus, where the bundle's regions would mislabel them, and is refused; a store without the group is refused as well, and a store without the coordinates raises a clear error naming the map.
 
 Because it is cohort-level, the output is not written next to a session; the ``.mp4`` lands in the project-wide ``figures.save_directory`` with a render-timestamped name (``qlvm_torus_traversal_qlvm_<YYYYMMDD_HHMMSS>.mp4``; always the regular map) unless an explicit ``--output-path`` is given:
 
@@ -837,3 +865,88 @@ Every tunable lives in the ``vocal_pose_figures`` block of */usv-playpen/_parame
                 "floor": 0.12
             }
         }
+
+Render QLVM figures
+-------------------
+The ``usv_playpen.visualizations.qlvm_figures`` module renders three **cohort-level** figures of the regular QLVM map and its content-ridge categories, and ``usv_playpen.visualizations.qlvm_property_sweep_video`` the matching property-sweep video. Like the vocal-pose figures they are **notebook-driven** (the ``usv_general_analyses.ipynb`` cells *QLVM property-sweep video* and *QLVM figures*, see :doc:`Notebooks`), not exposed in the GUI, so they have no ``visualize_booleans`` switch; every setting the figures read lives in the ``qlvm_figures`` block of */usv-playpen/_parameter_settings/visualizations_settings.json* (the sweep video's knobs are notebook-local and it reads only ``figures.sequential_cmap``).
+
+**Data.** The USVs are the cohort's: ``make_usv_spectrograms.load_regular_map_cohort_usvs`` pools every non-playback ``*sessions_list.txt`` under ``shared_resources.input_files_directory`` (``read_cohort_session_roots`` — the same cohort definition as the embedding thumbnails and the embedding explorer) through ``build_pooled_embeddings_df`` and the pooled-embeddings cache ``<spectrograms_dir>/embeddings/pooled_embeddings_production.parquet`` (``os_utils.POOLED_EMBEDDINGS_CACHE_NAME``, rebuilt when the summaries change), and keeps the pure USVs (``usv`` true, ``squeak`` false; noise segments dropped) that have a regular-map position (``qlvm1`` / ``qlvm2``) and all six measured properties (``duration``, ``spectral_entropy``, ``freq_bandwidth_hz``, ``mean_freq_hz``, ``loudness_db``, ``mask_number``; ``make_usv_spectrograms.REGULAR_MAP_PROPERTY_COLUMNS``). The category geometry is the QLVM category bundle (``os_utils.load_qlvm_category_bundle``; see *Where the category geometry comes from* above), and ``check_categories_match_bundle`` first verifies that every pooled ``qlvm_category`` is the category the bundle's grid gives the call's position (the pixel rule ``assign-qlvm-categories`` applies): summaries categorized with another bundle, or before their positions were last written, stop the figures with a message naming the sessions. The spectrogram-based panels use a per-session sample (``build_qlvm_figure_sample``: up to ``usvs_per_session`` random USVs of every session, read from the session's own ``audio/spectrograms/<session>_spectrograms.h5`` and masked by the union of the USV's SAM2 masks, kept both as the regular cell's decoder input — time-stretched to 128 × 128 and normalized by the production cell's training contract, exactly what ``infer-qlvm-latents`` embeds — and at native length), written to ``sample_cache_file`` and served again while the drawn USVs are the same.
+
+- ``plot_qlvm_overview`` — the map at a glance: the USV density (``auxiliary_plot_functions.periodic_density``, a periodic Gaussian so the torus seams wrap), the bundle's content-change field with the R-1 … R-k boundaries and numbers, the calls coloured by category with example spectrograms sampled along a spiral around each category's densest point, and the calls coloured by duration, spectral entropy, bandwidth, mean frequency and loudness.
+- ``compute_qlvm_quality_metrics`` / ``plot_qlvm_quality`` — the regular map against PCA and UMAP of the same decoder inputs: the acoustic readout from 2-D position (kNN rank R², whole sessions held out, against shuffled positions), neighborhood preservation (neighbor overlap, false-neighbor severity = 1 − trustworthiness, torn-apart severity = 1 − continuity), distance fidelity (distance correlation of map distances with property distances; for the QLVM the decoder pullback geodesic, the density geodesic and the flat-torus distance of ``modeling.modeling_torus_geodesics``) and the readout per training seed, the sample re-embedded with the cells of ``seed_cell_directories`` (``embed_with_cells``).
+- ``compute_category_boundary_fields`` / ``compute_category_similarity`` / ``plot_category_boundaries`` — what the content-ridge boundaries follow (the density and the content change on the boundary pixels against the same pattern shifted rigidly around the torus; each property's share of the change; the change per property) and whether the categories group similar USVs (the aligned, per-USV-normalized spectrogram similarity between categories, each USV's attachment to its own category, where its closest matches fall, and the categories against the density-watershed clusters of ``watershed_levels_file``).
+- ``render_qlvm_property_sweep_video`` — six panels (SAM-mask count, duration, bandwidth, spectral entropy, mean frequency, loudness) sweeping an equal-count percentile window of each property over the regular map: the window's USV density in the colour of its median value on black, the bundle's boundaries dotted in white, and a colour bar marking the window; a preview quantile renders one still instead.
+
+Being cohort-level, the figures are written to ``figures.save_directory`` as ``qlvm_overview``, ``qlvm_quality`` and ``qlvm_categories`` (through ``figure_io.save_figure``, so in the ``figures`` block's format and DPI, with a ``_YYYYMMDD_HHMMSS`` stamp when ``figures.timestamp_in_name`` is set); the video's ``.mp4`` path is set in the notebook cell:
+
+.. parsed-literal::
+
+    ├── ...  (the ``figures.save_directory`` cohort output folder)
+    │   ├── **qlvm_overview_20250430_145017.png**
+    │   ├── **qlvm_quality_20250430_145017.png**
+    │   ├── **qlvm_categories_20250430_145017.png**
+    │   ├── **qlvm_property_sweep.mp4**
+    │   ...
+
+The ``qlvm_figures`` block (the seed is ``figures.seed`` and the colormap ``figures.sequential_cmap``):
+
+* **n_usvs** : most cohort USVs drawn for the map panels (the overview, and the density and content-change fields of the category figure).
+* **usvs_per_session** : most USVs per session in the spectrogram sample.
+* **sample_cache_file** : ``.npz`` cache of the spectrogram sample (empty: no cache).
+* **seed_cell_directories** : model cells of other trainings of the regular map's recipe (other seeds), with which the quality figure's readout-per-seed panel re-embeds the sample; empty skips the panel. These validation cells are kept outside the production package, so the shipped paths name them explicitly.
+* **watershed_levels_file** : ``.npz`` of the density-watershed partitions of the regular map (its ``final_coarse``, ``k4`` and ``final_fine`` grids: 3, 4 and 6 clusters) that the category figure's partition panel compares the categories with; empty compares the categories alone.
+* **category_colors** : one hex colour per category (R-1 … R-k in order).
+* **overview** : ``n_examples`` spectrograms per category; ``spiral_radius`` (torus units) and ``spiral_turns`` of the example spiral; ``density_bandwidth`` (torus units) of every density field of the figures.
+* **quality** : ``n_pcs`` PCA components (the first two are the PCA map, all of them the UMAP input); ``umap_n_neighbors`` / ``umap_min_dist``; ``readout_neighbors`` / ``readout_folds`` of the acoustic readout; ``neighborhood_k`` / ``n_neighborhood_subsets`` / ``neighborhood_subset_size`` of the neighborhood scores; ``distance_sample_size`` / ``n_distance_samples`` of the distance fidelity; ``pullback_grid`` nodes per axis of the geodesic grids; ``embed_lattice_batch_size`` / ``embed_data_batch_size`` of the seed-cell embedding.
+* **categories** : ``n_shifts`` of the along-boundary test and ``histogram_bins`` of its histogram; ``similarity_downsample`` / ``similarity_max_shift`` of the aligned correlation; ``balanced_per_category`` / ``balanced_reference_per_category`` of the between-category panels; ``closest_matches`` and ``closest_log2_limit`` of the closest-matches panel; ``partition_sample_size`` / ``partition_reference_size`` of the partition comparison; ``average_size`` / ``align_max_shift`` / ``align_iterations`` / ``average_time_ms`` of the aligned category means.
+
+.. code-block:: json
+
+    "qlvm_figures": {
+        "n_usvs": 100000,
+        "usvs_per_session": 200,
+        "sample_cache_file": "/mnt/falkner/Bartul/spectrograms/embeddings/qlvm_figure_sample.npz",
+        "seed_cell_directories": [
+            "/mnt/falkner/Bartul/spectrograms/qlvm/seeds/seed7",
+            "/mnt/falkner/Bartul/spectrograms/qlvm/seeds/seed1234"
+        ],
+        "watershed_levels_file": "/mnt/falkner/Bartul/spectrograms/qlvm/watershed_levels.npz",
+        "category_colors": ["#4E79A7", "#F28E2B", "#59A14F", "#E15759"],
+        "overview": {
+            "n_examples": 10,
+            "spiral_radius": 0.03,
+            "spiral_turns": 3,
+            "density_bandwidth": 0.01
+        },
+        "quality": {
+            "n_pcs": 50,
+            "umap_n_neighbors": 30,
+            "umap_min_dist": 0.1,
+            "readout_neighbors": 20,
+            "readout_folds": 5,
+            "neighborhood_k": 20,
+            "n_neighborhood_subsets": 5,
+            "neighborhood_subset_size": 9000,
+            "distance_sample_size": 3000,
+            "n_distance_samples": 5,
+            "pullback_grid": 48,
+            "embed_lattice_batch_size": 2048,
+            "embed_data_batch_size": 1024
+        },
+        "categories": {
+            "n_shifts": 1000,
+            "histogram_bins": 30,
+            "similarity_downsample": 2,
+            "similarity_max_shift": 4,
+            "balanced_per_category": 2000,
+            "balanced_reference_per_category": 1000,
+            "closest_matches": 100,
+            "closest_log2_limit": 2.0,
+            "partition_sample_size": 8000,
+            "partition_reference_size": 4000,
+            "average_size": 1000,
+            "align_max_shift": 8,
+            "align_iterations": 5,
+            "average_time_ms": 150.0
+        }
+    }

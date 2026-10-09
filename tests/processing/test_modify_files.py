@@ -33,11 +33,13 @@ import pathlib
 import numpy as np
 import pytest
 import soundfile as sf
+from click.testing import CliRunner
 from scipy import signal
 from scipy.io import wavfile
 
 import usv_playpen
 from usv_playpen.os_utils import find_audio_mmap
+from usv_playpen.processing import preprocess_data
 from tests.conftest import write_broadband_audio
 from usv_playpen.processing.modify_files import (
     BROADBAND_BATCH_REPORT_COLUMNS,
@@ -1119,10 +1121,6 @@ def test_add_broadband_low_band_variance_fills_an_older_report(tmp_path, process
 def test_add_broadband_low_band_variance_cli_runs_every_listed_session(tmp_path, mocker):
     """The command collects sessions from --root-directories and --sessions-file (each once) and
     reports each one's status."""
-    from click.testing import CliRunner
-
-    from usv_playpen.processing import preprocess_data
-
     added = mocker.patch("usv_playpen.processing.preprocess_data.add_broadband_low_band_variance",
                          side_effect=lambda root, settings, message_output, force: {'status': 'written', 'reason': 'added'})
     sessions_file = tmp_path / "sessions.txt"

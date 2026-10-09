@@ -11,8 +11,9 @@ replaced that formulation with plain 2-D regression because (a) the
 variance parameters were not conditional on the behavioural history, so
 the "calibration" metrics (coverage at 68 %/95 %, Mahalanobis distance)
 only tested whether the empirical residual distribution happened to match
-a single global ellipse, and (b) UMAP coordinates are not a metric space
-in any principled sense, which makes density-level claims fragile anyway.
+a single global ellipse, and (b) the manifold coordinates of that era (a UMAP
+embedding; the target is now the QLVM torus) were not a metric space in any
+principled sense, which made density-level claims fragile anyway.
 The regression retains everything that carried scientific weight — the
 learned linear map, the temporal smoothness penalty, and the inverse-
 density sample weighting — and drops only the density head.
@@ -1286,8 +1287,10 @@ class ContinuousModelRunner:
     This class serves as the execution engine for the continuous modelling
     phase. It consumes the extracted `(X, Y, w)` data produced by the
     `ContinuousModelingPipeline`, transforms it into binned univariate
-    design matrices, and performs cross-validation using the JAX-accelerated
-    `SmoothBivariateRegression` estimator.
+    design matrices, and performs cross-validation using the
+    geometry-resolved estimator (`manifold_torus_regression.resolve_manifold_regressor_cls`):
+    the JAX-accelerated `SmoothBivariateRegression` on a euclidean manifold,
+    the closed-form `SmoothTorusManifoldRegression` on the torus.
 
     Key responsibilities:
     1. Data transformation: pivots nested session dictionaries into unified,
@@ -1304,12 +1307,13 @@ class ContinuousModelRunner:
        learned weights and intercepts, and per-fold optimizer diagnostics.
 
     Metrics saved per fold (see `SmoothBivariateRegression.evaluate_metrics`
-    for full definitions). Every fit uses the manifold-snapped predictions
-    so the active model and both baselines are evaluated on the same
-    support:
+    for full definitions). On a euclidean manifold every fit uses the
+    manifold-snapped predictions so the active model and both baselines are
+    evaluated on the same support; the torus estimator decodes to a
+    coordinate that is always on the manifold and does not snap:
     - `r2_spatial` — pooled spatial variance explained by the predictions;
-      bounded above by 1. **Selection score on Euclidean
-      manifolds** (higher is better).
+      bounded above by 1. A reported descriptor on both geometries (on the
+      torus it is structurally inverted, see `vm_logscore`).
     - `vm_logscore` — macro (per-region) product-von-Mises log-likelihood of
       the decoded prediction (see `manifold_metric.macro_von_mises_logscore`).
       **Selection score on the TORUS manifold** (higher is better); `nan` on
@@ -1404,7 +1408,7 @@ class ContinuousModelRunner:
         bin_size : int, optional
             The resizing factor for temporal downsampling. A value of 10
             means every 10 frames are averaged into 1 bin. Default is 1,
-            matching `hyperparameters.linear_models.bivariate.bin_resizing_factor`
+            matching `hyperparameters.linear_models.manifold_regression.bin_resizing_factor`
             in the settings file — any downstream caller should normally
             pass the settings value through rather than rely on this
             default.
@@ -1642,9 +1646,10 @@ class ContinuousModelRunner:
         Executes the cross-validation and statistical evaluation loop for a
         single feature.
 
-        This method applies `SmoothBivariateRegression` to the temporal
-        kinematics `X` to predict the manifold position `Y`. Performance is
-        evaluated across three strategies:
+        This method applies the geometry-resolved estimator
+        (`SmoothBivariateRegression` on euclidean, `SmoothTorusManifoldRegression`
+        on the torus) to the temporal kinematics `X` to predict the manifold
+        position `Y`. Performance is evaluated across three strategies:
 
         1. `actual` — fits the true kinematic-to-acoustic mapping.
         2. `null` — within-session target (Y) permutation. For the training
@@ -1665,51 +1670,48 @@ class ContinuousModelRunner:
 
         Selection score
         ---------------
-        The headline score is geometry-dependent: `r2_spatial` (pooled-axis
-        coefficient of determination against the test-fold marginal mean) on
-        Euclidean manifolds, and `dcor_xy` (wrap-aware distance
-        correlation between the decoded prediction and the truth) on the
-        near-uniform periodic TORUS manifold, where the centroid-referenced
-        `r2_spatial` is structurally inverted. Both are directly comparable
-        across features and sex groups; all other metrics are reported as
+        The headline score is geometry-dependent
+        (`manifold_metric.resolve_manifold_selection_score_key`): the von
+        Mises log-score on the near-uniform periodic TORUS manifold — the
+        region-balanced macro `vm_logscore` by default, or the event-weighted
+        `vm_logscore_pooled` twin when `vocal_features.usv_manifold_selection_score`
+        is `'micro'` — and `dcor_xy` (wrap-aware distance correlation between
+        the prediction and the truth) on Euclidean manifolds. The
+        centroid-referenced `r2_spatial` is structurally inverted on the torus
+        and is reported as a descriptor only; all other metrics are
         diagnostics (see the class docstring).
 
         Hyperparameter tuning
         ---------------------
-        On the TORUS manifold the inner-loop CV is **unnecessary and is
-        unconditionally disabled** (`tune_regularization_bool` is forced to
-        `False` regardless of the settings value): `dcor_xy` is
-        scale/regularisation-invariant via the `atan2` decode, so the score
-        is provably flat across the `(lambda_smooth, l2_reg)` grids — tuning
-        only spends compute to land back on the fixed centre. Use the advised
-        fixed defaults `lambda_smooth_fixed = 1.0` and `l2_reg_fixed = 0.01`;
-        these no longer move the selection score, but `lambda_smooth` still
-        shapes the (interpretable) published filter, so it is not a free
-        parameter for visualisation. On Euclidean manifolds the pipeline
-        instead honours
-        `hyperparameters.linear_models.bivariate.tune_regularization_bool`:
+        `hyperparameters.linear_models.manifold_regression.tune_regularization_bool`
+        is honoured on BOTH geometries; the inner-CV objective is not a
+        settings knob but the geometry's own selection score (`vm_logscore`
+        on the torus, `dcor_xy` on euclidean), so it responds to the
+        smoothness penalty:
 
         - `false` (default): every outer fold uses the fixed settings-
-          level `lambda_smooth_fixed` and `l2_reg_fixed` values.
+          level `lambda_smooth_fixed` and `l2_reg_fixed` values (under a
+          B-spline `temporal_basis`, the basis's own `lambda_smooth_fixed`
+          and no L2, see `modeling_bases_functions.resolve_temporal_basis`).
         - `true`: each outer fold runs a joint inner CV over the log-
           spaced `(lambda_smooth, l2_reg)` grids (centred on the fixed
           values, half-width controlled by
-          `tune_regularization_params.{lambda_smooth, l2_reg}_decades_each_side`)
-          and picks the pair that maximises `r2_spatial` (or whatever
-          `inner_cv_scoring_metric` is set to) on held-out inner folds.
-          The `null` strategy is tuned the same way so the permutation
-          test compares like-against-like hyperparameters rather than
-          penalising the null by forcing it to use the actual model's
-          settings.
+          `tune_regularization_params.{lambda_smooth, l2_reg}_decades_each_side`;
+          a B-spline basis uses its own `lambda_smooth` decades and pins the
+          L2 grid to 0) and picks the pair that maximises the selection
+          score on held-out inner folds. The `null` strategy is tuned the
+          same way so the permutation test compares like-against-like
+          hyperparameters rather than penalising the null by forcing it to
+          use the actual model's settings.
 
-          When `inner_cv_use_one_se_rule=True` (default) the tuner then
-          applies the canonical 1-SE rule biased toward filter
+          When `inner_cv_use_one_se_rule` is `true` (shipped `false`) the
+          tuner then applies the canonical 1-SE rule biased toward filter
           interpretability: the returned pair is the smoothest one whose
           mean inner score is within one SE of the performance argmax,
           with `l2_reg` broken as a secondary tiebreak. This prevents
-          the tuner from chasing wiggly filters whose R² gains are
-          statistically indistinguishable from noise. Set the flag to
-          `False` to recover the raw performance-argmax behaviour.
+          the tuner from chasing wiggly filters whose score gains are
+          statistically indistinguishable from noise. Leave it `false`
+          for the raw performance-argmax behaviour.
 
         The winning pair per outer fold is persisted alongside the filter
         weights (see `selected_lambda_smooth`, `selected_l2_reg`,
@@ -2207,7 +2209,6 @@ class ContinuousModelRunner:
                 results[strategy]['folds']['hyperparam_grid_audit'].append(fold_grid_audit)
                 results[strategy]['folds']['hyperparams_tuned'].append(fold_tuned_flag)
 
-        # ------------------------------------------------------------------
         # Held-out test evaluation (honest final score).
         # The reserved held-out sessions were excluded from every fold, from the
         # inner-CV tuning, and from the null baselines above. Here each strategy's
@@ -2219,7 +2220,6 @@ class ContinuousModelRunner:
         # unaffected. Fold `test_indices` and the held-out rows are disjoint by
         # construction (the development/held-out masks are complements), so no
         # held-out row ever informed selection or tuning.
-        # ------------------------------------------------------------------
         _has_holdout = _held_positions.size > 0
         # A dedicated seed base past every fold seed (folds use random_seed + fold_idx).
         held_seed = random_seed + n_splits + 1

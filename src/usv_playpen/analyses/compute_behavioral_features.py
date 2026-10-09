@@ -1760,7 +1760,7 @@ class FeatureZoo:
                                     fontsize=3,
                                     labelpad=1,
                                 )
-                                temp_ymin, temp_ymax = ax.get_ylim()
+                                _, temp_ymax = ax.get_ylim()
                                 # The upper occupancy tick is the rounded axis top
                                 # minus a 10 s headroom; for a sparsely occupied
                                 # feature (temp_ymax < 10) that subtraction goes

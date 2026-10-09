@@ -713,7 +713,7 @@ class TestFindBoutEpochs:
                               **kwargs)
 
     @pytest.mark.parametrize('vocal_output_type', ['categories_rate', 'all_rate'])
-    @pytest.mark.parametrize('category_column', [None, 'qlvm_supercategory'])
+    @pytest.mark.parametrize('category_column', [None, 'absent_label_column'])
     def test_category_predictors_without_labels_raise(self, tmp_path, vocal_output_type, category_column):
         """Per-category predictor traces with no label column (null setting, or a
         column the summary lacks) raise the labels-unavailable error naming
@@ -1423,7 +1423,7 @@ class TestFindVariableLengthBouts:
         assert not any(k.startswith('usv_cat_') for k in signals)
 
 
-    @pytest.mark.parametrize('category_column', [None, 'qlvm_supercategory'])
+    @pytest.mark.parametrize('category_column', [None, 'absent_label_column'])
     def test_category_predictors_without_labels_raise(self, tmp_path, category_column):
         """Bout loading with 'categories_rate' and no label column (null, or
         absent from the summary) raises the labels-unavailable error."""
@@ -1580,7 +1580,7 @@ class TestCategoryLabelRequirement:
         """A set column missing from one summary's columns raises, naming the file."""
 
         with pytest.raises(ValueError, match='absent from s.csv'):
-            require_usv_category_column('qlvm_supercategory', 'x', summary_columns=['qlvm1'], source='s.csv')
+            require_usv_category_column('absent_label_column', 'x', summary_columns=['qlvm1'], source='s.csv')
 
     def test_present_column_passes(self):
         """A set column present in the summary passes silently."""

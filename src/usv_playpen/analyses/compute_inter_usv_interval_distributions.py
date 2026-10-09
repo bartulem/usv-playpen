@@ -2,9 +2,12 @@
 @author: bartulem
 Computes inter-vocalization interval (inter-USV interval) distributions across one or
 more lists of session root directories, and (optionally) sweeps a 1D
-mixture model -- either a Gaussian or a Student-t mixture, selected via
+mixture model -- a log-Gaussian (``gauss``), a Student-t in log space (``t``) or
+an inverse-Gaussian in linear time (``ig``) mixture, selected via
 ``model_class`` -- over a range of component counts on the pooled
-log-inter-USV interval samples.
+inter-USV interval samples of every fitted pool of ``interval_pools``, fits the
+tied-scale Student-t peak model with its step-up peak-count test, and regresses
+each interval on the one before it (serial dependence).
 
 Convention
 Each animal's sex is read from the session metadata

@@ -786,8 +786,9 @@ def build_lr_schedule(peak_lr: float, total_epochs: int, steps_per_epoch: int, w
     shatter the gradients and cause the loss to diverge instantly.
 
     This schedule acts as a safety buffer. It starts the learning rate at 0.0,
-    linearly warms it up to the `peak_lr` over the first 10% of total training steps,
-    and then decays it following a cosine curve down to 0.0 over the remaining 90%.
+    linearly warms it up to the `peak_lr` over the first ``warmup_fraction`` of the
+    total training steps, and then decays it following a cosine curve down to 0.0
+    over the remaining steps.
     This allows the optimizer to gently orient the fresh kernels before making large
     updates, and eventually forces the model to settle smoothly into the local minimum.
 

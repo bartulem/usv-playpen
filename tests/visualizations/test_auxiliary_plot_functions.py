@@ -2,8 +2,9 @@
 @author: bartulem
 Unit tests for visualizations/auxiliary_plot_functions.py — the pure colour
 helpers (`luminance_equalizer`, `create_colormap`) that back every per-mouse
-colormap and luminance-matched palette in the figure suite, and the
-per-category outline helper (`draw_category_outlines`).
+colormap and luminance-matched palette in the figure suite, the per-category
+outline helper (`draw_category_outlines`) and the periodic torus density
+(`periodic_density`) of the QLVM figures and videos.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from usv_playpen.visualizations.auxiliary_plot_functions import (
     luminance_equalizer,
     create_colormap,
     draw_category_outlines,
+    periodic_density,
 )
 
 
@@ -262,3 +264,13 @@ def test_draw_category_outlines_puts_a_shared_border_at_one_position():
     nan_grid[:, :2] = np.nan
     assert len(draw_category_outlines(ax, axis, axis, nan_grid, colors="#000000", linewidths=1.0, zorder=1)) == 1
     plt.close(fig)
+
+
+def test_periodic_density_is_additive_and_wraps():
+    """Each USV adds the same kernel (peak 1 at its own pixel), and a USV on the seam spreads to the opposite edge."""
+    single = periodic_density(np.array([0]), np.array([0]), 40, 0.02)
+    assert single[0, 0] == pytest.approx(1.0)
+    assert single[39, 0] == pytest.approx(single[1, 0])
+    assert single[0, 39] == pytest.approx(single[0, 1])
+    triple = periodic_density(np.array([0, 0, 5]), np.array([0, 0, 7]), 40, 0.02)
+    assert triple.sum() == pytest.approx(3 * single.sum())
