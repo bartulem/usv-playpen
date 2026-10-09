@@ -17,7 +17,8 @@ That covariance was not conditional on `X`, so the "calibration" metrics
 (coverage at 68 %/95 %, Mahalanobis distance) were really measuring whether
 the empirical residual distribution happened to match a single global
 ellipse — a weaker claim than a probabilistic framing suggests. In addition,
-UMAP coordinates are not a metric space in any principled sense (global
+the manifold coordinates of that era (a UMAP embedding; the target is now
+the QLVM torus) were not a metric space in any principled sense (global
 Euclidean distance over-weights embedding seams), and we never relied on
 per-trial `(sigma_x, sigma_y, rho)` scientifically. Stripping the density
 keeps every signal that actually mattered (the learned mean, the temporal

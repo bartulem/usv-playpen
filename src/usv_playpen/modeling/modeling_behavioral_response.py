@@ -49,11 +49,16 @@ question actually asked, in the feature's own units, with an interval.
 Settings
 --------
 Everything is read from the ``behavioral_response`` block of
-``modeling_settings.json``: ``response_mouse_index``, ``response_feature``,
+``modeling_settings.json``: ``response_mouse_index``, ``response_features``,
 ``history_seconds``, ``target_window_seconds``, ``target_bin_seconds``,
-``post_bout_silence_seconds``, ``covariate_summary_seconds``, ``duration_n_bins``
-and ``likelihood``. The anchor RNG is seeded from
-``model_validation.random_seed``.
+``post_bout_silence_seconds``, ``deep_silence_margin_seconds``,
+``covariate_summary_seconds`` and ``duration_n_bins`` at extraction;
+``covariate_transform`` and ``covariate_features`` at fit time, by
+:func:`behavioral_response_contrast`; and the ``matched_divergence`` sub-block by
+:class:`MatchedDivergencePipeline`. The likelihood of each response feature is
+not a setting: it is derived from the feature's support (Gamma with a log link
+for a non-negative feature, Gaussian for a signed one). The anchor RNG is seeded
+from ``model_validation.random_seed``.
 """
 
 from __future__ import annotations
