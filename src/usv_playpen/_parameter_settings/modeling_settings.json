@@ -203,7 +203,7 @@
         "l2_reg_fixed": 0.01,
         "smoothness_derivative_order": 1,
         "temporal_basis": {
-          "type": "none",
+          "type": "bspline",
           "n_splines": 8,
           "spline_order": 3,
           "lambda_smooth_fixed": 1e-5,

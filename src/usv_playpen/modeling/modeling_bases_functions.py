@@ -311,12 +311,12 @@ def resolve_temporal_basis(model_block: dict, history_frames: int) -> tuple[np.n
     settings block (``hyperparameters.linear_models.multinomial_logistic`` or
     ``.manifold_regression``) and returns the hyperparameters the fit actually uses.
 
-    * ``temporal_basis.type == "none"``: the filter has one free weight per frame,
+    * ``temporal_basis.type == "none"`` (the manifold block's shipped default): the filter has one free weight per frame,
       penalised by the block's own L2 and finite-difference smoothness settings
       (``lambda_smooth_fixed``, ``l2_reg_fixed``, ``smoothness_derivative_order``,
       reflective edge rows for order 2). The block is returned unchanged apart from
       ``smoothness_reflective_edges = True``.
-    * ``temporal_basis.type == "bspline"``: every feature's history of
+    * ``temporal_basis.type == "bspline"`` (the multinomial block's shipped default, since its per-frame multi-feature fits fail to converge on most folds at the shipped learning rate while the spline fits converge with the same score): every feature's history of
       ``history_frames`` frames is projected onto ``n_splines`` B-splines of degree
       ``spline_order`` (:func:`gam_bspline_basis`, pyGAM's lag basis, divided by
       ``history_frames`` so each projected column is a weighted average of the
