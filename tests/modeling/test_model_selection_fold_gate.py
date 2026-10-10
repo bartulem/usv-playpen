@@ -29,6 +29,7 @@ import pytest
 with warnings.catch_warnings():
     warnings.simplefilter('ignore', DeprecationWarning)
     from usv_playpen.modeling.model_selection import (
+        _frozen_selection_kappa,
         _fold_paired_margin_bootstrap,
         _SELECTION_EFFECT_FLOOR,
         _SELECTION_N_BOOTSTRAP,
@@ -203,3 +204,22 @@ def test_selection_gate_settings_are_present():
     assert 0.0 < _SELECTION_EFFECT_FLOOR < 1.0
     assert _SELECTION_N_BOOTSTRAP >= 100
     assert 0.0 < _SELECTION_CI_LEVEL < 1.0
+
+
+def test_frozen_kappa_scores_worse_than_marginal_below_the_flat_floor():
+    """With the frozen concentration a fold predicted worse than the marginal scores
+    below the flat-torus density -ln(4 pi^2) (a signed score), whereas a kappa refit on
+    that fold's own residuals is clamped to 0 and returns exactly the floor -- the
+    zero-margin floor that hid half the folds of the torus screen."""
+    rng = np.random.default_rng(0)
+    n = 4000
+    y_true = (np.column_stack([rng.vonmises(0.0, 2.0, n), rng.vonmises(0.0, 2.0, n)]) / (2 * np.pi)) % 1.0
+    kappa = _frozen_selection_kappa(y_true, np.ones(n), metric='torus', period=1.0)
+    assert kappa > 0.5
+    # Predictions half a period away from where the calls are: worse than the marginal.
+    y_bad = (y_true + 0.5 + rng.normal(0.0, 0.05, (n, 2))) % 1.0
+    floor = -np.log(4.0 * np.pi ** 2)
+    self_fit = macro_von_mises_logscore(y_bad, y_true, None, metric='torus', period=1.0)
+    frozen = macro_von_mises_logscore(y_bad, y_true, None, metric='torus', period=1.0, kappa=kappa)
+    assert abs(self_fit - floor) < 1e-9
+    assert frozen < floor - 0.1

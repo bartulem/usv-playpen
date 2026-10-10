@@ -126,7 +126,7 @@ _MULTINOMIAL_HP_OVERRIDES = {
     'focal_loss_gamma': 0.0,
     'tune_regularization_bool': False,
     'temporal_basis': {'type': 'none', 'n_splines': 8, 'spline_order': 3,
-                       'lambda_smooth_fixed': 1.0, 'lambda_smooth_decades_each_side': 0},
+                       'lambda_smooth_fixed': 1.0, 'l2_reg_fixed': 0.0, 'l2_lag_alpha': 0, 'lambda_smooth_decades_each_side': 0},
     'tune_regularization_params': {
         'lambda_smooth_decades_each_side': 0,
         'l2_reg_decades_each_side': 0,
@@ -914,7 +914,7 @@ class TestMultinomialUnivariateRunner:
         )
         block = settings['hyperparameters']['linear_models']['multinomial_logistic']
         block['temporal_basis'] = {'type': 'bspline', 'n_splines': 8, 'spline_order': 3,
-                                   'lambda_smooth_fixed': 0.6, 'lambda_smooth_decades_each_side': 1}
+                                   'lambda_smooth_fixed': 0.6, 'l2_reg_fixed': 0.0, 'l2_lag_alpha': 0, 'lambda_smooth_decades_each_side': 1}
         block['tune_regularization_bool'] = True
         block['bin_resizing_factor'] = 1
 
@@ -1138,7 +1138,7 @@ class TestMultinomialModelSelection:
         )
         settings['hyperparameters']['linear_models']['multinomial_logistic']['temporal_basis'] = {
             'type': 'bspline', 'n_splines': 8, 'spline_order': 3, 'lambda_smooth_fixed': 0.6,
-            'lambda_smooth_decades_each_side': 1}
+            'l2_reg_fixed': 0.0, 'l2_lag_alpha': 0, 'lambda_smooth_decades_each_side': 1}
         settings['hyperparameters']['linear_models']['multinomial_logistic']['bin_resizing_factor'] = 1
         feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
         input_pkl = str(build_multinomial_input_pickle(
@@ -1248,6 +1248,11 @@ class TestMultinomialModelSelection:
         assert final['heldout'] is not None
         assert final['heldout']['n_held_out_sessions'] == 1
         assert final['heldout']['n_held_out_events'] > 0
+        # the no-signal filter band: one permuted-label refit of the final model per
+        # model_params.filter_null_permutations, laid out like `weights`
+        if final['heldout']['model_type'] == 'multinomial_logistic':
+            n_perm = settings['model_params']['filter_null_permutations']
+            assert final['heldout']['null_weights'].shape == (n_perm,) + np.asarray(final['heldout']['weights']).shape
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")

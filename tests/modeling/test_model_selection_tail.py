@@ -1413,11 +1413,13 @@ class TestMultinomialAndManifoldAborts:
 
     def test_manifold_no_significant_features_aborts(self, tmp_path):
         """
-        When no feature's per-fold paired dcor margin is significant (here both
-        ``actual`` and ``null`` predictions are drawn independently of the truth,
-        so every fold margin scatters around 0) the manifold selector's fold-grain
-        screen admits no candidate, prints its abort line, and returns before
-        loading the input data — no step pickle written.
+        When no feature's per-fold paired margin is significant (here ``actual``
+        and ``null`` share predictions drawn independently of the truth, so every
+        fold margin is exactly 0) the manifold selector's fold-grain screen admits
+        no candidate, prints its abort line, and returns -- no step pickle
+        written. On the torus the screen scores with the per-event regions and the
+        frozen kappa, so the input pickle (positions, weights, regions) is read
+        before the screen.
         """
 
         settings, _ = _build_settings(tmp_path, model_engine='sklearn',
@@ -1459,12 +1461,29 @@ class TestMultinomialAndManifoldAborts:
         ranking_pkl = tmp_path / 'univariate_combined.pkl'
         with ranking_pkl.open('wb') as fh:
             pickle.dump(ranking, fh)
+        # The input the torus screen reads: per-session positions (row-aligned with
+        # the folds' sorted-session event order), weights and regions.
+        input_data = {
+            feature: {
+                session_id: {
+                    'X': np.zeros((per_session, 4)),
+                    'Y': truth[event_to_session == session_index],
+                    'w': np.ones(per_session),
+                    'category': rng.integers(1, 3, per_session).astype(float),
+                }
+                for session_index, session_id in enumerate(session_ids)
+            }
+            for feature in ['self.speed', 'other.speed']
+        }
+        input_pkl = tmp_path / 'modeling_input.pkl'
+        with input_pkl.open('wb') as fh:
+            pickle.dump(input_data, fh)
 
         ms_dir = tmp_path / 'model_selection'
         ms_dir.mkdir()
         continuous_vocal_manifold_model_selection(
             univariate_results_path=str(ranking_pkl),
-            input_data_path=str(tmp_path / 'does_not_need_to_exist.pkl'),
+            input_data_path=str(input_pkl),
             settings_path=_settings_json(tmp_path, settings),
             output_directory=str(ms_dir),
             use_top_rank_as_anchor=True,

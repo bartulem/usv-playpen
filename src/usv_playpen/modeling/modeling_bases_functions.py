@@ -311,12 +311,12 @@ def resolve_temporal_basis(model_block: dict, history_frames: int) -> tuple[np.n
     settings block (``hyperparameters.linear_models.multinomial_logistic`` or
     ``.manifold_regression``) and returns the hyperparameters the fit actually uses.
 
-    * ``temporal_basis.type == "none"`` (the manifold block's shipped default): the filter has one free weight per frame,
+    * ``temporal_basis.type == "none"``: the filter has one free weight per frame,
       penalised by the block's own L2 and finite-difference smoothness settings
       (``lambda_smooth_fixed``, ``l2_reg_fixed``, ``smoothness_derivative_order``,
       reflective edge rows for order 2). The block is returned unchanged apart from
       ``smoothness_reflective_edges = True``.
-    * ``temporal_basis.type == "bspline"`` (the multinomial block's shipped default: the same selection and score as the per-frame basis on the same inputs, a fiftieth of the fitting time, and no fold lost to float32 softmax saturation of the raw-lag fit): every feature's history of
+    * ``temporal_basis.type == "bspline"`` (both blocks' shipped default; for the multinomial model the same selection and score as the per-frame basis on the same inputs, a fiftieth of the fitting time, and no fold lost to float32 softmax saturation of the raw-lag fit; for the torus model the per-frame fit cannot recover a planted filter shape, see below): every feature's history of
       ``history_frames`` frames is projected onto ``n_splines`` B-splines of degree
       ``spline_order`` (:func:`gam_bspline_basis`, pyGAM's lag basis, divided by
       ``history_frames`` so each projected column is a weighted average of the
@@ -324,9 +324,19 @@ def resolve_temporal_basis(model_block: dict, history_frames: int) -> tuple[np.n
       the inputs on the features' scale), so the model fits ``n_splines``
       coefficients per feature, and the penalty mirrors pyGAM's:
       the second-order difference penalty on neighbouring spline coefficients with
-      open boundaries and no L2 term, at strength ``temporal_basis.lambda_smooth_fixed``
-      (tuned over ``temporal_basis.lambda_smooth_decades_each_side`` decades when
-      the block's ``tune_regularization_bool`` is set; the L2 grid is pinned to 0).
+      open boundaries, at strength ``temporal_basis.lambda_smooth_fixed`` (tuned over
+      ``temporal_basis.lambda_smooth_decades_each_side`` decades when the block's
+      ``tune_regularization_bool`` is set), plus an L2 penalty on the spline
+      coefficients at ``temporal_basis.l2_reg_fixed`` (fixed; its tuning grid is
+      pinned to that value). With ``temporal_basis.l2_lag_alpha`` > 0 that L2 grows
+      with the spline's distance from onset, ``l2 * (1 + alpha * lag**2)`` (``lag``
+      the spline centre's distance from onset as a fraction of the window), the
+      lag-varying ridge of penalised distributed-lag models: it is implemented by
+      scaling each basis column by ``1 / sqrt(1 + alpha * lag**2)``, so a uniform L2
+      on the coefficients of the scaled basis is exactly the lag-varying L2 on the
+      unscaled ones, and the same scaled basis maps coefficients back to frame
+      weights (the stored ``basis_coefficients`` are those of the scaled basis; the
+      second-difference penalty acts on them too).
       Frame binning cannot be combined with it.
 
       The multinomial default strength, ``lambda_smooth_fixed = 1e-5`` tuned over
@@ -347,6 +357,42 @@ def resolve_temporal_basis(model_block: dict, history_frames: int) -> tuple[np.n
       rise over the last ~0.3 s that the second-difference penalty flattens, and the
       unpenalised fit has no edge wiggle to remove; 1e-8 is the largest strength
       whose loss is negligible (~0.4 % of the feature's margin over the null).
+      The shipped ``n_splines`` (20 for both models) and the torus model's
+      ``l2_reg_fixed`` (1e-4; the multinomial model's is set below) come from a basis
+      experiment on the same cohort (development sessions, 5 session-grouped folds),
+      scoring each configuration by (i) the cross-validated score of the top features,
+      (ii) the filter weight a within-session-PERMUTED (no-signal) fit puts at the
+      window ends, relative to the mid-window median, and (iii) the recovery of
+      PLANTED filters of known shape (bumps at -3 s and -1.5 s, ramps over the last
+      0.3 s and 1 s) generated through the real neck-elevation histories. On the
+      torus, 8 splines with no L2 put 7.3x the mid-window weight at -4 s and 11x at
+      0 s in a no-signal fit (the near-unpenalised end coefficients absorb noise, and
+      the rise follows the window edge when the window is shortened); an L2 of 1e-4
+      cuts that to ~2-3x, recovers every planted shape at r >= 0.90 with 20 splines,
+      and costs ~9 % of the cross-validated gain; the per-frame fit recovers none of
+      them (r -0.18 to 0.36). For the multinomial model 20 splines gave the highest
+      cross-validated macro-AUC and recovered every planted shape at r >= 0.96; a
+      uniform L2 only cost score there, and its L2 is set with the lag-varying ridge
+      below. A residual 2-4x end weight remains in every configuration, so fitted filters are
+      read against their permuted null.
+      The torus model's ``l2_lag_alpha = 10`` comes from
+      a follow-up on the window's far edge: with a uniform L2 the torus filters still
+      rose at -4 s (inter-partner distance 1.04 vs a permuted 95th percentile of 0.67,
+      x1e-3), and neither a clamped basis nor a 1000x stronger smoothness changed it,
+      while the lag-varying ridge at alpha 10 brought the far-edge weight of head pitch
+      and neck elevation to their permuted level (0.22 / 0.26 and 0.15 / 0.17), kept
+      the planted-shape recovery (r >= 0.87, a bump at -3 s included) and the onset
+      rise, and cost ~0 cross-validated gain except for inter-partner distance (-7 %),
+      whose oldest frames carry real information (history cut off by the window).
+      The multinomial model's ``l2_reg_fixed = 1e-5`` with ``l2_lag_alpha = 100`` comes
+      from the same test: its unpenalised spline put a no-signal spike at -4 s
+      (inter-partner distance 15.1 vs an onset peak of 22.1, x1e-3); this setting cuts it
+      to 0.76 vs 8.8, costs at most 4 % of the cross-validated macro-AUC and keeps the
+      planted-shape recovery at r >= 0.89 (a bump at -3 s 0.91). The history window
+      stays at 4 s: with an 8 s re-extraction inter-partner distance and head pitch
+      predict ~40 % better (the residual far-edge weight is history before the window,
+      with no edge rise in the longer window) while neck elevation, which acts in the
+      last second, loses 14 %.
 
     Parameters
     ----------
@@ -393,8 +439,14 @@ def resolve_temporal_basis(model_block: dict, history_frames: int) -> tuple[np.n
     # inputs on the features' z-score scale: a plain sum over the ~history/n_splines frames
     # under each bump inflates them ~that many times, saturating the softmax.
     basis = gam_bspline_basis(int(history_frames), int(temporal_basis["n_splines"]), int(temporal_basis["spline_order"])) / float(history_frames)
+    lag_alpha = float(temporal_basis["l2_lag_alpha"])
+    if lag_alpha > 0.0:
+        frames_axis = np.arange(int(history_frames), dtype=np.float64)
+        centres = (frames_axis[:, None] * basis).sum(axis=0) / basis.sum(axis=0)
+        lag_fraction = np.clip((float(history_frames) - 1.0 - centres) / (float(history_frames) - 1.0), 0.0, 1.0)
+        basis = basis / np.sqrt(1.0 + lag_alpha * lag_fraction ** 2)[None, :]
     effective_block["lambda_smooth_fixed"] = float(temporal_basis["lambda_smooth_fixed"])
-    effective_block["l2_reg_fixed"] = 0.0
+    effective_block["l2_reg_fixed"] = float(temporal_basis["l2_reg_fixed"])
     effective_block["smoothness_derivative_order"] = 2
     effective_block["smoothness_reflective_edges"] = False
     effective_block["tune_regularization_params"]["lambda_smooth_decades_each_side"] = int(temporal_basis["lambda_smooth_decades_each_side"])

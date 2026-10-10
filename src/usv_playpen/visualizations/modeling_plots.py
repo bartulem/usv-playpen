@@ -1678,7 +1678,7 @@ def plot_model_selection_results(
             _out_dir = _fallback.parent if _fallback.is_file() else _fallback
         else:
             _out_dir = pathlib.Path(output_dir)
-        out_traj = _out_dir / _figure_filename(f"model_selection_trajectory")
+        out_traj = _out_dir / _figure_filename("model_selection_trajectory")
         fig_traj.savefig(out_traj, bbox_inches='tight', dpi=_FIGURE_DPI,
                          facecolor=BG_COLOR, transparent=False)
         print(f"Saved trajectory figure to: {out_traj}")
@@ -1828,7 +1828,7 @@ def plot_model_selection_results(
             # at the file path itself.
             _fallback = pathlib.Path(selection_results_path)
             output_dir = _fallback.parent if _fallback.is_file() else _fallback
-        out_name = pathlib.Path(output_dir) / _figure_filename(f"model_selection_final_model_filters")
+        out_name = pathlib.Path(output_dir) / _figure_filename("model_selection_final_model_filters")
         fig_grid.savefig(out_name, bbox_inches='tight', dpi=_FIGURE_DPI, facecolor=BG_COLOR, transparent=False)
         print(f"Saved final model filter grid to: {out_name}")
 
@@ -2837,6 +2837,55 @@ def plot_multinomial_selection_trajectory(
     plt.show()
 
 
+def _final_null_filter_weights(selection_steps: list, features: list, layout: str):
+    """
+    Description
+    -----------
+    The no-signal band of a selection's final filters: the filters of the final
+    feature set refit with the target permuted within each session, stored by the
+    torus and multinomial selections with the held-out block
+    (``heldout['null_weights']``, ``model_params.filter_null_permutations`` refits),
+    reordered to ``features``.
+
+    Parameters
+    ----------
+    selection_steps (list)
+        The steps returned by ``load_selection_results``.
+    features (list)
+        The plotted feature order.
+    layout (str)
+        ``'manifold'`` -- stored as ``(n_permutations, n_features * n_time_bins,
+        n_outputs)``, returned as ``(n_permutations, n_features, n_time_bins,
+        n_outputs)``; ``'multinomial'`` -- stored as ``(n_permutations, n_classes,
+        n_features * n_time_bins)``, returned as ``(n_permutations, n_classes,
+        n_features, n_time_bins)``.
+
+    Returns
+    -------
+    null_weights (np.ndarray | None)
+        The reordered permuted filters, or ``None`` when the artifact stores none
+        (held-out reserve disabled, ``filter_null_permutations = 0``, an artifact
+        that predates the band, or a feature set that does not match).
+    """
+    heldout = next((step['heldout'] for step in reversed(selection_steps)
+                    if 'heldout' in step and step['heldout'] is not None), None)
+    if heldout is None or 'null_weights' not in heldout or heldout['null_weights'] is None:
+        return None
+    stored_features = list(heldout['features'])
+    if sorted(stored_features) != sorted(features):
+        return None
+    null = np.asarray(heldout['null_weights'], dtype=np.float64)
+    n_features = len(stored_features)
+    order = [stored_features.index(feature) for feature in features]
+    if layout == 'manifold':
+        n_perm, n_inputs, n_out = null.shape
+        null = null.reshape(n_perm, n_features, n_inputs // n_features, n_out)
+        return null[:, order]
+    n_perm, n_classes, n_inputs = null.shape
+    null = null.reshape(n_perm, n_classes, n_features, n_inputs // n_features)
+    return null[:, :, order]
+
+
 def plot_multinomial_multivariate_filters(
         selection_results_path: str,
         history_window_sec: float = 4.0,
@@ -2984,6 +3033,11 @@ def plot_multinomial_multivariate_filters(
             mean_weights = np.nanmean(weights, axis=0)
 
         n_feats = len(features)
+        # No-signal band: per class and lag, the 95th percentile of |w| over the
+        # permuted-target refits; cells inside it are faded (weight a fit with no
+        # signal reaches too, e.g. the residual end weight of the lag basis).
+        null_weights = _final_null_filter_weights(selection_steps, list(features), 'multinomial')
+        null_band = (np.percentile(np.abs(null_weights), 95, axis=0) if null_weights is not None else None)
         ncols = 3
         nrows = math.ceil(n_feats / ncols)
 
@@ -3020,6 +3074,12 @@ def plot_multinomial_multivariate_filters(
 
             ax.imshow(feat_slice, aspect='auto', cmap=cmap,
                       vmin=-max_amp, vmax=max_amp, interpolation='nearest')
+            if null_band is not None and null_band.shape[1:] == (n_feats, feat_slice.shape[1]):
+                inside = np.abs(feat_slice) <= null_band[:, i, :]
+                fade = np.zeros(inside.shape + (4,))
+                fade[..., :3] = 1.0
+                fade[..., 3] = np.where(inside, 0.7, 0.0)
+                ax.imshow(fade, aspect='auto', interpolation='nearest')
 
             # X-AXIS
             n_bins = feat_slice.shape[1]
@@ -3046,6 +3106,10 @@ def plot_multinomial_multivariate_filters(
             ax.tick_params(axis='both', which='both', bottom=True, left=True,
                            labelbottom=True, color=TEXT_COLOR, length=5)
 
+        if null_band is not None:
+            fig.text(0.5, 0.995, "Faded cells: weight within the 95th percentile of the same model refit on "
+                     "within-session permuted labels (no-signal band).",
+                     ha='center', va='top', color=TEXT_COLOR, fontsize=11)
         cbar_ax = fig.add_axes([0.92, 0.3, 0.012, 0.4])
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=plt.Normalize(vmin=-1, vmax=1))
         cbar = fig.colorbar(sm, cax=cbar_ax)
@@ -4196,7 +4260,7 @@ def plot_manifold_filter_atlas(
       instant decoded as the signed ``e(theta) . W`` field over the torus. Decks
       overlap so only the ``t = 0`` plane shows in full; earlier slices recede as
       faded slivers. A **single shared** colour scale (``figures.diverging_cmap``,
-      rounded up to a clean 0.1) is honest about relative strength across
+      rounded up to one significant figure) is honest about relative strength across
       features -- weak features render pale. The white category boundaries
       are repeated (depth-faded) on every plane.
     * **Colour scale (top-right).** A small colourbar for the affinity fields,
@@ -4349,14 +4413,19 @@ def plot_manifold_filter_atlas(
 
     # Filmstrip fields: sample the filter at n_time_slices instants (index 0 =
     # -history, last = onset) and decode each to its torus field. The shared
-    # colour scale is fixed by the strongest onset (t = 0) field, rounded up to a
-    # clean 0.1 so the colourbar reads -0.1 / 0 / 0.1.
+    # colour scale is fixed by the strongest onset (t = 0) field, rounded up to
+    # one significant figure (e.g. 0.0023 -> 0.003), so it follows the filters'
+    # actual size instead of washing them out on a fixed grid.
     n_slices = int(n_time_slices)
     slice_idx = np.round(np.linspace(0, n_time_bins - 1, n_slices)).astype(int)
     fields = {f: [_field(raw_weights[i][j]) for j in slice_idx]
               for i, f in enumerate(features)}
     _raw_peak = max(float(np.abs(fields[f][-1]).max()) for f in features)
-    vmax = float(np.ceil(_raw_peak / 0.1) * 0.1) if _raw_peak > 0.0 else 0.1
+    if _raw_peak > 0.0:
+        _decade = 10.0 ** np.floor(np.log10(_raw_peak))
+        vmax = float(np.ceil(_raw_peak / _decade) * _decade)
+    else:
+        vmax = 0.1
 
     # Vocal-space atlas: decode a tiled grid of torus positions into canonical
     # USV spectrograms through the frozen QLVM decoder resolved above.
@@ -4416,7 +4485,12 @@ def plot_manifold_filter_atlas(
     ax_atlas.set_xlabel(manifold_columns[0].upper(), color=TEXT_COLOR)
     ax_atlas.set_ylabel(manifold_columns[1].upper(), color=TEXT_COLOR)
 
-    # (2) Bottom-left: per-feature filter-magnitude |W(t)|.
+    # (2) Bottom-left: per-feature filter-magnitude |W(t)|, each drawn over its
+    # no-signal band: the 95th percentile, per display bin, of the same magnitude
+    # in the permuted-target refits (dashed), so weight a fit with no signal
+    # reaches too (e.g. the residual end weight of the lag basis) is visible as such.
+    _null_steps, _, _ = load_selection_results(selection_results_path)
+    null_weights = _final_null_filter_weights(_null_steps, list(features), 'manifold')
     ax_mag = fig.add_subplot(left_gs[1, 0])
     ax_mag.set_box_aspect(1)
     ax_mag.set_anchor('N')
@@ -4432,6 +4506,15 @@ def plot_manifold_filter_atlas(
             coarse = gaussian_filter1d(coarse, sigma=float(smooth_sigma), mode='nearest')
         ax_mag.plot(t_ctr, coarse, lw=1.3, color=base_colors[i], alpha=alphas[i],
                     label=_pretty(features[i]), zorder=3)
+        if null_weights is not None and null_weights.shape[2] == n_time_bins:
+            null_magnitude = np.sqrt(np.sum(null_weights[:, i] ** 2, axis=-1))     # (n_permutations, n_time_bins)
+            null_coarse = np.array([[perm[edges[k]:edges[k + 1]].mean() for k in range(n_disp)] for perm in null_magnitude])
+            if smooth_sigma and float(smooth_sigma) > 0.0:
+                null_coarse = gaussian_filter1d(null_coarse, sigma=float(smooth_sigma), mode='nearest', axis=1)
+            ax_mag.plot(t_ctr, np.percentile(null_coarse, 95, axis=0), lw=1.0, ls='--',
+                        color=base_colors[i], alpha=alphas[i], zorder=2)
+    if null_weights is not None:
+        ax_mag.plot([], [], lw=1.0, ls='--', color='#7F7F7F', label='permuted target, 95th pct')
     ax_mag.set_xlabel("time prior to USV onset (s)", color=TEXT_COLOR)
     ax_mag.set_ylabel("filter magnitude |W(t)|", color=TEXT_COLOR)
     for _s in ('top', 'right'):
@@ -4511,7 +4594,7 @@ def plot_manifold_filter_atlas(
     cax = fig.add_axes([_film_pos.x1 + 0.012, _top_fig - _cb_h, _cb_w, _cb_h])
     cb = fig.colorbar(im_ref, cax=cax)
     cb.set_ticks([-vmax, 0.0, vmax])
-    cb.set_ticklabels([f"{-vmax:.1f}", "0", f"{vmax:.1f}"])
+    cb.set_ticklabels([f"{-vmax:.1g}", "0", f"{vmax:.1g}"])
     cb.ax.tick_params(length=0, labelsize=7, labelcolor=TEXT_COLOR)
     cb.set_label("vocal region affinity (per SD)", fontsize=8, color=TEXT_COLOR)
     cb.outline.set_linewidth(0.5)
@@ -7864,7 +7947,7 @@ def _draw_behavioral_response_key(fig, grid, payload: dict, features: list,
     for level, start, stop, colour, label in (
             (2, -history, 0.0, '#BDC3C7', f'long history, {history:g} s'),
             (1, -short, 0.0, DYADIC_COLOR, f'short history, {short:g} s'),
-            (0, 0.0, window, female_color, f'response $y_i$, no further bout')):
+            (0, 0.0, window, female_color, 'response $y_i$, no further bout')):
         schematic.barh(level, stop - start, left=start, height=0.62, color=colour,
                        alpha=0.55, linewidth=0)
         schematic.text(stop + 0.10, level, label, fontsize=6.5, va='center', ha='left')
