@@ -1692,13 +1692,13 @@ class ContinuousModelRunner:
         - `false` (default): every outer fold uses the fixed settings-
           level `lambda_smooth_fixed` and `l2_reg_fixed` values (under a
           B-spline `temporal_basis`, the basis's own `lambda_smooth_fixed`
-          and no L2, see `modeling_bases_functions.resolve_temporal_basis`).
+          and `l2_reg_fixed`, see `modeling_bases_functions.resolve_temporal_basis`).
         - `true`: each outer fold runs a joint inner CV over the log-
           spaced `(lambda_smooth, l2_reg)` grids (centred on the fixed
           values, half-width controlled by
           `tune_regularization_params.{lambda_smooth, l2_reg}_decades_each_side`;
           a B-spline basis uses its own `lambda_smooth` decades and pins the
-          L2 grid to 0) and picks the pair that maximises the selection
+          L2 grid to its `l2_reg_fixed`) and picks the pair that maximises the selection
           score on held-out inner folds. The `null` strategy is tuned the
           same way so the permutation test compares like-against-like
           hyperparameters rather than penalising the null by forcing it to

@@ -19,6 +19,7 @@
     "selection_effect_floor": 0.1,
     "selection_n_bootstrap": 1000,
     "selection_ci_level": 0.99,
+    "filter_null_permutations": 20,
     "usv_bout_time": 2,
     "usv_per_bout_floor": 2,
     "onset_target_category": null,
@@ -173,10 +174,12 @@
         "l2_reg_fixed": 0.01,
         "smoothness_derivative_order": 1,
         "temporal_basis": {
-          "type": "none",
-          "n_splines": 8,
+          "type": "bspline",
+          "n_splines": 20,
           "spline_order": 3,
           "lambda_smooth_fixed": 1e-8,
+          "l2_reg_fixed": 1e-4,
+          "l2_lag_alpha": 10,
           "lambda_smooth_decades_each_side": 2
         },
         "huber_delta": 1.0,
@@ -204,9 +207,11 @@
         "smoothness_derivative_order": 1,
         "temporal_basis": {
           "type": "bspline",
-          "n_splines": 8,
+          "n_splines": 20,
           "spline_order": 3,
           "lambda_smooth_fixed": 1e-5,
+          "l2_reg_fixed": 1e-5,
+          "l2_lag_alpha": 100,
           "lambda_smooth_decades_each_side": 2
         },
         "learning_rate": 0.005,

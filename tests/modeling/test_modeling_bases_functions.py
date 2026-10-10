@@ -201,7 +201,7 @@ def _jax_block(basis_type: str, bin_resizing_factor: int = 1) -> dict:
             "smoothness_derivative_order": 1, "tune_regularization_bool": False,
             "tune_regularization_params": {"lambda_smooth_decades_each_side": 0, "l2_reg_decades_each_side": 4},
             "temporal_basis": {"type": basis_type, "n_splines": 8, "spline_order": 3,
-                               "lambda_smooth_fixed": 0.6, "lambda_smooth_decades_each_side": 3}}
+                               "lambda_smooth_fixed": 0.6, "l2_reg_fixed": 0.0, "l2_lag_alpha": 0, "lambda_smooth_decades_each_side": 3}}
 
 
 class TestGamBsplineBasis:
@@ -290,3 +290,29 @@ class TestBasisProjection:
             project_history_onto_basis(np.zeros((5, 29)), basis)
         with pytest.raises(ValueError, match="coefficients"):
             basis_coefficients_to_frames(np.zeros((3, 15)), basis, n_features=2, axis=1)
+
+
+class TestLagVaryingRidge:
+
+    def test_scaled_basis_is_the_lag_varying_ridge(self):
+        """With ``l2_lag_alpha`` > 0 the basis columns are scaled by 1/sqrt(1 + alpha * lag**2), so a uniform
+        ridge on the scaled basis equals a ridge whose weight grows with each spline's distance from onset,
+        on the unscaled basis -- the same frame-axis filter; the newest spline is (almost) unscaled and
+        the oldest shrinks the most."""
+
+        rng = np.random.default_rng(0)
+        frames, alpha, l2 = 120, 10.0, 0.05
+        block = _jax_block("bspline")
+        block["temporal_basis"]["l2_lag_alpha"] = alpha
+        scaled, _ = resolve_temporal_basis(block, frames)
+        block["temporal_basis"]["l2_lag_alpha"] = 0
+        plain, _ = resolve_temporal_basis(block, frames)
+        scale = scaled.sum(axis=0) / plain.sum(axis=0)
+        assert scale[-1] > 0.99 and scale[0] < scale[-1] and np.all(np.diff(scale) >= -1e-12)
+        X = rng.normal(size=(400, frames)).cumsum(axis=1) / 10.0
+        y = X[:, -10:].mean(axis=1) + rng.normal(scale=0.5, size=400)
+        Xs, Xp = X @ scaled, X @ plain
+        c_scaled = np.linalg.solve(Xs.T @ Xs + l2 * np.eye(Xs.shape[1]), Xs.T @ y)
+        ridge_weights = l2 / scale ** 2
+        c_plain = np.linalg.solve(Xp.T @ Xp + np.diag(ridge_weights), Xp.T @ y)
+        np.testing.assert_allclose(scaled @ c_scaled, plain @ c_plain, rtol=1e-8, atol=1e-10)

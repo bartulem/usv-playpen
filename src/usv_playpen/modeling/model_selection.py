@@ -193,6 +193,34 @@ def _make_step_wrapper(input_md: dict, univariate_md: dict, run_md: dict):
     return wrap
 
 
+def _within_group_permutation(groups: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """
+    Description
+    -----------
+    Index permutation that shuffles rows only within their own group (session):
+    applied to a target it keeps every session's target distribution and destroys
+    the trial-level pairing with the inputs -- the within-session null the
+    selections test against, here used for the final model's no-signal filter band.
+
+    Parameters
+    ----------
+    groups (np.ndarray)
+        ``(n,)`` group (session) label of every row.
+    rng (np.random.Generator)
+        Random generator.
+
+    Returns
+    -------
+    permutation (np.ndarray)
+        ``(n,)`` row indices; ``target[permutation]`` is the permuted target.
+    """
+    permutation = np.arange(groups.shape[0])
+    for group in np.unique(groups):
+        rows = np.where(groups == group)[0]
+        permutation[rows] = rows[rng.permutation(rows.size)]
+    return permutation
+
+
 def _frozen_selection_kappa(y_dev: np.ndarray, w_dev: np.ndarray, *, metric: str, period: float) -> float:
     """
     Description
@@ -4703,6 +4731,34 @@ def multinomial_vocal_category_model_selection(
                 held_fit_time = float(held_model.fit_time_)
                 p_train_labels = y_dev_fit
                 model_type = 'multinomial_logistic'
+                # No-signal filter band: the same model and hyperparameters refit on
+                # the development rows with the category labels permuted within each
+                # session; the filter figures draw the final filters against it.
+                groups_dev_fit = (groups_global[_dev_positions][dev_train_idx] if balance_train
+                                  else groups_global[_dev_positions])
+                n_null_permutations = int(settings['model_params']['filter_null_permutations'])
+                null_rng = np.random.default_rng(held_seed_mn)
+                held_null_weights = []
+                for _ in range(n_null_permutations):
+                    perm = _within_group_permutation(groups_dev_fit, null_rng)
+                    null_model = SmoothMultinomialLogisticRegression(
+                        n_features=n_final_feats, n_time_bins=n_time_bins,
+                        lambda_smooth=final_lambda_smooth,
+                        l2_reg=final_l2_reg,
+                        smoothness_derivative_order=smoothness_order,
+                        smoothness_reflective_edges=reflective_edges,
+                        focal_gamma=model_focal_gamma,
+                        uniform_class_weights=model_uniform_weights,
+                        learning_rate=hp['learning_rate'],
+                        max_iter=hp['max_iter'],
+                        tol=hp['tol'],
+                        random_state=held_seed_mn,
+                        _use_lax_loop=use_lax_loop_mn,
+                    )
+                    null_model.fit(X_dev_fit, y_dev_fit[perm])
+                    held_null_weights.append(basis_coefficients_to_frames(null_model.coef_, temporal_basis, n_features=n_final_feats, axis=1)
+                                             if temporal_basis is not None else np.asarray(null_model.coef_))
+                held_null_weights = np.stack(held_null_weights).astype(np.float32) if held_null_weights else None
             else:
                 # No feature accepted: the empirical development prior is the model.
                 unique_classes, counts = np.unique(y_dev, return_counts=True)
@@ -4717,6 +4773,7 @@ def multinomial_vocal_category_model_selection(
                 held_n_iter = 0
                 held_converged = True
                 held_fit_time = 0.0
+                held_null_weights = None
                 final_lambda_smooth = float('nan')
                 final_l2_reg = float('nan')
                 final_grid_audit = {
@@ -4760,6 +4817,7 @@ def multinomial_vocal_category_model_selection(
                     'brier': h_brier, 'ece': h_ece, 'mcc': h_mcc,
                 },
                 'weights': held_weights,
+                'null_weights': held_null_weights,
                 'basis_coefficients': held_basis_coefficients,
                 'intercepts': held_intercepts,
                 'y_true': y_held,
@@ -4890,7 +4948,7 @@ def continuous_vocal_manifold_model_selection(
     forward-selection trial) runs its own joint inner CV over the log-spaced
     `(lambda_smooth, l2_reg)` grids before the outer fit; under a B-spline
     `temporal_basis` the grid is the basis's own `lambda_smooth` decades with
-    the L2 grid pinned to 0 (`resolve_temporal_basis`). The l2 grid is
+    the L2 grid pinned to the basis's `l2_reg_fixed` (`resolve_temporal_basis`). The l2 grid is
     rescaled by `1 / sqrt(n_trial_features)` so the search window tracks
     the same effective regularisation strength as the fixed fallback
     (which is rescaled the same way). The winning pair, the full grid of
@@ -6367,6 +6425,33 @@ def continuous_vocal_manifold_model_selection(
                     'n_held_out_sessions': len(_held_out_session_ids),
                     'n_held_out_events': int(_held_positions.size),
                 }
+                # No-signal filter band: the same model, hyperparameters and
+                # reweighting refit on the development sessions with the positions
+                # (with their weights and regions) permuted within each session; the
+                # filter figures draw the final filters against it.
+                n_null_permutations = int(settings['model_params']['filter_null_permutations'])
+                null_rng = np.random.default_rng(held_seed)
+                null_weights = []
+                for _ in range(n_null_permutations):
+                    perm = _within_group_permutation(groups_dev, null_rng)
+                    w_perm = w_dev[perm]
+                    w_perm_fit = (w_perm * inverse_region_frequency_weights(region_dev[perm])
+                                  if manifold_metric == 'torus' else w_perm)
+                    null_model = manifold_regressor_cls(
+                        n_features=n_feats_final, n_time_bins=n_time_bins,
+                        lambda_smooth=final_lambda_smooth, l2_reg=final_l2_reg,
+                        smoothness_derivative_order=smoothness_order,
+                        smoothness_reflective_edges=reflective_edges,
+                        huber_delta=hp['huber_delta'],
+                        learning_rate=hp['learning_rate'], max_iter=hp['max_iter'],
+                        tol=hp['tol'], random_state=held_seed,
+                        _use_lax_loop=use_lax_loop,
+                        metric=manifold_metric, period=manifold_period,
+                    )
+                    null_model.fit(X_dev, Y_dev[perm], sample_weight=w_perm_fit)
+                    null_weights.append(basis_coefficients_to_frames(null_model.coef_, temporal_basis, n_features=n_feats_final, axis=0)
+                                        if temporal_basis is not None else np.asarray(null_model.coef_))
+                heldout_result['null_weights'] = (np.stack(null_weights).astype(np.float32) if null_weights else None)
             else:
                 # No feature survived selection: the honest held-out model is the
                 # empirical-density draw (the Step-0 baseline) from development Y,

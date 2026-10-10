@@ -170,7 +170,10 @@ def _build_manifold_settings(tmp_path: Path, **overrides):
     settings['model_validation']['spatial_cluster_num'] = SPATIAL_CLUSTER_NUM
 
     hp = settings['hyperparameters']['linear_models']['manifold_regression']
-    hp['bin_resizing_factor'] = 10        # 30 -> 3 temporal predictors
+    # The per-frame representation with frame binning (30 -> 3 temporal predictors) keeps
+    # these fits tiny; the B-spline default cannot be binned and has its own tests below.
+    hp['temporal_basis']['type'] = 'none'
+    hp['bin_resizing_factor'] = 10
     hp['max_iter'] = 60
     hp['tune_regularization_bool'] = False
     hp['use_lax_loop'] = False
@@ -530,7 +533,7 @@ class TestContinuousModelRunner:
         )
         settings['hyperparameters']['linear_models']['manifold_regression']['temporal_basis'] = {
             'type': 'bspline', 'n_splines': 8, 'spline_order': 3, 'lambda_smooth_fixed': 0.6,
-            'lambda_smooth_decades_each_side': 1}
+            'l2_reg_fixed': 0.0, 'l2_lag_alpha': 0, 'lambda_smooth_decades_each_side': 1}
         settings['hyperparameters']['linear_models']['manifold_regression']['bin_resizing_factor'] = 1
         pipeline = ContinuousModelingPipeline(modeling_settings_dict=settings)
         pipeline.extract_and_save_continuous_data()
@@ -859,6 +862,13 @@ class TestManifoldModelSelection:
         knobs = final_step['_run_metadata']['extra_knobs']
         assert knobs['n_held_out_sessions'] > 0
         assert len(knobs['held_out_session_ids']) == knobs['n_held_out_sessions']
+        # the no-signal filter band: one permuted-target refit of the final model per
+        # model_params.filter_null_permutations, on the frame axis like `weights`
+        heldout = final_step['heldout']
+        if heldout is not None and heldout['model_type'] == 'manifold_regressor':
+            n_perm = settings['model_params']['filter_null_permutations']
+            assert heldout['null_weights'].shape == (n_perm,) + np.asarray(heldout['weights']).shape
+            assert np.isfinite(heldout['null_weights']).all()
         # the step-file prefix carries the input pickle's map-prefix tag verbatim
         assert all(path.name.startswith('model_selection_continuous_manifold_qlvm_duration_') for path in step_pkls)
 
@@ -976,7 +986,7 @@ class TestManifoldModelSelection:
         block = settings['hyperparameters']['linear_models']['manifold_regression']
         block['bin_resizing_factor'] = 1
         block['temporal_basis'] = {'type': 'bspline', 'n_splines': 8, 'spline_order': 3,
-                                   'lambda_smooth_fixed': 0.6, 'lambda_smooth_decades_each_side': 1}
+                                   'lambda_smooth_fixed': 0.6, 'l2_reg_fixed': 0.0, 'l2_lag_alpha': 0, 'lambda_smooth_decades_each_side': 1}
         feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
         session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
         input_md = {
