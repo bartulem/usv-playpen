@@ -208,7 +208,7 @@ cross-validation and held-out-test settings live in their own
         "usv_manifold_period": 1.0,
         "usv_manifold_min_region_events": 20,
         "usv_manifold_selection_score": "macro",
-        "freeze_selection_kappa": false,
+        "freeze_selection_kappa": true,
         "usv_manifold_geodesic_metrics": {
             "compute": true,
             "grid_n_per_dim": 40,
@@ -229,7 +229,7 @@ cross-validation and held-out-test settings live in their own
 * **usv_manifold_period** — the wrap period for the ``'torus'`` metric.
 * **usv_manifold_min_region_events** — the minimum number of labelled events an acoustic region (a QLVM category) must contain to enter the **macro** (region-balanced) von Mises average and the region-weighted MAE; sparser regions are dropped from those balanced statistics so a single under-sampled corner cannot dominate them (default ``20``). Ignored on euclidean and when no region labels are present. Without region labels (``usv_category_column_name`` ``null``, or a pickle extracted without them) the torus ``'macro'`` score falls back to the pooled score and the equal-region fit reweighting to uniform weights; the univariate and selection runs print a ``WARNING`` saying so, rather than substituting silently.
 * **usv_manifold_selection_score** — on the ``'torus'`` metric, which von Mises log-score the forward selection ranks on: ``'macro'`` (default) uses the region-balanced ``vm_logscore``, ``'micro'`` uses the event-weighted ``vm_logscore_pooled`` twin. Both are always logged per candidate, so this only changes which column drives the greedy ranking and the acceptance gate — the candidate pool, the region-reweighted fit, and every other reported metric are identical — making a macro-vs-micro selection comparison a one-key flip. Ignored on euclidean (which always ranks on ``dcor_xy``); an absent key resolves to ``'macro'``.
-* **freeze_selection_kappa** — on a torus manifold run, ``true`` fits the von Mises concentration ``kappa`` once on the development set and reuses it for every score (baseline, fitted candidates, held-out, and the acceptance-gate bootstrap), so every margin sits on one dispersion scale; ``false`` (shipped) refits ``kappa`` per scored prediction set (see the *Frozen von Mises concentration* note below). Ignored on euclidean.
+* **freeze_selection_kappa** — on a torus manifold run, ``true`` fits the von Mises concentration ``kappa`` once on the development set and reuses it for every score (the univariate screen, baseline, fitted candidates, held-out, and the acceptance-gate bootstrap), so every margin sits on one dispersion scale and a fold predicted worse than the marginal scores below the flat-torus density instead of being clamped to it; ``true`` is shipped. ``false`` refits ``kappa`` per scored prediction set (see the *Frozen von Mises concentration* note below). Ignored on euclidean.
 * **usv_manifold_geodesic_metrics** — the analysis-only *reference-map* geometry for the two torus **geodesic** prediction-error columns (``density_geodesic_mae``, ``pullback_geodesic_mae``), reported per fold alongside the flat-torus MAE on the ``'torus'`` metric (both ``NaN`` on euclidean). ``compute`` toggles the whole block; ``grid_n_per_dim`` sets the resolution of the regular torus grid the all-pairs geodesic distance matrices are precomputed on once (``40`` → a 40×40 node lattice, so per-event errors are cheap snap-to-grid look-ups); ``graph_k`` is the number of wrap-aware nearest neighbours per node in the k-NN graph the shortest paths run over; ``density_exponent`` is the inverse-aggregate-posterior-density exponent ``α`` weighting the density-ratio geodesic (``0`` recovers the flat graph metric, larger values push paths harder through dense regions); ``pullback_metric`` switches the decoder-Jacobian pullback geodesic on: the frozen decoder whose Jacobian defines the pullback metric ``G = JᵀJ`` is not a setting but the production cell of the map the manifold coordinates come from, ``os_utils.qlvm_map_cell_directory(<map>)`` with ``<map>`` the map prefix of the input pickle's recorded ``usv_manifold_column_names`` (``_input_metadata.analysis_specific``; a pickle without that record falls back to the current setting): ``qlvm1`` / ``qlvm2`` -> the regular cell ``.../spectrograms/qlvm/qlvm``, ``qlvm_duration`` / ``qlvm_entropy`` / ``qlvm_bandwidth`` / ``qlvm_loudness`` -> their cells ``.../spectrograms/qlvm/<map>`` (``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``), ``qlvm_squeak1`` / ``qlvm_squeak2`` -> the squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under ``QLVM_SQUEAK_PACKAGE_ROOT``; each is read without torch from its ``checkpoint.tar``. A pullback metric of one map's coordinates under another map's decoder would measure distances on a torus the coordinates do not live on. Manifold columns that name no QLVM map with ``pullback_metric`` ``true`` are a settings error. The cell comes from the code constants so the CLI / GUI re-keying of experimenter folders in the settings can never point it at another folder; a ``decoder_model_cell_directory`` (or the retired ``decoder_weights_npz_path``) key left in older settings is ignored. ``pullback_condition_quantile`` (in ``[0, 1]``, default ``0.5``) fixes the conditioning value of a conditional map's decoder, which decodes a torus position *and* a per-call conditioning value ``c`` (duration, spectral entropy, bandwidth or loudness): every grid node is decoded at the same ``c``, that quantile of the cell's training corpus's conditioning distribution (read from the cell's ``condition_bins.npz`` bin edges and per-bin training counts, linear inside a bin, then decoded by the cell's own ``condition.decode`` rule: clamped for ``'exact'``, snapped to the decode grid for ``'grid'``; ``processing.qlvm_latents.condition_quantile_value``), so ``G`` is one Riemannian metric of the torus. ``0.5`` measures distances as decoded-spectrogram change for the corpus median call (production medians: duration ``c`` 0.244, entropy 0.595, bandwidth 0.245, loudness 0.545); the value depends only on the cell, not on which calls a run holds. The regular and squeak decoders take no conditioning value and ignore it. ``pullback_metric`` ``false`` (or an unreadable decoder) degrades ``pullback_geodesic_mae`` to ``NaN`` and the run proceeds.
 
 **diagnostics** — the predictor-collinearity and predictor-timescale audits (rendered in :ref:`Predictor diagnostics <modeling-diagnostics>`).
@@ -461,14 +461,25 @@ log-score ``vm_logscore`` on the torus, ``dcor_xy`` on euclidean).
 
 .. note::
 
-   **Frozen von Mises concentration.** On a torus manifold run, set
-   ``vocal_features.freeze_selection_kappa = true`` to fit the von Mises
-   concentration ``kappa`` once on the development set and reuse it for every
-   score (baseline, fitted candidates, held-out, and the acceptance-gate
-   bootstrap). The default (``false``) self-refits ``kappa`` per call, which floors
-   the score on weak folds (the ``kappa → 0`` clamp) and corrupts the gate's paired
-   per-fold margin; a single frozen ``kappa`` keeps every score on one dispersion
-   scale so the margins are a proper scoring rule.
+   **Frozen von Mises concentration.** On a torus manifold run
+   ``vocal_features.freeze_selection_kappa = true`` (shipped) fits the von Mises
+   concentration ``kappa`` once on the development set (the marginal dispersion of
+   the call positions around their circular mean) and reuses it for every score
+   (the univariate screen, baseline, fitted candidates, held-out, and the
+   acceptance-gate bootstrap). ``false`` self-refits ``kappa`` per call, which
+   floors the score on weak folds (the ``kappa → 0`` clamp) and corrupts the
+   paired per-fold margin; a single frozen ``kappa`` keeps every score on one
+   dispersion scale so the margins are a proper scoring rule. On the intact-partner
+   male cohort the self-refit put 5 of 10 session folds at the floor for every
+   feature and its null, so the univariate screen passed only 2 of 23 features.
+
+   **The torus screen uses the selection score.** The univariate screen scores
+   every fold with the same rule as the greedy gate: the selection score's own
+   averaging (``vm_logscore``, the region-balanced macro score, by default; it
+   matches the equal-region reweighting of the fit, whose centre is the
+   equal-weight average of the regions rather than the centre of the calls) and
+   the frozen ``kappa``. The torus input pickle is therefore loaded before the
+   screen.
 
 **hyperparameters.classical** — the ``'pygam'`` / ``'sklearn'`` engine models of
 the onset, binomial-category and bout-parameter pipelines (and their model

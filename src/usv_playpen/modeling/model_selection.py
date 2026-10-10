@@ -193,6 +193,45 @@ def _make_step_wrapper(input_md: dict, univariate_md: dict, run_md: dict):
     return wrap
 
 
+def _frozen_selection_kappa(y_dev: np.ndarray, w_dev: np.ndarray, *, metric: str, period: float) -> float:
+    """
+    Description
+    -----------
+    The torus selection's frozen von Mises concentration: fit ONCE on the
+    development events from the residuals of an intercept-only (circular-mean)
+    predictor -- the marginal dispersion of the call positions -- and unweighted,
+    matching the unweighted per-point von Mises scoring. Every torus score of a
+    selection run (the univariate screen, the baseline, the candidates, the
+    acceptance gate and the held-out refit) reuses it when
+    ``vocal_features.freeze_selection_kappa`` is on, so a fold whose predictions
+    are worse than the marginal scores BELOW the flat-torus density instead of
+    being clamped to it (a self-refit kappa on that fold's own residuals would be
+    0) and every score is one comparable, signed rule.
+
+    Parameters
+    ----------
+    y_dev (np.ndarray)
+        ``(n, 2)`` torus positions of the development events.
+    w_dev (np.ndarray)
+        ``(n,)`` event weights, used only to place the circular mean.
+    metric (str)
+        Manifold geometry (``'torus'``).
+    period (float)
+        Per-axis wrap period.
+
+    Returns
+    -------
+    kappa (float)
+        The frozen concentration.
+    """
+    y_dev = np.asarray(y_dev, dtype=np.float64)
+    w_dev = np.asarray(w_dev, dtype=np.float64)
+    w_cov = w_dev / (np.sum(w_dev) + 1e-12)
+    mu_dev = circular_mean(y_dev, metric=metric, period=period, weights=w_cov)
+    r_dev = signed_diff(y_dev, mu_dev[None, :], metric=metric, period=period) * (2.0 * np.pi / period)
+    return _fit_von_mises_kappa(r_dev.ravel())
+
+
 def _fold_paired_margin_bootstrap(
         actual_folds: dict,
         null_folds: dict,
@@ -261,9 +300,8 @@ def _fold_paired_margin_bootstrap(
         Per-event acoustic-region (QLVM category) label, aligned to the same
         full-event index space as each fold's ``test_indices``. Required for the
         torus macro von Mises score; pass ``None`` to score with the pooled
-        (label-free) von Mises log-likelihood (the coarse pre-screen path, which
-        runs before the input pickle -- hence the region map -- is loaded).
-        Ignored on euclidean.
+        (label-free) von Mises log-likelihood (a run whose selection score is the
+        pooled ``vm_logscore_pooled``). Ignored on euclidean.
     min_region_events (int)
         Minimum events a region must contribute within a fold to enter that
         fold's torus macro average. Ignored on euclidean and when
@@ -4816,10 +4854,13 @@ def continuous_vocal_manifold_model_selection(
        at `q = p_val`, and a surviving feature must also clear a relative
        effect floor (`selection_effect_floor` x the top surviving margin).
        The permutation removes the session-level confound while leaving
-       the trial-level dependence to test. The screen runs before the
-       input pickle is loaded, so on the torus it uses the pooled
-       (label-free) von Mises score; the greedy gate below uses the
-       per-region macro score once the region labels are available.
+       the trial-level dependence to test. On the torus the screen scores
+       every fold with the same rule as the greedy gate -- the selection
+       score's own averaging (the region-balanced macro score by default,
+       matching the equal-region fit reweighting) and, with
+       `freeze_selection_kappa`, the one frozen concentration -- so the
+       input pickle is loaded before the screen there (once; the binning
+       reuses it); on euclidean the screen still runs before any load.
     3. Spatial stratification. Folds come from
        `get_stratified_spatial_splits_stable`, which uses deterministic
        K-Means geographic clustering so rare acoustic satellites are
@@ -4928,11 +4969,11 @@ def continuous_vocal_manifold_model_selection(
     _input_pre_md_from_univ = univariate_data.pop('_input_metadata', None)
     univariate_data.pop('_consolidation_metadata', None)
 
-    # Per-region event floor for the torus macro von Mises score (settings read
-    # only -- no input pickle is touched here, so the screen below can still abort
-    # or raise without ever loading `input_data_path`, the contract two abort
-    # tests rely on). The raw input pickle (and the per-event `region_global` it
-    # provides) is loaded AFTER the screen, right before the binning loop.
+    # Per-region event floor for the torus macro von Mises score. On EUCLIDEAN
+    # runs no input pickle is touched before the screen, so it can still abort or
+    # raise without ever loading `input_data_path`; on the TORUS the input is
+    # loaded just before the screen, which needs its per-event regions and the
+    # development events' marginal dispersion (see below).
     _min_region_events = settings['vocal_features']['usv_manifold_min_region_events']
 
     # Geometry-conditional selection score, carried under the reused numeric key
@@ -5016,10 +5057,56 @@ def continuous_vocal_manifold_model_selection(
         )
 
     print(f"Screening {num_features} features (fold-grain paired score margin "
-          f"[torus: pooled von Mises log-lik; euclidean: dcor], "
+          f"[torus: {SELECTION_SCORE_KEY} von Mises log-lik; euclidean: dcor], "
           f"BH-FDR q={p_val:.2g}, effect floor={_SELECTION_EFFECT_FLOOR:.2g} x top driver)...")
 
     _screen_seed = settings['model_validation']['random_seed']
+
+    # On the TORUS the screen scores each fold with the same rule as the greedy
+    # gate: the selection score's own averaging (the region-balanced macro score
+    # by default, matching the equal-region fit reweighting) and, with
+    # `freeze_selection_kappa`, the one frozen concentration. Scoring the
+    # region-reweighted fits with the pooled score and a per-fold self-fit kappa
+    # instead put half the folds of a real cohort at the kappa=0 flat-torus floor
+    # for every feature and its null (a zero margin there), so only features
+    # positive on every remaining fold survived. This needs the per-event regions
+    # and the development events, so the input pickle is loaded here (once; the
+    # binning below reuses it). The univariate folds' `test_indices` index the
+    # same sorted-session event array.
+    raw_data = None
+    screen_event_to_region = None
+    kappa_frozen = None
+    _vf = settings['vocal_features']
+    freeze_selection_kappa = (bool(_vf['freeze_selection_kappa'])
+                              if 'freeze_selection_kappa' in _vf else False)
+    if _selection_manifold_metric == 'torus':
+        print("Loading raw continuous input data (the torus screen needs per-event regions)...")
+        with open(input_data_path, 'rb') as f:
+            raw_data = pickle.load(f)
+        _screen_feature = next(k for k in raw_data if not k.startswith('_'))
+        _screen_sessions = sorted(raw_data[_screen_feature].keys())
+        _screen_y = np.vstack([raw_data[_screen_feature][sess_id]['Y'] for sess_id in _screen_sessions]).astype(np.float32).astype(np.float64)
+        _screen_w = np.concatenate([raw_data[_screen_feature][sess_id]['w'] for sess_id in _screen_sessions]).astype(np.float32).astype(np.float64)
+        _screen_groups = np.concatenate([np.full(len(raw_data[_screen_feature][sess_id]['Y']), sess_id) for sess_id in _screen_sessions])
+        _screen_regions = np.concatenate([
+            np.asarray(raw_data[_screen_feature][sess_id]['category'], dtype=np.float32)
+            if 'category' in raw_data[_screen_feature][sess_id]
+            else np.full(len(raw_data[_screen_feature][sess_id]['Y']), np.nan, dtype=np.float32)
+            for sess_id in _screen_sessions])
+        if SELECTION_SCORE_KEY == 'vm_logscore':
+            screen_event_to_region = _screen_regions
+        if freeze_selection_kappa:
+            if _input_pre_md_from_univ is not None:
+                _screen_md = _input_pre_md_from_univ
+            elif '_input_metadata' in raw_data:
+                _screen_md = raw_data['_input_metadata']
+            else:
+                _screen_md = {}
+            _screen_dev, _ = development_heldout_masks(_screen_groups, held_out_session_ids_from_metadata(_screen_md))
+            kappa_frozen = _frozen_selection_kappa(_screen_y[_screen_dev], _screen_w[_screen_dev],
+                                                   metric=_selection_manifold_metric, period=_selection_manifold_period)
+            print(f"  Frozen selection kappa = {kappa_frozen:.4f} "
+                  f"(dev events, marginal residuals, unweighted)")
 
     # PASS 1: per-feature fold-margin bootstrap.
     screen_rows = []
@@ -5035,12 +5122,11 @@ def continuous_vocal_manifold_model_selection(
             n_bootstrap=_SELECTION_N_BOOTSTRAP,
             ci_level=_SELECTION_CI_LEVEL,
             random_state=_screen_seed,
-            # The screen runs before the input pickle is loaded, so no per-event
-            # region map is available; it uses the POOLED von Mises score
-            # (`event_to_region=None`) as a coarse pre-filter. The greedy gate
-            # below uses the per-region MACRO score once `region_global` exists.
-            event_to_region=None,
+            # Torus: the selection score's averaging and the frozen kappa (see
+            # above); euclidean: both None (dcor needs neither).
+            event_to_region=screen_event_to_region,
             min_region_events=_min_region_events,
+            kappa=kappa_frozen,
         )
         if stat['n_folds'] < 2:
             continue
@@ -5111,9 +5197,10 @@ def continuous_vocal_manifold_model_selection(
     # Load the raw input pickle only NOW, after the screen has confirmed there is
     # something to fit -- so the abort / stale-ranking-raise paths above never
     # touch `input_data_path` (the contract two abort tests rely on).
-    print("Loading and binning raw continuous input data...")
-    with open(input_data_path, 'rb') as f:
-        raw_data = pickle.load(f)
+    if raw_data is None:
+        print("Loading and binning raw continuous input data...")
+        with open(input_data_path, 'rb') as f:
+            raw_data = pickle.load(f)
 
     # Final upstream-metadata harvest: prefer the univariate copy, fall back to
     # the input pickle's own block for legacy runs.
@@ -5181,9 +5268,8 @@ def continuous_vocal_manifold_model_selection(
 
     # `region_global` is aligned to the same full-event index space as
     # `groups_global` (sorted-session order), so it doubles as the
-    # `event_to_region` map the greedy gate indexes by each fold's test_indices.
-    # (The screen above used the pooled -- label-free -- von Mises score, so it did
-    # not need this and could abort before the input pickle was loaded.)
+    # `event_to_region` map the greedy gate indexes by each fold's test_indices
+    # (the torus screen above built the same map from the same pickle).
     event_to_region = region_global
     warn_if_no_region_labels(region_global, metric=_selection_manifold_metric,
                              context="continuous manifold model selection")
@@ -5314,23 +5400,9 @@ def continuous_vocal_manifold_model_selection(
     # scoring. `None` (the default / flag off) preserves the historical
     # per-call self-refit at every site, so euclidean and legacy runs are
     # byte-identical.
-    _vf = settings['vocal_features']
-    freeze_selection_kappa = (bool(_vf['freeze_selection_kappa'])
-                              if 'freeze_selection_kappa' in _vf else False)
-    kappa_frozen = None
-    if freeze_selection_kappa and manifold_metric == 'torus':
-        _y_dev = y_global[_dev_positions].astype(np.float64)
-        _w_dev = w_global[_dev_positions].astype(np.float64)
-        _w_cov_dev = _w_dev / (np.sum(_w_dev) + 1e-12)
-        _mu_dev = circular_mean(
-            _y_dev, metric=manifold_metric, period=manifold_period, weights=_w_cov_dev
-        )
-        _r_dev = signed_diff(
-            _y_dev, _mu_dev[None, :], metric=manifold_metric, period=manifold_period
-        ) * (2.0 * np.pi / manifold_period)
-        kappa_frozen = _fit_von_mises_kappa(_r_dev.ravel())
-        print(f"  Frozen selection kappa = {kappa_frozen:.4f} "
-              f"(dev events, marginal residuals, unweighted)")
+    # `freeze_selection_kappa` / `kappa_frozen` were resolved before the screen
+    # (torus only; `None` otherwise), from the same development events, so the
+    # screen and every score below share the one frozen concentration.
 
     # Generate the greedy CV folds on the DEVELOPMENT sessions only, then remap
     # the dev-relative indices the splitter returns back into full-array index
