@@ -255,6 +255,77 @@ def _extract_spatial_metrics(payload: dict) -> dict:
 # Per-modality flag helpers
 
 
+def _extract_ibi_bout_onset_metrics(payload: dict) -> dict:
+    """
+    Description
+    -----------
+    Pull the scalar fields from an IBI bout-onset block
+    (`triage_stats["usv_ibi_bout_onset"][emitter]`).
+
+    Every statistic contributes its observed value and its two-sided empirical p, so a downstream
+    table can re-threshold without reopening the per-cluster pickles.
+
+    Parameters
+    ----------
+    payload (dict)
+        The per-emitter bout-onset block.
+
+    Returns
+    -------
+    metrics (dict)
+        Observed values, p-values, the bout count and the threshold that produced them.
+    """
+
+    metrics = {"n_bouts": _safe_float(payload["n_bouts"]),
+               "ibi_threshold_seconds": _safe_float(payload["ibi_threshold_seconds"])}
+    for key in ("onset_gain", "peak_latency", "pre_onset_gain", "first_over_later",
+            "fraction_first_above"):
+        metrics[key] = _safe_float(payload[key]["observed"])
+        metrics[f"{key}_p"] = _safe_float(payload[key]["p_two_sided"])
+    return metrics
+
+
+def _flag_ibi_bout_onset(payload: dict, statistic: str, alpha: float,
+                         min_bouts: int) -> str | None:
+    """
+    Description
+    -----------
+    Whether one bout-onset statistic clears its own shift null, and in which direction.
+
+    A unit needs `min_bouts` bouts before the question is asked at all; below that the statistic
+    is reported but not flagged, since a handful of bouts cannot separate a response from the
+    unit's own variability.
+
+    Parameters
+    ----------
+    payload (dict)
+        The per-emitter bout-onset block.
+    statistic (str)
+        Which statistic to flag.
+    alpha (float)
+        Two-sided significance level.
+    min_bouts (int)
+        Fewest bouts required to flag anything.
+
+    Returns
+    -------
+    direction (str | None)
+        'excit' or 'suppress' for a rate statistic, 'first' or 'later' for the call ratio, and
+        None when not significant or not testable.
+    """
+
+    n_bouts = _safe_float(payload["n_bouts"])
+    if n_bouts is None or n_bouts < min_bouts:
+        return None
+    entry = payload[statistic]
+    observed, p_value = _safe_float(entry["observed"]), _safe_float(entry["p_two_sided"])
+    if observed is None or p_value is None or p_value > alpha:
+        return None
+    if statistic == "first_over_later":
+        return "first" if observed > 1.0 else "later"
+    return "excit" if observed > 1.0 else "suppress"
+
+
 def _flag_vmi(
     vmi_payload: dict, alpha: float, min_bouts: int
 ) -> tuple[str | None, dict | None]:
@@ -494,6 +565,8 @@ def flag_one_cluster(
     min_consecutive_bins: int,
     vmi_alpha: float,
     vmi_min_bouts: int,
+    ibi_bout_alpha: float,
+    ibi_bout_min_bouts: int,
     spatial_info_bps_threshold: float,
 ) -> dict[str, dict]:
     """
@@ -584,6 +657,33 @@ def flag_one_cluster(
             "role": role,
             **metrics,
         }
+
+
+    # usv_ibi_bout_onset: two labels per emitter -- whether the unit responds at bout onset, and
+    # whether a bout's first call draws more than its later ones. Bouts here are the IBI
+    # (respiratory-tempo) grouping, not the VMI `bout_quiet_seconds` one.
+    for emitter, payload in (ts.get("usv_ibi_bout_onset") or {}).items():
+        if not isinstance(payload, dict):
+            continue
+        role = payload.get("role") or emitter_roles.get(emitter) or emitter
+        metrics = _extract_ibi_bout_onset_metrics(payload)
+        for statistic, label in (("onset_gain", "ibi_bout_onset"),
+                                 ("first_over_later", "ibi_bout_first_call")):
+            direction = _flag_ibi_bout_onset(payload, statistic, alpha=ibi_bout_alpha,
+                                             min_bouts=ibi_bout_min_bouts)
+            observed = metrics[statistic]
+            if observed is None or not math.isfinite(observed):
+                continue
+            if statistic == "first_over_later":
+                inferred = "first" if observed > 1.0 else "later"
+            else:
+                inferred = "excit" if observed > 1.0 else "suppress"
+            records[f"{label}_{role}_{inferred}"] = {
+                "tested": True,
+                "significant": direction is not None,
+                "role": role,
+                **metrics,
+            }
 
     # usv_peth: per emitter, per direction (`excit` / `suppress`).
     for emitter, payload in (ts.get("usv_peth") or {}).items():
@@ -920,6 +1020,8 @@ def aggregate_units_across_conditions(
     min_consecutive_bins: int | None = None,
     vmi_alpha: float | None = None,
     vmi_min_bouts: int | None = None,
+    ibi_bout_alpha: float | None = None,
+    ibi_bout_min_bouts: int | None = None,
     spatial_info_bps_threshold: float | None = None,
     message_output: Callable = print,
 ) -> pathlib.Path:
@@ -953,6 +1055,7 @@ def aggregate_units_across_conditions(
         "generated_at": ISO-8601 string,
         "thresholds_used": {z_threshold, min_consecutive_bins,
                             vmi_alpha, vmi_min_bouts,
+                            ibi_bout_alpha, ibi_bout_min_bouts,
                             spatial_info_bps_threshold},
         "catalog_path": str,
         "data_root": str,
@@ -1014,6 +1117,10 @@ def aggregate_units_across_conditions(
         Override for the consecutive-bin run threshold.
     vmi_alpha (float | None)
         Override for the VMI Wilcoxon p-value cutoff.
+    ibi_bout_alpha (float | None)
+        Two-sided level for the bout-onset labels; falls back to the settings default.
+    ibi_bout_min_bouts (int | None)
+        Fewest IBI bouts before a bout-onset label is assigned at all.
     vmi_min_bouts (int | None)
         Override for the VMI minimum-bout requirement.
     spatial_info_bps_threshold (float | None)
@@ -1066,6 +1173,16 @@ def aggregate_units_across_conditions(
             vmi_min_bouts
             if vmi_min_bouts is not None
             else defaults["vmi_min_bouts"]
+        ),
+        "ibi_bout_alpha": (
+            ibi_bout_alpha
+            if ibi_bout_alpha is not None
+            else defaults["ibi_bout_alpha"]
+        ),
+        "ibi_bout_min_bouts": (
+            ibi_bout_min_bouts
+            if ibi_bout_min_bouts is not None
+            else defaults["ibi_bout_min_bouts"]
         ),
         "spatial_info_bps_threshold": (
             spatial_info_bps_threshold

@@ -21,6 +21,7 @@ from ..send_email import Messenger
 from .compute_behavioral_features import FeatureZoo
 from .compute_inter_usv_interval_distributions import InterUSVIntervalCalculator
 from .compute_neuronal_tuning_curves import NeuronalTuning
+from .decode_usv_bout_occupancy import BoutOccupancyDecoder
 from .generate_audio_files import AudioGenerator
 
 
@@ -158,6 +159,12 @@ class Analyst:
                         NeuronalTuning(root_directory=one_directory,
                                        tuning_parameters_dict=self.input_parameter_dict['calculate_neuronal_tuning_curves'],
                                        message_output=self.message_output).calculate_neuronal_tuning_curves()
+
+                    # # # decode whether a moment sits inside a vocal bout from population spiking
+                    if self.input_parameter_dict['analyses_booleans']['decode_usv_bout_occupancy_bool']:
+                        BoutOccupancyDecoder(root_directory=one_directory,
+                                             decoding_parameters_dict=self.input_parameter_dict['decode_usv_bout_occupancy'],
+                                             message_output=self.message_output).decode_usv_bout_occupancy()
 
                     # # # frequency shift audio segments
                     if self.input_parameter_dict['analyses_booleans']['frequency_shift_audio_segment_bool']:

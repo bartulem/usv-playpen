@@ -5,7 +5,8 @@
     "compute_inter_usv_interval_distributions_bool": false,
     "create_usv_playback_wav_bool": false,
     "create_naturalistic_usv_playback_wav_bool": false,
-    "frequency_shift_audio_segment_bool": false
+    "frequency_shift_audio_segment_bool": false,
+    "decode_usv_bout_occupancy_bool": false
   },
   "analyze_data": {
     "root_directories": []
@@ -20,7 +21,8 @@
     "allen_meshes_dir": "/mnt/falkner/Bartul/EPHYS/allen_meshes",
     "converter_path": "/mnt/falkner/Bartul/EPHYS/neuropixels_sites_to_anatomy_converter.json",
     "naturalistic_usv_repository_dir": "/mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_repositories",
-    "naturalistic_usv_playback_dir": "/mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_files"
+    "naturalistic_usv_playback_dir": "/mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_files",
+    "bout_decoding_out_dir": "/mnt/falkner/Bartul/EPHYS/bout_decoding"
   },
   "compute_behavioral_features": {
     "head_points": ["Head", "Ear_R", "Ear_L", "Nose"],
@@ -169,6 +171,20 @@
     "peth_window_seconds": [-2, 0.5],
     "peth_bin_seconds": 0.05,
     "bout_quiet_seconds": 2.0,
+    "ibi_bout_onset": {
+      "ibi_z_score": 2.58,
+      "ibi_component_index": 0,
+      "min_vocalizations": 3,
+      "shuffle_guard_seconds": 20.0,
+      "trigger_window_seconds": [-1.0, 2.0],
+      "trigger_bin_seconds": 0.02,
+      "smoothing_bins": 2.0,
+      "gain_window_seconds": [0.0, 0.25],
+      "pre_window_seconds": [-1.0, -0.5],
+      "peak_search_seconds": [-0.25, 1.0],
+      "response_window_seconds": 0.15,
+      "response_kernel_seconds": 0.02
+    },
     "vocal_require_clean_post_anchor": true,
     "vocal_require_clean_prior_anchor": false,
     "n_usv_min_self": 30,
@@ -194,7 +210,29 @@
     "min_consecutive_bins": 3,
     "vmi_alpha": 0.01,
     "vmi_min_bouts": 10,
+    "ibi_bout_alpha": 0.01,
+    "ibi_bout_min_bouts": 10,
     "spatial_info_bps_threshold": 0.5
+  },
+  "decode_usv_bout_occupancy": {
+    "emitter": "self",
+    "ibi_z_score": 2.58,
+    "ibi_component_index": 0,
+    "min_vocalizations": 3,
+    "bin_seconds": 0.25,
+    "min_kept_seconds": 0.03,
+    "brain_areas": null,
+    "min_units_per_area": 50,
+    "cluster_group": ["good"],
+    "somatic_bool": true,
+    "unit_ladder": [5, 10, 20, 50, 100, 200],
+    "runs_per_count": 10,
+    "n_folds": 3,
+    "n_shuffles": 1000,
+    "shuffle_guard_seconds": 20.0,
+    "shuffle_seed": 0,
+    "catalog_path": "/mnt/falkner/Bartul/EPHYS/unit_catalog.csv",
+    "output_directory": "/mnt/falkner/Bartul/EPHYS/bout_decoding"
   },
   "npx_histology_stack_lightsheet_volume": {
     "xy_flip": "none",

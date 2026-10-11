@@ -1350,6 +1350,22 @@ class FeatureZoo:
         "mask_number": "few -- (count) -- many",
     }
 
+    # Proper display names for vocal-property PANEL TITLES. `vocal_labels` above carries the
+    # axis labels, which read as a spectrum ("short -- (ms) -- long") and are the wrong thing to
+    # title a panel with; the raw column names are wrong in the other direction. Keyed by the
+    # same property names.
+    vocal_titles = {
+        "duration": "duration",
+        "mean_freq_hz": "mean frequency",
+        "peak_freq_hz": "peak frequency",
+        "freq_bandwidth_hz": "frequency bandwidth",
+        "mean_amplitude": "mean amplitude",
+        "max_amplitude": "maximum amplitude",
+        "loudness_db": "loudness",
+        "spectral_entropy": "spectral entropy",
+        "mask_number": "mask number",
+    }
+
     # Canonical short display labels for modeling figures, keyed by the
     # GENERIC (sex-neutral) feature base name. Egocentric bases carry no sex
     # word here -- `resolve_feature_label` prepends the per-mouse sex for
