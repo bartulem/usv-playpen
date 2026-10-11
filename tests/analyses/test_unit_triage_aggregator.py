@@ -1160,3 +1160,268 @@ def test_aggregator_logs_and_skips_bad_sessions(tmp_path):
     skipped = set(out["sessions_skipped"]["intact_female"])
     assert {"badname", "20240505_100000", "20240101_100000"} <= skipped
     assert out["n_units_total"] == 0
+
+
+# usv_ibi_bout_onset labels
+
+
+def _ibi_bout_payload(
+    *,
+    onset_gain: float | None,
+    first_over_later: float | None,
+    p: float,
+    n_bouts: int,
+    role: str | None = "self",
+) -> dict:
+    """
+    Description
+    -----------
+    Build a minimal `triage_stats["usv_ibi_bout_onset"][emitter]` block with the fields
+    `flag_one_cluster` reads: the bout count, the IBI threshold and, for each of the five
+    descriptors, its observed value and two-sided shift-null p. The three descriptors that carry
+    no label (`peak_latency`, `pre_onset_gain`, `fraction_first_above`) get fixed values.
+
+    Parameters
+    ----------
+    onset_gain (float | None)
+        Observed onset gain; above 1 reads as excitation, below 1 as suppression.
+    first_over_later (float | None)
+        Observed first-over-later USV response ratio; above 1 reads as `first`, below as `later`.
+    p (float)
+        Two-sided p shared by the two labelled descriptors.
+    n_bouts (int)
+        Number of IBI bouts, gated by `ibi_bout_min_bouts`.
+    role (str | None)
+        Emitter role placed on the payload; None leaves the `role` key out.
+
+    Returns
+    -------
+    payload (dict)
+        The bout-onset block.
+    """
+
+    payload = {
+        "n_bouts": n_bouts,
+        "n_shuffles": 100,
+        "ibi_threshold_seconds": 0.1155,
+        "onset_gain": {"observed": onset_gain, "p_two_sided": p},
+        "peak_latency": {"observed": 0.08, "p_two_sided": 0.5},
+        "pre_onset_gain": {"observed": 1.0, "p_two_sided": 0.9},
+        "first_over_later": {"observed": first_over_later, "p_two_sided": p},
+        "fraction_first_above": {"observed": 0.6, "p_two_sided": 0.3},
+    }
+    if role is not None:
+        payload["role"] = role
+    return payload
+
+
+def _ibi_records(records: dict) -> dict:
+    """
+    Description
+    -----------
+    Keep only the bout-onset records of a `flag_one_cluster` result.
+
+    Parameters
+    ----------
+    records (dict)
+        Output of `flag_one_cluster`.
+
+    Returns
+    -------
+    ibi (dict)
+        The records whose key starts with `ibi_bout_`.
+    """
+
+    return {k: v for k, v in records.items() if k.startswith("ibi_bout_")}
+
+
+def test_flag_one_cluster_ibi_bout_onset_significant_excitation_and_first():
+    """
+    Description
+    -----------
+    An onset gain above 1 and a first-over-later ratio above 1, both with p under
+    `ibi_bout_alpha` and enough bouts, yield `ibi_bout_onset_<role>_excit` and
+    `ibi_bout_first_usv_<role>_first`, each tested and significant and carrying every extracted
+    metric (observed values, p-values, bout count and threshold).
+    """
+
+    cluster_data = {"triage_stats": {"usv_ibi_bout_onset": {
+        "m1": _ibi_bout_payload(onset_gain=2.0, first_over_later=1.5, p=0.001, n_bouts=20)}}}
+    records = _ibi_records(flag_one_cluster(cluster_data, **DEFAULT_THRESHOLDS))
+
+    assert set(records) == {"ibi_bout_onset_self_excit", "ibi_bout_first_usv_self_first"}
+    for record in records.values():
+        assert record["tested"] is True
+        assert record["significant"] is True
+        assert record["role"] == "self"
+        assert record["n_bouts"] == 20.0
+        assert record["ibi_threshold_seconds"] == pytest.approx(0.1155)
+        assert record["onset_gain"] == pytest.approx(2.0)
+        assert record["first_over_later_p"] == pytest.approx(0.001)
+        assert record["peak_latency"] == pytest.approx(0.08)
+        assert record["fraction_first_above_p"] == pytest.approx(0.3)
+
+
+def test_flag_one_cluster_ibi_bout_onset_significant_suppression_and_later():
+    """
+    Description
+    -----------
+    Values below 1 flip the direction: a significant onset gain under 1 is `suppress` and a
+    significant first-over-later ratio under 1 is `later`.
+    """
+
+    cluster_data = {"triage_stats": {"usv_ibi_bout_onset": {
+        "m1": _ibi_bout_payload(onset_gain=0.4, first_over_later=0.7, p=0.001, n_bouts=20)}}}
+    records = _ibi_records(flag_one_cluster(cluster_data, **DEFAULT_THRESHOLDS))
+
+    assert set(records) == {"ibi_bout_onset_self_suppress", "ibi_bout_first_usv_self_later"}
+    assert all(record["significant"] for record in records.values())
+
+
+@pytest.mark.parametrize(
+    ("p", "n_bouts"),
+    [(0.001, 5), (0.2, 20)],
+    ids=["below_min_bouts", "p_above_alpha"],
+)
+def test_flag_one_cluster_ibi_bout_onset_tested_but_not_significant(p, n_bouts):
+    """
+    Description
+    -----------
+    A unit with fewer bouts than `ibi_bout_min_bouts` (even at a tiny p), or with p above
+    `ibi_bout_alpha`, still gets both labels recorded as tested, with the direction inferred
+    from the observed value, but neither is significant.
+    """
+
+    cluster_data = {"triage_stats": {"usv_ibi_bout_onset": {
+        "m1": _ibi_bout_payload(onset_gain=2.0, first_over_later=0.8, p=p, n_bouts=n_bouts)}}}
+    records = _ibi_records(flag_one_cluster(cluster_data, **DEFAULT_THRESHOLDS))
+
+    assert set(records) == {"ibi_bout_onset_self_excit", "ibi_bout_first_usv_self_later"}
+    for record in records.values():
+        assert record["tested"] is True
+        assert record["significant"] is False
+
+
+def test_flag_one_cluster_ibi_bout_onset_skips_non_finite_observed():
+    """
+    Description
+    -----------
+    A descriptor with no defined observed value (NaN, e.g. a bout with no later USVs, or None)
+    carries no direction, so its label is left out while the other label of the same block is
+    still recorded; a non-dict payload is skipped outright.
+    """
+
+    cluster_data = {"triage_stats": {"usv_ibi_bout_onset": {
+        "m1": _ibi_bout_payload(onset_gain=float("nan"), first_over_later=1.4, p=0.001,
+                                n_bouts=20),
+        "f1": _ibi_bout_payload(onset_gain=1.8, first_over_later=None, p=0.001, n_bouts=20,
+                                role="partner"),
+        "x1": "not a dict",
+    }}}
+    records = _ibi_records(flag_one_cluster(cluster_data, **DEFAULT_THRESHOLDS))
+
+    assert set(records) == {"ibi_bout_first_usv_self_first", "ibi_bout_onset_partner_excit"}
+    assert records["ibi_bout_first_usv_self_first"]["onset_gain"] is None
+
+
+@pytest.mark.parametrize(
+    "triage_stats",
+    [{}, {"usv_ibi_bout_onset": {}}, {"usv_ibi_bout_onset": None}],
+    ids=["block_absent", "block_empty", "block_none"],
+)
+def test_flag_one_cluster_ibi_bout_onset_absent_block_yields_no_records(triage_stats):
+    """
+    Description
+    -----------
+    Pickles written before the bout-onset statistics existed carry no `usv_ibi_bout_onset`
+    block (or an empty one); they must produce no bout-onset record rather than raise.
+    """
+
+    assert _ibi_records(flag_one_cluster({"triage_stats": triage_stats},
+                                         **DEFAULT_THRESHOLDS)) == {}
+
+
+def test_flag_one_cluster_ibi_bout_onset_role_resolution():
+    """
+    Description
+    -----------
+    The role in the modality key comes from the payload's own `role` when present; otherwise
+    from the emitter-to-role map built from the other vocal payloads (here `usv_peth`); and
+    failing both, from the emitter name itself.
+    """
+
+    cluster_data = {
+        "usv_peth": {"f1": {"role": "partner"}},
+        "triage_stats": {"usv_ibi_bout_onset": {
+            "m1": _ibi_bout_payload(onset_gain=2.0, first_over_later=1.5, p=0.001,
+                                    n_bouts=20, role="self"),
+            "f1": _ibi_bout_payload(onset_gain=2.0, first_over_later=1.5, p=0.001,
+                                    n_bouts=20, role=None),
+            "u1": _ibi_bout_payload(onset_gain=2.0, first_over_later=1.5, p=0.001,
+                                    n_bouts=20, role=""),
+        }},
+    }
+    records = _ibi_records(flag_one_cluster(cluster_data, **DEFAULT_THRESHOLDS))
+
+    assert {"ibi_bout_onset_self_excit", "ibi_bout_onset_partner_excit",
+            "ibi_bout_onset_u1_excit"} <= set(records)
+    assert records["ibi_bout_onset_partner_excit"]["role"] == "partner"
+    assert records["ibi_bout_onset_u1_excit"]["role"] == "u1"
+
+
+def test_aggregator_ibi_bout_thresholds_fall_back_to_settings_and_gate_the_labels(tmp_path):
+    """
+    Description
+    -----------
+    End to end through the cross-session aggregator: with `ibi_bout_alpha` and
+    `ibi_bout_min_bouts` left as None (other thresholds given), `thresholds_used` records the
+    shipped settings values for those two, and a unit with p = 0.1 over 5 bouts is tested but not
+    significant. Passing a looser alpha (0.2) and a lower bout floor (3) records those values and
+    flips the same unit to significant, so the two keywords really reach the flagging.
+    """
+
+    data_root = tmp_path / "data"
+    tuning_dir = data_root / "20240101_100000" / "ephys" / "tuning_curves"
+    tuning_dir.mkdir(parents=True)
+    unit_id = "imec0_cl0001_ch100_good"
+    _write_cluster_pkl(tuning_dir, unit_id, {"usv_ibi_bout_onset": {
+        "m1": _ibi_bout_payload(onset_gain=2.0, first_over_later=1.5, p=0.1, n_bouts=5)}})
+    catalog = tmp_path / "catalog.csv"
+    _write_catalog(catalog, [("M01", 20240101, unit_id, "PAG")])
+    session_list = tmp_path / "intact.txt"
+    session_list.write_text("20240101_100000\n")
+
+    settings_path = (pathlib.Path(__file__).resolve().parent.parent.parent / "src"
+                     / "usv_playpen" / "_parameter_settings" / "analyses_settings.json")
+    with settings_path.open() as fh:
+        shipped = json.load(fh)["detect_interesting_tuning_neurons"]
+
+    explicit = {k: v for k, v in DEFAULT_THRESHOLDS.items() if not k.startswith("ibi_bout_")}
+    explicit["vmi_alpha"] = 0.05
+    outcomes = {}
+    for name, ibi_kwargs in (("defaults", {"ibi_bout_alpha": None, "ibi_bout_min_bouts": None}),
+                             ("loose", {"ibi_bout_alpha": 0.2, "ibi_bout_min_bouts": 3})):
+        out_path = aggregate_units_across_conditions(
+            condition_to_session_list={"intact_female": session_list},
+            catalog_path=catalog,
+            out_dir=tmp_path / name,
+            data_root=data_root,
+            **explicit,
+            **ibi_kwargs,
+        )
+        with out_path.open("rb") as fh:
+            outcomes[name] = pickle.load(fh)
+
+    used = outcomes["defaults"]["thresholds_used"]
+    assert used["ibi_bout_alpha"] == shipped["ibi_bout_alpha"]
+    assert used["ibi_bout_min_bouts"] == shipped["ibi_bout_min_bouts"]
+    assert used["vmi_alpha"] == 0.05
+    assert outcomes["loose"]["thresholds_used"]["ibi_bout_alpha"] == 0.2
+    assert outcomes["loose"]["thresholds_used"]["ibi_bout_min_bouts"] == 3
+
+    uid = f"M01_20240101_{unit_id}"
+    for name, expected in (("defaults", 0), ("loose", 1)):
+        modalities = outcomes[name]["units"][uid]["conditions"]["intact_female"]["modalities"]
+        for key in ("ibi_bout_onset_self_excit", "ibi_bout_first_usv_self_first"):
+            assert modalities[key]["n_tested"] == 1
+            assert modalities[key]["n_significant"] == expected

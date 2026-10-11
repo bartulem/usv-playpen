@@ -83,6 +83,7 @@ with warnings.catch_warnings():
         SmoothBivariateRegression,
     )
     from usv_playpen.modeling.model_selection import (
+        _frozen_selection_kappa,
         continuous_vocal_manifold_model_selection,
     )
     from usv_playpen.modeling.manifold_metric import (
@@ -1117,6 +1118,184 @@ class TestManifoldModelSelection:
         with step_pkls[-1].open('rb') as fh:
             final_step = pickle.load(fh)
         assert 'freeze_selection_kappa' in json.dumps(final_step['_run_metadata'], default=str)
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_selection_torus_frozen_kappa_metadata_fallbacks(self, tmp_path, capsys):
+        """
+        The torus screen fits the frozen von Mises concentration on the
+        DEVELOPMENT events, so it has to know the held-out session set before any
+        score is taken. The set is read from the univariate ranking's
+        ``_input_metadata`` when present; this test drives the two fallbacks:
+
+        1. The ranking carries no ``_input_metadata`` but the input pickle does
+           (with five held-out sessions): the printed kappa equals
+           ``_frozen_selection_kappa`` fitted on the events of the twenty
+           development sessions only.
+        2. Neither the ranking nor the input pickle carries metadata: no session
+           is held out, so the printed kappa equals the fit on every event of all
+           twenty-five sessions -- a different number than in (1), which proves
+           the metadata source actually decides the development mask. This run
+           ranks only the no-signal feature, so the screen keeps nothing and the
+           run stops right after it (a run past the screen needs the input
+           metadata's ``analysis_tag`` to name its step files).
+        """
+
+        gate_n_sessions = 25
+        settings, _save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'torus'
+        settings['vocal_features']['freeze_selection_kappa'] = True
+        settings['hyperparameters']['linear_models']['manifold_regression']['bin_resizing_factor'] = 1
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
+        held_out_ids = session_ids[:5]
+        input_md = {
+            'analysis_type': 'continuous',
+            'analysis_tag': 'manifold_qlvm_category',
+            'session_ids': session_ids,
+            'held_out_session_ids': held_out_ids,
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
+            'analysis_specific': {
+                'usv_category_column_name': 'qlvm_category',
+                'manifold_metric': 'torus',
+                'manifold_period': 1.0,
+            },
+        }
+        input_path = _build_signal_continuous_pickle(
+            save_path=tmp_path / 'manifold_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            input_metadata=input_md,
+            target_kind='wound_torus',
+        )
+        input_pkl = str(input_path)
+        runner = ContinuousModelRunner(
+            ContinuousModelingPipeline(modeling_settings_dict=settings)
+        )
+        # The ranking deliberately carries NO `_input_metadata` block.
+        combined = {f: runner.run_univariate_training(input_pkl, f) for f in feature_names}
+        combined_path = tmp_path / 'univariate_combined.pkl'
+        with combined_path.open('wb') as fh:
+            pickle.dump(combined, fh)
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+
+        # Expected concentrations, from the same sorted-session event array the
+        # screen builds (float32 storage, float64 arithmetic).
+        with input_path.open('rb') as fh:
+            artifact = pickle.load(fh)
+        sorted_sessions = sorted(artifact[feature_names[0]].keys())
+        y_all = np.vstack([artifact[feature_names[0]][sess]['Y'] for sess in sorted_sessions]).astype(np.float32).astype(np.float64)
+        w_all = np.concatenate([artifact[feature_names[0]][sess]['w'] for sess in sorted_sessions]).astype(np.float32).astype(np.float64)
+        groups = np.concatenate([np.full(len(artifact[feature_names[0]][sess]['Y']), sess) for sess in sorted_sessions])
+        dev_mask = ~np.isin(groups, held_out_ids)
+        kappa_dev = _frozen_selection_kappa(y_all[dev_mask], w_all[dev_mask], metric='torus', period=1.0)
+        kappa_all = _frozen_selection_kappa(y_all, w_all, metric='torus', period=1.0)
+        assert f"{kappa_dev:.4f}" != f"{kappa_all:.4f}"
+
+        def _run(out_name: str, ranking_path: Path) -> str:
+            ms_dir = tmp_path / out_name
+            ms_dir.mkdir()
+            capsys.readouterr()
+            continuous_vocal_manifold_model_selection(
+                univariate_results_path=str(ranking_path),
+                input_data_path=input_pkl,
+                output_directory=str(ms_dir),
+                settings_path=str(settings_json),
+                use_top_rank_as_anchor=True,
+                p_val=0.5,
+            )
+            return capsys.readouterr().out
+
+        # (1) metadata only in the input pickle -> held-out sessions excluded.
+        out_input_md = _run('model_selection_input_md', combined_path)
+        assert f"Frozen selection kappa = {kappa_dev:.4f}" in out_input_md
+
+        # (2) no metadata anywhere -> every session is development.
+        artifact.pop('_input_metadata')
+        with input_path.open('wb') as fh:
+            pickle.dump(artifact, fh)
+        no_signal_path = tmp_path / 'univariate_no_signal.pkl'
+        with no_signal_path.open('wb') as fh:
+            pickle.dump({'other.speed': combined['other.speed']}, fh)
+        out_no_md = _run('model_selection_no_md', no_signal_path)
+        assert f"Frozen selection kappa = {kappa_all:.4f}" in out_no_md
+        assert 'No significant features found' in out_no_md
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    def test_selection_euclidean_screen_loads_input_after_screening(self, tmp_path, capsys):
+        """
+        On a EUCLIDEAN run the screen needs neither per-event regions nor a
+        frozen concentration (distance correlation uses neither), so the input
+        pickle is NOT loaded before the screen; it is loaded only after the
+        screen has kept at least one feature. With
+        ``vocal_features.usv_manifold_metric='euclidean'`` (and
+        ``freeze_selection_kappa`` left on, to show it is torus-only) the run
+        never prints the torus screen's loading message nor a frozen kappa,
+        prints the post-screen loading message exactly once, and still reaches
+        a final step that contains the signal feature.
+        """
+
+        gate_n_sessions = 25
+        settings, _save_dir = _build_manifold_settings(
+            tmp_path, split_strategy='session', split_num=10, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = 'euclidean'
+        settings['vocal_features']['freeze_selection_kappa'] = True
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(gate_n_sessions)]
+        input_md = {
+            'analysis_type': 'continuous',
+            'analysis_tag': 'manifold_qlvm_category',
+            'session_ids': session_ids,
+            'n_events_per_session': dict.fromkeys(session_ids, 60),
+            'analysis_specific': {
+                'usv_category_column_name': 'qlvm_category',
+                'manifold_metric': 'euclidean',
+                'manifold_period': 1.0,
+            },
+        }
+        input_pkl = str(_build_signal_continuous_pickle(
+            save_path=tmp_path / 'manifold_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            input_metadata=input_md,
+        ))
+        runner = ContinuousModelRunner(
+            ContinuousModelingPipeline(modeling_settings_dict=settings)
+        )
+        combined = {f: runner.run_univariate_training(input_pkl, f) for f in feature_names}
+        combined['_input_metadata'] = input_md
+        combined_path = tmp_path / 'univariate_combined.pkl'
+        with combined_path.open('wb') as fh:
+            pickle.dump(combined, fh)
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        capsys.readouterr()
+
+        continuous_vocal_manifold_model_selection(
+            univariate_results_path=str(combined_path),
+            input_data_path=input_pkl,
+            output_directory=str(ms_dir),
+            settings_path=str(settings_json),
+            use_top_rank_as_anchor=True,
+            p_val=0.5,
+        )
+
+        out = capsys.readouterr().out
+        assert 'the torus screen needs per-event regions' not in out
+        assert 'Frozen selection kappa' not in out
+        assert out.count('Loading and binning raw continuous input data...') == 1
+        step_pkls = sorted(ms_dir.glob('model_selection_continuous_manifold_*_step_*.pkl'))
+        assert step_pkls
+        with step_pkls[-1].open('rb') as fh:
+            final_step = pickle.load(fh)
+        assert 'self.speed' in final_step['current_features']
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_selection_torus_stale_ranking_raises(self, tmp_path):

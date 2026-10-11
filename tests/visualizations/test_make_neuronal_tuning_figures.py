@@ -43,6 +43,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import polars as pls
 import pytest
+from matplotlib import gridspec
+from matplotlib.figure import Figure
 
 from usv_playpen import os_utils
 from usv_playpen.analyses.compute_neuronal_tuning_curves import (
@@ -2757,3 +2759,162 @@ def test_vocal_page_layout_puts_section_c_on_the_vocal_page():
     assert tuning_figures.VOCAL_SECTION_HSPACE * sum(heights) / 3 == pytest.approx(3.375)
     assert not hasattr(tuning_figures, "VOCAL_PAGE2_FIGSIZE_INCHES")
     assert not hasattr(NeuronalTuningFigureMaker, "_render_page2")
+
+
+def _bout_onset_figure_inputs(tmp_path: pathlib.Path) -> tuple[NeuronalTuningFigureMaker, dict,
+                                                               pls.DataFrame]:
+    """
+    Description
+    -----------
+    Build the inputs the bout-onset panels read, on a synthetic 120 s session.
+
+    The male `m1` produces 19 IBI bouts, one every 6 s from 5 s, each of three 100 ms USVs 200 ms
+    apart; two USVs are assigned to no animal and the female `f1` never vocalizes. The unit fires
+    a Poisson background plus a burst in the 300 ms after every bout onset, and its spike file is
+    written at `<tmp_path>/ephys/imec0/cluster_data/imec0_cl0001.npy` (spike times in row 0), the
+    layout `_cluster_spike_times` searches under the rendered directory. The pkl payload carries
+    the `usv_metadata` fields the panels read, a bout-onset block for both emitters and a pooled
+    `usv_peth` block for `m1`.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Pytest-provided temporary directory, used as the rendered session root.
+
+    Returns
+    -------
+    maker, cluster_data, usv_summary_df (tuple)
+        A figure maker rooted at `tmp_path`, the synthetic pkl payload and the USV summary.
+    """
+
+    rng = np.random.default_rng(0)
+    onsets = np.arange(5.0, 115.0, 6.0)
+    starts = np.concatenate([onsets + offset for offset in (0.0, 0.2, 0.4)] + [[2.0, 60.0]])
+    emitters = ["m1"] * (3 * onsets.size) + [None, None]
+    usv_summary_df = pls.DataFrame({"start": starts, "stop": starts + 0.1,
+                                    "emitter": emitters}).sort("start")
+    spikes = np.sort(np.concatenate([rng.uniform(0.0, 120.0, size=600)]
+                                    + [o + rng.uniform(0.0, 0.3, size=8) for o in onsets]))
+    cluster_dir = tmp_path / "ephys" / "imec0" / "cluster_data"
+    cluster_dir.mkdir(parents=True)
+    np.save(cluster_dir / "imec0_cl0001.npy", np.vstack([spikes, np.zeros_like(spikes)]))
+    cfg = _make_tuning_parameters()["ibi_bout_onset"]
+    bin_centers = np.arange(-2.0, 0.5, 0.05) + 0.025
+    cluster_data = {
+        "usv_metadata": {"cluster_id": "imec0_cl0001", "session_root": None,
+                         "ibi_bout_onset": cfg, "duration_seconds": 120.0},
+        "usv_ibi_bout_onset": {
+            "m1": {"ibi_threshold_seconds": 0.1155, "sex": "male", "n_bouts": onsets.size},
+            "f1": {"ibi_threshold_seconds": 0.1155, "sex": "female", "n_bouts": 0},
+        },
+        "usv_peth": {"m1": {"sex": "male", "bin_centers_s": bin_centers,
+                            "rate": np.full(bin_centers.size, 5.0),
+                            "null_p0_5": np.full(bin_centers.size, 3.0),
+                            "null_p99_5": np.full(bin_centers.size, 7.0),
+                            "n_anchors": 3 * onsets.size}},
+    }
+    maker = NeuronalTuningFigureMaker(root_directory=str(tmp_path),
+                                      visualizations_parameter_dict=_make_visualizations_parameters(),
+                                      message_output=lambda *_args, **_kwargs: None)
+    return maker, cluster_data, usv_summary_df
+
+
+def _bout_page_grid(figure: Figure) -> gridspec.GridSpec:
+    """
+    Description
+    -----------
+    The top three rows of the vocal page grid, which is all the bout-onset panels address.
+
+    Parameters
+    ----------
+    figure (matplotlib.figure.Figure)
+        Target figure.
+
+    Returns
+    -------
+    outer (gridspec.GridSpec)
+        A three-row grid with `VOCAL_PAGE_COLUMNS` columns.
+    """
+
+    return gridspec.GridSpec(nrows=3, ncols=tuning_figures.VOCAL_PAGE_COLUMNS, figure=figure)
+
+
+def test_bout_onset_panels_draw_session_zoom_scatter_and_raster(tmp_path):
+    """
+    Description
+    -----------
+    With a bout-onset payload the page draws the session rate trace, the zoom on the densest
+    20 s window, the first-versus-later scatter and the bout-triggered raster. The titles report
+    the 19 bouts the emitter's USVs form under the payload's own IBI threshold, the zoom carries a
+    spike raster, the scatter has a density image and contours, and the raster gains a twinned
+    rate axis.
+    """
+
+    maker, cluster_data, usv_summary_df = _bout_onset_figure_inputs(tmp_path)
+    figure = Figure(figsize=(16, 9))
+    outer = _bout_page_grid(figure)
+    maker._draw_bout_rows(fig=figure, outer=outer, emitter="m1", cluster_data=cluster_data,
+                          usv_summary_df=usv_summary_df,
+                          payload=cluster_data["usv_ibi_bout_onset"]["m1"])
+    ax_session, ax_zoom, ax_scatter = figure.axes
+    assert "19 bouts" in ax_session.get_title(loc="left")
+    assert ax_session.get_xlim() == pytest.approx((0.0, 120.0))
+    assert "the densest window" in ax_zoom.get_title(loc="left")
+    assert ax_zoom.get_xlim()[1] - ax_zoom.get_xlim()[0] == pytest.approx(
+        tuning_figures.BOUT_ZOOM_SECONDS)
+    assert any(isinstance(c, matplotlib.collections.EventCollection) for c in ax_zoom.collections)
+    assert "first vs later USV" in ax_scatter.get_title(loc="left")
+    assert "19 bouts" in ax_scatter.get_title(loc="left")
+    assert ax_scatter.images
+
+    ax_raster = figure.add_subplot(outer[0, tuning_figures.VOCAL_PAGE_COLUMNS - 1])
+    maker._draw_bout_raster(ax=ax_raster, emitter="m1", usv_summary_df=usv_summary_df,
+                            cluster_data=cluster_data)
+    assert "19 bouts" in ax_raster.get_title(loc="left")
+    assert ax_raster.get_ylim() == pytest.approx((-0.5, 18.5))
+    assert len(figure.axes) == 5
+
+
+def test_bout_onset_panels_without_payload_or_bouts_say_so(tmp_path):
+    """
+    Description
+    -----------
+    A pickle with no bout-onset block, or an emitter the block does not name, leaves the raster
+    with the text "no bout-onset payload". An emitter that has a payload but never vocalizes gets
+    "no bouts" in the raster, a session trace whose zoom falls back to the start of the session,
+    and "too few multi-USV bouts" instead of a scatter. With no USV summary at all the raster
+    panel says it was omitted while the pooled PETH beside it is still drawn.
+    """
+
+    maker, cluster_data, usv_summary_df = _bout_onset_figure_inputs(tmp_path)
+    figure = Figure(figsize=(16, 9))
+    outer = _bout_page_grid(figure)
+
+    no_block = {key: value for key, value in cluster_data.items() if key != "usv_ibi_bout_onset"}
+    for payload_source, emitter in ((no_block, "m1"), (cluster_data, "u9")):
+        ax = figure.add_subplot(outer[2, 0])
+        maker._draw_bout_raster(ax=ax, emitter=emitter, usv_summary_df=usv_summary_df,
+                                cluster_data=payload_source)
+        assert [t.get_text() for t in ax.texts] == ["no bout-onset payload"]
+        figure.delaxes(ax)
+
+    ax = figure.add_subplot(outer[2, 0])
+    maker._draw_bout_raster(ax=ax, emitter="f1", usv_summary_df=usv_summary_df,
+                            cluster_data=cluster_data)
+    assert [t.get_text() for t in ax.texts] == ["no bouts"]
+    figure.delaxes(ax)
+
+    maker._draw_bout_rows(fig=figure, outer=outer, emitter="f1", cluster_data=cluster_data,
+                          usv_summary_df=usv_summary_df,
+                          payload=cluster_data["usv_ibi_bout_onset"]["f1"])
+    ax_session, ax_zoom, ax_scatter = figure.axes
+    assert "0 bouts" in ax_session.get_title(loc="left")
+    assert ax_zoom.get_xlim() == pytest.approx((0.0, tuning_figures.BOUT_ZOOM_SECONDS))
+    assert [t.get_text() for t in ax_scatter.texts] == ["too few multi-USV bouts"]
+
+    peth_figure = Figure(figsize=(8, 4))
+    ax_raster, ax_peth = peth_figure.subplots(1, 2)
+    maker._draw_section_a(ax_raster=ax_raster, ax_peth=ax_peth, emitter="m1",
+                          cluster_data=cluster_data, usv_summary_df=None)
+    assert "raster omitted" in ax_raster.texts[0].get_text()
+    assert ax_peth.get_title() == "PETH (n_USVs = 57)"
