@@ -950,3 +950,19 @@ The ``qlvm_figures`` block (the seed is ``figures.seed`` and the colormap ``figu
             "average_time_ms": 150.0
         }
     }
+
+
+Neuronal decoding figures
+--------------------------------
+``visualizations/make_neuronal_decoding_figures.py`` draws the vocal-bout occupancy decode from
+the per-session archives written by ``decode_usv_bout_occupancy`` (see :doc:`Analyze`). It is not
+driven from the GUI; it is built in the notebook (see :doc:`Notebooks`).
+
+``make_bout_decoding_figure`` draws one focal area's accuracy against unit count for every session
+named, beside exactly three comparison panels. Opacity carries how much each animal vocalised, and
+a filled marker means that rung cleared its **own** shift null — significance is per curve rather
+than read off a shared band, which could not exist here, since the null's 99.5th percentile spans
+0.05–0.10 across sessions.
+
+``summarize`` gathers the per-session decoder tables into one frame, which is the step the analysis
+deliberately leaves to the caller, since it pools nothing across sessions.

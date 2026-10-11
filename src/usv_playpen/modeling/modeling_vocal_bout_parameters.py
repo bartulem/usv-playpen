@@ -47,7 +47,7 @@ from tqdm import tqdm
 
 from .modeling_vocal_onsets import VocalOnsetModelingPipeline
 from .load_input_files import load_behavioral_feature_data, find_variable_length_bouts
-from .load_input_files import require_labels_for_vocal_predictors
+from .load_input_files import is_pooled_vocal_signal, is_vocal_signal, require_labels_for_vocal_predictors
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -120,16 +120,18 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         continuous bout features (e.g., duration, complexity).
 
         Key Logical & Scientific Configurations:
-        1. Vocal feature configuration (usv_predictor_type & usv_predictor_partner_only):
-           - If 'usv_predictor_partner_only' is True: Only the partner's USV signals are ingested.
-           - If 'usv_predictor_partner_only' is False (Full syntax mode): Both mice's USV signals
+        1. Vocal feature configuration (vocal_predictor_type, vocal_predictor_classes &
+           vocal_predictor_partner_only): one trace per entry of 'vocal_predictor_classes'.
+           - If 'vocal_predictor_partner_only' is True: Only the partner's vocal signals are ingested.
+           - If 'vocal_predictor_partner_only' is False (Full syntax mode): Both mice's vocal signals
              are ingested. This allows the model to determine if the subject's own prior vocal
              patterns (syntax) influence the parameters of the current bout.
         2. Scientific guardrail (self-predictor filtering):
            - When 'partner_only' is False, the script allows USV category/syntax traces from the
              subject (self) to be used as predictors.
-           - However, it strictly excludes density-based signals (e.g., 'usv_rate',
-             'usv_event') for the subject mouse. This prevents the model from trivially predicting
+           - However, it strictly excludes density-based signals ('<name>_rate' /
+             '<name>_event' of every trace name, e.g. 'usv_rate', 'squeak_event') for the
+             subject mouse. This prevents the model from trivially predicting
              bout duration based on the fact that the mouse is currently vocalizing.
         3. Generic renaming (self vs other):
            - Harmonizes egocentric (subject) and allocentric (partner) signals into a
@@ -160,9 +162,9 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         mixture_model_z = self.modeling_settings['model_params']['mixture_model_z_score']
         min_usv = self.modeling_settings['model_params']['usv_per_bout_floor']
 
-        voc_type = self.modeling_settings['vocal_features']['usv_predictor_type']
-        partner_only = self.modeling_settings['vocal_features']['usv_predictor_partner_only']
-        smooth_sd = self.modeling_settings['vocal_features']['usv_predictor_smoothing_sd']
+        voc_type = self.modeling_settings['vocal_features']['vocal_predictor_type']
+        partner_only = self.modeling_settings['vocal_features']['vocal_predictor_partner_only']
+        smooth_sd = self.modeling_settings['vocal_features']['vocal_predictor_smoothing_sd']
         exclude_noise = self.modeling_settings['vocal_features']['exclude_noise_usvs']
 
         print("Loading behavioral feature data...")
@@ -185,6 +187,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             filter_history=self.modeling_settings['model_params']['filter_history'],
             proportion_smoothing_sd=smooth_sd,
             vocal_output_type=voc_type,
+            predictor_classes=self.modeling_settings['vocal_features']['vocal_predictor_classes'],
+            target_classes=self.modeling_settings['model_params']['onset_target_classes'],
             exclude_noise_usvs=exclude_noise,
             category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
         )
@@ -314,8 +318,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             for c in kept_columns_first_sess
         })
         vocal_columns_md = sorted({
-            c for c in kept_columns_first_sess
-            if any(tok in c for tok in ('usv_rate', 'usv_cat_', 'usv_event'))
+            c for c in kept_columns_first_sess if is_vocal_signal(c)
         })
 
         _sorted_session_ids = sorted(processed_beh_feature_data_dict.keys())
@@ -350,6 +353,8 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                 'target_variable': target_variable,
                 'usv_bout_time': self.modeling_settings['model_params']['usv_bout_time'],
                 'usv_per_bout_floor': self.modeling_settings['model_params']['usv_per_bout_floor'],
+                # The vocal classes bouts were grouped from.
+                'onset_target_classes': list(self.modeling_settings['model_params']['onset_target_classes']),
             },
         )
 
@@ -488,7 +493,7 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
             is_zero = np.all(final_data_dict[feat]['X'] == 0)
             status = "ZERO-FILLED" if is_zero else "DATA-PRESENT"
 
-            guard = " [PROTECTED]" if feat.startswith("self.") and any(k in feat for k in ('usv_rate', 'usv_event')) else ""
+            guard = " [PROTECTED]" if feat.startswith("self.") and is_pooled_vocal_signal(feat) else ""
 
             print(f"{i:3}. {feat:<45} | {feat_n:<10} | {feat_sess:<10} | {status}{guard}")
 

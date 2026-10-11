@@ -1,12 +1,12 @@
 """
 @author: bartulem
-Classify every USV segment that is not noise as an ultrasonic call (``usv``), a
-squeak (``squeak``) or both in one segment (``both``), locate each squeak in time,
+Classify every USV segment that is not noise as a USV (``usv``), a squeak
+(``squeak``) or a USV and a squeak in one segment (``overlap``), locate each squeak in time,
 and merge the result into the session's ``*_usv_summary.csv``.
 
 A squeak is a broadband harmonic stack (fundamental around 3-8 kHz) that the
 ultrasonic DAS segmenter picks up as part of a USV segment; a segment can hold a
-squeak alone, an ultrasonic call alone, or both. This step scores every segment
+squeak alone, a USV alone, or both (an overlap). This step scores every segment
 the noise step did not flag (``noise`` not true) with an ensemble of
 time-resolved multiple-instance classifiers that have two heads on one trunk: a
 three-class head that decides the segment's class, and a per-frame squeak head
@@ -46,7 +46,7 @@ the columns of earlier encodings -- ``squeak_probability``, ``squeak_frame_runs`
 
 * ``usv`` / ``squeak`` -- two booleans from the class of highest ensemble-mean
   probability: a pure USV is ``(true, false)``, a pure squeak ``(false, true)``
-  and a segment holding both ``(true, true)``; both null on noise rows and on
+  and an overlap segment ``(true, true)``; both null on noise rows and on
   rows too short for one STFT window. ``usv`` alone does NOT mean "USV only":
   a pure-USV filter is ``usv & ~squeak`` (:func:`os_utils.pure_usv_mask`);
 * ``p_usv`` / ``p_squeak`` / ``p_both`` -- the ensemble-mean class
@@ -69,8 +69,8 @@ input constants and scalar standardization, its training recipe and the label
 files it was trained on, and this step reads every one of them from the bundle.
 
 Squeak QLVM embedding (``infer-qlvm-squeak-latents``,
-:class:`USVSqueakQLVMEmbedder`): a second step places every row of call class
-``squeak`` true (pure squeaks and "both") that is not noise on the torus of one
+:class:`USVSqueakQLVMEmbedder`): a second step places every row with
+``squeak`` true (pure squeaks and overlap segments) that is not noise on the torus of one
 squeak QLVM cell (the ``infer_qlvm_squeak_latents.model_cell_directory`` setting,
 filled when empty with the production cell ``os_utils.QLVM_SQUEAK_PRODUCTION_CELL``
 under ``os_utils.QLVM_SQUEAK_PACKAGE_ROOT``: the time-stretched, unmasked,
@@ -104,7 +104,7 @@ float32 as the torch driver built it (:func:`qlvm_model.gen_fib_basis_float32`).
 
 Training (``train-usv-squeak-model``, :class:`USVSqueakModelTrainer`): from the
 labelling tool's files -- one or more label sets, each a labels CSV
-(``panel_id``, ``label`` 0 usv / 1 squeak / 2 both / 3 unsure,
+(``panel_id``, ``label`` 0 usv / 1 squeak / 2 overlap / 3 unsure,
 ``squeak_extents_s`` JSON spans) and its sample CSV (``panel_id``,
 ``session_dir``, ``row_index``, ``start``, ``stop``), plus optional review CSVs
 that override a set's labels by panel -- it builds every labelled segment's
@@ -141,9 +141,9 @@ from torch import nn
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
-    CALL_CLASSES,
     SQUEAK_FLAG_COLUMN,
     USV_FLAG_COLUMN,
+    VOCAL_CLASSES,
     atomic_output_path,
     configure_path,
     derive_spectrogram_model_paths,
@@ -182,22 +182,27 @@ from .qlvm_model import decoder_head, embed_data, gen_fib_basis_float32
 # Columns written into the USV summary CSV, in canonical order.
 VOCAL_CLASS_COLUMNS = (USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN, "p_usv", "p_squeak", "p_both", "squeak_start", "squeak_end")
 
-# The two booleans each call class is written as: (usv, squeak).
-CALL_CLASS_FLAGS = {"usv": (True, False), "squeak": (False, True), "both": (True, True)}
+# The two booleans each vocal class is written as: (usv, squeak).
+VOCAL_CLASS_FLAGS = {"usv": (True, False), "squeak": (False, True), "overlap": (True, True)}
 
-# Columns of earlier encodings (the retired binary squeak detector's and the call-class / span
+# Name the overlap class (a USV and a squeak in one segment) had when the trained bundles on disk
+# were written: their ``class_names`` read ["usv", "squeak", "both"]. The bundle check reads it as
+# "overlap", so those bundles load unchanged; newly trained bundles record VOCAL_CLASSES.
+LEGACY_OVERLAP_CLASS_NAME = "both"
+
+# Columns of earlier encodings (the retired binary squeak detector's and the vocal-class / span
 # encoding's), dropped whenever a summary is rewritten here.
 RETIRED_SQUEAK_COLUMNS = ("squeak_probability", "squeak_frame_runs", "call_class", "squeak_spans", "n_squeaks")
 
 # Name the bundle records for its network, checked on load.
 USV_SQUEAK_MODEL_NAME = "usv_squeak_timemil_ensemble"
 
-# Input contract of the call-class model: the noise model's, with the frame cap raised so a whole
+# Input contract of the vocal-class model: the noise model's, with the frame cap raised so a whole
 # window (the longest labelled segment is 0.81 s = 396 frames, plus 2 x 49 context frames) is never
 # truncated. Training writes these into the bundle; scoring reads them back from it.
 USV_SQUEAK_INPUT_CONTRACT = {**NOISE_INPUT_CONTRACT, "max_frames": 1024}
 
-# Labelling-tool answers: 0 usv, 1 squeak, 2 both (the class index), 3 unsure (never trained on).
+# Labelling-tool answers: 0 usv, 1 squeak, 2 overlap (the class index), 3 unsure (never trained on).
 USV_SQUEAK_UNSURE_LABEL = 3
 
 # Columns a labels CSV, a sample CSV and an override CSV of the labelling tool must hold.
@@ -261,16 +266,16 @@ class USVSqueakTimeMIL(NoiseTimeMIL):
     """
     Description
     -----------
-    The call-class network: the noise model's trunk (:class:`detect_usv_noise.NoiseTimeMIL`'s four
+    The vocal-class network: the noise model's trunk (:class:`detect_usv_noise.NoiseTimeMIL`'s four
     frequency-pooling Conv2d blocks and five residual dilated Conv1d blocks, so every frame keeps its own
     128-channel representation with about 61 frames of receptive field) with a three-class
     multiple-instance head and a per-frame squeak head. The noise model's binary head is removed.
     Trunk attribute names are the noise model's, so a noise checkpoint's ``body.*`` / ``tcn.*`` weights
     load into it unchanged (the pretrained initialization), and head attribute names match the
-    call-class bundle's ``state_dict`` keys and must not change.
+    vocal-class bundle's ``state_dict`` keys and must not change.
 
     The noise model's per-frame instance logits cannot double as the squeak track: the class decision
-    "squeak" vs "both" hinges on whether an ultrasonic call is ALSO present, not on where the squeak is,
+    "squeak" vs "overlap" hinges on whether a USV is ALSO present, not on where the squeak is,
     so the frame head for the squeak itself is a separate target with its own supervision.
     """
 
@@ -346,9 +351,12 @@ def load_usv_squeak_model(model_path: str, device: torch.device) -> dict:
     """
     Description
     -----------
-    Loads the call-class bundle: every member's weights in eval mode on ``device``, the input
+    Loads the vocal-class bundle: every member's weights in eval mode on ``device``, the input
     constants, the scalar standardization, the class names and the squeak-extent threshold. A bundle whose model
     name, class names or bands differ from what this module builds is refused rather than scored with.
+    Bundles trained before the overlap class was renamed store ``class_names`` as
+    ``["usv", "squeak", "both"]``; the legacy name (``LEGACY_OVERLAP_CLASS_NAME``) is read as
+    ``"overlap"`` before the comparison, so those bundles load unchanged.
 
     Parameters
     ----------
@@ -360,7 +368,8 @@ def load_usv_squeak_model(model_path: str, device: torch.device) -> dict:
     Returns
     -------
     bundle (dict)
-        ``models`` (list[USVSqueakTimeMIL]), ``class_names`` (tuple), ``scalar_mean`` / ``scalar_std``
+        ``models`` (list[USVSqueakTimeMIL]), ``class_names`` (tuple, always ``VOCAL_CLASSES``: a legacy
+        bundle's ``"both"`` is returned as ``"overlap"``), ``scalar_mean`` / ``scalar_std``
         (float32 arrays), ``bands_hz``, ``db_floor``, ``db_ceil``, ``db_center``, ``db_half``,
         ``max_frames``, ``context_frames``, ``span_threshold`` (float, the squeak-frame threshold of
         the extent rule) and ``labels`` (the label files it was trained on).
@@ -370,13 +379,13 @@ def load_usv_squeak_model(model_path: str, device: torch.device) -> dict:
     FileNotFoundError
         The bundle does not exist.
     ValueError
-        The bundle is not a call-class bundle this module can score with.
+        The bundle is not a vocal-class bundle this module can score with.
     """
 
     path = pathlib.Path(configure_path(model_path))
     if not path.is_file():
         error_message = (
-            f"Call-class model bundle not found: {path}. Set processing_settings['detect_usv_squeaks']['squeak_model_path'] "
+            f"Vocal-class model bundle not found: {path}. Set processing_settings['detect_usv_squeaks']['squeak_model_path'] "
             f"or leave it empty to derive it from shared_resources['spectrograms_root']."
         )
         raise FileNotFoundError(error_message)
@@ -384,24 +393,25 @@ def load_usv_squeak_model(model_path: str, device: torch.device) -> dict:
     problems = []
     if checkpoint["model"] != USV_SQUEAK_MODEL_NAME:
         problems.append(f"model is {checkpoint['model']!r}, expected {USV_SQUEAK_MODEL_NAME!r} (the retired binary squeak checkpoint cannot be scored here)")
-    if tuple(checkpoint["class_names"]) != CALL_CLASSES:
-        problems.append(f"class_names are {checkpoint['class_names']}, expected {list(CALL_CLASSES)}")
+    stored_class_names = tuple("overlap" if name == LEGACY_OVERLAP_CLASS_NAME else name for name in checkpoint["class_names"])
+    if stored_class_names != VOCAL_CLASSES:
+        problems.append(f"class_names are {checkpoint['class_names']}, expected {list(VOCAL_CLASSES)}")
     if [tuple(band) for band in checkpoint["bands_hz"]] != [tuple(band) for band in NOISE_BANDS_HZ]:
         problems.append(f"bands_hz are {checkpoint['bands_hz']}, this module builds {list(NOISE_BANDS_HZ)}")
     if int(checkpoint["sampling_rate"]) != NOISE_SAMPLING_RATE or int(checkpoint["hop_samples"]) != HOP_SAMPLES:
         problems.append(f"sampling_rate / hop_samples are {checkpoint['sampling_rate']} / {checkpoint['hop_samples']}, expected {NOISE_SAMPLING_RATE} / {HOP_SAMPLES}")
     if problems:
-        error_message = f"{path} is not a call-class bundle detect-usv-squeaks can score with:\n  " + "\n  ".join(problems)
+        error_message = f"{path} is not a vocal-class bundle detect-usv-squeaks can score with:\n  " + "\n  ".join(problems)
         raise ValueError(error_message)
     models = []
     for state_dict in checkpoint["state_dicts"]:
-        model = USVSqueakTimeMIL(in_channels=checkpoint["in_channels"], n_scalars=checkpoint["n_scalars"], n_classes=len(CALL_CLASSES)).to(device)
+        model = USVSqueakTimeMIL(in_channels=checkpoint["in_channels"], n_scalars=checkpoint["n_scalars"], n_classes=len(VOCAL_CLASSES)).to(device)
         model.load_state_dict(state_dict)
         model.eval()
         models.append(model)
     return {
         "models": models,
-        "class_names": tuple(checkpoint["class_names"]),
+        "class_names": stored_class_names,
         "scalar_mean": np.asarray(checkpoint["scalar_mean"], dtype=np.float32),
         "scalar_std": np.asarray(checkpoint["scalar_std"], dtype=np.float32),
         "bands_hz": NOISE_BANDS_HZ,
@@ -423,7 +433,7 @@ def usv_squeak_window_input(
     """
     Description
     -----------
-    Reads one segment's audio window from the open broadband channel readers and builds its call-class
+    Reads one segment's audio window from the open broadband channel readers and builds its vocal-class
     input, the channels weighted by their stored low-band variance plus the window's own variance.
     The window is the noise model's (:func:`detect_usv_noise.window_segment_input`): it starts exactly
     ``context_frames`` hops before the segment's first sample ``floor(start * fs)`` (fewer at the start
@@ -490,7 +500,7 @@ def ensemble_usv_squeak_predict(
     """
     Description
     -----------
-    Scores call-class inputs with every member of an ensemble and returns the member-mean class
+    Scores vocal-class inputs with every member of an ensemble and returns the member-mean class
     probabilities (softmax) and frame squeak probabilities (sigmoid). Inputs are grouped into
     frame-budgeted batches (:func:`detect_usv_noise.frame_budget_batches`) and padded as in training
     (:func:`detect_usv_noise.pad_noise_batch`); the class head pools over each input's segment frames
@@ -512,12 +522,12 @@ def ensemble_usv_squeak_predict(
     Returns
     -------
     class_probability (np.ndarray)
-        ``(N, 3)`` member-mean class probabilities, in ``CALL_CLASSES`` order.
+        ``(N, 3)`` member-mean class probabilities, in ``VOCAL_CLASSES`` order.
     frame_probability (list[np.ndarray])
         Per input, the ``(T_i,)`` member-mean frame squeak probability.
     """
 
-    class_sum = np.zeros((len(inputs), len(CALL_CLASSES)), dtype=np.float64)
+    class_sum = np.zeros((len(inputs), len(VOCAL_CLASSES)), dtype=np.float64)
     frame_sum = [np.zeros(item.shape[2], dtype=np.float64) for item in inputs]
     batches = frame_budget_batches(inputs, batch_size)
     with torch.no_grad():
@@ -628,11 +638,11 @@ def classify_usv_squeak_rows(
     Description
     -----------
     Classifies every row of one session's USV summary that is not noise and returns the vocal-class
-    columns. For each such row the call-class input is built (:func:`usv_squeak_window_input`) with
+    columns. For each such row the vocal-class input is built (:func:`usv_squeak_window_input`) with
     the noise model's scalars (:func:`detect_usv_noise.noise_scalars`, standardized with the bundle's
     mean and std), the ensemble scores every input (:func:`ensemble_usv_squeak_predict`), the class is
     the arg-max of the mean probabilities, written as the ``usv`` / ``squeak`` booleans
-    (``CALL_CLASS_FLAGS``), and on rows with ``squeak`` true the squeak extent is the envelope of the
+    (``VOCAL_CLASS_FLAGS``), and on rows with ``squeak`` true the squeak extent is the envelope of the
     mean frame track's above-threshold frames touching the segment (:func:`squeak_envelope_frames`,
     with its fallback; :func:`frames_to_session_seconds`). Rows flagged as noise (``noise`` true; a
     null ``noise`` counts as not noise, :func:`os_utils.drop_noise_usvs`) are not read at all and get
@@ -649,7 +659,7 @@ def classify_usv_squeak_rows(
     usv_summary (pls.DataFrame)
         The session's USV summary (``start``, ``stop``, ``chs_count`` and ``noise`` are read).
     bundle (dict)
-        Loaded call-class bundle (:func:`load_usv_squeak_model`).
+        Loaded vocal-class bundle (:func:`load_usv_squeak_model`).
     device (torch.device)
         Scoring device.
     exclude_metadata_audio_channels (bool)
@@ -700,7 +710,7 @@ def classify_usv_squeak_rows(
 
     usv_flag: list[bool | None] = [None] * n_rows
     squeak_flag: list[bool | None] = [None] * n_rows
-    probability = np.full((n_rows, len(CALL_CLASSES)), np.nan, dtype=np.float64)
+    probability = np.full((n_rows, len(VOCAL_CLASSES)), np.nan, dtype=np.float64)
     squeak_start: list[float | None] = [None] * n_rows
     squeak_end: list[float | None] = [None] * n_rows
     n_fallback = 0
@@ -721,8 +731,8 @@ def classify_usv_squeak_rows(
             torch.backends.cudnn.benchmark = previous_benchmark
         for position, row in enumerate(scored_rows):
             probability[row] = class_probability[position]
-            label = CALL_CLASSES[int(np.argmax(class_probability[position]))]
-            usv_flag[row], squeak_flag[row] = CALL_CLASS_FLAGS[label]
+            label = VOCAL_CLASSES[int(np.argmax(class_probability[position]))]
+            usv_flag[row], squeak_flag[row] = VOCAL_CLASS_FLAGS[label]
             if squeak_flag[row]:
                 window = windows[position]
                 first, last, fallback = squeak_envelope_frames(
@@ -766,7 +776,7 @@ class USVSqueakDetector:
     """
     Description
     -----------
-    Classifies every USV segment of one session that is not noise as a pure USV, a pure squeak or both,
+    Classifies every USV segment of one session that is not noise as a pure USV, a pure squeak or an overlap,
     writes the class as the ``usv`` / ``squeak`` booleans with the squeak extent, and merges the
     vocal-class columns into its ``*_usv_summary.csv``.
     """
@@ -806,7 +816,7 @@ class USVSqueakDetector:
         """
         Description
         -----------
-        Loads the call-class bundle, classifies every non-noise row of the session's USV summary (see
+        Loads the vocal-class bundle, classifies every non-noise row of the session's USV summary (see
         :func:`classify_usv_squeak_rows`), and writes the ``VOCAL_CLASS_COLUMNS`` into the summary,
         replacing any existing ones (an old ``squeak`` column included) and removing the columns of
         earlier encodings (``RETIRED_SQUEAK_COLUMNS``). Every other column is left as it was. Run it
@@ -822,7 +832,7 @@ class USVSqueakDetector:
         """
 
         self.message_output(
-            f"USV call-class detection started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
+            f"USV vocal-class detection started at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
         )
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
@@ -831,7 +841,7 @@ class USVSqueakDetector:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         bundle = load_usv_squeak_model(cfg['squeak_model_path'], device)
         self.message_output(
-            f"Call classes {'/'.join(bundle['class_names'])} from a {len(bundle['models'])}-member ensemble; the squeak extent is the "
+            f"Vocal classes {'/'.join(bundle['class_names'])} from a {len(bundle['models'])}-member ensemble; the squeak extent is the "
             f"envelope of frames with squeak probability > {bundle['span_threshold']} touching the segment."
         )
 
@@ -862,11 +872,11 @@ class USVSqueakDetector:
         squeak_flag = scores[SQUEAK_FLAG_COLUMN].fill_null(False)
         self.message_output(
             f"Merged vocal classes into {usv_summary_loc.name}: {int((usv_flag & ~squeak_flag).sum())} pure usv, "
-            f"{int((squeak_flag & ~usv_flag).sum())} pure squeak, {int((usv_flag & squeak_flag).sum())} both among {usv_df.height} "
+            f"{int((squeak_flag & ~usv_flag).sum())} pure squeak, {int((usv_flag & squeak_flag).sum())} overlap among {usv_df.height} "
             f"segments ({int(scores[USV_FLAG_COLUMN].null_count())} without a class: noise or too short)."
         )
         self.message_output(
-            f"USV call-class detection ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
+            f"USV vocal-class detection ended at: {datetime.now().hour:02d}:{datetime.now().minute:02d}:{datetime.now().second:02d}."
         )
 
 
@@ -881,7 +891,7 @@ def read_usv_squeak_labels(label_sets: list[dict], label_overrides: list[dict], 
     (a review CSV in the labels format) replaces the label and spans of the panels it lists in the named
     set; the set's own CSV is never edited, and an override panel that the set does not hold stops the
     run. Unsure answers (``label`` 3) are dropped and counted; any other label outside 0 / 1 / 2 stops the
-    run, as does a ``usv`` label with spans or a ``squeak`` / ``both`` label without any. Row order is
+    run, as does a ``usv`` label with spans or a ``squeak`` / ``overlap`` label without any. Row order is
     the sets' order, then each labels CSV's order.
 
     Parameters
@@ -921,7 +931,7 @@ def read_usv_squeak_labels(label_sets: list[dict], label_overrides: list[dict], 
         # that looks numeric keeps its leading zeros and an all-empty column never changes type.
         path = pathlib.Path(configure_path(csv_path))
         if not path.is_file():
-            error_message = f"Call-class training file not found: {path}."
+            error_message = f"Vocal-class training file not found: {path}."
             raise FileNotFoundError(error_message)
         table = pls.read_csv(str(path), infer_schema_length=0)
         missing = [column for column in required if column not in table.columns]
@@ -971,19 +981,19 @@ def read_usv_squeak_labels(label_sets: list[dict], label_overrides: list[dict], 
         pls.col("label").cast(pls.Int64), pls.col("squeak_extents_s").fill_null("[]"), "reviewed",
     )
     if table.select(pls.col("sample_id", "session_dir", "row_index", "start", "stop", "label").null_count()).sum_horizontal()[0] > 0:
-        error_message = "Call-class training labels have empty cells in sample_id / session_dir / row_index / start / stop / label."
+        error_message = "Vocal-class training labels have empty cells in sample_id / session_dir / row_index / start / stop / label."
         raise ValueError(error_message)
     n_unsure = int((table["label"] == USV_SQUEAK_UNSURE_LABEL).sum())
     table = table.filter(pls.col("label") != USV_SQUEAK_UNSURE_LABEL)
     if not table["label"].is_in([0, 1, 2]).all():
-        error_message = "Call-class labels must be 0 (usv), 1 (squeak), 2 (both) or 3 (unsure)."
+        error_message = "Vocal-class labels must be 0 (usv), 1 (squeak), 2 (overlap) or 3 (unsure)."
         raise ValueError(error_message)
     n_spans = np.array([len(json.loads(text)) for text in table["squeak_extents_s"]], dtype=np.int64)
     labels_array = table["label"].to_numpy()
     if np.any((labels_array == 0) & (n_spans > 0)) or np.any((labels_array > 0) & (n_spans == 0)):
-        error_message = "Every usv label must have no squeak span and every squeak / both label at least one."
+        error_message = "Every usv label must have no squeak span and every squeak / overlap label at least one."
         raise ValueError(error_message)
-    counts = {name: int((labels_array == index).sum()) for index, name in enumerate(CALL_CLASSES)}
+    counts = {name: int((labels_array == index).sum()) for index, name in enumerate(VOCAL_CLASSES)}
     message_output(
         f"{table.height} labelled segment(s) from {table['session_dir'].n_unique()} session(s) in {len(label_sets)} set(s) "
         f"({counts}; {int(table['reviewed'].sum())} reviewed); {n_unsure} unsure answer(s) dropped."
@@ -999,7 +1009,7 @@ def session_usv_squeak_training_inputs(
     """
     Description
     -----------
-    Builds the call-class inputs of one session's labelled segments, opening the session's broadband
+    Builds the vocal-class inputs of one session's labelled segments, opening the session's broadband
     memmap (:func:`detect_usv_noise.squeak_audio_channels`) and USV summary once, and reads each
     segment's ``chs_count`` from the summary row the sample names (checking
     that the row still starts where the sample says). Run in a worker thread by
@@ -1056,7 +1066,7 @@ def build_usv_squeak_training_inputs(
     """
     Description
     -----------
-    Builds every labelled segment's call-class input exactly as ``detect-usv-squeaks`` builds it at
+    Builds every labelled segment's vocal-class input exactly as ``detect-usv-squeaks`` builds it at
     inference (:func:`usv_squeak_window_input` with ``USV_SQUEAK_INPUT_CONTRACT``, over the same
     broadband memmap channels and channel exclusion). Sessions are processed in ``n_workers``
     threads (the work is the latency of reading short windows on a network share), each
@@ -1093,7 +1103,7 @@ def build_usv_squeak_training_inputs(
         for session_number, future in enumerate(as_completed(futures), start=1):
             built.update(future.result())
             if session_number % 50 == 0 or session_number == len(futures):
-                message_output(f"Built call-class training inputs for {session_number}/{len(futures)} session(s), {len(built)} segment(s).")
+                message_output(f"Built vocal-class training inputs for {session_number}/{len(futures)} session(s), {len(built)} segment(s).")
     kept_rows = np.array(sorted(built), dtype=np.int64)
     if kept_rows.size < labels.height:
         dropped = sorted(set(range(labels.height)) - set(kept_rows.tolist()))
@@ -1181,7 +1191,7 @@ def train_usv_squeak_seed(
     cross-entropy (label smoothing ``recipe['label_smoothing']``; with ``recipe['class_weighted']``
     weighted by inverse training class frequency) plus ``recipe['frame_loss_weight']`` times the frame
     binary cross-entropy, averaged over the supervised frames of the batch: every valid frame of a
-    squeak / both segment (the labeller marked every squeak in view), but only the segment's own frames
+    squeak / overlap segment (the labeller marked every squeak in view), but only the segment's own frames
     of a usv segment (the label says the segment holds no squeak, not that its context holds none).
     Adam (``learning_rate``, ``weight_decay``) under a cosine schedule over all epochs, stepped per batch.
 
@@ -1219,15 +1229,15 @@ def train_usv_squeak_seed(
     """
 
     torch.manual_seed(seed)
-    model = USVSqueakTimeMIL(in_channels=inputs[0].shape[0], n_scalars=standardized_scalars.shape[1], n_classes=len(CALL_CLASSES)).to(device)
+    model = USVSqueakTimeMIL(in_channels=inputs[0].shape[0], n_scalars=standardized_scalars.shape[1], n_classes=len(VOCAL_CLASSES)).to(device)
     if trunk_state_dict is not None:
         trunk = {key: value for key, value in trunk_state_dict.items() if key.startswith(("body.", "tcn."))}
         loaded = model.load_state_dict(trunk, strict=False)
         if loaded.unexpected_keys:
-            error_message = f"The noise trunk holds keys the call-class network lacks: {loaded.unexpected_keys}."
+            error_message = f"The noise trunk holds keys the vocal-class network lacks: {loaded.unexpected_keys}."
             raise ValueError(error_message)
-    counts = np.bincount(y, minlength=len(CALL_CLASSES)).astype(np.float64)
-    class_weight = (torch.tensor(counts.sum() / (len(CALL_CLASSES) * counts), dtype=torch.float32, device=device)
+    counts = np.bincount(y, minlength=len(VOCAL_CLASSES)).astype(np.float64)
+    class_weight = (torch.tensor(counts.sum() / (len(VOCAL_CLASSES) * counts), dtype=torch.float32, device=device)
                     if recipe['class_weighted'] else None)
     class_loss = nn.CrossEntropyLoss(weight=class_weight, label_smoothing=recipe['label_smoothing'])
     optimizer = torch.optim.Adam(model.parameters(), lr=recipe['learning_rate'], weight_decay=recipe['weight_decay'])
@@ -1266,7 +1276,7 @@ class USVSqueakModelTrainer:
     """
     Description
     -----------
-    Trains the call-class ensemble on the labelling tool's files and writes a bundle
+    Trains the vocal-class ensemble on the labelling tool's files and writes a bundle
     ``detect-usv-squeaks`` loads unchanged.
     """
 
@@ -1325,7 +1335,7 @@ class USVSqueakModelTrainer:
         """
 
         start_time = datetime.now()
-        self.message_output(f"Call-class model training started at: {start_time.hour:02d}:{start_time.minute:02d}:{start_time.second:02d}.")
+        self.message_output(f"Vocal-class model training started at: {start_time.hour:02d}:{start_time.minute:02d}:{start_time.second:02d}.")
         derive_spectrogram_model_paths(self.input_parameter_dict)
         cfg = self.input_parameter_dict['train_usv_squeak_model']
         bundle_path = pathlib.Path(configure_path(self.bundle_path))
@@ -1379,7 +1389,7 @@ class USVSqueakModelTrainer:
         bundle = {
             "model": USV_SQUEAK_MODEL_NAME,
             "state_dicts": state_dicts,
-            "class_names": list(CALL_CLASSES),
+            "class_names": list(VOCAL_CLASSES),
             "in_channels": int(inputs[0].shape[0]), "n_scalars": int(raw_scalars.shape[1]),
             "scalar_names": list(NOISE_SCALAR_NAMES),
             "scalar_mean": scalar_mean.tolist(), "scalar_std": scalar_std.tolist(),
@@ -1402,7 +1412,7 @@ class USVSqueakModelTrainer:
             },
             "labels": [str(label_set['labels_csv']) for label_set in cfg['label_sets']],
             "label_overrides": [[override['name'], str(override['override_csv'])] for override in cfg['label_overrides']],
-            "n_labels": {name: int((y == index).sum()) for index, name in enumerate(CALL_CLASSES)},
+            "n_labels": {name: int((y == index).sum()) for index, name in enumerate(VOCAL_CLASSES)},
             "built_by": "usv_playpen train-usv-squeak-model",
             "created": datetime.now().isoformat(timespec="seconds"),
         }
@@ -1562,7 +1572,7 @@ def squeak_extent_frames(
     The first and last frame of a window's spectrogram whose centres lie inside the squeak extent
     ``[squeak_start, squeak_end]`` (closed): ``ceil((squeak_start - window_start) / FRAME_DT_S)`` and
     ``floor((squeak_end - window_start) / FRAME_DT_S)``, with a 1e-9-frame tolerance against float
-    error. This is the frame rule the call-class model's frame targets use, so a squeak's crop holds
+    error. This is the frame rule the vocal-class model's frame targets use, so a squeak's crop holds
     exactly the frames its span was labelled on.
 
     Parameters
@@ -1706,7 +1716,7 @@ def squeak_qlvm_rows(usv_summary: pls.DataFrame) -> np.ndarray:
     Description
     -----------
     The USV summary rows the squeak QLVM embedding (and the squeak spectrogram store) considers:
-    ``squeak`` true (pure squeaks and "both", :func:`os_utils.squeak_bearing_mask`) and not noise. A
+    ``squeak`` true (pure squeaks and overlap segments, :func:`os_utils.squeak_bearing_mask`) and not noise. A
     noise row has null booleans, so the noise test is a guard; a null ``noise`` (a segment the noise model could not score)
     counts as not noise, the single definition of noise the analyses share
     (:func:`os_utils.drop_noise_usvs`).
@@ -1751,7 +1761,7 @@ def squeak_qlvm_inputs(
     Description
     -----------
     Builds the squeak QLVM decoder inputs of one session: selects the rows with ``squeak`` true (pure
-    squeaks and "both") that are not noise (:func:`squeak_qlvm_rows`), leaves out rows without a
+    squeaks and overlap segments) that are not noise (:func:`squeak_qlvm_rows`), leaves out rows without a
     squeak extent (only possible in a hand-edited summary: every squeak row gets one), rebuilds each remaining row's sonic spectrogram over its crop window (the segment
     widened to hold the envelope plus its context, :func:`squeak_crop_window`,
     :func:`squeak_window_spectrograms`), crops each to its envelope plus context
@@ -1787,7 +1797,7 @@ def squeak_qlvm_inputs(
     squeak_inputs (dict)
         ``row_index`` (``(M,)`` int64 summary rows embedded), ``window_start_s`` (``(M,)`` float64),
         ``first`` / ``last`` (``(M,)`` int64 crop frames of the window), ``inputs`` (``(M, 128, 128)``
-        float32 decoder inputs), ``n_candidates`` (squeak / both rows that are not noise) and
+        float32 decoder inputs), ``n_candidates`` (squeak / overlap rows that are not noise) and
         ``excluded`` (reason -> number of candidate rows left out: ``"no squeak extent"``,
         ``"no spectrogram"``, ``"crop < 8 frames"``, ``"crop > 128 frames"``).
     """
@@ -2080,7 +2090,7 @@ class USVSqueakQLVMEmbedder:
     """
     Description
     -----------
-    Places every ``squeak`` / ``both`` row of one session that is not noise on the torus of a squeak
+    Places every ``squeak`` / ``overlap`` row of one session that is not noise on the torus of a squeak
     QLVM cell (:func:`load_squeak_qlvm_cell`, either layout) and merges ``qlvm_squeak1`` / ``qlvm_squeak2`` into its ``*_usv_summary.csv``.
     """
 
@@ -2124,7 +2134,7 @@ class USVSqueakQLVMEmbedder:
         (:func:`load_squeak_qlvm_cell`; an empty setting is filled with the
         production cell by ``os_utils.derive_spectrogram_model_paths`` and raises
         only when there is no ``spectrograms_root`` to derive it from), builds the decoder inputs of the
-        session's ``squeak`` / ``both`` rows that are not noise (:func:`squeak_qlvm_inputs`, one crop
+        session's ``squeak`` / ``overlap`` rows that are not noise (:func:`squeak_qlvm_inputs`, one crop
         per row over its squeak envelope, time-stretched or centred and normalized as the loaded cell
         was trained), embeds them as the posterior mean over the cell's lattice
         (:func:`qlvm_model.embed_data`) and writes ``qlvm_squeak1`` / ``qlvm_squeak2`` (torus
@@ -2183,7 +2193,7 @@ class USVSqueakQLVMEmbedder:
         left_out = ", ".join(f"{count} {reason}" for reason, count in squeak_inputs['excluded'].items() if count)
         null_note = f"; null {'/'.join(SQUEAK_QLVM_COLUMNS)} for {left_out}" if left_out else ""
         self.message_output(
-            f"{squeak_inputs['n_candidates']} squeak / both segments that are not noise, {squeak_inputs['row_index'].size} embedded{null_note}."
+            f"{squeak_inputs['n_candidates']} squeak / overlap segments that are not noise, {squeak_inputs['row_index'].size} embedded{null_note}."
         )
 
         coords = np.empty((0, 2), dtype=np.float64)
@@ -2218,7 +2228,7 @@ class USVSqueakQLVMEmbedder:
 
 @click.command(name="detect-usv-squeaks")
 @click.option('--root-directory', type=click.Path(exists=True, file_okay=False, dir_okay=True), required=True, help='Session root directory path.')
-@click.option('--squeak-model-path', 'squeak_model_path', type=str, default=None, required=False, help='Path to the call-class (usv / squeak / both) model bundle (.pt); derived from spectrograms_root when empty.')
+@click.option('--squeak-model-path', 'squeak_model_path', type=str, default=None, required=False, help='Path to the vocal-class (usv / squeak / overlap) model bundle (.pt); derived from spectrograms_root when empty.')
 @click.option('--exclude-metadata-audio-channels/--no-exclude-metadata-audio-channels', 'exclude_metadata_audio_channels', default=None, required=False, help='Drop channels the session metadata marks as excluded from the spectrogram average.')
 @click.option('--batch-size', 'batch_size', type=int, default=None, required=False, help='Segments per forward pass at the typical window length; a batch is budgeted at batch-size x 128 frame slots, so one long window never inflates it.')
 @click.pass_context
@@ -2226,8 +2236,8 @@ def detect_usv_squeaks_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
     -----------
-    A command-line tool to classify every non-noise USV segment of a session as usv / squeak / both,
-    locate its squeaks, and merge the call-class columns into its USV summary CSV.
+    A command-line tool to classify every non-noise USV segment of a session as usv / squeak / overlap,
+    locate its squeaks, and merge the vocal-class columns into its USV summary CSV.
 
     Parameters
     ----------
@@ -2274,7 +2284,7 @@ def train_usv_squeak_model_cli(ctx, bundle_path, label_set, label_override, **kw
     """
     Description
     -----------
-    A command-line tool to train the call-class (usv / squeak / both) ensemble on the labelling tool's
+    A command-line tool to train the vocal-class (usv / squeak / overlap) ensemble on the labelling tool's
     files and write a bundle detect-usv-squeaks loads unchanged.
 
     Parameters
@@ -2321,7 +2331,7 @@ def infer_qlvm_squeak_latents_cli(ctx, root_directory, **kwargs) -> None:
     """
     Description
     -----------
-    A command-line tool to place a session's squeak / both segments that are not noise on the torus of a
+    A command-line tool to place a session's squeak / overlap segments that are not noise on the torus of a
     squeak QLVM cell and merge ``qlvm_squeak1`` / ``qlvm_squeak2`` into its USV summary CSV.
 
     Parameters

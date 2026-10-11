@@ -670,12 +670,12 @@ class TestBuildVocalSignalColumns:
         }
 
     def test_falsy_predictor_type_returns_empty(self):
-        """A falsy ``usv_predictor_type`` short-circuits to empty lists."""
+        """A falsy ``vocal_predictor_type`` short-circuits to empty lists."""
 
         cols, names = build_vocal_signal_columns(
             self._usv_dict(), 'sess', 'mTarget', 'mPartner',
-            voc_settings={'usv_predictor_type': None,
-                          'usv_predictor_partner_only': False},
+            voc_settings={'vocal_predictor_type': None,
+                          'vocal_predictor_partner_only': False},
         )
         assert cols == [] and names == []
 
@@ -686,8 +686,8 @@ class TestBuildVocalSignalColumns:
 
         cols, names = build_vocal_signal_columns(
             self._usv_dict(), 'sess', 'mTarget', 'mPartner',
-            voc_settings={'usv_predictor_type': 'continuous',
-                          'usv_predictor_partner_only': False},
+            voc_settings={'vocal_predictor_type': 'continuous',
+                          'vocal_predictor_partner_only': False},
         )
         assert 'mTarget.usv_rate' not in names
         assert 'mTarget.usv_event' not in names
@@ -697,14 +697,34 @@ class TestBuildVocalSignalColumns:
         # The Series list mirrors the names list one-to-one.
         assert [s.name for s in cols] == names
 
+    def test_self_exclusion_covers_every_pooled_trace_name(self):
+        """Every pooled trace of the target mouse is left out whatever its name
+        ('squeak_rate', 'overlap_event', 'all_vocalizations_rate'), its per-category
+        traces of any name survive, and an extra ``usv_self_exclude`` key is left out
+        on top; the partner keeps everything."""
+
+        signals = {
+            'squeak_rate': np.zeros(3), 'overlap_event': np.zeros(3), 'all_vocalizations_rate': np.zeros(3),
+            'overlap_cat_2': np.zeros(3), 'usv_cat_1': np.zeros(3),
+        }
+        d = {'sess': {'mTarget': {'continuous_vocal_signals': dict(signals)},
+                      'mPartner': {'continuous_vocal_signals': dict(signals)}}}
+        _cols, names = build_vocal_signal_columns(
+            d, 'sess', 'mTarget', 'mPartner',
+            voc_settings={'vocal_predictor_type': 'pooled_rate', 'vocal_predictor_partner_only': False},
+            usv_self_exclude=('usv_cat_1',),
+        )
+        assert [n for n in names if n.startswith('mTarget.')] == ['mTarget.overlap_cat_2']
+        assert sorted(n for n in names if n.startswith('mPartner.')) == sorted(f"mPartner.{k}" for k in signals)
+
     def test_partner_only_emits_partner_signals_only(self):
-        """``usv_predictor_partner_only`` restricts emission to the partner
+        """``vocal_predictor_partner_only`` restricts emission to the partner
         mouse."""
 
         _cols, names = build_vocal_signal_columns(
             self._usv_dict(), 'sess', 'mTarget', 'mPartner',
-            voc_settings={'usv_predictor_type': 'continuous',
-                          'usv_predictor_partner_only': True},
+            voc_settings={'vocal_predictor_type': 'continuous',
+                          'vocal_predictor_partner_only': True},
         )
         assert all(n.startswith('mPartner.') for n in names)
         assert names  # non-empty
@@ -717,8 +737,8 @@ class TestBuildVocalSignalColumns:
         del d['sess']['mPartner']
         _cols, names = build_vocal_signal_columns(
             d, 'sess', 'mTarget', 'mPartner',
-            voc_settings={'usv_predictor_type': 'continuous',
-                          'usv_predictor_partner_only': True},
+            voc_settings={'vocal_predictor_type': 'continuous',
+                          'vocal_predictor_partner_only': True},
         )
         # partner_only=True but partner absent -> nothing emitted.
         assert names == []

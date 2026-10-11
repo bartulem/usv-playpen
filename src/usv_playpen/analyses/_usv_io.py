@@ -19,7 +19,7 @@ from typing import Any
 import h5py
 import polars as pls
 
-from ..os_utils import call_class_mask, drop_noise_usvs
+from ..os_utils import drop_noise_usvs, vocal_class_mask
 from ..yaml_utils import extract_animal_sexes
 
 __all__ = [
@@ -230,7 +230,7 @@ def load_and_filter_usv_data(
         if call_type not in ("usv", "squeak"):
             msg = f"load_and_filter_usv_data: call_type must be 'usv', 'squeak' or None, got {call_type!r}."
             raise ValueError(msg)
-        usv_info_clean = usv_info_clean.filter(call_class_mask(usv_info_clean, (call_type,), usv_file.name))
+        usv_info_clean = usv_info_clean.filter(vocal_class_mask(usv_info_clean, (call_type,), usv_file.name))
 
     return usv_info_clean.with_columns(
         (pls.col("start") * frame_rate).floor().cast(pls.UInt32).alias("frame_index")

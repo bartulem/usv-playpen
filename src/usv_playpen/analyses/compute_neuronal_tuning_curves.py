@@ -45,6 +45,7 @@ order, never clobbers the other's output.
 
 from __future__ import annotations
 
+import json
 import pathlib
 import pickle
 from collections import OrderedDict
@@ -55,14 +56,15 @@ import h5py
 import numpy as np
 import polars as pls
 from scipy import ndimage, stats
+from scipy.special import erf
 from tqdm import tqdm
 
 from ..os_utils import (
     QLVM_CATEGORY_COLUMNS,
     atomic_output_path,
-    call_class_mask,
     drop_noise_usvs,
     first_match_or_raise,
+    vocal_class_mask,
 )
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import extract_animal_sexes
@@ -724,6 +726,150 @@ def _bin_count_for_property(prop: str, default_n_bins: int) -> int:
     return int(default_n_bins)
 
 
+def ibi_bout_threshold(sex: str, ibi_z_score: float, ibi_component_index: int) -> float:
+    """
+    Description
+    -----------
+    The inter-bout silence that ends an IBI bout, in seconds, for one emitter sex.
+
+    Read from the log inter-syllable-interval mixture in `modeling_settings.json`, exactly as
+    `build_naturalistic_usv_repository` does: the chosen component's mean plus `ibi_z_score`
+    standard deviations, exponentiated back out of log space. Component 0 is the respiratory
+    rhythm, which for the male at z = 2.58 puts the threshold at 115.5 ms.
+
+    This is NOT `bout_quiet_seconds`, which is the VMI baseline window and groups USVs only as a
+    side effect of guaranteeing a silent pre-window. The two describe different objects and both
+    are correct for their own analysis.
+
+    Parameters
+    ----------
+    sex (str)
+        Emitter sex, keying the mixture ('male' or 'female').
+    ibi_z_score (float)
+        How many standard deviations above the component mean the threshold sits.
+    ibi_component_index (int)
+        Which mixture component to read.
+
+    Returns
+    -------
+    threshold (float)
+        Inter-bout silence in seconds.
+    """
+
+    settings_dir = pathlib.Path(__file__).parent.parent / "_parameter_settings"
+    with (settings_dir / "modeling_settings.json").open(encoding="utf-8") as modeling_file:
+        mixture_params = json.load(modeling_file)["mixture_model_params"]
+    if sex not in mixture_params:
+        msg = (f"No inter-syllable mixture for emitter sex {sex!r}; "
+               f"modeling_settings.json carries {sorted(mixture_params)}.")
+        raise KeyError(msg)
+    component = mixture_params[sex]
+    return float(np.exp(component["means"][ibi_component_index]
+                        + ibi_z_score * component["sds"][ibi_component_index]))
+
+
+def ibi_bout_runs(starts: np.ndarray, stops: np.ndarray, ibi_threshold: float,
+                  min_vocalizations: int) -> list:
+    """
+    Description
+    -----------
+    The USV indices of every qualifying IBI bout, found before any binning or windowing.
+
+    A bout is a maximal run of USVs whose consecutive silences all fall under `ibi_threshold`.
+    Runs shorter than `min_vocalizations` are not bouts and their USVs are left unassigned. The
+    `>=` comparison matches `build_naturalistic_usv_repository._segment_bouts`; `_detect_bouts`
+    uses `>` and a different threshold, and answers a different question.
+
+    Parameters
+    ----------
+    starts, stops (np.ndarray)
+        Emitter USV onsets and offsets in seconds, sorted by onset.
+    ibi_threshold (float)
+        A silence at least this long ends a bout, in seconds.
+    min_vocalizations (int)
+        Fewest USVs a run needs to count as a bout.
+
+    Returns
+    -------
+    runs (list)
+        One array of USV indices per bout, in time order.
+    """
+
+    if starts.size == 0:
+        return []
+    breaks = np.flatnonzero(starts[1:] - stops[:-1] >= ibi_threshold) + 1
+    return [r for r in np.split(np.arange(starts.size), breaks) if r.size >= min_vocalizations]
+
+
+def ibi_bout_extents(starts: np.ndarray, stops: np.ndarray, ibi_threshold: float,
+                     min_vocalizations: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Description
+    -----------
+    First USV onset and last USV offset of every qualifying IBI bout.
+
+    Parameters
+    ----------
+    starts, stops (np.ndarray)
+        Emitter USV onsets and offsets in seconds, sorted by onset.
+    ibi_threshold (float)
+        A silence at least this long ends a bout, in seconds.
+    min_vocalizations (int)
+        Fewest USVs a run needs to count as a bout.
+
+    Returns
+    -------
+    bout_starts, bout_stops (tuple[np.ndarray, np.ndarray])
+        Extents of each bout, empty when none qualify.
+    """
+
+    runs = ibi_bout_runs(starts, stops, ibi_threshold, min_vocalizations)
+    if not runs:
+        return np.empty(0, dtype=float), np.empty(0, dtype=float)
+    return (np.array([starts[r[0]] for r in runs], dtype=float),
+            np.array([stops[r[-1]] for r in runs], dtype=float))
+
+
+def weighted_usv_response(spike_times: np.ndarray, usv_start: float, response_window: float,
+                           response_kernel: float) -> float:
+    """
+    Description
+    -----------
+    A USV's spike response, counted through a Gaussian rather than a hard window edge.
+
+    A plain count over a short window is an integer, so per-USV responses stack on a handful of
+    values and a first-versus-later comparison becomes a comparison of small integers. Weighting
+    each spike by how much of the Gaussian-smeared window it falls in makes the quantity
+    continuous at the same expected value.
+
+    Parameters
+    ----------
+    spike_times (np.ndarray)
+        Sorted spike times in seconds.
+    usv_start (float)
+        USV onset in seconds.
+    response_window (float)
+        Width of the counting window after onset, in seconds.
+    response_kernel (float)
+        Standard deviation of the smoothing kernel, in seconds.
+
+    Returns
+    -------
+    response (float)
+        Weighted spike count.
+    """
+
+    scale = response_kernel * np.sqrt(2.0)
+    lo = usv_start - 3.0 * response_kernel
+    hi = usv_start + response_window + 3.0 * response_kernel
+    near = spike_times[(spike_times >= lo) & (spike_times <= hi)]
+    if near.size == 0:
+        return 0.0
+    upper = erf((usv_start + response_window - near) / scale)
+    lower = erf((usv_start - near) / scale)
+    return float(np.sum(0.5 * (upper - lower)))
+
+
 def _percentiles_block(arr: np.ndarray) -> dict:
     """
     Description
@@ -752,6 +898,160 @@ def _percentiles_block(arr: np.ndarray) -> dict:
         "null_p97_5": np.nanpercentile(arr, 97.5, axis=0),
         "null_p99_5": np.nanpercentile(arr, 99.5, axis=0),
     }
+
+
+def ibi_bout_onset_statistics(spike_times: np.ndarray, usv_starts: np.ndarray,
+                              runs: list, duration_seconds: float, cfg: dict) -> dict:
+    """
+    Description
+    -----------
+    Five descriptors of how a unit behaves around the onset of an IBI bout.
+
+    All five are referenced to the unit's own session firing rate rather than to its pre-onset
+    window, because the pre-onset window is occupied by the PREVIOUS bout on roughly half of all
+    bouts, so a pre-window baseline would silently subtract part of the response.
+
+      onset_gain        rate over `gain_window_seconds` after onset, over the session rate
+      peak_latency      where the smoothed bout-triggered rate peaks within the search window
+      pre_onset_gain    rate over `pre_window_seconds` before onset, over the session rate
+      first_over_later  the bout's first USV's response over the mean of its later USVs'
+      fraction_first_above   share of bouts whose first USV drew more than its later ones
+
+    `first_over_later` averages over EVERY USV after the first, not the last ones, so a 27-USV
+    bout contributes one point whose x is the mean of USVs 2-27.
+
+    Parameters
+    ----------
+    spike_times (np.ndarray)
+        Sorted spike times in seconds.
+    usv_starts (np.ndarray)
+        Emitter USV onsets in seconds, sorted.
+    runs (list)
+        USV indices per bout, from `ibi_bout_runs`.
+    duration_seconds (float)
+        Session length in seconds.
+    cfg (dict)
+        The `ibi_bout_onset` settings sub-block.
+
+    Returns
+    -------
+    stats (dict)
+        The five descriptors; NaN where a unit never fires or a bout has no later USVs.
+    """
+
+    keys = ("onset_gain", "peak_latency", "pre_onset_gain", "first_over_later",
+            "fraction_first_above")
+    if not runs or spike_times.size == 0:
+        return dict.fromkeys(keys, np.nan)
+
+    session_rate = spike_times.size / duration_seconds
+    window_lo, window_hi = (float(cfg["trigger_window_seconds"][0]),
+                            float(cfg["trigger_window_seconds"][1]))
+    bin_s = float(cfg["trigger_bin_seconds"])
+    edges = np.arange(window_lo, window_hi + bin_s, bin_s)
+    centres = edges[:-1] + bin_s / 2.0
+    onsets = np.array([usv_starts[r[0]] for r in runs], dtype=float)
+    per_bout = np.vstack([np.histogram(spike_times - a, bins=edges)[0] / bin_s for a in onsets])
+    trace = _gaussian_smooth_1d(per_bout.mean(axis=0), float(cfg["smoothing_bins"]))
+
+    gain_lo, gain_hi = cfg["gain_window_seconds"]
+    pre_lo, pre_hi = cfg["pre_window_seconds"]
+    peak_lo, peak_hi = cfg["peak_search_seconds"]
+    in_gain = (centres >= gain_lo) & (centres <= gain_hi)
+    in_pre = (centres >= pre_lo) & (centres <= pre_hi)
+    in_peak = (centres >= peak_lo) & (centres <= peak_hi)
+
+    response_window = float(cfg["response_window_seconds"])
+    response_kernel = float(cfg["response_kernel_seconds"])
+    first, later = [], []
+    for run in runs:
+        if run.size < 2:
+            continue
+        first.append(weighted_usv_response(spike_times, float(usv_starts[run[0]]),
+                                            response_window, response_kernel))
+        later.append(float(np.mean([weighted_usv_response(spike_times, float(usv_starts[k]),
+                                                           response_window, response_kernel)
+                                    for k in run[1:]])))
+    first, later = np.asarray(first, dtype=float), np.asarray(later, dtype=float)
+
+    return {
+        "onset_gain": float(trace[in_gain].mean() / session_rate) if session_rate > 0 else np.nan,
+        "peak_latency": float(centres[in_peak][int(np.argmax(trace[in_peak]))]),
+        "pre_onset_gain": float(trace[in_pre].mean() / session_rate) if session_rate > 0
+        else np.nan,
+        "first_over_later": float(first.mean() / later.mean()) if later.size and later.mean() > 0
+        else np.nan,
+        "fraction_first_above": float(np.mean(first > later)) if first.size else np.nan,
+    }
+
+
+def ibi_bout_onset_block(spike_times: np.ndarray, usv_starts: np.ndarray, runs: list,
+                         duration_seconds: float, cfg: dict, ibi_threshold: float,
+                         shuffle_offsets: np.ndarray) -> dict:
+    """
+    Description
+    -----------
+    The bout-onset descriptors with a circular-shift null for each, ready to merge into a pkl.
+
+    The null shifts the spike train and leaves the bouts untouched, so it asks whether this unit's
+    spiking is aligned to bout onsets rather than whether bouts exist. Only summaries are kept,
+    matching the other vocal blocks: observed value, `_percentiles_block` aggregates and a
+    two-sided empirical p. Suppression is as real as elevation here, which is why the p is
+    two-sided and the direction is carried separately by the sign of the observed value.
+
+    Parameters
+    ----------
+    spike_times (np.ndarray)
+        Sorted spike times in seconds.
+    usv_starts (np.ndarray)
+        Emitter USV onsets in seconds, sorted.
+    runs (list)
+        USV indices per bout, from `ibi_bout_runs`.
+    duration_seconds (float)
+        Session length in seconds.
+    cfg (dict)
+        The `ibi_bout_onset` settings sub-block.
+    ibi_threshold (float)
+        The inter-bout silence used, recorded so a reader never has to infer it.
+    shuffle_offsets (np.ndarray)
+        Circular shifts in seconds, one per draw.
+
+    Returns
+    -------
+    payload (dict)
+        Per statistic the observed value, null aggregates and `p_two_sided`; plus `n_bouts`,
+        `n_shuffles` and `ibi_threshold_seconds`.
+    """
+
+    observed = ibi_bout_onset_statistics(spike_times, usv_starts, runs, duration_seconds, cfg)
+    draws = [ibi_bout_onset_statistics(
+        _circular_shift_spike_times(spike_times, duration_seconds, float(offset)),
+        usv_starts, runs, duration_seconds, cfg) for offset in shuffle_offsets]
+
+    payload = {"n_bouts": len(runs), "n_shuffles": int(shuffle_offsets.size),
+               "ibi_threshold_seconds": float(ibi_threshold)}
+    for key, value in observed.items():
+        null = np.asarray([d[key] for d in draws], dtype=float)
+        entry = {"observed": value}
+        finite = null[np.isfinite(null)]
+        # A statistic can be undefined for every draw -- a unit that never fires has no peak
+        # latency, and a bout with no later USVs has no ratio. Handing an all-NaN array to the
+        # percentile helper is well defined but noisy, and the suite runs warnings as errors, so
+        # the aggregates are filled in directly instead.
+        if finite.size == 0:
+            entry.update({name: np.nan for name in
+                          ("null_mean", "null_std", "null_p0_5", "null_p2_5", "null_p97_5",
+                           "null_p99_5")})
+        else:
+            entry.update(_percentiles_block(null))
+        if np.isfinite(value) and finite.size:
+            exceed = int(np.sum(np.abs(finite - np.nanmean(finite))
+                                >= abs(value - np.nanmean(finite))))
+            entry["p_two_sided"] = (1 + exceed) / (finite.size + 1)
+        else:
+            entry["p_two_sided"] = np.nan
+        payload[key] = entry
+    return payload
 
 
 def _gaussian_smooth_1d(
@@ -1295,6 +1595,105 @@ def _ramp_index(rate: np.ndarray, bin_centers_s: np.ndarray) -> float:
 # unified class
 
 
+def load_vocal_inputs(root_directory: str | pathlib.Path) -> dict | None:
+    """
+    Description
+    -----------
+    Locate `*_usv_summary.csv` and the tracking H5; filter the USV
+    summary to non-noise rows (raising when it has no ``usv`` /
+    ``squeak`` columns, which the squeak and category exclusions need), read the animals
+    from h5 `track_names` and each animal's sex from the session metadata
+    (``yaml_utils.extract_animal_sexes``: the ``Subjects`` entry whose ``subject_id``
+    matches the stripped track name -- never the track slot, so a female-female session
+    has two female sides and a male-male session two male sides; a track the metadata
+    cannot resolve raises), and derive session duration from the H5 as
+    `tracks.shape[0] / recording_frame_rate` (same time base the
+    spikes are aligned to). Returns None if either required file
+    is missing or the filtered USV table is empty.
+
+    Parameters
+    ----------
+    root_directory (str | pathlib.Path)
+        Session root directory.
+
+    Returns
+    -------
+    bundle (dict | None)
+        None if any required input is missing; otherwise a dict with
+        keys: `usv_df` (filtered pls.DataFrame), `track_names`
+        (stripped, file order), `animal_sex` (stripped track name ->
+        'male' / 'female', from the session metadata),
+        `duration_seconds`, `starts`, `stops`,
+        `emitters`, `is_usv` (bool per row; True only on pure USVs,
+        ``usv & ~squeak``, so pure squeaks, overlap segments and
+        null booleans are False).
+    """
+
+    root = pathlib.Path(root_directory)
+    try:
+        usv_csv = first_match_or_raise(
+            root=root,
+            pattern="*_usv_summary.csv",
+            recursive=True,
+            label="USV summary CSV",
+        )
+    except (StopIteration, FileNotFoundError):
+        return None
+
+    df = pls.read_csv(str(usv_csv))
+    # Noise segments are excluded here, not left to the caller: a tuning curve built over
+    # detections that hold no vocalization is not a vocal tuning curve. A session whose summary
+    # carries no `noise` column raises rather than silently contributing its noise.
+    df = drop_noise_usvs(df, usv_csv.name)[0]
+    if df.shape[0] == 0:
+        return None
+    # Segments that are not pure USVs (usv & ~squeak: pure squeaks, overlap segments,
+    # unscored nulls) are dropped from the anchors per side (exclude_squeaks_self /
+    # exclude_squeaks_partner) and always from the QLVM category tuning, so the two booleans
+    # are required; a summary without them raises (vocal_class_mask) rather than silently
+    # tuning to squeaks.
+    is_usv = vocal_class_mask(df, ("usv",), usv_csv.name).to_numpy()
+
+    emitters = [
+        (e.strip() if e is not None else None) for e in df["emitter"].to_list()
+    ]
+    starts = df["start"].to_numpy()
+    stops = df["stop"].to_numpy()
+
+    try:
+        h5_path = first_match_or_raise(
+            root=root,
+            pattern="[!speaker]*_points3d_translated_rotated_metric.h5*",
+            recursive=True,
+            label="translated/rotated mouse points3d .h5",
+        )
+    except (StopIteration, FileNotFoundError):
+        return None
+    # Session duration is derived from the tracking H5: the leading
+    # axis of `tracks` is the frame count, divided by the camera
+    # frame rate gives seconds. This is the SAME time base the
+    # spike data is aligned to (and that the behavioral compute
+    # uses), so circular shuffles wrap modulo the right interval.
+    with h5py.File(h5_path, mode="r") as f:
+        track_names = [t.decode("utf-8").strip("\x00").strip() for t in f["track_names"]]
+        n_frames = int(f["tracks"].shape[0])
+        recording_fr = float(f["recording_frame_rate"][()])
+    duration_seconds = float(n_frames) / recording_fr
+    # Sex per animal from the session metadata, never from the track slot.
+    animal_sex = extract_animal_sexes(str(root), track_names)
+
+    return {
+        "usv_df": df,
+        "track_names": track_names,
+        "animal_sex": animal_sex,
+        "duration_seconds": duration_seconds,
+        "starts": starts,
+        "stops": stops,
+        "emitters": np.array(emitters, dtype=object),
+        "is_usv": is_usv,
+    }
+
+
 class NeuronalTuning(FeatureZoo):
     """
     Description
@@ -1485,17 +1884,9 @@ class NeuronalTuning(FeatureZoo):
         """
         Description
         -----------
-        Locate `*_usv_summary.csv` and the tracking H5; filter the USV
-        summary to non-noise rows (raising when it has no ``usv`` /
-        ``squeak`` columns, which the squeak and category exclusions need), read the animals
-        from h5 `track_names` and each animal's sex from the session metadata
-        (``yaml_utils.extract_animal_sexes``: the ``Subjects`` entry whose ``subject_id``
-        matches the stripped track name -- never the track slot, so a female-female session
-        has two female sides and a male-male session two male sides; a track the metadata
-        cannot resolve raises), and derive session duration from the H5 as
-        `tracks.shape[0] / recording_frame_rate` (same time base the
-        spikes are aligned to). Returns None if either required file
-        is missing or the filtered USV table is empty.
+        Session-level vocal inputs for this instance's root directory. A thin wrapper over the
+        module-level `load_vocal_inputs`, which the bout-occupancy decoder reuses so the two
+        analyses never drift on noise filtering, squeak exclusion, emitter sex or the time base.
 
         Parameters
         ----------
@@ -1504,79 +1895,10 @@ class NeuronalTuning(FeatureZoo):
         Returns
         -------
         bundle (dict | None)
-            None if any required input is missing; otherwise a dict with
-            keys: `usv_df` (filtered pls.DataFrame), `track_names`
-            (stripped, file order), `animal_sex` (stripped track name ->
-            'male' / 'female', from the session metadata),
-            `duration_seconds`, `starts`, `stops`,
-            `emitters`, `is_usv` (bool per row; True only on pure USVs,
-            ``usv & ~squeak``, so pure squeaks, segments holding both and
-            null booleans are False).
+            See `load_vocal_inputs`.
         """
 
-        root = pathlib.Path(self.root_directory)
-        try:
-            usv_csv = first_match_or_raise(
-                root=root,
-                pattern="*_usv_summary.csv",
-                recursive=True,
-                label="USV summary CSV",
-            )
-        except (StopIteration, FileNotFoundError):
-            return None
-
-        df = pls.read_csv(str(usv_csv))
-        # Noise segments are excluded here, not left to the caller: a tuning curve built over
-        # detections that hold no vocalization is not a vocal tuning curve. A session whose summary
-        # carries no `noise` column raises rather than silently contributing its noise.
-        df = drop_noise_usvs(df, usv_csv.name)[0]
-        if df.shape[0] == 0:
-            return None
-        # Segments that are not pure USVs (usv & ~squeak: pure squeaks, segments holding both,
-        # unscored nulls) are dropped from the anchors per side (exclude_squeaks_self /
-        # exclude_squeaks_partner) and always from the QLVM category tuning, so the two booleans
-        # are required; a summary without them raises (call_class_mask) rather than silently
-        # tuning to squeaks.
-        is_usv = call_class_mask(df, ("usv",), usv_csv.name).to_numpy()
-
-        emitters = [
-            (e.strip() if e is not None else None) for e in df["emitter"].to_list()
-        ]
-        starts = df["start"].to_numpy()
-        stops = df["stop"].to_numpy()
-
-        try:
-            h5_path = first_match_or_raise(
-                root=root,
-                pattern="[!speaker]*_points3d_translated_rotated_metric.h5*",
-                recursive=True,
-                label="translated/rotated mouse points3d .h5",
-            )
-        except (StopIteration, FileNotFoundError):
-            return None
-        # Session duration is derived from the tracking H5: the leading
-        # axis of `tracks` is the frame count, divided by the camera
-        # frame rate gives seconds. This is the SAME time base the
-        # spike data is aligned to (and that the behavioral compute
-        # uses), so circular shuffles wrap modulo the right interval.
-        with h5py.File(h5_path, mode="r") as f:
-            track_names = [t.decode("utf-8").strip("\x00").strip() for t in f["track_names"]]
-            n_frames = int(f["tracks"].shape[0])
-            recording_fr = float(f["recording_frame_rate"][()])
-        duration_seconds = float(n_frames) / recording_fr
-        # Sex per animal from the session metadata, never from the track slot.
-        animal_sex = extract_animal_sexes(str(root), track_names)
-
-        return {
-            "usv_df": df,
-            "track_names": track_names,
-            "animal_sex": animal_sex,
-            "duration_seconds": duration_seconds,
-            "starts": starts,
-            "stops": stops,
-            "emitters": np.array(emitters, dtype=object),
-            "is_usv": is_usv,
-        }
+        return load_vocal_inputs(self.root_directory)
 
     # main entry point
 
@@ -2871,6 +3193,7 @@ class NeuronalTuning(FeatureZoo):
         prop_min_occ_s = float(params["usv_property_min_occupancy_seconds"])
         n_min_category = int(params["n_usv_min_category"])
         bout_quiet_s = float(params["bout_quiet_seconds"])
+        ibi_cfg = params["ibi_bout_onset"]
         smoothing_sd = float(params["smoothing_sd"])
         require_post = bool(params["vocal_require_clean_post_anchor"])
         require_prior = bool(params["vocal_require_clean_prior_anchor"])
@@ -3052,6 +3375,7 @@ class NeuronalTuning(FeatureZoo):
             "usv_property_tuning": OrderedDict(),
             "usv_category_tuning": OrderedDict(),
             "usv_category_peth": OrderedDict(),
+            "usv_ibi_bout_onset": OrderedDict(),
             "triage_stats": {"vmi": OrderedDict()},
         }
 
@@ -3089,6 +3413,42 @@ class NeuronalTuning(FeatureZoo):
             vmi_payload["sex"] = sex_label
             vmi_payload["emitter"] = emitter_str
             partial["triage_stats"]["vmi"][emitter_str] = vmi_payload
+
+            # Bout-onset descriptors on IBI bouts, which group USVs at the emitter's own
+            # respiratory tempo and are a different object from the VMI bouts above: those are
+            # grouped by `bout_quiet_s` because that is the VMI baseline window. The threshold is
+            # read from this side's own sex, so a female side is not segmented by a male rhythm.
+            ibi_threshold = ibi_bout_threshold(
+                sex_label, float(ibi_cfg["ibi_z_score"]), int(ibi_cfg["ibi_component_index"])
+            )
+            ibi_runs = ibi_bout_runs(
+                em_starts, em_stops, ibi_threshold, int(ibi_cfg["min_vocalizations"])
+            )
+            # The bout-onset null draws its shifts from [guard, duration - guard] rather than
+            # the block's fixed 20-60 s window. A 40 s window holds only about ten effectively
+            # independent draws once the statistic's own decorrelation time is accounted for,
+            # which floors the attainable p far above what a cohort-wide correction needs. The
+            # other statistics in this module keep their original range so their banked results
+            # stay comparable.
+            ibi_offsets = _generate_shuffle_offsets(
+                n_shuffles=n_shuffles,
+                shuffle_min_seconds=float(ibi_cfg["shuffle_guard_seconds"]),
+                shuffle_max_seconds=duration_seconds - float(ibi_cfg["shuffle_guard_seconds"]),
+                seed=params["shuffle_seed"],
+            )
+            ibi_payload = ibi_bout_onset_block(
+                spike_times=spike_times_observed,
+                usv_starts=em_starts,
+                runs=ibi_runs,
+                duration_seconds=duration_seconds,
+                cfg=ibi_cfg,
+                ibi_threshold=ibi_threshold,
+                shuffle_offsets=ibi_offsets,
+            )
+            ibi_payload["role"] = role
+            ibi_payload["sex"] = sex_label
+            ibi_payload["emitter"] = emitter_str
+            partial["usv_ibi_bout_onset"][emitter_str] = ibi_payload
 
         for role, ps in side_precompute.items():
             if role == "_grid":
@@ -3221,9 +3581,14 @@ class NeuronalTuning(FeatureZoo):
             "n_usv_min_category": n_min_category,
             "usv_property_min_occupancy_seconds": prop_min_occ_s,
             "bout_quiet_seconds": bout_quiet_s,
+            "ibi_bout_onset": dict(ibi_cfg),
             "smoothing_sd": float(smoothing_sd),
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "duration_seconds": float(duration_seconds),
         }
         self._attach_vocal_triage_stats(partial, params)
+        # The bout-onset payload is already in final form -- observed value, null aggregates and
+        # a p per statistic -- so it is surfaced verbatim rather than re-derived, and the
+        # aggregator can read it from `triage_stats` alongside every other vocal block.
+        partial["triage_stats"]["usv_ibi_bout_onset"] = partial["usv_ibi_bout_onset"]
         return partial

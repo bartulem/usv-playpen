@@ -386,9 +386,9 @@ def build_input_metadata(modeling_settings: dict,
       `feature_zoo_kept`, `dyadic_engagement_features_used`,
       `dyadic_pose_symmetric_features_used`,
       `noise_usvs_excluded`).
-    - **Vocal-input shape** (`usv_predictor_type`,
-      `usv_predictor_partner_only`, `usv_predictor_smoothing_sd`,
-      `vocal_signal_columns_added`).
+    - **Vocal-input shape** (`vocal_predictor_type`,
+      `vocal_predictor_classes`, `vocal_predictor_partner_only`,
+      `vocal_predictor_smoothing_sd`, `vocal_signal_columns_added`).
     - **Temporal frame** (`filter_history_seconds`,
       `filter_history_frames`, `camera_sampling_rate_hz`,
       `mixture_model_component_index`, `mixture_model_z_score`, `ibi_thresholds`).
@@ -446,7 +446,7 @@ def build_input_metadata(modeling_settings: dict,
         dropped at load time (`vocal_features.exclude_noise_usvs`).
     vocal_signal_columns_added : list of str
         Vocal-history column names injected into the per-session DFs by
-        `build_vocal_signal_columns`. Empty when `usv_predictor_type`
+        `build_vocal_signal_columns`. Empty when `vocal_predictor_type`
         is `null`.
     filter_history_seconds : float
         Pre-event window length in seconds.
@@ -482,12 +482,14 @@ def build_input_metadata(modeling_settings: dict,
     target_sex = 'male' if target_idx == 0 else 'female'
     predictor_sex = 'male' if predictor_idx == 0 else 'female'
 
-    # Vocal-feature provenance — the three knobs that determine what the
-    # vocal predictor channel actually looks like.
+    # Vocal-feature provenance — the four knobs that determine what the
+    # vocal predictor channel actually looks like. The class lists are recorded
+    # verbatim: ["usv"] and ["usv", "overlap"] both give a trace named 'usv'.
     voc_settings = modeling_settings['vocal_features']
-    usv_predictor_type = voc_settings['usv_predictor_type']
-    usv_predictor_partner_only = voc_settings['usv_predictor_partner_only']
-    usv_predictor_smoothing_sd = voc_settings['usv_predictor_smoothing_sd']
+    vocal_predictor_type = voc_settings['vocal_predictor_type']
+    vocal_predictor_classes = [list(group) for group in voc_settings['vocal_predictor_classes']]
+    vocal_predictor_partner_only = voc_settings['vocal_predictor_partner_only']
+    vocal_predictor_smoothing_sd = voc_settings['vocal_predictor_smoothing_sd']
 
     git_info = get_git_commit_info()
     settings_source = settings_path if settings_path is not None else modeling_settings
@@ -514,9 +516,10 @@ def build_input_metadata(modeling_settings: dict,
         'noise_usvs_excluded': bool(noise_usvs_excluded),
 
         # Vocal-input shape
-        'usv_predictor_type': usv_predictor_type,
-        'usv_predictor_partner_only': bool(usv_predictor_partner_only),
-        'usv_predictor_smoothing_sd': usv_predictor_smoothing_sd,
+        'vocal_predictor_type': vocal_predictor_type,
+        'vocal_predictor_classes': vocal_predictor_classes,
+        'vocal_predictor_partner_only': bool(vocal_predictor_partner_only),
+        'vocal_predictor_smoothing_sd': vocal_predictor_smoothing_sd,
         'vocal_signal_columns_added': list(vocal_signal_columns_added),
 
         # Temporal frame

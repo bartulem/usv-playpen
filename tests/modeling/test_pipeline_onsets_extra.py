@@ -672,7 +672,7 @@ class TestExtractionGuards:
             camera_sampling_rate=CAMERA_FPS,
             filter_history=FILTER_HISTORY,
             egocentric_features=['speed'],
-            usv_predictor_type='categories_rate',
+            vocal_predictor_type='categories_rate',
         )
         settings['model_params']['usv_bout_time'] = FILTER_HISTORY
 
@@ -823,12 +823,15 @@ class TestExtractionGuards:
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     def test_extraction_squeak_onsets_tag_and_metadata(self, tmp_path):
         """
-        With ``onset_target_type='squeak'`` in 'individual' mode, the squeak
+        With ``onset_target_classes=['squeak']`` in 'individual' mode, the squeak
         onsets are the positives, the saved input pickle's filename and
         ``analysis_tag`` carry ``_squeak`` (so a squeak-onset run never shares an
         artifact name with a USV-onset run), and ``analysis_specific`` records the
-        call type. Every synthetic call is relabelled a squeak, so the squeak
-        target keeps every onset and both sessions survive.
+        target classes. Every synthetic vocalization is relabelled a squeak, so the
+        squeak target keeps every onset and both sessions survive. The predictor is
+        the partner's squeak trace (``vocal_predictor_classes=[['squeak']]``), which
+        lands as the feature ``other.squeak_rate``, with the class lists recorded
+        verbatim in the metadata.
         """
 
         session_roots = build_session_tree(
@@ -856,7 +859,10 @@ class TestExtractionGuards:
         )
         settings['model_params']['usv_bout_time'] = FILTER_HISTORY
         settings['model_params']['model_target_vocal_type'] = 'individual'
-        settings['model_params']['onset_target_type'] = 'squeak'
+        settings['model_params']['onset_target_classes'] = ['squeak']
+        settings['vocal_features']['vocal_predictor_type'] = 'pooled_rate'
+        settings['vocal_features']['vocal_predictor_classes'] = [['squeak']]
+        settings['vocal_features']['vocal_predictor_partner_only'] = True
 
         pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
         pipeline.extract_and_save_modeling_input_data()
@@ -868,11 +874,14 @@ class TestExtractionGuards:
             artifact = pickle.load(fh)
         md = artifact['_input_metadata']
         assert md['analysis_tag'] == 'individual_squeak'
-        assert md['analysis_specific']['onset_target_type'] == 'squeak'
+        assert md['analysis_specific']['onset_target_classes'] == ['squeak']
+        assert md['vocal_predictor_classes'] == [['squeak']]
+        assert [c.split('.', 1)[-1] for c in md['vocal_signal_columns_added']] == ['squeak_rate']
+        assert 'other.squeak_rate' in artifact
 
 
-@pytest.mark.parametrize('usv_predictor_type', [None, 'categories_rate'])
-def test_onset_target_category_without_labels_fails_before_loading(tmp_path, mocker, usv_predictor_type):
+@pytest.mark.parametrize('vocal_predictor_type', [None, 'categories_rate'])
+def test_onset_target_category_without_labels_fails_before_loading(tmp_path, mocker, vocal_predictor_type):
     """
     With no category label column (``usv_category_column_name`` set to
     null, QLVM labels unavailable) the single-category onset target stops with the labels-unavailable
@@ -882,7 +891,7 @@ def test_onset_target_category_without_labels_fails_before_loading(tmp_path, moc
     settings = build_modeling_settings(
         session_list_file=tmp_path / 'session_list.txt',
         save_directory=tmp_path,
-        usv_predictor_type=usv_predictor_type,
+        vocal_predictor_type=vocal_predictor_type,
         usv_category_column_name=None,
     )
     settings['model_params']['model_target_vocal_type'] = 'individual'

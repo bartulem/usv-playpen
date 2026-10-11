@@ -502,9 +502,10 @@ def _full_modeling_settings(model_engine='sklearn',
             'session_split_widen_every': 10,
         },
         'vocal_features': {
-            'usv_predictor_type': 'rate',
-            'usv_predictor_partner_only': True,
-            'usv_predictor_smoothing_sd': 0.1,
+            'vocal_predictor_type': 'rate',
+            'vocal_predictor_classes': [['usv'], ['squeak', 'overlap']],
+            'vocal_predictor_partner_only': True,
+            'vocal_predictor_smoothing_sd': 0.1,
             'exclude_noise_usvs': True,
             # Manifold geometry: drives the geometry-determined continuous
             # inner-CV metric recorded by build_run_metadata (`vm_logscore` on
@@ -748,9 +749,10 @@ class TestBuildInputMetadata:
         assert md['dyadic_pose_symmetric_features_used'] is True
         assert md['noise_usvs_excluded'] is True
         # Vocal-input shape (read from settings).
-        assert md['usv_predictor_type'] == 'rate'
-        assert md['usv_predictor_partner_only'] is True
-        assert md['usv_predictor_smoothing_sd'] == 0.1
+        assert md['vocal_predictor_type'] == 'rate'
+        assert md['vocal_predictor_classes'] == [['usv'], ['squeak', 'overlap']]
+        assert md['vocal_predictor_partner_only'] is True
+        assert md['vocal_predictor_smoothing_sd'] == 0.1
         assert md['vocal_signal_columns_added'] == ['usv_rate_partner']
         # Temporal frame.
         assert md['filter_history_seconds'] == 2.0

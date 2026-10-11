@@ -51,10 +51,10 @@ from ..analyses._usv_io import (
 from ..os_utils import (
     QLVM_CATEGORY_MAP,
     QLVM_MAPS,
-    call_class_mask,
     drop_noise_usvs,
     load_qlvm_category_bundle,
     squeak_class_selection,
+    vocal_class_mask,
 )
 from .auxiliary_plot_functions import create_colormap, draw_category_outlines
 
@@ -168,7 +168,7 @@ def extract_category_embedding_data(
                 exclude_noise_usvs=exclude_noise_usvs
             )
             if usv_only:
-                usv_info = usv_info.filter(call_class_mask(usv_info, ("usv",), session_root))
+                usv_info = usv_info.filter(vocal_class_mask(usv_info, ("usv",), session_root))
 
             # Ensure the required columns actually exist in this session's CSV
             req_cols = [usv_category_col, usv_continuous_cols[0], usv_continuous_cols[1]]
@@ -427,7 +427,7 @@ def build_master_usv_dataframe(
         total_noise_filtered += n_dropped
         if usv_only:
             n_before_class = usv_clean.height
-            usv_clean = usv_clean.filter(call_class_mask(usv_clean, ("usv",), usv_file.name))
+            usv_clean = usv_clean.filter(vocal_class_mask(usv_clean, ("usv",), usv_file.name))
             total_squeak_rows_dropped += n_before_class - usv_clean.height
         usv_info = usv_clean.with_columns(
             (pls.col('start') * frame_rate).floor().cast(pls.UInt32).alias('frame_index')
@@ -3223,18 +3223,18 @@ def plot_session_squeak_time_heatmap(
     vmax_percent: float,
     zero_tint: float,
     nodata_color: str,
-    squeak_class: str = 'squeak+both',
+    squeak_class: str = 'squeak+overlap',
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes, plt.Axes, plt.Axes], dict[str, Any]]:
     """
     Description
     -----------
     Plots, one row per session, where in the recording the session's squeaks sit.
 
-    A squeak is a broadband vocalization (3-8 kHz fundamental). The call classifier
+    A squeak is a broadband vocalization (3-8 kHz fundamental). The vocal-class classifier
     (``detect_usv_squeaks``) gives every segment of the USV summary that is not noise two
     booleans, ``usv`` and ``squeak``: a pure USV (``usv & ~squeak``), a pure squeak
-    (``squeak & ~usv``) or both in one segment (``usv & squeak``). ``squeak_class`` picks which segments count as squeaks here: ``"squeak"``
-    (pure squeaks), ``"both"`` (the mixed segments) or ``"squeak+both"`` (either; the default,
+    (``squeak & ~usv``) or an overlap of both in one segment (``usv & squeak``). ``squeak_class`` picks which segments count as squeaks here: ``"squeak"``
+    (pure squeaks), ``"overlap"`` (the mixed segments) or ``"squeak+overlap"`` (either; the default,
     every segment that holds a squeak). Each session's summary is read from
     ``<session>/audio/*_usv_summary.csv``; when ``exclude_noise_usvs`` is set, the segments the
     noise classifier flagged are dropped first, so the rate is selected squeaks among vocal
@@ -3309,8 +3309,8 @@ def plot_session_squeak_time_heatmap(
     nodata_color (str)
         Hex colour where no vocalization is near (white, ``#FFFFFF``, draws it as empty).
     squeak_class (str)
-        Which call classes count as squeaks: ``"squeak"``, ``"both"`` or ``"squeak+both"``
-        (``os_utils.SQUEAK_CLASS_SELECTIONS``); default ``"squeak+both"``. A summary without
+        Which vocal classes count as squeaks: ``"squeak"``, ``"overlap"`` or ``"squeak+overlap"``
+        (``os_utils.SQUEAK_CLASS_SELECTIONS``); default ``"squeak+overlap"``. A summary without
         the ``usv`` / ``squeak`` booleans raises a KeyError naming the file.
 
     Returns
@@ -3332,8 +3332,8 @@ def plot_session_squeak_time_heatmap(
     squeak_classes = squeak_class_selection(squeak_class)
     squeak_class_label = {
         'squeak': 'squeaks',
-        'both': "squeak + USV ('both') segments",
-        'squeak+both': "squeaks (incl. 'both' segments)",
+        'overlap': "squeak + USV ('overlap') segments",
+        'squeak+overlap': "squeaks (incl. 'overlap' segments)",
     }[squeak_class]
     session_condition: dict[str, str] = {}
     session_roots: dict[str, str] = {}
@@ -3369,7 +3369,7 @@ def plot_session_squeak_time_heatmap(
             summary, n_noise_dropped = drop_noise_usvs(summary, summaries[0].name,
                                                        message_output=lambda _message: None)
         start = summary['start'].to_numpy().astype(float)
-        is_squeak = call_class_mask(summary, squeak_classes, summaries[0].name).to_numpy().astype(bool)
+        is_squeak = vocal_class_mask(summary, squeak_classes, summaries[0].name).to_numpy().astype(bool)
         segment_starts[session_id] = start
         segment_is_squeak[session_id] = is_squeak
         n_segments = int(start.size)

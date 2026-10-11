@@ -273,6 +273,9 @@ def build_multinomial_usv_summary_csv(
         category_column: categories,
         # The classifier's verdict: the synthesized noise rows are what the loaders now strip.
         'noise': [category == NOISE_CATEGORY for category in categories],
+        # The squeak classifier's booleans: every real row is a pure USV, noise rows carry none.
+        'usv': [None if category == NOISE_CATEGORY else True for category in categories],
+        'squeak': [None if category == NOISE_CATEGORY else False for category in categories],
         'mask_number': [2] * n_rows,
         manifold_columns[0]: (rng.standard_normal(n_rows)).round(6).tolist(),
         manifold_columns[1]: (rng.standard_normal(n_rows)).round(6).tolist(),
@@ -410,7 +413,7 @@ def _apply_multinomial_overrides(settings: dict) -> dict:
     settings['hyperparameters']['linear_models']['multinomial_logistic'] = dict(
         _MULTINOMIAL_HP_OVERRIDES
     )
-    settings['vocal_features']['usv_predictor_type'] = None
+    settings['vocal_features']['vocal_predictor_type'] = None
     # The shipped default is now [] (QLVM convention: the Phase-4 gate removes
     # noise upstream); these tests exercise the category-strip mechanism, so
     # the noise filter is enabled explicitly.
@@ -1772,7 +1775,7 @@ class TestMultinomialExtractionEdgeCases:
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_extraction_with_vocal_predictors_adds_usv_columns(self, tmp_path, qlvm_category_bundle):
         """
-        With ``usv_predictor_type='categories_rate'`` the extractor builds
+        With ``vocal_predictor_type='categories_rate'`` the extractor builds
         partner-side vocal-signal predictor columns
         (``build_vocal_signal_columns``), attaches them with
         ``with_columns`` (the vocal-column injection arm), and slices them
@@ -1783,7 +1786,7 @@ class TestMultinomialExtractionEdgeCases:
 
         settings, save_dir = _build_extraction_settings(tmp_path)
         # Re-enable vocal predictors (the multinomial overrides disable them).
-        settings['vocal_features']['usv_predictor_type'] = 'categories_rate'
+        settings['vocal_features']['vocal_predictor_type'] = 'categories_rate'
 
         pipeline = MultinomialModelingPipeline(modeling_settings_dict=settings)
         pipeline.extract_and_save_multinomial_input_data()
@@ -1799,8 +1802,8 @@ class TestMultinomialExtractionEdgeCases:
         ), f"expected at least one vocal-signal feature key, got {feature_keys}"
 
 
-@pytest.mark.parametrize('usv_predictor_type', [None, 'categories_rate'])
-def test_multinomial_extraction_without_labels_fails_before_loading(tmp_path, mocker, usv_predictor_type):
+@pytest.mark.parametrize('vocal_predictor_type', [None, 'categories_rate'])
+def test_multinomial_extraction_without_labels_fails_before_loading(tmp_path, mocker, vocal_predictor_type):
     """
     With no category label column (``usv_category_column_name`` set to
     null, QLVM labels unavailable) the multinomial category extraction stops with the labels-unavailable
@@ -1810,7 +1813,7 @@ def test_multinomial_extraction_without_labels_fails_before_loading(tmp_path, mo
     settings = build_modeling_settings(
         session_list_file=tmp_path / 'session_list.txt',
         save_directory=tmp_path,
-        usv_predictor_type=usv_predictor_type,
+        vocal_predictor_type=vocal_predictor_type,
         usv_category_column_name=None,
     )
     prepare = mocker.patch('usv_playpen.modeling.modeling_vocal_categories_multinomial.prepare_modeling_sessions')

@@ -128,7 +128,6 @@ from ..os_utils import (
     SQUEAK_FLAG_COLUMN,
     USV_FLAG_COLUMN,
     atomic_output_path,
-    call_class_mask,
     cell_cluster_directory,
     configure_path,
     first_match_or_raise,
@@ -136,6 +135,7 @@ from ..os_utils import (
     pure_squeak_mask,
     qlvm_cell_model_id,
     qlvm_map_cell_directory,
+    vocal_class_mask,
 )
 from ..time_utils import is_gui_context, smart_wait
 from .build_qlvm_training_set import file_sha256
@@ -1071,7 +1071,7 @@ class SpectrogramStoreConsolidator:
                 "summary_sha256": file_sha256(summary_path),
                 "n_rows": n_rows,
                 "status": production_embedding_status(durations, mask_counts, pure_squeak, length_threshold),
-                "has_squeak": call_class_mask(summary_df, ("squeak", "both"), summary_path.name).to_numpy(),
+                "has_squeak": vocal_class_mask(summary_df, ("squeak", "overlap"), summary_path.name).to_numpy(),
                 "qlvm_frame": summary_df.select(qlvm_columns),
             })
             self.message_output(f"Validated '{session_id}' ({n_rows} rows).")

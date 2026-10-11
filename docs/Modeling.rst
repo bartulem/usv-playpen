@@ -124,7 +124,7 @@ cross-validation and held-out-test settings live in their own
         "usv_bout_time": 2,
         "usv_per_bout_floor": 2,
         "onset_target_category": null,
-        "onset_target_type": "usv"
+        "onset_target_classes": ["usv"]
     }
 
 * **filter_history** — seconds of behavioral history preceding each event that feed the temporal filter (× ``camera_sampling_rate`` → frames).
@@ -132,7 +132,7 @@ cross-validation and held-out-test settings live in their own
 * **model_basis_function** — temporal-filter basis over the history window: ``'raised_cosine'`` / ``'bspline'`` / ``'laplacian_pyramid'`` (parameters in ``hyperparameters.basis_functions``), or ``'identity'`` (the raw per-frame history, no projection). Only relevant when ``model_engine = 'sklearn'`` — the ``'pygam'`` engine uses its own tensor-product splines instead.
 * **model_engine** — univariate model backend: ``'pygam'`` (tensor-product-spline GAM, a generalized additive model) or ``'sklearn'`` (basis-projected linear).
 * **model_predictor_mouse_index** — which mouse (``0`` / ``1``) is the **partner**; the **target** — the mouse whose vocal behavior is being predicted — is defined as the other one. Both mice's kinematics enter the predictor set.
-* **model_target_vocal_type** — onset target mode, one of ``'bout_onset'`` (clustered bout onsets, both positive and negative pre-event windows kept clean), ``'individual'`` (per-USV onsets), ``'state'`` (the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent, with no clean-history requirement), or ``'bout_offset'`` (the END of a bout against an interior call of a bout that continued; configured by the ``bout_offset`` block, see :ref:`Bout offsets <modeling-bout-offsets>`); used only by ``VocalOnsetModelingPipeline``.
+* **model_target_vocal_type** — onset target mode, one of ``'bout_onset'`` (clustered bout onsets, both positive and negative pre-event windows kept clean), ``'individual'`` (per-USV onsets), ``'state'`` (the session is sampled on a regular ``filter_history``-spaced time grid and each sample labelled vocal / silent by whether a vocalization of the ``onset_target_classes`` occupies it, with no clean-history requirement), or ``'bout_offset'`` (the END of a bout against an interior USV of a bout that continued; configured by the ``bout_offset`` block, see :ref:`Bout offsets <modeling-bout-offsets>`); used only by ``VocalOnsetModelingPipeline``.
 * **model_target_variable** — for ``BoutParameterPipeline``, which per-bout quantity to regress: ``'bout_durations'`` (first-to-last-USV span, seconds), ``'mean_mask_complexity'`` (per-USV mean spectrogram-mask complexity), or ``'total_mask_complexity'`` (summed over the bout).
 * **selection_p_val** — the significance level gating whether a candidate feature is admitted during forward-stepwise model selection (default ``0.01``); on the acoustic-manifold target it is the Benjamini–Hochberg FDR ``q`` used to screen candidates.
 * **selection_effect_floor** / **selection_n_bootstrap** / **selection_ci_level** — the acoustic-manifold selection's **fold-grain acceptance gate** (``continuous_vocal_manifold_model_selection``): a feature is kept only when its per-fold paired score margin over the shuffle null (the macro von Mises log-likelihood on the torus, the wrap-aware distance correlation on euclidean) is consistently positive across CV folds. ``selection_effect_floor`` is the relative effect floor a screened feature must clear — a fraction of the top surviving driver's margin (default ``0.1`` = 10%); ``selection_n_bootstrap`` is the number of fold bootstrap resamples (default ``1000``); ``selection_ci_level`` is the bootstrap confidence level whose lower bound must exceed ``0`` for an anchor / forward step to be accepted (default ``0.99``). These three apply to the manifold gate only; the onset / category / bout-parameter selections use ``selection_p_val`` alone.
@@ -140,7 +140,7 @@ cross-validation and held-out-test settings live in their own
 * **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout_onset'`` mode: a candidate silent-epoch onset is kept only if no USV (from any source) starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
 * **usv_per_bout_floor** — the minimum number of USVs a positive bout must contain (``'bout_onset'`` mode).
 * **onset_target_category** — restrict positive onsets to a single USV category (``'individual'`` mode only); ``null`` pools all categories (see the single-category note under :ref:`Modeling input data <modeling-extract>`).
-* **onset_target_type** — which vocal segments are the positive onsets, from the summary's ``usv`` / ``squeak`` booleans (written by ``detect-usv-squeaks``): ``'usv'`` (default) only pure USVs (``usv`` true and ``squeak`` false), ``'usv_with_both'`` pure USVs and the segments holding both a squeak and an ultrasonic call (``usv`` true, whatever ``squeak`` is), ``'squeak'`` only pure squeaks (``squeak`` true and ``usv`` false; ``'individual'`` mode only), ``'all'`` every segment, without filtering on the booleans. A segment holding both (both booleans true) is therefore dropped by default and kept, as a USV onset and a bout member, only by ``'usv_with_both'`` (or ``'all'``); an unscored segment (null booleans) is in none of ``'usv'``, ``'usv_with_both'`` and ``'squeak'``. The negative (silent) windows are sampled against every call of the mouse whatever the target type (squeaks and "both" segments included), so they are identical across target types and silent of every positive any of them can produce. Noise segments are removed first in every case when ``vocal_features.exclude_noise_usvs`` is ``true``. Applied in every onset mode (``'bout_onset'``, ``'individual'``, ``'bout_offset'``) before ``onset_target_category``; any value other than ``'usv'`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``).
+* **onset_target_classes** — which vocal classes are the positive onsets, a non-empty list read from the summary's ``usv`` / ``squeak`` booleans (written by ``detect-usv-squeaks``): ``"usv"`` (a pure USV, ``usv`` true and ``squeak`` false), ``"squeak"`` (a pure squeak, ``squeak`` true and ``usv`` false) and ``"overlap"`` (a USV and a squeak in one segment, both true). ``["usv"]`` (default) models pure USVs, ``["usv", "overlap"]`` every segment holding a USV, ``["squeak", "overlap"]`` every segment holding a squeak, ``["overlap"]`` overlaps alone, and ``["usv", "squeak", "overlap"]`` everything. An unscored segment (null booleans) is in no class. Vocalizations of the other classes neither join nor split a bout; the bout-parameter and behavioral-response pipelines group their bouts from the same classes, so a bout is the same in every model. The bout modes (``'bout_onset'``, ``'bout_offset'``) accept ``"usv"`` and ``"overlap"`` only, since squeaks do not come in bouts and the inter-bout threshold is calibrated on USV intervals; ``'individual'`` and ``'state'`` take any list. Silence is not class-specific: a negative window, and a ``'bout_onset'`` positive's clean history, must both be free of every vocalization of the target mouse (any class) and of every vocalization assigned to no animal, so the two groups are built under one rule whatever the target. Noise segments are removed first in every case when ``vocal_features.exclude_noise_usvs`` is ``true``. Applied before ``onset_target_category``; any list other than ``["usv"]`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``, ``bout_onset_usv+overlap``).
 
 **model_validation** — the held-out test set and cross-validation splitting.
 
@@ -200,9 +200,10 @@ cross-validation and held-out-test settings live in their own
 .. code-block:: json
 
     "vocal_features": {
-        "usv_predictor_type": "categories_rate",
-        "usv_predictor_partner_only": true,
-        "usv_predictor_smoothing_sd": 1,
+        "vocal_predictor_type": "categories_rate",
+        "vocal_predictor_classes": [["usv"]],
+        "vocal_predictor_partner_only": true,
+        "vocal_predictor_smoothing_sd": 1,
         "usv_category_column_name": "qlvm_category",
         "exclude_noise_usvs": true,
         "usv_manifold_column_names": ["qlvm1", "qlvm2"],
@@ -221,18 +222,19 @@ cross-validation and held-out-test settings live in their own
         }
     }
 
-* **usv_predictor_type** — which vocal-syntax predictor traces to build: ``'pooled_binary'`` (one pooled per-frame USV-event indicator), ``'pooled_rate'`` (one pooled USV-rate trace), ``'categories_rate'`` (one per-category USV-rate trace per ``usv_category_column_name`` category; the shipped default, over ``qlvm_category``), or ``'all_rate'`` (the pooled rate plus the per-category rates). A falsy value builds no vocal predictors. ``'categories_rate'`` and ``'all_rate'`` need a label column: with ``usv_category_column_name`` ``null``, or naming a column a session's summary lacks (e.g. a summary whose categories ``assign-qlvm-categories`` has not written yet), they raise a ``ValueError`` naming the setting (before any session is loaded, for the ``null`` case) instead of silently building no category traces. The pooled modes never read a label column.
-* **usv_predictor_partner_only** — if ``true``, ingest only the *partner's* USV signals as predictors (not the target mouse's own vocal history).
-* **usv_predictor_smoothing_sd** — Gaussian σ (frames) applied to the USV-rate predictor traces.
-* **usv_category_column_name** — the USV-catalog column defining categories: ``'qlvm_category'`` (shipped), the content-ridge categories R-1 … R-k (4 in production) of the regular map's ``qlvm1`` / ``qlvm2`` torus that ``assign-qlvm-categories`` writes; it is the summary's only category column (no coarse level, and no category column of the conditional maps: the categories are defined on the regular map, so every map's analyses — ``qlvm`` and the conditional ``qlvm_duration``, ``qlvm_entropy``, ``qlvm_bandwidth`` and ``qlvm_loudness`` alike — label a call with its ``qlvm_category``). Labels are integers ``1..k``, 1 the category with the most calls. ``null`` runs the label-free paths only: every label-dependent path fails clearly on ``null`` — the multinomial and binomial category pipelines, ``onset_target_category`` in ``'individual'`` mode, and the ``'categories_rate'`` / ``'all_rate'`` predictors raise ``QLVM category labels are not available; set vocal_features.usv_category_column_name to an existing label column`` before loading anything — while the continuous manifold pipeline runs without it (no category packet). A column that is set must exist in every summary.
+* **vocal_predictor_type** — how each vocal predictor trace is built: ``'pooled_binary'`` (a per-frame event indicator, ``<name>_event``), ``'pooled_rate'`` (a smoothed rate, ``<name>_rate``), ``'categories_rate'`` (one smoothed rate per ``usv_category_column_name`` category, ``<name>_cat_<k>``; the shipped default, over ``qlvm_category``), or ``'all_rate'`` (the pooled rate plus the per-category rates). Pure squeaks carry no QLVM category, so a trace whose class list holds pure squeaks is one ``<name>_rate`` under ``'categories_rate'`` and ``'all_rate'``. A falsy value builds no vocal predictors. ``'categories_rate'`` and ``'all_rate'`` need a label column: with ``usv_category_column_name`` ``null``, or naming a column a session's summary lacks (e.g. a summary whose categories ``assign-qlvm-categories`` has not written yet), they raise a ``ValueError`` naming the setting (before any session is loaded, for the ``null`` case) instead of silently building no category traces. The pooled modes never read a label column.
+* **vocal_predictor_classes** — which vocalizations the predictor traces hold: a list of class lists, each one trace, from the same three classes as ``onset_target_classes``. A trace is named by what it holds: a list holding ``"usv"`` (alone or with ``"overlap"``) is a ``usv`` trace, one holding ``"squeak"`` (alone or with ``"overlap"``) a ``squeak`` trace, ``["overlap"]`` an ``overlap`` trace, and one holding both ``"usv"`` and ``"squeak"`` an ``all_vocalizations`` trace. ``[["usv"]]`` (default) gives ``other.usv_cat_<k>`` (or ``other.usv_rate``); ``[["squeak", "overlap"]]`` gives ``other.squeak_rate``; ``[["usv", "overlap"], ["squeak"]]`` gives a USV and a squeak trace side by side. Lists may share classes (an overlap segment holds a USV and a squeak, so it belongs in both), but two lists that give the same name are refused. The exact lists are recorded in ``_input_metadata`` (``vocal_predictor_classes``), since ``["usv"]`` and ``["usv", "overlap"]`` both give a ``usv`` trace. The target mouse's own pooled traces (any name) are never used as its predictors.
+* **vocal_predictor_partner_only** — if ``true``, ingest only the *partner's* vocal traces as predictors (not the target mouse's own vocal history).
+* **vocal_predictor_smoothing_sd** — Gaussian σ (frames) applied to the USV-rate predictor traces.
+* **usv_category_column_name** — the USV-catalog column defining categories: ``'qlvm_category'`` (shipped), the content-ridge categories R-1 … R-k (4 in production) of the regular map's ``qlvm1`` / ``qlvm2`` torus that ``assign-qlvm-categories`` writes; it is the summary's only category column (no coarse level, and no category column of the conditional maps: the categories are defined on the regular map, so every map's analyses — ``qlvm`` and the conditional ``qlvm_duration``, ``qlvm_entropy``, ``qlvm_bandwidth`` and ``qlvm_loudness`` alike — label a USV with its ``qlvm_category``). Labels are integers ``1..k``, 1 the category with the most USVs. ``null`` runs the label-free paths only: every label-dependent path fails clearly on ``null`` — the multinomial and binomial category pipelines, ``onset_target_category`` in ``'individual'`` mode, and the ``'categories_rate'`` / ``'all_rate'`` predictors raise ``QLVM category labels are not available; set vocal_features.usv_category_column_name to an existing label column`` before loading anything — while the continuous manifold pipeline runs without it (no category packet). A column that is set must exist in every summary.
 * **exclude_noise_usvs** — whether to drop the USV segments ``detect-usv-noise`` flagged as holding no vocalization. A session whose summary lacks the ``noise`` column raises rather than contributing unfiltered detections.
-* **usv_manifold_column_names** — the two catalog columns giving the 2-D manifold position (the ``ContinuousModelingPipeline`` target). Calls the embedding could not place have null coordinates; they are dropped at extraction (with the count printed per session and in total), so the inverse-density KDE, the regressions and the GLM-HMM never see a NaN position. The columns' map prefix also names the run: the manifold analysis tag is ``manifold_<map>`` (``['qlvm1', 'qlvm2']`` -> ``manifold_qlvm``, ``['qlvm_duration1', 'qlvm_duration2']`` -> ``manifold_qlvm_duration``; ``modeling_utils.manifold_tag_segment``) whether or not a category column is set, and it carries into the modeling input pickle (``modeling_manifold_<map>_<cohort>_<ts>.pkl``), the univariate results, the model-selection step files (``model_selection_continuous_manifold_<map>_<condition>_<split>_step_*.pkl``, named from the input pickle's ``analysis_tag``) and the consolidated artifact (``model_selection_final_<sex>_<condition>_manifold_<map>_<split>_<ts>.pkl``). Results written before this naming carry ``manifold_qlvm_category`` (the category column, the same for every map); they are read as before, and the consolidator never appends the category column to a ``manifold_<map>`` tag.
+* **usv_manifold_column_names** — the two catalog columns giving the 2-D manifold position (the ``ContinuousModelingPipeline`` target). USVs the embedding could not place have null coordinates; they are dropped at extraction (with the count printed per session and in total), so the inverse-density KDE, the regressions and the GLM-HMM never see a NaN position. The columns' map prefix also names the run: the manifold analysis tag is ``manifold_<map>`` (``['qlvm1', 'qlvm2']`` -> ``manifold_qlvm``, ``['qlvm_duration1', 'qlvm_duration2']`` -> ``manifold_qlvm_duration``; ``modeling_utils.manifold_tag_segment``) whether or not a category column is set, and it carries into the modeling input pickle (``modeling_manifold_<map>_<cohort>_<ts>.pkl``), the univariate results, the model-selection step files (``model_selection_continuous_manifold_<map>_<condition>_<split>_step_*.pkl``, named from the input pickle's ``analysis_tag``) and the consolidated artifact (``model_selection_final_<sex>_<condition>_manifold_<map>_<split>_<ts>.pkl``). Results written before this naming carry ``manifold_qlvm_category`` (the category column, the same for every map); they are read as before, and the consolidator never appends the category column to a ``manifold_<map>`` tag.
 * **usv_manifold_metric** — ``'euclidean'`` (plane) or ``'torus'`` (wrap-aware) distance on the manifold.
 * **usv_manifold_period** — the wrap period for the ``'torus'`` metric.
 * **usv_manifold_min_region_events** — the minimum number of labelled events an acoustic region (a QLVM category) must contain to enter the **macro** (region-balanced) von Mises average and the region-weighted MAE; sparser regions are dropped from those balanced statistics so a single under-sampled corner cannot dominate them (default ``20``). Ignored on euclidean and when no region labels are present. Without region labels (``usv_category_column_name`` ``null``, or a pickle extracted without them) the torus ``'macro'`` score falls back to the pooled score and the equal-region fit reweighting to uniform weights; the univariate and selection runs print a ``WARNING`` saying so, rather than substituting silently.
 * **usv_manifold_selection_score** — on the ``'torus'`` metric, which von Mises log-score the forward selection ranks on: ``'macro'`` (default) uses the region-balanced ``vm_logscore``, ``'micro'`` uses the event-weighted ``vm_logscore_pooled`` twin. Both are always logged per candidate, so this only changes which column drives the greedy ranking and the acceptance gate — the candidate pool, the region-reweighted fit, and every other reported metric are identical — making a macro-vs-micro selection comparison a one-key flip. Ignored on euclidean (which always ranks on ``dcor_xy``); an absent key resolves to ``'macro'``.
 * **freeze_selection_kappa** — on a torus manifold run, ``true`` fits the von Mises concentration ``kappa`` once on the development set and reuses it for every score (the univariate screen, baseline, fitted candidates, held-out, and the acceptance-gate bootstrap), so every margin sits on one dispersion scale and a fold predicted worse than the marginal scores below the flat-torus density instead of being clamped to it; ``true`` is shipped. ``false`` refits ``kappa`` per scored prediction set (see the *Frozen von Mises concentration* note below). Ignored on euclidean.
-* **usv_manifold_geodesic_metrics** — the analysis-only *reference-map* geometry for the two torus **geodesic** prediction-error columns (``density_geodesic_mae``, ``pullback_geodesic_mae``), reported per fold alongside the flat-torus MAE on the ``'torus'`` metric (both ``NaN`` on euclidean). ``compute`` toggles the whole block; ``grid_n_per_dim`` sets the resolution of the regular torus grid the all-pairs geodesic distance matrices are precomputed on once (``40`` → a 40×40 node lattice, so per-event errors are cheap snap-to-grid look-ups); ``graph_k`` is the number of wrap-aware nearest neighbours per node in the k-NN graph the shortest paths run over; ``density_exponent`` is the inverse-aggregate-posterior-density exponent ``α`` weighting the density-ratio geodesic (``0`` recovers the flat graph metric, larger values push paths harder through dense regions); ``pullback_metric`` switches the decoder-Jacobian pullback geodesic on: the frozen decoder whose Jacobian defines the pullback metric ``G = JᵀJ`` is not a setting but the production cell of the map the manifold coordinates come from, ``os_utils.qlvm_map_cell_directory(<map>)`` with ``<map>`` the map prefix of the input pickle's recorded ``usv_manifold_column_names`` (``_input_metadata.analysis_specific``; a pickle without that record falls back to the current setting): ``qlvm1`` / ``qlvm2`` -> the regular cell ``.../spectrograms/qlvm/qlvm``, ``qlvm_duration`` / ``qlvm_entropy`` / ``qlvm_bandwidth`` / ``qlvm_loudness`` -> their cells ``.../spectrograms/qlvm/<map>`` (``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``), ``qlvm_squeak1`` / ``qlvm_squeak2`` -> the squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under ``QLVM_SQUEAK_PACKAGE_ROOT``; each is read without torch from its ``checkpoint.tar``. A pullback metric of one map's coordinates under another map's decoder would measure distances on a torus the coordinates do not live on. Manifold columns that name no QLVM map with ``pullback_metric`` ``true`` are a settings error. The cell comes from the code constants so the CLI / GUI re-keying of experimenter folders in the settings can never point it at another folder; a ``decoder_model_cell_directory`` (or the retired ``decoder_weights_npz_path``) key left in older settings is ignored. ``pullback_condition_quantile`` (in ``[0, 1]``, default ``0.5``) fixes the conditioning value of a conditional map's decoder, which decodes a torus position *and* a per-call conditioning value ``c`` (duration, spectral entropy, bandwidth or loudness): every grid node is decoded at the same ``c``, that quantile of the cell's training corpus's conditioning distribution (read from the cell's ``condition_bins.npz`` bin edges and per-bin training counts, linear inside a bin, then decoded by the cell's own ``condition.decode`` rule: clamped for ``'exact'``, snapped to the decode grid for ``'grid'``; ``processing.qlvm_latents.condition_quantile_value``), so ``G`` is one Riemannian metric of the torus. ``0.5`` measures distances as decoded-spectrogram change for the corpus median call (production medians: duration ``c`` 0.244, entropy 0.595, bandwidth 0.245, loudness 0.545); the value depends only on the cell, not on which calls a run holds. The regular and squeak decoders take no conditioning value and ignore it. ``pullback_metric`` ``false`` (or an unreadable decoder) degrades ``pullback_geodesic_mae`` to ``NaN`` and the run proceeds.
+* **usv_manifold_geodesic_metrics** — the analysis-only *reference-map* geometry for the two torus **geodesic** prediction-error columns (``density_geodesic_mae``, ``pullback_geodesic_mae``), reported per fold alongside the flat-torus MAE on the ``'torus'`` metric (both ``NaN`` on euclidean). ``compute`` toggles the whole block; ``grid_n_per_dim`` sets the resolution of the regular torus grid the all-pairs geodesic distance matrices are precomputed on once (``40`` → a 40×40 node lattice, so per-event errors are cheap snap-to-grid look-ups); ``graph_k`` is the number of wrap-aware nearest neighbours per node in the k-NN graph the shortest paths run over; ``density_exponent`` is the inverse-aggregate-posterior-density exponent ``α`` weighting the density-ratio geodesic (``0`` recovers the flat graph metric, larger values push paths harder through dense regions); ``pullback_metric`` switches the decoder-Jacobian pullback geodesic on: the frozen decoder whose Jacobian defines the pullback metric ``G = JᵀJ`` is not a setting but the production cell of the map the manifold coordinates come from, ``os_utils.qlvm_map_cell_directory(<map>)`` with ``<map>`` the map prefix of the input pickle's recorded ``usv_manifold_column_names`` (``_input_metadata.analysis_specific``; a pickle without that record falls back to the current setting): ``qlvm1`` / ``qlvm2`` -> the regular cell ``.../spectrograms/qlvm/qlvm``, ``qlvm_duration`` / ``qlvm_entropy`` / ``qlvm_bandwidth`` / ``qlvm_loudness`` -> their cells ``.../spectrograms/qlvm/<map>`` (``QLVM_PRODUCTION_MODEL_CELLS`` under ``QLVM_MODEL_PACKAGE_ROOT``), ``qlvm_squeak1`` / ``qlvm_squeak2`` -> the squeak cell ``QLVM_SQUEAK_PRODUCTION_CELL`` under ``QLVM_SQUEAK_PACKAGE_ROOT``; each is read without torch from its ``checkpoint.tar``. A pullback metric of one map's coordinates under another map's decoder would measure distances on a torus the coordinates do not live on. Manifold columns that name no QLVM map with ``pullback_metric`` ``true`` are a settings error. The cell comes from the code constants so the CLI / GUI re-keying of experimenter folders in the settings can never point it at another folder; a ``decoder_model_cell_directory`` (or the retired ``decoder_weights_npz_path``) key left in older settings is ignored. ``pullback_condition_quantile`` (in ``[0, 1]``, default ``0.5``) fixes the conditioning value of a conditional map's decoder, which decodes a torus position *and* a per-USV conditioning value ``c`` (duration, spectral entropy, bandwidth or loudness): every grid node is decoded at the same ``c``, that quantile of the cell's training corpus's conditioning distribution (read from the cell's ``condition_bins.npz`` bin edges and per-bin training counts, linear inside a bin, then decoded by the cell's own ``condition.decode`` rule: clamped for ``'exact'``, snapped to the decode grid for ``'grid'``; ``processing.qlvm_latents.condition_quantile_value``), so ``G`` is one Riemannian metric of the torus. ``0.5`` measures distances as decoded-spectrogram change for the corpus median USV (production medians: duration ``c`` 0.244, entropy 0.595, bandwidth 0.245, loudness 0.545); the value depends only on the cell, not on which USVs a run holds. The regular and squeak decoders take no conditioning value and ignore it. ``pullback_metric`` ``false`` (or an unreadable decoder) degrades ``pullback_geodesic_mae`` to ``NaN`` and the run proceeds.
 
 **diagnostics** — the predictor-collinearity and predictor-timescale audits (rendered in :ref:`Predictor diagnostics <modeling-diagnostics>`).
 
@@ -316,7 +318,7 @@ continuous manifold target, consumed by ``NeuralContinuousCNNRunner`` (see
     }
 
 * **use_kde_weights** — how each epoch's training rows are drawn: ``true`` samples ``N`` rows with replacement with probability proportional to the pickle's inverse-density KDE weights ``w`` (rare acoustic regions are over-drawn); ``false`` uses the grid-balanced sampler instead (``grid_size`` / ``samples_per_cell`` below).
-* **loss_function** / **huber_delta** — the training loss on the wrap-aware residual (per ``usv_manifold_metric``): ``'huber'`` (quadratic below ``huber_delta``, linear beyond it, so satellite calls cannot dominate the gradient); any other value is plain squared error.
+* **loss_function** / **huber_delta** — the training loss on the wrap-aware residual (per ``usv_manifold_metric``): ``'huber'`` (quadratic below ``huber_delta``, linear beyond it, so satellite USVs cannot dominate the gradient); any other value is plain squared error.
 * **learning_rate** / **use_scheduler** / **warmup_fraction** — the peak Adam(W) step size; with ``use_scheduler`` ``true`` the rate starts at 0, warms up linearly over ``warmup_fraction`` of the total steps to the peak and then cosine-decays to 0 over the rest, with ``false`` it is constant.
 * **block_channels** — output channels of each residual block (the list length is the network depth; every block halves the time axis).
 * **weight_decay** / **weight_decay_exclude_output_head** — AdamW decoupled weight decay; ``true`` exempts the output head (``dense2``), whose collapse to zero would park the torus ``sin_cos`` head at a constant prediction.
@@ -333,7 +335,7 @@ continuous manifold target, consumed by ``NeuralContinuousCNNRunner`` (see
 * **n_folds** / **permutation_iterations** — the number of spatial-CV folds, and the permutation repeats per feature in the permutation-importance phase.
 * **use_kinematic_masking** / **masking_prob** / **masking_length_frames** — 1-D cutout augmentation: with probability ``masking_prob`` each feature channel of a sequence has a contiguous ``masking_length_frames`` chunk zeroed (the z-score mean), so the network cannot lean on a single dominant feature.
 * **use_hybrid_flatten** — ``true`` concatenates a global-average-pooled channel vector to the flattened final feature map before the dense head, so time-invariant averages reach the head beside the strictly-timed motifs.
-* **saliency** — the regional-saliency phase. ``enable`` toggles it; it is shipped ``true`` with ``segmentation`` ``'category'`` (the only value): the segmentation groups calls by their per-USV QLVM category, which the modeling pickle carries when it was extracted from summaries holding ``qlvm_category`` (the regular map's categories, the label of every map, the conditional ones included). A pickle without the requested labels stops the run in the saliency pre-flight check, before Phase 1 (a ``RuntimeError`` saying the labels are unavailable); set ``enable`` to ``false`` for such a pickle. ``alpha`` scales each category's inclusion circle (radius ``alpha × d_nn / 2``, ``d_nn`` the distance to the nearest other category centre, so circles never overlap for ``alpha <= 1``) and ``radius_mode`` is ``'adaptive'`` (one radius per category from its own ``d_nn``) or ``'uniform'`` (one shared radius from the tightest pair).
+* **saliency** — the regional-saliency phase. ``enable`` toggles it; it is shipped ``true`` with ``segmentation`` ``'category'`` (the only value): the segmentation groups USVs by their QLVM category, which the modeling pickle carries when it was extracted from summaries holding ``qlvm_category`` (the regular map's categories, the label of every map, the conditional ones included). A pickle without the requested labels stops the run in the saliency pre-flight check, before Phase 1 (a ``RuntimeError`` saying the labels are unavailable); set ``enable`` to ``false`` for such a pickle. ``alpha`` scales each category's inclusion circle (radius ``alpha × d_nn / 2``, ``d_nn`` the distance to the nearest other category centre, so circles never overlap for ``alpha <= 1``) and ``radius_mode`` is ``'adaptive'`` (one radius per category from its own ``d_nn``) or ``'uniform'`` (one shared radius from the tightest pair).
 
 **hyperparameters.linear_models** — the two JAX linear models,
 ``manifold_regression`` (continuous manifold position: the Huber coordinate
@@ -470,9 +472,9 @@ log-score ``vm_logscore`` on the torus, ``dcor_xy`` on euclidean).
    **Frozen von Mises concentration.** On a torus manifold run
    ``vocal_features.freeze_selection_kappa = true`` (shipped) fits the von Mises
    concentration ``kappa`` once on the development set (the marginal dispersion of
-   the call positions around their circular mean) and reuses it for every score
+   the USV positions around their circular mean) and reuses it for every score
    (the univariate screen, baseline, fitted candidates, held-out, and the
-   acceptance-gate bootstrap). ``false`` self-refits ``kappa`` per call, which
+   acceptance-gate bootstrap). ``false`` self-refits ``kappa`` per fold, which
    floors the score on weak folds (the ``kappa → 0`` clamp) and corrupts the
    paired per-fold margin; a single frozen ``kappa`` keeps every score on one
    dispersion scale so the margins are a proper scoring rule. On the intact-partner
@@ -483,7 +485,7 @@ log-score ``vm_logscore`` on the torus, ``dcor_xy`` on euclidean).
    every fold with the same rule as the greedy gate: the selection score's own
    averaging (``vm_logscore``, the region-balanced macro score, by default; it
    matches the equal-region reweighting of the fit, whose centre is the
-   equal-weight average of the regions rather than the centre of the calls) and
+   equal-weight average of the regions rather than the centre of the USVs) and
    the frozen ``kappa``. The torus input pickle is therefore loaded before the
    screen.
 
@@ -612,7 +614,7 @@ is ``'bout_offset'``.
 
 * **filter_history** — the history window (s) of this target, deliberately its own key: ``model_params.filter_history`` also sets the silent-tile width, the clean-history criterion of ``'bout_onset'`` mode and the ``'state'`` grid, none of which this target uses, and the offset question lives on a shorter timescale (the kinematic changes that precede a bout end sit in the last ~0.5 s).
 * **negative_scheme** — ``'cross_bout'`` or ``'within_bout'``; see below.
-* **min_singing_after_negative_seconds** — a negative's bout must keep singing for at least this long after the negative's call, so the negative sits outside the ending itself (the measured ending process spans ~0.3 s).
+* **min_singing_after_negative_seconds** — a negative's bout must keep singing for at least this long after the negative's USV, so the negative sits outside the ending itself (the measured ending process spans ~0.3 s).
 * **time_since_bout_onset_tolerance_seconds** — ``'cross_bout'`` only: how far apart the time since bout onset of a positive and its negative may be.
 * **max_negatives_per_bout** — ``'cross_bout'`` only: cap on negatives drawn from any one bout (``null`` for none), so that a few long bouts cannot supply most of the negative class.
 
@@ -646,7 +648,7 @@ is ``'bout_offset'``.
         }
     }
 
-* **response_mouse_index** — which mouse's behaviour is predicted, by **absolute slot index** (``0`` is always the male, ``1`` always the female). Deliberately *not* the relative ``self.`` / ``other.`` role keys used elsewhere: those are defined against ``model_params.model_predictor_mouse_index`` and cannot be read on their own. **This is the only mouse index you set.** ``model_params.model_predictor_mouse_index`` decides whose *calls* are ingested and carries the opposite meaning on the same 0/1 axis; since the partner's calls are by definition the other animal's, it is **derived** as ``1 - response_mouse_index`` on a private copy of the settings (the caller's dict is never mutated, and the shipped value the five vocal pipelines read is untouched). So ``response_mouse_index: 1`` predicts the female from the male's calls, with nothing to keep in step by hand.
+* **response_mouse_index** — which mouse's behaviour is predicted, by **absolute slot index** (``0`` is always the male, ``1`` always the female). Deliberately *not* the relative ``self.`` / ``other.`` role keys used elsewhere: those are defined against ``model_params.model_predictor_mouse_index`` and cannot be read on their own. **This is the only mouse index you set.** ``model_params.model_predictor_mouse_index`` decides whose *vocalizations* are ingested and carries the opposite meaning on the same 0/1 axis; since the partner's vocalizations are by definition the other animal's, it is **derived** as ``1 - response_mouse_index`` on a private copy of the settings (the caller's dict is never mutated, and the shipped value the five vocal pipelines read is untouched). So ``response_mouse_index: 1`` predicts the female from the male's vocalizations, with nothing to keep in step by hand.
 * **response_features** — the behavioural features used as response variables, every one extracted in the same pass (the anchors are identical across features, only the target changes). Each must be one of ``kinematic_features.egocentric``; an unknown name is rejected before any session is read. Read from the raw per-session feature table **before** z-scoring, so the responses stay in native units — the likelihood of each is **derived** from its support (see :ref:`Behavioral response <modeling-behavioral-response>`): a non-negative feature (plain, or folded by ``abs_features`` / ``smooth_abs_features``) is fitted as a Gamma GAM with a log link, a signed one as Gaussian.
 * **history_seconds** — seconds of behavioural history preceding each anchor, the window the covariate summaries are taken over. Block-local rather than shared with ``model_params.filter_history``, mirroring how ``glm_hmm`` carries its own ``history_frames``. It also sets the stride of the deep-silence anchors (below), so no two of those rows share a history sample.
 * **target_window_seconds** — width of the forward window the response is averaged over for the headline (``window``) fit. Averaging suppresses the frame-to-frame differentiation noise in a single 6.7 ms sample and breaks the near-determinism that would otherwise tie the target to the last frame of its own history.
@@ -657,7 +659,7 @@ is ``'bout_offset'``.
 * **covariate_transform** — how the stored (pooled z-scored) covariates enter the contrast's design, applied at **fit time** (read from the settings, not from the artifact, so an artifact written before the key existed is still valid input): ``'yeo_johnson'`` (shipped) fits one Yeo-Johnson power parameter per covariate by maximum likelihood on its native-scale values and re-standardises; ``'derived'`` applies the response's own support rule (``log`` for a non-negative covariate, identity for a signed one); ``'normal_scores'`` replaces each covariate by the Gaussian quantile of its rank; ``'linear'`` uses the stored z-scores as they are. The non-linear options exist because the response is measured to be linear in the dominant covariate's *rank* and strongly concave in its value, a misfit an order of magnitude larger than the effect under test.
 * **covariate_features** — which animal's pre-anchor kinematics adjust the contrast, also a fit-time choice: ``'self'`` (the responder's), ``'partner'`` (the caller's) or ``'both'`` (shipped). The dyadic columns stay in under every choice.
 * **duration_n_bins** — the number of quantile bands bout duration is cut into; each band is interacted with the vocal indicator so every band gets its own step against silence (``3`` = terciles). Bands rather than a slope because duration is heavily skewed (median ``0.43`` s with a long tail).
-* **matched_divergence** — the design-based companion analysis, ``MatchedDivergencePipeline.extract_and_save_matched_divergence`` (see :ref:`Matched divergence <modeling-matched-divergence>`), which holds pre-anchor state fixed by matching instead of by covariate adjustment. Every duration is in seconds. ``pre_seconds`` — a candidate silent anchor must lie at least this long after the last call of **any** animal; ``post_clean_seconds`` — no call of any animal may start (or still be ongoing) within this long after an anchor, vocal and silent alike (the bout offsets that fail it are dropped); ``window_seconds`` / ``pre_window_seconds`` — the stored per-anchor curve spans ``[-pre_window_seconds, +window_seconds]`` around the anchor; ``baseline_start_seconds`` / ``baseline_end_seconds`` — the matching window is the mean over ``[-baseline_start_seconds, -baseline_end_seconds]`` before the anchor (``start`` must exceed ``end``); it ends ``0.5`` s *before* the anchor because these features are slow (``tau(1/e)`` 0.35–0.54 s), so a window reaching the anchor would already contain the divergence under way; ``silence_grid_seconds`` — spacing of the grid the candidate silent anchors are drawn from; ``match_caliper_sd`` — every silent anchor whose baseline lies within this many pooled standard deviations of a vocal anchor's is averaged into that anchor's control curve (a vocal anchor has a median of 82 eligible controls).
+* **matched_divergence** — the design-based companion analysis, ``MatchedDivergencePipeline.extract_and_save_matched_divergence`` (see :ref:`Matched divergence <modeling-matched-divergence>`), which holds pre-anchor state fixed by matching instead of by covariate adjustment. Every duration is in seconds. ``pre_seconds`` — a candidate silent anchor must lie at least this long after the last vocalization of **any** animal; ``post_clean_seconds`` — no vocalization of any animal may start (or still be ongoing) within this long after an anchor, vocal and silent alike (the bout offsets that fail it are dropped); ``window_seconds`` / ``pre_window_seconds`` — the stored per-anchor curve spans ``[-pre_window_seconds, +window_seconds]`` around the anchor; ``baseline_start_seconds`` / ``baseline_end_seconds`` — the matching window is the mean over ``[-baseline_start_seconds, -baseline_end_seconds]`` before the anchor (``start`` must exceed ``end``); it ends ``0.5`` s *before* the anchor because these features are slow (``tau(1/e)`` 0.35–0.54 s), so a window reaching the anchor would already contain the divergence under way; ``silence_grid_seconds`` — spacing of the grid the candidate silent anchors are drawn from; ``match_caliper_sd`` — every silent anchor whose baseline lies within this many pooled standard deviations of a vocal anchor's is averaged into that anchor's control curve (a vocal anchor has a median of 82 eligible controls).
 
 .. _modeling-extract:
 
@@ -755,7 +757,7 @@ provenance, for example:
         "predictor_idx": 1, "predictor_mouse_sex": "female",
         "target_idx": 0, "target_mouse_sex": "male",
         "feature_zoo_full": ["speed", "..."], "feature_zoo_kept": ["speed", "..."],
-        "usv_predictor_type": "categories_rate", "usv_predictor_partner_only": true,
+        "vocal_predictor_type": "categories_rate", "vocal_predictor_classes": [["usv"]], "vocal_predictor_partner_only": true,
         "filter_history_seconds": 4, "filter_history_frames": 600,
         "ibi_thresholds": {"male": 0.42, "female": 0.55},
         "analysis_specific": { "...": "..." },
@@ -765,7 +767,7 @@ provenance, for example:
 * **cohort / scope** — ``experimental_condition`` (the cohort label), ``session_ids``, and ``n_events_per_session`` (how many positive / negative events each session contributed).
 * **mouse roles** — ``predictor_idx`` / ``target_idx`` and their sexes.
 * **behavioral features** — ``feature_zoo_full`` (everything requested) vs ``feature_zoo_kept`` (what survived the collinearity / timescale audits).
-* **vocal-input shape** — ``usv_predictor_type``, ``usv_predictor_partner_only``, ``usv_predictor_smoothing_sd``.
+* **vocal-input shape** — ``vocal_predictor_type``, ``vocal_predictor_classes``, ``vocal_predictor_partner_only``, ``vocal_predictor_smoothing_sd``.
 * **temporal frame** — ``filter_history_seconds`` / ``filter_history_frames`` (the history window), and ``ibi_thresholds`` (the per-sex bout-gap thresholds derived from the mixture model).
 * **analysis_specific** — the per-pipeline knobs (differs by pipeline; listed just below).
 * **run provenance** — ``git_commit`` / ``git_dirty``, ``settings_sha256``, ``created_utc``, ``package_version``, so any result traces back to exact code and settings.
@@ -785,39 +787,37 @@ pipeline:
 * **VocalOnsetModelingPipeline** — ``usv_feature_arr`` = positive onset windows, ``no_usv_feature_arr`` = silent-epoch (negative) windows. ``analysis_specific``: ``model_target_vocal_type``, ``usv_bout_time``, ``usv_per_bout_floor``, and in ``'bout_offset'`` mode the whole ``bout_offset`` block.
 * **BoutParameterPipeline** — ``X`` = the bout-onset feature windows, ``y`` = the per-bout regression target (selected by ``model_target_variable``), ``groups`` = the session grouping. ``analysis_specific``: ``target_variable``.
 * **VocalCategoryModelingPipeline** — ``target_feature_arr`` = windows for the chosen target category, ``other_feature_arr`` = windows for the pooled "other". ``analysis_specific``: ``target_category``.
-* **MultinomialModelingPipeline** — ``X`` = per-USV feature windows, ``y`` = each USV's category label. ``analysis_specific``: ``categories_kept``, ``class_counts``, ``usv_category_number`` (C, the number of classes the cohort actually holds, which the model is fit with), ``usv_category_column_name``, ``bundle_category_number`` (k, the number of categories of the QLVM category bundle, ``os_utils.load_qlvm_category_bundle``, R-1 … R-k; ``null`` when the label column is not ``qlvm_category``) and ``bundle_categories_missing`` (the bundle labels with no calls in the cohort, ``[]`` when C = k). When C < k the extraction prints a warning naming the missing categories (e.g. ``missing: R-4``); the model is still fit with the C observed classes.
-* **ContinuousModelingPipeline** — ``X`` = per-USV feature windows, ``Y`` = the 2-D acoustic-manifold position target, ``w`` = inverse-density KDE weights (always present); ``category`` (each USV's QLVM category, the regular map's ``qlvm_category`` whatever map the manifold columns come from — the categories are defined on the regular map and label the call; also the acoustic region of the torus macro score, the equal-region reweighting and model selection) is added when the summaries carry that column. ``analysis_specific``: ``usv_manifold_column_names``.
+* **MultinomialModelingPipeline** — ``X`` = per-USV feature windows, ``y`` = each USV's category label. ``analysis_specific``: ``categories_kept``, ``class_counts``, ``usv_category_number`` (C, the number of classes the cohort actually holds, which the model is fit with), ``usv_category_column_name``, ``bundle_category_number`` (k, the number of categories of the QLVM category bundle, ``os_utils.load_qlvm_category_bundle``, R-1 … R-k; ``null`` when the label column is not ``qlvm_category``) and ``bundle_categories_missing`` (the bundle labels with no USVs in the cohort, ``[]`` when C = k). When C < k the extraction prints a warning naming the missing categories (e.g. ``missing: R-4``); the model is still fit with the C observed classes.
+* **ContinuousModelingPipeline** — ``X`` = per-USV feature windows, ``Y`` = the 2-D acoustic-manifold position target, ``w`` = inverse-density KDE weights (always present); ``category`` (each USV's QLVM category, the regular map's ``qlvm_category`` whatever map the manifold columns come from — the categories are defined on the regular map and label the USV; also the acoustic region of the torus macro score, the equal-region reweighting and model selection) is added when the summaries carry that column. ``analysis_specific``: ``usv_manifold_column_names``.
 
 .. note::
 
    **Modeling onsets for a single USV category.** By default
    ``VocalOnsetModelingPipeline`` derives positive onset events from the target
-   mouse's vocal segments of one **target type** (``onset_target_type``): by default
-   its ultrasonic calls, so squeaks are neither USV onsets nor bout members (a
-   squeak between two USVs no longer joins or splits a bout). To model **squeak
+   mouse's vocal segments of the **target classes** (``onset_target_classes``): by
+   default ``["usv"]``, pure USVs, so squeaks are neither USV onsets nor bout members
+   (a squeak between two USVs neither joins nor splits a bout). To model **squeak
    onsets** — e.g. the female's, which are plentiful in courtship when her USVs
    are not — set ``model_target_vocal_type = 'individual'`` and
-   ``onset_target_type = 'squeak'``; this replaces the VAE-era route of
-   targeting squeak category 6. Segments holding both a squeak and an ultrasonic
-   call are dropped from the default ``'usv'`` positives; ``onset_target_type =
-   'usv_with_both'`` keeps them as USVs (onsets and bout members) in every onset
-   mode. Squeaks are available in ``'individual'`` mode
-   only, since bout grouping needs an inter-bout threshold and the per-sex
-   thresholds are derived from ultrasonic-call intervals; asking for them in a
-   bout mode raises. A summary without the ``usv`` / ``squeak`` columns raises unless the
-   target type is ``'all'``.
+   ``onset_target_classes = ["squeak"]`` (or ``["squeak", "overlap"]``); this
+   replaces the VAE-era route of targeting squeak category 6. Squeaks are available
+   outside the bout modes only, since squeaks do not come in bouts and the per-sex
+   inter-bout thresholds are derived from USV intervals; asking for them in a bout
+   mode raises. A summary without the ``usv`` / ``squeak`` columns raises.
 
    A USV and a squeak can fall in the same segment: DAS was trained to detect
-   both, and the call classifier marks such a segment with ``usv`` and ``squeak``
-   both true. It belongs to
-   neither single target type: under ``'usv'`` and under ``'squeak'`` it is
-   dropped whole, so USVs that overlap a squeak are **not** positive onsets —
-   the price of keeping squeak onsets out of the USV target — and neither are
-   squeaks that overlap a USV. ``'all'`` keeps them, together with the pure USV
-   and squeak onsets; comparing the runs shows whether the overlap matters for a
-   given question.
+   both, and the squeak classifier marks such a segment with ``usv`` and ``squeak``
+   both true — the ``overlap`` class. It is a target only when listed: under
+   ``["usv"]`` and under ``["squeak"]`` it is dropped whole, while
+   ``["usv", "overlap"]`` keeps it as a USV (onset and bout member) and
+   ``["squeak", "overlap"]`` as a squeak. Comparing the runs shows whether the
+   overlap matters for a given question. The predictor side is set independently
+   (``vocal_predictor_classes``): e.g. male bout onsets from every segment holding a
+   USV, predicted from the female's squeaks only, is ``onset_target_classes =
+   ["usv", "overlap"]`` with ``vocal_predictor_classes = [["squeak"]]`` and
+   ``vocal_predictor_partner_only = true``.
 
-   Within that target type, when overall vocal output is too sparse for
+   Within those target classes, when overall vocal output is too sparse for
    bout-onset modeling but one category is plentiful, you can restrict the
    positive onsets to a single category by setting two knobs in
    ``model_params``:
@@ -832,13 +832,14 @@ pipeline:
      ``null`` ``usv_category_column_name`` a set ``onset_target_category``
      raises a ``ValueError`` before any session is loaded, and a summary that
      lacks the configured column raises when it is read (it no longer falls
-     back to all calls with a warning).
+     back to all USVs with a warning).
 
-   Only the *positive* onsets are filtered, by target type and by category alike:
-   the behavioral / vocal predictors and the silent-epoch (No-USV) negative
-   reference are still computed over **all** of the mouse's calls, squeaks
-   included, so these choices change only *which* onsets count as events —
-   never the predictors or the negatives. The filter
+   Only the *positive* onsets are filtered, by target classes and by category
+   alike: the vocal predictors follow their own ``vocal_predictor_classes``, and the
+   silent-epoch (No-USV) negative reference is still computed over **every**
+   vocalization of the mouse, squeaks and overlap segments included (and every
+   one assigned to no animal), so these choices change only *which* onsets count
+   as events — never the predictors or the negatives. The category filter
    is honoured in ``'individual'`` mode only; in ``'bout_onset'`` mode it is
    ignored, because the mixture-model inter-syllable-interval threshold used
    for bout grouping is calibrated on the all-USV interval distribution and
@@ -861,13 +862,13 @@ reuses the whole onset machinery — the same bout grouping, the same window sli
 the same univariate runners, screen, forward selection and held-out evaluation —
 and differs only in what a row is.
 
-*Positive*: the offset of the last call of every bout with at least
-``usv_per_bout_floor`` calls. No clean-history or clean-future requirement is
-imposed: the inter-call threshold of the bout definition already certifies the end
+*Positive*: the offset of the last USV of every bout with at least
+``usv_per_bout_floor`` USVs. No clean-history or clean-future requirement is
+imposed: the inter-USV threshold of the bout definition already certifies the end
 (a silence beyond it is a memoryless restart), and nothing after the offset enters
 the design. On the courtship cohort this is every one of the ~16,000 male bouts.
 
-*Negative*: an interior call's offset, chosen by ``negative_scheme``:
+*Negative*: an interior USV's offset, chosen by ``negative_scheme``:
 
 * ``'cross_bout'`` — from ANOTHER bout of the same session, at the same time since
   that bout's onset (within the tolerance), in a bout that kept singing for at least
@@ -880,10 +881,10 @@ the design. On the courtship cohort this is every one of the ~16,000 male bouts.
   That is the answer to "why does he stop sooner", not a confound: bout length is
   the outcome. Measured yield on the cohort: ~14,800 pairs from ~4,600 supplying
   bouts without a cap, ~10,500 pairs with the cap of 3.
-* ``'within_bout'`` — from the SAME bout: the latest interior call at least
+* ``'within_bout'`` — from the SAME bout: the latest interior USV at least
   ``min_singing_after_negative_seconds`` before that bout's end. Positive and negative
   then share the bout, the animal, the context and the bout's length, and only the
-  approach to the end differs; only bouts long enough to hold such a call enter
+  approach to the end differs; only bouts long enough to hold such a USV enter
   (~3,000 of ~16,000 on the cohort, all long ones).
 
 Under both schemes the pairing is only the sampling recipe: the loader returns
@@ -1209,7 +1210,7 @@ gain and the retained-feature filters.
 For the acoustic-manifold model the converged filters have a single dedicated
 view, ``plot_manifold_filter_atlas`` (torus runs only), reading the same
 consolidated artifact — a three-panel figure. The **vocal-space atlas** panel
-tiles the torus with canonical calls decoded through the frozen decoder of the
+tiles the torus with canonical USVs decoded through the frozen decoder of the
 run's QLVM map (inferno on black, each icon peak-normalised; on the regular map
 the QLVM category boundaries overlaid in white) as the key for the fields. The **filter magnitude**
 panel draws the per-feature temporal magnitude ``|W(t)|`` over the history window
@@ -1229,8 +1230,8 @@ maps -> their cells ``.../spectrograms/qlvm/<map>``, ``qlvm_squeak``
 maps and is read as a regular-map run). A conditional cell decodes a torus
 position and a conditioning value, so every tile is decoded at one value, the
 ``condition_quantile`` argument's quantile of the cell's training conditioning
-distribution (default ``0.5``, the corpus median call; e.g. ``0.1`` / ``0.9``
-show the duration map's torus for short / long calls), the same rule as the
+distribution (default ``0.5``, the corpus median USV; e.g. ``0.1`` / ``0.9``
+show the duration map's torus for short / long USVs), the same rule as the
 geodesic ``pullback_condition_quantile``. On the regular map its white boundaries
 are the R-1 … R-k regions of the QLVM category bundle (``os_utils.load_qlvm_category_bundle``,
 ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``, the partition the summaries'
@@ -1312,7 +1313,7 @@ Latent vocal states (GLM-HMM)
 A GLM-HMM treats the animal as switching between a small number of latent
 "behaviour → vocalization rules": each latent state owns its own GLM mapping the
 recent behavioural history to the vocalization, and the animal transitions between
-states over a bout of calling. The pipeline reads the behaviours to emit from —
+states over a vocal bout. The pipeline reads the behaviours to emit from —
 the manifold selection's ``final_model_features`` (``model_selection_path``), so the
 GLM-HMM always emits from exactly the features that selection kept — turns each
 session into one temporally-ordered observation sequence, fits the model across the
@@ -1362,8 +1363,7 @@ transitions vary per time bin), the per-session Viterbi ``state_paths``, and a
 Behavioral response
 -------------------
 Every pipeline above predicts a *vocal* target from behavioural history. This one
-runs the other way: it predicts a **behavioural** variable and asks whether the
-partner's calling changed it.
+runs the other way: it predicts a **behavioural** variable and asks whether the partner's vocalizing changed it.
 
 It answers two questions from one extraction:
 
@@ -1372,9 +1372,9 @@ It answers two questions from one extraction:
 
 Anchors are **events, not tiles**. Every row sits either at a male bout offset or
 inside an inter-bout gap. A precursor design tiled anchors every 4 s across the
-whole session and spent ~70% of its rows on windows containing no calls at all,
+whole session and spent ~70% of its rows on windows containing no vocalizations at all,
 diluting the very contrast it was meant to measure — measured on this cohort,
-only **30.6%** of tiled anchors carried any call.
+only **30.6%** of tiled anchors carried any vocalization.
 
 The silent comparison is **inter-bout silence**, not globally quiet stretches. A
 point inside a gap is a moment where he *could* have called and did not, with
@@ -1520,11 +1520,9 @@ question with almost disjoint assumptions — one leans on the functional form o
 adjustment, the other on the choice of what to match — so a result appearing in
 both is far harder to explain away than one appearing in either.
 
-Its anchors differ from the contrast's on purpose: cleanliness is judged against
-**every** call (his singletons, the partner's calls and unassigned ones included),
+Its anchors differ from the contrast's on purpose: cleanliness is judged against **every** vocalization (his singletons, the partner's vocalizations and unassigned ones included),
 ``post_clean_seconds`` ahead of vocal and silent anchors alike, and silent anchors
-are drawn from a ``silence_grid_seconds`` grid at least ``pre_seconds`` after the
-last call of anyone. Controls are matched, not modelled, and all eligible controls
+are drawn from a ``silence_grid_seconds`` grid at least ``pre_seconds`` after the last vocalization of anyone. Controls are matched, not modelled, and all eligible controls
 are averaged into one curve per vocal anchor, so the unit of analysis is the vocal
 anchor. Matching is per feature, on that feature's own baseline, so the panels are
 different anchor sets and are not comparable with one another.

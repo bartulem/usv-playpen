@@ -98,7 +98,7 @@ import polars as pls
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import confusion_matrix, matthews_corrcoef
 
-from .load_input_files import _calculate_ibi_threshold
+from .load_input_files import _calculate_ibi_threshold, is_pooled_vocal_signal, is_vocal_signal
 from .modeling_collinearity_audit import (
     audit_predictor_collinearity,
     audit_predictor_timescales,
@@ -525,7 +525,7 @@ def build_vocal_signal_columns(usv_data_dict: dict,
                                target_name: str,
                                predictor_name: str,
                                voc_settings: dict,
-                               usv_self_exclude: tuple = ('usv_rate', 'usv_event')) -> tuple:
+                               usv_self_exclude: tuple = ()) -> tuple:
     """
     Constructs the list of per-mouse vocal signal columns for one session.
 
@@ -536,14 +536,15 @@ def build_vocal_signal_columns(usv_data_dict: dict,
 
     Behavior
     --------
-    - When `voc_settings['usv_predictor_type']` is falsy, returns empty lists.
-    - When `voc_settings['usv_predictor_partner_only']` is True, only the
+    - When `voc_settings['vocal_predictor_type']` is falsy, returns empty lists.
+    - When `voc_settings['vocal_predictor_partner_only']` is True, only the
       predictor (partner) mouse's signals are emitted.
-    - For the target (self) mouse, any signal key in `usv_self_exclude`
-      (default: `('usv_rate', 'usv_event')`) is skipped, because including the
-      subject's own aggregate rate/event trace would induce trivial
-      autocorrelation and drown out behavioral predictors. Per-category
-      signals (`usv_cat_*`) are always allowed because they carry syntax
+    - For the target (self) mouse, every POOLED vocal trace ('<name>_rate' /
+      '<name>_event' for any trace name, `load_input_files.is_pooled_vocal_signal`)
+      is skipped, because including the subject's own aggregate rate/event trace
+      would induce trivial autocorrelation and drown out behavioral predictors;
+      so is any extra key in `usv_self_exclude`. Per-category signals
+      ('<name>_cat_*') are otherwise allowed because they carry syntax
       information, not mere presence.
 
     Parameters
@@ -558,11 +559,12 @@ def build_vocal_signal_columns(usv_data_dict: dict,
     predictor_name : str
         The predictor (other) mouse identifier.
     voc_settings : dict
-        Must contain the keys `usv_predictor_type` (str or None) and
-        `usv_predictor_partner_only` (bool).
+        Must contain the keys `vocal_predictor_type` (str or None) and
+        `vocal_predictor_partner_only` (bool).
     usv_self_exclude : tuple of str, optional
-        Signal keys that must NEVER be emitted for the target mouse.
-        Default: `('usv_rate', 'usv_event')`.
+        Further signal keys that must NEVER be emitted for the target mouse, on
+        top of its pooled traces (e.g. the binomial model's target-category
+        traces). Default: `()`.
 
     Returns
     -------
@@ -575,8 +577,8 @@ def build_vocal_signal_columns(usv_data_dict: dict,
     new_voc_cols = []
     new_voc_col_names = []
 
-    voc_out_type = voc_settings['usv_predictor_type']
-    partner_only = voc_settings['usv_predictor_partner_only']
+    voc_out_type = voc_settings['vocal_predictor_type']
+    partner_only = voc_settings['vocal_predictor_partner_only']
 
     if not voc_out_type:
         return new_voc_cols, new_voc_col_names
@@ -592,7 +594,7 @@ def build_vocal_signal_columns(usv_data_dict: dict,
         vocal_signals = usv_data_dict[session_id][m_name]['continuous_vocal_signals']
 
         for sig_key, sig_arr in vocal_signals.items():
-            if is_target and sig_key in usv_self_exclude:
+            if is_target and (is_pooled_vocal_signal(sig_key) or sig_key in usv_self_exclude):
                 continue
             col_name = f"{m_name}.{sig_key}"
             new_voc_cols.append(pls.Series(col_name, sig_arr))
@@ -772,11 +774,11 @@ def harmonize_session_columns(processed_beh_dict: dict,
                     generic_key = f"{prefix}.{suffix}"
 
                     if expected_col not in existing_cols:
-                        # Gate vocal suffixes with the `'usv_'` substring test
-                        # (no risk of a non-vocal suffix that happens to
-                        # contain the bare `'usv'` substring being silently
-                        # gated).
-                        if 'usv_' in suffix:
+                        # Gate vocal suffixes ('<name>_rate' / '_event' /
+                        # '_cat_<k>' for every trace name,
+                        # `load_input_files.is_vocal_signal`), so a non-vocal
+                        # suffix is never gated and a squeak trace is.
+                        if is_vocal_signal(suffix):
                             if generic_key in generic_existence_map:
                                 new_zeros.append(pls.Series(expected_col, np.zeros(df.height, dtype=np.float32)))
                         else:

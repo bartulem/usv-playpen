@@ -58,7 +58,6 @@ from ..os_utils import (
     QLVM_CATEGORY_MAP,
     QLVM_MAPS,
     VOCAL_FLAG_COLUMNS,
-    call_class_mask,
     configure_path,
     drop_noise_usvs,
     find_audio_mmap,
@@ -67,6 +66,7 @@ from ..os_utils import (
     parse_audio_mmap_name,
     resolve_consolidated_h5_path,
     resolve_pooled_embeddings_cache,
+    vocal_class_mask,
 )
 from ..time_utils import is_gui_context, smart_wait
 from .auxiliary_plot_functions import draw_category_outlines
@@ -1235,7 +1235,7 @@ class USVSpectrogramPlotter:
         The window's calls exclude every segment the noise classifier flagged
         (always; ``os_utils.drop_noise_usvs``) and, when the sequence settings'
         ``exclude_squeaks`` is True, every squeak-bearing segment as well: only
-        the pure USVs (``usv & ~squeak``, ``os_utils.call_class_mask``) are kept,
+        the pure USVs (``usv & ~squeak``, ``os_utils.vocal_class_mask``) are kept,
         exactly as ``embedding_thumbnails.exclude_squeaks`` does, so pure squeaks,
         segments holding a squeak and a USV, and unclassed rows are neither
         plotted on the map, numbered, stitched into the spectrogram nor marked.
@@ -1290,12 +1290,12 @@ class USVSpectrogramPlotter:
         if seq_cfg["exclude_squeaks"]:
             # Same rule as embedding_thumbnails.exclude_squeaks: keep the pure USVs
             # (usv & ~squeak) and leave out pure squeaks, segments holding both and
-            # unclassed rows (call_class_mask raises without the usv / squeak columns).
+            # unclassed rows (vocal_class_mask raises without the usv / squeak columns).
             n_before_squeaks = usv_df.height
-            usv_df = usv_df.filter(call_class_mask(usv_df, ("usv",), usv_summary_path.name))
+            usv_df = usv_df.filter(vocal_class_mask(usv_df, ("usv",), usv_summary_path.name))
             self.message_output(
                 f"Sequence: kept the {usv_df.height} pure USV(s) of {n_before_squeaks} non-noise segments "
-                f"({n_before_squeaks - usv_df.height} squeak, both or unclassed left out)."
+                f"({n_before_squeaks - usv_df.height} squeak, overlap or unclassed left out)."
             )
 
         qlvm_map = shared["qlvm_map"]
@@ -2359,13 +2359,13 @@ EMBEDDING_FEATURE_COLS = (
 # into usv_summary.csv): a pure USV is usv & ~squeak, a pure squeak squeak & ~usv, and a
 # segment holding both has both true; null on noise and unscorable rows. Carried in the
 # pooled embeddings DataFrame so the embedding figures and the explorer can keep the USV
-# maps to pure USVs and filter the squeak map by class (os_utils.call_class_mask). A cache
+# maps to pure USVs and filter the squeak map by class (os_utils.vocal_class_mask). A cache
 # written before the columns existed lacks ``usv`` and is rebuilt (both are required).
 
 # Extra per-USV columns pulled into the pooled embeddings DataFrame.
 # They power the auxiliary scatters (sex, duration), the acoustic-feature
 # color-by metrics in ``plot_embedding_with_category_thumbnails`` / the embedding
-# explorer, and the call-class filters. The cache file is invalidated automatically
+# explorer, and the vocal-class filters. The cache file is invalidated automatically
 # when these columns are missing -- see schema-check logic in
 # ``build_pooled_embeddings_df``.
 EMBEDDING_EXTRA_COLS = ("emitter", "duration", *VOCAL_FLAG_COLUMNS) + EMBEDDING_FEATURE_COLS
@@ -2553,7 +2553,7 @@ def load_regular_map_cohort_usvs(
     ``input_files_directory`` (playback lists dropped), read with
     ``build_pooled_embeddings_df`` (served from ``cache_path`` when that parquet
     matches the current summaries, otherwise rebuilt and written there). Keeps
-    the pure USVs (``usv & ~squeak``, ``os_utils.call_class_mask``: squeaks and
+    the pure USVs (``usv & ~squeak``, ``os_utils.vocal_class_mask``: squeaks and
     segments holding both are left out, the USV maps being trained on USVs only)
     with a regular-map position (``qlvm1`` / ``qlvm2``) and every
     ``REGULAR_MAP_PROPERTY_COLUMNS`` value finite.
@@ -2590,7 +2590,7 @@ def load_regular_map_cohort_usvs(
     numeric = ["qlvm1", "qlvm2", *REGULAR_MAP_PROPERTY_COLUMNS]
     columns = ["session_id", "row_index", "qlvm1", "qlvm2",
                *([QLVM_CATEGORY_COLUMN] if QLVM_CATEGORY_COLUMN in pooled.columns else []), *REGULAR_MAP_PROPERTY_COLUMNS]
-    usvs = (pooled.filter(call_class_mask(pooled, ("usv",), "pooled embeddings table"))
+    usvs = (pooled.filter(vocal_class_mask(pooled, ("usv",), "pooled embeddings table"))
             .select(columns)
             .drop_nulls(numeric)
             .filter(pls.all_horizontal([pls.col(column).is_finite() for column in numeric])))
@@ -3468,10 +3468,10 @@ def plot_embedding_with_category_thumbnails(
             )
             raise KeyError(msg)
         n_before = df_clean.height
-        df_clean = df_clean.filter(call_class_mask(df_clean, ("usv",), "the pooled embeddings table"))
+        df_clean = df_clean.filter(vocal_class_mask(df_clean, ("usv",), "the pooled embeddings table"))
         message_output(
-            f"Kept the {df_clean.height} pure USV(s) of {n_before} placed calls "
-            f"({n_before - df_clean.height} squeak, both or unclassed left out)."
+            f"Kept the {df_clean.height} pure USV(s) of {n_before} placed segments "
+            f"({n_before - df_clean.height} squeak, overlap or unclassed left out)."
         )
     categories = sorted(set(df_clean[cat_col].to_list()))
     if not categories:

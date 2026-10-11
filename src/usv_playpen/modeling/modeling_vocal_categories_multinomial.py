@@ -33,7 +33,7 @@ from tqdm import tqdm
 from typing import Any
 
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
-from .load_input_files import require_labels_for_vocal_predictors, require_usv_category_column
+from .load_input_files import is_vocal_signal, require_labels_for_vocal_predictors, require_usv_category_column
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -647,7 +647,7 @@ class MultinomialModelingPipeline(FeatureZoo):
        retained alongside the design matrix so downstream fitting can solve
        the multinomial problem in a single pass rather than target-vs-rest.
     2. **Identity-guarded vocal predictors**: injects partner-side and,
-       when `usv_predictor_partner_only=False`, subject-side vocal syntax
+       when `vocal_predictor_partner_only=False`, subject-side vocal syntax
        traces as predictors while strictly excluding the target-category
        density channels to prevent self-prediction / trivial autocorrelation.
 
@@ -745,8 +745,8 @@ class MultinomialModelingPipeline(FeatureZoo):
         voc_settings = self.modeling_settings['vocal_features']
         kin_settings = self.modeling_settings['kinematic_features']
 
-        voc_mode = voc_settings['usv_predictor_type']
-        smooth_sd = voc_settings['usv_predictor_smoothing_sd']
+        voc_mode = voc_settings['vocal_predictor_type']
+        smooth_sd = voc_settings['vocal_predictor_smoothing_sd']
         column_name_cats = voc_settings['usv_category_column_name']
         exclude_noise = voc_settings['exclude_noise_usvs']
 
@@ -765,6 +765,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             category_column=column_name_cats,
             filter_history=filter_hist,
             vocal_output_type=voc_mode,
+            predictor_classes=self.modeling_settings['vocal_features']['vocal_predictor_classes'],
             proportion_smoothing_sd=smooth_sd,
             exclude_noise_usvs=exclude_noise,
         )
@@ -943,8 +944,7 @@ class MultinomialModelingPipeline(FeatureZoo):
             for c in kept_columns_first_sess
         })
         vocal_columns_md = sorted({
-            c for c in kept_columns_first_sess
-            if any(tok in c for tok in ('usv_rate', 'usv_cat_', 'usv_event'))
+            c for c in kept_columns_first_sess if is_vocal_signal(c)
         })
 
         n_events_per_session_md = {

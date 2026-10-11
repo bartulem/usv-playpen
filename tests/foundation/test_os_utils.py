@@ -1124,33 +1124,33 @@ def test_rebase_experimenter_in_paths_is_idempotent():
     assert out == already
 
 
-# call classes
+# vocal classes
 
 
-def test_call_class_mask_derives_classes_from_the_two_booleans():
+def test_vocal_class_mask_derives_classes_from_the_two_booleans():
     """Classes come from both booleans, never from usv alone: pure USV = usv & ~squeak, pure squeak =
-    squeak & ~usv, both = usv & squeak; null rows (noise) are in no class; the flags may arrive as
+    squeak & ~usv, overlap = usv & squeak; null rows (noise) are in no class; the flags may arrive as
     Boolean, as text, or as an all-null column; an unknown class or a summary without the booleans
     raises."""
     table = pls.DataFrame(
         {"usv": [True, None, True, False, True], "squeak": [False, None, True, True, False]},
         schema={"usv": pls.Boolean, "squeak": pls.Boolean},
     )
-    assert os_utils.call_class_mask(table, ["usv"], "s").to_list() == [True, False, False, False, True]
+    assert os_utils.vocal_class_mask(table, ["usv"], "s").to_list() == [True, False, False, False, True]
     assert os_utils.pure_usv_mask(table, "s").to_list() == [True, False, False, False, True]
     assert os_utils.pure_squeak_mask(table, "s").to_list() == [False, False, False, True, False]
-    assert os_utils.both_mask(table, "s").to_list() == [False, False, True, False, False]
+    assert os_utils.overlap_mask(table, "s").to_list() == [False, False, True, False, False]
     assert os_utils.squeak_bearing_mask(table, "s").to_list() == [False, False, True, True, False]
-    assert os_utils.call_class_mask(table, os_utils.squeak_class_selection("squeak+both"), "s").to_list() == [False, False, True, True, False]
-    assert os_utils.call_class_mask(table, os_utils.squeak_class_selection("both"), "s").to_list() == [False, False, True, False, False]
+    assert os_utils.vocal_class_mask(table, os_utils.squeak_class_selection("squeak+overlap"), "s").to_list() == [False, False, True, True, False]
+    assert os_utils.vocal_class_mask(table, os_utils.squeak_class_selection("overlap"), "s").to_list() == [False, False, True, False, False]
     as_text = table.with_columns(pls.col("usv").cast(pls.String), pls.col("squeak").cast(pls.String))
     assert os_utils.pure_usv_mask(as_text, "s").to_list() == [True, False, False, False, True]
     all_null = pls.DataFrame({"usv": [None, None], "squeak": [None, None]})
-    assert os_utils.call_class_mask(all_null, ["usv", "squeak", "both"], "s").to_list() == [False, False]
-    with pytest.raises(ValueError, match="unknown call class"):
-        os_utils.call_class_mask(table, ["squeaks"], "s")
+    assert os_utils.vocal_class_mask(all_null, ["usv", "squeak", "overlap"], "s").to_list() == [False, False]
+    with pytest.raises(ValueError, match="unknown vocal class"):
+        os_utils.vocal_class_mask(table, ["squeaks"], "s")
     with pytest.raises(KeyError, match="detect-usv-squeaks"):
-        os_utils.call_class_mask(pls.DataFrame({"squeak": [True]}), ["usv"], "old_summary.csv")
+        os_utils.vocal_class_mask(pls.DataFrame({"squeak": [True]}), ["usv"], "old_summary.csv")
     with pytest.raises(ValueError, match="squeak class selection"):
         os_utils.squeak_class_selection("usv")
 

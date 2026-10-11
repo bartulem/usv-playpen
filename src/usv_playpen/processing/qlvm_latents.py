@@ -1431,7 +1431,7 @@ class QLVMLatentInference:
 
         root, h5_loc, usv_summary_loc, usv_df = self._locate_session_files()
         # Pure squeaks are not USVs the maps can place; every cell skips them (null
-        # coordinates). "both" segments hold a USV too and are embedded.
+        # coordinates). Overlap segments hold a USV too and are embedded.
         is_pure_squeak = pure_squeak_mask(usv_df, usv_summary_loc.name).to_numpy()
         self.message_output(
             f"{int(np.count_nonzero(is_pure_squeak))} pure squeak(s) (squeak true, usv false) are skipped by every "

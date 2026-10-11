@@ -20,6 +20,7 @@ Key Capabilities:
 from __future__ import annotations
 
 import pickle
+from collections.abc import Iterable
 from pathlib import Path
 
 import h5py
@@ -28,7 +29,7 @@ import polars as pls
 from astropy.convolution import Gaussian1DKernel, convolve
 from scipy.stats import invgauss, norm
 
-from ..os_utils import QLVM_CATEGORY_COLUMN, VOCAL_FLAG_COLUMNS, call_class_mask, drop_noise_usvs
+from ..os_utils import QLVM_CATEGORY_COLUMN, VOCAL_CLASSES, VOCAL_FLAG_COLUMNS, drop_noise_usvs, vocal_class_mask
 
 
 def load_behavioral_feature_data(behavior_file_paths: list = None,
@@ -76,18 +77,307 @@ def load_behavioral_feature_data(behavior_file_paths: list = None,
 # per-call label column; 'pooled_rate' / 'pooled_binary' never read one.
 CATEGORY_PREDICTOR_TYPES = ('categories_rate', 'all_rate')
 
-# The onset target types (`model_params.onset_target_type`): which call classes of
-# the summary's usv / squeak booleans (os_utils.call_class_mask) are the positive
-# onset source. 'usv' keeps pure USVs only, so a segment holding both a squeak and
-# an ultrasonic call is dropped; 'usv_with_both' keeps those "both" segments as
-# USVs too; 'squeak' keeps pure squeaks only. 'all' keeps every row without
-# reading the booleans (None: no class filter).
-ONSET_TARGET_CALL_CLASSES = {
-    'usv': ('usv',),
-    'usv_with_both': ('usv', 'both'),
-    'squeak': ('squeak',),
-    'all': None,
-}
+# Vocal classes a bout-grouping prediction mode accepts as its target
+# (`model_params.onset_target_classes`): bouts are grouped with the per-sex
+# inter-bout threshold, which is calibrated on USV intervals, and squeaks do not
+# come in bouts, so a target holding pure squeaks has no bouts to group.
+# 'variable_length_bouts' labels `find_variable_length_bouts` (the bout-parameter
+# and behavioral-response pipelines), which groups bouts from the same classes.
+BOUT_PREDICTION_MODES = ('bout_onset', 'bout_offset', 'variable_length_bouts')
+BOUT_TARGET_CLASSES = ('usv', 'overlap')
+
+# The vocal-signal names a predictor trace can carry (see `vocal_trace_name`), and
+# the suffixes the trace builders append: '_rate' (smoothed density), '_event'
+# (binary occupancy) and '_cat_<k>' (smoothed density of one QLVM category).
+VOCAL_TRACE_NAMES = ('usv', 'squeak', 'overlap', 'all_vocalizations')
+POOLED_VOCAL_SUFFIXES = ('_rate', '_event')
+CATEGORY_VOCAL_INFIX = '_cat_'
+
+
+def vocal_trace_name(classes: Iterable[str]) -> str:
+    """
+    Description
+    -----------
+    Names the trace built from one list of vocal classes by what it holds. An
+    overlap segment holds a USV and a squeak, so it adds nothing to the name of a
+    list that already holds one of them:
+
+    * ``["usv"]`` or ``["usv", "overlap"]`` -> ``"usv"``;
+    * ``["squeak"]`` or ``["squeak", "overlap"]`` -> ``"squeak"``;
+    * ``["overlap"]`` -> ``"overlap"``;
+    * ``["usv", "squeak"]`` or ``["usv", "squeak", "overlap"]`` -> ``"all_vocalizations"``.
+
+    The exact list a trace came from is recorded in the run metadata
+    (``vocal_predictor_classes``), so ``["usv"]`` and ``["usv", "overlap"]`` runs
+    stay distinguishable although their traces share a name.
+
+    Parameters
+    ----------
+    classes (Iterable[str])
+        Vocal classes, each one of ``os_utils.VOCAL_CLASSES``.
+
+    Returns
+    -------
+    name (str)
+        One of ``VOCAL_TRACE_NAMES``.
+    """
+
+    class_set = set(classes)
+    if 'usv' in class_set and 'squeak' in class_set:
+        return 'all_vocalizations'
+    if 'usv' in class_set:
+        return 'usv'
+    if 'squeak' in class_set:
+        return 'squeak'
+    return 'overlap'
+
+
+def onset_target_tag(target_classes: list) -> str:
+    """
+    Description
+    -----------
+    The filename segment of an onset target (``model_params.onset_target_classes``):
+    empty for the default ``["usv"]``, otherwise ``"_"`` plus the classes in
+    ``os_utils.VOCAL_CLASSES`` order joined by ``"+"`` (e.g. ``["overlap", "usv"]``
+    -> ``"_usv+overlap"``). The Level-1 onset pipeline and the model selection
+    both build their file names with it, so runs of different target classes never
+    share an artifact name and the selection finds its own step files.
+
+    Parameters
+    ----------
+    target_classes (list)
+        The configured target classes.
+
+    Returns
+    -------
+    tag (str)
+        ``""`` or ``"_<class>+<class>..."``.
+    """
+
+    ordered = [value for value in VOCAL_CLASSES if value in target_classes]
+    return "" if ordered == ['usv'] else "_" + "+".join(ordered)
+
+
+def validate_vocal_class_settings(target_classes: list | None,
+                                  predictor_classes: list | None,
+                                  prediction_mode: str | None) -> None:
+    """
+    Description
+    -----------
+    Checks the two vocal-class settings before any session is read, so a
+    misconfigured run stops at once with a message naming the setting:
+
+    * ``model_params.onset_target_classes`` (``target_classes``): a non-empty list
+      of distinct ``os_utils.VOCAL_CLASSES``; in a bout-grouping mode
+      (``BOUT_PREDICTION_MODES``) every class must be one of
+      ``BOUT_TARGET_CLASSES``, because squeaks do not come in bouts and the
+      inter-bout threshold is calibrated on USV intervals;
+    * ``vocal_features.vocal_predictor_classes`` (``predictor_classes``): a list of
+      lists, each a non-empty list of distinct ``os_utils.VOCAL_CLASSES`` that
+      becomes one trace (``vocal_trace_name``). Lists may share classes (an
+      overlap segment holds both a USV and a squeak, so it belongs in a USV trace
+      and in a squeak trace alike), but two lists that give the same trace name
+      would give two columns of one name and are refused.
+
+    Either argument may be None to skip its check (a pipeline without an onset
+    target, or without vocal predictors).
+
+    Parameters
+    ----------
+    target_classes (list | tuple | None)
+        The configured ``model_params.onset_target_classes``.
+    predictor_classes (list | tuple | None)
+        The configured ``vocal_features.vocal_predictor_classes`` (lists or tuples).
+    prediction_mode (str | None)
+        The configured ``model_params.model_target_vocal_type``; None skips the
+        bout-mode restriction.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        Any of the rules above is broken.
+    """
+
+    if target_classes is not None:
+        if not isinstance(target_classes, (list, tuple)) or len(target_classes) == 0:
+            raise ValueError(f"model_params.onset_target_classes must be a non-empty list of {list(VOCAL_CLASSES)}; got {target_classes!r}.")
+        unknown = [value for value in target_classes if value not in VOCAL_CLASSES]
+        if unknown or len(set(target_classes)) != len(target_classes):
+            raise ValueError(f"model_params.onset_target_classes {target_classes!r} must hold distinct classes from {list(VOCAL_CLASSES)}.")
+        if prediction_mode in BOUT_PREDICTION_MODES and not set(target_classes) <= set(BOUT_TARGET_CLASSES):
+            raise ValueError(
+                f"model_params.onset_target_classes {target_classes!r} is not valid for {prediction_mode!r}: bouts are "
+                f"grouped from {list(BOUT_TARGET_CLASSES)} only, because squeaks do not come in bouts and the inter-bout "
+                "threshold is calibrated on USV intervals. Use 'individual' mode for squeak onsets."
+            )
+    if predictor_classes is not None:
+        if not isinstance(predictor_classes, (list, tuple)) or len(predictor_classes) == 0:
+            raise ValueError(f"vocal_features.vocal_predictor_classes must be a non-empty list of class lists, e.g. [['usv']]; got {predictor_classes!r}.")
+        trace_names = []
+        for group in predictor_classes:
+            if not isinstance(group, (list, tuple)) or len(group) == 0:
+                raise ValueError(f"vocal_features.vocal_predictor_classes: every entry must be a non-empty list of classes, e.g. ['usv', 'overlap']; got {group!r}.")
+            unknown = [value for value in group if value not in VOCAL_CLASSES]
+            if unknown or len(set(group)) != len(group):
+                raise ValueError(f"vocal_features.vocal_predictor_classes entry {group!r} must hold distinct classes from {list(VOCAL_CLASSES)}.")
+            trace_names.append(vocal_trace_name(group))
+        duplicated = sorted({name for name in trace_names if trace_names.count(name) > 1})
+        if duplicated:
+            clashing = [group for group in predictor_classes if vocal_trace_name(group) in duplicated]
+            raise ValueError(
+                f"vocal_features.vocal_predictor_classes entries {clashing} all give the trace name(s) {duplicated}; "
+                "each entry must give a different trace (see vocal_trace_name)."
+            )
+
+
+def is_vocal_signal(signal_key: str) -> bool:
+    """
+    Description
+    -----------
+    Whether a column (``"<animal>.<signal>"``) or a bare signal key is a vocal
+    predictor trace built by the loaders: ``<name>_rate``, ``<name>_event`` or
+    ``<name>_cat_<k>`` with ``<name>`` one of ``VOCAL_TRACE_NAMES``. Every
+    pipeline uses this to tell its vocal columns from its kinematic ones.
+
+    Parameters
+    ----------
+    signal_key (str)
+        A column name or a bare ``continuous_vocal_signals`` key.
+
+    Returns
+    -------
+    is_vocal (bool)
+        True for a vocal predictor trace.
+    """
+
+    bare = signal_key.split('.', 1)[-1]
+    for name in VOCAL_TRACE_NAMES:
+        if bare in tuple(f"{name}{suffix}" for suffix in POOLED_VOCAL_SUFFIXES):
+            return True
+        category_prefix = f"{name}{CATEGORY_VOCAL_INFIX}"
+        if bare.startswith(category_prefix) and bare[len(category_prefix):].isdigit():
+            return True
+    return False
+
+
+def is_pooled_vocal_signal(signal_key: str) -> bool:
+    """
+    Description
+    -----------
+    Whether a column or bare signal key is a POOLED vocal trace (``<name>_rate`` /
+    ``<name>_event``), as opposed to a per-category one. The target animal's own
+    pooled traces are left out of its predictors (``build_vocal_signal_columns``):
+    its own vocal density right before its own onsets would predict them
+    trivially, while its per-category traces carry which categories it emitted.
+
+    Parameters
+    ----------
+    signal_key (str)
+        A column name or a bare ``continuous_vocal_signals`` key.
+
+    Returns
+    -------
+    is_pooled (bool)
+        True for ``<name>_rate`` / ``<name>_event`` with ``<name>`` in ``VOCAL_TRACE_NAMES``.
+    """
+
+    bare = signal_key.split('.', 1)[-1]
+    return any(bare == f"{name}{suffix}" for name in VOCAL_TRACE_NAMES for suffix in POOLED_VOCAL_SUFFIXES)
+
+
+def build_vocal_predictor_signals(mouse_usvs: pls.DataFrame,
+                                  predictor_classes: list,
+                                  vocal_output_type: str | None,
+                                  category_column: str | None,
+                                  duration_frames: int,
+                                  fps: float,
+                                  smooth_sd: float | None,
+                                  source: str) -> dict:
+    """
+    Description
+    -----------
+    Builds one animal's vocal predictor traces: one trace per entry of
+    ``predictor_classes``, from the rows of ``mouse_usvs`` whose vocal class
+    (``os_utils.vocal_class_mask``, read from the ``usv`` / ``squeak`` booleans) is
+    in that entry, named by ``vocal_trace_name``. ``vocal_output_type`` decides
+    how each trace is built:
+
+    * ``'pooled_binary'``: binary occupancy, ``<name>_event``;
+    * ``'pooled_rate'``: Gaussian-smoothed occupancy, ``<name>_rate``;
+    * ``'categories_rate'``: one smoothed trace per QLVM category,
+      ``<name>_cat_<k>``, for an entry without pure squeaks; an entry holding
+      pure squeaks gets one ``<name>_rate`` instead, because pure squeaks carry no
+      QLVM category (the QLVM map embeds USVs, and overlap segments, only);
+    * ``'all_rate'``: ``<name>_rate`` plus, for an entry without pure squeaks,
+      the per-category traces;
+    * None or ``''``: no traces.
+
+    A pooled trace is built even when the entry matches no row (an all-zero
+    trace: the animal emitted none of those classes), so every session carries
+    the same pooled columns; per-category traces exist for the categories the
+    animal emitted, as before.
+
+    Parameters
+    ----------
+    mouse_usvs (polars.DataFrame)
+        One animal's summary rows (noise already dropped when configured),
+        sorted by ``start``.
+    predictor_classes (list | tuple)
+        The configured ``vocal_features.vocal_predictor_classes`` (validated by
+        ``validate_vocal_class_settings``).
+    vocal_output_type (str | None)
+        The configured ``vocal_features.vocal_predictor_type``.
+    category_column (str | None)
+        The per-USV QLVM category column; needed only by ``'categories_rate'`` /
+        ``'all_rate'`` (checked by the caller).
+    duration_frames (int)
+        Session length in camera frames.
+    fps (float)
+        Camera frame rate.
+    smooth_sd (float | None)
+        Gaussian smoothing sd in frames for the ``_rate`` / ``_cat_`` traces.
+    source (str)
+        What the rows came from, named in the error when the booleans are missing.
+
+    Returns
+    -------
+    signals (dict)
+        Signal key -> trace of shape ``(duration_frames,)``.
+    """
+
+    signals = {}
+    if not vocal_output_type:
+        return signals
+    if vocal_output_type not in ('pooled_binary', 'pooled_rate', 'categories_rate', 'all_rate'):
+        raise ValueError(
+            f"Unknown vocal_features.vocal_predictor_type {vocal_output_type!r}; choose 'pooled_binary', "
+            "'pooled_rate', 'categories_rate', 'all_rate' or null."
+        )
+    for group in predictor_classes:
+        name = vocal_trace_name(group)
+        group_usvs = mouse_usvs.filter(vocal_class_mask(mouse_usvs, group, source))
+        starts = group_usvs['start'].to_numpy()
+        stops = group_usvs['stop'].to_numpy()
+        split_by_category = vocal_output_type in CATEGORY_PREDICTOR_TYPES and 'squeak' not in group
+        if vocal_output_type == 'pooled_binary':
+            signals[f"{name}_event"] = _generate_vocal_trace(starts, stops, duration_frames, fps, smooth_sd=None)
+        elif vocal_output_type in ('pooled_rate', 'all_rate') or not split_by_category:
+            signals[f"{name}_rate"] = _generate_vocal_trace(starts, stops, duration_frames, fps, smooth_sd=smooth_sd)
+        if split_by_category and group_usvs.height > 0:
+            for cat_id in group_usvs[category_column].unique().to_list():
+                try:
+                    cat_int = int(cat_id)
+                except (ValueError, TypeError):
+                    continue
+                cat_usvs = group_usvs.filter(pls.col(category_column) == cat_id)
+                signals[f"{name}{CATEGORY_VOCAL_INFIX}{cat_int}"] = _generate_vocal_trace(
+                    cat_usvs['start'].to_numpy(), cat_usvs['stop'].to_numpy(), duration_frames, fps, smooth_sd=smooth_sd
+                )
+    return signals
 
 
 def read_usv_summary_table(csv_path: str | Path, csv_sep: str) -> pls.DataFrame:
@@ -161,7 +451,7 @@ def require_usv_category_column(category_column: str | None,
         The configured ``vocal_features.usv_category_column_name``.
     purpose (str)
         What needs the labels (named in the error), e.g.
-        ``"usv_predictor_type 'categories_rate'"``.
+        ``"vocal_predictor_type 'categories_rate'"``.
     summary_columns (list | None)
         Columns of one usv_summary.csv; None skips the per-file check.
     source (str | None)
@@ -178,7 +468,7 @@ def require_usv_category_column(category_column: str | None,
             f"existing label column. {purpose} needs a per-USV category label, and the setting is "
             f"{category_column!r}. Point the setting at a label column the usv_summary.csv files carry "
             f"(e.g. 'qlvm_category', written by assign-qlvm-categories) or use a "
-            f"label-free alternative (e.g. usv_predictor_type 'pooled_rate')."
+            f"label-free alternative (e.g. vocal_predictor_type 'pooled_rate')."
         )
         raise ValueError(error_message)
     if summary_columns is not None and category_column not in summary_columns:
@@ -195,27 +485,32 @@ def require_labels_for_vocal_predictors(voc_settings: dict) -> None:
     Description
     -----------
     The early, settings-only form of the vocal-predictor label check: a pipeline
-    calls it before loading any session, so a ``usv_predictor_type`` of
+    calls it before loading any session, so a ``vocal_predictor_type`` of
     ``'categories_rate'`` / ``'all_rate'`` with no category label column
     (``usv_category_column_name`` null) stops at once instead of after the
     behavioral features of every session were read. The per-summary check (the
-    column exists in each file) runs later, inside the loaders.
+    column exists in each file) runs later, inside the loaders. With vocal
+    predictors on, it also checks ``vocal_predictor_classes``
+    (``validate_vocal_class_settings``).
 
     Parameters
     ----------
     voc_settings (dict)
         The ``vocal_features`` block of the modeling settings; must contain
-        ``usv_predictor_type`` and ``usv_category_column_name``.
+        ``vocal_predictor_type``, ``vocal_predictor_classes`` and
+        ``usv_category_column_name``.
 
     Returns
     -------
     None
     """
 
-    if voc_settings['usv_predictor_type'] in CATEGORY_PREDICTOR_TYPES:
+    if voc_settings['vocal_predictor_type']:
+        validate_vocal_class_settings(None, voc_settings['vocal_predictor_classes'], None)
+    if voc_settings['vocal_predictor_type'] in CATEGORY_PREDICTOR_TYPES:
         require_usv_category_column(
             voc_settings['usv_category_column_name'],
-            f"vocal_features.usv_predictor_type '{voc_settings['usv_predictor_type']}'",
+            f"vocal_features.vocal_predictor_type '{voc_settings['vocal_predictor_type']}'",
         )
 
 
@@ -314,6 +609,42 @@ def _get_clean_tiled_epochs(usv_starts_all: np.ndarray,
             all_valid_t.extend(possible_ts)
 
     return np.array(all_valid_t)
+
+def _history_is_dirty(onset_time: float,
+                      reference_starts: np.ndarray,
+                      reference_stops: np.ndarray,
+                      filter_history: float) -> bool:
+    """
+    Description
+    -----------
+    Whether a positive onset's pre-onset window holds a vocalization of the
+    silence reference (the target mouse's vocalizations of every class plus those
+    assigned to no animal): one that starts before the onset and ends at or after
+    ``onset_time - filter_history``. That is the rule the negative epochs obey
+    (``_get_clean_tiled_epochs`` forbids ``[start, stop + filter_history]`` around
+    every reference vocalization), so a clean positive and a negative have
+    equally silent histories. The onset's own vocalization starts AT
+    ``onset_time`` and is therefore not counted.
+
+    Parameters
+    ----------
+    onset_time (float)
+        The candidate onset, in seconds.
+    reference_starts (np.ndarray)
+        Start times (s) of the silence reference.
+    reference_stops (np.ndarray)
+        Stop times (s), same order.
+    filter_history (float)
+        Length (s) of the pre-onset window.
+
+    Returns
+    -------
+    dirty (bool)
+        True when the window holds a reference vocalization.
+    """
+
+    return bool(np.any((reference_starts < onset_time) & (reference_stops >= onset_time - filter_history)))
+
 
 def _build_binary_occupancy(event_starts: np.ndarray,
                             event_stops: np.ndarray,
@@ -594,7 +925,8 @@ def find_onset_epochs(root_directories: list = None,
                      exclude_noise_usvs: bool = True,
                      category_column: str = 'usv_category',
                      target_category: int = None,
-                     target_type: str = 'usv',
+                     target_classes: list | tuple = ('usv',),
+                     predictor_classes: list | tuple = (('usv',),),
                      negative_scheme: str = None,
                      min_singing_after_negative: int | float = None,
                      time_since_bout_onset_tolerance: int | float = None,
@@ -641,10 +973,13 @@ def find_onset_epochs(root_directories: list = None,
         None raises TypeError. Typically loaded from modeling_settings['mixture_model_params'].
     vocal_output_type : str, optional
         Controls the type of vocal predictors generated in 'continuous_vocal_signals':
-        - 'pooled_binary': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
-        - 'pooled_rate': Aggregate smoothed density of all biological USVs ('usv_rate').
-        - 'categories_rate': Individual smoothed density per category ('usv_cat_X').
-        - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
+        one trace per entry of `predictor_classes`, named ``<name>`` by
+        ``vocal_trace_name`` (see ``build_vocal_predictor_signals``):
+        - 'pooled_binary': binary occupancy (0/1), '<name>_event'.
+        - 'pooled_rate': smoothed density, '<name>_rate'.
+        - 'categories_rate': smoothed density per QLVM category, '<name>_cat_X'
+          (an entry holding pure squeaks, which carry no category: '<name>_rate').
+        - 'all_rate': '<name>_rate' plus the per-category '<name>_cat_X' traces.
     exclude_noise_usvs : bool, optional
         Whether to drop the segments ``detect_usv_noise`` flagged as holding no
         vocalization (default True). A summary without the ``noise`` column raises.
@@ -660,7 +995,7 @@ def find_onset_epochs(root_directories: list = None,
         If set (and `prediction_mode == 'individual'`), restricts the POSITIVE
         onset events to USVs whose `category_column` value equals this category
         (e.g. `qlvm_category` 3). The predictor
-        vocal traces ('usv_rate'/'usv_count'/'usv_cat_X') and the silent-epoch
+        vocal traces and the silent-epoch
         (negative) reference are still computed over ALL of the mouse's USVs, so
         the category choice changes only which onsets count as positive events.
         Ignored in 'bout_onset' and 'state' modes, because the mixture-model inter-syllable-
@@ -668,30 +1003,28 @@ def find_onset_epochs(root_directories: list = None,
         interval distribution and would mis-group a category-sparsified
         sequence; in those modes all categories are pooled as before. If None
         (default), all USV categories are pooled (original behavior).
-    target_type : str, optional
-        Which calls are the POSITIVE onset source, read from the summary's
-        ``usv`` / ``squeak`` booleans (written by the call classifier, ``detect-usv-squeaks``):
-        ``'usv'`` (default) keeps pure USVs only (``usv & ~squeak``),
-        ``'usv_with_both'`` pure USVs and the segments holding both a squeak and an
-        ultrasonic call (``usv``, whatever ``squeak`` is), ``'squeak'`` pure squeaks
-        only (``squeak & ~usv``), ``'all'`` every row (``ONSET_TARGET_CALL_CLASSES``).
-        A segment holding both (a squeak and an ultrasonic call together) is
-        therefore dropped by default and kept only by ``'usv_with_both'`` (or
-        ``'all'``); null booleans (a segment too short to score) are in none of
-        ``'usv'``, ``'usv_with_both'`` and ``'squeak'``. Applied before
-        `target_category`, in every mode whose positives are call times ('bout_onset',
-        'individual', 'bout_offset'), so in 'usv' mode bouts are grouped from pure
-        ultrasonic calls alone -- a squeak or a "both" segment between two calls no
-        longer joins or splits a bout -- and squeak onsets are no longer counted as USV
-        onsets; in 'usv_with_both' mode a "both" segment is a bout member and an
-        onset like any USV. As with `target_category`, the predictor vocal traces and
-        the silent-epoch (negative) reference still use ALL of the mouse's calls
-        (every class, whatever the target type), so a negative window is silent of
-        squeaks and "both" segments too, and the negatives are the same for every
-        target type. ``'squeak'`` is accepted in
-        'individual' mode only: bout grouping needs an inter-bout threshold, and
-        the per-sex thresholds are calibrated on ultrasonic-call intervals, not on
-        squeaks. A summary without the ``usv`` / ``squeak`` columns raises unless ``'all'``.
+    target_classes : list or tuple, default ('usv',)
+        Which vocal classes are the POSITIVE source (``model_params.onset_target_classes``),
+        read from the summary's ``usv`` / ``squeak`` booleans (written by ``detect-usv-squeaks``,
+        ``os_utils.vocal_class_mask``): any non-empty list of ``"usv"`` (pure USV),
+        ``"squeak"`` (pure squeak) and ``"overlap"`` (a USV and a squeak in one segment),
+        e.g. ``["usv"]`` (pure USVs, the default) or ``["usv", "overlap"]`` (every
+        segment holding a USV). Null booleans (a segment too short to score) are in no
+        class. Applied before `target_category`, in every mode: the positives of
+        'bout_onset', 'individual' and 'bout_offset' are the target classes' onsets
+        (bouts are grouped from them alone, so a vocalization of another class between
+        two target ones neither joins nor splits a bout), and the 'state' labels are
+        the target classes' occupancy. The bout modes accept ``"usv"`` and
+        ``"overlap"`` only (``BOUT_TARGET_CLASSES``): squeaks do not come in bouts.
+        Silence is NOT class-specific: a negative epoch's window and a 'bout_onset'
+        positive's clean history must both be free of every vocalization of the target
+        animal (any class) and of every vocalization assigned to no animal, so the two
+        groups are built under the same rule whatever the target classes.
+    predictor_classes : list or tuple, default (('usv',),)
+        ``vocal_features.vocal_predictor_classes``: a list of class lists, each one
+        predictor trace (``build_vocal_predictor_signals``, named by ``vocal_trace_name``),
+        e.g. ``[["usv"]]`` or ``[["usv", "overlap"], ["squeak"]]``. Needed when
+        `vocal_output_type` is set.
     negative_scheme : str, optional
         ``'bout_offset'`` mode only. ``'cross_bout'``: each positive (the last
         call's offset of a bout) is paired with an interior call's offset from
@@ -729,22 +1062,15 @@ def find_onset_epochs(root_directories: list = None,
             'start': np.array of positive-source USV start times (category-filtered
                 only in 'individual' mode with a target_category, else all USVs).
             'stop': np.array of positive-source USV stop times.
-            'continuous_vocal_signals': dict of continuous predictor traces keyed by
-                vocal_output_type ('usv_event'/'usv_rate'/'usv_cat_X').
+            'continuous_vocal_signals': dict of continuous predictor traces, one per
+                entry of `predictor_classes` ('<name>_event'/'<name>_rate'/'<name>_cat_X').
             'positive_events': unbalanced array of POSITIVE event times (seconds).
             'negative_events': unbalanced array of NEGATIVE (no-USV) event times (seconds).
-            'usv_count': raw binary occupancy trace (0/1) over the full per-mouse USV set.
-            'usv_rate': Gaussian-smoothed density trace over the full per-mouse USV set.
+            'usv_count': raw binary occupancy trace (0/1) of the target classes ('state' labels).
+            'usv_rate': Gaussian-smoothed density trace of the target classes.
     """
 
-    if target_type not in ONSET_TARGET_CALL_CLASSES:
-        raise ValueError(f"Unknown target_type: {target_type!r}. Must be one of {list(ONSET_TARGET_CALL_CLASSES)}.")
-    if target_type == 'squeak' and prediction_mode != 'individual':
-        raise ValueError(
-            f"target_type 'squeak' is supported in 'individual' mode only, not {prediction_mode!r}: "
-            "bout grouping needs an inter-bout threshold, and the per-sex thresholds come from "
-            "ultrasonic-call intervals."
-        )
+    validate_vocal_class_settings(target_classes, predictor_classes if vocal_output_type else None, prediction_mode)
 
     # Labels are needed only by the per-category predictor traces and by the
     # single-category onset target ('individual' mode); either one without a label
@@ -752,7 +1078,7 @@ def find_onset_epochs(root_directories: list = None,
     # no category traces or falling back to all calls.
     category_purposes = []
     if vocal_output_type in CATEGORY_PREDICTOR_TYPES:
-        category_purposes.append(f"vocal_features.usv_predictor_type '{vocal_output_type}'")
+        category_purposes.append(f"vocal_features.vocal_predictor_type '{vocal_output_type}'")
     if target_category is not None and prediction_mode == 'individual':
         category_purposes.append(f"model_params.onset_target_category {target_category}")
     for category_purpose in category_purposes:
@@ -780,10 +1106,10 @@ def find_onset_epochs(root_directories: list = None,
                                         summary_columns=usv_summary_data.columns, source=str(csv_path))
         if exclude_noise_usvs:
             usv_summary_data = drop_noise_usvs(usv_summary_data, Path(csv_path).name)[0]
-        if target_type != 'all' and any(column not in usv_summary_data.columns for column in VOCAL_FLAG_COLUMNS):
+        if any(column not in usv_summary_data.columns for column in VOCAL_FLAG_COLUMNS):
             raise ValueError(
-                f"{Path(csv_path).name} has no {list(VOCAL_FLAG_COLUMNS)} columns, so target_type {target_type!r} "
-                "cannot be applied; run detect-usv-squeaks on the session, or use 'all'."
+                f"{Path(csv_path).name} has no {list(VOCAL_FLAG_COLUMNS)} columns, so its USVs cannot be told from its "
+                "squeaks for onset_target_classes / vocal_predictor_classes; run detect-usv-squeaks on the session."
             )
 
         if session_id not in mouse_ids_dict:
@@ -827,22 +1153,15 @@ def find_onset_epochs(root_directories: list = None,
             # `find_variable_length_bouts`.
             mouse_usvs_df = usv_summary_data.filter(pls.col('emitter') == mouse_name).sort('start')
 
-            # Positive-event source. When a single target USV category is
-            # requested ('individual' mode only), restrict the USVs that become
-            # POSITIVE onsets to that category. The full `mouse_usvs_df` still
-            # drives the predictor vocal traces below, and the all-USV frame
-            # still drives the silent-epoch (negative) reference, so neither the
-            # predictors nor the negatives are affected by the category choice.
-            # The target type is applied first: pure ultrasonic calls, pure ultrasonic
-            # calls plus "both" segments, pure squeaks, or every call. Null booleans
-            # match no class; a "both" segment only 'usv_with_both' (and 'all').
-            target_call_classes = ONSET_TARGET_CALL_CLASSES[target_type]
-            if target_call_classes is not None:
-                typed_source_df = mouse_usvs_df.filter(
-                    call_class_mask(mouse_usvs_df, target_call_classes, Path(csv_path).name)
-                )
-            else:
-                typed_source_df = mouse_usvs_df
+            # Positive-event source: the rows of the target classes
+            # (`target_classes`, read from the usv / squeak booleans; null booleans
+            # match no class) and, when a single target USV category is requested
+            # ('individual' mode only), of that category. The predictor traces are
+            # built from their own class lists (`predictor_classes`) and the
+            # silence reference from every class, so neither depends on the target.
+            typed_source_df = mouse_usvs_df.filter(
+                vocal_class_mask(mouse_usvs_df, target_classes, Path(csv_path).name)
+            )
             if target_category is not None and prediction_mode == 'individual':
                 # The column's presence was checked above, when the summary was read.
                 positive_source_df = typed_source_df.filter(pls.col(category_column) == target_category)
@@ -852,32 +1171,24 @@ def find_onset_epochs(root_directories: list = None,
             usv_data_dict[session_id][mouse_name]['start'] = np.array(positive_source_df['start'])
             usv_data_dict[session_id][mouse_name]['stop'] = np.array(positive_source_df['stop'])
 
-            # Get all USVs (this mouse + uncategorized) - this is important for clean epoch sampling
+            # The silence reference: every vocalization of this mouse (any class) and
+            # every one assigned to no animal. Negative epochs must be free of all of
+            # them, and so must a 'bout_onset' positive's clean history.
             all_usvs_df = usv_summary_data.filter((pls.col('emitter').is_null()) | (pls.col('emitter') == mouse_name)).sort('start')
             usv_start_mouse_and_uncategorized = np.array(all_usvs_df['start'])
             usv_stop_mouse_and_uncategorized = np.array(all_usvs_df['stop'])
 
-            # Binarize the USV data
             session_fps = camera_fps_dict[session_id]
             session_duration_frames = features_dict[session_id].shape[0]
 
-            # Compute local proportion of time spent vocalizing (Legacy/State Mode Support).
-            # These predictor traces are always derived from the full per-mouse
-            # USV set (`mouse_usvs_df`), never the category-filtered positive
-            # source, so an onset category filter cannot leak into the
-            # 'usv_rate'/'usv_count' predictors or the 'state'-mode labels.
-            # Build the binary occupancy once and reuse it for both the binary
-            # `usv_count` trace and the smoothed `usv_rate` trace. The previous
-            # code rasterised the same start/stop timestamps twice (once with
-            # `smooth_sd=None`, once with the smoothing sd), rebuilding an
-            # identical binary occupancy inside the second call before smoothing
-            # it. Smoothing the shared occupancy here is bit-identical to that
-            # second `_generate_vocal_trace` call. The `else` branch preserves
-            # the original behaviour when `proportion_smoothing_sd` is None or 0
-            # (in which case `_generate_vocal_trace` returned the raw binary
-            # trace).
-            usv_frame_events = _build_binary_occupancy(mouse_usvs_df['start'].to_numpy(),
-                                                       mouse_usvs_df['stop'].to_numpy(),
+            # Occupancy of the target classes ('state'-mode labels): the binary
+            # trace `usv_count` and its Gaussian-smoothed `usv_rate`, built once from
+            # the class-filtered rows (`typed_source_df`, never the category-filtered
+            # positive source, so an onset category filter cannot leak into the
+            # 'state' labels). Smoothing the shared occupancy is bit-identical to a
+            # second `_generate_vocal_trace` call with the smoothing sd.
+            usv_frame_events = _build_binary_occupancy(typed_source_df['start'].to_numpy(),
+                                                       typed_source_df['stop'].to_numpy(),
                                                        session_duration_frames, session_fps)
 
             if proportion_smoothing_sd is not None and proportion_smoothing_sd > 0:
@@ -888,29 +1199,11 @@ def find_onset_epochs(root_directories: list = None,
             usv_data_dict[session_id][mouse_name]['usv_count'] = usv_frame_events
             usv_data_dict[session_id][mouse_name]['usv_rate'] = usv_frame_rate
 
-            # Generates continuous vocal signals based on specified output type
-            if vocal_output_type in ['pooled_binary', 'pooled_rate', 'categories_rate', 'all_rate']:
-
-                # A. Joined Aggregate logic
-                if vocal_output_type in ['pooled_binary', 'pooled_rate', 'all_rate'] and mouse_usvs_df.height > 0:
-                    if vocal_output_type == 'pooled_binary':
-                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_event'] = usv_frame_events
-                    else:
-                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_rate'] = usv_frame_rate
-
-                # B. Per-category logic
-                if vocal_output_type in CATEGORY_PREDICTOR_TYPES and mouse_usvs_df.height > 0:
-                    unique_cats = mouse_usvs_df[category_column].unique().to_list()
-                    for cat_id in unique_cats:
-                        try:
-                            cat_int = int(cat_id)
-                        except (ValueError, TypeError):
-                            continue
-
-                        cat_df = mouse_usvs_df.filter(pls.col(category_column) == cat_id)
-                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals'][f'usv_cat_{cat_int}'] = _generate_vocal_trace(
-                            cat_df['start'].to_numpy(), cat_df['stop'].to_numpy(), session_duration_frames, session_fps, smooth_sd=proportion_smoothing_sd
-                        )
+            # Predictor traces, one per entry of `predictor_classes`.
+            usv_data_dict[session_id][mouse_name]['continuous_vocal_signals'] = build_vocal_predictor_signals(
+                mouse_usvs=mouse_usvs_df, predictor_classes=predictor_classes, vocal_output_type=vocal_output_type,
+                category_column=category_column, duration_frames=session_duration_frames, fps=session_fps,
+                smooth_sd=proportion_smoothing_sd, source=Path(csv_path).name)
 
             session_duration_sec = session_duration_frames / session_fps
 
@@ -941,11 +1234,15 @@ def find_onset_epochs(root_directories: list = None,
                         # A. Must be far enough into session
                         if bout_start_time <= filter_history: continue
 
-                        # B. Previous USV must be > filter_history away
-                        if idx_start > 0:
-                            prev_usv_end = stops[idx_start - 1]
-                            if (bout_start_time - prev_usv_end) <= filter_history:
-                                continue
+                        # B. Clean history under the negatives' rule: no vocalization of
+                        # this mouse (any class, not only the target classes) and none
+                        # assigned to no animal may end within filter_history before the
+                        # onset or start before it and still be running. Checking only
+                        # the target classes would let, e.g., a squeak sit in a positive's
+                        # history while every negative is free of squeaks.
+                        if _history_is_dirty(bout_start_time, usv_start_mouse_and_uncategorized,
+                                             usv_stop_mouse_and_uncategorized, filter_history):
+                            continue
 
                         valid_bouts.append(bout_start_time)
 
@@ -1037,6 +1334,7 @@ def find_usv_categories(root_directories: list = None,
                         category_column: str = 'usv_category',
                         filter_history: int | float = 0.0,
                         vocal_output_type: str = None,
+                        predictor_classes: list | tuple = (('usv',),),
                         proportion_smoothing_sd: float = 1.0,
                         exclude_noise_usvs: bool = True,
                         manifold_column_names: list = None) -> dict:
@@ -1083,12 +1381,19 @@ def find_usv_categories(root_directories: list = None,
         Minimum time (seconds) from the start of the session. Discards USVs before this.
     vocal_output_type : str, optional, default=None
         Controls the type of vocal predictors generated in 'continuous_vocal_signals':
-        - 'pooled_binary': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
-        - 'pooled_rate': Aggregate smoothed density of all biological USVs ('usv_rate').
-        - 'categories_rate': Individual smoothed density per category ('usv_cat_X').
-        - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
+        one trace per entry of `predictor_classes`, named ``<name>`` by
+        ``vocal_trace_name`` (see ``build_vocal_predictor_signals``):
+        - 'pooled_binary': binary occupancy (0/1), '<name>_event'.
+        - 'pooled_rate': smoothed density, '<name>_rate'.
+        - 'categories_rate': smoothed density per QLVM category, '<name>_cat_X'
+          (an entry holding pure squeaks, which carry no category: '<name>_rate').
+        - 'all_rate': '<name>_rate' plus the per-category '<name>_cat_X' traces.
     proportion_smoothing_sd : float, default 1.0
         Standard deviation for Gaussian smoothing (in frames).
+    predictor_classes : list or tuple, default (('usv',),)
+        ``vocal_features.vocal_predictor_classes``: a list of class lists, each one
+        predictor trace (``build_vocal_predictor_signals``), e.g. ``[["usv"]]``.
+        Needed when `vocal_output_type` is set.
     exclude_noise_usvs : bool, optional
         Whether to drop the segments ``detect_usv_noise`` flagged as holding no
         vocalization (default True). A summary without the ``noise`` column raises.
@@ -1130,13 +1435,14 @@ def find_usv_categories(root_directories: list = None,
     # coordinates alone, so there a null `category_column` simply means "no
     # category packets". A categorical path without labels stops here, before any
     # session is read.
+    validate_vocal_class_settings(None, predictor_classes if vocal_output_type else None, None)
     category_purposes = []
     if not manifold_column_names:
         category_purposes.append("The USV category models (multinomial / binomial)")
     if target_category is not None:
         category_purposes.append(f"The binomial target category {target_category}")
     if vocal_output_type in CATEGORY_PREDICTOR_TYPES:
-        category_purposes.append(f"vocal_features.usv_predictor_type '{vocal_output_type}'")
+        category_purposes.append(f"vocal_features.vocal_predictor_type '{vocal_output_type}'")
     for category_purpose in category_purposes:
         require_usv_category_column(category_column, category_purpose)
     use_categories = category_column is not None and category_column != ''
@@ -1227,35 +1533,11 @@ def find_usv_categories(root_directories: list = None,
                 cat_df = mouse_usvs.filter(pls.col(category_column) == cat_id)
                 usv_data_dict[session_id][mouse_name]['events_by_category'][cat_int] = np.sort(cat_df['start'].to_numpy())
 
-            # Extract continuous vocal signals based on specified output type
-            if vocal_output_type in ['pooled_binary', 'pooled_rate', 'categories_rate', 'all_rate']:
-
-                # A. Aggregate (all calls combined)
-                if vocal_output_type in ['pooled_binary', 'pooled_rate', 'all_rate']:
-                    starts_all = mouse_usvs['start'].to_numpy()
-                    stops_all = mouse_usvs['stop'].to_numpy()
-
-                    if vocal_output_type == 'pooled_binary':
-                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_event'] = _generate_vocal_trace(
-                            starts_all, stops_all, session_duration_frames, session_fps, smooth_sd=None
-                        )
-                    else:
-                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_rate'] = _generate_vocal_trace(
-                            starts_all, stops_all, session_duration_frames, session_fps, smooth_sd=proportion_smoothing_sd
-                        )
-
-                # Per-category density
-                if vocal_output_type in CATEGORY_PREDICTOR_TYPES:
-                    for cat_id in unique_cats:
-                        try:
-                            cat_int = int(cat_id)
-                        except (ValueError, TypeError):
-                            continue
-
-                        cat_df = mouse_usvs.filter(pls.col(category_column) == cat_id)
-                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals'][f'usv_cat_{cat_int}'] = _generate_vocal_trace(
-                            cat_df['start'].to_numpy(), cat_df['stop'].to_numpy(), session_duration_frames, session_fps, smooth_sd=proportion_smoothing_sd
-                        )
+            # Predictor traces, one per entry of `predictor_classes`.
+            usv_data_dict[session_id][mouse_name]['continuous_vocal_signals'] = build_vocal_predictor_signals(
+                mouse_usvs=mouse_usvs, predictor_classes=predictor_classes, vocal_output_type=vocal_output_type,
+                category_column=category_column, duration_frames=session_duration_frames, fps=session_fps,
+                smooth_sd=proportion_smoothing_sd, source=f"{session_id} ({mouse_name})")
 
             # Save raw category streams (for potential future use, e.g., custom signal generation or validation)
             for cat_id in unique_cats:
@@ -1382,6 +1664,8 @@ def find_variable_length_bouts(root_directories: list = None,
                                filter_history: float = 4.0,
                                proportion_smoothing_sd: float = 1.0,
                                vocal_output_type: str = None,
+                               predictor_classes: list | tuple = (('usv',),),
+                               target_classes: list | tuple = ('usv',),
                                exclude_noise_usvs: bool = True,
                                category_column: str = 'usv_category') -> dict:
     """
@@ -1403,6 +1687,10 @@ def find_variable_length_bouts(root_directories: list = None,
         - Based on `vocal_output_type`, generates aggregate or category-specific signals.
         - Supports binary traces (0/1) or smoothed density traces via Gaussian convolution.
     4.  Bout Definition:
+        - Keeps the vocalizations of the target classes (`target_classes`,
+          ``model_params.onset_target_classes``), so a bout here is the same as in the
+          onset pipeline: a vocalization of another class (e.g. a squeak between two
+          USVs) neither joins nor splits a bout.
         - Calculates gaps between remaining valid syllables.
         - Clusters syllables into bouts wherever the gap is smaller than the calculated IBI.
     5.  Bout Validation:
@@ -1439,10 +1727,21 @@ def find_variable_length_bouts(root_directories: list = None,
         Standard deviation of the Gaussian kernel (in frames) used to smooth continuous signals.
     vocal_output_type : str, optional
         Controls the type of vocal predictors generated:
-        - 'pooled_binary': Aggregate binary trace (0/1) of all biological USVs ('usv_event').
-        - 'pooled_rate': Aggregate smoothed density of all biological USVs ('usv_rate').
-        - 'categories_rate': Individual smoothed density per category ('usv_cat_X').
-        - 'all_rate': Both 'usv_rate' and individual 'usv_cat_X' signals.
+        one trace per entry of `predictor_classes`, named ``<name>`` by
+        ``vocal_trace_name`` (see ``build_vocal_predictor_signals``):
+        - 'pooled_binary': binary occupancy (0/1), '<name>_event'.
+        - 'pooled_rate': smoothed density, '<name>_rate'.
+        - 'categories_rate': smoothed density per QLVM category, '<name>_cat_X'
+          (an entry holding pure squeaks, which carry no category: '<name>_rate').
+        - 'all_rate': '<name>_rate' plus the per-category '<name>_cat_X' traces.
+    predictor_classes : list or tuple, default (('usv',),)
+        ``vocal_features.vocal_predictor_classes``: a list of class lists, each one
+        predictor trace (``build_vocal_predictor_signals``), e.g. ``[["usv"]]``.
+        Needed when `vocal_output_type` is set.
+    target_classes : list or tuple, default ('usv',)
+        ``model_params.onset_target_classes``: the vocal classes bouts are grouped
+        from (``"usv"`` and ``"overlap"`` only, ``BOUT_TARGET_CLASSES``). The predictor
+        traces are built from their own lists (`predictor_classes`), not from these.
     exclude_noise_usvs : bool, optional
         Whether to drop the segments ``detect_usv_noise`` flagged as holding no
         vocalization (default True). A summary without the ``noise`` column raises.
@@ -1466,8 +1765,9 @@ def find_variable_length_bouts(root_directories: list = None,
 
     # Per-category traces need a label column; without one they stop here, before
     # any session is read, instead of silently building no category predictors.
+    validate_vocal_class_settings(target_classes, predictor_classes if vocal_output_type else None, 'variable_length_bouts')
     category_traces = vocal_output_type in CATEGORY_PREDICTOR_TYPES
-    category_purpose = f"vocal_features.usv_predictor_type '{vocal_output_type}'"
+    category_purpose = f"vocal_features.vocal_predictor_type '{vocal_output_type}'"
     if category_traces:
         require_usv_category_column(category_column, category_purpose)
 
@@ -1553,36 +1853,14 @@ def find_variable_length_bouts(root_directories: list = None,
             if exclude_noise_usvs:
                 mouse_usvs = drop_noise_usvs(mouse_usvs, f"{session_id} ({mouse_name})")[0]
 
-            # Generate continuous vocal signals based on specified output type
-            if vocal_output_type in ['pooled_binary', 'pooled_rate', 'categories_rate', 'all_rate']:
+            # Predictor traces, one per entry of `predictor_classes`.
+            usv_data_dict[session_id][mouse_name]['continuous_vocal_signals'] = build_vocal_predictor_signals(
+                mouse_usvs=mouse_usvs, predictor_classes=predictor_classes, vocal_output_type=vocal_output_type,
+                category_column=category_column, duration_frames=session_duration_frames, fps=session_fps,
+                smooth_sd=proportion_smoothing_sd, source=f"{session_id} ({mouse_name})")
 
-                # A. Joined Aggregate logic
-                if vocal_output_type in ['pooled_binary', 'pooled_rate', 'all_rate'] and mouse_usvs.height > 0:
-                    starts_all = mouse_usvs['start'].to_numpy()
-                    stops_all = mouse_usvs['stop'].to_numpy()
-
-                    if vocal_output_type == 'pooled_binary':
-                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_event'] = _generate_vocal_trace(
-                            starts_all, stops_all, session_duration_frames, session_fps, smooth_sd=None
-                        )
-                    else:
-                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals']['usv_rate'] = _generate_vocal_trace(
-                            starts_all, stops_all, session_duration_frames, session_fps, smooth_sd=proportion_smoothing_sd
-                        )
-
-                # B. Per-category logic
-                if category_traces and mouse_usvs.height > 0:
-                    unique_cats = mouse_usvs[category_column].unique().to_list()
-                    for cat_id in unique_cats:
-                        try:
-                            cat_int = int(cat_id)
-                        except (ValueError, TypeError):
-                            continue
-
-                        cat_df = mouse_usvs.filter(pls.col(category_column) == cat_id)
-                        usv_data_dict[session_id][mouse_name]['continuous_vocal_signals'][f'usv_cat_{cat_int}'] = _generate_vocal_trace(
-                            cat_df['start'].to_numpy(), cat_df['stop'].to_numpy(), session_duration_frames, session_fps, smooth_sd=proportion_smoothing_sd
-                        )
+            # Bouts are grouped from the target classes only (null booleans match no class).
+            mouse_usvs = mouse_usvs.filter(vocal_class_mask(mouse_usvs, target_classes, f"{session_id} ({mouse_name})"))
 
             if mouse_usvs.height == 0:
                 continue

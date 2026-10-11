@@ -59,7 +59,7 @@ from typing import Any, List, Tuple
 from tqdm import tqdm
 
 from .load_input_files import load_behavioral_feature_data, find_usv_categories
-from .load_input_files import require_labels_for_vocal_predictors
+from .load_input_files import is_vocal_signal, require_labels_for_vocal_predictors
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -883,8 +883,8 @@ class ContinuousModelingPipeline(FeatureZoo):
         voc_settings = self.modeling_settings['vocal_features']
         kin_settings = self.modeling_settings['kinematic_features']
 
-        voc_mode = voc_settings['usv_predictor_type']
-        smooth_sd = voc_settings['usv_predictor_smoothing_sd']
+        voc_mode = voc_settings['vocal_predictor_type']
+        smooth_sd = voc_settings['vocal_predictor_smoothing_sd']
         column_name_cats = voc_settings['usv_category_column_name']
         exclude_noise = voc_settings['exclude_noise_usvs']
         manifold_cols = voc_settings['usv_manifold_column_names']
@@ -914,6 +914,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             category_column=column_name_cats,
             filter_history=filter_hist,
             vocal_output_type=voc_mode,
+            predictor_classes=self.modeling_settings['vocal_features']['vocal_predictor_classes'],
             proportion_smoothing_sd=smooth_sd,
             exclude_noise_usvs=exclude_noise,
             manifold_column_names=manifold_cols,
@@ -1107,8 +1108,7 @@ class ContinuousModelingPipeline(FeatureZoo):
             for c in kept_columns_first_sess
         })
         vocal_columns_md = sorted({
-            c for c in kept_columns_first_sess
-            if any(tok in c for tok in ('usv_rate', 'usv_cat_', 'usv_event'))
+            c for c in kept_columns_first_sess if is_vocal_signal(c)
         })
 
         n_events_per_session_md = {

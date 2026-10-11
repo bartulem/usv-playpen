@@ -18,7 +18,7 @@ from sklearn.model_selection import StratifiedGroupKFold, StratifiedShuffleSplit
 from sklearn.metrics import (log_loss, roc_auc_score, f1_score, recall_score,
                              balanced_accuracy_score, mean_squared_log_error,
                              mean_gamma_deviance, brier_score_loss)
-from .load_input_files import load_pickle_modeling_data
+from .load_input_files import load_pickle_modeling_data, onset_target_tag
 from .modeling_bases_functions import (
     _normalizecols,
     basis_coefficients_to_frames,
@@ -965,10 +965,9 @@ def vocal_onset_model_selection(univariate_results_path: str,
         cat_seg = f"_cat_{cat_col}_{onset_cat}"
     else:
         cat_seg = ""
-    # The onset target type joins the prefix when it is not the default 'usv', as in the
-    # Level-1 analysis_tag, so squeak-onset and USV-onset step files never collide.
-    onset_target_type = settings['model_params']['onset_target_type']
-    target_type_seg = "" if onset_target_type == 'usv' else f"_{onset_target_type}"
+    # The onset target classes join the prefix when they are not the default ["usv"],
+    # as in the Level-1 analysis_tag, so squeak-onset and USV-onset step files never collide.
+    target_type_seg = onset_target_tag(settings['model_params']['onset_target_classes'])
 
     prefix = f"model_selection_{target_condition}_{prediction_mode}{target_type_seg}{cat_seg}_{split_strategy}_step_"
 

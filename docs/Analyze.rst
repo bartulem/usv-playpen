@@ -212,9 +212,19 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **n_spatial_bins** : number of spatial bins (2D behavioral feature)
 * **spatial_scale_cm** : maximum distance from center of arena to one edge (in cm)
 * **shuffle_seconds_range** : ``[min, max]`` of the uniform circular shift (in s) used to build the null distribution
-* **peth_window_seconds** : ``[start, stop]`` of the PETH window relative to each call's onset (in s); default ``[-2, 0.5]``. Bins before onset honour the two cleanliness rules below; a bin after onset is kept only while it ends before the next USV's onset (any emitter, squeak and both segments included), so the post-onset PETH covers the call itself and the silence after it, never a following call
+* **peth_window_seconds** : ``[start, stop]`` of the PETH window relative to each call's onset (in s); default ``[-2, 0.5]``. Bins before onset honour the two cleanliness rules below; a bin after onset is kept only while it ends before the next USV's onset (any emitter, squeak and overlap segments included), so the post-onset PETH covers the call itself and the silence after it, never a following call
 * **peth_bin_seconds** : PETH bin width (in s)
 * **bout_quiet_seconds** : inter-bout silence required to define a new bout (in s)
+* **ibi_bout_onset** : per-unit statistics around the onset of IBI bouts, the respiratory-tempo grouping (not the ``bout_quiet_seconds`` one), stored as ``usv_ibi_bout_onset`` in the pkl and in ``triage_stats``. Each statistic is referenced to the unit's own session rate, never to a pre-onset baseline (the window before an onset is occupied by the previous bout on roughly half of all bouts), and gets a circular-shift null and a two-sided empirical p:
+
+  * **ibi_z_score** / **ibi_component_index** : the inter-bout threshold, as the emitter sex's inter-syllable mixture component at this many standard deviations (the construction ``decode_usv_bout_occupancy`` and ``build-naturalistic-usv-repository`` use; 115.5 ms for the male at 2.58)
+  * **min_vocalizations** : fewest USVs a run needs to count as a bout
+  * **shuffle_guard_seconds** : the null's circular shifts are drawn from ``[guard, duration - guard]`` (in s)
+  * **trigger_window_seconds** / **trigger_bin_seconds** / **smoothing_bins** : the bout-triggered rate, its window around onset and bin width (in s), and its Gaussian smoothing (in bins)
+  * **gain_window_seconds** : window after onset whose mean rate over the session rate is ``onset_gain`` (in s)
+  * **pre_window_seconds** : window before onset whose mean rate over the session rate is ``pre_onset_gain`` (in s)
+  * **peak_search_seconds** : window in which the smoothed trace's maximum gives ``peak_latency`` (in s)
+  * **response_window_seconds** / **response_kernel_seconds** : each USV's response for ``first_over_later`` (the bout's first USV's response over the mean of its later USVs') and ``fraction_first_above`` (share of bouts whose first USV drew more): spikes in a window of this width after the USV onset, weighted through a Gaussian of this standard deviation rather than a hard edge, so the response is continuous rather than a small integer (in s)
 * **vocal_require_clean_post_anchor** : if ``true``, the time after the USV onset must be free of contaminating USVs to keep the anchor
 * **vocal_require_clean_prior_anchor** : if ``true``, the lookback window must also be free of contaminating USVs
 * **n_usv_min_self** : minimum self-side USV count for the self plots to be computed
@@ -223,8 +233,8 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
 * **behavioral_min_occupancy_seconds** : minimum behavioral occupancy per bin (in s) to draw that bin in 1D feature plots; persisted into ``behavioral_metadata``
 * **usv_property_min_occupancy_seconds** : minimum vocal-property occupancy per bin (in s) to keep the rate estimate finite
 * **include_partner_vocalization_tuning_bool** : also compute partner-side vocal tuning when its threshold is met. The self side is the tracked animal with more pure USVs and the partner the other; each side's ``sex`` label comes from the session metadata's ``Subjects`` (matched to the track name), never from the track slot, so a female-female session has two female sides
-* **exclude_squeaks_self** : restrict the self side's anchors to pure USVs (``usv`` true and ``squeak`` false), leaving its pure squeaks and its segments holding both a squeak and a USV (treated like squeaks) out (default ``true``). The self side is the emitter with more pure USVs. Squeak-bearing segments still count as other calls in the overlap checks, and a summary without the ``usv`` / ``squeak`` columns raises
-* **exclude_squeaks_partner** : the same for the partner side (default ``false``, since the partner is usually the female, who emits the squeaks). Either way, only pure-USV anchors enter the QLVM category tuning (the QLVM label of a squeak or of a segment holding both is not a USV category)
+* **exclude_squeaks_self** : restrict the self side's anchors to pure USVs (``usv`` true and ``squeak`` false), leaving its pure squeaks and its overlap segments (a squeak and a USV in one segment, treated like squeaks) out (default ``true``). The self side is the emitter with more pure USVs. Squeak-bearing segments still count as other calls in the overlap checks, and a summary without the ``usv`` / ``squeak`` columns raises
+* **exclude_squeaks_partner** : the same for the partner side (default ``false``, since the partner is usually the female, who emits the squeaks). Either way, only pure-USV anchors enter the QLVM category tuning (the QLVM label of a squeak or of an overlap segment is not a USV category)
 * **excluded_behavioral_features** : behavioral base features left out of the tuning, derivatives (``_1st_der`` / ``_2nd_der``) included (default ``nose-nose``, ``allo_yaw-nose``, ``nose-allo_yaw``, ``allo_pitch-nose``, ``nose-allo_pitch``: their head-anchored versions, ``head-head``, ``allo_yaw-head``, ``head-allo_yaw``, ``allo_pitch-head``, ``head-allo_pitch``, are tuned instead)
 * **smoothing_sd** : standard deviation of the Gaussian kernel (in bins) applied to ratemaps and shuffle distributions; ``0`` disables smoothing
 * **circular_features** : list of behavioral feature suffixes that are wrap-around in nature (e.g. ``allo_yaw``, ``body_dir``); used by the triage helpers to detect divergence runs that span the bin-0 / bin-N boundary
@@ -242,6 +252,20 @@ The */usv-playpen/_parameter_settings/analyses_settings.json* file contains a se
         "peth_window_seconds": [-2, 0.5],
         "peth_bin_seconds": 0.05,
         "bout_quiet_seconds": 2.0,
+        "ibi_bout_onset": {
+            "ibi_z_score": 2.58,
+            "ibi_component_index": 0,
+            "min_vocalizations": 3,
+            "shuffle_guard_seconds": 20.0,
+            "trigger_window_seconds": [-1.0, 2.0],
+            "trigger_bin_seconds": 0.02,
+            "smoothing_bins": 2.0,
+            "gain_window_seconds": [0.0, 0.25],
+            "pre_window_seconds": [-1.0, -0.5],
+            "peak_search_seconds": [-0.25, 1.0],
+            "response_window_seconds": 0.15,
+            "response_kernel_seconds": 0.02
+        },
         "vocal_require_clean_post_anchor": true,
         "vocal_require_clean_prior_anchor": false,
         "n_usv_min_self": 30,
@@ -268,6 +292,7 @@ Each per-cluster pkl also carries a ``triage_stats`` block — a flat collection
 * ``usv_property_tuning[emitter][prop]`` — the same per-direction divergence-segment (run) analysis as the 1D behavioral axes above (``n_bins``, ``max_run``, ``run_start_idx`` / ``run_end_idx``, ``peak_idx``, ``peak_abs_z``, ``peak_signed_z``, ``selectivity``, ``monotonicity``, plus ``excit`` / ``suppress`` run segments).
 * ``usv_peth[emitter]`` — a spike peri-event time histogram (PETH) around USV onset: ``peak_abs_z``, ``peak_signed_z``, ``peak_idx`` / ``peak_t``, ``ramp_index`` (a two-point pre-USV shape descriptor), and ``excit`` / ``suppress`` run segments.
 * ``usv_category_peth[emitter][cat_feat]`` — a per-category PETH: ``best_cat``, ``best_abs_z``, ``best_signed_z``, ``best_t_idx`` / ``best_t``, ``best_excit`` / ``best_suppress``, and ``per_category``.
+* ``usv_ibi_bout_onset[emitter]`` — the ``ibi_bout_onset`` statistics (``onset_gain``, ``peak_latency``, ``pre_onset_gain``, ``first_over_later``, ``fraction_first_above``), each with its ``observed`` value, shuffle percentiles and ``p_two_sided``, plus ``n_bouts`` and ``ibi_threshold_seconds``. The aggregator labels a unit ``ibi_bout_onset_<role>_<excit|suppress>`` and ``ibi_bout_first_usv_<role>_<first|later>``, significant when ``p_two_sided`` is at most ``ibi_bout_alpha`` and the unit has at least ``ibi_bout_min_bouts`` bouts (``detect_interesting_tuning_neurons``).
 * ``usv_category_tuning[emitter][cat_feat]`` — categorical (no run analysis): ``peak_abs_z``, ``peak_signed_z``, ``best_cat``, ``n_sig_categories`` (count of categories outside the [p0.5, p99.5] shuffle band), ``selectivity``.
 
 Frequency shift audio segment
@@ -493,3 +518,87 @@ Every setting below is exposed in the GUI's *Create naturalistic playback .WAV* 
    The playback audio device expects **192 kHz**, so change the audio's sampling rate from
    250 kHz to 192 kHz before playback (resample the file to 192 kHz, or set the output rate
    on the playback command).
+
+Decode vocal-bout occupancy
+---------------------------------
+This analysis asks whether a moment sits **inside a vocal bout** can be read off simultaneously
+recorded spiking. It runs per session, alongside the neuronal tuning curves, and is switched on
+with ``decode_usv_bout_occupancy_bool``.
+
+A bout is found on the **USV sequence first**, as a maximal run of the emitter's USVs whose
+consecutive silences all stay under the inter-bout threshold — the emitter sex's log
+inter-syllable-interval mixture component at ``ibi_z_score`` standard deviations, the same
+construction ``build-naturalistic-usv-repository`` uses, which for the male at z = 2.58 puts the
+threshold at 115.5 ms. Runs shorter than ``min_vocalizations`` are not bouts.
+
+The bins then follow the bouts rather than the other way round:
+
+* a **positive** bin is laid from a bout's own first USV start, stepping forward by
+  ``bin_seconds`` while it stays inside that bout, and contributes **only its silent time**, so
+  no window the decoder reads ever contains a vocalization. It needs at least
+  ``min_kept_seconds`` of silent time to count at all.
+* a **negative** bin comes from the global lattice and must hold no vocalization and touch no bout.
+* everything else is **dropped**. A bin holding a single USV cannot be assigned: a 120 ms USV
+  followed by a 110 ms silence is one USV per bin and squarely inside a bout, so a USV count
+  cannot say which side such a bin belongs to.
+
+Bouts are grouped from the emitter's pure USVs, but silence is not class-specific: a positive
+bin's kept time and a negative bin must both be free of every vocalization of the emitter (pure
+USVs, pure squeaks, overlap segments and unscored segments alike) and of every vocalization
+assigned to no animal, so a squeak, or an overlap segment, which holds a USV, never sits inside a
+window labelled silent.
+
+Each bin becomes a population vector of **raw** spike counts — nothing is divided by time and
+nothing is standardised — three contiguous thirds rotate as train and test, and a test bin takes
+the label of the training bin its vector correlates with most. Accuracy is balanced across the two
+classes, because the negatives outnumber the positives several times over. The sweep repeats with
+increasingly large random subsets of each area's units, so the curve says how much of the
+population the signal needs. The null applies **one common circular shift** to every unit, which
+preserves the correlations between them and breaks only their alignment to vocalization.
+
+.. warning::
+
+   Per-unit z-scoring must not be introduced here. Under the shift null a positive bin's counts
+   are a fixed fraction of a negative bin's for *every* unit, because it contributes less
+   counting time, and Pearson correlation is blind to that uniform factor. Standardising each
+   unit first turns it into a per-unit offset that varies across units, which correlation *can*
+   read: measured on one session it lifted the 415-unit null from 0.509 to 0.751.
+
+The session's units are split by brain area from the unit catalog on their own — no area list is
+needed — and every area clearing ``min_units_per_area`` is decoded into its own compressed
+archive, carrying every observed and every null draw. Areas seen but held back by the floor are
+reported by name, so an absent area is never ambiguous. Sessions are independent and **nothing is
+pooled**: assembling across them is a later step, done in the notebook (see :doc:`Notebooks`).
+
+.. code-block:: json
+
+    "decode_usv_bout_occupancy": {
+      "emitter": "self",
+      "ibi_z_score": 2.58,
+      "ibi_component_index": 0,
+      "min_vocalizations": 3,
+      "bin_seconds": 0.25,
+      "min_kept_seconds": 0.03,
+      "brain_areas": null,
+      "min_units_per_area": 50,
+      "cluster_group": ["good"],
+      "somatic_bool": true,
+      "unit_ladder": [5, 10, 20, 50, 100, 200],
+      "runs_per_count": 10,
+      "n_folds": 3,
+      "n_shuffles": 1000,
+      "shuffle_guard_seconds": 20.0,
+      "shuffle_seed": 0
+    }
+
+``emitter`` takes ``self`` (the recorded animal), ``partner`` or ``all``; the inter-bout threshold
+follows whoever is calling, so a female side is not segmented by a male rhythm. ``brain_areas``
+set to ``null`` means every area clearing the unit floor.
+
+.. note::
+
+   This bout grouping is **not** the ``bout_quiet_seconds`` of the neuronal tuning curves. That
+   one is the VMI baseline window, and groups USVs only as a side effect of guaranteeing a
+   silent pre-window; this one describes the respiratory rhythm. Both are correct for their own
+   analysis, and the tuning curves now carry their own IBI-based ``ibi_bout_onset`` block for
+   per-unit bout-onset statistics.

@@ -36,12 +36,20 @@ from matplotlib import colors as mcolors
 from matplotlib import gridspec
 from matplotlib import patheffects as mpe
 from matplotlib.backends.backend_pdf import PdfPages
-from matplotlib.patches import Circle, Patch
+from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.patches import Circle, Patch, Rectangle
+from scipy import ndimage
 from scipy.stats import gaussian_kde, spearmanr
 from tqdm import tqdm
 
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..analyses.compute_neuronal_tuning_curves import CONTINUOUS_PROPERTIES, behavioral_feature_base
+from ..analyses.compute_neuronal_tuning_curves import (
+    CONTINUOUS_PROPERTIES,
+    behavioral_feature_base,
+    ibi_bout_extents,
+    ibi_bout_runs,
+    weighted_usv_response,
+)
 from ..analyses.decode_experiment_label import extract_information
 from ..os_utils import (
     QLVM_CATEGORY_COLUMN,
@@ -298,6 +306,29 @@ VOCAL_SECTION_B_ROW_HEIGHT = 17.5 / (len(PROPERTY_ROW_ORDER) + 0.45 * (len(PROPE
 VOCAL_SECTION_HEIGHT_RATIOS = (5.0, 17.5, VOCAL_SECTION_B_ROW_HEIGHT * len(SECTION_C_ROWS))
 VOCAL_SECTION_HSPACE = 3.375 / (sum(VOCAL_SECTION_HEIGHT_RATIOS) / len(VOCAL_SECTION_HEIGHT_RATIOS))
 VOCAL_PAGE_FIGSIZE_INCHES = (16, 30.7)
+
+# The vocal page is ONE page, four columns wide: the two rate traces take three quarters of the
+# width with the bout-triggered raster and the first-versus-later scatter stacked in the
+# remaining quarter, then the pooled PETH beside the QLVM category cells, then the continuous
+# property grid. Panels, markings and titles are ported from the standalone bout figure.
+VOCAL_PAGE_COLUMNS = 4
+VOCAL_ONE_PAGE_FIGSIZE_INCHES = (16, 27.0)
+BOUT_SESSION_BIN_SECONDS = 1.0
+BOUT_ZOOM_SECONDS = 20.0
+BOUT_ZOOM_BIN_SECONDS = 0.05
+BOUT_SMOOTH_BINS = 2.0
+BOUT_TRIGGER_WINDOW_SECONDS = (-1.0, 2.0)
+BOUT_TRIGGER_BIN_SECONDS = 0.02
+BOUT_TRIGGER_SMOOTH_BINS = 2.5
+BOUT_DENSITY_GRID = 160
+BOUT_DENSITY_LEVELS = (0.5, 0.75, 0.9)
+BOUT_DENSITY_STYLES = ("-", "--", ":")
+BOUT_LEGEND_FONTSIZE = 9
+BOUT_LEGEND_LINE_STEP = 0.075
+PETH_TICK_SECONDS = 0.5
+QLVM_CATEGORY_LABEL_FONTSIZE = 14
+QLVM_LABEL_INSET = 0.06
+
 
 # Section-(c) per-category strip plot scaling: switch to symlog when
 # (max / min) firing-rate dynamic range exceeds the threshold; the
@@ -5839,7 +5870,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                             )
                             ax1.set_title(
                                 "Spatial tuning", fontsize=13, pad=8.0,
-                                fontweight="bold",
+                                fontweight="light",
                             )
                             ax1.set_xticks([])
                             ax1.set_yticks([])
@@ -5930,12 +5961,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                                     # arrow glyphs (U+2192 etc.), so render
                                     # the arrow via matplotlib mathtext.
                                     title_text = (
-                                        rf"{feat_name} ({idx_a}$\rightarrow${idx_b})"
+                                        rf"{self._feature_title(feat_name)} "
+                                        rf"({idx_a}$\rightarrow${idx_b})"
                                     )
                                 except ValueError:
-                                    title_text = feat_name
+                                    title_text = self._feature_title(feat_name)
                             else:
-                                title_text = feat_name
+                                title_text = self._feature_title(feat_name)
 
                             ax1 = fig.add_subplot(gs[gs_x, gs_y])
                             # split x/y tick params: push xticklabels down
@@ -5958,7 +5990,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                             )
                             ax1.set_title(
                                 title_text, fontsize=13, pad=8.0,
-                                fontweight="bold",
+                                fontweight="light",
                             )
                             tx_min, tx_max = ax1.get_xlim()
                             x1_lo = max(
@@ -6088,6 +6120,351 @@ class NeuronalTuningFigureMaker(FeatureZoo):
 
     # Vocal page — sections (a), (b) and (c)
 
+    def _feature_title(self, feature_name: str) -> str:
+        """
+        Description
+        -----------
+        A kinematic feature's proper display name for a panel title.
+
+        Reads the canonical `feature_display_names` map, which is the project's single source of
+        truth for these names, after stripping any `self.` / `other.` role prefix. A feature the
+        map does not carry falls back to its own name with underscores opened out, so a new
+        feature reads sensibly rather than raising mid-figure.
+
+        Parameters
+        ----------
+        feature_name (str)
+            Feature key, with or without a role prefix.
+
+        Returns
+        -------
+        title (str)
+            Human-readable name.
+        """
+
+        base = feature_name.split(".")[-1]
+        if base in self.feature_display_names:
+            return self.feature_display_names[base]
+        return base.replace("_", " ")
+
+    def _cluster_spike_times(self, cluster_data: dict) -> np.ndarray:
+        """
+        Description
+        -----------
+        The cluster's spike times in seconds.
+
+        The session root recorded in the pkl is wherever the compute RAN, which for anything
+        produced on the cluster is a scratch path absent from a local machine, so the directory
+        being rendered is tried first and the recorded root is only a fallback. Without that the
+        panels silently draw no spikes at all.
+
+        Parameters
+        ----------
+        cluster_data (dict)
+            Loaded per-cluster pkl payload.
+
+        Returns
+        -------
+        spike_times (np.ndarray)
+            Sorted spike times in seconds, empty when the file cannot be found.
+        """
+
+        cluster_id = cluster_data["usv_metadata"]["cluster_id"]
+        if not cluster_id:
+            return np.empty(0, dtype=float)
+        for root in (self.root_directory, cluster_data["usv_metadata"]["session_root"]):
+            if root is None:
+                continue
+            try:
+                candidates = list(pathlib.Path(root).rglob(f"cluster_data/{cluster_id}.npy"))
+            except OSError:
+                continue
+            if candidates:
+                return np.sort(np.asarray(np.load(candidates[0])[0, :], dtype=float))
+        return np.empty(0, dtype=float)
+
+    @staticmethod
+    def _emitter_usv_times(emitter: str, usv_summary_df) -> tuple:
+        """
+        Description
+        -----------
+        One emitter's USV onsets and offsets, sorted by onset.
+
+        Parameters
+        ----------
+        emitter (str)
+            Emitter whose USVs are wanted.
+        usv_summary_df (pls.DataFrame)
+            Noise-filtered USV summary.
+
+        Returns
+        -------
+        starts, stops (tuple[np.ndarray, np.ndarray])
+            USV onsets and offsets in seconds.
+        """
+
+        emitters = np.array([(e.strip() if e is not None else None)
+                             for e in usv_summary_df["emitter"].to_list()], dtype=object)
+        mask = np.array([e == emitter for e in emitters], dtype=bool)
+        starts = usv_summary_df["start"].to_numpy()[mask]
+        stops = usv_summary_df["stop"].to_numpy()[mask]
+        order = np.argsort(starts, kind="mergesort")
+        return starts[order], stops[order]
+
+    @staticmethod
+    def _draw_event_ribbon(ax, bout_lo: np.ndarray, bout_hi: np.ndarray,
+                           unassigned_lo: np.ndarray, unassigned_hi: np.ndarray, colour: str,
+                           low: float, high: float, min_width: float = 0.01) -> None:
+        """
+        Description
+        -----------
+        The USV ribbon under a rate trace: bouts as fading bars, unassigned USVs as flat ones.
+
+        A bout's bar runs from the emitter's colour at its onset to the page at its end, and the
+        ramp is laid on the bout's TRUE duration before clipping, so a bout running past the
+        drawn window stays saturated rather than reading as finished. Unassigned USVs are the
+        same kind of event on the same clock, so they share the ribbon in their own colour
+        instead of being dropped.
+
+        Parameters
+        ----------
+        ax (matplotlib axis)
+            Target axis.
+        bout_lo, bout_hi (np.ndarray)
+            Bout extents in seconds.
+        unassigned_lo, unassigned_hi (np.ndarray)
+            Extents of USVs no emitter was credited with.
+        colour (str)
+            Hex colour the bout gradient starts from.
+        low, high (float)
+            Vertical extent of the ribbon, in data coordinates.
+        min_width (float)
+            Floor on a drawn bar's width so a very short USV stays visible.
+
+        Returns
+        -------
+        None
+        """
+
+        window_lo, window_hi = ax.get_xlim()
+        cmap = LinearSegmentedColormap.from_list("bout_ribbon", [colour, "#FFFFFF"])
+        for start, stop in zip(bout_lo, bout_hi):
+            visible_start, visible_stop = max(start, window_lo), min(stop, window_hi)
+            if visible_stop <= visible_start:
+                continue
+            span = max(stop - start, min_width)
+            ramp = np.linspace((visible_start - start) / span, (visible_stop - start) / span, 128)
+            ax.imshow(ramp[None, :], cmap=cmap, aspect="auto", vmin=0.0, vmax=1.0, zorder=3,
+                      extent=(visible_start, max(visible_stop, visible_start + min_width),
+                              low, high))
+        for start, stop in zip(unassigned_lo, unassigned_hi):
+            if stop >= window_lo and start <= window_hi:
+                ax.add_patch(Rectangle((start, low), max(stop - start, min_width), high - low,
+                                       facecolor=COLOR_LIGHT, edgecolor="none", zorder=4))
+
+    @staticmethod
+    def _draw_first_vs_later(ax, spike_times: np.ndarray, usv_starts: np.ndarray, runs: list,
+                             cfg: dict, colour: str) -> None:
+        """
+        Description
+        -----------
+        One point per bout: its first USV's response against the mean of its later USVs'.
+
+        The identity line is the reference, so a point above it is a bout whose first USV drew
+        more spikes, and the white diamond marks the two means. Contours enclose a stated share
+        of the bouts, which says how much of the cloud sits either side of the line rather than
+        leaving it to be eyeballed. Responses are weighted through a Gaussian instead of counted
+        inside a hard window, which keeps them continuous rather than stacked on small integers.
+        "Later" is the mean over EVERY USV after the first, not the last ones.
+
+        Parameters
+        ----------
+        ax (matplotlib axis)
+            Target axis.
+        spike_times (np.ndarray)
+            Sorted spike times in seconds.
+        usv_starts (np.ndarray)
+            Emitter USV onsets in seconds.
+        runs (list)
+            USV indices per bout.
+        cfg (dict)
+            The `ibi_bout_onset` settings sub-block.
+        colour (str)
+            Hex colour for the markers and the density ramp.
+
+        Returns
+        -------
+        None
+        """
+
+        window = float(cfg["response_window_seconds"])
+        kernel = float(cfg["response_kernel_seconds"])
+        first, later = [], []
+        for run in runs:
+            if run.size < 2:
+                continue
+            first.append(weighted_usv_response(spike_times, float(usv_starts[run[0]]),
+                                                window, kernel))
+            later.append(float(np.mean([weighted_usv_response(spike_times,
+                                                               float(usv_starts[k]),
+                                                               window, kernel)
+                                        for k in run[1:]])))
+        if len(first) < 3:
+            ax.text(0.5, 0.5, "too few multi-USV bouts", transform=ax.transAxes, ha="center",
+                    va="center", fontsize=11, color=COLOR_GRAY_DASH)
+            return
+        first, later = np.asarray(first), np.asarray(later)
+        limit = max(first.max(), later.max()) * 1.08 + 0.5
+
+        grid_x, grid_y = np.mgrid[0:limit:complex(0, BOUT_DENSITY_GRID),
+                                  0:limit:complex(0, BOUT_DENSITY_GRID)]
+        estimate = gaussian_kde(np.vstack([later, first]))
+        density = estimate(np.vstack([grid_x.ravel(), grid_y.ravel()])).reshape(grid_x.shape)
+        density = (density - density.min()) / (density.max() - density.min() + 1e-12)
+        # contour levels enclosing a stated share of the bouts, read off the sorted density
+        flat = np.sort(density.ravel())[::-1]
+        share = np.cumsum(flat) / flat.sum()
+        levels = sorted({float(flat[np.searchsorted(share, q)]) for q in BOUT_DENSITY_LEVELS})
+
+        ax.imshow(density.T,
+                  cmap=LinearSegmentedColormap.from_list("density", ["#FFFFFF", colour]),
+                  origin="lower", aspect="equal", extent=(0, limit, 0, limit),
+                  interpolation="bilinear", zorder=1)
+        ax.scatter(later, first, s=16, facecolor=colour, edgecolor=COLOR_BLACK, linewidth=0.3,
+                   zorder=2)
+        ax.plot([0, limit], [0, limit], color=COLOR_BLACK, linewidth=1.0, zorder=3)
+        for level, style in zip(levels, BOUT_DENSITY_STYLES[::-1]):
+            ax.contour(grid_x, grid_y, density, levels=[level], colors=COLOR_BLACK,
+                       linestyles=style, linewidths=1.0, zorder=4)
+        for style, quantile in zip(BOUT_DENSITY_STYLES, BOUT_DENSITY_LEVELS):
+            ax.plot([], [], color=COLOR_BLACK, linestyle=style, linewidth=1.0,
+                    label=f"{100 * quantile:.0f}%")
+        ax.scatter([later.mean()], [first.mean()], marker="D", s=46, facecolor="#FFFFFF",
+                   edgecolor=COLOR_BLACK, linewidth=0.8, zorder=5)
+        ax.legend(fontsize=6, frameon=False, loc="lower right", title="bouts enclosed",
+                  title_fontsize=6)
+        ax.set_xlim(0, limit)
+        ax.set_ylim(0, limit)
+        ax.set_aspect("equal")
+        ax.set_xlabel(f"later USVs, mean weighted spikes in {window * 1e3:.0f} ms", fontsize=8)
+        ax.set_ylabel(f"first USV, weighted spikes in {window * 1e3:.0f} ms", fontsize=8)
+        ax.set_title(f"first vs later USV   |   {first.size} bouts   |   "
+                     f"{first.mean():.2f} vs {later.mean():.2f}, "
+                     f"{100 * np.mean(first > later):.0f}% above", fontsize=9, loc="left")
+
+    def _draw_bout_rows(self, fig, outer, emitter: str, cluster_data: dict, usv_summary_df,
+                        payload: dict) -> None:
+        """
+        Description
+        -----------
+        The two rate traces across three quarters of the width, and the scatter beneath the
+        raster in the remaining quarter.
+
+        Parameters
+        ----------
+        fig (matplotlib figure)
+            Target figure.
+        outer (gridspec.GridSpec)
+            The page grid.
+        emitter (str)
+            Emitter whose USVs define the bouts.
+        cluster_data (dict)
+            Loaded per-cluster pkl payload.
+        usv_summary_df (pls.DataFrame)
+            Noise-filtered USV summary.
+        payload (dict)
+            This emitter's bout-onset block.
+
+        Returns
+        -------
+        None
+        """
+
+        cfg = cluster_data["usv_metadata"]["ibi_bout_onset"]
+        duration = float(cluster_data["usv_metadata"]["duration_seconds"])
+        threshold = float(payload["ibi_threshold_seconds"])
+        minimum_usvs = int(cfg["min_vocalizations"])
+        spikes = self._cluster_spike_times(cluster_data)
+        usv_starts, usv_stops = self._emitter_usv_times(emitter, usv_summary_df)
+        bout_lo, bout_hi = ibi_bout_extents(usv_starts, usv_stops, threshold, minimum_usvs)
+        runs = ibi_bout_runs(usv_starts, usv_stops, threshold, minimum_usvs)
+        colour = self._sex_color(payload["sex"])
+
+        emitters = [(e.strip() if e is not None else None)
+                    for e in usv_summary_df["emitter"].to_list()]
+        unassigned = np.array([e is None for e in emitters], dtype=bool)
+        unassigned_lo = usv_summary_df["start"].to_numpy()[unassigned]
+        unassigned_hi = usv_summary_df["stop"].to_numpy()[unassigned]
+        rate = spikes.size / duration if duration > 0 else float("nan")
+
+        ax_session = fig.add_subplot(outer[0, 0:VOCAL_PAGE_COLUMNS - 1])
+        edges = np.arange(0.0, duration + BOUT_SESSION_BIN_SECONDS, BOUT_SESSION_BIN_SECONDS)
+        trace = ndimage.gaussian_filter1d(
+            (np.histogram(spikes, bins=edges)[0] / BOUT_SESSION_BIN_SECONDS).astype(float),
+            BOUT_SMOOTH_BINS, mode="nearest")
+        ax_session.plot(edges[:-1] + BOUT_SESSION_BIN_SECONDS / 2.0, trace, color=COLOR_BLACK,
+                        linewidth=0.9)
+        top = float(trace.max()) * 1.22 + 1.0
+        ax_session.set_xlim(0.0, duration)
+        ax_session.set_ylim(-0.20 * top, top)
+        self._draw_event_ribbon(ax_session, bout_lo, bout_hi, unassigned_lo, unassigned_hi,
+                                colour, -0.16 * top, -0.02 * top)
+        ax_session.set_yticks([t for t in ax_session.get_yticks() if t >= 0])
+        ax_session.set_ylim(-0.20 * top, top)
+        ax_session.set_ylabel("firing rate (sp/s)", fontsize=8)
+        ax_session.set_xlabel("time in session (s)", fontsize=8)
+        ax_session.set_title(
+            f"{cluster_data['usv_metadata']['cluster_id']}   {emitter}   {rate:.1f} Hz   |   "
+            f"{len(runs)} bouts   |   {BOUT_SESSION_BIN_SECONDS:g} s bins, "
+            f"{BOUT_SMOOTH_BINS:g} bin Gaussian", fontsize=9, loc="left")
+        ax_session.text(0.995, 0.95, "bouts", transform=ax_session.transAxes, ha="right",
+                        va="top", fontsize=BOUT_LEGEND_FONTSIZE, color=colour)
+        ax_session.text(0.995, 0.95 - BOUT_LEGEND_LINE_STEP, "unassigned USVs",
+                        transform=ax_session.transAxes, ha="right", va="top",
+                        fontsize=BOUT_LEGEND_FONTSIZE, color=COLOR_LIGHT)
+        for side in ("top", "right"):
+            ax_session.spines[side].set_visible(False)
+
+        if bout_lo.size:
+            grid = np.arange(0.0, max(duration - BOUT_ZOOM_SECONDS, 1.0), 1.0)
+            counts = np.array([int(np.sum((bout_lo >= s) & (bout_lo < s + BOUT_ZOOM_SECONDS)))
+                               for s in grid])
+            zoom_lo = float(grid[int(np.argmax(counts))])
+        else:
+            zoom_lo = 0.0
+        zoom = (zoom_lo, zoom_lo + BOUT_ZOOM_SECONDS)
+
+        ax_zoom = fig.add_subplot(outer[1, 0:VOCAL_PAGE_COLUMNS - 1])
+        zoom_edges = np.arange(zoom[0], zoom[1] + BOUT_ZOOM_BIN_SECONDS, BOUT_ZOOM_BIN_SECONDS)
+        zoom_trace = ndimage.gaussian_filter1d(
+            (np.histogram(spikes, bins=zoom_edges)[0] / BOUT_ZOOM_BIN_SECONDS).astype(float),
+            BOUT_SMOOTH_BINS, mode="nearest")
+        ax_zoom.plot(zoom_edges[:-1] + BOUT_ZOOM_BIN_SECONDS / 2.0, zoom_trace,
+                     color=COLOR_BLACK, linewidth=0.9)
+        zoom_top = float(zoom_trace.max()) * 1.22 + 1.0
+        ax_zoom.set_xlim(*zoom)
+        ax_zoom.set_ylim(-0.20 * zoom_top, zoom_top)
+        self._draw_event_ribbon(ax_zoom, bout_lo, bout_hi, unassigned_lo, unassigned_hi, colour,
+                                -0.16 * zoom_top, -0.02 * zoom_top)
+        in_zoom = spikes[(spikes >= zoom[0]) & (spikes <= zoom[1])]
+        ax_zoom.eventplot(in_zoom, lineoffsets=0.92 * zoom_top, linelengths=0.14 * zoom_top,
+                          colors=COLOR_BLACK, linewidths=0.35)
+        ax_zoom.set_yticks([t for t in ax_zoom.get_yticks() if t >= 0])
+        ax_zoom.set_ylim(-0.20 * zoom_top, zoom_top)
+        ax_zoom.set_ylabel("firing rate (sp/s)", fontsize=8)
+        ax_zoom.set_xlabel("time in session (s)", fontsize=8)
+        whole = int(np.sum((bout_lo >= zoom[0]) & (bout_hi <= zoom[1])))
+        ax_zoom.set_title(f"zoom {zoom[0]:.0f}-{zoom[1]:.0f} s, the densest window   |   "
+                          f"{whole} whole bouts   |   "
+                          f"{1000 * BOUT_ZOOM_BIN_SECONDS:.0f} ms bins, "
+                          f"{BOUT_SMOOTH_BINS:g} bin Gaussian, raster above",
+                          fontsize=9, loc="left")
+        for side in ("top", "right"):
+            ax_zoom.spines[side].set_visible(False)
+
+        self._draw_first_vs_later(fig.add_subplot(outer[1, VOCAL_PAGE_COLUMNS - 1]), spikes,
+                                  usv_starts, runs, cfg, colour)
+
     def _render_vocal_page(
         self,
         emitter: str,
@@ -6100,27 +6477,27 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Render the vocal page for one emitter side: the bout raster +
-        pooled `usv_peth` (section a) on top of the 5×4
-        `usv_property_tuning` grid (section b), with the categorical
-        `usv_category_tuning` row (section c: rate / occupancy watersheds
-        and the strip, one row per QLVM category column, `SECTION_C_ROWS`)
-        at the bottom on section (b)'s 4-column grid, then commit the page
-        via `save_fig`. Section (c) sits on this page because it is a
-        single row: a page of its own would carry a lone figure row. The
-        per-category PETH (`usv_category_peth`) is still computed and saved
-        in the pickle but not drawn.
+        Render the whole vocal output for one emitter side on a single page.
+
+        Reading order follows the analysis: the session firing rate with its USV ribbon, a zoom
+        where a bout is seconds wide rather than a pixel, the bout-triggered raster and the
+        first-versus-later scatter down the right-hand quarter, then the pooled `usv_peth`
+        beside the QLVM `usv_category_tuning` cells, then the continuous `usv_property_tuning`
+        grid. The per-category PETH is still computed and saved in the pickle but not drawn.
+
+        Bouts on this page are the IBI grouping the bout-onset compute recorded, re-derived from
+        its own threshold, so the page and the statistics describe the same objects. That is a
+        different grouping from the VMI bouts of `bout_quiet_seconds`. A pickle written before
+        that compute existed carries no payload, and the bout panels are then left out.
 
         Parameters
         ----------
         emitter (str)
-            Emitter ID (e.g. mouse track name) keying into the vocal
-            payloads.
+            Emitter ID keying into the vocal payloads.
         cluster_data (dict)
             Loaded per-cluster pkl payload.
         usv_summary_df (pls.DataFrame | None)
-            Noise-filtered USV summary; used
-            by the bout raster. Pass `None` to skip the raster.
+            Noise-filtered USV summary; the bout panels need it.
         segmentation (dict)
             Loaded latent-embedding segmentation per categorical feature.
         save_fig (Callable[[Figure, str], None])
@@ -6133,52 +6510,81 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         None
         """
 
-        fig = plt.figure(figsize=VOCAL_PAGE_FIGSIZE_INCHES, tight_layout=False)
+        # Helvetica Light is pinned for THIS page rather than left to whatever the global
+        # style happens to be, and the context manager puts it back afterwards so no other
+        # figure inherits it.
+        with plt.rc_context({"font.family": "sans-serif", "font.sans-serif": ["Helvetica"],
+                             "font.weight": "light", "axes.titleweight": "light",
+                             "axes.labelweight": "light"}):
+            self._draw_vocal_page(emitter, cluster_data, usv_summary_df, segmentation, save_fig,
+                                  page_label)
+
+    def _draw_vocal_page(self, emitter: str, cluster_data: dict, usv_summary_df,
+                         segmentation: dict, save_fig, page_label: str) -> None:
+        """
+        Description
+        -----------
+        Lay out and draw the single vocal page. Split from `_render_vocal_page` only so the
+        font context wraps the whole of it without indenting the body twice.
+
+        Parameters
+        ----------
+        emitter (str)
+            Emitter ID keying into the vocal payloads.
+        cluster_data (dict)
+            Loaded per-cluster pkl payload.
+        usv_summary_df (pls.DataFrame | None)
+            Noise-filtered USV summary; the bout panels need it.
+        segmentation (dict)
+            Loaded latent-embedding segmentation per categorical feature.
+        save_fig (Callable[[Figure, str], None])
+            Persists the rendered figure and closes it.
+        page_label (str)
+            Short label embedded in non-PDF per-page filenames.
+
+        Returns
+        -------
+        None
+        """
+
+        fig = plt.figure(figsize=VOCAL_ONE_PAGE_FIGSIZE_INCHES, tight_layout=False)
+        height_ratios = [3.2, 3.2, 3.6] + [VOCAL_SECTION_B_ROW_HEIGHT] * len(PROPERTY_ROW_ORDER)
         outer = gridspec.GridSpec(
-            nrows=3, ncols=1, height_ratios=list(VOCAL_SECTION_HEIGHT_RATIOS), hspace=VOCAL_SECTION_HSPACE,
-            left=0.06, right=0.97, top=0.97, bottom=0.03,
+            nrows=len(height_ratios), ncols=VOCAL_PAGE_COLUMNS, height_ratios=height_ratios,
+            hspace=0.75, wspace=0.52, left=0.07, right=0.94, top=0.97, bottom=0.03,
         )
 
-        # section (a)
-        gs_a = gridspec.GridSpecFromSubplotSpec(1, 2, subplot_spec=outer[0, 0], wspace=0.18)
-        ax_raster = fig.add_subplot(gs_a[0, 0])
-        ax_peth = fig.add_subplot(gs_a[0, 1])
-        self._draw_section_a(
-            ax_raster=ax_raster,
-            ax_peth=ax_peth,
-            emitter=emitter,
-            cluster_data=cluster_data,
-            usv_summary_df=usv_summary_df,
-        )
+        # A pickle from before the bout-onset statistics carries no block, and an emitter the
+        # analysis skipped has no entry; either way there is nothing to draw.
+        bout_blocks = (cluster_data["usv_ibi_bout_onset"]
+                       if "usv_ibi_bout_onset" in cluster_data and cluster_data["usv_ibi_bout_onset"] else {})
+        payload = bout_blocks[emitter] if emitter in bout_blocks else None
+        drawable = payload is not None and usv_summary_df is not None
+        if drawable:
+            self._draw_bout_rows(fig=fig, outer=outer, emitter=emitter,
+                                 cluster_data=cluster_data, usv_summary_df=usv_summary_df,
+                                 payload=payload)
+            # `_draw_section_a` draws the raster and the pooled PETH together, so it is handed
+            # the two axes it needs even though they now sit in different rows of the page.
+            self._draw_section_a(
+                ax_raster=fig.add_subplot(outer[0, VOCAL_PAGE_COLUMNS - 1]),
+                ax_peth=fig.add_subplot(outer[2, 0]),
+                emitter=emitter, cluster_data=cluster_data, usv_summary_df=usv_summary_df)
 
-        # section (b) — one row per PROPERTY_ROW_ORDER entry × 4 cols of square
-        # usv_property_tuning cells
-        gs_b = gridspec.GridSpecFromSubplotSpec(
-            len(PROPERTY_ROW_ORDER), 4, subplot_spec=outer[1, 0], wspace=0.40, hspace=0.45
-        )
-        self._draw_section_b(
-            fig=fig,
-            gs=gs_b,
-            emitter=emitter,
-            cluster_data=cluster_data,
-        )
-
-        # section (c) — one row per QLVM category column on section (b)'s
-        # 4-column grid (3 of its cells per category column)
         gs_c = gridspec.GridSpecFromSubplotSpec(
-            len(SECTION_C_ROWS), 4, subplot_spec=outer[2, 0], wspace=0.40, hspace=0.45
+            len(SECTION_C_ROWS), 3, subplot_spec=outer[2, 1:VOCAL_PAGE_COLUMNS],
+            wspace=0.40, hspace=0.45,
         )
-        self._draw_section_c(
-            fig=fig,
-            gs=gs_c,
-            emitter=emitter,
-            cluster_data=cluster_data,
-            segmentation=segmentation,
+        self._draw_section_c(fig=fig, gs=gs_c, emitter=emitter, cluster_data=cluster_data,
+                             segmentation=segmentation)
+
+        gs_b = gridspec.GridSpecFromSubplotSpec(
+            len(PROPERTY_ROW_ORDER), VOCAL_PAGE_COLUMNS, subplot_spec=outer[3:, :],
+            wspace=0.40, hspace=0.45,
         )
+        self._draw_section_b(fig=fig, gs=gs_b, emitter=emitter, cluster_data=cluster_data)
 
         save_fig(fig, page_label)
-
-    # section (a) — raster + PETH
 
     def _draw_section_a(
         self,
@@ -6272,10 +6678,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         peth_half_bin = (bin_centers[1] - bin_centers[0]) / 2.0 if bin_centers.size > 1 else 0.0
         peth_lo, peth_hi = bin_centers.min() - peth_half_bin, bin_centers.max() + peth_half_bin
         ax_peth.set_xlim(peth_lo, peth_hi)
-        # explicit X ticks at 0.25 s spacing, anchored on 0 s so onset is always a
+        # explicit X ticks at PETH_TICK_SECONDS spacing, anchored on 0 s so onset is always a
         # tick, spanning the whole window (pre-onset and, e.g. for the default
         # [-2, +0.5] s window, post-onset bins).
-        peth_xticks = np.arange(np.ceil(peth_lo / 0.25) * 0.25, peth_hi + 1e-4, 0.25)
+        peth_xticks = np.arange(np.ceil(peth_lo / PETH_TICK_SECONDS) * PETH_TICK_SECONDS,
+                                peth_hi + 1e-4, PETH_TICK_SECONDS)
         ax_peth.set_xticks(peth_xticks)
         ax_peth.set_xticklabels([f"{v:g}" for v in peth_xticks])
         ax_peth.set_xlabel("time relative to USV onset (s)", fontsize=12)
@@ -6294,138 +6701,106 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        Draw the bout-onset-aligned raster on `ax`. Each bout (defined as
-        a same-emitter USV preceded by ≥ `bout_quiet_seconds` of silence)
-        becomes one row showing every USV (any emitter) within
-        [-2, +2] s of the bout onset, plus this cluster's spike events.
+        The bout-onset-aligned raster: one row per IBI bout, sorted by duration so the gradients
+        form a fan, with the across-bout mean firing rate and its standard error on a twinned
+        right-hand axis.
+
+        Three choices here were each arrived at by being wrong first. EVERY bout overlapping a
+        row's window is shaded, not only the triggering one: a previous bout ends inside the
+        pre-window on about half of all rows and the next one starts inside the post-window on
+        about as many, so shading only the trigger leaves white meaning "silence" on some rows
+        and "unmarked bout time" on others. Each gradient is laid on its bout's TRUE duration and
+        then clipped at the window edge, so a bout running past the edge stays saturated instead
+        of fading to white and reading as ended. And every bout's rate is smoothed BEFORE the
+        average, so the error band describes the smoothed quantity drawn rather than raw bins
+        where a bout holds zero or one spike and the spread is enormous.
 
         Parameters
         ----------
         ax (matplotlib axis)
             Target axis.
         emitter (str)
-            Anchor-emitter string for bout definition.
+            Emitter whose USVs define the bouts.
         usv_summary_df (pls.DataFrame)
-            Filtered USV summary.
+            Noise-filtered USV summary.
         cluster_data (dict)
-            Loaded vocal tuning pkl — needed for spike times and metadata.
-            The bout-quiet-seconds setting is read from
-            `cluster_data["usv_metadata"]["bout_quiet_seconds"]` so
-            that the raster's bout definition matches what compute used.
+            Loaded pkl payload; supplies the IBI threshold, spike times and metadata.
 
         Returns
         -------
         None
         """
 
-        bout_quiet_s = cluster_data["usv_metadata"]["bout_quiet_seconds"]
-
-        # find bouts of the anchor emitter
-        emitters = [
-            (e.strip() if e is not None else None)
-            for e in usv_summary_df["emitter"].to_list()
-        ]
-        starts = usv_summary_df["start"].to_numpy()
-        stops = usv_summary_df["stop"].to_numpy()
-        anchor_mask = np.array([e == emitter for e in emitters])
-        anchor_starts = starts[anchor_mask]
-        anchor_stops = stops[anchor_mask]
-        if anchor_starts.size == 0:
-            ax.text(
-                0.5, 0.5, "no anchor USVs",
-                transform=ax.transAxes, ha="center", va="center", fontsize=13, color=COLOR_GRAY_DASH,
-            )
+        # A pickle from before the bout-onset statistics carries no block, and an emitter the
+        # analysis skipped has no entry; either way there is nothing to draw.
+        bout_blocks = (cluster_data["usv_ibi_bout_onset"]
+                       if "usv_ibi_bout_onset" in cluster_data and cluster_data["usv_ibi_bout_onset"] else {})
+        payload = bout_blocks[emitter] if emitter in bout_blocks else None
+        if payload is None:
+            ax.text(0.5, 0.5, "no bout-onset payload", transform=ax.transAxes, ha="center",
+                    va="center", fontsize=11, color=COLOR_GRAY_DASH)
+            return
+        cfg = cluster_data["usv_metadata"]["ibi_bout_onset"]
+        threshold = float(payload["ibi_threshold_seconds"])
+        usv_starts, usv_stops = self._emitter_usv_times(emitter, usv_summary_df)
+        bout_lo, bout_hi = ibi_bout_extents(usv_starts, usv_stops, threshold,
+                                            int(cfg["min_vocalizations"]))
+        if bout_lo.size == 0:
+            ax.text(0.5, 0.5, "no bouts", transform=ax.transAxes, ha="center", va="center",
+                    fontsize=11, color=COLOR_GRAY_DASH)
             return
 
-        order = np.argsort(anchor_starts)
-        anchor_starts = anchor_starts[order]
-        anchor_stops = anchor_stops[order]
-        is_new_bout = np.empty(anchor_starts.size, dtype=bool)
-        is_new_bout[0] = True
-        is_new_bout[1:] = (anchor_starts[1:] - anchor_stops[:-1]) >= bout_quiet_s
-        bout_onsets = anchor_starts[is_new_bout]
+        spike_times = self._cluster_spike_times(cluster_data)
+        colour = self._sex_color(payload["sex"])
+        cmap = LinearSegmentedColormap.from_list("bout_row", [colour, "#FFFFFF"])
+        window_lo, window_hi = BOUT_TRIGGER_WINDOW_SECONDS
+        order = np.argsort(bout_hi - bout_lo)
+        sorted_lo = bout_lo[order]
 
-        if bout_onsets.size == 0:
-            ax.text(
-                0.5, 0.5, "no bouts", transform=ax.transAxes, ha="center", va="center",
-                fontsize=13, color=COLOR_GRAY_DASH,
-            )
-            return
-
-        # spike data: the spike file path is not stored in the pkl;
-        # locate the cluster's spike .npy under <session_root>/ephys
-        # via session_root + cluster_id stored in metadata.
-        spike_path_hint = cluster_data["usv_metadata"]["session_root"]
-        if spike_path_hint is not None:
-            cluster_id = cluster_data["usv_metadata"]["cluster_id"]
-            if cluster_id:
-                spike_npy_candidates = list(
-                    pathlib.Path(spike_path_hint).rglob(f"cluster_data/{cluster_id}.npy")
-                )
-                if spike_npy_candidates:
-                    arr = np.load(spike_npy_candidates[0])
-                    spike_times = np.sort(np.asarray(arr[0, :], dtype=float))
-                else:
-                    spike_times = np.empty(0, dtype=float)
-            else:
-                spike_times = np.empty(0, dtype=float)
-        else:
-            spike_times = np.empty(0, dtype=float)
-
-        x_lo, x_hi = -2.0, 2.0
-
-        # USV-bar color: anchor's own sex for anchor-emitter USVs;
-        # gray (COLOR_LIGHT) for unassigned-emitter USVs. Partner-emitter
-        # USVs are skipped below, so no partner color is ever needed.
-        anchor_sex = cluster_data["usv_peth"][emitter]["sex"]
-
-        # for each bout, draw spikes (black) and USV-bars (sex-colored)
-        # within [-2, +2] of the bout onset
-        all_starts = starts
-        all_stops = stops
-        spike_y = []
-        spike_x = []
-        for row_idx, t0 in enumerate(bout_onsets):
-            # USVs in window:
-            mask = (all_stops > t0 + x_lo) & (all_starts < t0 + x_hi)
-            for j in np.where(mask)[0]:
-                s = max(all_starts[j] - t0, x_lo)
-                e = min(all_stops[j] - t0, x_hi)
-                em = emitters[j]
-                # plot only anchor-emitter USVs (sex-colored) and
-                # unassigned USVs (gray); skip partner-emitter USVs
-                # entirely so the raster reflects this side's vocal
-                # activity uncluttered by the other animal's calls.
-                if em is not None and em != emitter:
+        for row, anchor in enumerate(sorted_lo):
+            for other in np.flatnonzero((bout_hi > anchor + window_lo)
+                                        & (bout_lo < anchor + window_hi)):
+                visible_start = max(bout_lo[other], anchor + window_lo)
+                visible_stop = min(bout_hi[other], anchor + window_hi)
+                if visible_stop <= visible_start:
                     continue
-                color = self._sex_color(anchor_sex) if em == emitter else COLOR_LIGHT
-                # USV bars at the TOP of each row (just inside the upper edge);
-                # spikes occupy the body of the row centered at row_idx + 0.5.
-                ax.hlines(y=row_idx + 0.95, xmin=s, xmax=e, colors=color, linewidth=1.5)
+                span = bout_hi[other] - bout_lo[other]
+                ramp = np.linspace((visible_start - bout_lo[other]) / span,
+                                   (visible_stop - bout_lo[other]) / span, 128)
+                ax.imshow(ramp[None, :], cmap=cmap, aspect="auto", vmin=0.0, vmax=1.0, zorder=1,
+                          extent=(visible_start - anchor, visible_stop - anchor,
+                                  row - 0.5, row + 0.5))
+            in_window = spike_times[(spike_times >= anchor + window_lo)
+                                    & (spike_times <= anchor + window_hi)] - anchor
+            if in_window.size:
+                ax.eventplot(in_window, lineoffsets=row, linelengths=0.85, colors=COLOR_BLACK,
+                             linewidths=0.3, zorder=4)
 
-            # spikes in window:
-            if spike_times.size > 0:
-                lo = np.searchsorted(spike_times, t0 + x_lo, "left")
-                hi = np.searchsorted(spike_times, t0 + x_hi, "left")
-                rel = spike_times[lo:hi] - t0
-                spike_x.extend(rel.tolist())
-                spike_y.extend([row_idx + 0.5] * rel.size)
+        ax.axvline(0.0, color=COLOR_BLACK, linewidth=0.9, zorder=5)
+        ax.set_xlim(window_lo, window_hi)
+        ax.set_ylim(-0.5, sorted_lo.size - 0.5)
+        ax.set_xlabel("time from bout onset (s)", fontsize=8)
+        ax.set_ylabel("bout # (sorted by duration)", fontsize=8)
+        ax.set_title(f"bout-triggered   |   {sorted_lo.size} bouts   |   "
+                     f"{1000 * BOUT_TRIGGER_BIN_SECONDS:.0f} ms bins", fontsize=9, loc="left")
 
-        if spike_x:
-            ax.vlines(
-                x=spike_x, ymin=np.array(spike_y) - 0.4, ymax=np.array(spike_y) + 0.4,
-                colors=COLOR_BLACK, linewidth=0.15,
-            )
-
-        ax.axvline(x=0.0, color=COLOR_BLACK, ls="--", lw=0.5)
-        ax.set_xlim(x_lo, x_hi)
-        ax.set_ylim(-0.25, bout_onsets.size + 0.25)
-        ax.set_xlabel("time relative to bout onset (s)", fontsize=12)
-        ax.set_ylabel("bout #", fontsize=12)
-        ax.set_title(f"raster (n_bouts = {bout_onsets.size})", fontsize=13, pad=3)
-        ax.tick_params(labelsize=11)
-
-    # section (b) — within-USV continuous tuning grid
+        edges = np.arange(window_lo, window_hi + BOUT_TRIGGER_BIN_SECONDS,
+                          BOUT_TRIGGER_BIN_SECONDS)
+        per_bout = np.vstack([np.histogram(spike_times - anchor, bins=edges)[0]
+                              / BOUT_TRIGGER_BIN_SECONDS for anchor in sorted_lo])
+        smoothed = ndimage.gaussian_filter1d(per_bout, BOUT_TRIGGER_SMOOTH_BINS, axis=1,
+                                             mode="nearest")
+        centres = edges[:-1] + BOUT_TRIGGER_BIN_SECONDS / 2.0
+        mean_rate = smoothed.mean(axis=0)
+        sem_rate = smoothed.std(axis=0, ddof=1) / np.sqrt(smoothed.shape[0])
+        ax_rate = ax.twinx()
+        ax_rate.fill_between(centres, mean_rate - sem_rate, mean_rate + sem_rate,
+                             color=COLOR_GRAY_BAND, alpha=0.55, linewidth=0, zorder=6)
+        ax_rate.plot(centres, mean_rate, color=COLOR_BLACK, linewidth=1.2, zorder=7)
+        ax_rate.set_ylabel("mean firing rate (sp/s)", fontsize=8)
+        ax_rate.set_xlim(window_lo, window_hi)
+        ax.spines["top"].set_visible(False)
+        ax_rate.spines["top"].set_visible(False)
 
     def _draw_section_b(
         self,
@@ -6610,8 +6985,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax_line.tick_params(axis="x", labelsize=11, pad=4.0)
         ax_line.tick_params(axis="y", labelsize=11, pad=0.5)
         ax_line.set_title(
-            prop.split(".")[-1], fontsize=15, pad=8.0,
-            fontweight="bold",
+            self.vocal_titles[prop.split(".")[-1]], fontsize=15, pad=8.0,
+            fontweight="light",
         )
         ax_line.set_box_aspect(1)
 
@@ -6746,8 +7121,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     cbar_label="firing rate (sp/s)",
                     fig=fig,
                     cmap=ratemap_cmap,
+                    annotate_categories=True,
                 )
                 ax_rate.set_title(tuning_title, fontsize=12, pad=3)
+                ax_rate.set_xlabel("QLVM 1", fontsize=11, labelpad=2)
+                ax_rate.set_ylabel("QLVM 2", fontsize=11, labelpad=2)
 
                 # column N+1: occupancy watershed (per-emitter cmap), with
                 # category IDs overlaid at each region's pole of
@@ -6763,6 +7141,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                     annotate_categories=True,
                 )
                 ax_occ.set_title("Occupancy", fontsize=12, pad=3)
+                ax_occ.set_xlabel("QLVM 1", fontsize=11, labelpad=2)
+                ax_occ.set_ylabel("QLVM 2", fontsize=11, labelpad=2)
 
                 # column N+2: per-category strip
                 self._draw_categorical_strip(
@@ -6918,45 +7298,36 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                 mask = label_grid == cat_id
                 if not mask.any():
                     continue
-                masked_x = xx[mask]
-                masked_y = yy[mask]
-                cx = float(masked_x.mean())
-                cy = float(masked_y.mean())
-                # check whether the arithmetic centroid lands inside the
-                # category mask (find nearest pixel and inspect its label)
-                d_a = (xx - cx) ** 2 + (yy - cy) ** 2
-                nearest = np.unravel_index(np.argmin(d_a), d_a.shape)
-                if not mask[nearest] and period_x > 0 and period_y > 0:
-                    # circular mean per axis (atan2 of mean sin / mean cos),
-                    # then map back into [x_min, x_max] / [y_min, y_max]
-                    theta_x = 2.0 * np.pi * (masked_x - x_min) / period_x
-                    theta_y = 2.0 * np.pi * (masked_y - y_min) / period_y
-                    cx_c = (
-                        x_min
-                        + np.arctan2(
-                            np.sin(theta_x).mean(),
-                            np.cos(theta_x).mean(),
-                        )
-                        * period_x / (2.0 * np.pi)
-                    )
-                    cy_c = (
-                        y_min
-                        + np.arctan2(
-                            np.sin(theta_y).mean(),
-                            np.cos(theta_y).mean(),
-                        )
-                        * period_y / (2.0 * np.pi)
-                    )
-                    cx_c = x_min + ((cx_c - x_min) % period_x)
-                    cy_c = y_min + ((cy_c - y_min) % period_y)
-                    d_c = (xx - cx_c) ** 2 + (yy - cy_c) ** 2
-                    nearest_c = np.unravel_index(np.argmin(d_c), d_c.shape)
-                    if mask[nearest_c]:
-                        cx, cy = float(cx_c), float(cy_c)
+                # The label goes at the point DEEPEST inside the region -- the maximum of a
+                # distance transform on its mask -- rather than at a centroid. An arithmetic
+                # centroid leaves a concave or horseshoe-shaped region's label outside the
+                # region entirely, and the circular-mean fallback that handled wrap-around
+                # still lands on an edge when the region hugs one. The deepest point is inside
+                # by construction and reads as the middle of the blob.
+                # A category can WRAP across the embedding boundary, which leaves it split
+                # into slivers in the unwrapped view drawn here, so the label is placed inside
+                # the largest contiguous piece rather than anywhere in the union.
+                pieces, n_pieces = ndimage.label(mask)
+                if n_pieces > 1:
+                    sizes = ndimage.sum_labels(mask, pieces, index=range(1, n_pieces + 1))
+                    biggest = pieces == (int(np.argmax(sizes)) + 1)
+                else:
+                    biggest = mask
+                depth = ndimage.distance_transform_edt(biggest)
+                deepest = np.unravel_index(int(np.argmax(depth)), depth.shape)
+                cx, cy = float(xx[deepest]), float(yy[deepest])
+                # A region hugging a panel border puts its own deepest point on that border,
+                # where the label collides with the axis label or is clipped by the frame, so
+                # it is held a little inside. The label still sits within its region.
+                inset_x = QLVM_LABEL_INSET * (x_max - x_min)
+                inset_y = QLVM_LABEL_INSET * (y_max - y_min)
+                cx = min(max(cx, x_min + inset_x), x_max - inset_x)
+                cy = min(max(cy, y_min + inset_y), y_max - inset_y)
                 ax.text(
                     cx, cy, str(cat_id),
                     ha="center", va="center",
-                    fontsize=9, fontweight="bold", color=COLOR_BLACK,
+                    fontsize=QLVM_CATEGORY_LABEL_FONTSIZE,
+                    fontweight="light", color=COLOR_BLACK,
                     path_effects=[
                         mpe.withStroke(linewidth=2.0, foreground="#FFFFFF"),
                     ],
