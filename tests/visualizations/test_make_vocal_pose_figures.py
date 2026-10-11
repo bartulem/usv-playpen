@@ -30,6 +30,7 @@ import numpy as np
 import polars as pls
 import pytest
 import soundfile as sf
+from PIL import Image
 
 import usv_playpen
 from usv_playpen.visualizations.make_behavioral_videos import (
@@ -42,6 +43,8 @@ from usv_playpen.visualizations.make_vocal_pose_figures import (
     blend_colors,
     find_vocal_pose_windows,
     hex_to_rgb,
+    load_behavioral_feature_traces,
+    load_session_poses,
     male_side_azimuth,
     peak_microphone,
     plot_vocal_pose_window_candidates,
@@ -55,6 +58,8 @@ _NODES = ["Nose", "Ear_R", "Ear_L", "TTI", "TailTip", "Head", "Trunk", "Tail_0",
 _FPS = 30.0
 _SESSION_SECONDS = 12.0
 _WAV_RATE = 250000
+_EGOCENTRIC = ["speed", "neck_elevation", "allo_roll", "allo_pitch", "ego_yaw", "back_pitch", "back_yaw", "tail_curvature"]
+_DYADIC = ["head-head", "allo_yaw-head", "allo_pitch-head", "head-allo_yaw", "head-allo_pitch"]
 
 
 @pytest.fixture(autouse=True)
@@ -120,8 +125,11 @@ def _write_session(root: pathlib.Path) -> pathlib.Path:
     -----------
     Write a synthetic session in the on-disk shape the module reads: the mouse points3d .h5 (two
     animals, 15 nodes, 30 fps, 12 s, experimental code of a male-female courtship pair), a USV summary
-    (male USVs at 3-5 s, a female squeak at 7 s, a noise detection at 8 s, male USVs again at 9-11 s)
-    and one microphone's video-cropped wav with a tone burst at each call.
+    (male USVs at 3-5 s, a female squeak at 7 s, a noise detection at 8 s, male USVs again at 9-11 s),
+    one microphone's video-cropped wav with a tone burst at each call, and a behavioural-features
+    csv (one row per frame) whose egocentric columns hold ``frame + feature index`` for the male and
+    the negative of that for the female, and whose dyadic columns, in the male-female order only,
+    hold ``frame`` scaled by the feature's rank.
 
     Parameters
     ----------
@@ -168,6 +176,14 @@ def _write_session(root: pathlib.Path) -> pathlib.Path:
         inside = (audio_times >= row["start"]) & (audio_times < row["stop"])
         audio[inside] = 0.5 * np.sin(2 * np.pi * 60000.0 * audio_times[inside]).astype(np.float32)
     sf.write(session / "audio" / "cropped_to_video" / "m_240101120000_ch01_cropped_to_video.wav", audio, _WAV_RATE)
+    frames = np.arange(n_frames, dtype=float)
+    features = {}
+    for rank, feature in enumerate(_EGOCENTRIC):
+        features[f"100_1.{feature}"] = frames + rank
+        features[f"200_2.{feature}"] = -(frames + rank)
+    for rank, feature in enumerate(_DYADIC):
+        features[f"100_1-200_2.{feature}"] = frames * (rank + 1)
+    pls.DataFrame(features).write_csv(session / "video" / "20240101120000" / "20240101120000_points3d_translated_rotated_metric_behavioral_features.csv")
     return session
 
 
@@ -333,7 +349,7 @@ class TestOnSyntheticSession:
         assert b"<svg" in paths["svg"].read_bytes()[:400]
 
     def test_still_with_fixed_camera_and_no_key(self, tmp_path):
-        """A numeric azimuth, no colour key, no alignment and no scale mark are honoured."""
+        """A numeric azimuth, no colour key, no alignment, no scale mark and no trace panel are honoured."""
 
         session = _write_session(tmp_path)
         settings = _settings(tmp_path / "figures")
@@ -342,9 +358,68 @@ class TestOnSyntheticSession:
         block["layout"]["color_key"] = False
         block["layout"]["align_pose"] = False
         block["scale_mark"]["length_cm"] = 0.0
+        block["traces"]["enabled"] = False
         paths = VocalPoseStillMaker(str(session), settings, message_output=lambda *_: None).make_vocal_pose_still()
         assert paths["png"].is_file()
         assert "svg" not in paths
+
+    def test_feature_traces_span_the_frame_and_keep_each_side(self, tmp_path):
+        """The loader centres every trace on the frame, reads each animal's own egocentric columns and resolves a side's dyadic feature from the one animal order the file holds."""
+
+        session = _write_session(tmp_path)
+        settings = _settings(tmp_path / "figures")
+        traces = settings["vocal_pose_figures"]["traces"]
+        poses = load_session_poses(session, settings)
+        rows = load_behavioral_feature_traces(session, poses, traces, end_seconds=5.0)
+        assert [row["label"] for row in rows] == [traces["labels"][feature] for feature in traces["egocentric"]] + [
+            "partner yaw orientation (°)", "partner pitch orientation (°)", "partner distance (cm)"]
+        assert [row["social"] for row in rows] == [False] * len(traces["egocentric"]) + [True] * 3
+        frame = int(np.floor(5.0 * _FPS))
+        half = round(traces["span_seconds"] * _FPS)
+        for row in rows:
+            for trace in row["traces"].values():
+                assert trace["times"].size == 2 * half + 1
+                assert trace["times"][half] == 0.0
+                assert trace["times"][0] == pytest.approx(-traces["span_seconds"])
+        # speed: the male's column reads frame + 0 at the frame, the female's its negative
+        assert rows[0]["traces"]["male"]["values"][half] == frame
+        assert rows[0]["traces"]["female"]["values"][half] == -frame
+        # partner yaw: the male's side is allo_yaw-head (rank 1 -> frame * 2), the female's head-allo_yaw (rank 3 -> frame * 4)
+        assert rows[-3]["traces"]["male"]["values"][half] == frame * 2
+        assert rows[-3]["traces"]["female"]["values"][half] == frame * 4
+        # partner distance is the same column on both sides
+        np.testing.assert_array_equal(rows[-1]["traces"]["male"]["values"], rows[-1]["traces"]["female"]["values"])
+
+    def test_feature_traces_name_a_missing_dyadic_column(self, tmp_path):
+        """A dyadic feature the file holds in neither animal order fails with both tried names."""
+
+        session = _write_session(tmp_path)
+        settings = _settings(tmp_path / "figures")
+        traces = settings["vocal_pose_figures"]["traces"]
+        traces["dyadic"]["male"][0] = "nose-nose"
+        traces["labels"]["nose-nose"] = "nose distance (cm)"
+        with pytest.raises(KeyError, match=r"100_1-200_2\.nose-nose"):
+            load_behavioral_feature_traces(session, load_session_poses(session, settings), traces, end_seconds=5.0)
+
+    def test_trace_panel_widens_the_still_and_writes_live_labels(self, tmp_path):
+        """With the panel on, the still grows to the right by the panel's width and its SVG carries the feature labels and the time label as text."""
+
+        session = _write_session(tmp_path)
+        settings = _settings(tmp_path / "figures")
+        block = settings["vocal_pose_figures"]
+        block["output"]["save_svg"] = True
+        block["traces"]["enabled"] = False
+        without = VocalPoseStillMaker(str(session), settings, message_output=lambda *_: None).make_vocal_pose_still()
+        plain_width, plain_height = Image.open(without["png"]).size
+        block["traces"]["enabled"] = True
+        settings["figures"]["save_directory"] = str(tmp_path / "figures_traced")
+        with_panel = VocalPoseStillMaker(str(session), settings, message_output=lambda *_: None).make_vocal_pose_still()
+        traced_width, traced_height = Image.open(with_panel["png"]).size
+        assert traced_height == plain_height
+        assert traced_width > plain_width
+        svg = with_panel["svg"].read_text()
+        for text in ("speed (cm/s)", "partner distance (cm)", block["traces"]["time_label"]):
+            assert text in svg, f"{text!r} is not live text in the SVG"
 
     def test_key_beside_animals_renders_or_names_the_way_out(self, tmp_path):
         """The key beside the animals renders when there is room, and a key too wide to fit fails with a message naming the setting to change."""

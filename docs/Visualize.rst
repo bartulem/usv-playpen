@@ -644,7 +644,7 @@ Render vocal-pose figures
 -------------------------
 The ``usv_playpen.visualizations.make_vocal_pose_figures`` module renders one session's **vocal-pose still** and the matching **video**: what the animals were doing while the male sang. It is **notebook-driven** (the ``usv_general_analyses.ipynb`` *Vocal-pose figures* cells, see :doc:`Notebooks`), not exposed in the GUI, so it has no ``visualize_booleans`` switch; it reads the session's 3D tracks (``*_points3d_translated_rotated_metric.h5``), ``*_usv_summary.csv`` and ``audio/cropped_to_video`` wavs, takes the animal colours from the ``male_colors`` / ``female_colors`` / ``unassigned_colors`` palette and the arena from ``make_behavioral_videos.arena_directory``.
 
-**The still** (``VocalPoseStillMaker.make_vocal_pose_still``) stacks two panels. On top is the spectrogram of one microphone over the window ending at ``window.end_time`` (``"peak"`` picks the microphone most of the window's calls peak on), every time column coloured by the emitter of the call covering it — white to the male's colour, white to the female's, white to the unassigned colour outside any listed call — with each emitter's USVs and squeaks scaled to their own loudest sound (a squeak is tens of dB louder than a USV) and a shared floor so silence stays white; the male ramp continues past his colour to a darker shade of the same hue (``male_deep``) so narrowband USVs stand out on white. Beneath it a time bar whose strength follows the fade of the pose trails. Below are both animals at the frame, drawn with the shared mouse renderer (``plot_mouse_data``) in one colour each with see-through bodies, over one silhouette per camera frame of their preceding movement that fades with age and ends after ``window.trail_end_seconds``; the skeleton's line widths scale with the panel's zoom so the animals look the same in every figure. The camera stands on the male's side of the pair when ``camera.azimuth`` is ``"male_side"`` (it looks along the line from the female's body centre to the male's, so he is nearest the viewer); a number read off the view picker fixes it instead. Optional: a scale mark of three perpendicular arms of ``scale_mark.length_cm`` beside the male, the arena floor and nearest wall as grey surfaces with a black junction line (``surfaces``), a two-swatch colour key (``layout.color_key``) and, with ``layout.align_pose``, the whole tracking panel moved left so its right edge sits under the spectrogram's. The PNG is cropped to its content; ``output.save_svg`` also writes an SVG with live text (Helvetica Light), vector current poses and the trail, spectrogram and bar as embedded images.
+**The still** (``VocalPoseStillMaker.make_vocal_pose_still``) stacks two panels. On top is the spectrogram of one microphone over the window ending at ``window.end_time`` (``"peak"`` picks the microphone most of the window's calls peak on), every time column coloured by the emitter of the call covering it — white to the male's colour, white to the female's, white to the unassigned colour outside any listed call — with each emitter's USVs and squeaks scaled to their own loudest sound (a squeak is tens of dB louder than a USV) and a shared floor so silence stays white; the male ramp continues past his colour to a darker shade of the same hue (``male_deep``) so narrowband USVs stand out on white. Beneath it a time bar whose strength follows the fade of the pose trails. Below are both animals at the frame, drawn with the shared mouse renderer (``plot_mouse_data``) in one colour each with see-through bodies, over one silhouette per camera frame of their preceding movement that fades with age and ends after ``window.trail_end_seconds``; the skeleton's line widths scale with the panel's zoom so the animals look the same in every figure. The camera stands on the male's side of the pair when ``camera.azimuth`` is ``"male_side"`` (it looks along the line from the female's body centre to the male's, so he is nearest the viewer); a number read off the view picker fixes it instead. Optional: a scale mark of three perpendicular arms of ``scale_mark.length_cm`` beside the male, the arena floor and nearest wall as grey surfaces with a black junction line (``surfaces``), a two-swatch colour key (``layout.color_key``) and, with ``layout.align_pose``, the whole tracking panel moved left so its right edge sits under the spectrogram's. To the right, with ``traces.enabled``, a third panel shows what the pair's bodies were doing around the frame: one small strip per behavioural feature (``traces.egocentric`` for each animal, ``traces.dyadic`` per side, read from the session's ``*_behavioral_features.csv``) in two columns, male left and female right, each trace spanning ``traces.span_seconds`` on both sides of the frame, drawn in the animal's colour (``social_colors`` for the dyadic rows) and fading to white with ``(1 - |t| / span) ** fade_power`` while thinning from ``line_width_centre`` to ``line_width_end``; both strips of a row share one y-range whose extremes stand in the gap between the columns, and the row's name (``traces.labels``) sits at the left. The PNG is cropped to its content; ``output.save_svg`` also writes an SVG with live text (Helvetica Light), vector current poses and traces, and the trail, spectrogram and bar as embedded images.
 
 **The video** (``VocalPoseVideoMaker.make_vocal_pose_video``) plays the ``video.duration_seconds`` before the same frame at ``video.speed`` (0.5 = half speed, every camera frame kept) with a ``video.trail.trail_seconds`` fading trail behind each animal, the camera fixed at the still's view, following the pair (``video.follow_seconds`` ≥ 0 centres the smoothed middle of their outline in every frame) or turning at ``video.degrees_per_second`` into the still's view on the last frame, and a scrolling spectrogram with the present fixed at its centre, ``reach_seconds`` visible on each side and sharp only within ``sharp_seconds`` — as an inset in a corner no animal ever enters (``layout`` ``"inset"``; the lower right when free, slid left by ``inset_shift`` of the free room) or a strip below the animals (``"below"``). Frames render in ``workers`` processes (0 = all cores but one) and are encoded by ffmpeg.
 
@@ -672,6 +672,7 @@ Every tunable lives in the ``vocal_pose_figures`` block of */usv-playpen/_parame
 * **layout** : figure width, the spectrogram's left / width / height, the bar, fonts and ink, ``content_threshold`` / ``crop_edge_pixels`` / ``svg_pad_inches`` for the crops, ``box_zoom`` / ``fit_shrink`` / ``max_fit_passes`` (the pose box is shrunk until nothing is cut off), ``align_pose``, ``color_key`` / ``key_position`` (``"pose"`` = wide swatches beside the animals, ``"spectrogram"`` = squares to its right) and the swatch sizes.
 * **output** : ``dpi`` and ``save_svg``.
 * **video** : ``duration_seconds``, ``speed``, ``follow_seconds`` (−1 = fixed camera), ``degrees_per_second``, render ``inches`` / ``dpi`` / ``crop_edge_pixels`` / ``workers``, the ffmpeg ``codec`` / ``pixel_format`` / ``crf`` / ``encode_timeout_seconds``, its own ``trail`` and ``skeleton`` sub-blocks, and ``spectrogram`` (``enabled``, ``layout``, ``reach_seconds``, ``sharp_seconds``, ``fade_seconds``, ``floor``, the inset's size, corner and shift, and the panel text room).
+* **traces** : ``enabled``; ``width_inches`` of the panel and its ``left_gap_inches`` / ``right_gap_inches`` / ``top_inches`` / ``bottom_inches``; ``span_seconds`` each side of the frame; ``columns`` (``"both"``, ``"male"`` or ``"female"``); ``egocentric`` (feature names, top to bottom), ``dyadic`` (per sex, the same number of features, the name's order giving the side, e.g. ``allo_yaw-head`` for the male and ``head-allo_yaw`` for the female), ``labels`` (feature -> printed name); ``fade_power``, ``line_width_centre`` / ``line_width_end``, ``y_pad_fraction``; the panel's division into ``label_fraction``, ``column_gap_fraction``, ``row_gap_fraction``, ``label_gap_fraction``; the range numbers' ``value_decimals`` (``small`` / ``medium`` / ``large`` for magnitudes split at ``value_decimal_thresholds``) and ``value_font_scale``; ``font_size``; the frame line ``zero_tick`` / ``zero_tick_width`` / ``zero_tick_alpha``; ``time_label`` and its ``time_label_offset`` (in row heights below the last row).
 * **candidates** : ``window_seconds``, ``step_seconds``, ``n_shown``, ``max_gap_cm`` and the candidate sheet's size.
 * **view_picker** : how many trail silhouettes the page draws and their fade.
 
@@ -841,6 +842,77 @@ Every tunable lives in the ``vocal_pose_figures`` block of */usv-playpen/_parame
                     "panel_edge_pixels": 22,
                     "panel_full_text_pixels": 290
                 }
+            },
+            "traces": {
+                "enabled": true,
+                "width_inches": 2.6,
+                "left_gap_inches": 0.35,
+                "right_gap_inches": 0.1,
+                "top_inches": 0.1,
+                "bottom_inches": 0.3,
+                "span_seconds": 2.0,
+                "columns": "both",
+                "egocentric": [
+                    "speed",
+                    "neck_elevation",
+                    "allo_roll",
+                    "allo_pitch",
+                    "ego_yaw",
+                    "back_pitch",
+                    "back_yaw",
+                    "tail_curvature"
+                ],
+                "dyadic": {
+                    "male": [
+                        "allo_yaw-head",
+                        "allo_pitch-head",
+                        "head-head"
+                    ],
+                    "female": [
+                        "head-allo_yaw",
+                        "head-allo_pitch",
+                        "head-head"
+                    ]
+                },
+                "labels": {
+                    "speed": "speed (cm/s)",
+                    "neck_elevation": "neck elevation (cm)",
+                    "allo_roll": "head roll (°)",
+                    "allo_pitch": "head pitch (°)",
+                    "ego_yaw": "head yaw (°)",
+                    "back_pitch": "back pitch (°)",
+                    "back_yaw": "back yaw (°)",
+                    "tail_curvature": "tail curvature (a.u.)",
+                    "head-head": "partner distance (cm)",
+                    "allo_yaw-head": "partner yaw orientation (°)",
+                    "head-allo_yaw": "partner yaw orientation (°)",
+                    "allo_pitch-head": "partner pitch orientation (°)",
+                    "head-allo_pitch": "partner pitch orientation (°)"
+                },
+                "fade_power": 3.0,
+                "line_width_centre": 2.2,
+                "line_width_end": 0.4,
+                "y_pad_fraction": 0.08,
+                "label_fraction": 0.4,
+                "column_gap_fraction": 0.06,
+                "row_gap_fraction": 0.12,
+                "label_gap_fraction": 0.012,
+                "value_decimals": {
+                    "small": 2,
+                    "medium": 1,
+                    "large": 0
+                },
+                "value_decimal_thresholds": [
+                    1.0,
+                    10.0
+                ],
+                "value_font_scale": 0.8,
+                "font_size": 6,
+                "zero_tick": true,
+                "zero_tick_width": 0.5,
+                "zero_tick_alpha": 0.25,
+                "time_label": "Time relative to frame (s)",
+                "time_label_offset": 0.35
             },
             "candidates": {
                 "window_seconds": 2.0,

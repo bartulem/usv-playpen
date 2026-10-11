@@ -48,6 +48,7 @@ import numpy as np
 import polars as pls
 import soundfile as sf
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 from matplotlib.transforms import Bbox, TransformedBbox
@@ -55,7 +56,13 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from PIL import Image
 from scipy.ndimage import gaussian_filter1d
 
-from ..os_utils import drop_noise_usvs, first_match_or_raise, noise_mask, pure_usv_mask, squeak_bearing_mask
+from ..os_utils import (
+    drop_noise_usvs,
+    first_match_or_raise,
+    noise_mask,
+    pure_usv_mask,
+    squeak_bearing_mask,
+)
 from ..yaml_utils import extract_animal_sexes
 from .auxiliary_plot_functions import choose_animal_colors
 from .figure_io import resolve_save_path
@@ -737,6 +744,207 @@ def arena_geometry(arena_directory: str, pose: np.ndarray, nodes: list[str]) -> 
     return {'low': low, 'high': high, 'wall_axis': wall_axis, 'wall_at': wall_at, 'gap_m': float(gaps[(wall_axis, wall_at)])}
 
 
+def load_behavioral_feature_traces(root_directory: pathlib.Path, session: dict[str, Any], traces: dict[str, Any],
+                                   end_seconds: float) -> list[dict[str, Any]]:
+    """
+    Description
+    -----------
+    The behavioural-feature traces around a frame, from the session's ``*_behavioral_features.csv``
+    (one row per tracking frame), as a grid of rows by animal column. The egocentric rows are
+    ``traces['egocentric']`` read from each animal's ``<id>.<feature>`` column; the dyadic rows are
+    ``traces['dyadic'][sex]`` per column (the feature name itself carries the side, e.g.
+    ``allo_yaw-head`` is the first animal's yaw to the other's head and ``head-allo_yaw`` the
+    reverse), read from the ``<a>-<b>.<feature>`` column in whichever animal order the file holds.
+
+    Parameters
+    ----------
+    root_directory (pathlib.Path)
+        Session directory.
+    session (dict[str, Any])
+        From :func:`load_session_poses`.
+    traces (dict[str, Any])
+        The ``traces`` settings sub-block.
+    end_seconds (float)
+        The frame's time (s); traces span ``traces['span_seconds']`` on each side of it.
+
+    Returns
+    -------
+    rows (list[dict[str, Any]])
+        One entry per grid row, top to bottom: ``label`` (display name), ``social`` (a dyadic
+        row, drawn in the social colour) and ``traces`` (sex -> dict with ``times`` (s relative to
+        the frame) and ``values``), for the sexes in ``traces['columns']``.
+    """
+    features_path = first_match_or_raise(root=root_directory / 'video', pattern='*_behavioral_features.csv', recursive=True,
+                                         label='behavioral features csv')
+    table = pls.read_csv(features_path)
+    fps = session['fps']
+    frame = int(np.floor(end_seconds * fps))
+    half = round(float(traces['span_seconds']) * fps)
+    first, last = max(frame - half, 0), min(frame + half, table.height - 1)
+    times = (np.arange(first, last + 1) - frame) / fps
+    by_sex = {session['sex_of'][name]: name for name in session['names']}
+    sexes = ['male', 'female'] if traces['columns'] == 'both' else [traces['columns']]
+
+    def column_of(feature: str) -> str:
+        """
+        Description
+        -----------
+        The dyadic column holding a feature, in whichever animal order the file uses.
+
+        Parameters
+        ----------
+        feature (str)
+            Feature name such as ``head-allo_yaw``.
+
+        Returns
+        -------
+        column (str)
+            The column name.
+        """
+        candidates = [f"{by_sex['male']}-{by_sex['female']}.{feature}", f"{by_sex['female']}-{by_sex['male']}.{feature}"]
+        for candidate in candidates:
+            if candidate in table.columns:
+                return candidate
+        message = f'Neither {candidates[0]} nor {candidates[1]} is a column of {features_path}.'
+        raise KeyError(message)
+
+    def series(column: str) -> dict[str, Any]:
+        """
+        Description
+        -----------
+        One trace's times and values.
+
+        Parameters
+        ----------
+        column (str)
+            Table column.
+
+        Returns
+        -------
+        trace (dict[str, Any])
+            ``times`` and ``values``.
+        """
+        return {'times': times, 'values': table[column][first:last + 1].to_numpy().astype(float)}
+
+    rows = [{'label': traces['labels'][feature], 'social': False, 'traces': {sex: series(f'{by_sex[sex]}.{feature}') for sex in sexes}}
+            for feature in traces['egocentric']]
+    n_dyadic = len(traces['dyadic'][sexes[0]])
+    for index in range(n_dyadic):
+        features = {sex: traces['dyadic'][sex][index] for sex in sexes}
+        rows.append({'label': traces['labels'][features[sexes[0]]], 'social': True,
+                     'traces': {sex: series(column_of(features[sex])) for sex in sexes}})
+    return rows
+
+
+def add_feature_trace_panel(fig: Any, rect: tuple[float, float, float, float], rows: list[dict[str, Any]], traces: dict[str, Any],
+                            layout: dict[str, Any], sex_color: dict[str, str], social_color: str) -> None:
+    """
+    Description
+    -----------
+    Draw the behavioural-feature traces as a grid of small strips: one row per feature, one column
+    per animal (male left, female right). Each trace runs from ``-span`` to ``+span`` seconds
+    around the frame; its colour fades from white at the ends to its full colour at 0 (the animal's
+    colour, or the social colour for the dyadic rows) following
+    ``strength = (1 - |t| / span) ** fade_power``, and its width grows from ``line_width_end`` to
+    ``line_width_centre`` the same way. Both strips of a row share one y-range, the union of the two
+    traces' ranges in the window padded by ``y_pad_fraction``; its extremes are written once, in the
+    gap between the two columns, aligned with the strips' top and bottom edges. The feature's label
+    sits at the left. Under the columns there is one time label but no ticks; the faint vertical
+    line in every strip is the frame.
+
+    Parameters
+    ----------
+    fig (matplotlib.figure.Figure)
+        Figure to draw into.
+    rect (tuple[float, float, float, float])
+        The panel's rectangle in figure fractions (left, bottom, width, height).
+    rows (list[dict[str, Any]])
+        From :func:`load_behavioral_feature_traces`.
+    traces (dict[str, Any])
+        The ``traces`` settings sub-block.
+    layout (dict[str, Any])
+        The ``layout`` settings sub-block (fonts and ink).
+    sex_color (dict[str, str])
+        Sex -> hex colour.
+    social_color (str)
+        Hex colour of the dyadic rows.
+
+    Returns
+    -------
+    None
+    """
+    left, bottom, width, height = rect
+    span = float(traces['span_seconds'])
+    sexes = [sex for sex in ('male', 'female') if sex in rows[0]['traces']]
+    n_rows = len(rows)
+    label_width = float(traces['label_fraction']) * width
+    column_gap = float(traces['column_gap_fraction']) * width
+    plot_left = left + label_width
+    plot_width = width - label_width
+    gap = float(traces['row_gap_fraction'])
+    row_height = height / (n_rows + (n_rows - 1) * gap)
+    column_width = (plot_width - column_gap * (len(sexes) - 1)) / len(sexes)
+    ink, font = layout['ink_color'], float(traces['font_size'])
+
+    def value_text(value: float) -> str:
+        """
+        Description
+        -----------
+        A range value written with the number of decimals its magnitude calls for
+        (``value_decimals`` for magnitudes below / between / above the two ``value_decimal_thresholds``).
+
+        Parameters
+        ----------
+        value (float)
+            The number.
+
+        Returns
+        -------
+        text (str)
+            The formatted number.
+        """
+        low_bound, high_bound = (float(bound) for bound in traces['value_decimal_thresholds'])
+        size = abs(value)
+        decimals = traces['value_decimals']['small'] if size < low_bound else traces['value_decimals']['medium'] if size < high_bound else traces['value_decimals']['large']
+        return f'{value:.{int(decimals)}f}'
+    for index, row in enumerate(rows):
+        finite = np.concatenate([trace['values'][np.isfinite(trace['values'])] for trace in row['traces'].values()])
+        low, high = (float(finite.min()), float(finite.max())) if finite.size else (0.0, 1.0)
+        pad = max((high - low) * float(traces['y_pad_fraction']), np.finfo(float).eps)
+        axes_bottom = bottom + height - (index + 1) * row_height - index * gap * row_height
+        for column, sex in enumerate(sexes):
+            ax = fig.add_axes((plot_left + column * (column_width + column_gap), axes_bottom, column_width, row_height))
+            ax.set_xlim(-span, span)
+            ax.set_ylim(low - pad, high + pad)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            ax.patch.set_visible(False)
+            trace = row['traces'][sex]
+            times, values = trace['times'], trace['values']
+            if np.isfinite(values).sum() >= 2:
+                strength = np.clip(1.0 - np.abs(times) / span, 0.0, 1.0) ** float(traces['fade_power'])
+                mid = 0.5 * (strength[:-1] + strength[1:])
+                points = np.column_stack([times, values])
+                segments = np.stack([points[:-1], points[1:]], axis=1)
+                colors = [blend_colors(social_color if row['social'] else sex_color[sex], layout['background_color'], float(value)) for value in mid]
+                widths = float(traces['line_width_end']) + (float(traces['line_width_centre']) - float(traces['line_width_end'])) * mid
+                ax.add_collection(LineCollection(segments, colors=colors, linewidths=widths, capstyle='round', joinstyle='round'))
+            if traces['zero_tick']:
+                ax.axvline(0.0, color=ink, linewidth=float(traces['zero_tick_width']), alpha=float(traces['zero_tick_alpha']), zorder=0)
+            if column == 0:
+                ax.text(-float(traces['label_gap_fraction']) * width / column_width, 0.5, row['label'], transform=ax.transAxes,
+                        ha='right', va='center', fontsize=font, color=ink)
+                # The row's range in the gap between the columns, centred, at the strips' top and bottom edges.
+                for value, place in ((high, 'top'), (low, 'bottom')):
+                    ax.text(1.0 + 0.5 * column_gap / column_width, 1.0 if place == 'top' else 0.0, value_text(value), transform=ax.transAxes,
+                            ha='center', va=place, fontsize=font * float(traces['value_font_scale']), color=ink)
+    # One time label under the two columns; no ticks or tick labels.
+    fig.text(plot_left + 0.5 * plot_width, bottom - float(traces['time_label_offset']) * row_height, traces['time_label'],
+             ha='center', va='top', fontsize=font, color=ink)
+
+
 class VocalPoseStillMaker:
     """
     Description
@@ -842,6 +1050,14 @@ class VocalPoseStillMaker:
         key_rows = self._key_rows(pose_image, pose_shift) if layout['color_key'] and layout['key_position'] == 'pose' else None
         top_block = float(layout['top_block_inches'])
         fig_height = top_block + pose_inches
+        trace_rows = load_behavioral_feature_traces(self.root_directory, session, settings['traces'], end_seconds) if settings['traces']['enabled'] else []
+        trace_width_in = float(settings['traces']['width_inches']) if trace_rows else 0.0
+        # The trace panel starts where the drawn content ends (the spectrogram's right edge when the pose is aligned under it,
+        # else the full original width) and widens the figure to the right; every x position above is a fraction of the
+        # original width, so it is scaled by ``fx`` into the wider figure.
+        content_right_in = (spec_left + spec_width) * width_in if layout['align_pose'] else width_in
+        total_width = (content_right_in if trace_rows else width_in) + trace_width_in
+        fx = width_in / total_width
 
         def build_figure(vector_pose: bool) -> Any:
             """
@@ -860,18 +1076,18 @@ class VocalPoseStillMaker:
             fig (matplotlib.figure.Figure)
                 The assembled figure.
             """
-            fig = plt.figure(figsize=(width_in, fig_height), dpi=dpi, facecolor=background)
+            fig = plt.figure(figsize=(total_width, fig_height), dpi=dpi, facecolor=background)
             inch = 1.0 / fig_height
             spec_top, spec_height, bar_height, bar_gap = (float(layout[key]) for key in ('spectrogram_top_inches', 'spectrogram_height_inches',
                                                                                           'bar_height_inches', 'bar_gap_inches'))
-            ax_spec = fig.add_axes((spec_left, 1.0 - (spec_top + spec_height) * inch, spec_width, spec_height * inch))
-            ax_bar = fig.add_axes((spec_left, 1.0 - (spec_top + spec_height + bar_gap + bar_height) * inch, spec_width, bar_height * inch))
+            ax_spec = fig.add_axes((spec_left * fx, 1.0 - (spec_top + spec_height) * inch, spec_width * fx, spec_height * inch))
+            ax_bar = fig.add_axes((spec_left * fx, 1.0 - (spec_top + spec_height + bar_gap + bar_height) * inch, spec_width * fx, bar_height * inch))
             if vector_pose:
-                vector_axes = panel.add_axes(fig, (-pose_shift, -(pose_side - pose_row1) / dpi * inch, 1.0, width_in * inch), True)
+                vector_axes = panel.add_axes(fig, (-pose_shift * fx, -(pose_side - pose_row1) / dpi * inch, fx, width_in * inch), True)
                 if settings['surfaces']['enabled']:
-                    panel.add_surfaces(vector_axes, TransformedBbox(Bbox([[0.0, 0.0], [1.0, pose_inches * inch]]), fig.transFigure))
+                    panel.add_surfaces(vector_axes, TransformedBbox(Bbox([[0.0, 0.0], [fx, pose_inches * inch]]), fig.transFigure))
             else:
-                ax_image = fig.add_axes((-pose_shift, 0.0, 1.0, pose_inches * inch))
+                ax_image = fig.add_axes((-pose_shift * fx, 0.0, fx, pose_inches * inch))
                 ax_image.imshow(pose_image, aspect='auto', interpolation='none')
                 ax_image.axis('off')
             ax_spec.imshow(image, origin='lower', aspect='auto', extent=(-history_seconds, 0.0, band[0], band[-1]), interpolation='antialiased')
@@ -903,22 +1119,30 @@ class VocalPoseStillMaker:
             if layout['color_key']:
                 side = float(layout['key_swatch_inches'])
                 if layout['key_position'] == 'pose' and key_rows is not None:
-                    left, wide = spec_left, float(layout['key_wide_inches'])
+                    left, wide = spec_left * fx, float(layout['key_wide_inches'])
                     middle = (pose_inches - key_rows / dpi - side - 0.5 * float(layout['key_spacing_inches'])) * inch
                 else:
-                    left, wide = spec_left + spec_width + float(layout['key_gap_inches']) / width_in, side
+                    left, wide = (spec_left + spec_width) * fx + float(layout['key_gap_inches']) / total_width, side
                     middle = 1.0 - (spec_top + 0.5 * spec_height) * inch
                 for row, sex in enumerate(('male', 'female')):
                     bottom = middle + (0.5 * float(layout['key_spacing_inches']) if row == 0 else -0.5 * float(layout['key_spacing_inches']) - side) * inch
-                    fig.add_artist(Rectangle((left, bottom), wide / width_in, side * inch, transform=fig.transFigure,
+                    fig.add_artist(Rectangle((left, bottom), wide / total_width, side * inch, transform=fig.transFigure,
                                              facecolor=sex_color[sex], edgecolor='none'))
+            if trace_rows:
+                traces = settings['traces']
+                panel_left = (content_right_in + float(traces['left_gap_inches'])) / total_width
+                panel_width = (trace_width_in - float(traces['left_gap_inches']) - float(traces['right_gap_inches'])) / total_width
+                panel_bottom = float(traces['bottom_inches']) * inch
+                panel_height = 1.0 - (float(traces['top_inches']) + float(traces['bottom_inches'])) * inch
+                add_feature_trace_panel(fig, (panel_left, panel_bottom, panel_width, panel_height), trace_rows, traces, layout, sex_color,
+                                        self.visualizations_parameter_dict['social_colors'][0])
             return fig
 
         stem = f'vocal_pose_{self.root_directory.name}_{end_seconds - history_seconds:.2f}-{end_seconds:.2f}s'
         png_path, _, _ = resolve_save_path(stem=stem, viz_settings=self.visualizations_parameter_dict, override_format='png', override_dpi=dpi)
         fig = build_figure(False)
         # The whole figure, exactly: pixel positions in this image are then figure positions, which the SVG crop relies on.
-        fig.savefig(png_path, dpi=dpi, facecolor=background, bbox_inches=Bbox([[0.0, 0.0], [width_in, fig_height]]), pad_inches=0.0)
+        fig.savefig(png_path, dpi=dpi, facecolor=background, bbox_inches=Bbox([[0.0, 0.0], [total_width, fig_height]]), pad_inches=0.0)
         plt.close(fig)
         saved = Image.open(png_path).convert('RGB')
         pixels = np.asarray(saved)
