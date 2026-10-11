@@ -77,7 +77,7 @@ On the other hand, for **processing sessions separately**, the order of processi
     #. Run A/V sync check
     #. Run E/V sync check
     #. Run HPSS
-    #. High-pass filter audio files
+    #. High-pass filter WAVs
     #. Ultrasonic MEMMAP
     #. Broadband MEMMAP
     #. Run SLP-H5 conversion
@@ -99,7 +99,7 @@ On the other hand, for **processing sessions separately**, the order of processi
 
 The same per-session order can be run on the Princeton cluster with the four SLURM scripts in *usv_playpen/other/cluster/usv_playpen*. Each one is a template: set the variables at its top (``EXPERIMENTER_ID``, ``WORK_DIR``, ``USV_PLAYPEN_PATH``, ``SESSION_ROOT_DIRECTORY``, the e-mail fields and, where present, the arena session, experimental code and model folders), then run it with ``bash <script>``; it writes a job file into ``WORK_DIR`` and submits it with ``sbatch``. Run the four steps in order, each after the previous one has finished:
 
-    #. *process_data_step_one_inference_global.sh* (24 CPUs, 128 GB, 5 h): ``concatenate-video-files``, ``rectify-video-fps``, ``multichannel-to-single-ch``, ``crop-wav-files``, HPSS (submits the HPSS job array and waits for it), ``bp-filter-audio`` (*High-pass filter audio files*), ``concatenate-audio-files`` (*Ultrasonic MEMMAP*), ``broadband-filter-audio`` (*Broadband MEMMAP*, using all the job's CPUs), DAS inference (submits the DAS job array and waits for it), ``das-summarize`` (*Curate DAS outputs*) and ``av-sync-check``
+    #. *process_data_step_one_inference_global.sh* (24 CPUs, 128 GB, 5 h): ``concatenate-video-files``, ``rectify-video-fps``, ``multichannel-to-single-ch``, ``crop-wav-files``, HPSS (submits the HPSS job array and waits for it), ``bp-filter-audio`` (*High-pass filter WAVs*), ``concatenate-audio-files`` (*Ultrasonic MEMMAP*), ``broadband-filter-audio`` (*Broadband MEMMAP*, using all the job's CPUs), DAS inference (submits the DAS job array and waits for it), ``das-summarize`` (*Curate DAS outputs*) and ``av-sync-check``
     #. *process_data_step_two_inference_global.sh* (6 CPUs, 48 GB, 2 h): ``sleap-to-h5``, ``anipose-triangulate`` and ``anipose-trm`` (*Re-coordinate*)
     #. *process_data_step_three_inference_global.sh* (2 CPUs, 18 GB, 2 h): ``prepare-vcl-assign`` and ``vcl-assign`` (*Prepare USV assignment* and *Run USV assignment*, in the vocalocator conda environment)
     #. *process_data_step_four_inference_global.sh* (1 GPU, requested as ``--gres=gpu:1``, 8 CPUs, 64 GB, 3 h): ``detect-usv-noise`` and ``detect-usv-squeaks`` (*Produce noise labels* and *Produce squeak labels*), ``generate-usv-spectrograms``, ``generate-usv-masks``, ``generate-usv-acoustic-features`` (*Compute USV features*), ``infer-qlvm-latents``, ``assign-qlvm-categories`` and ``infer-qlvm-squeak-latents`` (*Infer QLVM latents*)
@@ -953,7 +953,7 @@ These four parameters are no longer exposed in the GUI (only the *Run HPSS* togg
 
 Filter and concatenate to MEMMAP
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select *High-pass filter audio files* and *Ultrasonic MEMMAP* (and *Broadband MEMMAP* for the 2 kHz+ file), click *Next* and then *Process*:
+These steps can be run separately (still in sequence, though), but for the sake of simplicity, they will be described jointly. To run these steps together, you need to list the root directories of interest, select *High-pass filter WAVs* and *Ultrasonic MEMMAP* (and *Broadband MEMMAP* for the 2 kHz+ file), click *Next* and then *Process*:
 
 .. figure:: https://raw.githubusercontent.com/bartulem/usv-playpen/refs/heads/main/docs/media/processing_step_11.png
    :align: center
@@ -988,7 +988,7 @@ The purpose of these two functions is to first high-pass filter each audio file 
     │   └── video
     │       ...
 
-The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section with the following parameters; none of them is in the GUI (which shows only the *High-pass filter audio files* toggle), they are set in the settings file:
+The */usv-playpen/_parameter_settings/processing_settings.json* file contains a section with the following parameters; none of them is in the GUI (which shows only the *High-pass filter WAVs* toggle), they are set in the settings file:
 
 * **filter_audio_format** : audio file format (usually "wav")
 * **filter_dirs** : list of directories to be filtered (usually "hpss")

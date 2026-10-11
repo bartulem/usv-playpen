@@ -3854,7 +3854,7 @@ class USVPlaypenWindow(QMainWindow):
         self.conduct_hpss_cb.activated.connect(partial(self._combo_box_prior_false, variable_id='conduct_hpss_cb_bool'))
         self.conduct_hpss_cb.move(column_three_x2, 160)
 
-        filter_audio_cb_label = QLabel('High-pass filter audio files:', self.ProcessSettings)
+        filter_audio_cb_label = QLabel('High-pass filter WAVs:', self.ProcessSettings)
         filter_audio_cb_label.setFont(QFont(self.font_id, 11+self.font_size_increase))
         filter_audio_cb_label.setStyleSheet(self.orange_label_style)
         filter_audio_cb_label.move(column_three_x1, 190)
