@@ -756,7 +756,9 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             min_vocalizations=self.modeling_settings['model_params']['usv_per_bout_floor'],
             filter_history=response_settings['history_seconds'],
             proportion_smoothing_sd=None,
-            vocal_output_type=self.modeling_settings['vocal_features']['usv_predictor_type'],
+            vocal_output_type=self.modeling_settings['vocal_features']['vocal_predictor_type'],
+            predictor_classes=self.modeling_settings['vocal_features']['vocal_predictor_classes'],
+            target_classes=self.modeling_settings['model_params']['onset_target_classes'],
             exclude_noise_usvs=self.modeling_settings['vocal_features']['exclude_noise_usvs'],
             category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
         )
@@ -915,6 +917,8 @@ class BehavioralResponsePipeline(BoutParameterPipeline):
             camera_sampling_rate_hz=derive_camera_fps_field(camera_fr_dict),
             ibi_thresholds=ibi_thresholds_md,
             analysis_specific={
+                # The vocal classes the anchor bouts were grouped from.
+                'onset_target_classes': list(self.modeling_settings['model_params']['onset_target_classes']),
                 'response_mouse_index': response_idx,
                 'derived_predictor_mouse_index': predictor_mouse_idx,
                 'response_features': response_features,
@@ -1413,7 +1417,9 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
             min_vocalizations=self.modeling_settings['model_params']['usv_per_bout_floor'],
             filter_history=response_settings['history_seconds'],
             proportion_smoothing_sd=None,
-            vocal_output_type=self.modeling_settings['vocal_features']['usv_predictor_type'],
+            vocal_output_type=self.modeling_settings['vocal_features']['vocal_predictor_type'],
+            predictor_classes=self.modeling_settings['vocal_features']['vocal_predictor_classes'],
+            target_classes=self.modeling_settings['model_params']['onset_target_classes'],
             exclude_noise_usvs=self.modeling_settings['vocal_features']['exclude_noise_usvs'],
             category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
         )
@@ -1618,6 +1624,8 @@ class MatchedDivergencePipeline(BehavioralResponsePipeline):
             'anchor_index': int(anchor_index),
             'pooled_scaling': dict(pooled_scaling),
             'parameters': dict(self.divergence_settings),
+            # The vocal classes the anchor bouts were grouped from.
+            'onset_target_classes': list(self.modeling_settings['model_params']['onset_target_classes']),
             # Stored rather than assumed by the plotter: the time axis is derived
             # from it, and a figure that guesses the frame rate would silently
             # mislabel every timestamp on a cohort recorded at another.

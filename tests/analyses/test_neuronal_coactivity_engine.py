@@ -792,7 +792,7 @@ def test_load_animal_sessions_picks_richest_day_and_builds_entries(tmp_path):
     assert entry["total_duration"] == pytest.approx(300 / 150.0)
     assert set(entry["neural_data"]) == {"u_a_good", "u_b_good"}
     # Focal-only USV-bearing segments split by category; group A = category 1 (2 focal pure
-    # USVs + the focal squeak+USV "both" segment), B = category 3 (1). The labelled noise and
+    # USVs + the focal squeak+USV "overlap" segment), B = category 3 (1). The labelled noise and
     # pure-squeak rows enter neither group.
     assert entry["group_a_df"].height == 3
     assert entry["group_b_df"].height == 1

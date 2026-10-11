@@ -41,7 +41,7 @@ model sees the segment only. Values are mapped by the fixed affine ``(clip(x, -1
 Run it after ``das_summarize`` (re-summarizing rewrites the CSV with its base columns only) and before
 ``detect_usv_squeaks``, which classifies only the segments this step does not flag as noise (and so
 needs the ``noise`` column); the summary then reads the DAS event (``usv_id``, ``start``, ``stop``,
-``duration``), the two noise columns, the call-class block, then ``emitter`` and the channel statistics
+``duration``), the two noise columns, the vocal-class block, then ``emitter`` and the channel statistics
 (the canonical layout, ``os_utils.USV_SUMMARY_COLUMN_ORDER``).
 
 The module also trains the ensemble (``train-noise-model``, :class:`USVNoiseModelTrainer`): from a labels
@@ -85,7 +85,7 @@ from .generate_spectrograms import compute_usv_spectrogram
 # Columns written into the USV summary CSV.
 NOISE_COLUMNS = ("noise", "noise_probability")
 
-# The audio every audio classifier of the pipeline reads (the noise model here, the call-class model
+# The audio every audio classifier of the pipeline reads (the noise model here, the vocal-class model
 # and the squeak QLVM embedding of detect_usv_squeaks, and the squeak spectrogram store): the session's
 # broadband memmap (the 'broadband' band of os_utils.find_audio_mmap), the per-channel HPSS audio
 # high-passed at 2 kHz with the line-noise tones removed. ``audio/hpss_filtered`` is high-passed above
@@ -103,7 +103,7 @@ NOISE_COLUMNS = ("noise", "noise_probability")
 # (Spearman 0.997). Through this code path on 1,118 labelled segments the noise model keeps its
 # precision and recall (0.988 / 0.993, scores r 0.984 with the wav input); it loses about 11 more real
 # calls per 10,000 segments, 9 of them from the tone removal alone and 2 from the weight reconstruction,
-# and the call-class / squeak QLVM outputs agree with the wav input at >= 99.98 % / a median position
+# and the vocal-class / squeak QLVM outputs agree with the wav input at >= 99.98 % / a median position
 # shift of 0.003-0.006.
 BROADBAND_RECORD_NAME = "line_noise.json"
 BROADBAND_LOW_BAND_KEY = "low_band_variance"
@@ -287,7 +287,7 @@ def squeak_audio_channels(
     ``add-broadband-low-band-variance``), which each reader carries; the memmap must be sampled at
     250 kHz. Every audio
     classifier of the pipeline averages over exactly these channels: the noise model (this module), the
-    call-class model and the squeak QLVM embedding (:mod:`detect_usv_squeaks`) and the squeak
+    vocal-class model and the squeak QLVM embedding (:mod:`detect_usv_squeaks`) and the squeak
     spectrogram store, at inference and in training. It lives here, in the module every one of them
     imports, so no import cycle forms.
 

@@ -714,8 +714,8 @@ def _patch_session_identity(monkeypatch) -> None:
     monkeypatch.setattr(iui_mod, "extract_animal_sexes", lambda _root, _ids: {"M": "male", "F": "female"})
 
 
-def test_compute_session_usv_intervals_both_is_neither_usv_nor_squeak(tmp_path, monkeypatch):
-    """A segment with both flags true (usv and squeak) is left out of the squeak sequence: under ``'filtered'`` it is removed
+def test_compute_session_usv_intervals_overlap_is_neither_usv_nor_squeak(tmp_path, monkeypatch):
+    """An overlap segment (usv and squeak flags both true) is left out of the squeak sequence: under ``'filtered'`` it is removed
     before pairing (the squeaks either side of it form one interval), under ``'strict'`` it stays
     in the record as a non-target call and breaks the pairs it sits between. It never enters the
     USV sequence either."""

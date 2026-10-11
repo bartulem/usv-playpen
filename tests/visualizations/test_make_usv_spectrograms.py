@@ -50,7 +50,7 @@ import pytest
 
 from usv_playpen import os_utils
 from usv_playpen.notebooks import usv_embedding_explorer
-from usv_playpen.os_utils import SQUEAK_CLASS_SELECTIONS, call_class_mask
+from usv_playpen.os_utils import SQUEAK_CLASS_SELECTIONS, vocal_class_mask
 
 from usv_playpen.visualizations.make_usv_spectrograms import (
     BANDWIDTH_BIMODAL_SPLIT_KHZ,
@@ -1239,7 +1239,7 @@ def test_build_pooled_embeddings_df_and_cache(tmp_path):
     assert pooled["qlvm_duration1"].to_list() == [0.2, 0.3, 0.4]
     assert pooled["qlvm_entropy1"].null_count() == pooled.height
     # the usv / squeak booleans are carried as Boolean (the thumbnails' default filter and
-    # the explorer derive the call class from them)
+    # the explorer derive the vocal class from them)
     assert pooled["usv"].to_list() == [False, True, True]
     assert pooled["squeak"].to_list() == [True, False, True]
     assert pooled.schema["usv"] == pls.Boolean and pooled.schema["squeak"] == pls.Boolean
@@ -1877,10 +1877,10 @@ def test_plot_umap_thumbnails_has_no_category_suffix_parameter():
 @pytest.mark.filterwarnings("ignore:Glyph .* missing from font:UserWarning")
 def test_plot_umap_thumbnails_excludes_squeaks_by_default(tmp_path):
     """Only pure USVs (usv true, squeak false) become thumbnail picks by default: pure
-    squeaks and both rows (whose usv is true too) are left out alike, the count is logged,
+    squeaks and overlap rows (whose usv is true too) are left out alike, the count is logged,
     and exclude_squeaks=False keeps them."""
     pooled = _make_pooled_df("sessS", n_per_cat=6)
-    # the category-1 rows alternate pure squeak (false, true) / both (true, true): with the
+    # the category-1 rows alternate pure squeak (false, true) / overlap (true, true): with the
     # default filter only category 2 is left
     category_one = pls.col("qlvm_category") == 1
     pooled = pooled.with_columns(
@@ -1895,7 +1895,7 @@ def test_plot_umap_thumbnails_excludes_squeaks_by_default(tmp_path):
         n_samples_per_category=3, pooled_df=pooled, message_output=logs.append, seed=1,
     )
     assert isinstance(fig, plt.Figure)
-    assert any("Kept the 6 pure USV(s) of 12 placed calls (6 squeak, both or unclassed left out)" in message
+    assert any("Kept the 6 pure USV(s) of 12 placed segments (6 squeak, overlap or unclassed left out)" in message
                for message in logs)
     fig_all = plot_embedding_with_category_thumbnails(
         sessions_txt_path="unused", consolidated_h5_path=str(h5_path), exclude_squeaks=False,
@@ -2431,7 +2431,7 @@ def test_explorer_greys_out_controls_that_do_not_apply_to_the_map(qlvm_map, boun
 
     _output, definitions = usv_embedding_explorer._map_dependent_controls.run(
         QLVM_CATEGORY_MAP="qlvm", SQUEAK_CLASS_SELECTIONS=SQUEAK_CLASS_SELECTIONS,
-        get_boundary_choice=lambda: "category", get_squeak_class_choice=lambda: "both",
+        get_boundary_choice=lambda: "category", get_squeak_class_choice=lambda: "overlap",
         map_dropdown=control(qlvm_map), mo=mo,
         set_boundary_choice=lambda _value: None, set_squeak_class_choice=lambda _value: None,
     )
@@ -2439,7 +2439,7 @@ def test_explorer_greys_out_controls_that_do_not_apply_to_the_map(qlvm_map, boun
     assert boundary._args.args["disabled"] is (not boundaries_enabled)
     assert squeak_class._args.args["disabled"] is (not squeak_class_enabled)
     assert boundary.value == ("category" if boundaries_enabled else "none")
-    assert squeak_class.value == "both"
+    assert squeak_class.value == "overlap"
     assert list(squeak_class.options) == ["squeak only", "squeak + USV"]
 
 
@@ -2457,8 +2457,8 @@ def _explorer_scatter_rows(qlvm_map: str, squeak_class: str) -> list[int]:
     Description
     -----------
     Runs the embedding explorer's scatter cell on a five-row pooled table (one
-    row per call class: usv, squeak, both, unclassed, usv; squeak-map
-    coordinates only on the squeak and both rows) with the given map and
+    row per vocal class: usv, squeak, overlap, unclassed, usv; squeak-map
+    coordinates only on the squeak and overlap rows) with the given map and
     squeak-class selection, and returns the ``row_index`` of the points it
     plots.
 
@@ -2492,7 +2492,7 @@ def _explorer_scatter_rows(qlvm_map: str, squeak_class: str) -> list[int]:
 
     _output, definitions = usv_embedding_explorer._scatter_chart.run(
         CHART_DATA_WIDTH_PX=100, CHART_HEIGHT_PX=100, SQUEAK_CLASS_SELECTIONS=SQUEAK_CLASS_SELECTIONS,
-        alt=alt, boundary_dropdown=control("none"), call_class_mask=call_class_mask,
+        alt=alt, boundary_dropdown=control("none"), vocal_class_mask=vocal_class_mask,
         category_grid=None, category_grid_note=None, QLVM_CATEGORY_COLUMN="qlvm_category", QLVM_CATEGORY_MAP="qlvm",
         color_dropdown=control("none"), global_cmap="viridis",
         map_dropdown=control(qlvm_map), max_points_slider=control(1000), mo=mo, np=np, pd=pd, plt=plt,
@@ -2504,18 +2504,18 @@ def _explorer_scatter_rows(qlvm_map: str, squeak_class: str) -> list[int]:
 
 @pytest.mark.parametrize("squeak_class", list(SQUEAK_CLASS_SELECTIONS))
 def test_explorer_usv_maps_show_pure_usvs_only(squeak_class):
-    """A USV map draws only pure USVs (usv & ~squeak) -- never a pure squeak, a both segment
+    """A USV map draws only pure USVs (usv & ~squeak) -- never a pure squeak, an overlap segment
     (although its usv is true) or an unclassed row -- whatever the squeak-class control says."""
     assert _explorer_scatter_rows("qlvm", squeak_class) == [0, 4]
 
 
 @pytest.mark.parametrize(
     ("squeak_class", "expected_rows"),
-    [("squeak+both", [1, 2]), ("squeak", [1]), ("both", [2])],
+    [("squeak+overlap", [1, 2]), ("squeak", [1]), ("overlap", [2])],
 )
 def test_explorer_squeak_map_class_filter(squeak_class, expected_rows):
     """The squeak map draws the squeak-bearing classes a squeak-class selection names: the
-    explorer offers squeak only (the default) and squeak + USV ("both"); the union selection
+    explorer offers squeak only (the default) and squeak + USV ("overlap"); the union selection
     of os_utils.SQUEAK_CLASS_SELECTIONS, used by other figures, still filters correctly."""
     assert _explorer_scatter_rows("qlvm_squeak", squeak_class) == expected_rows
 
@@ -2545,12 +2545,12 @@ def test_explorer_colours_by_qlvm_category_and_draws_bundle_boundaries_on_the_re
     grid = os_utils.load_qlvm_category_bundle()["label_grid"]
     _output, definitions = usv_embedding_explorer._scatter_chart.run(
         CHART_DATA_WIDTH_PX=100, CHART_HEIGHT_PX=100, SQUEAK_CLASS_SELECTIONS=SQUEAK_CLASS_SELECTIONS,
-        alt=alt, boundary_dropdown=control("category"), call_class_mask=call_class_mask,
+        alt=alt, boundary_dropdown=control("category"), vocal_class_mask=vocal_class_mask,
         category_grid=grid, category_grid_note=None, QLVM_CATEGORY_COLUMN="qlvm_category", QLVM_CATEGORY_MAP="qlvm",
         color_dropdown=control("category"), global_cmap="viridis",
         map_dropdown=control(qlvm_map), max_points_slider=control(1000), mo=mo, np=np, pd=pd, plt=plt,
         pooled_df=pooled, sessions_select=control([]), sex_colors={},
-        squeak_class_dropdown=control("squeak+both"),
+        squeak_class_dropdown=control("squeak+overlap"),
     )
     assert sorted(definitions["chart_data"]["qlvm_category"].tolist()) == [1, 2, 3, 4]
     chart = definitions["chart_widget"]._chart

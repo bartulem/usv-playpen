@@ -27,7 +27,8 @@ from sklearn.model_selection import StratifiedShuffleSplit, ShuffleSplit
 from tqdm import tqdm
 
 from .load_input_files import load_behavioral_feature_data, find_onset_epochs
-from .load_input_files import require_labels_for_vocal_predictors, require_usv_category_column
+from .load_input_files import is_vocal_signal, onset_target_tag, require_labels_for_vocal_predictors, require_usv_category_column
+from .load_input_files import validate_vocal_class_settings
 from .modeling_metadata import (
     build_input_metadata, derive_experimental_condition,
     derive_feature_zoo_full, derive_camera_fps_field, inject_metadata,
@@ -213,8 +214,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
              'another_feature': {...}, ...}`
         """
 
-        # Label-dependent vocal predictors fail here, before any session is loaded.
+        # Label-dependent vocal predictors and malformed vocal-class lists fail here,
+        # before any session is loaded.
         require_labels_for_vocal_predictors(self.modeling_settings['vocal_features'])
+        validate_vocal_class_settings(self.modeling_settings['model_params']['onset_target_classes'], None,
+                                      self.modeling_settings['model_params']['model_target_vocal_type'])
         # A single-category onset target ('individual' mode) needs a label column too.
         if (self.modeling_settings['model_params']['onset_target_category'] is not None
                 and self.modeling_settings['model_params']['model_target_vocal_type'] == 'individual'):
@@ -255,15 +259,16 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             mixture_model_z_score=self.modeling_settings['model_params']['mixture_model_z_score'],
             mixture_model_params=self.modeling_settings['mixture_model_params'],
             exclude_noise_usvs=self.modeling_settings['vocal_features']['exclude_noise_usvs'],
-            proportion_smoothing_sd=self.modeling_settings['vocal_features']['usv_predictor_smoothing_sd'],
-            vocal_output_type=self.modeling_settings['vocal_features']['usv_predictor_type'],
+            proportion_smoothing_sd=self.modeling_settings['vocal_features']['vocal_predictor_smoothing_sd'],
+            vocal_output_type=self.modeling_settings['vocal_features']['vocal_predictor_type'],
             filter_history=self.history_seconds,
             prediction_mode=self.modeling_settings['model_params']['model_target_vocal_type'],
             usv_bout_time=self.modeling_settings['model_params']['usv_bout_time'],
             min_usv_per_bout=self.modeling_settings['model_params']['usv_per_bout_floor'],
             category_column=self.modeling_settings['vocal_features']['usv_category_column_name'],
             target_category=self.modeling_settings['model_params']['onset_target_category'],
-            target_type=self.modeling_settings['model_params']['onset_target_type'],
+            target_classes=self.modeling_settings['model_params']['onset_target_classes'],
+            predictor_classes=self.modeling_settings['vocal_features']['vocal_predictor_classes'],
             **bout_offset_kwargs,
         )
 
@@ -377,7 +382,7 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         mixture_model_idx = self.modeling_settings['model_params']['mixture_model_component_index']
 
         # Optional single-category onset target (e.g. qlvm_category 3;
-        # squeaks are targeted with onset_target_type instead). The category COLUMN is the existing
+        # squeaks are targeted with onset_target_classes instead). The category COLUMN is the existing
         # `usv_category_column_name`; only the integer index lives in
         # `onset_target_category`. Category filtering is honoured in
         # 'individual' mode only (see `find_onset_epochs`): in 'bout_onset'/'state'
@@ -406,11 +411,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
         # `category_<col>_<idx>` convention), so the QLVM category column
         # is unambiguous in every downstream
         # artifact name and provenance block.
-        # The onset target type ('usv' default, 'usv_with_both', 'squeak', 'all') joins the tag whenever it
-        # is not the default, so a squeak-onset run and a USV-onset run of the same
-        # cohort never share an artifact name.
-        onset_target_type = self.modeling_settings['model_params']['onset_target_type']
-        target_type_seg = "" if onset_target_type == 'usv' else f"_{onset_target_type}"
+        # The onset target classes join the tag whenever they are not the default
+        # ["usv"] (`onset_target_tag`, e.g. '_usv+overlap'), so a squeak-onset run and
+        # a USV-onset run of the same cohort never share an artifact name.
+        onset_target_classes = self.modeling_settings['model_params']['onset_target_classes']
+        target_type_seg = onset_target_tag(onset_target_classes)
         if onset_category_active:
             analysis_tag = f"{target_vocal_type}{target_type_seg}_cat_{cat_col}_{onset_cat}"
         else:
@@ -473,26 +478,19 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             dyadic_engagement_features_used=list(kin_settings['dyadic_engagement']),
             dyadic_pose_symmetric_features_used=kin_settings['dyadic_pose_symmetric'],
             noise_usvs_excluded=voc_settings['exclude_noise_usvs'],
-            # `build_vocal_signal_columns` emits exactly these per-mouse suffixes
-            # (from `continuous_vocal_signals`): the scalar `usv_event` /
-            # `usv_rate` traces and any number of per-category `usv_cat_<int>`
-            # syntax traces. Match on the bare suffix by equality (scalar traces)
-            # or the `usv_cat_` prefix (category traces) rather than testing
-            # substring membership against the `usv_predictor_type` mode string
-            # (e.g. 'categories_rate'), which is a configuration label, not a
-            # column suffix.
-            vocal_signal_columns_added=sorted({
-                c for c in kept_columns_first_sess
-                if (c.split('.', 1)[-1] in ('usv_event', 'usv_rate')
-                    or c.split('.', 1)[-1].startswith('usv_cat_'))
-            }),
+            # `build_vocal_signal_columns` emits the per-mouse vocal traces of
+            # `continuous_vocal_signals` ('<name>_event' / '<name>_rate' /
+            # '<name>_cat_<int>', `load_input_files.is_vocal_signal`); match on the
+            # column suffix, not on the `vocal_predictor_type` mode string (e.g.
+            # 'categories_rate'), which is a configuration label, not a column suffix.
+            vocal_signal_columns_added=sorted({c for c in kept_columns_first_sess if is_vocal_signal(c)}),
             filter_history_seconds=float(max_hist_sec),
             filter_history_frames=int(self.history_frames),
             camera_sampling_rate_hz=derive_camera_fps_field(camera_fr_dict),
             ibi_thresholds=ibi_thresholds_md,
             analysis_specific={
                 'model_target_vocal_type': target_vocal_type,
-                'onset_target_type': onset_target_type,
+                'onset_target_classes': list(onset_target_classes),
                 'usv_bout_time': self.modeling_settings['model_params']['usv_bout_time'],
                 'usv_per_bout_floor': self.modeling_settings['model_params']['usv_per_bout_floor'],
                 **({'onset_target_category': int(onset_cat),

@@ -1950,7 +1950,7 @@ def test_squeaks_are_dropped_from_self_anchors_and_never_categorised(synthetic_c
     true AND squeak false): pure squeaks AND segments with both flags true are dropped alike, so
     usv being true is not enough. With it off they are anchors but
     still carry no QLVM category (the qlvm_category tuning is usv-only), and a category held
-    only by squeak / both segments does not appear."""
+    only by squeak / overlap segments does not appear."""
     root, _ = synthetic_compute_session
     usv_csv = next(root.rglob("*_usv_summary.csv"))
     df = pls.read_csv(usv_csv)
@@ -1960,7 +1960,7 @@ def test_squeaks_are_dropped_from_self_anchors_and_never_categorised(synthetic_c
     squeak[:5] = True
     squeak[5:10] = True
     not_usv = squeak
-    # category 99 only on squeak / both segments
+    # category 99 only on squeak / overlap segments
     df.with_columns(
         pls.Series("usv", usv.tolist(), dtype=pls.Boolean),
         pls.Series("squeak", squeak.tolist(), dtype=pls.Boolean),
@@ -1985,7 +1985,7 @@ def test_squeaks_are_dropped_from_self_anchors_and_never_categorised(synthetic_c
 
 def test_unscored_rows_are_not_usv_anchors(synthetic_compute_session):
     """A non-noise row with null booleans (a segment too short to score) is not a USV: it is
-    dropped from the anchors when squeaks are excluded, like a squeak or a both segment."""
+    dropped from the anchors when squeaks are excluded, like a squeak or an overlap segment."""
     root, _ = synthetic_compute_session
     usv_csv = next(root.rglob("*_usv_summary.csv"))
     df = pls.read_csv(usv_csv)

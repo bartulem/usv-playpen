@@ -5,6 +5,8 @@ Pools data from different sessions and normalizes them together.
 
 import polars as pls
 
+from .load_input_files import is_vocal_signal
+
 
 def zscore_different_sessions_together(data_dict: dict,
                                        feature_lst: list,
@@ -59,7 +61,7 @@ def zscore_different_sessions_together(data_dict: dict,
        observations sit on the kink, so the spline fit is
        well-conditioned even with the corner.
     3. **Theoretical-bounds clip** — for the rest (excluding
-       `usv_*` columns), values outside `feature_bounds[base]` are
+       vocal predictor traces, `load_input_files.is_vocal_signal`), values outside `feature_bounds[base]` are
        set to null. Outlier guard.
 
     After this routing, every kept feature is z-scored against the
@@ -147,7 +149,7 @@ def zscore_different_sessions_together(data_dict: dict,
                 )
             elif base_feature in abs_features_set:
                 cols_to_update.append(pls.col(column).abs().alias(column))
-            elif 'usv_' not in base_feature:
+            elif not is_vocal_signal(base_feature):
                 theoretical_min, theoretical_max = feature_bounds[base_feature]
                 cols_to_update.append(
                     pls.when((pls.col(column) >= theoretical_min) & (pls.col(column) <= theoretical_max))

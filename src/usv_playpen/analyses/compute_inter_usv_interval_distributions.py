@@ -44,7 +44,7 @@ from scipy.optimize import minimize_scalar
 from sklearn.preprocessing import SplineTransformer
 from statsmodels.tools.sm_exceptions import IterationLimitWarning
 
-from ..os_utils import call_class_mask, configure_path, require_vocal_flags
+from ..os_utils import configure_path, require_vocal_flags, vocal_class_mask
 from ._usv_io import (
     extract_animal_sexes,
     extract_session_metadata,
@@ -297,7 +297,7 @@ def compute_session_usv_intervals(
     # carried alongside start/stop/sex rather than applied as a row filter.
     target_expr = (
         pls.lit(True).alias("is_target") if (call_type is None or adjacency == "filtered")
-        else call_class_mask(usv_info, (call_type,), session_root).alias("is_target")
+        else vocal_class_mask(usv_info, (call_type,), session_root).alias("is_target")
     )
     if "stop" in usv_info.columns:
         sub = usv_info.with_columns([emitter_expr, target_expr]).select(

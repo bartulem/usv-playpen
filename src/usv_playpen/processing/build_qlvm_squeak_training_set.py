@@ -124,7 +124,7 @@ def squeak_candidates_from_summary(usv_summary: pls.DataFrame, exclude_noise: bo
     Description
     -----------
     The squeak candidates of one session: rows with ``squeak`` true (pure squeaks
-    and "both", :func:`os_utils.squeak_bearing_mask`; and, with ``exclude_noise``,
+    and overlap segments, :func:`os_utils.squeak_bearing_mask`; and, with ``exclude_noise``,
     ``noise`` not true; noise rows carry null booleans, so this is a guard), with a
     finite squeak extent
     (``squeak_start`` / ``squeak_end``) and an audio window of at least one frame.

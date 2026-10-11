@@ -3,11 +3,11 @@
 Tests for processing/build_qlvm_squeak_training_set.
 
 The frame count, the candidate selection from the USV summary (squeak true:
-pure squeaks and both, the crop window that widens a segment to hold a squeak running
+pure squeaks and overlap segments, the crop window that widens a segment to hold a squeak running
 past it), the crop gates of both crop windows, the per-session/stratum cap, the
 natural and uniform duration-stratified draws and the crop normalizations are
 tested directly; the end-to-end build runs on synthetic sessions (a metadata YAML
-and a USV summary with the call-class columns) with the audio spectrogram rebuild
+and a USV summary with the vocal-class columns) with the audio spectrogram rebuild
 mocked by a deterministic function of the window, so the crops, the draw, the
 split and the written columns can be checked without wav files.
 """

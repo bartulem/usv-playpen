@@ -23,7 +23,7 @@
     "usv_bout_time": 2,
     "usv_per_bout_floor": 2,
     "onset_target_category": null,
-    "onset_target_type": "usv"
+    "onset_target_classes": ["usv"]
   },
 
   "model_validation": {
@@ -77,9 +77,10 @@
   },
 
   "vocal_features": {
-    "usv_predictor_type": "categories_rate",
-    "usv_predictor_partner_only": true,
-    "usv_predictor_smoothing_sd": 1,
+    "vocal_predictor_type": "categories_rate",
+    "vocal_predictor_classes": [["usv"]],
+    "vocal_predictor_partner_only": true,
+    "vocal_predictor_smoothing_sd": 1,
     "usv_category_column_name": "qlvm_category",
     "exclude_noise_usvs": true,
     "usv_manifold_column_names": ["qlvm1", "qlvm2"],

@@ -14,7 +14,7 @@ import librosa
 import numpy as np
 import polars as pls
 
-from ..os_utils import call_class_mask, drop_noise_usvs, find_audio_mmap, first_match_or_raise, parse_audio_mmap_name
+from ..os_utils import drop_noise_usvs, find_audio_mmap, first_match_or_raise, parse_audio_mmap_name, vocal_class_mask
 
 
 def extract_snippet_matrix(
@@ -1049,15 +1049,15 @@ def load_animal_sessions(
         # Only USV-bearing segments of the focal mouse enter a category group: noise segments
         # are dropped (os_utils.drop_noise_usvs, the one shared definition; a summary without
         # the `noise` column raises), and so are pure squeaks and unscored rows
-        # (os_utils.call_class_mask with the "usv" and "both" classes, i.e. `usv & ~squeak`
-        # plus `usv & squeak`; a summary without the `usv` / `squeak` booleans raises). A
-        # segment holding both a squeak and a USV is kept because it carries a USV;
+        # (os_utils.vocal_class_mask with the "usv" and "overlap" classes, i.e. `usv & ~squeak`
+        # plus `usv & squeak`; a summary without the `usv` / `squeak` booleans raises). An
+        # overlap segment (a squeak and a USV together) is kept because it carries a USV;
         # assign-qlvm-categories labels every row with a regular-map position, noise and
         # pure squeaks included, but those rows hold no USV, so their labels are not USV
         # categories.
         usv_summary_data = drop_noise_usvs(usv_summary_data, usv_summary_file.name, message_output=log)[0]
         usv_summary_data = usv_summary_data.filter(
-            call_class_mask(usv_summary_data, ("usv", "both"), usv_summary_file.name))
+            vocal_class_mask(usv_summary_data, ("usv", "overlap"), usv_summary_file.name))
         focal_usvs = usv_summary_data.filter(pls.col("emitter").cast(pls.String).str.strip_chars() == mouse_track_names[0])
         if focal_usvs.height == 0:
             log(f"  {directory.name}: no USV is attributed to {mouse_track_names[0]} (an empty emitter column means "

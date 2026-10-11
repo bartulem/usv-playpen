@@ -451,7 +451,7 @@ def _build_category_settings(tmp_path: Path, **overrides):
         ``model_type`` (the shipped JSON default is ``None``), distinct from the
         ``model_engine`` key the univariate extraction / dispatch consult; both
         are pinned to the same engine so the two stages agree.
-      - ``vocal_features.usv_predictor_type`` defaults to ``None`` here (kept
+      - ``vocal_features.vocal_predictor_type`` defaults to ``None`` here (kept
         tiny); callers may override via ``overrides``.
 
     Parameters
@@ -461,7 +461,7 @@ def _build_category_settings(tmp_path: Path, **overrides):
         below it so nothing is ever written into the package tree.
     overrides (dict)
         Extra keyword arguments forwarded to ``build_modeling_settings`` (e.g.
-        ``model_engine``, ``usv_predictor_type``, ``split_strategy``,
+        ``model_engine``, ``vocal_predictor_type``, ``split_strategy``,
         ``split_num``, ``test_proportion``). ``model_type`` is popped out and
         applied to ``model_params`` directly.
 
@@ -680,7 +680,7 @@ class TestCategoryInputExtraction:
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     def test_extraction_with_partner_vocal_predictors(self, tmp_path):
         """
-        With ``usv_predictor_type='categories_rate'`` the extraction additionally
+        With ``vocal_predictor_type='categories_rate'`` the extraction additionally
         materializes a partner per-category vocal predictor column
         (``other.usv_cat_2``), exercising ``build_vocal_signal_columns`` plus the
         identity-guard that excludes the target category's own
@@ -690,7 +690,7 @@ class TestCategoryInputExtraction:
         """
 
         settings, save_dir = _build_category_settings(
-            tmp_path, model_engine='sklearn', usv_predictor_type='categories_rate'
+            tmp_path, model_engine='sklearn', vocal_predictor_type='categories_rate'
         )
         _pkl_path, artifact = _extract_category_input(settings, save_dir)
 
@@ -1463,8 +1463,8 @@ class TestRunModelingCategoryHandlers:
         assert np.isfinite(res['heldout']['actual']['fit_time'])
 
 
-@pytest.mark.parametrize('usv_predictor_type', [None, 'categories_rate'])
-def test_binomial_extraction_without_labels_fails_before_loading(tmp_path, mocker, usv_predictor_type):
+@pytest.mark.parametrize('vocal_predictor_type', [None, 'categories_rate'])
+def test_binomial_extraction_without_labels_fails_before_loading(tmp_path, mocker, vocal_predictor_type):
     """
     With no category label column (``usv_category_column_name`` set to
     null, QLVM labels unavailable) the binomial category extraction stops with the labels-unavailable
@@ -1474,7 +1474,7 @@ def test_binomial_extraction_without_labels_fails_before_loading(tmp_path, mocke
     settings = build_modeling_settings(
         session_list_file=tmp_path / 'session_list.txt',
         save_directory=tmp_path,
-        usv_predictor_type=usv_predictor_type,
+        vocal_predictor_type=vocal_predictor_type,
         usv_category_column_name=None,
     )
     prepare = mocker.patch('usv_playpen.modeling.modeling_vocal_categories_binomial.prepare_modeling_sessions')

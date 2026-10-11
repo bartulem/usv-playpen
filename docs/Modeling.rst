@@ -124,7 +124,7 @@ cross-validation and held-out-test settings live in their own
         "usv_bout_time": 2,
         "usv_per_bout_floor": 2,
         "onset_target_category": null,
-        "onset_target_type": "usv"
+        "onset_target_classes": ["usv"]
     }
 
 * **filter_history** — seconds of behavioral history preceding each event that feed the temporal filter (× ``camera_sampling_rate`` → frames).
@@ -140,7 +140,7 @@ cross-validation and held-out-test settings live in their own
 * **usv_bout_time** — duration (seconds) of the post-onset silence window that defines the **negative (No-USV) events** in ``'bout_onset'`` mode: a candidate silent-epoch onset is kept only if no USV (from any source) starts within ``[t_onset, t_onset + usv_bout_time)`` after it.
 * **usv_per_bout_floor** — the minimum number of USVs a positive bout must contain (``'bout_onset'`` mode).
 * **onset_target_category** — restrict positive onsets to a single USV category (``'individual'`` mode only); ``null`` pools all categories (see the single-category note under :ref:`Modeling input data <modeling-extract>`).
-* **onset_target_type** — which vocal segments are the positive onsets, from the summary's ``usv`` / ``squeak`` booleans (written by ``detect-usv-squeaks``): ``'usv'`` (default) only pure USVs (``usv`` true and ``squeak`` false), ``'usv_with_both'`` pure USVs and the segments holding both a squeak and an ultrasonic call (``usv`` true, whatever ``squeak`` is), ``'squeak'`` only pure squeaks (``squeak`` true and ``usv`` false; ``'individual'`` mode only), ``'all'`` every segment, without filtering on the booleans. A segment holding both (both booleans true) is therefore dropped by default and kept, as a USV onset and a bout member, only by ``'usv_with_both'`` (or ``'all'``); an unscored segment (null booleans) is in none of ``'usv'``, ``'usv_with_both'`` and ``'squeak'``. The negative (silent) windows are sampled against every call of the mouse whatever the target type (squeaks and "both" segments included), so they are identical across target types and silent of every positive any of them can produce. Noise segments are removed first in every case when ``vocal_features.exclude_noise_usvs`` is ``true``. Applied in every onset mode (``'bout_onset'``, ``'individual'``, ``'bout_offset'``) before ``onset_target_category``; any value other than ``'usv'`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``).
+* **onset_target_classes** — which vocal classes are the positive onsets, a non-empty list read from the summary's ``usv`` / ``squeak`` booleans (written by ``detect-usv-squeaks``): ``"usv"`` (a pure USV, ``usv`` true and ``squeak`` false), ``"squeak"`` (a pure squeak, ``squeak`` true and ``usv`` false) and ``"overlap"`` (a USV and a squeak in one segment, both true). ``["usv"]`` (default) models pure USVs, ``["usv", "overlap"]`` every segment holding a USV, ``["squeak", "overlap"]`` every segment holding a squeak, ``["overlap"]`` overlaps alone, and ``["usv", "squeak", "overlap"]`` everything. An unscored segment (null booleans) is in no class. Vocalizations of the other classes neither join nor split a bout; the bout-parameter and behavioral-response pipelines group their bouts from the same classes, so a bout is the same in every model. The bout modes (``'bout_onset'``, ``'bout_offset'``) accept ``"usv"`` and ``"overlap"`` only, since squeaks do not come in bouts and the inter-bout threshold is calibrated on USV intervals; ``'individual'`` and ``'state'`` take any list. Silence is not class-specific: a negative window, and a ``'bout_onset'`` positive's clean history, must both be free of every vocalization of the target mouse (any class) and of every vocalization assigned to no animal, so the two groups are built under one rule whatever the target. Noise segments are removed first in every case when ``vocal_features.exclude_noise_usvs`` is ``true``. Applied before ``onset_target_category``; any list other than ``["usv"]`` is embedded in the ``analysis_tag`` (e.g. ``individual_squeak``, ``bout_onset_usv+overlap``).
 
 **model_validation** — the held-out test set and cross-validation splitting.
 
@@ -200,9 +200,10 @@ cross-validation and held-out-test settings live in their own
 .. code-block:: json
 
     "vocal_features": {
-        "usv_predictor_type": "categories_rate",
-        "usv_predictor_partner_only": true,
-        "usv_predictor_smoothing_sd": 1,
+        "vocal_predictor_type": "categories_rate",
+        "vocal_predictor_classes": [["usv"]],
+        "vocal_predictor_partner_only": true,
+        "vocal_predictor_smoothing_sd": 1,
         "usv_category_column_name": "qlvm_category",
         "exclude_noise_usvs": true,
         "usv_manifold_column_names": ["qlvm1", "qlvm2"],
@@ -221,9 +222,10 @@ cross-validation and held-out-test settings live in their own
         }
     }
 
-* **usv_predictor_type** — which vocal-syntax predictor traces to build: ``'pooled_binary'`` (one pooled per-frame USV-event indicator), ``'pooled_rate'`` (one pooled USV-rate trace), ``'categories_rate'`` (one per-category USV-rate trace per ``usv_category_column_name`` category; the shipped default, over ``qlvm_category``), or ``'all_rate'`` (the pooled rate plus the per-category rates). A falsy value builds no vocal predictors. ``'categories_rate'`` and ``'all_rate'`` need a label column: with ``usv_category_column_name`` ``null``, or naming a column a session's summary lacks (e.g. a summary whose categories ``assign-qlvm-categories`` has not written yet), they raise a ``ValueError`` naming the setting (before any session is loaded, for the ``null`` case) instead of silently building no category traces. The pooled modes never read a label column.
-* **usv_predictor_partner_only** — if ``true``, ingest only the *partner's* USV signals as predictors (not the target mouse's own vocal history).
-* **usv_predictor_smoothing_sd** — Gaussian σ (frames) applied to the USV-rate predictor traces.
+* **vocal_predictor_type** — how each vocal predictor trace is built: ``'pooled_binary'`` (a per-frame event indicator, ``<name>_event``), ``'pooled_rate'`` (a smoothed rate, ``<name>_rate``), ``'categories_rate'`` (one smoothed rate per ``usv_category_column_name`` category, ``<name>_cat_<k>``; the shipped default, over ``qlvm_category``), or ``'all_rate'`` (the pooled rate plus the per-category rates). Pure squeaks carry no QLVM category, so a trace whose class list holds pure squeaks is one ``<name>_rate`` under ``'categories_rate'`` and ``'all_rate'``. A falsy value builds no vocal predictors. ``'categories_rate'`` and ``'all_rate'`` need a label column: with ``usv_category_column_name`` ``null``, or naming a column a session's summary lacks (e.g. a summary whose categories ``assign-qlvm-categories`` has not written yet), they raise a ``ValueError`` naming the setting (before any session is loaded, for the ``null`` case) instead of silently building no category traces. The pooled modes never read a label column.
+* **vocal_predictor_classes** — which vocalizations the predictor traces hold: a list of class lists, each one trace, from the same three classes as ``onset_target_classes``. A trace is named by what it holds: a list holding ``"usv"`` (alone or with ``"overlap"``) is a ``usv`` trace, one holding ``"squeak"`` (alone or with ``"overlap"``) a ``squeak`` trace, ``["overlap"]`` an ``overlap`` trace, and one holding both ``"usv"`` and ``"squeak"`` an ``all_vocalizations`` trace. ``[["usv"]]`` (default) gives ``other.usv_cat_<k>`` (or ``other.usv_rate``); ``[["squeak", "overlap"]]`` gives ``other.squeak_rate``; ``[["usv", "overlap"], ["squeak"]]`` gives a USV and a squeak trace side by side. Lists may share classes (an overlap segment holds a USV and a squeak, so it belongs in both), but two lists that give the same name are refused. The exact lists are recorded in ``_input_metadata`` (``vocal_predictor_classes``), since ``["usv"]`` and ``["usv", "overlap"]`` both give a ``usv`` trace. The target mouse's own pooled traces (any name) are never used as its predictors.
+* **vocal_predictor_partner_only** — if ``true``, ingest only the *partner's* USV signals as predictors (not the target mouse's own vocal history).
+* **vocal_predictor_smoothing_sd** — Gaussian σ (frames) applied to the USV-rate predictor traces.
 * **usv_category_column_name** — the USV-catalog column defining categories: ``'qlvm_category'`` (shipped), the content-ridge categories R-1 … R-k (4 in production) of the regular map's ``qlvm1`` / ``qlvm2`` torus that ``assign-qlvm-categories`` writes; it is the summary's only category column (no coarse level, and no category column of the conditional maps: the categories are defined on the regular map, so every map's analyses — ``qlvm`` and the conditional ``qlvm_duration``, ``qlvm_entropy``, ``qlvm_bandwidth`` and ``qlvm_loudness`` alike — label a call with its ``qlvm_category``). Labels are integers ``1..k``, 1 the category with the most calls. ``null`` runs the label-free paths only: every label-dependent path fails clearly on ``null`` — the multinomial and binomial category pipelines, ``onset_target_category`` in ``'individual'`` mode, and the ``'categories_rate'`` / ``'all_rate'`` predictors raise ``QLVM category labels are not available; set vocal_features.usv_category_column_name to an existing label column`` before loading anything — while the continuous manifold pipeline runs without it (no category packet). A column that is set must exist in every summary.
 * **exclude_noise_usvs** — whether to drop the USV segments ``detect-usv-noise`` flagged as holding no vocalization. A session whose summary lacks the ``noise`` column raises rather than contributing unfiltered detections.
 * **usv_manifold_column_names** — the two catalog columns giving the 2-D manifold position (the ``ContinuousModelingPipeline`` target). Calls the embedding could not place have null coordinates; they are dropped at extraction (with the count printed per session and in total), so the inverse-density KDE, the regressions and the GLM-HMM never see a NaN position. The columns' map prefix also names the run: the manifold analysis tag is ``manifold_<map>`` (``['qlvm1', 'qlvm2']`` -> ``manifold_qlvm``, ``['qlvm_duration1', 'qlvm_duration2']`` -> ``manifold_qlvm_duration``; ``modeling_utils.manifold_tag_segment``) whether or not a category column is set, and it carries into the modeling input pickle (``modeling_manifold_<map>_<cohort>_<ts>.pkl``), the univariate results, the model-selection step files (``model_selection_continuous_manifold_<map>_<condition>_<split>_step_*.pkl``, named from the input pickle's ``analysis_tag``) and the consolidated artifact (``model_selection_final_<sex>_<condition>_manifold_<map>_<split>_<ts>.pkl``). Results written before this naming carry ``manifold_qlvm_category`` (the category column, the same for every map); they are read as before, and the consolidator never appends the category column to a ``manifold_<map>`` tag.
@@ -755,7 +757,7 @@ provenance, for example:
         "predictor_idx": 1, "predictor_mouse_sex": "female",
         "target_idx": 0, "target_mouse_sex": "male",
         "feature_zoo_full": ["speed", "..."], "feature_zoo_kept": ["speed", "..."],
-        "usv_predictor_type": "categories_rate", "usv_predictor_partner_only": true,
+        "vocal_predictor_type": "categories_rate", "vocal_predictor_classes": [["usv"]], "vocal_predictor_partner_only": true,
         "filter_history_seconds": 4, "filter_history_frames": 600,
         "ibi_thresholds": {"male": 0.42, "female": 0.55},
         "analysis_specific": { "...": "..." },
@@ -765,7 +767,7 @@ provenance, for example:
 * **cohort / scope** — ``experimental_condition`` (the cohort label), ``session_ids``, and ``n_events_per_session`` (how many positive / negative events each session contributed).
 * **mouse roles** — ``predictor_idx`` / ``target_idx`` and their sexes.
 * **behavioral features** — ``feature_zoo_full`` (everything requested) vs ``feature_zoo_kept`` (what survived the collinearity / timescale audits).
-* **vocal-input shape** — ``usv_predictor_type``, ``usv_predictor_partner_only``, ``usv_predictor_smoothing_sd``.
+* **vocal-input shape** — ``vocal_predictor_type``, ``vocal_predictor_classes``, ``vocal_predictor_partner_only``, ``vocal_predictor_smoothing_sd``.
 * **temporal frame** — ``filter_history_seconds`` / ``filter_history_frames`` (the history window), and ``ibi_thresholds`` (the per-sex bout-gap thresholds derived from the mixture model).
 * **analysis_specific** — the per-pipeline knobs (differs by pipeline; listed just below).
 * **run provenance** — ``git_commit`` / ``git_dirty``, ``settings_sha256``, ``created_utc``, ``package_version``, so any result traces back to exact code and settings.
@@ -792,32 +794,30 @@ pipeline:
 
    **Modeling onsets for a single USV category.** By default
    ``VocalOnsetModelingPipeline`` derives positive onset events from the target
-   mouse's vocal segments of one **target type** (``onset_target_type``): by default
-   its ultrasonic calls, so squeaks are neither USV onsets nor bout members (a
-   squeak between two USVs no longer joins or splits a bout). To model **squeak
+   mouse's vocal segments of the **target classes** (``onset_target_classes``): by
+   default ``["usv"]``, pure USVs, so squeaks are neither USV onsets nor bout members
+   (a squeak between two USVs neither joins nor splits a bout). To model **squeak
    onsets** — e.g. the female's, which are plentiful in courtship when her USVs
    are not — set ``model_target_vocal_type = 'individual'`` and
-   ``onset_target_type = 'squeak'``; this replaces the VAE-era route of
-   targeting squeak category 6. Segments holding both a squeak and an ultrasonic
-   call are dropped from the default ``'usv'`` positives; ``onset_target_type =
-   'usv_with_both'`` keeps them as USVs (onsets and bout members) in every onset
-   mode. Squeaks are available in ``'individual'`` mode
-   only, since bout grouping needs an inter-bout threshold and the per-sex
-   thresholds are derived from ultrasonic-call intervals; asking for them in a
-   bout mode raises. A summary without the ``usv`` / ``squeak`` columns raises unless the
-   target type is ``'all'``.
+   ``onset_target_classes = ["squeak"]`` (or ``["squeak", "overlap"]``); this
+   replaces the VAE-era route of targeting squeak category 6. Squeaks are available
+   outside the bout modes only, since squeaks do not come in bouts and the per-sex
+   inter-bout thresholds are derived from USV intervals; asking for them in a bout
+   mode raises. A summary without the ``usv`` / ``squeak`` columns raises.
 
    A USV and a squeak can fall in the same segment: DAS was trained to detect
-   both, and the call classifier marks such a segment with ``usv`` and ``squeak``
-   both true. It belongs to
-   neither single target type: under ``'usv'`` and under ``'squeak'`` it is
-   dropped whole, so USVs that overlap a squeak are **not** positive onsets —
-   the price of keeping squeak onsets out of the USV target — and neither are
-   squeaks that overlap a USV. ``'all'`` keeps them, together with the pure USV
-   and squeak onsets; comparing the runs shows whether the overlap matters for a
-   given question.
+   both, and the squeak classifier marks such a segment with ``usv`` and ``squeak``
+   both true — the ``overlap`` class. It is a target only when listed: under
+   ``["usv"]`` and under ``["squeak"]`` it is dropped whole, while
+   ``["usv", "overlap"]`` keeps it as a USV (onset and bout member) and
+   ``["squeak", "overlap"]`` as a squeak. Comparing the runs shows whether the
+   overlap matters for a given question. The predictor side is set independently
+   (``vocal_predictor_classes``): e.g. male bout onsets from every segment holding a
+   USV, predicted from the female's squeaks only, is ``onset_target_classes =
+   ["usv", "overlap"]`` with ``vocal_predictor_classes = [["squeak"]]`` and
+   ``vocal_predictor_partner_only = true``.
 
-   Within that target type, when overall vocal output is too sparse for
+   Within those target classes, when overall vocal output is too sparse for
    bout-onset modeling but one category is plentiful, you can restrict the
    positive onsets to a single category by setting two knobs in
    ``model_params``:

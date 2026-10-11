@@ -60,9 +60,9 @@ from tqdm import tqdm
 from ..os_utils import (
     QLVM_CATEGORY_COLUMNS,
     atomic_output_path,
-    call_class_mask,
     drop_noise_usvs,
     first_match_or_raise,
+    vocal_class_mask,
 )
 from ..time_utils import is_gui_context, smart_wait
 from ..yaml_utils import extract_animal_sexes
@@ -1532,12 +1532,12 @@ class NeuronalTuning(FeatureZoo):
         df = drop_noise_usvs(df, usv_csv.name)[0]
         if df.shape[0] == 0:
             return None
-        # Segments that are not pure USVs (usv & ~squeak: pure squeaks, segments holding both,
+        # Segments that are not pure USVs (usv & ~squeak: pure squeaks, overlap segments,
         # unscored nulls) are dropped from the anchors per side (exclude_squeaks_self /
         # exclude_squeaks_partner) and always from the QLVM category tuning, so the two booleans
-        # are required; a summary without them raises (call_class_mask) rather than silently
+        # are required; a summary without them raises (vocal_class_mask) rather than silently
         # tuning to squeaks.
-        is_usv = call_class_mask(df, ("usv",), usv_csv.name).to_numpy()
+        is_usv = vocal_class_mask(df, ("usv",), usv_csv.name).to_numpy()
 
         emitters = [
             (e.strip() if e is not None else None) for e in df["emitter"].to_list()

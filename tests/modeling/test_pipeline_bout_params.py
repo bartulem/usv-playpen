@@ -234,7 +234,7 @@ def _build_settings(tmp_path: Path, **overrides):
         below it so nothing is ever written into the package tree.
     overrides (dict)
         Extra keyword arguments passed through to ``build_modeling_settings``
-        (e.g. ``model_engine``, ``usv_predictor_type``, ``split_strategy``).
+        (e.g. ``model_engine``, ``vocal_predictor_type``, ``split_strategy``).
 
     Returns
     -------
@@ -355,7 +355,7 @@ class TestBoutParameterExtraction:
         """
 
         settings, save_dir = _build_settings(
-            tmp_path, model_engine='sklearn', usv_predictor_type='categories_rate'
+            tmp_path, model_engine='sklearn', vocal_predictor_type='categories_rate'
         )
         pipeline = BoutParameterPipeline(modeling_settings_dict=settings)
         pipeline.extract_and_save_modeling_input_data()
@@ -410,7 +410,7 @@ class TestBoutParameterExtraction:
         writes NO pickle -- rather than persisting a known-misaligned regression
         artifact that pairs predictors with the wrong USV targets."""
         settings, save_dir = _build_settings(
-            tmp_path, model_engine='sklearn', usv_predictor_type='categories_rate'
+            tmp_path, model_engine='sklearn', vocal_predictor_type='categories_rate'
         )
         pipeline = BoutParameterPipeline(modeling_settings_dict=settings)
         # Force the intra-session group-alignment check (the only np.array_equal in

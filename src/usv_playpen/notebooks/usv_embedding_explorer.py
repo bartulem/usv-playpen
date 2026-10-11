@@ -112,11 +112,11 @@ def _imports():
         QLVM_MAP_DISPLAY_NAMES,
         QLVM_MAPS,
         SQUEAK_CLASS_SELECTIONS,
-        call_class_mask,
         load_qlvm_category_bundle,
         resolve_consolidated_h5_path,
         resolve_experimenter_path,
         resolve_squeak_spectrogram_store_path,
+        vocal_class_mask,
     )
     from usv_playpen.processing.build_squeak_spectrogram_store import (
         squeak_store_thumbnail,
@@ -136,7 +136,7 @@ def _imports():
         alt,
         base64,
         build_pooled_embeddings_df,
-        call_class_mask,
+        vocal_class_mask,
         h5py,
         hashlib,
         json,
@@ -441,14 +441,14 @@ def _map_dependent_controls(
         disabled=not _boundaries_apply,
         on_change=set_boundary_choice if _boundaries_apply else None,
     )
-    # Which squeak-bearing call class the squeaks map shows: pure squeaks
-    # (squeak & ~usv, the default) or segments holding a squeak and a USV
+    # Which squeak-bearing vocal class the squeaks map shows: pure squeaks
+    # (squeak & ~usv, the default) or overlap segments holding a squeak and a USV
     # (usv & squeak). {display label -> selection name of
     # os_utils.SQUEAK_CLASS_SELECTIONS}; .value returns the selection name. The
     # USV maps ignore it: they always show pure USVs only.
     _squeak_class_labels = {
         "squeak only": "squeak",
-        "squeak + USV": "both",
+        "squeak + USV": "overlap",
     }
     if not set(_squeak_class_labels.values()) <= set(SQUEAK_CLASS_SELECTIONS):
         raise ValueError("The explorer's squeak-class options must be os_utils.SQUEAK_CLASS_SELECTIONS names.")
@@ -618,7 +618,7 @@ def _scatter_chart(
     SQUEAK_CLASS_SELECTIONS,
     alt,
     boundary_dropdown,
-    call_class_mask,
+    vocal_class_mask,
     category_grid,
     category_grid_note,
     color_dropdown,
@@ -681,7 +681,7 @@ def _scatter_chart(
         # (pure squeaks, or squeak + USV segments). A pooled table without the usv / squeak
         # booleans (older summaries) raises with a message naming the missing columns.
         _classes = SQUEAK_CLASS_SELECTIONS[squeak_class_dropdown.value] if squeak_map else ("usv",)
-        pooled = pooled.filter(call_class_mask(pooled, _classes, "the pooled embeddings table"))
+        pooled = pooled.filter(vocal_class_mask(pooled, _classes, "the pooled embeddings table"))
         if pooled.height == 0:
             return None, None, None, None
 

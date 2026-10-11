@@ -131,7 +131,7 @@ def _build_manifold_settings(tmp_path: Path, **overrides):
         below it so nothing is ever written into the package tree.
     overrides (dict)
         Extra keyword arguments forwarded to ``build_modeling_settings`` (e.g.
-        ``split_strategy``, ``split_num``, ``usv_predictor_type``).
+        ``split_strategy``, ``split_num``, ``vocal_predictor_type``).
 
     Returns
     -------
@@ -154,10 +154,10 @@ def _build_manifold_settings(tmp_path: Path, **overrides):
     save_dir = tmp_path / 'out'
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    # The continuous pipeline reads ``usv_predictor_type`` to optionally build
+    # The continuous pipeline reads ``vocal_predictor_type`` to optionally build
     # vocal-signal predictor columns; default to ``None`` so the design matrix
     # stays minimal (the continuous-target extraction is independent of it).
-    overrides.setdefault('usv_predictor_type', None)
+    overrides.setdefault('vocal_predictor_type', None)
 
     settings = build_modeling_settings(
         session_list_file=list_file,

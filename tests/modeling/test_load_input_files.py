@@ -26,14 +26,20 @@ from usv_playpen.modeling.load_input_files import (
     _calculate_ibi_threshold,
     _generate_vocal_trace,
     _get_clean_tiled_epochs,
+    build_vocal_predictor_signals,
     find_onset_epochs,
     find_usv_categories,
     find_variable_length_bouts,
+    is_pooled_vocal_signal,
+    is_vocal_signal,
     load_behavioral_feature_data,
     load_pickle_modeling_data,
+    onset_target_tag,
     read_usv_summary_table,
     require_labels_for_vocal_predictors,
     require_usv_category_column,
+    validate_vocal_class_settings,
+    vocal_trace_name,
 )
 from tests.modeling._synth import _SETTINGS_JSON
 
@@ -536,14 +542,12 @@ class TestFindBoutEpochs:
                                **kwargs)
         np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0, 3.0, 4.0])
 
-    def test_target_type_selects_the_positive_onsets(self, tmp_path):
-        """The ``usv`` / ``squeak`` booleans decide which onsets are positive: 'usv' (the
-        default) keeps pure USVs only (usv true, squeak false), 'usv_with_both' pure USVs
-        plus the segments with both flags true, 'squeak' pure squeaks only, 'all' every
-        row; a segment with both flags true is dropped by 'usv' (usv being true is not
-        enough) and null flags are in none of the three typed selections; the
-        silent-epoch negatives are the same in all four because they are sampled
-        against every call of the mouse."""
+    def test_target_classes_select_the_positive_onsets(self, tmp_path):
+        """The ``usv`` / ``squeak`` booleans decide which onsets are positive: each target
+        list keeps the rows of its classes -- "usv" pure USVs (usv true, squeak false),
+        "squeak" pure squeaks, "overlap" both flags true -- and null flags are in no class;
+        the silent-epoch negatives are the same for every list, because silence is checked
+        against every vocalization of the mouse."""
 
         rows = {
             'emitter': ['male', 'male', 'male', 'male', 'male'],
@@ -557,26 +561,31 @@ class TestFindBoutEpochs:
         common = dict(prediction_mode='individual', filter_history=1.0,
                       usv_bout_time=0.5, min_usv_per_bout=2,
                       proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
-        out = {kind: find_onset_epochs(target_type=kind, **common, **kwargs)['sess_B']['male']
-               for kind in ('usv', 'usv_with_both', 'squeak', 'all')}
-        np.testing.assert_allclose(out['usv']['positive_events'], [2.0, 4.0])
-        np.testing.assert_allclose(out['usv_with_both']['positive_events'], [2.0, 4.0, 5.0])
-        np.testing.assert_allclose(out['squeak']['positive_events'], [3.0])
-        np.testing.assert_allclose(out['all']['positive_events'], [2.0, 3.0, 4.0, 5.0, 6.0])
-        np.testing.assert_allclose(out['usv']['negative_events'], out['squeak']['negative_events'])
-        np.testing.assert_allclose(out['usv']['negative_events'], out['usv_with_both']['negative_events'])
-        np.testing.assert_allclose(out['usv']['negative_events'], out['all']['negative_events'])
-        # the default is 'usv'
+        expected = {
+            ('usv',): [2.0, 4.0],
+            ('usv', 'overlap'): [2.0, 4.0, 5.0],
+            ('squeak',): [3.0],
+            ('squeak', 'overlap'): [3.0, 5.0],
+            ('overlap',): [5.0],
+            ('usv', 'squeak'): [2.0, 3.0, 4.0],
+            ('usv', 'squeak', 'overlap'): [2.0, 3.0, 4.0, 5.0],
+        }
+        out = {classes: find_onset_epochs(target_classes=list(classes), **common, **kwargs)['sess_B']['male']
+               for classes in expected}
+        for classes, positives in expected.items():
+            np.testing.assert_allclose(out[classes]['positive_events'], positives)
+            np.testing.assert_allclose(out[classes]['negative_events'], out[('usv',)]['negative_events'])
+        # the default is ['usv']
         default = find_onset_epochs(**common, **kwargs)['sess_B']['male']
         np.testing.assert_allclose(default['positive_events'], [2.0, 4.0])
 
-    def test_usv_with_both_keeps_both_segments_in_bouts(self, tmp_path):
-        """In a bout mode a "both" segment (usv and squeak true) between two pure USVs is
-        a bout member under 'usv_with_both', so the three calls form one bout with one
-        onset; under the default 'usv' it is dropped and the two pure USVs, now farther
-        apart than the inter-bout threshold, are two bouts of one call each, below the
-        two-call floor (no positive; the inter-bout threshold of these parameters is
-        1 s). The negatives do not depend on the target type."""
+    def test_overlap_segments_join_bouts_when_targeted(self, tmp_path):
+        """In a bout mode an overlap segment (usv and squeak true) between two pure USVs is
+        a bout member under ["usv", "overlap"], so the three form one bout with one
+        onset; under the default ["usv"] it is not a target and the two pure USVs, now
+        farther apart than the inter-bout threshold (1 s for these parameters), are two
+        bouts of one USV each, below the two-USV floor. The negatives do not depend on
+        the target classes."""
 
         rows = {
             'emitter': ['male', 'male', 'male'],
@@ -590,16 +599,48 @@ class TestFindBoutEpochs:
         common = dict(prediction_mode='bout_onset', filter_history=1.0, usv_bout_time=0.5,
                       min_usv_per_bout=2, proportion_smoothing_sd=None,
                       mixture_model_params=_mixture_model_params())
-        with_both = find_onset_epochs(target_type='usv_with_both', **common, **kwargs)['sess_B']['male']
-        pure = find_onset_epochs(target_type='usv', **common, **kwargs)['sess_B']['male']
-        np.testing.assert_allclose(with_both['positive_events'], [2.0])
+        with_overlap = find_onset_epochs(target_classes=['usv', 'overlap'], **common, **kwargs)['sess_B']['male']
+        pure = find_onset_epochs(target_classes=['usv'], **common, **kwargs)['sess_B']['male']
+        np.testing.assert_allclose(with_overlap['positive_events'], [2.0])
         assert len(pure['positive_events']) == 0
-        np.testing.assert_allclose(with_both['negative_events'], pure['negative_events'])
+        np.testing.assert_allclose(with_overlap['negative_events'], pure['negative_events'])
 
-    def test_target_type_refuses_what_it_cannot_do(self, tmp_path):
-        """Squeak onsets outside 'individual' mode, an unknown call type, and a
-        summary without the ``usv`` / ``squeak`` columns (unless 'all') all raise rather than
-        silently falling back to every call."""
+    @pytest.mark.parametrize('emitter, squeak_start, kept', [
+        ('male', 1.5, False),     # the mouse's own squeak 0.5 s before the onset
+        (None, 1.5, False),       # a vocalization assigned to no animal
+        ('male', 0.5, True),      # own squeak, but ended before the 1 s history window
+        ('female', 1.5, True),    # the partner's squeak: a predictor, not part of silence
+    ])
+    def test_bout_history_is_clean_of_every_class(self, tmp_path, emitter, squeak_start, kept):
+        """A 'bout_onset' positive's clean history obeys the negatives' rule: no
+        vocalization of the target mouse of ANY class (not only the target classes) and
+        none assigned to no animal may fall in the window before the onset, so a squeak
+        can no longer sit in a positive's history while every negative is free of
+        squeaks. The partner's vocalizations do not count, for positives and negatives
+        alike."""
+
+        rows = {
+            'emitter': [emitter, 'male', 'male'],
+            'start': [squeak_start, 2.0, 2.3],
+            'stop': [squeak_start + 0.05, 2.05, 2.35],
+            'usv_category': [1, 1, 1],
+            'usv': [False, True, True],
+            'squeak': [True, False, False],
+        }
+        kwargs = self._build(tmp_path, rows)
+        male = find_onset_epochs(prediction_mode='bout_onset', filter_history=1.0, usv_bout_time=0.5,
+                                 min_usv_per_bout=2, proportion_smoothing_sd=None,
+                                 mixture_model_params=_mixture_model_params(), target_classes=['usv'],
+                                 **kwargs)['sess_B']['male']
+        if kept:
+            np.testing.assert_allclose(male['positive_events'], [2.0])
+        else:
+            assert male['positive_events'].size == 0
+
+    def test_target_classes_refuse_what_they_cannot_do(self, tmp_path):
+        """A target holding pure squeaks in a bout mode, an unknown or repeated class, an
+        empty list, and a summary without the ``usv`` / ``squeak`` columns all raise
+        rather than silently falling back to every vocalization."""
 
         rows = {
             'emitter': ['male', 'male'],
@@ -612,10 +653,17 @@ class TestFindBoutEpochs:
         kwargs = self._build(tmp_path, rows)
         common = dict(filter_history=1.0, usv_bout_time=0.5, min_usv_per_bout=2,
                       proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params())
-        with pytest.raises(ValueError, match="'individual' mode only"):
-            find_onset_epochs(prediction_mode='bout_onset', target_type='squeak', **common, **kwargs)
-        with pytest.raises(ValueError, match="Unknown target_type"):
-            find_onset_epochs(prediction_mode='individual', target_type='chirp', **common, **kwargs)
+        for mode in ('bout_onset', 'bout_offset'):
+            with pytest.raises(ValueError, match="bouts are grouped from"):
+                find_onset_epochs(prediction_mode=mode, target_classes=['squeak', 'overlap'], **common, **kwargs)
+        with pytest.raises(ValueError, match="must hold distinct classes"):
+            find_onset_epochs(prediction_mode='individual', target_classes=['chirp'], **common, **kwargs)
+        with pytest.raises(ValueError, match="must hold distinct classes"):
+            find_onset_epochs(prediction_mode='individual', target_classes=['usv', 'usv'], **common, **kwargs)
+        with pytest.raises(ValueError, match="non-empty list"):
+            find_onset_epochs(prediction_mode='individual', target_classes=[], **common, **kwargs)
+        out = find_onset_epochs(prediction_mode='individual', target_classes=['squeak'], **common, **kwargs)
+        np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [3.0])
 
         bare = tmp_path / 'bare'
         bare_kwargs = self._build(bare, {'emitter': ['male'], 'start': [2.0], 'stop': [2.05],
@@ -623,9 +671,7 @@ class TestFindBoutEpochs:
         csv_path = next((bare / 'sess_B' / 'audio').glob('*_usv_summary.csv'))
         pls.read_csv(csv_path).drop('usv', 'squeak').write_csv(csv_path)
         with pytest.raises(ValueError, match=r"no \['usv', 'squeak'\] columns"):
-            find_onset_epochs(prediction_mode='individual', target_type='usv', **common, **bare_kwargs)
-        out = find_onset_epochs(prediction_mode='individual', target_type='all', **common, **bare_kwargs)
-        np.testing.assert_allclose(out['sess_B']['male']['positive_events'], [2.0])
+            find_onset_epochs(prediction_mode='individual', target_classes=['usv'], **common, **bare_kwargs)
 
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     def test_target_category_predictors_unaffected(self, tmp_path):
@@ -717,7 +763,7 @@ class TestFindBoutEpochs:
     def test_category_predictors_without_labels_raise(self, tmp_path, vocal_output_type, category_column):
         """Per-category predictor traces with no label column (null setting, or a
         column the summary lacks) raise the labels-unavailable error naming
-        ``usv_predictor_type`` instead of silently building no category trace."""
+        ``vocal_predictor_type`` instead of silently building no category trace."""
 
         rows = {
             'emitter': ['male', 'male'],
@@ -733,7 +779,7 @@ class TestFindBoutEpochs:
                               proportion_smoothing_sd=None, mixture_model_params=_mixture_model_params(),
                               vocal_output_type=vocal_output_type,
                               category_column=category_column, **kwargs)
-        assert f"usv_predictor_type '{vocal_output_type}'" in str(excinfo.value)
+        assert f"vocal_predictor_type '{vocal_output_type}'" in str(excinfo.value)
 
     @pytest.mark.parametrize('vocal_output_type', ['pooled_rate', 'pooled_binary'])
     def test_pooled_predictors_need_no_category_column(self, tmp_path, vocal_output_type):
@@ -1055,7 +1101,7 @@ class TestFindUsvCategories:
         column."""
 
         rows = {'emitter': ['male'], 'start': [2.0], 'stop': [2.05], 'qlvm1': [0.1], 'qlvm2': [0.3]}
-        with pytest.raises(ValueError, match="usv_predictor_type 'categories_rate'"):
+        with pytest.raises(ValueError, match="vocal_predictor_type 'categories_rate'"):
             find_usv_categories(target_category=None, filter_history=1.0,
                                 vocal_output_type='categories_rate', category_column=None,
                                 manifold_column_names=['qlvm1', 'qlvm2'],
@@ -1276,6 +1322,36 @@ class TestFindVariableLengthBouts:
         np.testing.assert_allclose(male['bout_syllable_counts'], [3])
         np.testing.assert_allclose(male['total_mask_complexity'], [10])
         np.testing.assert_allclose(male['mean_mask_complexity'], [10 / 3])
+
+    def test_bouts_are_grouped_from_the_target_classes(self, tmp_path):
+        """Bouts are grouped from the target classes only, as in the onset pipeline: an
+        overlap segment between two USV groups bridges them into one bout only when
+        overlaps are targets. Under the default ["usv"] the groups (gap 1.0 s, at the 1 s
+        threshold of these parameters) are separate bouts and the lone last USV falls
+        below the two-USV floor; under ["usv", "overlap"] all four form one bout. A
+        target holding pure squeaks is refused."""
+
+        rows = {
+            'emitter': ['male', 'male', 'male', 'male'],
+            'start': [2.0, 2.3, 2.8, 3.3],
+            'stop': [2.0, 2.3, 2.8, 3.3],
+            'usv_category': [1, 1, 1, 1],
+            'mask_number': [1, 1, 1, 1],
+            'usv': [True, True, True, True],
+            'squeak': [False, False, True, False],
+        }
+        common = dict(min_vocalizations=2, filter_history=1.0, mixture_model_params=_mixture_model_params())
+        pure = find_variable_length_bouts(target_classes=['usv'], **common, **self._kwargs(tmp_path, rows))['sess_E']['male']
+        np.testing.assert_allclose(pure['bout_onsets'], [2.0])
+        np.testing.assert_allclose(pure['bout_durations'], [0.3])
+        np.testing.assert_allclose(pure['bout_syllable_counts'], [2])
+        with_overlap = find_variable_length_bouts(target_classes=['usv', 'overlap'], **common,
+                                                  **self._kwargs(tmp_path / 'o', rows))['sess_E']['male']
+        np.testing.assert_allclose(with_overlap['bout_onsets'], [2.0])
+        np.testing.assert_allclose(with_overlap['bout_durations'], [1.3])
+        np.testing.assert_allclose(with_overlap['bout_syllable_counts'], [4])
+        with pytest.raises(ValueError, match="bouts are grouped from"):
+            find_variable_length_bouts(target_classes=['usv', 'squeak'], **common, **self._kwargs(tmp_path / 's', rows))
 
     def test_below_min_vocalizations_dropped(self, tmp_path):
         """A bout with fewer than ``min_vocalizations`` syllables is dropped,
@@ -1563,6 +1639,106 @@ class TestBoutOffsetEpochs:
         assert out['sess_O']['female']['negative_events'].size == 0
 
 
+class TestVocalClassTraces:
+    """One trace per predictor list, named by what it holds; the target tag; the
+    settings checks; and the helpers that recognise vocal columns."""
+
+    @staticmethod
+    def _rows() -> pls.DataFrame:
+        """Five segments at 0.1 s steps: pure USV (category 1), pure squeak, pure USV
+        (category 2), overlap (category 1), and an unscored row (null flags)."""
+
+        return pls.DataFrame({
+            'start': [0.10, 0.20, 0.30, 0.40, 0.50],
+            'stop': [0.11, 0.21, 0.31, 0.41, 0.51],
+            'qlvm_category': [1, None, 2, 1, 1],
+            'usv': [True, False, True, True, None],
+            'squeak': [False, True, False, True, None],
+        })
+
+    @pytest.mark.parametrize('classes, name', [
+        (['usv'], 'usv'), (['usv', 'overlap'], 'usv'),
+        (['squeak'], 'squeak'), (['squeak', 'overlap'], 'squeak'),
+        (['overlap'], 'overlap'),
+        (['usv', 'squeak'], 'all_vocalizations'), (['usv', 'squeak', 'overlap'], 'all_vocalizations'),
+    ])
+    def test_trace_name(self, classes, name):
+        """A list holding USVs is a USV trace, one holding squeaks a squeak trace, overlap
+        alone an overlap trace, and USVs with squeaks every vocalization."""
+
+        assert vocal_trace_name(classes) == name
+
+    def test_pooled_traces_hold_their_classes_only(self):
+        """``pooled_binary`` marks exactly the frames of each list's rows (100 fps: frame
+        10 is 0.10 s); overlap rows count in both a USV and a squeak list; unscored rows
+        in none."""
+
+        signals = build_vocal_predictor_signals(
+            self._rows(), [['usv', 'overlap'], ['squeak']], 'pooled_binary', 'qlvm_category',
+            duration_frames=60, fps=100.0, smooth_sd=None, source='s')
+        assert sorted(signals) == ['squeak_event', 'usv_event']
+        assert np.flatnonzero(signals['usv_event']).tolist() == [10, 30, 40]
+        assert np.flatnonzero(signals['squeak_event']).tolist() == [20]
+
+    def test_categories_split_squeak_free_lists_only(self):
+        """``categories_rate`` splits a list without pure squeaks by QLVM category and
+        gives a list with pure squeaks one pooled trace; ``all_rate`` adds the pooled
+        trace to the split one; an empty list still gives an all-zero pooled trace."""
+
+        rows = self._rows()
+        cats = build_vocal_predictor_signals(rows, [['usv', 'overlap'], ['squeak', 'overlap']], 'categories_rate',
+                                             'qlvm_category', duration_frames=60, fps=100.0, smooth_sd=None, source='s')
+        assert sorted(cats) == ['squeak_rate', 'usv_cat_1', 'usv_cat_2']
+        assert np.flatnonzero(cats['usv_cat_1']).tolist() == [10, 40]
+        assert np.flatnonzero(cats['squeak_rate']).tolist() == [20, 40]
+        both = build_vocal_predictor_signals(rows, [['usv']], 'all_rate', 'qlvm_category',
+                                             duration_frames=60, fps=100.0, smooth_sd=None, source='s')
+        assert sorted(both) == ['usv_cat_1', 'usv_cat_2', 'usv_rate']
+        empty = build_vocal_predictor_signals(rows.filter(pls.col('squeak') == False), [['squeak']], 'pooled_rate',  # noqa: E712
+                                              'qlvm_category', duration_frames=60, fps=100.0, smooth_sd=None, source='s')
+        assert list(empty) == ['squeak_rate'] and not empty['squeak_rate'].any()
+        assert build_vocal_predictor_signals(rows, [['usv']], None, None, 60, 100.0, None, 's') == {}
+
+    def test_predictor_lists_are_checked(self):
+        """Lists may share classes, but two lists giving one trace name, an unknown or
+        repeated class, and an empty list are refused."""
+
+        validate_vocal_class_settings(None, [['usv', 'overlap'], ['squeak', 'overlap']], None)
+        with pytest.raises(ValueError, match="give the trace name"):
+            validate_vocal_class_settings(None, [['usv'], ['usv', 'overlap']], None)
+        with pytest.raises(ValueError, match="distinct classes"):
+            validate_vocal_class_settings(None, [['usv', 'chirp']], None)
+        with pytest.raises(ValueError, match="non-empty list"):
+            validate_vocal_class_settings(None, [[]], None)
+        with pytest.raises(ValueError, match="non-empty list"):
+            validate_vocal_class_settings(None, [], None)
+        with pytest.raises(ValueError, match="give the trace name"):
+            require_labels_for_vocal_predictors({'vocal_predictor_type': 'pooled_rate',
+                                                 'vocal_predictor_classes': [['squeak'], ['squeak', 'overlap']],
+                                                 'usv_category_column_name': None})
+
+    def test_target_tag(self):
+        """The default ["usv"] adds nothing to a file name; any other list adds its
+        classes in a fixed order."""
+
+        assert onset_target_tag(['usv']) == ''
+        assert onset_target_tag(['overlap', 'usv']) == '_usv+overlap'
+        assert onset_target_tag(['squeak']) == '_squeak'
+
+    @pytest.mark.parametrize('column, vocal, pooled', [
+        ('other.usv_rate', True, True), ('self.squeak_event', True, True),
+        ('other.all_vocalizations_rate', True, True), ('other.overlap_cat_3', True, False),
+        ('usv_cat_0', True, False), ('other.speed', False, False), ('other.usv_cat_x', False, False),
+        ('other.squeaky_rate', False, False),
+    ])
+    def test_vocal_column_recognition(self, column, vocal, pooled):
+        """Vocal columns are '<name>_rate' / '<name>_event' / '<name>_cat_<int>' with a
+        known trace name; only the first two are pooled."""
+
+        assert is_vocal_signal(column) is vocal
+        assert is_pooled_vocal_signal(column) is pooled
+
+
 class TestCategoryLabelRequirement:
     """The settings-level label checks the pipelines run before loading anything."""
 
@@ -1594,7 +1770,8 @@ class TestCategoryLabelRequirement:
     def test_vocal_predictor_settings_check(self, predictor_type, raises):
         """Only the per-category predictor modes need a label column."""
 
-        voc = {'usv_predictor_type': predictor_type, 'usv_category_column_name': None}
+        voc = {'vocal_predictor_type': predictor_type, 'vocal_predictor_classes': [['usv']],
+               'usv_category_column_name': None}
         if raises:
             with pytest.raises(ValueError, match=_LABELS_UNAVAILABLE):
                 require_labels_for_vocal_predictors(voc)
@@ -1610,7 +1787,7 @@ class TestCategoryLabelRequirement:
 
         with open(_SETTINGS_JSON, 'r') as fh:
             voc = json.load(fh)['vocal_features']
-        assert voc['usv_predictor_type'] == 'categories_rate'
+        assert voc['vocal_predictor_type'] == 'categories_rate'
         assert voc['usv_category_column_name'] == 'qlvm_category'
         require_labels_for_vocal_predictors(voc)
         with pytest.raises(ValueError, match='absent from s.csv'):

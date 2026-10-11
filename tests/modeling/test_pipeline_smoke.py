@@ -106,7 +106,7 @@ def _build_settings(tmp_path: Path, **overrides):
         below it so nothing is ever written into the package tree.
     overrides (dict)
         Extra keyword arguments passed through to ``build_modeling_settings``
-        (e.g. ``model_engine``, ``usv_predictor_type``, ``split_strategy``).
+        (e.g. ``model_engine``, ``vocal_predictor_type``, ``split_strategy``).
 
     Returns
     -------
@@ -306,14 +306,14 @@ class TestOnsetInputExtraction:
     @pytest.mark.filterwarnings("ignore::astropy.utils.exceptions.AstropyUserWarning")
     def test_extraction_with_partner_vocal_predictors(self, tmp_path):
         """
-        With ``usv_predictor_type='categories_rate'`` the extraction additionally
+        With ``vocal_predictor_type='categories_rate'`` the extraction additionally
         materializes a partner per-category vocal predictor column
         (``other.usv_cat_1``), exercising ``build_vocal_signal_columns`` and the
         vocal-column harmonization branch.
         """
 
         settings, save_dir = _build_settings(
-            tmp_path, model_engine='sklearn', usv_predictor_type='categories_rate'
+            tmp_path, model_engine='sklearn', vocal_predictor_type='categories_rate'
         )
         pipeline = VocalOnsetModelingPipeline(modeling_settings_dict=settings)
         pipeline.extract_and_save_modeling_input_data()

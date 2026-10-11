@@ -478,7 +478,7 @@ def build_modeling_settings(
         egocentric_features: list[str] | None = None,
         dyadic_features: list[str] | None = None,
         engagement_features: list[str] | None = None,
-        usv_predictor_type=None,
+        vocal_predictor_type=None,
         usv_category_column_name: str | None = 'qlvm_category',
         split_strategy: str = 'mixed',
         split_num: int = 2,
@@ -501,7 +501,7 @@ def build_modeling_settings(
         (few folds), ``test_proportion``, ``random_seed``.
       - ``kinematic_features``: feature buckets shrunk to the tiny synthetic
         set; derivatives off.
-      - ``vocal_features.usv_predictor_type`` -> ``None`` by default so no
+      - ``vocal_features.vocal_predictor_type`` -> ``None`` by default so no
         vocal predictor columns are generated (keeps the design matrix tiny).
       - ``vocal_features.usv_category_column_name`` -> ``'qlvm_category'``
         by default, the label column the synthetic summaries carry, so the
@@ -538,7 +538,7 @@ def build_modeling_settings(
         Dyadic-pose bucket; defaults to ``[]``.
     engagement_features (list of str or None)
         Engagement bucket; defaults to ``[]``.
-    usv_predictor_type (str or None)
+    vocal_predictor_type (str or None)
         Vocal predictor mode; ``None`` disables vocal predictor columns.
     usv_category_column_name (str or None)
         Category label column the pipelines read; ``'qlvm_category'``
@@ -612,7 +612,7 @@ def build_modeling_settings(
     kin['include_2nd_derivatives'] = False
     kin['smooth_abs_features'] = {}
 
-    settings['vocal_features']['usv_predictor_type'] = usv_predictor_type
+    settings['vocal_features']['vocal_predictor_type'] = vocal_predictor_type
     settings['vocal_features']['usv_category_column_name'] = usv_category_column_name
 
     settings['diagnostics']['collinearity_audit'] = False

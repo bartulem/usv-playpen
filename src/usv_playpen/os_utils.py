@@ -375,7 +375,7 @@ def rebase_experimenter_in_paths(obj: object = None,
 # one sub-folder per map named by its column prefix (``qlvm``, ``qlvm_duration``,
 # ``qlvm_entropy``, ``qlvm_bandwidth``, ``qlvm_loudness`` and the squeak map
 # ``qlvm_squeak``), each a train-qlvm cell (checkpoint.tar, config/, metrics/), next to
-# the SAM2 / YOLO, noise and call-class models of that directory; ``qlvm/PROVENANCE.json``
+# the SAM2 / YOLO, noise and vocal-class models of that directory; ``qlvm/PROVENANCE.json``
 # records the training package each cell was copied from. A module constant rather
 # than a processing_settings.json key: the GUI and the CLI re-key every experimenter
 # name in those settings to the active experimenter (`rebase_experimenter_in_paths`),
@@ -860,7 +860,7 @@ def derive_spectrogram_model_paths(settings: dict = None) -> dict:
     sam_dir = f'{root}/sam'
     squeak_dir = f'{root}/squeak'
     # The noise model file name carries its training: TimeMIL, 5-seed ensemble, 4,680 labels, build date.
-    # The call-class (usv / squeak / both) model's likewise: 5-member ensemble, 2,476 non-unsure labels,
+    # The vocal-class (usv / squeak / overlap) model's likewise: 5-member ensemble, 2,476 non-unsure labels,
     # build date, and "_reviewed" for the label set with the review overrides applied.
     noise_dir = f'{root}/noise'
     derived = (
@@ -1425,7 +1425,7 @@ def wait_for_subprocesses(
 # truth every step that writes the summary reorders to (order_usv_summary_columns), so
 # a column's position never depends on which step ran last. Six blocks:
 #   1. the DAS event: usv_id, start, stop, duration (das_summarize);
-#   2. the call-level class labels: noise / noise_probability (detect_usv_noise), then
+#   2. the segment-level class labels: noise / noise_probability (detect_usv_noise), then
 #      the vocal-class block of detect_usv_squeaks -- the usv / squeak booleans, the
 #      three class probabilities p_usv / p_squeak / p_both and the squeak extent
 #      squeak_start / squeak_end;
@@ -1549,24 +1549,25 @@ def drop_noise_usvs(usv_summary: Any, source: str, message_output: Callable = pr
 
 
 # Columns `detect_usv_squeaks` writes: two booleans per segment that is not noise -- `usv` (the
-# segment holds an ultrasonic call) and `squeak` (it holds a broadband squeak) -- both null on noise
-# rows and on rows too short to score. A pure USV is (true, false), a pure squeak (false, true), and a
-# segment holding both is (true, true). `usv` alone is NOT "USV only": a pure-USV filter must also
-# require `squeak` false, which is what `call_class_mask` / `pure_usv_mask` do.
+# segment holds a USV) and `squeak` (it holds a broadband squeak) -- both null on noise rows and on
+# rows too short to score. A pure USV is (true, false), a pure squeak (false, true), and an overlap
+# segment (a USV and a squeak together) is (true, true). `usv` alone is NOT "USV only": a pure-USV
+# filter must also require `squeak` false, which is what `vocal_class_mask` / `pure_usv_mask` do.
 USV_FLAG_COLUMN = "usv"
 SQUEAK_FLAG_COLUMN = "squeak"
 VOCAL_FLAG_COLUMNS = (USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN)
 
-# The three call classes the two booleans encode: "usv" = pure USV (usv & ~squeak), "squeak" = pure
-# squeak (squeak & ~usv), "both" = a squeak and a USV in one segment (usv & squeak).
-CALL_CLASSES = ("usv", "squeak", "both")
+# The three vocal classes the two booleans encode: "usv" = pure USV (usv & ~squeak), "squeak" = pure
+# squeak (squeak & ~usv), "overlap" = a squeak and a USV in one segment (usv & squeak).
+VOCAL_CLASSES = ("usv", "squeak", "overlap")
 
 # The three selections every squeak-side consumer (squeak figures, the explorer's squeak map)
-# offers: pure squeaks, segments holding a squeak and a USV, or both kinds together (squeak true).
+# offers: pure squeaks, overlap segments (a squeak and a USV together), or both kinds together
+# (squeak true).
 SQUEAK_CLASS_SELECTIONS = {
     "squeak": ("squeak",),
-    "both": ("both",),
-    "squeak+both": ("squeak", "both"),
+    "overlap": ("overlap",),
+    "squeak+overlap": ("squeak", "overlap"),
 }
 
 
@@ -1666,13 +1667,13 @@ def noise_mask(usv_summary: Any, source: str) -> Any:
     return _vocal_flag(usv_summary, NOISE_COLUMN).alias(NOISE_COLUMN)
 
 
-def call_class_mask(usv_summary: Any, classes: Iterable[str], source: str) -> Any:
+def vocal_class_mask(usv_summary: Any, classes: Iterable[str], source: str) -> Any:
     """
     Description
     -----------
-    Marks the rows of a USV summary whose call class -- derived from the two booleans, never from
+    Marks the rows of a USV summary whose vocal class -- derived from the two booleans, never from
     ``usv`` alone -- is one of ``classes``: ``"usv"`` = pure USV (``usv & ~squeak``), ``"squeak"`` =
-    pure squeak (``squeak & ~usv``), ``"both"`` = ``usv & squeak``. A null flag counts as false, so a
+    pure squeak (``squeak & ~usv``), ``"overlap"`` = ``usv & squeak``. A null flag counts as false, so a
     noise row (both null) is in no selection and a mask built here never admits noise.
 
     Parameters
@@ -1680,7 +1681,7 @@ def call_class_mask(usv_summary: Any, classes: Iterable[str], source: str) -> An
     usv_summary (polars.DataFrame)
         A session's USV summary table (or any table holding ``usv`` and ``squeak``).
     classes (Iterable[str])
-        Call classes to keep, each one of ``CALL_CLASSES``.
+        Vocal classes to keep, each one of ``VOCAL_CLASSES``.
     source (str)
         What the table came from, named in the error when a flag is missing.
 
@@ -1694,30 +1695,30 @@ def call_class_mask(usv_summary: Any, classes: Iterable[str], source: str) -> An
     KeyError
         The table lacks ``usv`` or ``squeak``.
     ValueError
-        A requested class is not one of ``CALL_CLASSES``.
+        A requested class is not one of ``VOCAL_CLASSES``.
     """
 
     classes = list(classes)
-    unknown = [value for value in classes if value not in CALL_CLASSES]
+    unknown = [value for value in classes if value not in VOCAL_CLASSES]
     if unknown:
-        error_message = f"call_class_mask: unknown call class(es) {unknown}; the classes are {list(CALL_CLASSES)}."
+        error_message = f"vocal_class_mask: unknown vocal class(es) {unknown}; the classes are {list(VOCAL_CLASSES)}."
         raise ValueError(error_message)
     require_vocal_flags(usv_summary, source)
     usv = _vocal_flag(usv_summary, USV_FLAG_COLUMN)
     squeak = _vocal_flag(usv_summary, SQUEAK_FLAG_COLUMN)
-    by_class = {"usv": usv & ~squeak, "squeak": squeak & ~usv, "both": usv & squeak}
+    by_class = {"usv": usv & ~squeak, "squeak": squeak & ~usv, "overlap": usv & squeak}
     mask = usv & ~usv
     for value in classes:
         mask = mask | by_class[value]
-    return mask.alias("call_class_mask")
+    return mask.alias("vocal_class_mask")
 
 
 def pure_usv_mask(usv_summary: Any, source: str) -> Any:
     """
     Description
     -----------
-    Rows holding an ultrasonic call and no squeak (``usv & ~squeak``): what every USV-only consumer
-    keeps. Shorthand for ``call_class_mask(usv_summary, ("usv",), source)``.
+    Rows holding a USV and no squeak (``usv & ~squeak``): what every USV-only consumer keeps.
+    Shorthand for ``vocal_class_mask(usv_summary, ("usv",), source)``.
 
     Parameters
     ----------
@@ -1732,15 +1733,15 @@ def pure_usv_mask(usv_summary: Any, source: str) -> Any:
         Boolean, one value per row.
     """
 
-    return call_class_mask(usv_summary, ("usv",), source)
+    return vocal_class_mask(usv_summary, ("usv",), source)
 
 
 def pure_squeak_mask(usv_summary: Any, source: str) -> Any:
     """
     Description
     -----------
-    Rows holding a squeak and no ultrasonic call (``squeak & ~usv``). Shorthand for
-    ``call_class_mask(usv_summary, ("squeak",), source)``.
+    Rows holding a squeak and no USV (``squeak & ~usv``). Shorthand for
+    ``vocal_class_mask(usv_summary, ("squeak",), source)``.
 
     Parameters
     ----------
@@ -1755,15 +1756,15 @@ def pure_squeak_mask(usv_summary: Any, source: str) -> Any:
         Boolean, one value per row.
     """
 
-    return call_class_mask(usv_summary, ("squeak",), source)
+    return vocal_class_mask(usv_summary, ("squeak",), source)
 
 
-def both_mask(usv_summary: Any, source: str) -> Any:
+def overlap_mask(usv_summary: Any, source: str) -> Any:
     """
     Description
     -----------
-    Rows holding a squeak and an ultrasonic call (``usv & squeak``). Shorthand for
-    ``call_class_mask(usv_summary, ("both",), source)``.
+    Overlap rows: segments holding a squeak and a USV together (``usv & squeak``). Shorthand for
+    ``vocal_class_mask(usv_summary, ("overlap",), source)``.
 
     Parameters
     ----------
@@ -1778,16 +1779,17 @@ def both_mask(usv_summary: Any, source: str) -> Any:
         Boolean, one value per row.
     """
 
-    return call_class_mask(usv_summary, ("both",), source)
+    return vocal_class_mask(usv_summary, ("overlap",), source)
 
 
 def squeak_bearing_mask(usv_summary: Any, source: str) -> Any:
     """
     Description
     -----------
-    Rows holding a squeak, with or without an ultrasonic call (``squeak`` true: pure squeaks and
-    "both"): the rows the squeak QLVM embedding, its training-set builder and the squeak spectrogram
-    store take. Shorthand for ``call_class_mask(usv_summary, ("squeak", "both"), source)``.
+    Rows holding a squeak, with or without a USV (``squeak`` true: pure squeaks and overlap
+    segments): the rows the squeak QLVM embedding, its training-set builder and the squeak
+    spectrogram store take. Shorthand for
+    ``vocal_class_mask(usv_summary, ("squeak", "overlap"), source)``.
 
     Parameters
     ----------
@@ -1802,15 +1804,15 @@ def squeak_bearing_mask(usv_summary: Any, source: str) -> Any:
         Boolean, one value per row.
     """
 
-    return call_class_mask(usv_summary, ("squeak", "both"), source)
+    return vocal_class_mask(usv_summary, ("squeak", "overlap"), source)
 
 
 def squeak_class_selection(selection: str) -> tuple[str, ...]:
     """
     Description
     -----------
-    Resolves a squeak-class selection name (``"squeak"``, ``"both"`` or ``"squeak+both"``) to
-    the call classes it covers.
+    Resolves a squeak-class selection name (``"squeak"``, ``"overlap"`` or ``"squeak+overlap"``)
+    to the vocal classes it covers.
 
     Parameters
     ----------
@@ -1820,7 +1822,7 @@ def squeak_class_selection(selection: str) -> tuple[str, ...]:
     Returns
     -------
     classes (tuple[str, ...])
-        The call classes the selection keeps.
+        The vocal classes the selection keeps.
 
     Raises
     ------

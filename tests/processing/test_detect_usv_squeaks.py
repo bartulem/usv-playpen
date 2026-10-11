@@ -2,14 +2,15 @@
 @author: bartulem
 Tests for processing/detect_usv_squeaks.
 
-The call-class model: the network (and its noise-trunk initialization), the squeak-extent rule (the
+The vocal-class model: the network (and its noise-trunk initialization), the squeak-extent rule (the
 envelope of above-threshold frames in runs touching the segment, no minimum run, half-hop edges, and
 the highest-scoring-frame fallback), the window input (segment indicator, frame grid) and the bundle
-loader with its refusals are tested directly. The end-to-end classifier runs on a synthetic session
+loader with its refusals (and its acceptance of a legacy bundle whose overlap class is still named
+"both") are tested directly. The end-to-end classifier runs on a synthetic session
 (a four-channel broadband memmap plus a small ``*_usv_summary.csv``) with a stub ensemble
 whose class logits are set by the segment length and whose frame logits are set per frame relative to
 the segment, so every row's class, probabilities and extent are known: that pins the boolean encoding
-(pure USV (true, false), pure squeak (false, true), both (true, true), nulls on noise rows),
+(pure USV (true, false), pure squeak (false, true), overlap (true, true), nulls on noise rows),
 probabilities summing to 1, the single extent on squeak rows only, the fallback count, and the merge
 that removes the columns of earlier encodings.
 
@@ -19,7 +20,7 @@ loader accepts.
 
 The squeak QLVM embedding is tested on the same kind of synthetic session: the crop window that
 widens a segment to hold a squeak running past it, the frame rule, the crop normalization and
-centring, the row selection (squeak and both, never noise or usv) and exclusions, the old-layout cell
+centring, the row selection (squeak and overlap, never noise or usv) and exclusions, the old-layout cell
 loader and its checks, and the merge of ``qlvm_squeak1`` / ``qlvm_squeak2`` with the decoder mocked.
 """
 
@@ -45,7 +46,7 @@ SAMPLING_RATE = 250000
 HOP_S = HOP_SAMPLES / SAMPLING_RATE
 
 
-class _StubCallClassModel(torch.nn.Module):
+class _StubVocalClassModel(torch.nn.Module):
     """
     Description
     -----------
@@ -213,7 +214,7 @@ def _stub_bundle(fallback: bool = False) -> dict:
     """
     Description
     -----------
-    A loaded-bundle dict around the stub model: the 50 ms row is "both", the 400 ms row "squeak", every
+    A loaded-bundle dict around the stub model: the 50 ms row is "overlap", the 400 ms row "squeak", every
     other row "usv". By default the frame track is above the threshold on frames -30 .. -16 from the
     first segment frame (a run wholly in the context before the segment, which the extent ignores),
     2 .. 29 (a run that starts inside the segment and, for the 25-frame 50 ms segment, extends past its
@@ -232,7 +233,7 @@ def _stub_bundle(fallback: bool = False) -> dict:
     """
 
     above = list(range(-30, -15)) if fallback else list(range(-30, -15)) + list(range(2, 30)) + list(range(32, 37))
-    model = _StubCallClassModel(
+    model = _StubVocalClassModel(
         {_segment_frames(0.10, 0.15): 2, _segment_frames(0.30, 0.70): 1, _segment_frames(0.20, 0.30): 0},
         above,
         peak_offset=7 if fallback else None,
@@ -240,7 +241,7 @@ def _stub_bundle(fallback: bool = False) -> dict:
     return {
         **squeaks.USV_SQUEAK_INPUT_CONTRACT,
         "models": [model],
-        "class_names": squeaks.CALL_CLASSES,
+        "class_names": squeaks.VOCAL_CLASSES,
         "scalar_mean": np.zeros(2, dtype=np.float32),
         "scalar_std": np.ones(2, dtype=np.float32),
         "span_threshold": 0.6,
@@ -248,11 +249,11 @@ def _stub_bundle(fallback: bool = False) -> dict:
     }
 
 
-def _write_bundle(path: pathlib.Path, model_name: str = squeaks.USV_SQUEAK_MODEL_NAME) -> None:
+def _write_bundle(path: pathlib.Path, model_name: str = squeaks.USV_SQUEAK_MODEL_NAME, class_names: tuple[str, ...] = squeaks.VOCAL_CLASSES) -> None:
     """
     Description
     -----------
-    Writes a randomly initialized two-member call-class bundle in the trainer's format.
+    Writes a randomly initialized two-member vocal-class bundle in the trainer's format.
 
     Parameters
     ----------
@@ -260,6 +261,10 @@ def _write_bundle(path: pathlib.Path, model_name: str = squeaks.USV_SQUEAK_MODEL
         Bundle path.
     model_name (str)
         ``model`` entry (a wrong one must be refused).
+    class_names (tuple[str, ...])
+        ``class_names`` entry, stored as a list as the trainer stores it; ``VOCAL_CLASSES`` by default,
+        the legacy ``("usv", "squeak", "both")`` of the bundles trained before the overlap class was
+        renamed, or a wrong list that must be refused.
 
     Returns
     -------
@@ -269,7 +274,7 @@ def _write_bundle(path: pathlib.Path, model_name: str = squeaks.USV_SQUEAK_MODEL
     torch.manual_seed(0)
     state_dicts = [squeaks.USVSqueakTimeMIL(in_channels=3, n_scalars=2).state_dict() for _ in range(2)]
     torch.save({
-        "model": model_name, "state_dicts": state_dicts, "class_names": ["usv", "squeak", "both"],
+        "model": model_name, "state_dicts": state_dicts, "class_names": list(class_names),
         "in_channels": 3, "n_scalars": 2, "scalar_names": ["log_chs_count", "log_duration_s"],
         "scalar_mean": [2.9, -2.2], "scalar_std": [0.5, 0.6],
         **{key: ([list(band) for band in value] if key == "bands_hz" else value) for key, value in squeaks.USV_SQUEAK_INPUT_CONTRACT.items()},
@@ -358,7 +363,7 @@ def test_load_usv_squeak_model_round_trip_and_refusals(tmp_path):
     _write_bundle(tmp_path / "ok.pt")
     bundle = squeaks.load_usv_squeak_model(str(tmp_path / "ok.pt"), torch.device("cpu"))
     assert len(bundle["models"]) == 2
-    assert bundle["class_names"] == ("usv", "squeak", "both")
+    assert bundle["class_names"] == ("usv", "squeak", "overlap")
     assert bundle["span_threshold"] == 0.6
     assert bundle["max_frames"] == 1024
     assert bundle["context_frames"] == 49
@@ -367,11 +372,27 @@ def test_load_usv_squeak_model_round_trip_and_refusals(tmp_path):
     _write_bundle(tmp_path / "old.pt", model_name="timemil_binary")
     with pytest.raises(ValueError, match="retired binary"):
         squeaks.load_usv_squeak_model(str(tmp_path / "old.pt"), torch.device("cpu"))
+    _write_bundle(tmp_path / "wrong_classes.pt", class_names=("usv", "squeak", "noise"))
+    with pytest.raises(ValueError, match="class_names"):
+        squeaks.load_usv_squeak_model(str(tmp_path / "wrong_classes.pt"), torch.device("cpu"))
+
+
+def test_load_usv_squeak_model_accepts_legacy_overlap_class_name(tmp_path):
+    """A bundle trained before the overlap class was renamed stores class_names as
+    ["usv", "squeak", "both"]: it loads unchanged, its class names are returned as VOCAL_CLASSES (so
+    every downstream lookup sees "overlap"), and a legacy name in the wrong position is still refused."""
+    _write_bundle(tmp_path / "legacy.pt", class_names=("usv", "squeak", squeaks.LEGACY_OVERLAP_CLASS_NAME))
+    bundle = squeaks.load_usv_squeak_model(str(tmp_path / "legacy.pt"), torch.device("cpu"))
+    assert len(bundle["models"]) == 2
+    assert bundle["class_names"] == squeaks.VOCAL_CLASSES == ("usv", "squeak", "overlap")
+    _write_bundle(tmp_path / "legacy_misordered.pt", class_names=("usv", squeaks.LEGACY_OVERLAP_CLASS_NAME, "squeak"))
+    with pytest.raises(ValueError, match="class_names"):
+        squeaks.load_usv_squeak_model(str(tmp_path / "legacy_misordered.pt"), torch.device("cpu"))
 
 
 def test_classify_usv_squeak_rows_encoding(tmp_path):
     """
-    The boolean encoding on every kind of row: the "both" (50 ms) row is (true, true), the "squeak"
+    The boolean encoding on every kind of row: the "overlap" (50 ms) row is (true, true), the "squeak"
     (400 ms) row (false, true), the "usv" rows (true, false), and the noise row is not read and gets
     nulls everywhere (a null noise value counts as not noise). Squeak rows get one extent, the envelope
     of the runs touching the segment: on the 400 ms row frames 2 .. 36 (the context-only run dropped,
@@ -533,7 +554,7 @@ def _write_label_set(directory: pathlib.Path, session_root: pathlib.Path) -> tup
     Description
     -----------
     Writes a labelling-tool label set on the synthetic session (rows 0, 1, 4 and the noise row 3 as an
-    unsure answer) and a review CSV that turns panel P0 from usv into both.
+    unsure answer) and a review CSV that turns panel P0 from usv into overlap.
 
     Parameters
     ----------
@@ -650,7 +671,8 @@ def test_usv_squeak_model_trainer_writes_a_loadable_bundle(tmp_path, mocker):
     mocker.patch("usv_playpen.processing.detect_usv_squeaks.torch.cuda.is_available", return_value=False)
     bundle_path = squeaks.USVSqueakModelTrainer(str(tmp_path / "bundle.pt"), settings, lambda *_a, **_kw: None).train()
     raw = torch.load(bundle_path, weights_only=True)
-    assert raw["n_labels"] == {"usv": 1, "squeak": 1, "both": 1}
+    assert raw["n_labels"] == {"usv": 1, "squeak": 1, "overlap": 1}
+    assert raw["class_names"] == list(squeaks.VOCAL_CLASSES)
     assert raw["extent_rule"]["threshold"] == 0.6
     assert raw["label_overrides"] == [["r1", str(review)]]
     assert raw["max_frames"] == 1024
@@ -688,15 +710,15 @@ def _build_squeak_embedding_session(tmp_path: pathlib.Path) -> pathlib.Path:
 
     * row 0 -- squeak, envelope ``start + 4.5 dt .. start + 20.5 dt`` of a 100 ms segment: the window
       is the segment, extent frames 5 .. 20, crop 3 .. 22 (embedded);
-    * row 1 -- a noise row (no call class; not a candidate);
-    * row 2 -- both, a squeak starting 10 frames BEFORE its segment: the window starts 12 frames before
+    * row 1 -- a noise row (no vocal class; not a candidate);
+    * row 2 -- overlap, a squeak starting 10 frames BEFORE its segment: the window starts 12 frames before
       the segment, extent frames 2 .. 42, crop 0 .. 44 (embedded);
     * row 3 -- squeak, extent frames 10 .. 180 of a 400 ms segment (crop of 175 frames, too wide);
-    * row 4 -- both, an envelope one frame wide (crop of 5 frames, too narrow);
+    * row 4 -- overlap, an envelope one frame wide (crop of 5 frames, too narrow);
     * row 5 -- squeak on a 1 ms segment at the very start of the recording with a 0.5 ms envelope (the
       window cannot extend before 0 s and stays shorter than one STFT window: no spectrogram);
     * row 6 -- usv (not a candidate);
-    * row 7 -- both without an extent (only a hand-edited summary has one: no squeak extent).
+    * row 7 -- overlap without an extent (only a hand-edited summary has one: no squeak extent).
 
     Parameters
     ----------
@@ -814,8 +836,8 @@ def test_squeak_crop_inputs_time_stretches_and_floors_as_the_contract_says():
     assert not np.array_equal(floored, inputs)
 
 
-def test_squeak_qlvm_rows_selects_squeak_and_both_that_are_not_noise():
-    """squeak and both rows with noise false or null are selected, never usv or unclassed rows; a
+def test_squeak_qlvm_rows_selects_squeak_and_overlap_that_are_not_noise():
+    """squeak and overlap rows with noise false or null are selected, never usv or unclassed rows; a
     summary without noise or the usv / squeak booleans raises."""
     summary = pls.DataFrame(
         {"noise": [False, True, None, False, False, False],
