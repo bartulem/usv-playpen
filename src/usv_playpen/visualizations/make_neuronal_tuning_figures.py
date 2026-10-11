@@ -6554,7 +6554,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             hspace=0.75, wspace=0.52, left=0.07, right=0.94, top=0.97, bottom=0.03,
         )
 
-        payload = (cluster_data.get("usv_ibi_bout_onset") or {}).get(emitter)
+        # A pickle from before the bout-onset statistics carries no block, and an emitter the
+        # analysis skipped has no entry; either way there is nothing to draw.
+        bout_blocks = (cluster_data["usv_ibi_bout_onset"]
+                       if "usv_ibi_bout_onset" in cluster_data and cluster_data["usv_ibi_bout_onset"] else {})
+        payload = bout_blocks[emitter] if emitter in bout_blocks else None
         drawable = payload is not None and usv_summary_df is not None
         if drawable:
             self._draw_bout_rows(fig=fig, outer=outer, emitter=emitter,
@@ -6727,7 +6731,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         None
         """
 
-        payload = (cluster_data.get("usv_ibi_bout_onset") or {}).get(emitter)
+        # A pickle from before the bout-onset statistics carries no block, and an emitter the
+        # analysis skipped has no entry; either way there is nothing to draw.
+        bout_blocks = (cluster_data["usv_ibi_bout_onset"]
+                       if "usv_ibi_bout_onset" in cluster_data and cluster_data["usv_ibi_bout_onset"] else {})
+        payload = bout_blocks[emitter] if emitter in bout_blocks else None
         if payload is None:
             ax.text(0.5, 0.5, "no bout-onset payload", transform=ax.transAxes, ha="center",
                     va="center", fontsize=11, color=COLOR_GRAY_DASH)

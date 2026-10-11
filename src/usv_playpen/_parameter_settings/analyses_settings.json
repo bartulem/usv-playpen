@@ -21,8 +21,7 @@
     "allen_meshes_dir": "/mnt/falkner/Bartul/EPHYS/allen_meshes",
     "converter_path": "/mnt/falkner/Bartul/EPHYS/neuropixels_sites_to_anatomy_converter.json",
     "naturalistic_usv_repository_dir": "/mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_repositories",
-    "naturalistic_usv_playback_dir": "/mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_files",
-    "bout_decoding_out_dir": "/mnt/falkner/Bartul/EPHYS/bout_decoding"
+    "naturalistic_usv_playback_dir": "/mnt/falkner/Bartul/usv_playback_experiments/usv_naturalistic_playback_files"
   },
   "compute_behavioral_features": {
     "head_points": ["Head", "Ear_R", "Ear_L", "Nose"],

@@ -310,7 +310,8 @@ def _flag_ibi_bout_onset(payload: dict, statistic: str, alpha: float,
     Returns
     -------
     direction (str | None)
-        'excit' or 'suppress' for a rate statistic, 'first' or 'later' for the call ratio, and
+        'excit' or 'suppress' for a rate statistic, 'first' or 'later' for the first-over-later
+        USV ratio, and
         None when not significant or not testable.
     """
 
@@ -660,15 +661,23 @@ def flag_one_cluster(
 
 
     # usv_ibi_bout_onset: two labels per emitter -- whether the unit responds at bout onset, and
-    # whether a bout's first call draws more than its later ones. Bouts here are the IBI
+    # whether a bout's first USV draws more than its later ones. Bouts here are the IBI
     # (respiratory-tempo) grouping, not the VMI `bout_quiet_seconds` one.
-    for emitter, payload in (ts.get("usv_ibi_bout_onset") or {}).items():
+    # Pickles written before the bout-onset statistics existed carry no block, hence the
+    # membership checks rather than a lookup that would raise on them.
+    ibi_bout_blocks = ts["usv_ibi_bout_onset"] if "usv_ibi_bout_onset" in ts and ts["usv_ibi_bout_onset"] else {}
+    for emitter, payload in ibi_bout_blocks.items():
         if not isinstance(payload, dict):
             continue
-        role = payload.get("role") or emitter_roles.get(emitter) or emitter
+        if "role" in payload and payload["role"]:
+            role = payload["role"]
+        elif emitter in emitter_roles and emitter_roles[emitter]:
+            role = emitter_roles[emitter]
+        else:
+            role = emitter
         metrics = _extract_ibi_bout_onset_metrics(payload)
         for statistic, label in (("onset_gain", "ibi_bout_onset"),
-                                 ("first_over_later", "ibi_bout_first_call")):
+                                 ("first_over_later", "ibi_bout_first_usv")):
             direction = _flag_ibi_bout_onset(payload, statistic, alpha=ibi_bout_alpha,
                                              min_bouts=ibi_bout_min_bouts)
             observed = metrics[statistic]

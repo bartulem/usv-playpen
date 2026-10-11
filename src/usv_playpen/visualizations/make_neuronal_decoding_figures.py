@@ -326,7 +326,7 @@ class NeuronalDecodingFigureMaker:
         axis.set_ylabel("balanced accuracy", fontsize=9)
         axis.set_title("Nearest neighbor decoding (bout vs no-bout)", fontsize=12, loc="left",
                        pad=18)
-        axis.text(0.0, 1.015, "250 ms bins, USV spikes excluded", transform=axis.transAxes,
+        axis.text(0.0, 1.015, "250 ms bins, spikes during any vocalization excluded", transform=axis.transAxes,
                   fontsize=8, color=COLOR_TRACE)
         curves_legend = axis.legend(fontsize=7, frameon=False, loc="upper left",
                                     handlelength=3.0)

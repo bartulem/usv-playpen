@@ -960,7 +960,7 @@ defined at the top of this cell.
     else:
         aggregator_pkl_path = Path(AGGREGATOR_PKL)
 
-* **THRESHOLDS** — significance knobs applied by the aggregator; default to the ``detect_interesting_tuning_neurons`` block, override here to sweep without re-computing tuning.
+* **THRESHOLDS** — significance knobs applied by the aggregator; default to the ``detect_interesting_tuning_neurons`` block, override here to sweep without re-computing tuning. Two more knobs of that block are not listed in the cell and take their settings values: ``ibi_bout_alpha`` (two-sided level for the IBI bout-onset labels, ``0.01``) and ``ibi_bout_min_bouts`` (fewest IBI bouts before a unit gets a bout-onset label at all, ``10``).
 * **CONDITION_TO_SESSION_LIST** — one ``.txt`` of session roots (one per line) per condition; each condition becomes a block in every unit's pickle entry.
 * **CATALOG_PATH** — the authoritative ``unit_catalog.csv`` supplying each cluster's anatomy (reassigned again in the anatomy cell below).
 * **AGGREGATOR_OUT_DIR** / **DATA_ROOT** — where ``unit_triage_<YYYYMMDD>_<HHMMSS>.pkl`` is written, and the root the aggregator walks for ``*_tuning_curves_data.pkl``.

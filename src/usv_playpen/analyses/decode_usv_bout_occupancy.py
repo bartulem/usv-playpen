@@ -8,11 +8,18 @@ threshold, keeping runs of at least `min_vocalizations` USVs. Bins then follow t
 than the other way round:
 
 * a POSITIVE bin is laid from a bout's own first USV start, stepping forward by `bin_seconds`
-  while it stays inside that bout's extent, and contributes only its NON-USV time -- so no window
-  the decoder reads ever contains a vocalization. It needs at least `min_kept_seconds` of non-USV
+  while it stays inside that bout's extent, and contributes only its SILENT time -- so no window
+  the decoder reads ever contains a vocalization. It needs at least `min_kept_seconds` of silent
   time to count at all; without that floor a bin can enter the population vector carrying a couple
   of milliseconds of counting time, which is noise.
-* a NEGATIVE bin comes from the global lattice and must hold no emitter USV and touch no bout.
+* a NEGATIVE bin comes from the global lattice and must hold no vocalization and touch no bout.
+
+Bouts are grouped from the emitter's pure USVs, but SILENCE is not class-specific: the time a
+positive bin keeps and the bins a negative may use must be free of every vocalization of the
+emitter -- pure USVs, pure squeaks, overlap segments (a USV and a squeak in one segment) and
+unscored segments alike -- and of every vocalization assigned to no animal. Checking silence
+against pure USVs only would let a squeak, or an overlap segment, which holds a USV, sit inside a
+"silent" negative bin or inside a positive bin's kept time.
 * everything else is DROPPED. A bin holding a single USV cannot be assigned: a 120 ms USV
   followed by a 110 ms silence is one USV per bin and squarely inside a bout, so a USV count
   cannot say whether such a bin is bout time or not.
@@ -62,14 +69,14 @@ def free_intervals(lo: float, hi: float, starts: np.ndarray, stops: np.ndarray) 
     """
     Description
     -----------
-    The sub-intervals of ``[lo, hi)`` that no USV covers.
+    The sub-intervals of ``[lo, hi)`` that no vocalization covers.
 
     Parameters
     ----------
     lo, hi (float)
         Bin bounds in seconds.
     starts, stops (np.ndarray)
-        USV onsets and offsets in seconds, sorted by onset.
+        Vocalization onsets and offsets in seconds, sorted by onset.
 
     Returns
     -------
@@ -91,6 +98,7 @@ def free_intervals(lo: float, hi: float, starts: np.ndarray, stops: np.ndarray) 
 
 
 def bout_occupancy_bins(bin_seconds: float, starts: np.ndarray, stops: np.ndarray,
+                        silence_starts: np.ndarray, silence_stops: np.ndarray,
                         duration_seconds: float, ibi_threshold: float, min_vocalizations: int,
                         min_kept_seconds: float) -> tuple[list, np.ndarray, np.ndarray,
                                                           np.ndarray]:
@@ -99,16 +107,22 @@ def bout_occupancy_bins(bin_seconds: float, starts: np.ndarray, stops: np.ndarra
     -----------
     Per bin, the sub-intervals whose spikes count, its label, its midpoint and its bout position.
 
-    Positives are anchored to each bout's own first USV start and keep only their non-USV time;
-    negatives come from the global lattice and must hold no USV and touch no bout; anything else
-    is dropped. See the module docstring for why a single-USV bin cannot be assigned.
+    Positives are anchored to each bout's own first USV start and keep only their silent time;
+    negatives come from the global lattice and must hold no vocalization and touch no bout;
+    anything else is dropped. Bouts come from ``starts`` / ``stops`` (the emitter's pure USVs);
+    silence is judged against ``silence_starts`` / ``silence_stops`` (every vocalization of the
+    emitter, any class, plus those assigned to no animal). See the module docstring for why a
+    single-USV bin cannot be assigned.
 
     Parameters
     ----------
     bin_seconds (float)
         Bin width in seconds.
     starts, stops (np.ndarray)
-        Emitter USV onsets and offsets in seconds, sorted by onset.
+        Emitter USV onsets and offsets in seconds, sorted by onset; bouts are grouped from them.
+    silence_starts, silence_stops (np.ndarray)
+        Onsets and offsets in seconds, sorted by onset, of every vocalization silence must be
+        free of (the emitter's of any class and the unassigned ones); a superset of ``starts``.
     duration_seconds (float)
         Session length in seconds.
     ibi_threshold (float)
@@ -116,7 +130,7 @@ def bout_occupancy_bins(bin_seconds: float, starts: np.ndarray, stops: np.ndarra
     min_vocalizations (int)
         Fewest USVs a run needs to count as a bout.
     min_kept_seconds (float)
-        Fewest seconds of non-USV time a positive bin needs to count.
+        Fewest seconds of silent time a positive bin needs to count.
 
     Returns
     -------
@@ -132,7 +146,7 @@ def bout_occupancy_bins(bin_seconds: float, starts: np.ndarray, stops: np.ndarra
         step = 0
         while lo_b + (step + 1) * bin_seconds <= hi_b + 1e-9:
             lo = lo_b + step * bin_seconds
-            free = free_intervals(lo, lo + bin_seconds, starts, stops)
+            free = free_intervals(lo, lo + bin_seconds, silence_starts, silence_stops)
             if sum(b - a for a, b in free) >= min_kept_seconds:
                 spans.append(free)
                 labels.append(1)
@@ -142,7 +156,7 @@ def bout_occupancy_bins(bin_seconds: float, starts: np.ndarray, stops: np.ndarra
 
     for k in range(int(duration_seconds / bin_seconds)):
         lo, hi = k * bin_seconds, (k + 1) * bin_seconds
-        if np.any((stops > lo) & (starts < hi)):
+        if np.any((silence_stops > lo) & (silence_starts < hi)):
             continue
         if bout_lo.size and np.any((bout_hi > lo) & (bout_lo < hi)):
             continue
@@ -435,18 +449,26 @@ class BoutOccupancyDecoder:
         focal_mouse = block["mouse_id"][0]
 
         keep = self._emitter_names(bundle, focal_mouse)
-        # `is_usv` keeps PURE USVs only (usv & ~squeak), so pure squeaks, segments holding both
-        # and unscored nulls never enter a bout. Noise was already dropped by the loader. A bout
-        # is a run of vocalizations; a squeak in the middle of one would both split it and be
-        # counted as a USV.
-        emitter_rows = bundle["is_usv"].copy()
+        # Bouts are grouped from PURE USVs only (`is_usv`: usv & ~squeak), so pure squeaks,
+        # overlap segments and unscored nulls never join or split a bout. Noise was already
+        # dropped by the loader. Silence, though, is judged against every vocalization of the
+        # emitter (any class) and every one assigned to no animal, so neither a negative bin nor
+        # a positive bin's kept time can hold a squeak or an overlap segment.
         if keep:
-            emitter_rows &= np.isin(bundle["emitters"], keep)
+            emitter_any = np.isin(bundle["emitters"], keep)
+        else:
+            emitter_any = np.ones(bundle["starts"].size, dtype=bool)
+        emitter_rows = bundle["is_usv"] & emitter_any
         order = np.argsort(bundle["starts"][emitter_rows], kind="mergesort")
         usv_starts = bundle["starts"][emitter_rows][order]
         usv_stops = bundle["stops"][emitter_rows][order]
+        unassigned = np.array([name is None for name in bundle["emitters"]], dtype=bool)
+        silence_rows = emitter_any | unassigned
+        silence_order = np.argsort(bundle["starts"][silence_rows], kind="mergesort")
+        silence_starts = bundle["starts"][silence_rows][silence_order]
+        silence_stops = bundle["stops"][silence_rows][silence_order]
 
-        # The threshold belongs to whoever is doing the calling, so 'partner' reads the partner's
+        # The threshold belongs to whoever is vocalizing, so 'partner' reads the partner's
         # mixture, not the recorded animal's. Under 'all' the emitter set is mixed (and includes
         # unassigned rows), so there is no single right sex and the recorded animal's is used.
         emitter_sexes = {bundle["animal_sex"][name] for name in keep}
@@ -455,11 +477,13 @@ class BoutOccupancyDecoder:
         threshold = ibi_bout_threshold(sex, float(params["ibi_z_score"]),
                                        int(params["ibi_component_index"]))
         spans, labels, mids, positions = bout_occupancy_bins(
-            float(params["bin_seconds"]), usv_starts, usv_stops,
+            float(params["bin_seconds"]), usv_starts, usv_stops, silence_starts, silence_stops,
             bundle["duration_seconds"], threshold, int(params["min_vocalizations"]),
             float(params["min_kept_seconds"]))
         n_positive, n_negative = int((labels == 1).sum()), int((labels == 0).sum())
-        message_output(f"  {session_id}: emitter {params['emitter']} ({focal_mouse}, {sex}), "
+        # The sex that picked the mixture is not logged: CodeQL reads `animal_sex` as personal data
+        # (py/clear-text-logging-sensitive-data), and the bout gap it sets is printed instead.
+        message_output(f"  {session_id}: emitter {params['emitter']} ({focal_mouse}), "
                        f"bout gap {1000 * threshold:.1f} ms, {n_positive} in-bout bins / "
                        f"{n_negative} silent bins")
         if n_positive == 0 or n_negative == 0:

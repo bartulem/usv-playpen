@@ -15,6 +15,7 @@ import pathlib
 
 import matplotlib
 import numpy as np
+import polars as pls
 import pytest
 
 matplotlib.use("Agg")
@@ -80,7 +81,7 @@ def test_labelling_drops_single_usv_bins_and_respects_the_kept_floor() -> None:
     starts = np.array([0.0, 0.2, 0.4, 20.0])
     stops = starts + 0.1
     spans, labels, mids, positions = bout_occupancy_bins(
-        0.25, starts, stops, 40.0, 0.1155, 3, 0.03)
+        0.25, starts, stops, starts, stops, 40.0, 0.1155, 3, 0.03)
 
     # the three-USV run is one bout of extent [0.0, 0.5] -> two whole positive bins
     assert int((labels == 1).sum()) == 2
@@ -94,8 +95,38 @@ def test_labelling_drops_single_usv_bins_and_respects_the_kept_floor() -> None:
 
     # a floor above the available non-USV time removes every positive
     _spans, strict_labels, _mids, _pos = bout_occupancy_bins(
-        0.25, starts, stops, 40.0, 0.1155, 3, 0.20)
+        0.25, starts, stops, starts, stops, 40.0, 0.1155, 3, 0.20)
     assert int((strict_labels == 1).sum()) == 0
+
+
+def test_silence_is_judged_against_every_vocalization() -> None:
+    """Bouts come from the pure USVs, but a squeak or an overlap segment (or an unassigned
+    vocalization) is not silence: a lattice bin holding one is no negative, and inside a bout its
+    time is cut from a positive bin's kept time just like a USV's."""
+    starts = np.array([0.0, 0.2, 0.4])
+    stops = starts + 0.1
+    squeak_starts, squeak_stops = np.array([0.16, 10.1]), np.array([0.19, 10.2])
+    silence_starts = np.sort(np.concatenate([starts, squeak_starts]))
+    silence_stops = np.concatenate([stops, squeak_stops])[np.argsort(np.concatenate([starts, squeak_starts]))]
+
+    usv_only = bout_occupancy_bins(0.25, starts, stops, starts, stops, 40.0, 0.1155, 3, 0.03)
+    every = bout_occupancy_bins(0.25, starts, stops, silence_starts, silence_stops, 40.0, 0.1155, 3, 0.03)
+
+    # the squeak at 10.1 s sits in the lattice bin [10.0, 10.25): a negative under pure-USV
+    # silence, dropped once every vocalization counts
+    def negative_at(result, t):
+        spans, labels = result[0], result[1]
+        return any(label == 0 and spans[i][0][0] <= t < spans[i][0][1] for i, label in enumerate(labels))
+    assert negative_at(usv_only, 10.15)
+    assert not negative_at(every, 10.15)
+    assert int((every[1] == 0).sum()) == int((usv_only[1] == 0).sum()) - 1
+
+    # inside the bout the squeak's 30 ms is cut from the first positive bin's kept time
+    def first_positive_kept(result):
+        spans, labels = result[0], result[1]
+        index = int(np.flatnonzero(labels == 1)[0])
+        return sum(b - a for a, b in spans[index])
+    assert first_positive_kept(usv_only) - first_positive_kept(every) == pytest.approx(0.03)
 
 
 def test_counts_are_raw_and_the_shift_is_common_to_every_unit() -> None:
@@ -203,3 +234,42 @@ def test_decoding_figure_pools_catalog_acronyms_onto_palette_buckets(
     assert maker._area_colour("CENT2") == palette["CENT"]
     assert maker._area_colour("PAG") == palette["PAG"]
     assert maker._area_colour("Su3") == palette["other"]
+
+
+def test_decoding_figure_draws_and_summarizes_decoded_sessions(tmp_path: pathlib.Path) -> None:
+    """With every named session and area decoded, the figure is written and the per-session
+    tables are stacked into one frame, one row per area-session-rung."""
+    rng = np.random.default_rng(0)
+    session_a, session_b = "20250101_000000", "20250102_000000"
+    for session, areas in ((session_a, ("PAG", "MRN", "CENT2")), (session_b, ("PAG", "VTA"))):
+        rows = []
+        for area in areas:
+            draws = {str(c): 0.6 + 0.01 * rng.standard_normal(10) for c in (5, 10)}
+            nulls = {f"null_{c}": 0.5 + 0.01 * rng.standard_normal(200) for c in (5, 10)}
+            np.savez_compressed(tmp_path / f"{session}_{area}.npz", labels=np.array([0, 1]),
+                                positions=np.array([0, 1]), ladder=np.array([5, 10]), **draws, **nulls)
+            rows += [{"session": session, "area": area, "cells": c, "accuracy": float(draws[str(c)].mean())}
+                     for c in (5, 10)]
+        pls.DataFrame(rows).write_parquet(tmp_path / f"{session}_bout_decoding.parquet")
+
+    maker = NeuronalDecodingFigureMaker(
+        decoding_directory=str(tmp_path),
+        visualizations_parameter_dict=json.loads(
+            (SETTINGS_DIR / "visualizations_settings.json").read_text()),
+        message_output=lambda *_: None,
+    )
+    destination = maker.make_bout_decoding_figure(
+        focal_area="PAG",
+        focal_sessions=(("m1", session_a, 100), ("m2", session_b, 300)),
+        comparisons=(("MRN", session_a, session_a, "same session"),
+                     ("CENT2", session_a, session_a, "same session"),
+                     ("VTA", session_b, session_a, "density matched")),
+        unit_counts=(5, 10), out_dir=tmp_path / "figures")
+    assert pathlib.Path(destination).exists()
+
+    curve = maker._curve(session_a, "PAG", (5, 10, 20))
+    assert curve["rungs"] == [5, 10] and all(curve["clears"])
+
+    summary = maker.summarize(sessions=(session_a, session_b))
+    assert summary.height == 2 * 3 + 2 * 2
+    assert set(summary["session"].to_list()) == {session_a, session_b}
