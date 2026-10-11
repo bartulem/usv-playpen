@@ -1260,6 +1260,87 @@ class TestMultinomialModelSelection:
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     @pytest.mark.filterwarnings("ignore::UserWarning")
     @pytest.mark.filterwarnings("ignore::DeprecationWarning")
+    def test_multinomial_selection_holdout_without_accepted_feature_has_no_null_band(self, tmp_path):
+        """
+        When the held-out reserve is on but NO feature is ever accepted (no anchor,
+        and the first forward step rejects every candidate on all-zero inputs that
+        carry no class information), the honest held-out model is the empirical development
+        prior. There is no fitted filter, so there is no permuted-label refit
+        either: the final (step-0) pickle's ``heldout`` record is a
+        ``null_model_free`` model whose ``weights`` and ``null_weights`` are both
+        ``None`` (the filter figures then skip the no-signal band), and whose
+        predicted probabilities on every held-out row are the development class
+        proportions (uniform here: every session holds the same number of rows
+        per class).
+        """
+
+        settings, _ = _build_extraction_settings(
+            tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2,
+            test_proportion=0.4,
+        )
+        settings['model_validation']['held_out_test_proportion'] = 0.25
+
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        input_pkl_path = build_multinomial_input_pickle(
+            save_path=tmp_path / 'modeling_multinomial_input.pkl',
+            feature_names=feature_names,
+            session_ids=session_ids,
+            history_frames=HISTORY_FRAMES,
+            n_categories=N_CATEGORIES,
+            n_per_class_per_session=18,
+        )
+        with input_pkl_path.open('rb') as fh:
+            artifact = pickle.load(fh)
+        # Replace every window with zeros: the labels keep their balanced
+        # per-session layout, but no feature carries any information about them,
+        # so no candidate can beat the marginal prior.
+        for feature in feature_names:
+            for sess in session_ids:
+                artifact[feature][sess]['X'] = np.zeros_like(artifact[feature][sess]['X'])
+        artifact['_input_metadata']['held_out_session_ids'] = [session_ids[-1]]
+        with input_pkl_path.open('wb') as fh:
+            pickle.dump(artifact, fh)
+        univ_pkl = str(build_univariate_ranking_pickle(
+            save_path=tmp_path / 'univariate_combined.pkl',
+            feature_names=feature_names,
+            n_splits=settings['model_validation']['n_cv_folds'],
+        ))
+
+        settings_json = tmp_path / 'settings.json'
+        settings_json.write_text(json.dumps(settings))
+
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        multinomial_vocal_category_model_selection(
+            univariate_results_path=univ_pkl,
+            input_data_path=str(input_pkl_path),
+            settings_path=str(settings_json),
+            output_directory=str(ms_dir),
+            use_top_rank_as_anchor=False,
+            p_val=0.05,
+        )
+
+        step0_pkl = sorted(ms_dir.glob('model_selection_multinomial_*_step_0.pkl'))
+        assert len(step0_pkl) == 1
+        with step0_pkl[0].open('rb') as fh:
+            final = pickle.load(fh)
+        assert final['selected_feature'] == 'null_model_free'
+        assert final['final_model_features'] == []
+        heldout = final['heldout']
+        assert heldout is not None
+        assert heldout['model_type'] == 'null_model_free'
+        assert heldout['weights'] is None
+        assert heldout['null_weights'] is None
+        assert heldout['n_held_out_sessions'] == 1
+        assert heldout['n_held_out_events'] == N_CATEGORIES * 18
+        np.testing.assert_allclose(
+            heldout['y_probs'],
+            np.full((N_CATEGORIES * 18, N_CATEGORIES), 1.0 / N_CATEGORIES))
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    @pytest.mark.filterwarnings("ignore::UserWarning")
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning")
     def test_multinomial_selection_dispatcher_routes(self, tmp_path, monkeypatch):
         """
         ``dispatch_model_selection`` validates the three required paths and routes

@@ -20,6 +20,7 @@ import warnings
 
 import numpy as np
 import pytest
+from scipy.ndimage import gaussian_filter1d
 
 import matplotlib
 matplotlib.use("Agg")
@@ -41,6 +42,7 @@ with warnings.catch_warnings():
         _VIZ_SETTINGS,
         DeepResultsVisualizer,
         _classify_predictor_feature,
+        _final_null_filter_weights,
         _last_bin_of_consecutive_run,
         _resolve_atlas_decoder_and_categories,
         _rolling_mean_1d,
@@ -1368,7 +1370,9 @@ class TestPlotManifoldSelectionTrajectory:
 
 def _write_multinomial_multivariate_pickle(tmp_path, rng, n_classes: int = 3,
                                            n_features: int = 3,
-                                           n_time: int = 12) -> str:
+                                           n_time: int = 12,
+                                           weights: np.ndarray | None = None,
+                                           heldout: dict | None = None) -> str:
     """
     Write a synthetic consolidated multinomial ``selection_*.pkl`` whose
     final accepted step carries a pre-finalized ``weights_reshaped``
@@ -1380,7 +1384,10 @@ def _write_multinomial_multivariate_pickle(tmp_path, rng, n_classes: int = 3,
     (length-``n_features``), and ``classes``. A trailing rejection step is
     appended so the "last step that selected a feature" scan is exercised.
     Filename carries ``_male_`` + ``selection_`` so the loader / colour
-    split work.
+    split work. ``weights`` replaces the random ``weights_reshaped`` tensor
+    (shape ``(5, n_classes, n_features, n_time)``) and ``heldout`` is stored as
+    the trailing step's held-out record (where the selection stores the
+    no-signal ``null_weights`` band); without it the artifact predates the band.
 
     Returns
     -------
@@ -1394,15 +1401,82 @@ def _write_multinomial_multivariate_pickle(tmp_path, rng, n_classes: int = 3,
     accepted = {
         'selected_feature': feats[-1],
         'current_features': feats[:-1],
-        'weights_reshaped': rng.standard_normal((n_folds, n_classes, n_features, n_time)),
+        'weights_reshaped': (rng.standard_normal((n_folds, n_classes, n_features, n_time))
+                             if weights is None else weights),
         'final_model_features': feats,
         'classes': classes,
     }
     rejection = {'selected_feature': None, 'candidates_summary': {}}
+    if heldout is not None:
+        rejection['heldout'] = heldout
     out = tmp_path / "selection_multinomial_male_mv.pkl"
     with out.open('wb') as fh:
         pickle.dump({'steps': [accepted, rejection]}, fh)
     return str(out)
+
+
+class TestFinalNullFilterWeights:
+    """Tests for ``_final_null_filter_weights`` -- the no-signal band reader that
+    pulls the permuted-target refits of the final filters out of a selection's
+    held-out record and reorders them to the plotted feature order."""
+
+    def test_manifold_layout_is_split_per_feature_and_reordered(self):
+        """A torus band stored as ``(n_permutations, n_features * n_time_bins,
+        n_outputs)`` in the held-out record's own feature order comes back as
+        ``(n_permutations, n_features, n_time_bins, n_outputs)`` in the PLOTTED
+        order: each plotted feature's slice is exactly the stored block of the
+        same feature, and the most recent step carrying a held-out record wins
+        over an earlier one."""
+
+        rng = np.random.default_rng(301)
+        n_perm, n_time, n_out = 4, 5, 4
+        stored = ['other.speed', 'self.speed', 'nose-nose']
+        plotted = ['self.speed', 'nose-nose', 'other.speed']
+        null = rng.standard_normal((n_perm, len(stored) * n_time, n_out))
+        steps = [
+            {'heldout': {'features': stored, 'null_weights': np.zeros_like(null)}},
+            {'heldout': {'features': stored, 'null_weights': null}},
+            {'heldout': None},
+        ]
+        out = _final_null_filter_weights(steps, plotted, 'manifold')
+        assert out.shape == (n_perm, len(plotted), n_time, n_out)
+        for i, feature in enumerate(plotted):
+            j = stored.index(feature)
+            np.testing.assert_array_equal(out[:, i], null[:, j * n_time:(j + 1) * n_time, :])
+
+    def test_multinomial_layout_is_split_per_feature_and_reordered(self):
+        """A multinomial band stored as ``(n_permutations, n_classes, n_features *
+        n_time_bins)`` comes back as ``(n_permutations, n_classes, n_features,
+        n_time_bins)`` in the plotted order, each plotted feature's slice equal to
+        the stored column block of the same feature."""
+
+        rng = np.random.default_rng(302)
+        n_perm, n_classes, n_time = 3, 4, 6
+        stored = ['nose-nose', 'self.speed']
+        plotted = ['self.speed', 'nose-nose']
+        null = rng.standard_normal((n_perm, n_classes, len(stored) * n_time))
+        out = _final_null_filter_weights([{'heldout': {'features': stored, 'null_weights': null}}],
+                                         plotted, 'multinomial')
+        assert out.shape == (n_perm, n_classes, len(plotted), n_time)
+        for i, feature in enumerate(plotted):
+            j = stored.index(feature)
+            np.testing.assert_array_equal(out[:, :, i], null[:, :, j * n_time:(j + 1) * n_time])
+
+    def test_missing_or_mismatched_band_returns_none(self):
+        """No band is drawn -- ``None`` is returned -- when no step carries a
+        held-out record, when the record predates the band (no ``null_weights``
+        key) or stores ``None`` (held-out reserve without permutations), and when
+        the stored feature set differs from the plotted one."""
+
+        null = np.ones((2, 6, 4))
+        features = ['self.speed', 'other.speed']
+        assert _final_null_filter_weights([{'selected_feature': 'self.speed'}], features, 'manifold') is None
+        assert _final_null_filter_weights([{'heldout': None}], features, 'manifold') is None
+        assert _final_null_filter_weights([{'heldout': {'features': features}}], features, 'manifold') is None
+        assert _final_null_filter_weights([{'heldout': {'features': features, 'null_weights': None}}],
+                                          features, 'manifold') is None
+        assert _final_null_filter_weights([{'heldout': {'features': ['self.speed', 'nose-nose'], 'null_weights': null}}],
+                                          features, 'manifold') is None
 
 
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
@@ -1425,11 +1499,67 @@ class TestPlotMultinomialMultivariateFilters:
         )
         assert len(list(out_dir.glob(f"model_selection_multinomial_usv_category_*_filters_final_*.{_FIGURE_FORMAT}"))) == 1
 
+    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+    def test_cells_inside_the_null_band_are_faded(self, tmp_path):
+        """With a stored no-signal band (permuted-label refits, saved in the
+        held-out record's own feature order), every heatmap gets a second, white
+        RGBA overlay whose alpha is 0.7 exactly on the cells whose fold-mean
+        |weight| is at or below the per-class, per-lag 95th percentile of the
+        permuted |weights| of the same feature, and 0 elsewhere; the figure carries
+        the band note as a caption at the top centre."""
+
+        rng = np.random.default_rng(311)
+        n_classes, n_features, n_time, n_perm = 3, 3, 12, 6
+        feats = ['self.speed', 'other.speed', 'nose-nose']
+        stored = ['nose-nose', 'self.speed', 'other.speed']
+        weights = rng.standard_normal((5, n_classes, n_features, n_time))
+        null = 0.4 * rng.standard_normal((n_perm, n_classes, n_features * n_time))
+        pkl = _write_multinomial_multivariate_pickle(
+            tmp_path, rng, n_classes=n_classes, n_features=n_features, n_time=n_time,
+            weights=weights, heldout={'features': stored, 'null_weights': null})
+        plot_multinomial_multivariate_filters(selection_results_path=pkl, save_plot=False)
+        fig = plt.gcf()
+
+        mean_weights = weights.mean(axis=0)
+        n_inside = 0
+        for i, feature in enumerate(feats):
+            j = stored.index(feature)
+            band = np.percentile(np.abs(null[:, :, j * n_time:(j + 1) * n_time]), 95, axis=0)
+            inside = np.abs(mean_weights[:, i, :]) <= band
+            n_inside += int(inside.sum())
+            ax = fig.axes[i]
+            assert ax.get_title().startswith(feature)
+            assert len(ax.images) == 2
+            overlay = np.asarray(ax.images[1].get_array())
+            assert overlay.shape == (n_classes, n_time, 4)
+            np.testing.assert_array_equal(overlay[..., :3], 1.0)
+            np.testing.assert_array_equal(overlay[..., 3], np.where(inside, 0.7, 0.0))
+        # the fixture exercises both faded and unfaded cells
+        assert 0 < n_inside < n_classes * n_features * n_time
+        captions = [t for t in fig.texts if t.get_position() == (0.5, 0.995)]
+        assert len(captions) == 1
+        assert captions[0].get_text().startswith("Faded cells: weight within the 95th percentile")
+        assert "within-session permuted labels (no-signal band)" in captions[0].get_text()
+
+    @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
+    def test_artifact_without_null_band_draws_plain_heatmaps(self, tmp_path):
+        """An artifact that predates the band (no held-out record) still draws
+        every heatmap, with no fade overlay (one image per panel) and no caption."""
+
+        rng = np.random.default_rng(312)
+        pkl = _write_multinomial_multivariate_pickle(tmp_path, rng)
+        plot_multinomial_multivariate_filters(selection_results_path=pkl, save_plot=False)
+        fig = plt.gcf()
+        assert all(len(ax.images) == 1 for ax in fig.axes[:3])
+        assert fig.texts == []
+
 
 def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
                                         n_time: int = 12, n_folds: int = 5,
                                         output_dim: int = 2,
-                                        manifold_column_names: list | None = None) -> str:
+                                        manifold_column_names: list | None = None,
+                                        weights: np.ndarray | None = None,
+                                        heldout: dict | None = None) -> str:
     """
     Write a synthetic consolidated manifold ``selection_*.pkl`` whose
     final accepted step carries the raw bivariate weight block, for
@@ -1445,6 +1575,10 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
     appended. With ``manifold_column_names`` the artifact carries an
     ``_input_metadata.analysis_specific.usv_manifold_column_names`` record (the
     map the atlas decodes); without it, it is a legacy artifact with no metadata.
+    ``weights`` replaces the random fold weight block (shape ``(n_folds,
+    n_features * n_time, output_dim)``) and ``heldout`` is stored as the trailing
+    step's held-out record (where the torus selection stores the no-signal
+    ``null_weights`` band); without it the artifact predates the band.
 
     Returns
     -------
@@ -1458,7 +1592,8 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
     # `features` inside the plotter = current + [winner]; weight columns
     # must equal len(features) * n_time.
     n_total = len(feats) * n_time
-    weights = rng.standard_normal((n_folds, n_total, output_dim))
+    if weights is None:
+        weights = rng.standard_normal((n_folds, n_total, output_dim))
     accepted = {
         'selected_feature': winner,
         'current_features': current,
@@ -1467,6 +1602,8 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
         },
     }
     rejection = {'selected_feature': None, 'candidates_summary': {}}
+    if heldout is not None:
+        rejection['heldout'] = heldout
     artifact = {'steps': [accepted, rejection]}
     if manifold_column_names is not None:
         artifact['_input_metadata'] = {
@@ -1578,6 +1715,94 @@ class TestPlotManifoldFilterAtlas:
         assert loaded == [os_utils.qlvm_production_cell_directory("qlvm")]
         assert len(list(out_dir.glob(
             f"model_selection_manifold_*_filter_atlas_*.{_FIGURE_FORMAT}"))) == 1
+
+    def test_null_band_lines_and_rounded_colour_scale(self, tmp_path, monkeypatch, qlvm_category_bundle):
+        """With a stored no-signal band the magnitude panel draws, per feature, a
+        dashed line at the 95th percentile (over permutations) of the permuted
+        filters' magnitude |W(t)| -- read in the plotted feature order although
+        the record stores another order -- plus one grey legend entry
+        "permuted target, 95th pct". The shared affinity colour scale is the
+        strongest onset field rounded UP to one significant figure: an onset
+        filter of (0.0023, 0, 0, 0) peaks at 0.0023 * cos(pi / 120) on the
+        120-point field grid, so the colourbar runs -0.003 / 0 / +0.003. With
+        ``smooth_sigma`` on, the band is the 95th percentile of the SMOOTHED
+        permuted magnitude traces."""
+
+        rng = np.random.default_rng(321)
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
+        n_time, n_perm, n_folds = 12, 5, 4
+        feats = ['self.speed', 'other.speed']
+        stored = ['other.speed', 'self.speed']
+        block = 0.0005 * rng.standard_normal((len(feats) * n_time, 4))
+        block[n_time - 1] = [0.0023, 0.0, 0.0, 0.0]        # self.speed at onset
+        block[2 * n_time - 1] = 0.0                          # other.speed at onset
+        weights = np.repeat(block[None], n_folds, axis=0)
+        null = rng.standard_normal((n_perm, len(stored) * n_time, 4))
+        pkl = _write_manifold_multivariate_pickle(
+            tmp_path, rng, n_features=2, n_time=n_time, n_folds=n_folds, output_dim=4,
+            weights=weights, heldout={'features': stored, 'null_weights': null})
+        plot_manifold_filter_atlas(
+            selection_results_path=pkl, n_time_slices=3, atlas_grid_n=2,
+            display_bins=n_time, smooth_sigma=0.0, save_plot=False)
+        fig = plt.gcf()
+
+        ax_mag = next(ax for ax in fig.axes if ax.get_ylabel() == "filter magnitude |W(t)|")
+        dashed = [line for line in ax_mag.get_lines() if line.get_linestyle() == '--' and len(line.get_xdata()) > 0]
+        assert len(dashed) == len(feats)
+        for i, feature in enumerate(feats):
+            j = stored.index(feature)
+            null_magnitude = np.sqrt(np.sum(null[:, j * n_time:(j + 1) * n_time, :] ** 2, axis=-1))
+            np.testing.assert_allclose(dashed[i].get_ydata(), np.percentile(null_magnitude, 95, axis=0))
+            np.testing.assert_allclose(dashed[i].get_xdata(), np.linspace(-4.0, 0.0, n_time))
+        legend_texts = [t.get_text() for t in ax_mag.get_legend().get_texts()]
+        assert legend_texts.count('permuted target, 95th pct') == 1
+        proxy = next(h for h, t in zip(ax_mag.get_legend().legend_handles, legend_texts, strict=True)
+                     if t == 'permuted target, 95th pct')
+        assert proxy.get_linestyle() == '--'
+        assert matplotlib.colors.to_hex(proxy.get_color()) == '#7f7f7f'
+
+        cbar_ax = next(ax for ax in fig.axes if ax.get_ylabel() == "vocal region affinity (per SD)")
+        np.testing.assert_allclose(cbar_ax.get_yticks(), [-0.003, 0.0, 0.003])
+
+        # With smoothing on, each permutation's magnitude trace is smoothed the
+        # same way as the filter's own trace BEFORE the percentile is taken.
+        plt.close('all')
+        plot_manifold_filter_atlas(
+            selection_results_path=pkl, n_time_slices=3, atlas_grid_n=2,
+            display_bins=n_time, smooth_sigma=1.5, save_plot=False)
+        ax_mag = next(ax for ax in plt.gcf().axes if ax.get_ylabel() == "filter magnitude |W(t)|")
+        dashed = [line for line in ax_mag.get_lines() if line.get_linestyle() == '--' and len(line.get_xdata()) > 0]
+        for i, feature in enumerate(feats):
+            j = stored.index(feature)
+            null_magnitude = np.sqrt(np.sum(null[:, j * n_time:(j + 1) * n_time, :] ** 2, axis=-1))
+            smoothed = gaussian_filter1d(null_magnitude, sigma=1.5, mode='nearest', axis=1)
+            np.testing.assert_allclose(dashed[i].get_ydata(), np.percentile(smoothed, 95, axis=0))
+
+    def test_zero_onset_filters_without_band_fall_back_to_default_scale(self, tmp_path, monkeypatch, qlvm_category_bundle):
+        """When every onset filter is exactly zero the colour scale cannot be
+        rounded from the data and falls back to +-0.1; an artifact without a
+        stored band still draws the magnitude panel, with no dashed band line and
+        no "permuted target" legend entry."""
+
+        rng = np.random.default_rng(322)
+        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
+        n_time, n_folds = 12, 3
+        block = rng.standard_normal((2 * n_time, 4))
+        block[n_time - 1] = 0.0
+        block[2 * n_time - 1] = 0.0
+        weights = np.repeat(block[None], n_folds, axis=0)
+        pkl = _write_manifold_multivariate_pickle(
+            tmp_path, rng, n_features=2, n_time=n_time, n_folds=n_folds, output_dim=4, weights=weights)
+        plot_manifold_filter_atlas(
+            selection_results_path=pkl, n_time_slices=3, atlas_grid_n=2, save_plot=False)
+        fig = plt.gcf()
+
+        ax_mag = next(ax for ax in fig.axes if ax.get_ylabel() == "filter magnitude |W(t)|")
+        assert [line for line in ax_mag.get_lines() if line.get_linestyle() == '--'] == []
+        assert 'permuted target, 95th pct' not in [t.get_text() for t in ax_mag.get_legend().get_texts()]
+        assert len(ax_mag.get_lines()) == 2
+        cbar_ax = next(ax for ax in fig.axes if ax.get_ylabel() == "vocal region affinity (per SD)")
+        np.testing.assert_allclose(cbar_ax.get_yticks(), [-0.1, 0.0, 0.1])
 
     def test_conditional_map_decodes_with_its_own_cell(self, tmp_path, monkeypatch):
         """An artifact whose manifold columns are a conditional map's
