@@ -300,6 +300,8 @@ DEFAULT_THRESHOLDS = {
     "min_consecutive_bins": 3,
     "vmi_alpha": 0.01,
     "vmi_min_bouts": 10,
+    "ibi_bout_alpha": 0.01,
+    "ibi_bout_min_bouts": 10,
     "spatial_info_bps_threshold": 0.5,
 }
 

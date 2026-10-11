@@ -204,6 +204,20 @@ def _make_tuning_parameters() -> dict:
         "peth_window_seconds":                      [-2.0, 0.5],
         "peth_bin_seconds":                         0.05,
         "bout_quiet_seconds":                       2.0,
+        "ibi_bout_onset": {
+            "ibi_z_score":              2.58,
+            "ibi_component_index":      0,
+            "min_vocalizations":        3,
+            "shuffle_guard_seconds":    1.0,
+            "trigger_window_seconds":   [-1.0, 2.0],
+            "trigger_bin_seconds":      0.02,
+            "smoothing_bins":           2.0,
+            "gain_window_seconds":      [0.0, 0.25],
+            "pre_window_seconds":       [-1.0, -0.5],
+            "peak_search_seconds":      [-0.25, 1.0],
+            "response_window_seconds":  0.15,
+            "response_kernel_seconds":  0.02,
+        },
         "vocal_require_clean_post_anchor":          True,
         "vocal_require_clean_prior_anchor":         False,
         "n_usv_min_self":                           5,
@@ -801,6 +815,7 @@ _TOP_LEVEL_KEYS = frozenset({
     "usv_property_tuning",
     "usv_category_tuning",
     "usv_category_peth",
+    "usv_ibi_bout_onset",
     "usv_metadata",
 })
 

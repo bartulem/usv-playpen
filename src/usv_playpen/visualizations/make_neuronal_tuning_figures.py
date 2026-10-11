@@ -48,7 +48,7 @@ from ..analyses.compute_neuronal_tuning_curves import (
     behavioral_feature_base,
     ibi_bout_extents,
     ibi_bout_runs,
-    weighted_call_response,
+    weighted_usv_response,
 )
 from ..analyses.decode_experiment_label import extract_information
 from ..os_utils import (
@@ -6184,23 +6184,23 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         return np.empty(0, dtype=float)
 
     @staticmethod
-    def _emitter_call_times(emitter: str, usv_summary_df) -> tuple:
+    def _emitter_usv_times(emitter: str, usv_summary_df) -> tuple:
         """
         Description
         -----------
-        One emitter's call onsets and offsets, sorted by onset.
+        One emitter's USV onsets and offsets, sorted by onset.
 
         Parameters
         ----------
         emitter (str)
-            Emitter whose calls are wanted.
+            Emitter whose USVs are wanted.
         usv_summary_df (pls.DataFrame)
             Noise-filtered USV summary.
 
         Returns
         -------
         starts, stops (tuple[np.ndarray, np.ndarray])
-            Call onsets and offsets in seconds.
+            USV onsets and offsets in seconds.
         """
 
         emitters = np.array([(e.strip() if e is not None else None)
@@ -6218,11 +6218,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         """
         Description
         -----------
-        The call ribbon under a rate trace: bouts as fading bars, unassigned calls as flat ones.
+        The USV ribbon under a rate trace: bouts as fading bars, unassigned USVs as flat ones.
 
         A bout's bar runs from the emitter's colour at its onset to the page at its end, and the
         ramp is laid on the bout's TRUE duration before clipping, so a bout running past the
-        drawn window stays saturated rather than reading as finished. Unassigned calls are the
+        drawn window stays saturated rather than reading as finished. Unassigned USVs are the
         same kind of event on the same clock, so they share the ribbon in their own colour
         instead of being dropped.
 
@@ -6233,13 +6233,13 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         bout_lo, bout_hi (np.ndarray)
             Bout extents in seconds.
         unassigned_lo, unassigned_hi (np.ndarray)
-            Extents of calls no emitter was credited with.
+            Extents of USVs no emitter was credited with.
         colour (str)
             Hex colour the bout gradient starts from.
         low, high (float)
             Vertical extent of the ribbon, in data coordinates.
         min_width (float)
-            Floor on a drawn bar's width so a very short call stays visible.
+            Floor on a drawn bar's width so a very short USV stays visible.
 
         Returns
         -------
@@ -6263,19 +6263,19 @@ class NeuronalTuningFigureMaker(FeatureZoo):
                                        facecolor=COLOR_LIGHT, edgecolor="none", zorder=4))
 
     @staticmethod
-    def _draw_first_vs_later(ax, spike_times: np.ndarray, call_starts: np.ndarray, runs: list,
+    def _draw_first_vs_later(ax, spike_times: np.ndarray, usv_starts: np.ndarray, runs: list,
                              cfg: dict, colour: str) -> None:
         """
         Description
         -----------
-        One point per bout: its first call's response against the mean of its later calls'.
+        One point per bout: its first USV's response against the mean of its later USVs'.
 
-        The identity line is the reference, so a point above it is a bout whose first call drew
+        The identity line is the reference, so a point above it is a bout whose first USV drew
         more spikes, and the white diamond marks the two means. Contours enclose a stated share
         of the bouts, which says how much of the cloud sits either side of the line rather than
         leaving it to be eyeballed. Responses are weighted through a Gaussian instead of counted
         inside a hard window, which keeps them continuous rather than stacked on small integers.
-        "Later" is the mean over EVERY call after the first, not the last ones.
+        "Later" is the mean over EVERY USV after the first, not the last ones.
 
         Parameters
         ----------
@@ -6283,10 +6283,10 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             Target axis.
         spike_times (np.ndarray)
             Sorted spike times in seconds.
-        call_starts (np.ndarray)
-            Emitter call onsets in seconds.
+        usv_starts (np.ndarray)
+            Emitter USV onsets in seconds.
         runs (list)
-            Call indices per bout.
+            USV indices per bout.
         cfg (dict)
             The `ibi_bout_onset` settings sub-block.
         colour (str)
@@ -6303,14 +6303,14 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         for run in runs:
             if run.size < 2:
                 continue
-            first.append(weighted_call_response(spike_times, float(call_starts[run[0]]),
+            first.append(weighted_usv_response(spike_times, float(usv_starts[run[0]]),
                                                 window, kernel))
-            later.append(float(np.mean([weighted_call_response(spike_times,
-                                                               float(call_starts[k]),
+            later.append(float(np.mean([weighted_usv_response(spike_times,
+                                                               float(usv_starts[k]),
                                                                window, kernel)
                                         for k in run[1:]])))
         if len(first) < 3:
-            ax.text(0.5, 0.5, "too few multi-call bouts", transform=ax.transAxes, ha="center",
+            ax.text(0.5, 0.5, "too few multi-USV bouts", transform=ax.transAxes, ha="center",
                     va="center", fontsize=11, color=COLOR_GRAY_DASH)
             return
         first, later = np.asarray(first), np.asarray(later)
@@ -6346,9 +6346,9 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax.set_xlim(0, limit)
         ax.set_ylim(0, limit)
         ax.set_aspect("equal")
-        ax.set_xlabel(f"later calls, mean weighted spikes in {window * 1e3:.0f} ms", fontsize=8)
-        ax.set_ylabel(f"first call, weighted spikes in {window * 1e3:.0f} ms", fontsize=8)
-        ax.set_title(f"first vs later call   |   {first.size} bouts   |   "
+        ax.set_xlabel(f"later USVs, mean weighted spikes in {window * 1e3:.0f} ms", fontsize=8)
+        ax.set_ylabel(f"first USV, weighted spikes in {window * 1e3:.0f} ms", fontsize=8)
+        ax.set_title(f"first vs later USV   |   {first.size} bouts   |   "
                      f"{first.mean():.2f} vs {later.mean():.2f}, "
                      f"{100 * np.mean(first > later):.0f}% above", fontsize=9, loc="left")
 
@@ -6367,7 +6367,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         outer (gridspec.GridSpec)
             The page grid.
         emitter (str)
-            Emitter whose calls define the bouts.
+            Emitter whose USVs define the bouts.
         cluster_data (dict)
             Loaded per-cluster pkl payload.
         usv_summary_df (pls.DataFrame)
@@ -6383,11 +6383,11 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         cfg = cluster_data["usv_metadata"]["ibi_bout_onset"]
         duration = float(cluster_data["usv_metadata"]["duration_seconds"])
         threshold = float(payload["ibi_threshold_seconds"])
-        minimum_calls = int(cfg["min_vocalizations"])
+        minimum_usvs = int(cfg["min_vocalizations"])
         spikes = self._cluster_spike_times(cluster_data)
-        call_starts, call_stops = self._emitter_call_times(emitter, usv_summary_df)
-        bout_lo, bout_hi = ibi_bout_extents(call_starts, call_stops, threshold, minimum_calls)
-        runs = ibi_bout_runs(call_starts, call_stops, threshold, minimum_calls)
+        usv_starts, usv_stops = self._emitter_usv_times(emitter, usv_summary_df)
+        bout_lo, bout_hi = ibi_bout_extents(usv_starts, usv_stops, threshold, minimum_usvs)
+        runs = ibi_bout_runs(usv_starts, usv_stops, threshold, minimum_usvs)
         colour = self._sex_color(payload["sex"])
 
         emitters = [(e.strip() if e is not None else None)
@@ -6419,7 +6419,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             f"{BOUT_SMOOTH_BINS:g} bin Gaussian", fontsize=9, loc="left")
         ax_session.text(0.995, 0.95, "bouts", transform=ax_session.transAxes, ha="right",
                         va="top", fontsize=BOUT_LEGEND_FONTSIZE, color=colour)
-        ax_session.text(0.995, 0.95 - BOUT_LEGEND_LINE_STEP, "unassigned calls",
+        ax_session.text(0.995, 0.95 - BOUT_LEGEND_LINE_STEP, "unassigned USVs",
                         transform=ax_session.transAxes, ha="right", va="top",
                         fontsize=BOUT_LEGEND_FONTSIZE, color=COLOR_LIGHT)
         for side in ("top", "right"):
@@ -6463,7 +6463,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             ax_zoom.spines[side].set_visible(False)
 
         self._draw_first_vs_later(fig.add_subplot(outer[1, VOCAL_PAGE_COLUMNS - 1]), spikes,
-                                  call_starts, runs, cfg, colour)
+                                  usv_starts, runs, cfg, colour)
 
     def _render_vocal_page(
         self,
@@ -6479,7 +6479,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         -----------
         Render the whole vocal output for one emitter side on a single page.
 
-        Reading order follows the analysis: the session firing rate with its call ribbon, a zoom
+        Reading order follows the analysis: the session firing rate with its USV ribbon, a zoom
         where a bout is seconds wide rather than a pixel, the bout-triggered raster and the
         first-versus-later scatter down the right-hand quarter, then the pooled `usv_peth`
         beside the QLVM `usv_category_tuning` cells, then the continuous `usv_property_tuning`
@@ -6716,7 +6716,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
         ax (matplotlib axis)
             Target axis.
         emitter (str)
-            Emitter whose calls define the bouts.
+            Emitter whose USVs define the bouts.
         usv_summary_df (pls.DataFrame)
             Noise-filtered USV summary.
         cluster_data (dict)
@@ -6734,8 +6734,8 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             return
         cfg = cluster_data["usv_metadata"]["ibi_bout_onset"]
         threshold = float(payload["ibi_threshold_seconds"])
-        call_starts, call_stops = self._emitter_call_times(emitter, usv_summary_df)
-        bout_lo, bout_hi = ibi_bout_extents(call_starts, call_stops, threshold,
+        usv_starts, usv_stops = self._emitter_usv_times(emitter, usv_summary_df)
+        bout_lo, bout_hi = ibi_bout_extents(usv_starts, usv_stops, threshold,
                                             int(cfg["min_vocalizations"]))
         if bout_lo.size == 0:
             ax.text(0.5, 0.5, "no bouts", transform=ax.transAxes, ha="center", va="center",

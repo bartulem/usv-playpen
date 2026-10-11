@@ -2,19 +2,19 @@
 @author: bartulem
 Decode whether a moment sits inside a vocal bout from simultaneously recorded spiking.
 
-The session is cut into bins of `bin_seconds`. Bouts are found on the call sequence FIRST, as
-maximal runs of the emitter's calls whose consecutive silences all stay under the inter-bout
-threshold, keeping runs of at least `min_vocalizations` calls. Bins then follow the bouts rather
+The session is cut into bins of `bin_seconds`. Bouts are found on the USV sequence FIRST, as
+maximal runs of the emitter's USVs whose consecutive silences all stay under the inter-bout
+threshold, keeping runs of at least `min_vocalizations` USVs. Bins then follow the bouts rather
 than the other way round:
 
-* a POSITIVE bin is laid from a bout's own first call start, stepping forward by `bin_seconds`
-  while it stays inside that bout's extent, and contributes only its NON-CALL time -- so no window
-  the decoder reads ever contains a vocalization. It needs at least `min_kept_seconds` of non-call
+* a POSITIVE bin is laid from a bout's own first USV start, stepping forward by `bin_seconds`
+  while it stays inside that bout's extent, and contributes only its NON-USV time -- so no window
+  the decoder reads ever contains a vocalization. It needs at least `min_kept_seconds` of non-USV
   time to count at all; without that floor a bin can enter the population vector carrying a couple
   of milliseconds of counting time, which is noise.
-* a NEGATIVE bin comes from the global lattice and must hold no emitter call and touch no bout.
-* everything else is DROPPED. A bin holding a single call cannot be assigned: a 120 ms call
-  followed by a 110 ms silence is one call per bin and squarely inside a bout, so a call count
+* a NEGATIVE bin comes from the global lattice and must hold no emitter USV and touch no bout.
+* everything else is DROPPED. A bin holding a single USV cannot be assigned: a 120 ms USV
+  followed by a 110 ms silence is one USV per bin and squarely inside a bout, so a USV count
   cannot say whether such a bin is bout time or not.
 
 Each bin becomes a population vector of raw spike counts, three contiguous thirds rotate as train
@@ -35,7 +35,7 @@ makes it harmful.
 The inter-bout threshold is the same construction `build_naturalistic_usv_repository` uses -- the
 emitter sex's log-interval mixture component at `ibi_z_score` standard deviations -- and is NOT the
 `bout_quiet_seconds` of `compute_neuronal_tuning_curves`. That one is a VMI baseline-window
-parameter whose value also happens to group calls; this one describes the respiratory rhythm. They
+parameter whose value also happens to group USVs; this one describes the respiratory rhythm. They
 are different objects and both are correct for their own analysis.
 """
 
@@ -62,14 +62,14 @@ def free_intervals(lo: float, hi: float, starts: np.ndarray, stops: np.ndarray) 
     """
     Description
     -----------
-    The sub-intervals of ``[lo, hi)`` that no call covers.
+    The sub-intervals of ``[lo, hi)`` that no USV covers.
 
     Parameters
     ----------
     lo, hi (float)
         Bin bounds in seconds.
     starts, stops (np.ndarray)
-        Call onsets and offsets in seconds, sorted by onset.
+        USV onsets and offsets in seconds, sorted by onset.
 
     Returns
     -------
@@ -99,24 +99,24 @@ def bout_occupancy_bins(bin_seconds: float, starts: np.ndarray, stops: np.ndarra
     -----------
     Per bin, the sub-intervals whose spikes count, its label, its midpoint and its bout position.
 
-    Positives are anchored to each bout's own first call start and keep only their non-call time;
-    negatives come from the global lattice and must hold no call and touch no bout; anything else
-    is dropped. See the module docstring for why a single-call bin cannot be assigned.
+    Positives are anchored to each bout's own first USV start and keep only their non-USV time;
+    negatives come from the global lattice and must hold no USV and touch no bout; anything else
+    is dropped. See the module docstring for why a single-USV bin cannot be assigned.
 
     Parameters
     ----------
     bin_seconds (float)
         Bin width in seconds.
     starts, stops (np.ndarray)
-        Emitter call onsets and offsets in seconds, sorted by onset.
+        Emitter USV onsets and offsets in seconds, sorted by onset.
     duration_seconds (float)
         Session length in seconds.
     ibi_threshold (float)
         A silence at least this long ends a bout, in seconds.
     min_vocalizations (int)
-        Fewest calls a run needs to count as a bout.
+        Fewest USVs a run needs to count as a bout.
     min_kept_seconds (float)
-        Fewest seconds of non-call time a positive bin needs to count.
+        Fewest seconds of non-USV time a positive bin needs to count.
 
     Returns
     -------
@@ -347,8 +347,8 @@ class BoutOccupancyDecoder:
         Which track names count as the emitter, under the `self` / `partner` / `all` vocabulary.
 
         `all` returns an empty list, meaning NO filter, deliberately: a session's USV table can
-        carry rows whose emitter was never assigned, and a call nobody was credited with is still
-        a call the animal heard.
+        carry rows whose emitter was never assigned, and a USV nobody was credited with is still
+        a USV the animal heard.
 
         Parameters
         ----------
@@ -438,13 +438,13 @@ class BoutOccupancyDecoder:
         # `is_usv` keeps PURE USVs only (usv & ~squeak), so pure squeaks, segments holding both
         # and unscored nulls never enter a bout. Noise was already dropped by the loader. A bout
         # is a run of vocalizations; a squeak in the middle of one would both split it and be
-        # counted as a call.
+        # counted as a USV.
         emitter_rows = bundle["is_usv"].copy()
         if keep:
             emitter_rows &= np.isin(bundle["emitters"], keep)
         order = np.argsort(bundle["starts"][emitter_rows], kind="mergesort")
-        call_starts = bundle["starts"][emitter_rows][order]
-        call_stops = bundle["stops"][emitter_rows][order]
+        usv_starts = bundle["starts"][emitter_rows][order]
+        usv_stops = bundle["stops"][emitter_rows][order]
 
         # The threshold belongs to whoever is doing the calling, so 'partner' reads the partner's
         # mixture, not the recorded animal's. Under 'all' the emitter set is mixed (and includes
@@ -455,7 +455,7 @@ class BoutOccupancyDecoder:
         threshold = ibi_bout_threshold(sex, float(params["ibi_z_score"]),
                                        int(params["ibi_component_index"]))
         spans, labels, mids, positions = bout_occupancy_bins(
-            float(params["bin_seconds"]), call_starts, call_stops,
+            float(params["bin_seconds"]), usv_starts, usv_stops,
             bundle["duration_seconds"], threshold, int(params["min_vocalizations"]),
             float(params["min_kept_seconds"]))
         n_positive, n_negative = int((labels == 1).sum()), int((labels == 0).sum())

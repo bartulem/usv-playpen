@@ -493,3 +493,81 @@ Every setting below is exposed in the GUI's *Create naturalistic playback .WAV* 
    The playback audio device expects **192 kHz**, so change the audio's sampling rate from
    250 kHz to 192 kHz before playback (resample the file to 192 kHz, or set the output rate
    on the playback command).
+
+Decode vocal-bout occupancy
+---------------------------------
+This analysis asks whether a moment sits **inside a vocal bout** can be read off simultaneously
+recorded spiking. It runs per session, alongside the neuronal tuning curves, and is switched on
+with ``decode_usv_bout_occupancy_bool``.
+
+A bout is found on the **USV sequence first**, as a maximal run of the emitter's USVs whose
+consecutive silences all stay under the inter-bout threshold — the emitter sex's log
+inter-syllable-interval mixture component at ``ibi_z_score`` standard deviations, the same
+construction ``build-naturalistic-usv-repository`` uses, which for the male at z = 2.58 puts the
+threshold at 115.5 ms. Runs shorter than ``min_vocalizations`` are not bouts.
+
+The bins then follow the bouts rather than the other way round:
+
+* a **positive** bin is laid from a bout's own first USV start, stepping forward by
+  ``bin_seconds`` while it stays inside that bout, and contributes **only its non-USV time**, so
+  no window the decoder reads ever contains a vocalization. It needs at least
+  ``min_kept_seconds`` of non-USV time to count at all.
+* a **negative** bin comes from the global lattice and must hold no USV and touch no bout.
+* everything else is **dropped**. A bin holding a single USV cannot be assigned: a 120 ms USV
+  followed by a 110 ms silence is one USV per bin and squarely inside a bout, so a USV count
+  cannot say which side such a bin belongs to.
+
+Each bin becomes a population vector of **raw** spike counts — nothing is divided by time and
+nothing is standardised — three contiguous thirds rotate as train and test, and a test bin takes
+the label of the training bin its vector correlates with most. Accuracy is balanced across the two
+classes, because the negatives outnumber the positives several times over. The sweep repeats with
+increasingly large random subsets of each area's units, so the curve says how much of the
+population the signal needs. The null applies **one common circular shift** to every unit, which
+preserves the correlations between them and breaks only their alignment to vocalization.
+
+.. warning::
+
+   Per-unit z-scoring must not be introduced here. Under the shift null a positive bin's counts
+   are a fixed fraction of a negative bin's for *every* unit, because it contributes less
+   counting time, and Pearson correlation is blind to that uniform factor. Standardising each
+   unit first turns it into a per-unit offset that varies across units, which correlation *can*
+   read: measured on one session it lifted the 415-unit null from 0.509 to 0.751.
+
+The session's units are split by brain area from the unit catalog on their own — no area list is
+needed — and every area clearing ``min_units_per_area`` is decoded into its own compressed
+archive, carrying every observed and every null draw. Areas seen but held back by the floor are
+reported by name, so an absent area is never ambiguous. Sessions are independent and **nothing is
+pooled**: assembling across them is a later step, done in the notebook (see :doc:`Notebooks`).
+
+.. code-block:: json
+
+    "decode_usv_bout_occupancy": {
+      "emitter": "self",
+      "ibi_z_score": 2.58,
+      "ibi_component_index": 0,
+      "min_vocalizations": 3,
+      "bin_seconds": 0.25,
+      "min_kept_seconds": 0.03,
+      "brain_areas": null,
+      "min_units_per_area": 50,
+      "cluster_group": ["good"],
+      "somatic_bool": true,
+      "unit_ladder": [5, 10, 20, 50, 100, 200],
+      "runs_per_count": 10,
+      "n_folds": 3,
+      "n_shuffles": 1000,
+      "shuffle_guard_seconds": 20.0,
+      "shuffle_seed": 0
+    }
+
+``emitter`` takes ``self`` (the recorded animal), ``partner`` or ``all``; the inter-bout threshold
+follows whoever is calling, so a female side is not segmented by a male rhythm. ``brain_areas``
+set to ``null`` means every area clearing the unit floor.
+
+.. note::
+
+   This bout grouping is **not** the ``bout_quiet_seconds`` of the neuronal tuning curves. That
+   one is the VMI baseline window, and groups USVs only as a side effect of guaranteeing a
+   silent pre-window; this one describes the respiratory rhythm. Both are correct for their own
+   analysis, and the tuning curves now carry their own IBI-based ``ibi_bout_onset`` block for
+   per-unit bout-onset statistics.

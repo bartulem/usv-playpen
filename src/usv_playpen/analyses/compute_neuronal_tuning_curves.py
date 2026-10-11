@@ -737,7 +737,7 @@ def ibi_bout_threshold(sex: str, ibi_z_score: float, ibi_component_index: int) -
     standard deviations, exponentiated back out of log space. Component 0 is the respiratory
     rhythm, which for the male at z = 2.58 puts the threshold at 115.5 ms.
 
-    This is NOT `bout_quiet_seconds`, which is the VMI baseline window and groups calls only as a
+    This is NOT `bout_quiet_seconds`, which is the VMI baseline window and groups USVs only as a
     side effect of guaranteeing a silent pre-window. The two describe different objects and both
     are correct for their own analysis.
 
@@ -773,26 +773,26 @@ def ibi_bout_runs(starts: np.ndarray, stops: np.ndarray, ibi_threshold: float,
     """
     Description
     -----------
-    The call indices of every qualifying IBI bout, found before any binning or windowing.
+    The USV indices of every qualifying IBI bout, found before any binning or windowing.
 
-    A bout is a maximal run of calls whose consecutive silences all fall under `ibi_threshold`.
-    Runs shorter than `min_vocalizations` are not bouts and their calls are left unassigned. The
+    A bout is a maximal run of USVs whose consecutive silences all fall under `ibi_threshold`.
+    Runs shorter than `min_vocalizations` are not bouts and their USVs are left unassigned. The
     `>=` comparison matches `build_naturalistic_usv_repository._segment_bouts`; `_detect_bouts`
     uses `>` and a different threshold, and answers a different question.
 
     Parameters
     ----------
     starts, stops (np.ndarray)
-        Emitter call onsets and offsets in seconds, sorted by onset.
+        Emitter USV onsets and offsets in seconds, sorted by onset.
     ibi_threshold (float)
         A silence at least this long ends a bout, in seconds.
     min_vocalizations (int)
-        Fewest calls a run needs to count as a bout.
+        Fewest USVs a run needs to count as a bout.
 
     Returns
     -------
     runs (list)
-        One array of call indices per bout, in time order.
+        One array of USV indices per bout, in time order.
     """
 
     if starts.size == 0:
@@ -806,16 +806,16 @@ def ibi_bout_extents(starts: np.ndarray, stops: np.ndarray, ibi_threshold: float
     """
     Description
     -----------
-    First call onset and last call offset of every qualifying IBI bout.
+    First USV onset and last USV offset of every qualifying IBI bout.
 
     Parameters
     ----------
     starts, stops (np.ndarray)
-        Emitter call onsets and offsets in seconds, sorted by onset.
+        Emitter USV onsets and offsets in seconds, sorted by onset.
     ibi_threshold (float)
         A silence at least this long ends a bout, in seconds.
     min_vocalizations (int)
-        Fewest calls a run needs to count as a bout.
+        Fewest USVs a run needs to count as a bout.
 
     Returns
     -------
@@ -830,14 +830,14 @@ def ibi_bout_extents(starts: np.ndarray, stops: np.ndarray, ibi_threshold: float
             np.array([stops[r[-1]] for r in runs], dtype=float))
 
 
-def weighted_call_response(spike_times: np.ndarray, call_start: float, response_window: float,
+def weighted_usv_response(spike_times: np.ndarray, usv_start: float, response_window: float,
                            response_kernel: float) -> float:
     """
     Description
     -----------
-    A call's spike response, counted through a Gaussian rather than a hard window edge.
+    A USV's spike response, counted through a Gaussian rather than a hard window edge.
 
-    A plain count over a short window is an integer, so per-call responses stack on a handful of
+    A plain count over a short window is an integer, so per-USV responses stack on a handful of
     values and a first-versus-later comparison becomes a comparison of small integers. Weighting
     each spike by how much of the Gaussian-smeared window it falls in makes the quantity
     continuous at the same expected value.
@@ -846,8 +846,8 @@ def weighted_call_response(spike_times: np.ndarray, call_start: float, response_
     ----------
     spike_times (np.ndarray)
         Sorted spike times in seconds.
-    call_start (float)
-        Call onset in seconds.
+    usv_start (float)
+        USV onset in seconds.
     response_window (float)
         Width of the counting window after onset, in seconds.
     response_kernel (float)
@@ -860,13 +860,13 @@ def weighted_call_response(spike_times: np.ndarray, call_start: float, response_
     """
 
     scale = response_kernel * np.sqrt(2.0)
-    lo = call_start - 3.0 * response_kernel
-    hi = call_start + response_window + 3.0 * response_kernel
+    lo = usv_start - 3.0 * response_kernel
+    hi = usv_start + response_window + 3.0 * response_kernel
     near = spike_times[(spike_times >= lo) & (spike_times <= hi)]
     if near.size == 0:
         return 0.0
-    upper = erf((call_start + response_window - near) / scale)
-    lower = erf((call_start - near) / scale)
+    upper = erf((usv_start + response_window - near) / scale)
+    lower = erf((usv_start - near) / scale)
     return float(np.sum(0.5 * (upper - lower)))
 
 
@@ -900,7 +900,7 @@ def _percentiles_block(arr: np.ndarray) -> dict:
     }
 
 
-def ibi_bout_onset_statistics(spike_times: np.ndarray, call_starts: np.ndarray,
+def ibi_bout_onset_statistics(spike_times: np.ndarray, usv_starts: np.ndarray,
                               runs: list, duration_seconds: float, cfg: dict) -> dict:
     """
     Description
@@ -914,20 +914,20 @@ def ibi_bout_onset_statistics(spike_times: np.ndarray, call_starts: np.ndarray,
       onset_gain        rate over `gain_window_seconds` after onset, over the session rate
       peak_latency      where the smoothed bout-triggered rate peaks within the search window
       pre_onset_gain    rate over `pre_window_seconds` before onset, over the session rate
-      first_over_later  the bout's first call's response over the mean of its later calls'
-      fraction_first_above   share of bouts whose first call drew more than its later ones
+      first_over_later  the bout's first USV's response over the mean of its later USVs'
+      fraction_first_above   share of bouts whose first USV drew more than its later ones
 
-    `first_over_later` averages over EVERY call after the first, not the last ones, so a 27-call
-    bout contributes one point whose x is the mean of calls 2-27.
+    `first_over_later` averages over EVERY USV after the first, not the last ones, so a 27-USV
+    bout contributes one point whose x is the mean of USVs 2-27.
 
     Parameters
     ----------
     spike_times (np.ndarray)
         Sorted spike times in seconds.
-    call_starts (np.ndarray)
-        Emitter call onsets in seconds, sorted.
+    usv_starts (np.ndarray)
+        Emitter USV onsets in seconds, sorted.
     runs (list)
-        Call indices per bout, from `ibi_bout_runs`.
+        USV indices per bout, from `ibi_bout_runs`.
     duration_seconds (float)
         Session length in seconds.
     cfg (dict)
@@ -936,7 +936,7 @@ def ibi_bout_onset_statistics(spike_times: np.ndarray, call_starts: np.ndarray,
     Returns
     -------
     stats (dict)
-        The five descriptors; NaN where a unit never fires or a bout has no later calls.
+        The five descriptors; NaN where a unit never fires or a bout has no later USVs.
     """
 
     keys = ("onset_gain", "peak_latency", "pre_onset_gain", "first_over_later",
@@ -950,7 +950,7 @@ def ibi_bout_onset_statistics(spike_times: np.ndarray, call_starts: np.ndarray,
     bin_s = float(cfg["trigger_bin_seconds"])
     edges = np.arange(window_lo, window_hi + bin_s, bin_s)
     centres = edges[:-1] + bin_s / 2.0
-    onsets = np.array([call_starts[r[0]] for r in runs], dtype=float)
+    onsets = np.array([usv_starts[r[0]] for r in runs], dtype=float)
     per_bout = np.vstack([np.histogram(spike_times - a, bins=edges)[0] / bin_s for a in onsets])
     trace = _gaussian_smooth_1d(per_bout.mean(axis=0), float(cfg["smoothing_bins"]))
 
@@ -967,9 +967,9 @@ def ibi_bout_onset_statistics(spike_times: np.ndarray, call_starts: np.ndarray,
     for run in runs:
         if run.size < 2:
             continue
-        first.append(weighted_call_response(spike_times, float(call_starts[run[0]]),
+        first.append(weighted_usv_response(spike_times, float(usv_starts[run[0]]),
                                             response_window, response_kernel))
-        later.append(float(np.mean([weighted_call_response(spike_times, float(call_starts[k]),
+        later.append(float(np.mean([weighted_usv_response(spike_times, float(usv_starts[k]),
                                                            response_window, response_kernel)
                                     for k in run[1:]])))
     first, later = np.asarray(first, dtype=float), np.asarray(later, dtype=float)
@@ -985,7 +985,7 @@ def ibi_bout_onset_statistics(spike_times: np.ndarray, call_starts: np.ndarray,
     }
 
 
-def ibi_bout_onset_block(spike_times: np.ndarray, call_starts: np.ndarray, runs: list,
+def ibi_bout_onset_block(spike_times: np.ndarray, usv_starts: np.ndarray, runs: list,
                          duration_seconds: float, cfg: dict, ibi_threshold: float,
                          shuffle_offsets: np.ndarray) -> dict:
     """
@@ -1003,10 +1003,10 @@ def ibi_bout_onset_block(spike_times: np.ndarray, call_starts: np.ndarray, runs:
     ----------
     spike_times (np.ndarray)
         Sorted spike times in seconds.
-    call_starts (np.ndarray)
-        Emitter call onsets in seconds, sorted.
+    usv_starts (np.ndarray)
+        Emitter USV onsets in seconds, sorted.
     runs (list)
-        Call indices per bout, from `ibi_bout_runs`.
+        USV indices per bout, from `ibi_bout_runs`.
     duration_seconds (float)
         Session length in seconds.
     cfg (dict)
@@ -1023,18 +1023,27 @@ def ibi_bout_onset_block(spike_times: np.ndarray, call_starts: np.ndarray, runs:
         `n_shuffles` and `ibi_threshold_seconds`.
     """
 
-    observed = ibi_bout_onset_statistics(spike_times, call_starts, runs, duration_seconds, cfg)
+    observed = ibi_bout_onset_statistics(spike_times, usv_starts, runs, duration_seconds, cfg)
     draws = [ibi_bout_onset_statistics(
         _circular_shift_spike_times(spike_times, duration_seconds, float(offset)),
-        call_starts, runs, duration_seconds, cfg) for offset in shuffle_offsets]
+        usv_starts, runs, duration_seconds, cfg) for offset in shuffle_offsets]
 
     payload = {"n_bouts": len(runs), "n_shuffles": int(shuffle_offsets.size),
                "ibi_threshold_seconds": float(ibi_threshold)}
     for key, value in observed.items():
         null = np.asarray([d[key] for d in draws], dtype=float)
         entry = {"observed": value}
-        entry.update(_percentiles_block(null))
         finite = null[np.isfinite(null)]
+        # A statistic can be undefined for every draw -- a unit that never fires has no peak
+        # latency, and a bout with no later USVs has no ratio. Handing an all-NaN array to the
+        # percentile helper is well defined but noisy, and the suite runs warnings as errors, so
+        # the aggregates are filled in directly instead.
+        if finite.size == 0:
+            entry.update({name: np.nan for name in
+                          ("null_mean", "null_std", "null_p0_5", "null_p2_5", "null_p97_5",
+                           "null_p99_5")})
+        else:
+            entry.update(_percentiles_block(null))
         if np.isfinite(value) and finite.size:
             exceed = int(np.sum(np.abs(finite - np.nanmean(finite))
                                 >= abs(value - np.nanmean(finite))))
@@ -3405,7 +3414,7 @@ class NeuronalTuning(FeatureZoo):
             vmi_payload["emitter"] = emitter_str
             partial["triage_stats"]["vmi"][emitter_str] = vmi_payload
 
-            # Bout-onset descriptors on IBI bouts, which group calls at the emitter's own
+            # Bout-onset descriptors on IBI bouts, which group USVs at the emitter's own
             # respiratory tempo and are a different object from the VMI bouts above: those are
             # grouped by `bout_quiet_s` because that is the VMI baseline window. The threshold is
             # read from this side's own sex, so a female side is not segmented by a male rhythm.
@@ -3429,7 +3438,7 @@ class NeuronalTuning(FeatureZoo):
             )
             ibi_payload = ibi_bout_onset_block(
                 spike_times=spike_times_observed,
-                call_starts=em_starts,
+                usv_starts=em_starts,
                 runs=ibi_runs,
                 duration_seconds=duration_seconds,
                 cfg=ibi_cfg,

@@ -2825,3 +2825,18 @@ Launch it from the repo root in either of two modes:
 Both open in the browser at ``http://localhost:2718``. Source:
 `usv_embedding_explorer.py
 <https://github.com/bartulem/usv-playpen/blob/main/src/usv_playpen/notebooks/usv_embedding_explorer.py>`_.
+
+
+Vocal-bout occupancy decoding
+-----------------------------
+The last two cells of ``neuronal_tuning_summary.ipynb`` read the decoder's per-session outputs.
+The first gathers the named sessions into one table; the second draws one focal area across
+animals beside three comparison panels.
+
+Both raise rather than quietly producing a short table or an empty panel, because a missing
+session looks exactly like a session that decoded at chance.
+
+Read the figure's limitations before reusing it on a different session set: the sessions are
+chosen by the caller rather than discovered, only a **same-session** comparison is exact — accuracy
+falls steeply with how much the animal vocalised, so a cross-session comparison has to be matched
+on USV density by hand — and the geometry holds exactly three comparison panels.
