@@ -24,20 +24,10 @@
     "input_files_directory": "/mnt/falkner/Bartul/modeling/input_files"
   },
   "credentials_directory": "",
-  "male_colors": [
-    "#9AC0CD",
-    "#8CA252"
-  ],
-  "female_colors": [
-    "#FF6347",
-    "#B851B4"
-  ],
-  "social_colors": [
-    "#5A6470"
-  ],
-  "unassigned_colors": [
-    "#C0C0C0"
-  ],
+  "male_colors": ["#9AC0CD", "#8CA252"],
+  "female_colors": ["#FF6347", "#B851B4"],
+  "social_colors": ["#5A6470"],
+  "unassigned_colors": ["#C0C0C0"],
   "session_condition_styles": {
     "courtship_intact_partners": {
       "color": "#CD928A",
@@ -69,11 +59,7 @@
     "MB": "#9BBE85",
     "other": "#B8B8B8"
   },
-  "cell_type_colors": [
-    "#1A1A1A",
-    "#7A7A7A",
-    "#CFCFCF"
-  ],
+  "cell_type_colors": ["#1A1A1A", "#7A7A7A", "#CFCFCF"],
   "coactivity_colors": {
     "group_a": "#DC143C",
     "group_b": "#1E90FF",
@@ -115,29 +101,17 @@
     "save_fig": true,
     "fig_format": "png",
     "fig_dpi": 300,
-    "fig_size": [
-      6,
-      2
-    ],
+    "fig_size": [6, 2],
     "transparent_fig_bg": false,
     "mode": "sequence",
     "channel_of_interest": 11,
     "plot_raw_audio": true,
-    "time_window": [
-      0.4,
-      2.4
-    ],
-    "freq_limits": [
-      40,
-      95
-    ],
+    "time_window": [0.4, 2.4],
+    "freq_limits": [40, 95],
     "usv_amplitude_color": "#808080",
     "nfft": 512,
     "plot_cbar": true,
-    "cbar_limits": [
-      -70,
-      0
-    ],
+    "cbar_limits": [-70, 0],
     "apply_mask": true,
     "auto_open_figure": true,
     "sequence": {
@@ -178,13 +152,9 @@
     "raster_plot_bool": false,
     "raster_selection_criteria": {
       "brain_areas": [],
-      "other": [
-        "good"
-      ]
+      "other": ["good"]
     },
-    "raster_special_units": [
-      ""
-    ],
+    "raster_special_units": [""],
     "spike_sound_bool": false,
     "beh_features_bool": false,
     "beh_features_to_plot": [],
@@ -232,18 +202,9 @@
       "raster_ll": 10.9,
       "spectrogram_cbar_bool": true,
       "spectrogram_plot_window_size": 1,
-      "spectrogram_power_limit": [
-        -60,
-        0
-      ],
-      "spectrogram_frequency_limit": [
-        30000,
-        125000
-      ],
-      "spectrogram_yticks": [
-        50000,
-        100000
-      ],
+      "spectrogram_power_limit": [-60, 0],
+      "spectrogram_frequency_limit": [30000, 125000],
+      "spectrogram_yticks": [50000, 100000],
       "spectrogram_stft_nfft": 512,
       "plot_usv_segments_bool": true,
       "usv_segments_ypos": 120000,
@@ -278,12 +239,7 @@
       "/mnt/falkner/Bartul/spectrograms/qlvm/seeds/seed1234"
     ],
     "watershed_levels_file": "/mnt/falkner/Bartul/spectrograms/qlvm/watershed_levels.npz",
-    "category_colors": [
-      "#4E79A7",
-      "#F28E2B",
-      "#59A14F",
-      "#E15759"
-    ],
+    "category_colors": ["#4E79A7", "#F28E2B", "#59A14F", "#E15759"],
     "overview": {
       "n_examples": 10,
       "spiral_radius": 0.03,
@@ -332,15 +288,8 @@
       "microphone": "peak",
       "n_fft": 256,
       "hop_fraction": 4,
-      "freq_range_khz": [
-        30.0,
-        110.0
-      ],
-      "freq_ticks_khz": [
-        40.0,
-        70.0,
-        100.0
-      ],
+      "freq_range_khz": [30.0, 110.0],
+      "freq_ticks_khz": [40.0, 70.0, 100.0],
       "db_floor": "adaptive",
       "adaptive_floor_above_median_db": 12.0,
       "ceiling_percentile": 99.9,
@@ -373,16 +322,8 @@
     },
     "scale_mark": {
       "length_cm": 2.0,
-      "labels": [
-        "X",
-        "Y",
-        "Z"
-      ],
-      "signs": [
-        1,
-        -1,
-        1
-      ],
+      "labels": ["X", "Y", "Z"],
+      "signs": [1, -1, 1],
       "turn_degrees": 90.0,
       "gap_cm": 4.0,
       "line_width": 2.5,
@@ -507,16 +448,8 @@
         "tail_curvature"
       ],
       "dyadic": {
-        "male": [
-          "allo_yaw-head",
-          "allo_pitch-head",
-          "head-head"
-        ],
-        "female": [
-          "head-allo_yaw",
-          "head-allo_pitch",
-          "head-head"
-        ]
+        "male": ["allo_yaw-head", "allo_pitch-head", "head-head"],
+        "female": ["head-allo_yaw", "head-allo_pitch", "head-head"]
       },
       "labels": {
         "speed": "speed (cm/s)",
@@ -546,10 +479,7 @@
         "medium": 1,
         "large": 0
       },
-      "value_decimal_thresholds": [
-        1.0,
-        10.0
-      ],
+      "value_decimal_thresholds": [1.0, 10.0],
       "value_font_scale": 0.8,
       "font_size": 6,
       "zero_tick": true,
@@ -606,9 +536,6 @@
     "thumbnail_wspace": 0.04,
     "unstretched_specs": true,
     "scatter_max_points": 200000,
-    "fig_size": [
-      16,
-      12
-    ]
+    "fig_size": [16, 12]
   }
 }
