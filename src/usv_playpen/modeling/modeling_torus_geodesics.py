@@ -61,7 +61,7 @@ from scipy.stats import gaussian_kde
 from ..os_utils import QLVM_DECODER_MAPS, qlvm_map_cell_directory
 from ..processing.qlvm_latents import load_model_cell, model_decode_condition
 from ..processing.qlvm_model import decoder_forward, torus_basis_forward
-from .manifold_metric import _geodesic_distance_matrix, signed_diff
+from .manifold_metric import _geodesic_distance_matrix, macro_region_mean, signed_diff
 from .modeling_utils import manifold_tag_segment
 
 _DENSITY_FLOOR = 1e-12
@@ -802,14 +802,22 @@ def per_event_geodesic_error(y_pred: np.ndarray, y_true: np.ndarray,
 
 
 def geodesic_mae_columns(y_pred: np.ndarray, y_true: np.ndarray,
-                         ctx: TorusGeodesicContext) -> dict:
+                         ctx: TorusGeodesicContext, *,
+                         region_labels: np.ndarray = None,
+                         min_region_events: int = 1) -> dict:
     """
-    The two geodesic prediction-error metrics as a metric-bundle fragment.
+    The geodesic prediction-error metrics as a metric-bundle fragment.
 
-    Computes the mean per-event density-geodesic and pullback-geodesic distance
-    between prediction and truth, ready to merge into a fold's metric dict
-    alongside ``euclidean_mae`` / ``mahalanobis_mae``. Each is ``nan`` when its
-    geometry was not precomputed or no event has a finite distance.
+    Computes the per-event density-geodesic and pullback-geodesic distance
+    between prediction and truth and reports each in two averages, ready to
+    merge into a fold's metric dict alongside ``euclidean_mae`` /
+    ``euclidean_mae_macro``: the pooled mean over events
+    (``density_geodesic_mae`` / ``pullback_geodesic_mae``) and the
+    region-balanced macro mean (``density_geodesic_mae_macro`` /
+    ``pullback_geodesic_mae_macro``, :func:`manifold_metric.macro_region_mean`),
+    the yardstick that matches the region-reweighted fit and the macro selection
+    score. Each is ``nan`` when its geometry was not precomputed or no event has
+    a finite distance.
 
     Parameters
     ----------
@@ -818,21 +826,24 @@ def geodesic_mae_columns(y_pred: np.ndarray, y_true: np.ndarray,
     ctx : TorusGeodesicContext | None
         Precomputed geometry; ``None`` (or a missing per-method matrix) yields a
         ``nan`` for that column.
+    region_labels : np.ndarray
+        Length-``n`` per-event acoustic-region labels (NaN = unlabelled) for the
+        macro columns; ``None`` makes them equal to the pooled columns.
+    min_region_events : int
+        Minimum finite events a region must contribute to the macro average.
 
     Returns
     -------
     dict
-        ``{'density_geodesic_mae': float, 'pullback_geodesic_mae': float}``.
+        ``{'density_geodesic_mae': float, 'pullback_geodesic_mae': float,
+        'density_geodesic_mae_macro': float, 'pullback_geodesic_mae_macro': float}``.
     """
 
-    def _safe_mae(d):
-        d = np.asarray(d, dtype=np.float64)
-        finite = np.isfinite(d)
-        return float(d[finite].mean()) if finite.any() else float('nan')
-
-    return {
-        'density_geodesic_mae': _safe_mae(
-            per_event_geodesic_error(y_pred, y_true, ctx, method='density_geodesic')),
-        'pullback_geodesic_mae': _safe_mae(
-            per_event_geodesic_error(y_pred, y_true, ctx, method='pullback_geodesic')),
-    }
+    columns = {}
+    for method in ('density_geodesic', 'pullback_geodesic'):
+        distances = np.asarray(
+            per_event_geodesic_error(y_pred, y_true, ctx, method=method), dtype=np.float64)
+        columns[f'{method}_mae'] = macro_region_mean(distances, None)
+        columns[f'{method}_mae_macro'] = macro_region_mean(
+            distances, region_labels, min_region_events=min_region_events)
+    return columns

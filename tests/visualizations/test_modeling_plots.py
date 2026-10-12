@@ -15,9 +15,11 @@ window.
 
 from __future__ import annotations
 
+import pathlib
 import pickle
 import warnings
 
+import h5py
 import numpy as np
 import pytest
 from scipy.ndimage import gaussian_filter1d
@@ -44,7 +46,7 @@ with warnings.catch_warnings():
         _classify_predictor_feature,
         _final_null_filter_weights,
         _last_bin_of_consecutive_run,
-        _resolve_atlas_decoder_and_categories,
+        _resolve_atlas_tiles_and_categories,
         _rolling_mean_1d,
         plot_collinearity_audit,
         plot_feature_ranking,
@@ -1559,7 +1561,8 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
                                         output_dim: int = 2,
                                         manifold_column_names: list | None = None,
                                         weights: np.ndarray | None = None,
-                                        heldout: dict | None = None) -> str:
+                                        heldout: dict | None = None,
+                                        session_ids: list | None = None) -> str:
     """
     Write a synthetic consolidated manifold ``selection_*.pkl`` whose
     final accepted step carries the raw bivariate weight block, for
@@ -1574,7 +1577,9 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
     plotters collapse to per-coordinate magnitude. A trailing rejection step is
     appended. With ``manifold_column_names`` the artifact carries an
     ``_input_metadata.analysis_specific.usv_manifold_column_names`` record (the
-    map the atlas decodes); without it, it is a legacy artifact with no metadata.
+    map the atlas tiles); ``session_ids`` records the run's sessions
+    (``_input_metadata.session_ids``, the sessions the atlas draws its tiles
+    from); without both, it is a legacy artifact with no metadata.
     ``weights`` replaces the random fold weight block (shape ``(n_folds,
     n_features * n_time, output_dim)``) and ``heldout`` is stored as the trailing
     step's held-out record (where the torus selection stores the no-signal
@@ -1605,104 +1610,99 @@ def _write_manifold_multivariate_pickle(tmp_path, rng, n_features: int = 2,
     if heldout is not None:
         rejection['heldout'] = heldout
     artifact = {'steps': [accepted, rejection]}
-    if manifold_column_names is not None:
-        artifact['_input_metadata'] = {
-            'analysis_specific': {'usv_manifold_column_names': list(manifold_column_names)},
-        }
+    if manifold_column_names is not None or session_ids is not None:
+        artifact['_input_metadata'] = {}
+        if manifold_column_names is not None:
+            artifact['_input_metadata']['analysis_specific'] = {
+                'usv_manifold_column_names': list(manifold_column_names)}
+        if session_ids is not None:
+            artifact['_input_metadata']['session_ids'] = list(session_ids)
     out = tmp_path / "selection_manifold_male_mv.pkl"
     with out.open('wb') as fh:
         pickle.dump(artifact, fh)
     return str(out)
 
 
-def _fake_decoder_params(rng, c_dim: int = 0):
-    """
-    Build stand-in QLVM decoder weights for ``plot_manifold_filter_atlas`` so the
-    atlas renders without the real ``/mnt`` package: arrays matching the frozen
-    QLVM decoder architecture (two Linear layers 4 -> 2048 -> 4096, reshaped to
-    (64, 8, 8), then four ConvTranspose2d blocks 64 -> 32 -> 16 -> 8 -> 1; the
-    legacy-head layout) so ``decode_lattice_atlas`` runs, keyed as
-    ``processing.qlvm_latents.load_decoder_params`` returns them (no
-    ``decoder.`` prefix). ``c_dim`` 1 widens the first Linear layer by the one
-    conditioning input of a conditional decoder.
-
-    Returns
-    -------
-    dict
-        ``"<layer_idx>.weight"`` / ``"<layer_idx>.bias"`` -> float32 array.
-    """
-
-    return {
-        '0.weight': rng.standard_normal((2048, 4 + c_dim)).astype(np.float32),
-        '0.bias': rng.standard_normal((2048,)).astype(np.float32),
-        '1.weight': rng.standard_normal((4096, 2048)).astype(np.float32),
-        '1.bias': rng.standard_normal((4096,)).astype(np.float32),
-        '3.weight': rng.standard_normal((64, 32, 3, 3)).astype(np.float32),
-        '3.bias': rng.standard_normal((32,)).astype(np.float32),
-        '5.weight': rng.standard_normal((32, 16, 3, 3)).astype(np.float32),
-        '5.bias': rng.standard_normal((16,)).astype(np.float32),
-        '7.weight': rng.standard_normal((16, 8, 3, 3)).astype(np.float32),
-        '7.bias': rng.standard_normal((8,)).astype(np.float32),
-        '9.weight': rng.standard_normal((8, 1, 3, 3)).astype(np.float32),
-        '9.bias': rng.standard_normal((1,)).astype(np.float32),
-    }
-
-
 _FAKE_CELL_MODEL_ID = "spectrograms/qlvm/qlvm"
+_FAKE_STORE_MAPS = ("qlvm", "qlvm_duration", "qlvm_squeak")
 
 
-def _fake_model_cell_loader(rng, c_dim: int = 0, loaded: list | None = None, model_id: str = _FAKE_CELL_MODEL_ID):
+def _write_fake_spectrogram_store(tmp_path, rng, model_ids: dict | None = None, n_rows: int = 40,
+                                  sessions: tuple = ("sessA", "sessB"), n_freq: int = 16, window: int = 24,
+                                  pinned: dict | None = None) -> pathlib.Path:
     """
-    Build a stand-in for ``processing.qlvm_latents.load_model_cell`` so the atlas's
-    decoder runs without the real ``/mnt`` package: it returns the stand-in decoder
-    weights of ``_fake_decoder_params`` (legacy-head layout, which
-    ``decode_lattice_atlas`` runs), a contract with the given ``c_dim``, and
-    ``model_id`` (by default the production regular cell's). With ``c_dim`` 1 the
-    contract carries a duration condition block (``decode`` ``"exact"``) and the
-    stand-in carries phase 11 ``condition_bins`` (edges 0 / 0.2 / 1 with 30 and
-    10 training rows, so the corpus median is 0.1333...). Every directory it is
-    called with is appended to ``loaded``.
+    Write a tiny stand-in for the production spectrogram store so the atlas tiles
+    without the real ``/mnt`` store, in the store's layout: per session
+    ``spectrogram/<s>/{spectrograms (n, n_freq, window), durations}``,
+    ``mask/<s>/{segmentations (m, n_freq, window), spectrogram_index}`` (the first
+    session only, so both the masked and the unmasked thumbnail paths run),
+    ``qlvm/<s>/{<map> (n, 2), status (n,)}`` for the maps ``_FAKE_STORE_MAPS`` and a
+    ``qlvm_models/<map>`` group per map whose ``model_id`` attribute is
+    ``model_ids[map]`` (the production regular cell's id by default). Positions are
+    uniform on the unit torus, the last row of every session is left unembedded
+    (status 2, NaN positions) and ``pinned`` places chosen rows of the first
+    session exactly: ``{row: (position, duration)}``. The file is named like a
+    production store so ``resolve_consolidated_h5_path`` finds it.
 
     Returns
     -------
-    callable
-        ``model_cell_directory -> model dict``.
+    pathlib.Path
+        The store directory (``SPECTROGRAMS_DIRECTORY`` stand-in).
     """
 
-    params = _fake_decoder_params(rng, c_dim=c_dim)
-    condition = {"name": "duration", "decode": "exact"} if c_dim else None
-    condition_bins = {
-        "edges": np.array([0.0, 0.2, 1.0]), "group_sizes": np.array([30, 10]),
-        "train_c_min": np.float32(0.0), "train_c_max": np.float32(1.0),
-        "decode_grid": np.linspace(0.0, 1.0, 401),
-    } if c_dim else None
-
-    def _load(model_cell_directory):
-        if loaded is not None:
-            loaded.append(model_cell_directory)
-        return {"params": params, "contract": {"c_dim": c_dim, "condition": condition},
-                "condition_bins": condition_bins, "model_id": model_id}
-
-    return _load
+    store_dir = tmp_path / "spectrograms"
+    store_dir.mkdir(exist_ok=True)
+    ids = {m: _FAKE_CELL_MODEL_ID for m in _FAKE_STORE_MAPS}
+    if model_ids is not None:
+        ids.update(model_ids)
+    with h5py.File(store_dir / "spectrograms_fake_2sessions_80vocalizations_20260101_000000Z.h5", "w") as h5:
+        for m in _FAKE_STORE_MAPS:
+            h5.create_group(f"qlvm_models/{m}").attrs["model_id"] = ids[m]
+        for si, session_id in enumerate(sessions):
+            specs = rng.random((n_rows, n_freq, window)).astype(np.float32)
+            durations = rng.integers(4, window, size=n_rows)
+            status = np.zeros(n_rows, dtype=np.int8)
+            status[-1] = 2
+            positions = {m: rng.random((n_rows, 2)) for m in _FAKE_STORE_MAPS}
+            if si == 0 and pinned is not None:
+                for row, (position, duration) in pinned.items():
+                    for m in _FAKE_STORE_MAPS:
+                        positions[m][row] = position
+                    durations[row] = duration
+            for m in _FAKE_STORE_MAPS:
+                positions[m][-1] = np.nan
+            g = h5.create_group(f"spectrogram/{session_id}")
+            g.create_dataset("spectrograms", data=specs)
+            g.create_dataset("durations", data=durations.astype(np.int64))
+            q = h5.create_group(f"qlvm/{session_id}")
+            for m in _FAKE_STORE_MAPS:
+                q.create_dataset(m, data=positions[m])
+            q.create_dataset("status", data=status)
+            if si == 0:
+                masks = (rng.random((n_rows, n_freq, window)) > 0.5)
+                mk = h5.create_group(f"mask/{session_id}")
+                mk.create_dataset("segmentations", data=masks)
+                mk.create_dataset("spectrogram_index", data=np.arange(n_rows, dtype=np.int64))
+    return store_dir
 
 
 @pytest.mark.filterwarnings("ignore:FigureCanvasAgg is non-interactive:UserWarning")
 @pytest.mark.filterwarnings("ignore:Tight layout:UserWarning")
 class TestPlotManifoldFilterAtlas:
-    """Figure-emission tests for ``plot_manifold_filter_atlas`` — the combined
-    torus-only atlas (decoded vocal-space map + |W(t)| magnitude + per-feature
-    affinity filmstrips)."""
+    """Figure-emission tests for ``plot_manifold_filter_atlas`` -- the combined
+    torus-only atlas (real vocalizations tiling the vocal space + |W(t)| magnitude
+    + per-feature affinity filmstrips)."""
 
-    def test_writes_filter_atlas(self, tmp_path, monkeypatch, qlvm_category_bundle):
-        """A torus (4-D sin/cos) final step, with a stand-in decoder and the category
-        bundle, emits exactly one ``*_filter_atlas_*`` figure; an artifact without a
-        manifold-column record is a regular-map run, so the decoder is the
-        production regular cell from the os_utils constants (no argument names it)."""
+    def test_writes_filter_atlas(self, tmp_path, monkeypatch, capsys, qlvm_category_bundle):
+        """A torus (4-D sin/cos) final step, with a stand-in store and the category
+        bundle, emits exactly one ``*_filter_atlas_*`` figure; the tiles come from
+        the run's own sessions (one of the store's two) and an artifact without a
+        manifold-column record is a regular-map run, so the positions are the
+        regular map's (no argument names the store or the map)."""
 
         rng = np.random.default_rng(71)
-        loaded: list = []
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng, loaded=loaded))
-        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4)
+        monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(tmp_path, rng)))
+        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4, session_ids=["sessA"])
         out_dir = tmp_path / "atlas_out"
         out_dir.mkdir()
         plot_manifold_filter_atlas(
@@ -1712,9 +1712,26 @@ class TestPlotManifoldFilterAtlas:
             save_plot=True,
             output_dir=str(out_dir),
         )
-        assert loaded == [os_utils.qlvm_production_cell_directory("qlvm")]
+        printed = capsys.readouterr().out
+        assert "map 'qlvm', tiles = nearest of 39 vocalizations of 1 sessions in spectrograms_fake_" in printed
+        assert "categories" in printed
         assert len(list(out_dir.glob(
             f"model_selection_manifold_*_filter_atlas_*.{_FIGURE_FORMAT}"))) == 1
+
+    def test_filmstrip_titles_are_plain(self, tmp_path, monkeypatch, qlvm_category_bundle):
+        """Every filmstrip deck is titled with the feature's label in the plain text
+        colour at full opacity (no cohort colour, no fading between features)."""
+
+        rng = np.random.default_rng(74)
+        monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(tmp_path, rng)))
+        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=3, output_dim=4)
+        plot_manifold_filter_atlas(selection_results_path=pkl, n_time_slices=3, atlas_grid_n=2, save_plot=False)
+        ax_film = next(ax for ax in plt.gcf().axes if ax.get_xlabel() == "time prior to USV onset (s)" and not ax.get_lines())
+        titles = [t for t in ax_film.texts if t.get_fontsize() == 8]
+        assert len(titles) == 3
+        for title in titles:
+            assert matplotlib.colors.to_hex(title.get_color()) == matplotlib.colors.to_hex(modeling_plots.TEXT_COLOR)
+            assert title.get_alpha() is None
 
     def test_null_band_lines_and_rounded_colour_scale(self, tmp_path, monkeypatch, qlvm_category_bundle):
         """With a stored no-signal band the magnitude panel draws, per feature, a
@@ -1729,7 +1746,7 @@ class TestPlotManifoldFilterAtlas:
         permuted magnitude traces."""
 
         rng = np.random.default_rng(321)
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
+        monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(tmp_path, rng)))
         n_time, n_perm, n_folds = 12, 5, 4
         feats = ['self.speed', 'other.speed']
         stored = ['other.speed', 'self.speed']
@@ -1785,7 +1802,7 @@ class TestPlotManifoldFilterAtlas:
         no "permuted target" legend entry."""
 
         rng = np.random.default_rng(322)
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
+        monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(tmp_path, rng)))
         n_time, n_folds = 12, 3
         block = rng.standard_normal((2 * n_time, 4))
         block[n_time - 1] = 0.0
@@ -1804,26 +1821,16 @@ class TestPlotManifoldFilterAtlas:
         cbar_ax = next(ax for ax in fig.axes if ax.get_ylabel() == "vocal region affinity (per SD)")
         np.testing.assert_allclose(cbar_ax.get_yticks(), [-0.1, 0.0, 0.1])
 
-    def test_conditional_map_decodes_with_its_own_cell(self, tmp_path, monkeypatch):
+    def test_conditional_map_tiles_at_its_own_positions(self, tmp_path, monkeypatch, capsys):
         """An artifact whose manifold columns are a conditional map's
-        (qlvm_duration1 / qlvm_duration2) is decoded with THAT map's production
-        cell, at the requested training-corpus quantile of its conditioning value,
-        and draws no category boundaries, so the category bundle is never read (its
+        (qlvm_duration1 / qlvm_duration2) is tiled at THAT map's store positions and
+        draws no category boundaries, so the category bundle is never read (its
         directory is pointed at a missing folder to prove it)."""
 
         rng = np.random.default_rng(72)
-        loaded: list = []
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(
-            rng, c_dim=1, loaded=loaded, model_id="masked_clean/cell/duration"))
+        monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(
+            tmp_path, rng, model_ids={"qlvm_duration": "masked_clean/cell/duration"})))
         monkeypatch.setattr(os_utils, "QLVM_CATEGORY_BUNDLE_DIRECTORY", str(tmp_path / "missing"))
-        decoded: list = []
-        real_decode = modeling_plots.decode_shifted_lattice
-
-        def _spy(lattice, shift, params, condition=None):
-            decoded.append(np.asarray(condition))
-            return real_decode(lattice, shift, params, condition=condition)
-
-        monkeypatch.setattr(modeling_plots, "decode_shifted_lattice", _spy)
         pkl = _write_manifold_multivariate_pickle(
             tmp_path, rng, n_features=2, output_dim=4,
             manifold_column_names=['qlvm_duration1', 'qlvm_duration2'])
@@ -1831,96 +1838,86 @@ class TestPlotManifoldFilterAtlas:
         out_dir.mkdir()
         plot_manifold_filter_atlas(
             selection_results_path=pkl, n_time_slices=3, atlas_grid_n=2,
-            save_plot=True, output_dir=str(out_dir), condition_quantile=0.5)
-        assert loaded == [os_utils.qlvm_production_cell_directory("qlvm_duration")]
-        assert len(decoded) == 1
-        np.testing.assert_allclose(decoded[0], [[0.2 * 0.5 / 0.75]], atol=1e-6)
+            save_plot=True, output_dir=str(out_dir))
+        printed = capsys.readouterr().out
+        assert "map 'qlvm_duration', tiles = nearest of 78 vocalizations of 2 sessions" in printed
+        assert "(positions of cell masked_clean/cell/duration); no category boundaries" in printed
         assert len(list(out_dir.glob(f"*_filter_atlas_*.{_FIGURE_FORMAT}"))) == 1
 
-    def test_squeak_map_decodes_with_the_squeak_cell(self, monkeypatch):
-        """The squeak map resolves to the production squeak cell (unconditional, no
-        conditioning value) and gets no category grid."""
+    def test_squeak_map_tiles_without_categories(self, tmp_path, monkeypatch):
+        """The squeak map tiles at the store's squeak positions (its own cell) and
+        gets no category grid."""
 
         rng = np.random.default_rng(73)
-        loaded: list = []
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(
-            rng, loaded=loaded, model_id="squeaks/cell/stretch_nofloor"))
-        _, condition, bundle, model_id = _resolve_atlas_decoder_and_categories("qlvm_squeak", 0.5)
-        assert loaded == [f"{os_utils.QLVM_SQUEAK_PACKAGE_ROOT}/{os_utils.QLVM_SQUEAK_PRODUCTION_CELL}"]
-        assert condition is None and bundle is None
+        monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(
+            tmp_path, rng, model_ids={"qlvm_squeak": "squeaks/cell/stretch_nofloor"})))
+        lattice, tiles, bundle, model_id = _resolve_atlas_tiles_and_categories("qlvm_squeak", None, 2)
+        assert bundle is None
         assert model_id == "squeaks/cell/stretch_nofloor"
+        np.testing.assert_allclose(lattice, [[0.25, 0.25], [0.25, 0.75], [0.75, 0.25], [0.75, 0.75]])
+        assert tiles.shape == (4, 16, 24)
 
-    def test_decoder_and_categories_come_from_the_constants(self, monkeypatch, qlvm_category_bundle):
-        """The resolver takes no paths: the decoder is the production regular cell
-        (never a settings path the experimenter re-keying rewrites) and the category
-        grid is the bundle's, whose identity is recorded."""
+    def test_tiles_and_categories_come_from_the_constants(self, tmp_path, monkeypatch, qlvm_category_bundle):
+        """The resolver takes no paths: the store is the newest one under the
+        spectrograms-directory constant (never a settings path the experimenter
+        re-keying rewrites) and the category grid is the bundle's, whose identity
+        is recorded."""
 
         rng = np.random.default_rng(75)
-        loaded: list = []
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng, loaded=loaded))
-        _, condition, bundle, model_id = _resolve_atlas_decoder_and_categories()
-        assert condition is None
-        assert loaded[0].endswith("spectrograms/qlvm/qlvm")
+        monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(tmp_path, rng)))
+        lattice, tiles, bundle, model_id = _resolve_atlas_tiles_and_categories()
+        assert lattice.shape == (144, 2) and tiles.shape == (144, 16, 24)
         assert model_id == bundle["model_id"] == _FAKE_CELL_MODEL_ID
         assert bundle["directory"] == str(qlvm_category_bundle)
         assert sorted(np.unique(bundle["label_grid"]).tolist()) == [1, 2, 3, 4]
         assert "built 2026-10-03T12:00:00" in bundle["identity"]
 
-    def test_decoder_of_another_cell_raises(self, monkeypatch, qlvm_category_bundle):
-        """A decoder whose cell is not the one the category bundle is defined on is
-        refused, so boundaries always partition the decoded torus."""
+    def test_tiles_are_the_nearest_vocalizations_at_natural_duration(self, tmp_path, monkeypatch):
+        """Each node shows the embedded vocalization nearest to it, masked and at
+        its natural duration: a row pinned at the node (0.25, 0.25) with duration 5
+        fills exactly the 5 central columns of the storage window with its masked
+        spectrogram and nothing else (no time-stretching to the tile)."""
+
+        rng = np.random.default_rng(76)
+        store_dir = _write_fake_spectrogram_store(tmp_path, rng, pinned={3: ((0.25, 0.25), 5)})
+        monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(store_dir))
+        monkeypatch.setattr(os_utils, "QLVM_CATEGORY_BUNDLE_DIRECTORY", str(tmp_path / "missing"))
+        _, tiles, _, _ = _resolve_atlas_tiles_and_categories("qlvm_duration", ["sessA"], 2)
+        with h5py.File(next(store_dir.glob("spectrograms_*.h5")), "r") as h5:
+            spec = h5["spectrogram/sessA/spectrograms"][3].astype(np.float32)
+            mask = h5["mask/sessA/segmentations"][3]
+        tile = tiles[0]
+        pad = (24 - 5) // 2
+        np.testing.assert_allclose(tile[:, pad:pad + 5], spec[:, :5] * mask[:, :5])
+        assert not tile[:, :pad].any() and not tile[:, pad + 5:].any()
+
+    def test_store_of_another_cell_raises(self, tmp_path, monkeypatch, qlvm_category_bundle):
+        """A store whose regular-map positions were embedded with a cell other than
+        the one the category bundle is defined on is refused, so boundaries always
+        partition the torus the tiles sit on."""
 
         rng = np.random.default_rng(77)
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(
-            rng, model_id="v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked"))
+        monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(
+            tmp_path, rng, model_ids={"qlvm": "v2/phase9_USVs_masked_relu/natural_3strata_N65000_masked"})))
         with pytest.raises(ValueError, match="partitions the torus of spectrograms/qlvm/qlvm"):
-            _resolve_atlas_decoder_and_categories()
+            _resolve_atlas_tiles_and_categories()
 
     def test_unreadable_bundle_raises(self, tmp_path, monkeypatch):
         """Without a readable category bundle the atlas stops (no placeholder grid)."""
 
         rng = np.random.default_rng(79)
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
+        monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(tmp_path, rng)))
         monkeypatch.setattr(os_utils, "QLVM_CATEGORY_BUNDLE_DIRECTORY", str(tmp_path / "missing"))
         with pytest.raises(FileNotFoundError, match="missing"):
-            _resolve_atlas_decoder_and_categories()
+            _resolve_atlas_tiles_and_categories()
 
-    def test_conditional_cell_takes_the_corpus_quantile(self, monkeypatch):
-        """A conditional cell (c_dim 1) is decoded at the requested quantile of its
-        training conditioning distribution (edges 0 / 0.2 / 1 holding 30 and 10 rows:
-        median 0.2 * 0.5 / 0.75, the 0.9 quantile 0.2 + 0.8 * 0.15 / 0.25), with no
-        category grid off the category map; a quantile outside [0, 1] is refused."""
-
-        rng = np.random.default_rng(78)
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng, c_dim=1))
-        _, median, bundle, _ = _resolve_atlas_decoder_and_categories("qlvm_duration", 0.5)
-        assert bundle is None
-        assert float(median) == pytest.approx(0.2 * 0.5 / 0.75, abs=1e-6)
-        _, upper, _, _ = _resolve_atlas_decoder_and_categories("qlvm_duration", 0.9)
-        assert float(upper) == pytest.approx(0.2 + 0.8 * 0.15 / 0.25, abs=1e-6)
-        with pytest.raises(ValueError, match="quantile"):
-            _resolve_atlas_decoder_and_categories("qlvm_duration", 1.5)
-
-    def test_unknown_map_raises(self, monkeypatch):
-        """Manifold columns naming no QLVM map have no decoder."""
+    def test_unknown_map_raises(self, tmp_path, monkeypatch):
+        """A map the store carries no positions of is refused by name."""
 
         rng = np.random.default_rng(80)
-        monkeypatch.setattr(modeling_plots, "load_model_cell", _fake_model_cell_loader(rng))
-        with pytest.raises(ValueError, match="qlvm_map must be one of"):
-            _resolve_atlas_decoder_and_categories("vae", 0.5)
-
-    def test_euclidean_2d_block_is_rejected(self, tmp_path):
-        """The atlas is torus-only: a euclidean 2-D weight block prints why and
-        emits NO file. The guard returns before any QLVM artifact is touched, so
-        no decoder / bundle is needed."""
-
-        rng = np.random.default_rng(74)
-        pkl = _write_manifold_multivariate_pickle(tmp_path, rng, n_features=2, output_dim=2)
-        out_dir = tmp_path / "atlas_euc"
-        out_dir.mkdir()
-        plot_manifold_filter_atlas(
-            selection_results_path=pkl, save_plot=True, output_dir=str(out_dir))
-        assert list(out_dir.glob(f"*.{_FIGURE_FORMAT}")) == []
+        monkeypatch.setattr(modeling_plots, "SPECTROGRAMS_DIRECTORY", str(_write_fake_spectrogram_store(tmp_path, rng)))
+        with pytest.raises(ValueError, match="carries no positions of the 'vae' map"):
+            _resolve_atlas_tiles_and_categories("vae", None, 2)
 
 
 def _write_multinomial_diagnosis_pickle(tmp_path, rng, n_classes: int = 3,

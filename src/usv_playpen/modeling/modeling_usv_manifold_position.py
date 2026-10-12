@@ -1333,6 +1333,12 @@ class ContinuousModelRunner:
     - `euclidean_mae_weighted` — MAE on the Euclidean residual weighted by
       the inverse-density KDE weights so satellite vocalisations count as
       much as dense-core bouts.
+    - `euclidean_mae_macro` — region-balanced (macro) twin of
+      `euclidean_mae`: the per-region mean distance averaged with equal
+      weight per acoustic region (`manifold_metric.macro_region_mean`), the
+      distance yardstick that matches the region-reweighted fit and the macro
+      `vm_logscore`. The two geodesic columns carry the same twins
+      (`density_geodesic_mae_macro`, `pullback_geodesic_mae_macro`).
     - `euclidean_mae_raw` — diagnostic only; MAE on the *unsnapped* raw
       linear predictions. The gap `euclidean_mae_raw - euclidean_mae`
       quantifies how often the unconstrained model extrapolates
@@ -1902,6 +1908,13 @@ class ContinuousModelRunner:
             'vm_logscore_pooled',
             'density_geodesic_mae',
             'pullback_geodesic_mae',
+            # Region-balanced (macro) twins of the three distance columns: the
+            # per-region mean error averaged with equal weight per acoustic
+            # region (`manifold_metric.macro_region_mean`), matching the
+            # region-reweighted fit and the macro selection score.
+            'euclidean_mae_macro',
+            'density_geodesic_mae_macro',
+            'pullback_geodesic_mae_macro',
         ]
 
         # Torus geodesic "reference map" for the two analysis-only distance
@@ -2189,7 +2202,9 @@ class ContinuousModelRunner:
                 # prediction vs. truth; appended before the accumulation loop so
                 # every metric list (including the two geodesic ones) stays in
                 # lockstep with `metric_keys`. NaN columns when disabled/off-torus.
-                metrics.update(geodesic_mae_columns(y_pred_xy, Y_test, geodesic_ctx))
+                metrics.update(geodesic_mae_columns(
+                    y_pred_xy, Y_test, geodesic_ctx,
+                    region_labels=region_test, min_region_events=min_region_events))
 
                 for m_key, m_val in metrics.items():
                     results[strategy]['folds']['metrics'][m_key].append(m_val)
@@ -2363,7 +2378,9 @@ class ContinuousModelRunner:
 
             # Same analysis-only torus geodesic columns for the honest held-out
             # refit, mirroring the per-fold and selection sites.
-            metrics_h.update(geodesic_mae_columns(yh_pred_xy, Yh_test, geodesic_ctx))
+            metrics_h.update(geodesic_mae_columns(
+                yh_pred_xy, Yh_test, geodesic_ctx,
+                region_labels=region_held, min_region_events=min_region_events))
 
             results[strategy]['heldout'] = {
                 'metrics': metrics_h,

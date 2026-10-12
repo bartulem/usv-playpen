@@ -696,6 +696,58 @@ def inverse_region_frequency_weights(region_labels: np.ndarray) -> np.ndarray:
     return factor
 
 
+def macro_region_mean(values: np.ndarray, region_labels: np.ndarray = None, *,
+                      min_region_events: int = 1) -> float:
+    """
+    Region-balanced (macro) mean of a per-event quantity.
+
+    The distance twin of the macro averaging in :func:`macro_von_mises_logscore`:
+    the per-event ``values`` (one prediction error per vocalization) are averaged
+    within each acoustic region and the region means are then averaged with
+    equal weight per region, so a rare region counts as much as a dominant one.
+    This is the error yardstick that matches a region-reweighted fit
+    (:func:`inverse_region_frequency_weights`) and the macro selection score:
+    the pooled per-event mean charges a region-balanced model for resting away
+    from the dominant regions (on an unbalanced map that charge alone can exceed
+    what the behavioural features recover), the macro mean does not.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        Length-``n`` per-event quantity; non-finite entries (e.g. a geodesic
+        distance with no finite path) are skipped.
+    region_labels : np.ndarray
+        Length-``n`` per-event acoustic-region labels, NaN marking an unlabelled
+        event (excluded from every region). ``None`` or all-NaN yields the
+        pooled mean over the finite values, the same fallback as the macro von
+        Mises score.
+    min_region_events : int
+        Minimum finite events a region must contribute to enter the average.
+
+    Returns
+    -------
+    float
+        The macro mean; ``nan`` when no region (pooled: no event) has a finite
+        value.
+    """
+
+    values = np.asarray(values, dtype=np.float64)
+    finite = np.isfinite(values)
+    if region_labels is None:
+        return float(np.mean(values[finite])) if finite.any() else float('nan')
+    region_labels = np.asarray(region_labels, dtype=np.float64)
+    labelled = ~np.isnan(region_labels)
+    if not labelled.any():
+        return float(np.mean(values[finite])) if finite.any() else float('nan')
+    region_means = []
+    for region_id in np.unique(region_labels[labelled]):
+        region_mask = (region_labels == region_id) & finite
+        if int(region_mask.sum()) < int(min_region_events):
+            continue
+        region_means.append(float(np.mean(values[region_mask])))
+    return float(np.mean(region_means)) if region_means else float('nan')
+
+
 def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
                                 weights: np.ndarray = None, *,
                                 metric: str, period: float,
@@ -768,10 +820,12 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
     dict
         The metric bundle: ``r2_spatial``, ``euclidean_mae``,
         ``euclidean_rmse``, ``euclidean_mae_weighted``, ``euclidean_mae_raw``,
-        ``mahalanobis_mae``, ``mae_x``, ``mae_y``, ``pearson_x``,
-        ``pearson_y``, ``spearman_x``, ``spearman_y``, ``dcor_xy``,
-        ``vm_logscore`` (macro / region-balanced) and ``vm_logscore_pooled``
-        (the micro / event-weighted twin; both ``nan`` on euclidean).
+        ``euclidean_mae_macro`` (the region-balanced twin of ``euclidean_mae``,
+        :func:`macro_region_mean`), ``mahalanobis_mae``, ``mae_x``, ``mae_y``,
+        ``pearson_x``, ``pearson_y``, ``spearman_x``, ``spearman_y``,
+        ``dcor_xy``, ``vm_logscore`` (macro / region-balanced) and
+        ``vm_logscore_pooled`` (the micro / event-weighted twin; both ``nan``
+        on euclidean).
     """
 
     Y_true = np.asarray(Y_true, dtype=np.float64)
@@ -784,6 +838,12 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
     dy = residual[:, 1]
     euclidean_dist = np.sqrt(dx ** 2 + dy ** 2)
     euclidean_mae = float(np.mean(euclidean_dist))
+    # Region-balanced (macro) twin of `euclidean_mae`: the per-region mean
+    # distance averaged with equal weight per acoustic region -- the error
+    # yardstick that matches the region-reweighted fit and the macro selection
+    # score (`region_labels=None` -> the pooled mean, i.e. `euclidean_mae`).
+    euclidean_mae_macro = macro_region_mean(
+        euclidean_dist, region_labels, min_region_events=min_region_events)
 
     if train_cov_inv is not None:
         # Numerical noise in near-singular covariances can push tiny
@@ -862,6 +922,7 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
             np.sum(weights * euclidean_dist) / (np.sum(weights) + 1e-12)
         ),
         'euclidean_mae_raw': euclidean_mae,
+        'euclidean_mae_macro': euclidean_mae_macro,
         'mahalanobis_mae': mahalanobis_mae,
         'mae_x': float(np.mean(np.abs(dx))),
         'mae_y': float(np.mean(np.abs(dy))),

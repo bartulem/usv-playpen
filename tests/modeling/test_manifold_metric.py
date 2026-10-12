@@ -37,6 +37,7 @@ from usv_playpen.modeling.manifold_metric import (
     total_dispersion,
     _fit_von_mises_kappa,
     macro_von_mises_logscore,
+    macro_region_mean,
     inverse_region_frequency_weights,
     warn_if_no_region_labels,
 )
@@ -488,7 +489,7 @@ class TestManifoldPredictionMetrics:
 
     _KEYS = {
         'r2_spatial', 'euclidean_mae', 'euclidean_rmse', 'euclidean_mae_weighted',
-        'euclidean_mae_raw', 'mahalanobis_mae', 'mae_x', 'mae_y',
+        'euclidean_mae_raw', 'euclidean_mae_macro', 'mahalanobis_mae', 'mae_x', 'mae_y',
         'pearson_x', 'pearson_y', 'spearman_x', 'spearman_y', 'dcor_xy',
         'vm_logscore', 'vm_logscore_pooled',
     }
@@ -793,3 +794,58 @@ class TestRegionLabelFallbackIsLoud:
         assert first == pytest.approx(pooled) and second == pytest.approx(pooled)
         printed = capsys.readouterr().out
         assert printed.count('macro score fell back to the pooled von Mises score') == 1
+
+
+class TestMacroRegionMean:
+    """`macro_region_mean` -- the region-balanced mean of a per-event quantity,
+    the distance twin of the macro von Mises averaging, and the bundle column
+    `euclidean_mae_macro` built from it."""
+
+    def test_equal_weight_per_region(self):
+        """Two regions of unequal size: the macro mean is the mean of the two
+        region means, not the pooled per-event mean."""
+
+        values = np.array([1.0, 1.0, 1.0, 1.0, 5.0])
+        labels = np.array([0.0, 0.0, 0.0, 0.0, 1.0])
+        assert macro_region_mean(values, labels) == pytest.approx(3.0)
+        assert np.mean(values) == pytest.approx(1.8)
+
+    def test_pooled_fallbacks(self):
+        """`None` labels and all-NaN labels both yield the pooled mean of the
+        finite values; no finite value at all yields NaN."""
+
+        values = np.array([1.0, 3.0, np.nan])
+        assert macro_region_mean(values, None) == pytest.approx(2.0)
+        assert macro_region_mean(values, np.full(3, np.nan)) == pytest.approx(2.0)
+        assert np.isnan(macro_region_mean(np.full(3, np.nan), None))
+
+    def test_min_region_events_and_unlabelled_rows(self):
+        """A region below `min_region_events` (counting finite values only) is
+        dropped from the average, and unlabelled (NaN) rows belong to no
+        region."""
+
+        values = np.array([1.0, 1.0, 9.0, np.nan, 100.0])
+        labels = np.array([0.0, 0.0, 1.0, 1.0, np.nan])
+        assert macro_region_mean(values, labels) == pytest.approx(5.0)
+        assert macro_region_mean(values, labels, min_region_events=2) == pytest.approx(1.0)
+        assert np.isnan(macro_region_mean(values, labels, min_region_events=3))
+
+    def test_bundle_column_matches_helper(self):
+        """`manifold_prediction_metrics` reports `euclidean_mae_macro` as the
+        helper applied to the per-event geodesic distances: with region labels
+        it differs from the pooled `euclidean_mae`, without them it equals it."""
+
+        rng = np.random.default_rng(3)
+        Y = rng.random((60, 2))
+        Yp = (Y + rng.normal(0.0, 0.1, Y.shape)) % 1.0
+        labels = np.array([0.0] * 50 + [1.0] * 10)
+        Yp[50:] = (Yp[50:] + 0.4) % 1.0
+        dist = np.sqrt((signed_diff(Y, Yp, metric='torus', period=1.0) ** 2).sum(axis=1))
+        labelled = manifold_prediction_metrics(
+            Y, Yp, metric='torus', period=1.0, region_labels=labels)
+        assert labelled['euclidean_mae_macro'] == pytest.approx(
+            np.mean([dist[labels == 0].mean(), dist[labels == 1].mean()]))
+        assert labelled['euclidean_mae'] == pytest.approx(dist.mean())
+        assert labelled['euclidean_mae_macro'] > labelled['euclidean_mae']
+        unlabelled = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0)
+        assert unlabelled['euclidean_mae_macro'] == pytest.approx(unlabelled['euclidean_mae'])

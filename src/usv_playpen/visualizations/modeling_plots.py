@@ -40,6 +40,7 @@ a ``manifold_metric`` are drawn on a flat UMAP plane).
 """
 
 import cmasher as cmr
+import h5py
 import json
 import math
 import warnings
@@ -70,17 +71,16 @@ from ..modeling.modeling_metadata import RESERVED_METADATA_KEYS, load_selection_
 from ..modeling.manifold_metric import pairwise_distance
 from ..modeling.modeling_utils import manifold_tag_segment
 from ..analyses.compute_behavioral_features import FeatureZoo
-from ..processing.qlvm_latents import load_model_cell, model_decode_condition
-from ..processing.qlvm_model import decode_lattice_atlas, decode_shifted_lattice
 from ..os_utils import (
     QLVM_CATEGORY_MAP,
     QLVM_REGULAR_MAP,
+    SPECTROGRAMS_DIRECTORY,
     configure_path,
     load_qlvm_category_bundle,
-    qlvm_cell_model_id,
-    qlvm_map_cell_directory,
+    resolve_consolidated_h5_path,
 )
 from .plot_style import apply_plot_style
+from .qlvm_figures import neighbor_indices, read_thumbnail
 
 
 apply_plot_style()
@@ -1891,7 +1891,7 @@ def plot_univariate_multinomial_performance(
         number of tested features.
     base_cmap : str, default 'mako'
         The sequential colormap used for the Actual and Null proportion matrices.
-    diff_cmap : str, default 'RdBu_r'
+    diff_cmap : str, default the ``figures.diverging_cmap`` setting
         The diverging colormap used for the Subtracted (Information Gain) matrix.
     save_plot : bool, default False
         If True, saves the generated SVG plots to disk.
@@ -2180,7 +2180,7 @@ def plot_univariate_multinomial_filters_grid(
     history_window_sec : float, default 4.0
         The total length of the behavioral history window in seconds. Used to
         correctly format the X-axis time labels.
-    cmap : str, default 'RdBu_r'
+    cmap : str, default the ``figures.diverging_cmap`` setting
         The diverging colormap used to represent negative/positive filter weights.
     save_plot : bool, default False
         If True, saves the figure as an SVG.
@@ -2950,9 +2950,9 @@ def plot_multinomial_multivariate_filters(
     history_window_sec : float, default=4.0
         The duration of behavioral history analyzed. Used to convert internal
         indices into a human-readable time axis.
-    cmap : str, default='RdBu_r'
-        Diverging colormap; Red indicates promotion of a category, Blue
-        indicates suppression.
+    cmap : str, default the ``figures.diverging_cmap`` setting
+        Diverging colormap; the warm half marks promotion of a category, the
+        cool half suppression.
     save_plot : bool, default=False
         If True, exports the grid as an SVG file for publication-quality editing.
     output_dir : str, optional
@@ -3451,8 +3451,10 @@ def plot_manifold_selection_trajectory(
       ``spearman_x/y``) grow rightward from the chance baseline on
       the left; lower-is-better error metrics (``euclidean_mae``,
       ``euclidean_rmse``, ``euclidean_mae_weighted``, ``mahalanobis_mae``,
-      ``mae_x``, ``mae_y``) flip the x-axis and grow rightward from the
-      step-0 (null-model / intercept-only) baseline on the right.
+      ``mae_x``, ``mae_y``, the two geodesic errors and the three
+      region-balanced ``*_mae_macro`` twins) flip the x-axis and grow
+      rightward from the step-0 (null-model / intercept-only) baseline on
+      the right.
     * **Right panel** -- two vertical bars on the secondary-metric
       axis: best univariate (= the anchor, since the manifold selector
       restricts the first step to a single anchor feature) and final
@@ -3543,6 +3545,8 @@ def plot_manifold_selection_trajectory(
         'mse', 'rmse',
         # torus geodesic errors (modeling_torus_geodesics) -- lower is better
         'density_geodesic_mae', 'pullback_geodesic_mae',
+        # region-balanced (macro) twins of the three distance columns
+        'euclidean_mae_macro', 'density_geodesic_mae_macro', 'pullback_geodesic_mae_macro',
     }
     is_minimization_primary = metric_primary in lower_is_better_set
     # Secondary metrics as a list of (key, label). Backward-compatible: when
@@ -4128,89 +4132,122 @@ def _atlas_manifold_columns(selection_metadata: dict | None) -> list:
     return regular_columns
 
 
-def _resolve_atlas_decoder_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
-                                          condition_quantile: float = 0.5) -> tuple[dict, np.float32 | None, dict | None, str]:
+def _resolve_atlas_tiles_and_categories(qlvm_map: str = QLVM_REGULAR_MAP,
+                                        session_ids: list | None = None,
+                                        n_per_dim: int = 12) -> tuple[np.ndarray, np.ndarray, dict | None, str]:
     """
     Description
     -----------
-    Resolves what ``plot_manifold_filter_atlas`` decodes its vocal-space atlas
+    Resolves what ``plot_manifold_filter_atlas`` tiles its vocal-space atlas
     with and which category grid it draws over it. Both come from the code
     constants, never from settings paths the GUI / CLI experimenter re-keying
     rewrites:
 
-    * **Decoder.** The production cell of the map the run's coordinates come
-      from, ``os_utils.qlvm_map_cell_directory(qlvm_map)`` (``qlvm`` ->
-      ``.../spectrograms/qlvm/qlvm``; ``qlvm_duration`` / ``qlvm_entropy`` /
-      ``qlvm_bandwidth`` / ``qlvm_loudness`` -> their cells
-      ``.../spectrograms/qlvm/<map>``; ``qlvm_squeak`` -> the squeak cell),
-      loaded by ``processing.qlvm_latents.load_model_cell``. An atlas of one map's
-      filter decoded on another map's torus would show calls that do not live at
-      the positions the filter fields point to. A conditional cell decodes
-      ``(z, c)``, so the atlas fixes ``c`` at the ``condition_quantile`` of the
-      cell's training corpus's conditioning distribution
-      (``processing.qlvm_latents.model_decode_condition``; ``0.5`` is the corpus
-      median call), one value for every tile; the regular and squeak cells take
-      no conditioning value.
+    * **Tiles.** Real vocalizations from the production spectrogram store (the
+      newest ``spectrograms_*.h5`` under ``os_utils.SPECTROGRAMS_DIRECTORY``,
+      ``os_utils.resolve_consolidated_h5_path``), masked by the union of their
+      SAM masks and shown at their natural duration
+      (``qlvm_figures.read_thumbnail``: the storage window of 128 time bins with
+      the vocalization centred in it, NOT time-stretched; the decoder's
+      canonical, time-stretched reconstructions are deliberately not used). The
+      torus is tiled by an ``n_per_dim`` x ``n_per_dim`` grid of node centres and
+      each node shows the embedded vocalization nearest to it (flat-torus
+      distance, ``qlvm_figures.neighbor_indices``) among the store rows of the
+      run's sessions (``session_ids``; every session of the store when None),
+      at the positions of the run's map (the store's ``qlvm/<session>/<map>``
+      dataset: ``qlvm`` -> the regular map, ``qlvm_duration`` -> the
+      duration-conditioned map, ``qlvm_squeak`` -> the squeak map, and so on;
+      rows with embedding status 0 only). An atlas of one map's filter tiled at
+      another map's positions would show calls that do not live where the
+      filter fields point.
     * **Categories.** Only on the map the category bundle is defined on
       (``os_utils.QLVM_CATEGORY_MAP``, the regular map): the category bundle,
       ``os_utils.load_qlvm_category_bundle``
       (``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``, written by
       ``build-qlvm-categories``), whose ``label_grid`` (``1..k``, R-1..R-k,
       indexed ``[y, x]``) is the partition the summaries' ``qlvm_category`` was
-      assigned from. The bundle records no model cell itself, so its identity is
-      the map it is defined on and its ``build_config.json`` (build time,
-      positions file SHA-256, call count; ``bundle['identity']``, printed with the
-      decoder for the figure's record). The decoder's ``model_id`` must equal the
+      assigned from. The store records the cell each map's positions were
+      embedded with (``qlvm_models/<map>`` ``model_id``); it must equal the
       bundle's (``bundle['model_id']``, the cell of the bundle's map), otherwise
-      ValueError: boundaries of one torus over an atlas decoded on another would
-      mislabel every region. Any other map places the same calls elsewhere, so it
-      gets no category grid (None) and the atlas draws no boundaries.
+      ValueError: boundaries of one torus over the positions of another would
+      mislabel every region. Any other map places the same calls elsewhere, so
+      it gets no category grid (None) and the atlas draws no boundaries.
 
     Parameters
     ----------
     qlvm_map (str)
         The map of the run's manifold coordinates, one of
         ``os_utils.QLVM_DECODER_MAPS``. Defaults to the regular map.
-    condition_quantile (float)
-        The training-corpus quantile of the conditioning value a conditional
-        cell is decoded at, in ``[0, 1]``; ignored for an unconditional cell.
-        Defaults to 0.5 (the corpus median).
+    session_ids (list | None)
+        The run's session ids (the artifact's ``_input_metadata.session_ids``);
+        the tiles are drawn from these sessions' vocalizations. None takes every
+        session of the store.
+    n_per_dim (int)
+        Tiling density: ``n_per_dim ** 2`` node centres ``(i + 0.5) / n_per_dim``.
 
     Returns
     -------
-    decoder_params (dict)
-        Decoder weights for ``processing.qlvm_model`` decoding.
-    condition (np.float32 | None)
-        The conditioning value every tile is decoded at, or None for an
-        unconditional cell.
+    lattice (np.ndarray)
+        ``(n_per_dim ** 2, 2)`` node centres, the tile positions.
+    tiles (np.ndarray)
+        ``(n_per_dim ** 2, n_freq, window)`` masked spectrogram tiles, one per
+        node.
     bundle (dict | None)
         The category bundle (``os_utils.read_qlvm_category_bundle``) on the
         category map, None on every other map.
-    decoder_model_id (str)
-        ``<package>/<phase>/<cell>`` of the decoder's cell (for messages and
-        tests).
+    store_model_id (str)
+        ``<package>/<phase>/<cell>`` of the cell the map's positions were
+        embedded with (for messages and tests).
     """
 
-    model = load_model_cell(qlvm_map_cell_directory(qlvm_map))
-    decoder_model_id = qlvm_cell_model_id(model['model_id'])
-    condition = model_decode_condition(model, condition_quantile)
-    if condition is None:
-        decoder_note = f"decoder {decoder_model_id}"
-    else:
-        decoder_note = (f"decoder {decoder_model_id} at {model['contract']['condition']['name']} c = "
-                        f"{float(condition):.4f} (training-corpus quantile {float(condition_quantile):.3g})")
+    store_path = resolve_consolidated_h5_path(SPECTROGRAMS_DIRECTORY)
+    centres = (np.arange(int(n_per_dim)) + 0.5) / int(n_per_dim)
+    grid_x, grid_y = np.meshgrid(centres, centres, indexing='ij')
+    lattice = np.column_stack([grid_x.ravel(), grid_y.ravel()]).astype(np.float32)
+    with h5py.File(store_path, 'r') as h5:
+        if f'qlvm_models/{qlvm_map}' not in h5:
+            raise ValueError(
+                f"plot_manifold_filter_atlas: the spectrogram store {store_path} carries no "
+                f"positions of the {qlvm_map!r} map."
+            )
+        store_model_id = str(h5[f'qlvm_models/{qlvm_map}'].attrs['model_id'])
+        sessions = [str(s) for s in session_ids] if session_ids is not None else sorted(h5['spectrogram'].keys())
+        positions, owner_session, owner_row = [], [], []
+        for session_id in sessions:
+            if f'qlvm/{session_id}' not in h5:
+                continue
+            group = h5[f'qlvm/{session_id}']
+            session_positions = np.asarray(group[qlvm_map][:], dtype=np.float64)
+            embedded = np.flatnonzero(
+                (np.asarray(group['status'][:]) == 0) & np.all(np.isfinite(session_positions), axis=1))
+            positions.append(session_positions[embedded])
+            owner_session.extend([session_id] * int(embedded.size))
+            owner_row.append(embedded)
+        if not positions or sum(int(p.shape[0]) for p in positions) == 0:
+            raise ValueError(
+                f"plot_manifold_filter_atlas: no embedded vocalization of the {qlvm_map!r} map in "
+                f"{store_path} for the run's {len(sessions)} sessions."
+            )
+        positions = np.vstack(positions)
+        owner_row = np.concatenate(owner_row)
+        nearest = neighbor_indices(positions, lattice.astype(np.float64), 1, True, False)[:, 0]
+        tiles = np.stack([read_thumbnail(h5, owner_session[i], int(owner_row[i])) for i in nearest])
+    tiles_note = (f"tiles = nearest of {positions.shape[0]} vocalizations of "
+                  f"{len(set(owner_session))} sessions in {pathlib.Path(store_path).name} "
+                  f"(positions of cell {store_model_id})")
     if qlvm_map != QLVM_CATEGORY_MAP:
-        print(f"plot_manifold_filter_atlas: map {qlvm_map!r}, {decoder_note}; no category boundaries "
+        print(f"plot_manifold_filter_atlas: map {qlvm_map!r}, {tiles_note}; no category boundaries "
               f"(the categories are defined on the {QLVM_CATEGORY_MAP!r} map).")
-        return model['params'], condition, None, decoder_model_id
+        return lattice, tiles, None, store_model_id
     bundle = load_qlvm_category_bundle()
-    if bundle['model_id'] != decoder_model_id:
+    if bundle['model_id'] != store_model_id:
         raise ValueError(
             f"plot_manifold_filter_atlas: the category bundle {bundle['identity']} partitions the torus of "
-            f"{bundle['model_id']} (map {bundle['map']!r}), but the atlas decoder is {decoder_model_id}."
+            f"{bundle['model_id']} (map {bundle['map']!r}), but the store's {qlvm_map!r} positions were "
+            f"embedded with {store_model_id}."
         )
-    print(f"plot_manifold_filter_atlas: map {qlvm_map!r}, {decoder_note}; categories {bundle['identity']}.")
-    return model['params'], condition, bundle, decoder_model_id
+    print(f"plot_manifold_filter_atlas: map {qlvm_map!r}, {tiles_note}; categories {bundle['identity']}.")
+    return lattice, tiles, bundle, store_model_id
 
 
 def plot_manifold_filter_atlas(
@@ -4219,11 +4256,10 @@ def plot_manifold_filter_atlas(
         n_time_slices: int = 16,
         display_bins: int = 25,
         smooth_sigma: float = 3.0,
-        atlas_grid_n: int = 10,
+        atlas_grid_n: int = 12,
         save_plot: bool = False,
         output_dir: str = None,
         feature_label_overrides: dict = None,
-        condition_quantile: float = 0.5,
 ) -> None:
     """
     Single-figure "atlas" summary of the converged multivariate torus-manifold
@@ -4233,17 +4269,19 @@ def plot_manifold_filter_atlas(
     Layout
     ------
     * **Top-left -- vocal-space atlas.** A tiled ``atlas_grid_n`` x
-      ``atlas_grid_n`` grid of torus positions is decoded through the frozen
-      QLVM decoder of the map the run's coordinates come from (the map prefix of
-      the artifact's ``usv_manifold_column_names``: ``qlvm1`` / ``qlvm2`` -> the
-      production regular cell, ``qlvm_duration1`` / ``qlvm_duration2`` -> the
-      duration-conditioned cell, ``qlvm_squeak1`` / ``qlvm_squeak2`` -> the
-      squeak cell, and so on; a conditional cell decoded at the
-      ``condition_quantile`` of its training conditioning distribution) into
-      canonical spectrograms,
-      each drawn as a small ``figures.sequential_cmap`` (inferno) image on a black
-      background at its torus location and **normalised to its own peak** so the
-      contour shape reads at every position regardless of absolute intensity.
+      ``atlas_grid_n`` grid of torus positions, each node showing the real
+      vocalization of the run's sessions nearest to it in the production
+      spectrogram store (``_resolve_atlas_tiles_and_categories``: the positions of
+      the map the run's coordinates come from, the map prefix of the artifact's
+      ``usv_manifold_column_names``, ``qlvm1`` / ``qlvm2`` -> the regular map,
+      ``qlvm_duration1`` / ``qlvm_duration2`` -> the duration-conditioned map,
+      ``qlvm_squeak1`` / ``qlvm_squeak2`` -> the squeak map, and so on), masked
+      by its SAM masks and at its **natural duration** in the 128-bin storage
+      window (never time-stretched; the decoder's canonical reconstructions are
+      stretched and are not shown), each drawn as a small
+      ``figures.sequential_cmap`` (inferno) image on a black background at its
+      torus location and **normalised to its own peak** so the contour shape
+      reads at every position regardless of absolute intensity.
       On the regular map the QLVM categories (R-1..R-k of the category bundle,
       ``os_utils.load_qlvm_category_bundle``) are overlaid as thin white
       boundaries; the categories are defined on the regular map only, so a
@@ -4289,9 +4327,9 @@ def plot_manifold_filter_atlas(
     smooth_sigma : float, default 3.0
         Standard deviation (in display bins) of the Gaussian applied to each
         magnitude line before plotting (``0`` disables it).
-    atlas_grid_n : int, default 10
-        Tiling density of the vocal-space atlas (``atlas_grid_n ** 2`` decoded
-        USVs across the torus).
+    atlas_grid_n : int, default 12
+        Tiling density of the vocal-space atlas (``atlas_grid_n ** 2`` real
+        vocalizations across the torus, one per node).
     save_plot : bool, default False
         If True, writes the figure (format / timestamp per the shared figure
         settings).
@@ -4302,21 +4340,15 @@ def plot_manifold_filter_atlas(
         ``{raw_feature_name: display_label}`` overrides; unmapped names fall back
         to ``FeatureZoo.resolve_feature_label`` with the cohort sexes from the
         artifact metadata.
-    condition_quantile : float, default 0.5
-        Only for a conditional map (``qlvm_duration``, ``qlvm_entropy``,
-        ``qlvm_bandwidth``, ``qlvm_loudness``): the quantile of the conditioning
-        value's training-corpus distribution every atlas tile is decoded at
-        (``processing.qlvm_latents.condition_quantile_value``, decoded by the
-        cell's exact / grid rule). ``0.5`` decodes the corpus median call; e.g.
-        ``0.1`` / ``0.9`` show the same torus for short / long calls on the
-        duration map. Ignored on the regular and squeak maps.
 
     Notes
     -----
-    The decoder and the category grid are not arguments: both come from the code
-    constants (``_resolve_atlas_decoder_and_categories``), the production cell of
-    the artifact's map and, on the regular map, the category bundle, which must
-    describe the same torus. The map is read from the artifact's
+    The spectrogram store and the category grid are not arguments: both come from
+    the code constants (``_resolve_atlas_tiles_and_categories``), the production
+    store under ``os_utils.SPECTROGRAMS_DIRECTORY`` (positions of the artifact's
+    map, tiles from the run's sessions, ``_input_metadata.session_ids``) and, on
+    the regular map, the category bundle, which must describe the same torus. The
+    map is read from the artifact's
     ``_input_metadata.analysis_specific.usv_manifold_column_names``
     (``_atlas_manifold_columns``).
 
@@ -4353,12 +4385,16 @@ def plot_manifold_filter_atlas(
         history_window_sec = (float(_im['filter_history_seconds'])
                               if 'filter_history_seconds' in _im else 4.0)
 
-    # Resolve the QLVM decoder (the production cell of the artifact's map) and,
+    # Resolve the atlas tiles (real vocalizations of the run's sessions from the
+    # production spectrogram store, at the positions of the artifact's map) and,
     # on the regular map, the category grid (the category bundle) from the code
     # constants; they must share a torus.
     manifold_columns = _atlas_manifold_columns(selection_metadata)
-    decoder_params, decoder_condition, category_bundle, _ = _resolve_atlas_decoder_and_categories(
-        manifold_tag_segment(manifold_columns), condition_quantile)
+    _run_sessions = (list(selection_metadata['_input_metadata']['session_ids'])
+                     if selection_metadata and '_input_metadata' in selection_metadata
+                     and 'session_ids' in selection_metadata['_input_metadata'] else None)
+    _lattice, atlas, category_bundle, _ = _resolve_atlas_tiles_and_categories(
+        manifold_tag_segment(manifold_columns), _run_sessions, int(atlas_grid_n))
 
     # Feature colours: self / partner by cohort, dyadic social; features sharing a
     # category are separated by OPACITY only (mirrors the trajectory plotter).
@@ -4427,20 +4463,6 @@ def plot_manifold_filter_atlas(
     else:
         vmax = 0.1
 
-    # Vocal-space atlas: decode a tiled grid of torus positions into canonical
-    # USV spectrograms through the frozen QLVM decoder resolved above.
-    _tile_c = (np.arange(int(atlas_grid_n)) + 0.5) / int(atlas_grid_n)
-    _tile_gx, _tile_gy = np.meshgrid(_tile_c, _tile_c, indexing='ij')
-    _lattice = np.column_stack([_tile_gx.ravel(), _tile_gy.ravel()]).astype(np.float32)
-    if decoder_condition is None:
-        atlas = np.asarray(decode_lattice_atlas(_lattice, decoder_params))   # (K, 1, 128, 128)
-    else:
-        # A conditional decoder takes the one fixed conditioning value appended to
-        # every tile's basis (no shift: the tiles are decoded where they sit).
-        atlas = np.asarray(decode_shifted_lattice(
-            _lattice, np.zeros((1, 2), dtype=np.float32), decoder_params,
-            condition=np.full((1, 1), decoder_condition, dtype=np.float32)))   # (K, 1, 128, 128)
-
     # Approved layout constants (data-unit geometry of the filmstrip decks and the
     # labelled-time axis; tuned once with the user, kept here as named values).
     stack_dx = 0.12          # horizontal overlap offset per time slice
@@ -4459,7 +4481,8 @@ def plot_manifold_filter_atlas(
     outer = gridspec.GridSpec(1, 3, width_ratios=[1, 1, 0.14], wspace=0.30, figure=fig)
     left_gs = gridspec.GridSpecFromSubplotSpec(2, 1, subplot_spec=outer[0, 0], hspace=0.22)
 
-    # (1) Top-left: vocal-space atlas (decoded USVs, per-icon peak-normalised).
+    # (1) Top-left: vocal-space atlas (real vocalizations at natural duration,
+    # per-tile peak-normalised).
     ax_atlas = fig.add_subplot(left_gs[0, 0])
     ax_atlas.set_box_aspect(1)
     ax_atlas.set_anchor('N')
@@ -4467,7 +4490,7 @@ def plot_manifold_filter_atlas(
     _half = 0.5 / int(atlas_grid_n) * 0.98
     for k in range(int(atlas_grid_n) ** 2):
         _ax0, _ay0 = _lattice[k]
-        _spec = atlas[k, 0]
+        _spec = atlas[k]
         _vm = float(_spec.max())
         _vm = _vm if _vm > 1e-6 else 1.0
         ax_atlas.imshow(_spec, origin='lower',
@@ -4549,8 +4572,7 @@ def plot_manifold_filter_atlas(
                               lw=(1.3 if is_front else 1.0 - 0.70 * t_norm),
                               zorder=ri * 100 + 2 * k + 1))
         ax_film.text((n_slices - 1) * stack_dx * 0.5 + side * 0.5, y_base + side + 0.02,
-                     _pretty(f), color=base_colors[ri], alpha=alphas[ri], fontsize=8,
-                     ha='center', va='bottom')
+                     _pretty(f), color=TEXT_COLOR, fontsize=8, ha='center', va='bottom')
     ax_film.set_xlim(-0.1, (n_slices - 1) * stack_dx + side + 0.1)
     ax_film.set_ylim(-0.05, (n_features - 1) * row_pitch + side + 0.26)
     ax_film.set_yticks([])
@@ -5567,7 +5589,7 @@ class DeepResultsVisualizer:
     def plot_error_landscape(self,
                              gridsize: int = 30,
                              cmap: str = _GLOBAL_CMAP,
-                             diff_cmap: str = _DIVERGING_CMAP,  # Reverting to RdBu_r for standard diverging look
+                             diff_cmap: str = _DIVERGING_CMAP,
                              vmax_percentile: float = 95.0,
                              title_fontsize: int = 10,
                              label_fontsize: int = 8,
@@ -5592,7 +5614,7 @@ class DeepResultsVisualizer:
             The number of hexagons in the x-direction. Controls spatial resolution.
         cmap : str, default `figures.sequential_cmap` (currently 'inferno')
             Colormap for the absolute error landscape.
-        diff_cmap : str, default 'RdBu_r'
+        diff_cmap : str, default the ``figures.diverging_cmap`` setting
             Diverging colormap for the Error Reduction panel.
         vmax_percentile : float, default 95.0
             The percentile at which to cap the maximum color value for visual clarity.
@@ -6488,7 +6510,7 @@ def plot_collinearity_audit(audit_pkl_path: str,
         and coloured per feature group (matching the per-feature
         timescale panels); the axis tick *marks* are suppressed
         because the colour-coded labels are sufficient. Diverging
-        symmetric colormap (default `'RdBu_r'`, exposed via the
+        symmetric colormap (default the ``figures.diverging_cmap`` setting, exposed via the
         `cmap` parameter so the caller can plug in any other
         diverging colormap — sequential maps would misrepresent
         the sign of ρ and should not be used). Off-diagonal cells
@@ -6531,7 +6553,7 @@ def plot_collinearity_audit(audit_pkl_path: str,
         Matplotlib `savefig` format, defaulting to the project
         ``figures.fig_format`` setting. Only consulted when
         `save_plot_bool` is True.
-    cmap : str, default 'RdBu_r'
+    cmap : str, default the ``figures.diverging_cmap`` setting
         Matplotlib colormap name for the Spearman ρ heatmap. Must
         be a *diverging* colormap because the colour scale is
         symmetric on `[-1, 1]` — sequential maps would conflate

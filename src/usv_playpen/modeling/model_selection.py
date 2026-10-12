@@ -5674,6 +5674,13 @@ def continuous_vocal_manifold_model_selection(
         'vm_logscore_pooled',
         'density_geodesic_mae',
         'pullback_geodesic_mae',
+        # Region-balanced (macro) twins of the three distance columns: the
+        # per-region mean error averaged with equal weight per acoustic region
+        # (`manifold_metric.macro_region_mean`), matching the region-reweighted
+        # fit and the macro selection score.
+        'euclidean_mae_macro',
+        'density_geodesic_mae_macro',
+        'pullback_geodesic_mae_macro',
     ]
 
     # Precompute the torus geodesic "reference map" ONCE (fold-independent, like
@@ -5777,7 +5784,9 @@ def continuous_vocal_manifold_model_selection(
                 region_labels=region_global[te_idx], min_region_events=_min_region_events,
                 kappa=kappa_frozen,
             )
-            bundle.update(geodesic_mae_columns(y_pred_xy, Y_te, geodesic_ctx))
+            bundle.update(geodesic_mae_columns(
+                y_pred_xy, Y_te, geodesic_ctx,
+                region_labels=region_global[te_idx], min_region_events=_min_region_events))
             f_met = baseline_data['folds']['metrics']
             for _k, _v in bundle.items():
                 f_met[_k].append(_v)
@@ -6006,7 +6015,9 @@ def continuous_vocal_manifold_model_selection(
                     kappa=kappa_frozen,
                 )
                 y_pred_xy = model.predict(X_te, snap=True).astype(np.float32)
-                metrics.update(geodesic_mae_columns(y_pred_xy, Y_te, geodesic_ctx))
+                metrics.update(geodesic_mae_columns(
+                    y_pred_xy, Y_te, geodesic_ctx,
+                    region_labels=region_te, min_region_events=_min_region_events))
 
                 f_met = cand_data['folds']['metrics']
                 for _mk in f_met:
@@ -6205,7 +6216,9 @@ def continuous_vocal_manifold_model_selection(
                         kappa=kappa_frozen,
                     )
                     y_pred_xy = model.predict(X_te_stacked, snap=True).astype(np.float32)
-                    metrics.update(geodesic_mae_columns(y_pred_xy, Y_te, geodesic_ctx))
+                    metrics.update(geodesic_mae_columns(
+                    y_pred_xy, Y_te, geodesic_ctx,
+                    region_labels=region_te, min_region_events=_min_region_events))
 
                     f_met = cand_data['folds']['metrics']
                     for _mk in f_met:
@@ -6402,7 +6415,9 @@ def continuous_vocal_manifold_model_selection(
                     kappa=kappa_frozen,
                 )
                 held_pred_xy = held_model.predict(X_held, snap=True).astype(np.float32)
-                held_metrics.update(geodesic_mae_columns(held_pred_xy, Y_held, geodesic_ctx))
+                held_metrics.update(geodesic_mae_columns(
+                    held_pred_xy, Y_held, geodesic_ctx,
+                    region_labels=region_held, min_region_events=_min_region_events))
                 heldout_result = {
                     'model_type': 'manifold_regressor',
                     'features': list(current_model_features),
@@ -6474,7 +6489,9 @@ def continuous_vocal_manifold_model_selection(
                     region_labels=region_held, min_region_events=_min_region_events,
                     kappa=kappa_frozen,
                 )
-                held_bundle.update(geodesic_mae_columns(held_pred_xy, Y_held, geodesic_ctx))
+                held_bundle.update(geodesic_mae_columns(
+                    held_pred_xy, Y_held, geodesic_ctx,
+                    region_labels=region_held, min_region_events=_min_region_events))
                 heldout_result = {
                     'model_type': 'null_model_free',
                     'features': [],

@@ -97,6 +97,7 @@ from .manifold_metric import (
     torus_embed,
     dcor_prediction_truth,
     macro_von_mises_logscore,
+    macro_region_mean,
     _validate_metric_period,
 )
 
@@ -891,6 +892,12 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         - `euclidean_mae_weighted` : MAE on the Euclidean residual weighted
           by the caller-supplied inverse-density weights so rare satellite
           vocalisations carry the same influence as dense-core bouts.
+        - `euclidean_mae_macro` : region-balanced (macro) twin of
+          `euclidean_mae` -- the per-region mean distance averaged with equal
+          weight per acoustic region (`manifold_metric.macro_region_mean`),
+          the distance yardstick that matches the region-reweighted fit and
+          the macro `vm_logscore`; the pooled mean when `region_labels` is
+          None.
         - `euclidean_mae_raw` : **diagnostic only.** MAE on the *raw*
           unsnapped linear predictions. The gap `euclidean_mae_raw -
           euclidean_mae` quantifies how much the manifold projection
@@ -1019,6 +1026,12 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         euclidean_dist = np.sqrt(dx ** 2 + dy ** 2)
         euclidean_mae = float(np.mean(euclidean_dist))
         euclidean_rmse = float(np.sqrt(np.mean(euclidean_dist ** 2)))
+        # Region-balanced (macro) twin of `euclidean_mae`: the per-region mean
+        # distance averaged with equal weight per acoustic region -- the error
+        # yardstick that matches the region-reweighted fit and the macro
+        # `vm_logscore` (`region_labels=None` -> the pooled mean).
+        euclidean_mae_macro = macro_region_mean(
+            euclidean_dist, region_labels, min_region_events=min_region_events)
         euclidean_mae_weighted = float(
             np.sum(weights * euclidean_dist) / (np.sum(weights) + 1e-12)
         )
@@ -1141,6 +1154,7 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
             'euclidean_rmse': euclidean_rmse,
             'euclidean_mae_weighted': euclidean_mae_weighted,
             'euclidean_mae_raw': euclidean_mae_raw,
+            'euclidean_mae_macro': euclidean_mae_macro,
             'mahalanobis_mae': mahalanobis_mae,
             'mae_x': mae_x,
             'mae_y': mae_y,

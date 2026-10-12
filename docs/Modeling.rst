@@ -1121,12 +1121,24 @@ the Benjamini–Hochberg ``q`` on the manifold).
      and when their reference map is disabled or the decoder is unavailable;
      their absolute magnitudes are reweighted path-lengths (arbitrary scale), so
      they are read as a **Δ-vs-baseline**, exactly like the flat MAE.
-   * **Region-weighted vs global MAE** — ``euclidean_mae_weighted`` (the macro,
-     region-balanced distance twin of ``vm_logscore``) alongside the global
-     ``euclidean_mae``, plus ``mahalanobis_mae``, ``r2_spatial``, the per-axis
-     MAEs and the pearson / spearman correlations. The fit itself is additionally
+   * **Region-balanced (macro) vs pooled distance** — every distance column
+     comes in two averages: the pooled per-event mean (``euclidean_mae``,
+     ``density_geodesic_mae``, ``pullback_geodesic_mae``) and its
+     region-balanced twin (``euclidean_mae_macro``,
+     ``density_geodesic_mae_macro``, ``pullback_geodesic_mae_macro``: the
+     per-region mean error averaged with equal weight per acoustic region,
+     ``manifold_metric.macro_region_mean``). The fit itself is
      **region-reweighted** (inverse-region-frequency sample weights), so a few
-     dominant acoustic regions do not drown the rare ones during estimation.
+     dominant acoustic regions do not drown the rare ones during estimation, and
+     the selection score ``vm_logscore`` is macro; the ``*_macro`` columns are the
+     distance yardstick consistent with both. The pooled columns charge a
+     region-balanced model for resting away from the dominant regions, a charge
+     that on an unbalanced map (one region holding 7 % of the vocalizations)
+     exceeds what the behavioural features recover, so the trajectory figure's
+     error panels read the ``*_macro`` columns. Also reported:
+     ``euclidean_mae_weighted`` (the pooled distance weighted by the
+     inverse-density sample weights), ``mahalanobis_mae``, ``r2_spatial``, the
+     per-axis MAEs and the pearson / spearman correlations.
 
 Run on a single node from the notebook:
 
@@ -1210,8 +1222,10 @@ gain and the retained-feature filters.
 For the acoustic-manifold model the converged filters have a single dedicated
 view, ``plot_manifold_filter_atlas`` (torus runs only), reading the same
 consolidated artifact — a three-panel figure. The **vocal-space atlas** panel
-tiles the torus with canonical USVs decoded through the frozen decoder of the
-run's QLVM map (inferno on black, each icon peak-normalised; on the regular map
+tiles the torus with real USVs of the run's sessions: each node shows the
+vocalization nearest to it in the production spectrogram store, masked by its
+SAM masks and at its natural duration in the storage window, never
+time-stretched (inferno on black, each tile peak-normalised; on the regular map
 the QLVM category boundaries overlaid in white) as the key for the fields. The **filter magnitude**
 panel draws the per-feature temporal magnitude ``|W(t)|`` over the history window
 (one line per feature, coloured by behavioural category with opacity separating
@@ -1220,29 +1234,30 @@ envelope reads cleanly). The **affinity filmstrips** panel samples each feature'
 filter at ``n_time_slices`` instants from ``-history_window_sec`` to onset and
 decodes each into the signed ``e(theta).W`` field over the torus (red = a +1 SD
 increase in the feature just before onset drives the predicted vocalization toward
-that region, blue = away), on a shared diverging scale. The atlas is decoded by
-the production cell of the map the run's coordinates come from,
-``os_utils.qlvm_map_cell_directory(<map>)`` with ``<map>`` the map prefix of the
-artifact's ``_input_metadata.analysis_specific.usv_manifold_column_names``
-(``qlvm`` -> ``.../spectrograms/qlvm/qlvm``, the conditional
-maps -> their cells ``.../spectrograms/qlvm/<map>``, ``qlvm_squeak``
--> the squeak cell; an artifact without that record predates the conditional
-maps and is read as a regular-map run). A conditional cell decodes a torus
-position and a conditioning value, so every tile is decoded at one value, the
-``condition_quantile`` argument's quantile of the cell's training conditioning
-distribution (default ``0.5``, the corpus median USV; e.g. ``0.1`` / ``0.9``
-show the duration map's torus for short / long USVs), the same rule as the
-geodesic ``pullback_condition_quantile``. On the regular map its white boundaries
-are the R-1 … R-k regions of the QLVM category bundle (``os_utils.load_qlvm_category_bundle``,
+that region, blue = away), on a shared diverging scale. The atlas tiles come
+from the newest production spectrogram store under
+``os_utils.SPECTROGRAMS_DIRECTORY`` (``os_utils.resolve_consolidated_h5_path``),
+at the positions of the map the run's coordinates come from, ``<map>`` the map
+prefix of the artifact's
+``_input_metadata.analysis_specific.usv_manifold_column_names`` (the store's
+``qlvm/<session>/<map>`` dataset: ``qlvm`` the regular map, the conditional maps
+and ``qlvm_squeak`` their own; an artifact without that record predates the
+conditional maps and is read as a regular-map run), restricted to the run's
+sessions (``_input_metadata.session_ids``) and to embedded rows (status 0); each
+node shows the nearest such vocalization (flat-torus distance). The decoder's
+canonical reconstructions are time-stretched and are deliberately not shown. On
+the regular map its white boundaries are the R-1 … R-k regions of the QLVM
+category bundle (``os_utils.load_qlvm_category_bundle``,
 ``os_utils.QLVM_CATEGORY_BUNDLE_DIRECTORY``, the partition the summaries'
 ``qlvm_category`` was assigned from); the bundle partitions the regular map's
 torus only, so a conditional or squeak map's atlas and filmstrips draw no
-boundaries. Both come from the code constants, not from
-arguments or settings paths (the GUI / CLI experimenter re-keying cannot move
-them), and the bundle must be defined on the decoder's cell (the bundle's map,
-``os_utils.QLVM_CATEGORY_MAP``, resolves to the decoder's ``model_id``),
-otherwise a ``ValueError`` is raised; the bundle's ``build_config.json`` identity is
-printed with the decoder for the figure's record. Colours come from
+boundaries. Both come from the code constants, not from arguments or settings
+paths (the GUI / CLI experimenter re-keying cannot move them), and the bundle
+must be defined on the cell the store's positions were embedded with (the
+bundle's map, ``os_utils.QLVM_CATEGORY_MAP``, resolves to the store's recorded
+``qlvm_models/<map>`` ``model_id``), otherwise a ``ValueError`` is raised; the
+store, the cell and the bundle's ``build_config.json`` identity are printed for
+the figure's record. Colours come from
 ``visualizations_settings.json`` (``sequential_cmap`` / ``diverging_cmap``), and the temporal
 filter's smoothness is governed by the per-observation ``lambda_smooth`` prior (see
 the note above) — or, under ``temporal_basis.type = 'bspline'``, by the spline layer

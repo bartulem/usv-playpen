@@ -221,9 +221,22 @@ class TestPerEventHelpers:
         yp, yt = rng.random((50, 2)), rng.random((50, 2))
         ctx_no_dec = build_torus_geodesic_context(emb, n_per_dim=12, period=1.0, k=8)
         cols = geodesic_mae_columns(yp, yt, ctx_no_dec)
-        assert set(cols) == {'density_geodesic_mae', 'pullback_geodesic_mae'}
+        assert set(cols) == {'density_geodesic_mae', 'pullback_geodesic_mae',
+                             'density_geodesic_mae_macro', 'pullback_geodesic_mae_macro'}
         assert np.isfinite(cols['density_geodesic_mae'])
         assert np.isnan(cols['pullback_geodesic_mae'])
+        # Without region labels the macro twins equal the pooled columns.
+        assert cols['density_geodesic_mae_macro'] == pytest.approx(cols['density_geodesic_mae'])
+        assert np.isnan(cols['pullback_geodesic_mae_macro'])
+        # With labels the macro twin is the mean of the per-region means of the
+        # per-event distances (equal weight per region), the pooled column is
+        # unchanged.
+        labels = np.array([0.0] * 45 + [1.0] * 5)
+        cols_macro = geodesic_mae_columns(yp, yt, ctx_no_dec, region_labels=labels)
+        d = per_event_geodesic_error(yp, yt, ctx_no_dec, method='density_geodesic')
+        assert cols_macro['density_geodesic_mae_macro'] == pytest.approx(
+            np.mean([d[labels == 0].mean(), d[labels == 1].mean()]))
+        assert cols_macro['density_geodesic_mae'] == pytest.approx(cols['density_geodesic_mae'])
         a = jnp.array([[3.0, 0.0], [0.0, 1.0]])
         ctx_dec = build_torus_geodesic_context(emb, decode_fn=lambda z: a @ z,
                                                n_per_dim=12, period=1.0, k=8)
@@ -240,6 +253,8 @@ class TestPerEventHelpers:
         cols = geodesic_mae_columns(yp, yt, None)
         assert np.isnan(cols['density_geodesic_mae'])
         assert np.isnan(cols['pullback_geodesic_mae'])
+        assert np.isnan(cols['density_geodesic_mae_macro'])
+        assert np.isnan(cols['pullback_geodesic_mae_macro'])
 
 
 

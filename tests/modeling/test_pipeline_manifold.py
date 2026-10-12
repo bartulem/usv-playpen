@@ -683,8 +683,16 @@ class TestContinuousModelRunner:
             assert 'pullback_geodesic_mae' in metrics
             assert len(metrics['density_geodesic_mae']) == n_splits
             assert len(metrics['pullback_geodesic_mae']) == n_splits
+            # The region-balanced (macro) twins of the three distance columns
+            # ride along, one value per fold.
+            for macro_key in ('euclidean_mae_macro', 'density_geodesic_mae_macro',
+                              'pullback_geodesic_mae_macro'):
+                assert macro_key in metrics
+                assert len(metrics[macro_key]) == n_splits
         # Density-ratio geodesic needs no decoder -> at least one finite fold.
         assert np.isfinite(results['actual']['folds']['metrics']['density_geodesic_mae']).any()
+        assert np.isfinite(results['actual']['folds']['metrics']['density_geodesic_mae_macro']).any()
+        assert np.isfinite(results['actual']['folds']['metrics']['euclidean_mae_macro']).all()
         # No decoder supplied -> pullback column present but all-NaN (graceful).
         assert not np.isfinite(results['actual']['folds']['metrics']['pullback_geodesic_mae']).any()
 

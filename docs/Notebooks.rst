@@ -702,9 +702,9 @@ multinomial selection artifacts.
 ``continuous_vocal_manifold_model_selection`` (forward-stepwise selection for the
 2-D acoustic-manifold regression) — same ``model_selection_final_*.pkl`` schema as the
 multinomial plotters but with continuous regression metrics (torus: ``vm_logscore``,
-``euclidean_mae``, ``density_geodesic_mae``, ``pullback_geodesic_mae``;
-euclidean: ``r2_spatial``, ``mahalanobis_mae``, ``pearson_x/y``,
-``spearman_x/y``) and a 2-D output dim.
+``euclidean_mae``, ``density_geodesic_mae``, ``pullback_geodesic_mae`` and their
+region-balanced ``*_macro`` twins; euclidean: ``r2_spatial``, ``mahalanobis_mae``,
+``pearson_x/y``, ``spearman_x/y``) and a 2-D output dim.
 
 .. code-block:: python
 
@@ -717,15 +717,18 @@ euclidean: ``r2_spatial``, ``mahalanobis_mae``, ``pearson_x/y``,
 
     # Torus (QLVM) run: primary = von Mises log-score; the two secondary panels
     # show the per-feature "% improvement over chance" for the manifold-position
-    # error (euclidean_mae) and the acoustic error (pullback_geodesic_mae). Pass
+    # error (euclidean_mae_macro) and the acoustic error
+    # (pullback_geodesic_mae_macro), both region-balanced like the fit and the
+    # score (the pooled euclidean_mae / pullback_geodesic_mae charge a
+    # region-balanced model for resting away from the dominant regions). Pass
     # metric BASE names -- the panels append " (held-out data)" / " improvement (%)".
     plot_manifold_selection_trajectory(
         selection_results_path=man_trajectory_results,
         metric_primary="vm_logscore",
         primary_metric_name="von Mises log-score",
         metrics_secondary=[
-            ("euclidean_mae", "manifold-position error"),
-            ("pullback_geodesic_mae", "acoustic error"),
+            ("euclidean_mae_macro", "manifold-position error"),
+            ("pullback_geodesic_mae_macro", "acoustic error"),
         ],
         secondary_as_pct_of_chance=True,
         save_plot=False,
@@ -739,7 +742,7 @@ euclidean: ``r2_spatial``, ``mahalanobis_mae``, ``pearson_x/y``,
     )
 
 * **man_trajectory_results** — cumulative primary metric (von Mises log-score) across forward-stepwise iterations, plus one "% improvement over chance" gain panel per secondary error metric (manifold-position / acoustic).
-* **man_filters_results** — the combined ``plot_manifold_filter_atlas`` (torus only): decoded vocal-space map + per-feature ``|W(t)|`` magnitude + per-feature ``e(theta).W`` affinity filmstrips, reusing the same path. The atlas decodes with the cell of the run's own QLVM map (read from the artifact); on a conditional map ``condition_quantile`` (default ``0.5``) sets the quantile of the conditioning value it is decoded at.
+* **man_filters_results** — the combined ``plot_manifold_filter_atlas`` (torus only): vocal-space map of real USVs + per-feature ``|W(t)|`` magnitude + per-feature ``e(theta).W`` affinity filmstrips, reusing the same path. The atlas tiles the torus with the run's own sessions' vocalizations from the production spectrogram store (the one nearest to each node, masked, at its natural duration, never time-stretched), at the positions of the run's own QLVM map (read from the artifact).
 
 **7. CNN pipeline.** A non-linear baseline (1-D ResNet) for the continuous manifold-position
 regression. Load the multivariate feature blocks into the ``(N, F, T)`` tensor the

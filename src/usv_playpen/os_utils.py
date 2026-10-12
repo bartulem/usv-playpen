@@ -383,7 +383,15 @@ def rebase_experimenter_in_paths(obj: object = None,
 # active one's, where no cell exists. The folder is not a full model package: it has
 # no SESSION_H5_BASELINE.tsv, MANIFEST.sha256 or corpus embedding, so
 # infer-qlvm-latents always infers (the package route needs the baseline).
-QLVM_MODEL_PACKAGE_ROOT = "/mnt/falkner/Bartul/spectrograms/qlvm"
+# The lab's spectrograms directory (read-only code constant, like the package root
+# below): the consolidated production spectrogram store lives directly under it
+# (``spectrograms_production_<S>sessions_<N>vocalizations_<ts>.h5``, written by
+# consolidate-spectrogram-store; ``resolve_consolidated_h5_path`` picks the newest),
+# and the QLVM package root and the category bundle are its sub-folders. Figure
+# code that shows real vocalizations at their map positions reads the store from
+# here, never from a settings path the experimenter re-keying rewrites.
+SPECTROGRAMS_DIRECTORY = "/mnt/falkner/Bartul/spectrograms"
+QLVM_MODEL_PACKAGE_ROOT = f"{SPECTROGRAMS_DIRECTORY}/qlvm"
 
 # The production embedding: column prefix -> cell under the folder above (the
 # sub-folder is named by the prefix). The
@@ -471,7 +479,7 @@ QLVM_DECODER_MAPS = QLVM_MAPS + (QLVM_SQUEAK_MAP,)
 # (`derive_spectrogram_model_paths`). A module constant rather than a settings path
 # for the reason given at QLVM_MODEL_PACKAGE_ROOT: the GUI and the CLI re-key every
 # experimenter folder in the settings to the active experimenter.
-QLVM_CATEGORY_BUNDLE_DIRECTORY = "/mnt/falkner/Bartul/spectrograms/categories"
+QLVM_CATEGORY_BUNDLE_DIRECTORY = f"{SPECTROGRAMS_DIRECTORY}/categories"
 
 # The files of a category bundle (build-qlvm-categories writes them, every reader
 # finds them by these names).

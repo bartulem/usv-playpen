@@ -14,7 +14,7 @@
     "fig_format": "png",
     "dpi": 300,
     "timestamp_in_name": true,
-    "diverging_cmap": "RdBu_r",
+    "diverging_cmap": "BrBG_r",
     "sequential_cmap": "inferno",
     "seed": 0
   },
