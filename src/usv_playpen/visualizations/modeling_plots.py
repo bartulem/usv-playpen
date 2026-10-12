@@ -1281,7 +1281,7 @@ def plot_model_selection_results(
     # floor and axis label are metric-appropriate (score / AUC / accuracy: chance
     # 0.5; correlations: chance 0).
     _secondary_spec = {'auc': (0.5, 'AUC'), 'accuracy': (0.5, 'Accuracy'),
-                       'score': (0.5, 'Score'),
+                       'score': (0.5, 'Balanced accuracy'),
                        'spearman_r': (0.0, 'Spearman ρ'),
                        'pearson_r': (0.0, 'Pearson r')}
     _analysis_type = ((selection_metadata or {}).get('_input_metadata') or {}).get('analysis_type')
@@ -1501,10 +1501,10 @@ def plot_model_selection_results(
         light_color = _lighten(base_color, factor=0.65)
         prev_nll = cum_nlls[row_idx - 1] if row_idx > 0 else chance_nll
         cur_nll = cum_nlls[row_idx]
-        # Signed improvement over the previous cumulative value (positive = better)
-        # in the metric's own direction: a reduction for a minimized metric (NLL),
-        # an increase for a maximized one (explained deviance).
-        delta = (prev_nll - cur_nll) if is_minimization else (cur_nll - prev_nll)
+        # Signed change of the metric itself from the previous cumulative value:
+        # negative when a minimized metric (NLL) drops, positive when a maximized
+        # one (explained deviance) rises, so the printed sign matches the axis.
+        delta = cur_nll - prev_nll
 
         # The bar spans from the chance baseline to this step's cumulative value,
         # split at the previous value: a light segment for the improvement BEFORE
@@ -1537,7 +1537,7 @@ def plot_model_selection_results(
         if _rdw > 0:
             ax_traj.barh(rej_y, _rdw, left=_rd, height=bar_height,
                          color=rejected_dark, edgecolor='none')
-        _rej_delta = (prev_nll - cur_nll) if is_minimization else (cur_nll - prev_nll)
+        _rej_delta = cur_nll - prev_nll
         ax_traj.text(cur_nll, rej_y,
                      f"{cur_nll:.3f}  (Δ {_rej_delta:+.3f}, ns)",
                      ha='left' if is_minimization else 'right',
@@ -1622,7 +1622,7 @@ def plot_model_selection_results(
 
     # Y-axis: floor at the metric's chance level; ceiling extended if needed to
     # clear the feature-label stack above the tallest bar. An AUC/accuracy-like
-    # metric (chance 0.5) keeps the fixed ~0.97 ceiling and 0.5..0.95 ticks; a
+    # metric (chance 0.5) keeps the fixed 0.9 ceiling and 0.5..0.9 ticks; a
     # correlation-like metric (chance 0) scales to its own data.
     bar_tops = [best_univariate_value, final_score]
     y_data_max = float(np.nanmax(bar_tops))
@@ -1633,9 +1633,9 @@ def plot_model_selection_results(
     max_label_lines = len(steps_data)
     label_stack_top = (y_data_max + label_y_start_offset
                        + (max_label_lines + 1) * label_line_spacing)
-    y_top = max(0.97 if _auc_like else 0.0, label_stack_top)
+    y_top = max(0.9 if _auc_like else 0.0, label_stack_top)
     ax_bars.set_ylim(chance_secondary, y_top)
-    _tick_top = 0.95 if _auc_like else y_data_max
+    _tick_top = 0.9 if _auc_like else y_data_max
     visible_ticks = np.arange(chance_secondary, _tick_top + 1e-9, 0.05)
     ax_bars.set_yticks(visible_ticks)
     ax_bars.set_yticklabels([f"{t:.2f}" for t in visible_ticks],
@@ -2634,9 +2634,9 @@ def plot_multinomial_selection_trajectory(
                 ax_traj.barh(y, prev_p - cur_p, left=cur_p,
                              height=bar_height, color=base_color,
                              edgecolor='none')
-            delta = prev_p - cur_p
+            delta = cur_p - prev_p
             ax_traj.text(cur_p - 0.003 * (chance_primary - cur_p + 1e-9), y,
-                         f"{cur_p:.3f}  (Δ -{delta:.3f})",
+                         f"{cur_p:.3f}  (Δ {delta:+.3f})",
                          ha='left', va='center', fontsize=7,
                          color=TEXT_COLOR)
         else:
@@ -2652,7 +2652,7 @@ def plot_multinomial_selection_trajectory(
                              edgecolor='none')
             delta = cur_p - prev_p
             ax_traj.text(cur_p + 0.003, y,
-                         f"{cur_p:.3f}  (Δ +{delta:.3f})",
+                         f"{cur_p:.3f}  (Δ {delta:+.3f})",
                          ha='left', va='center', fontsize=7,
                          color=TEXT_COLOR)
 
@@ -2671,7 +2671,7 @@ def plot_multinomial_selection_trajectory(
                              height=bar_height, color=rejected_dark,
                              edgecolor='none')
             ax_traj.text(cur_p - 0.003, rej_y,
-                         f"{cur_p:.3f}  (Δ -{prev_p - cur_p:.3f}, ns)",
+                         f"{cur_p:.3f}  (Δ {cur_p - prev_p:+.3f}, ns)",
                          ha='left', va='center', fontsize=7,
                          color=NEUTRAL_COLOR, style='italic')
         else:
@@ -2684,7 +2684,7 @@ def plot_multinomial_selection_trajectory(
                              height=bar_height, color=rejected_dark,
                              edgecolor='none')
             ax_traj.text(cur_p + 0.003, rej_y,
-                         f"{cur_p:.3f}  (Δ +{cur_p - prev_p:.3f}, ns)",
+                         f"{cur_p:.3f}  (Δ {cur_p - prev_p:+.3f}, ns)",
                          ha='left', va='center', fontsize=7,
                          color=NEUTRAL_COLOR, style='italic')
 
@@ -3697,9 +3697,9 @@ def plot_manifold_selection_trajectory(
                 ax_traj.barh(y, prev_p - cur_p, left=cur_p,
                              height=bar_height, color=base_color,
                              edgecolor='none')
-            delta = prev_p - cur_p
+            delta = cur_p - prev_p
             ax_traj.text(cur_p - 0.003 * (chance_primary - cur_p + 1e-9), y,
-                         f"{cur_p:.3f}  (Δ -{delta:.3f})",
+                         f"{cur_p:.3f}  (Δ {delta:+.3f})",
                          ha='left', va='center', fontsize=7,
                          color=TEXT_COLOR)
         else:
@@ -3713,7 +3713,7 @@ def plot_manifold_selection_trajectory(
                              edgecolor='none')
             delta = cur_p - prev_p
             ax_traj.text(cur_p + 0.003, y,
-                         f"{cur_p:.3f}  (Δ +{delta:.3f})",
+                         f"{cur_p:.3f}  (Δ {delta:+.3f})",
                          ha='left', va='center', fontsize=7,
                          color=TEXT_COLOR)
 
@@ -3732,7 +3732,7 @@ def plot_manifold_selection_trajectory(
                              height=bar_height, color=rejected_dark,
                              edgecolor='none')
             ax_traj.text(cur_p - 0.003, rej_y,
-                         f"{cur_p:.3f}  (Δ -{prev_p - cur_p:.3f}, ns)",
+                         f"{cur_p:.3f}  (Δ {cur_p - prev_p:+.3f}, ns)",
                          ha='left', va='center', fontsize=7,
                          color=NEUTRAL_COLOR, style='italic')
         else:
@@ -3745,7 +3745,7 @@ def plot_manifold_selection_trajectory(
                              height=bar_height, color=rejected_dark,
                              edgecolor='none')
             ax_traj.text(cur_p + 0.003, rej_y,
-                         f"{cur_p:.3f}  (Δ +{cur_p - prev_p:.3f}, ns)",
+                         f"{cur_p:.3f}  (Δ {cur_p - prev_p:+.3f}, ns)",
                          ha='left', va='center', fontsize=7,
                          color=NEUTRAL_COLOR, style='italic')
 
