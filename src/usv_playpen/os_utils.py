@@ -1433,10 +1433,11 @@ def wait_for_subprocesses(
 # truth every step that writes the summary reorders to (order_usv_summary_columns), so
 # a column's position never depends on which step ran last. Six blocks:
 #   1. the DAS event: usv_id, start, stop, duration (das_summarize);
-#   2. the segment-level class labels: noise / noise_probability (detect_usv_noise), then
-#      the vocal-class block of detect_usv_squeaks -- the usv / squeak booleans, the
-#      three class probabilities p_usv / p_squeak / p_both and the squeak extent
-#      squeak_start / squeak_end;
+#   2. the segment-level class labels: the three booleans noise (detect_usv_noise) and
+#      usv / squeak (detect_usv_squeaks), then the probabilities behind them,
+#      noise_probability (detect_usv_noise) and the three vocal-class probabilities
+#      usv_probability / squeak_probability / overlap_probability (detect_usv_squeaks),
+#      then the squeak extent squeak_start / squeak_end (detect_usv_squeaks);
 #   3. the emitter (vocal assignment) and the DAS channel statistics peak_amp_ch,
 #      mean_amp_ch, chs_count, chs_detected (das_summarize);
 #   4. the acoustic descriptors (compute_usv_acoustic_features, including the absolute
@@ -1452,10 +1453,13 @@ def wait_for_subprocesses(
 # A column a session does not carry yet is simply absent; a column not listed here
 # (an obsolete one, or a new one not yet placed) is kept after the listed ones, in its
 # existing order, so a reorder never loses data. USV_SUMMARY_OBSOLETE_COLUMNS lists the
-# columns tidy_usv_summary_columns removes from older summaries.
+# columns tidy_usv_summary_columns removes from older summaries, and
+# USV_SUMMARY_RENAMED_COLUMNS the ones it renames.
 USV_SUMMARY_COLUMN_ORDER = (
     "usv_id", "start", "stop", "duration",
-    "noise", "noise_probability", "usv", "squeak", "p_usv", "p_squeak", "p_both", "squeak_start", "squeak_end",
+    "noise", "usv", "squeak",
+    "noise_probability", "usv_probability", "squeak_probability", "overlap_probability",
+    "squeak_start", "squeak_end",
     "emitter", "peak_amp_ch", "mean_amp_ch", "chs_count", "chs_detected",
     "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "loudness_db",
     "spectral_entropy", "mask_number",
@@ -1484,9 +1488,13 @@ QLVM_SUMMARY_MAP_PREFIXES = ("qlvm", "qlvm_duration", "qlvm_entropy", "qlvm_band
 # agreement / uncertain flag of the regular map (kept outside the summary), and the
 # columns of the retired squeak detectors that the usv / squeak booleans, the class
 # probabilities and the one squeak_start / squeak_end extent replace: the binary
-# detector's squeak_probability / squeak_frame_runs and the first three-class
-# encoding's call_class / squeak_spans / n_squeaks. ``squeak`` itself is not listed:
-# it is a current column (the squeak boolean of detect_usv_squeaks). The names are
+# detector's squeak_frame_runs and the first three-class encoding's call_class /
+# squeak_spans / n_squeaks. ``squeak`` and ``squeak_probability`` are not listed: they
+# are current columns (the squeak boolean and the pure-squeak class probability of
+# detect_usv_squeaks). The binary detector's own ``squeak_probability`` column carried
+# the same name; no summary on disk held it any more when the name was reused
+# (2026-10-12, all 562 summaries checked), so a canonical ``squeak_probability`` is
+# always the class probability. The names are
 # matched EXACTLY (never as prefixes or globs), so the current qlvm_bandwidth1/2 and
 # qlvm_loudness1/2 are never taken for the retired qlvm_bw* / qlvm_loud* columns.
 USV_SUMMARY_OBSOLETE_COLUMNS = (
@@ -1498,9 +1506,21 @@ USV_SUMMARY_OBSOLETE_COLUMNS = (
     "qlvm_loud1", "qlvm_loud2", "qlvm_loud_category", "qlvm_loud_supercategory",
     "qlvm_model",
     "qlvm_category_agreement", "qlvm_category_uncertain",
-    "squeak_probability", "squeak_frame_runs",
+    "squeak_frame_runs",
     "call_class", "squeak_spans", "n_squeaks",
 )
+
+# Columns older summaries carry under a name the canonical layout has since changed,
+# old name -> canonical name, renamed by tidy_usv_summary_columns with every value kept:
+# the three vocal-class probabilities of detect_usv_squeaks, first written as p_usv /
+# p_squeak / p_both. A summary holding both the old and the new name keeps the new
+# column and drops the old one (detect_usv_squeaks rewrote the probabilities after the
+# rename, so the new column is the current one).
+USV_SUMMARY_RENAMED_COLUMNS = {
+    "p_usv": "usv_probability",
+    "p_squeak": "squeak_probability",
+    "p_both": "overlap_probability",
+}
 
 # Suffixes of the per-call category agreement / uncertain columns an earlier
 # assign_qlvm_categories wrote for a prefix P (P_category_agreement,
@@ -1905,12 +1925,16 @@ def tidy_usv_summary_columns(usv_summary: Any) -> tuple[Any, dict]:
     """
     Description
     -----------
-    Brings an existing USV summary table to the canonical layout: drops its
-    obsolete columns (:func:`obsolete_usv_summary_columns`) and reorders the rest
-    with :func:`order_usv_summary_columns` (canonical columns first, any other
-    column after them in its existing order). No row or value of a kept column is
-    touched, and no column is created. Used by the ``tidy-usv-summary-columns``
-    command to migrate summaries written before the layout was fixed.
+    Brings an existing USV summary table to the canonical layout: renames the
+    columns written under an earlier name (``USV_SUMMARY_RENAMED_COLUMNS``, old
+    name -> canonical name; when the canonical name is already present, the old
+    column is dropped instead), drops its obsolete columns
+    (:func:`obsolete_usv_summary_columns`) and reorders the rest with
+    :func:`order_usv_summary_columns` (canonical columns first, any other column
+    after them in its existing order). No row or value of a kept column is
+    touched, and no column is created except by renaming. Used by the
+    ``tidy-usv-summary-columns`` command to migrate summaries written before the
+    layout was fixed.
 
     Parameters
     ----------
@@ -1922,17 +1946,23 @@ def tidy_usv_summary_columns(usv_summary: Any) -> tuple[Any, dict]:
     tidied (polars.DataFrame)
         The table without its obsolete columns, in canonical column order.
     report (dict)
-        What the tidy changes: ``dropped`` (list of the removed columns),
-        ``unknown`` (list of the kept columns the canonical order does not list,
+        What the tidy changes: ``renamed`` (dict, old name -> canonical name, of
+        the renamed columns), ``dropped`` (list of the removed columns: the
+        obsolete ones, then the old-name columns whose canonical name was already
+        present), ``unknown`` (list of the kept columns the canonical order does not list,
         which end up last), ``columns_before`` / ``columns_after`` (lists of the
         column names) and ``changed`` (bool, True when the columns or their order
         differ).
     """
 
-    dropped = obsolete_usv_summary_columns(usv_summary.columns)
-    tidied = order_usv_summary_columns(usv_summary.drop(dropped))
+    present = set(usv_summary.columns)
+    renamed = {old: new for old, new in USV_SUMMARY_RENAMED_COLUMNS.items() if old in present and new not in present}
+    superseded = [old for old, new in USV_SUMMARY_RENAMED_COLUMNS.items() if old in present and new in present]
+    dropped = obsolete_usv_summary_columns(usv_summary.columns) + superseded
+    tidied = order_usv_summary_columns(usv_summary.drop(dropped).rename(renamed))
     unknown = [column for column in tidied.columns if column not in USV_SUMMARY_COLUMN_ORDER]
     report = {
+        'renamed': renamed,
         'dropped': dropped,
         'unknown': unknown,
         'columns_before': list(usv_summary.columns),

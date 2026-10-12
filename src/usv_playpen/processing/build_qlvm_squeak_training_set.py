@@ -61,7 +61,9 @@ the resize (:func:`build_qlvm_training_set.stretch_specs`). The steps:
    ``train-qlvm`` reads: ``spectrograms``, all-zero ``masks`` and ``masks_len``,
    ``durations`` (crop width), ``spec_id`` (``{session}_{row}``), ``session_id``,
    ``session_type``, ``duration_bin``, ``squeak_probability`` (the classifier's
-   probability that the segment holds a squeak, ``p_squeak + p_both``),
+   probability that the segment holds a squeak, the summary's
+   ``squeak_probability + overlap_probability``; not the summary's
+   ``squeak_probability`` alone, which is the pure-squeak class),
    ``crop_first``, ``crop_last`` (frames of the audio window),
    ``n_frames_original`` (frames of the window) and ``apply_mask`` False.
 
@@ -137,7 +139,7 @@ def squeak_candidates_from_summary(usv_summary: pls.DataFrame, exclude_noise: bo
     ----------
     usv_summary (pls.DataFrame)
         The session's USV summary (``start``, ``stop``, ``usv``, ``squeak``,
-        ``p_squeak``, ``p_both``, ``squeak_start``, ``squeak_end`` and, with
+        ``squeak_probability``, ``overlap_probability``, ``squeak_start``, ``squeak_end`` and, with
         ``exclude_noise``, ``noise``).
     exclude_noise (bool)
         Leave out rows flagged as noise.
@@ -148,7 +150,7 @@ def squeak_candidates_from_summary(usv_summary: pls.DataFrame, exclude_noise: bo
         Row-aligned arrays: ``row`` (summary row), ``start_s`` / ``stop_s`` (the
         audio window, s), ``n_frames`` (frames of the window), ``first_raw`` /
         ``last_raw`` (first and last squeak frame of the window) and
-        ``probability`` (``p_squeak + p_both``, the probability that the segment
+        ``probability`` (``squeak_probability + overlap_probability``, the probability that the segment
         holds a squeak).
 
     Raises
@@ -157,7 +159,7 @@ def squeak_candidates_from_summary(usv_summary: pls.DataFrame, exclude_noise: bo
         A needed column is missing.
     """
 
-    needed = ["start", "stop", USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN, "p_squeak", "p_both", "squeak_start", "squeak_end", *(["noise"] if exclude_noise else [])]
+    needed = ["start", "stop", USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN, "squeak_probability", "overlap_probability", "squeak_start", "squeak_end", *(["noise"] if exclude_noise else [])]
     missing = [column for column in needed if column not in usv_summary.columns]
     if missing:
         error_message = f"The USV summary has no {missing} column(s); run detect-usv-noise and detect-usv-squeaks first."
@@ -178,8 +180,8 @@ def squeak_candidates_from_summary(usv_summary: pls.DataFrame, exclude_noise: bo
     keep &= n_frames > 0
     rows = np.flatnonzero(keep).astype(np.int64)
     first_raw, last_raw = squeak_extent_frames(window_start[rows], squeak_start[rows], squeak_end[rows])
-    probability = (usv_summary["p_squeak"].cast(pls.Float64).fill_null(np.nan).to_numpy()
-                   + usv_summary["p_both"].cast(pls.Float64).fill_null(np.nan).to_numpy())
+    probability = (usv_summary["squeak_probability"].cast(pls.Float64).fill_null(np.nan).to_numpy()
+                   + usv_summary["overlap_probability"].cast(pls.Float64).fill_null(np.nan).to_numpy())
     return {
         "row": rows,
         "start_s": window_start[rows],

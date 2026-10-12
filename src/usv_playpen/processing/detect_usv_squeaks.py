@@ -41,16 +41,19 @@ bundle holds several members; their class probabilities and frame squeak
 probabilities are averaged.
 
 Columns written into ``usv_summary.csv`` (any pre-existing ones are replaced, and
-the columns of earlier encodings -- ``squeak_probability``, ``squeak_frame_runs``,
-``call_class``, ``squeak_spans``, ``n_squeaks`` -- are removed):
+the columns of earlier encodings -- ``squeak_frame_runs``, ``call_class``,
+``squeak_spans``, ``n_squeaks`` and the class probabilities' first names ``p_usv`` /
+``p_squeak`` / ``p_both`` -- are removed):
 
 * ``usv`` / ``squeak`` -- two booleans from the class of highest ensemble-mean
   probability: a pure USV is ``(true, false)``, a pure squeak ``(false, true)``
   and an overlap segment ``(true, true)``; both null on noise rows and on
   rows too short for one STFT window. ``usv`` alone does NOT mean "USV only":
   a pure-USV filter is ``usv & ~squeak`` (:func:`os_utils.pure_usv_mask`);
-* ``p_usv`` / ``p_squeak`` / ``p_both`` -- the ensemble-mean class
-  probabilities (they sum to 1); null where the booleans are null;
+* ``usv_probability`` / ``squeak_probability`` / ``overlap_probability`` -- the
+  ensemble-mean probabilities of the three classes, pure USV, pure squeak and
+  overlap (they sum to 1); null where the booleans are null. The probability that
+  a segment holds a squeak at all is ``squeak_probability + overlap_probability``;
 * ``squeak_start`` / ``squeak_end`` -- ONE squeak extent per segment, in
   session seconds, on rows with ``squeak`` true only (null otherwise): the
   envelope of every frame whose ensemble-mean squeak probability exceeds the
@@ -180,7 +183,9 @@ from .qlvm_latents import cell_file, load_decoder_params, normalize_model_inputs
 from .qlvm_model import decoder_head, embed_data, gen_fib_basis_float32
 
 # Columns written into the USV summary CSV, in canonical order.
-VOCAL_CLASS_COLUMNS = (USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN, "p_usv", "p_squeak", "p_both", "squeak_start", "squeak_end")
+VOCAL_CLASS_COLUMNS = (
+    USV_FLAG_COLUMN, SQUEAK_FLAG_COLUMN, "usv_probability", "squeak_probability", "overlap_probability", "squeak_start", "squeak_end",
+)
 
 # The two booleans each vocal class is written as: (usv, squeak).
 VOCAL_CLASS_FLAGS = {"usv": (True, False), "squeak": (False, True), "overlap": (True, True)}
@@ -190,9 +195,11 @@ VOCAL_CLASS_FLAGS = {"usv": (True, False), "squeak": (False, True), "overlap": (
 # "overlap", so those bundles load unchanged; newly trained bundles record VOCAL_CLASSES.
 LEGACY_OVERLAP_CLASS_NAME = "both"
 
-# Columns of earlier encodings (the retired binary squeak detector's and the vocal-class / span
-# encoding's), dropped whenever a summary is rewritten here.
-RETIRED_SQUEAK_COLUMNS = ("squeak_probability", "squeak_frame_runs", "call_class", "squeak_spans", "n_squeaks")
+# Columns of earlier encodings (the retired binary squeak detector's, the vocal-class / span
+# encoding's, and the first names of the three class probabilities), dropped whenever a summary
+# is rewritten here. The binary detector's squeak_probability is not listed: the name is now the
+# pure-squeak class probability of VOCAL_CLASS_COLUMNS, which the rewrite replaces anyway.
+RETIRED_SQUEAK_COLUMNS = ("squeak_frame_runs", "call_class", "squeak_spans", "n_squeaks", "p_usv", "p_squeak", "p_both")
 
 # Name the bundle records for its network, checked on load.
 USV_SQUEAK_MODEL_NAME = "usv_squeak_timemil_ensemble"
@@ -673,7 +680,7 @@ def classify_usv_squeak_rows(
     -------
     scores (pls.DataFrame)
         One row per summary row, the ``VOCAL_CLASS_COLUMNS``: ``usv`` / ``squeak`` (Boolean),
-        ``p_usv`` / ``p_squeak`` / ``p_both`` (Float64) and ``squeak_start`` / ``squeak_end``
+        ``usv_probability`` / ``squeak_probability`` / ``overlap_probability`` (Float64) and ``squeak_start`` / ``squeak_end``
         (Float64). The number of squeak rows whose extent fell back to one frame is logged.
 
     Raises
@@ -753,18 +760,18 @@ def classify_usv_squeak_rows(
         {
             USV_FLAG_COLUMN: usv_flag,
             SQUEAK_FLAG_COLUMN: squeak_flag,
-            "p_usv": probability[:, 0],
-            "p_squeak": probability[:, 1],
-            "p_both": probability[:, 2],
+            "usv_probability": probability[:, 0],
+            "squeak_probability": probability[:, 1],
+            "overlap_probability": probability[:, 2],
             "squeak_start": squeak_start,
             "squeak_end": squeak_end,
         },
         schema={
             USV_FLAG_COLUMN: pls.Boolean,
             SQUEAK_FLAG_COLUMN: pls.Boolean,
-            "p_usv": pls.Float64,
-            "p_squeak": pls.Float64,
-            "p_both": pls.Float64,
+            "usv_probability": pls.Float64,
+            "squeak_probability": pls.Float64,
+            "overlap_probability": pls.Float64,
             "squeak_start": pls.Float64,
             "squeak_end": pls.Float64,
         },

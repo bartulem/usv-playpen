@@ -750,7 +750,9 @@ def test_usv_summary_column_order_is_the_agreed_layout():
     No obsolete column is canonical."""
     assert list(os_utils.USV_SUMMARY_COLUMN_ORDER) == [
         "usv_id", "start", "stop", "duration",
-        "noise", "noise_probability", "usv", "squeak", "p_usv", "p_squeak", "p_both", "squeak_start", "squeak_end",
+        "noise", "usv", "squeak",
+        "noise_probability", "usv_probability", "squeak_probability", "overlap_probability",
+        "squeak_start", "squeak_end",
         "emitter", "peak_amp_ch", "mean_amp_ch", "chs_count", "chs_detected",
         "mean_freq_hz", "peak_freq_hz", "freq_bandwidth_hz", "mean_amplitude", "max_amplitude", "loudness_db",
         "spectral_entropy", "mask_number",
@@ -762,9 +764,12 @@ def test_usv_summary_column_order_is_the_agreed_layout():
     assert len(set(os_utils.USV_SUMMARY_COLUMN_ORDER)) == len(os_utils.USV_SUMMARY_COLUMN_ORDER)
     assert not set(os_utils.USV_SUMMARY_OBSOLETE_COLUMNS) & set(os_utils.USV_SUMMARY_COLUMN_ORDER)
     assert os_utils.QLVM_SUMMARY_MAP_PREFIXES == ("qlvm", "qlvm_duration", "qlvm_entropy", "qlvm_bandwidth", "qlvm_loudness")
-    assert {"squeak_probability", "squeak_frame_runs", "call_class", "squeak_spans", "n_squeaks"} <= set(
-        os_utils.USV_SUMMARY_OBSOLETE_COLUMNS
-    )
+    assert {"squeak_frame_runs", "call_class", "squeak_spans", "n_squeaks"} <= set(os_utils.USV_SUMMARY_OBSOLETE_COLUMNS)
+    assert os_utils.USV_SUMMARY_RENAMED_COLUMNS == {
+        "p_usv": "usv_probability", "p_squeak": "squeak_probability", "p_both": "overlap_probability",
+    }
+    assert set(os_utils.USV_SUMMARY_RENAMED_COLUMNS.values()) <= set(os_utils.USV_SUMMARY_COLUMN_ORDER)
+    assert not set(os_utils.USV_SUMMARY_RENAMED_COLUMNS) & set(os_utils.USV_SUMMARY_COLUMN_ORDER)
 
 
 def test_obsolete_usv_summary_columns_picks_listed_and_confidence_columns():
@@ -805,7 +810,7 @@ def test_tidy_usv_summary_columns_drops_obsolete_and_reorders():
     table = pls.DataFrame({
         "usv_id": ["000000", "000001"], "start": [0.1, 1.0], "stop": [0.2, 1.1], "duration": [0.1, 0.1],
         "peak_amp_ch": [3.0, 4.0], "emitter": ["m", None], "noise": [False, True],
-        "squeak_probability": [0.1, None], "mean_freq_hz": [50000.0, 60000.0],
+        "squeak_frame_runs": [1, None], "mean_freq_hz": [50000.0, 60000.0],
         "qlvm1": [0.1, 0.2], "qlvm2": [0.3, 0.4], "qlvm_category": [1, 2], "qlvm_supercategory": [1, 1],
         "qlvm_dur1": [0.5, 0.6], "qlvm_dur2": [0.7, 0.8], "qlvm_dur_category": [3, 4],
         "qlvm_duration1": [0.5, 0.6], "qlvm_duration2": [0.7, 0.8], "qlvm_bandwidth1": [0.1, 0.2],
@@ -823,7 +828,7 @@ def test_tidy_usv_summary_columns_drops_obsolete_and_reorders():
     ]
     assert tidied.equals(table.select(tidied.columns))
     assert report["dropped"] == [
-        "squeak_probability", "qlvm_supercategory", "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category",
+        "squeak_frame_runs", "qlvm_supercategory", "qlvm_dur1", "qlvm_dur2", "qlvm_dur_category",
         "qlvm_dur_supercategory", "qlvm_mf1", "qlvm_mf2",
         "qlvm_mf_category", "qlvm_bw1", "qlvm_loud_supercategory", "qlvm_category_agreement",
         "qlvm_category_uncertain",
@@ -832,6 +837,45 @@ def test_tidy_usv_summary_columns_drops_obsolete_and_reorders():
     assert report["columns_before"] == table.columns
     assert report["columns_after"] == tidied.columns
     assert report["changed"] is True
+
+
+def test_tidy_usv_summary_columns_renames_the_first_probability_names():
+    """A summary written with p_usv / p_squeak / p_both gets them renamed to usv_probability /
+    squeak_probability / overlap_probability with every value kept, placed after
+    noise_probability in the canonical vocal-class block; nothing is dropped."""
+    table = pls.DataFrame({
+        "usv_id": ["000000", "000001"], "start": [0.1, 1.0], "stop": [0.2, 1.1], "duration": [0.1, 0.1],
+        "noise": [False, False], "noise_probability": [0.01, 0.02], "usv": [True, False], "squeak": [False, True],
+        "p_usv": [0.9, 0.1], "p_squeak": [0.05, 0.8], "p_both": [0.05, 0.1], "squeak_start": [None, 1.0],
+        "squeak_end": [None, 1.05], "emitter": ["m", None],
+    })
+    tidied, report = os_utils.tidy_usv_summary_columns(table)
+    assert tidied.columns == [
+        "usv_id", "start", "stop", "duration", "noise", "usv", "squeak", "noise_probability",
+        "usv_probability", "squeak_probability", "overlap_probability", "squeak_start", "squeak_end", "emitter",
+    ]
+    assert report["renamed"] == {"p_usv": "usv_probability", "p_squeak": "squeak_probability", "p_both": "overlap_probability"}
+    assert report["dropped"] == []
+    assert report["changed"] is True
+    for old, new in os_utils.USV_SUMMARY_RENAMED_COLUMNS.items():
+        assert tidied[new].to_list() == table[old].to_list()
+    again, second = os_utils.tidy_usv_summary_columns(tidied)
+    assert again.equals(tidied)
+    assert second["renamed"] == {}
+    assert second["changed"] is False
+
+
+def test_tidy_usv_summary_columns_drops_an_old_name_whose_new_name_is_present():
+    """When a summary holds both an old probability name and its new name, the new column is
+    kept as it is and the old one is dropped (reported under dropped, not renamed)."""
+    table = pls.DataFrame({
+        "usv_id": ["000000"], "start": [0.1], "stop": [0.2], "p_squeak": [0.3], "squeak_probability": [0.6],
+    })
+    tidied, report = os_utils.tidy_usv_summary_columns(table)
+    assert tidied.columns == ["usv_id", "start", "stop", "squeak_probability"]
+    assert tidied["squeak_probability"].to_list() == [0.6]
+    assert report["renamed"] == {}
+    assert report["dropped"] == ["p_squeak"]
 
 
 def test_tidy_usv_summary_columns_leaves_a_canonical_summary_alone():

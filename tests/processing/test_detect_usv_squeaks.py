@@ -410,11 +410,11 @@ def test_classify_usv_squeak_rows_encoding(tmp_path):
     assert scores.schema["squeak"] == pls.Boolean
     assert scores["usv"].to_list() == [True, False, True, None, True]
     assert scores["squeak"].to_list() == [True, True, False, None, False]
-    probabilities = scores.select("p_usv", "p_squeak", "p_both").to_numpy()
+    probabilities = scores.select("usv_probability", "squeak_probability", "overlap_probability").to_numpy()
     assert np.allclose(probabilities[[0, 1, 2, 4]].sum(axis=1), 1.0)
     assert probabilities[0].argmax() == 2
     assert np.isnan(probabilities[3]).all()
-    assert scores["p_usv"].null_count() == 1
+    assert scores["usv_probability"].null_count() == 1
     for row, start, last in ((0, 0.10, 29), (1, 0.30, 36)):
         first_centre = np.floor(start * SAMPLING_RATE) / SAMPLING_RATE
         assert scores["squeak_start"][row] == pytest.approx(first_centre + 1.5 * HOP_S, abs=2e-6)
@@ -500,8 +500,9 @@ def test_readers_carry_the_low_band_variance_and_the_window_input_weights_with_i
 
 def test_detect_and_merge_replaces_the_retired_columns(tmp_path, mocker):
     """
-    The merge removes the columns of earlier encodings (squeak_probability, squeak_frame_runs,
-    call_class, squeak_spans, n_squeaks), replaces a stale squeak flag and extent, keeps every other
+    The merge removes the columns of earlier encodings (squeak_frame_runs, call_class, squeak_spans,
+    n_squeaks and the first probability names p_usv / p_squeak / p_both), replaces a stale
+    squeak_probability and a stale squeak flag and extent, keeps every other
     column (and the usv_id zero-padding) unchanged, and leaves the summary in the canonical order: the
     DAS event, the noise block, the vocal-class block, then emitter and the DAS channel statistics, then
     the acoustic features.
@@ -510,7 +511,8 @@ def test_detect_and_merge_replaces_the_retired_columns(tmp_path, mocker):
     summary_path = root / "audio" / f"{SESSION_ID}_usv_summary.csv"
     original = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
     original.with_columns(
-        pls.lit(True).alias("squeak"), pls.lit(0.9).alias("squeak_probability"), pls.lit(1.0).alias("squeak_start"),
+        pls.lit(True).alias("squeak"), pls.lit(0.9).alias("squeak_probability"), pls.lit(0.1).alias("p_usv"), pls.lit(0.2).alias("p_squeak"),
+        pls.lit(0.7).alias("p_both"), pls.lit(1.0).alias("squeak_start"),
         pls.lit(9).alias("squeak_frame_runs"), pls.lit("usv").alias("call_class"), pls.lit("[]").alias("squeak_spans"),
         pls.lit(0).alias("n_squeaks"), pls.lit(40000.0).alias("mean_freq_hz"),
     ).write_csv(summary_path)

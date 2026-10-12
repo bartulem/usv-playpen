@@ -53,15 +53,15 @@ def test_squeak_candidates_from_summary():
     """squeak and both rows with an envelope are candidates (usv rows and rows without an
     envelope are not); noise is left out on request; the window grows to hold a squeak
     that starts before its segment; extents become frame indices of the window; the
-    probability is p_squeak + p_both."""
+    probability is squeak_probability + overlap_probability."""
     dt = FRAME_DT_S
     summary = pls.DataFrame({
         "start": [1.0, 2.0, 3.0, 4.0, 5.0],
         "stop": [1.1, 2.1, 3.1, 4.1, 5.1],
         "usv": [False, True, True, True, False],
         "squeak": [True, False, True, True, True],
-        "p_squeak": [0.8, 0.1, 0.3, 0.2, 0.6],
-        "p_both": [0.1, 0.0, 0.6, 0.7, 0.3],
+        "squeak_probability": [0.8, 0.1, 0.3, 0.2, 0.6],
+        "overlap_probability": [0.1, 0.0, 0.6, 0.7, 0.3],
         "squeak_start": [1.0 + 3 * dt, None, 3.0 - 5 * dt, 4.0 + 2 * dt, None],
         "squeak_end": [1.0 + 20 * dt, None, 3.0 + 9 * dt, 4.0 + 30 * dt, None],
         "noise": [False, False, False, True, False],
@@ -154,8 +154,8 @@ def _write_session(tmp_path, session_id, sexes, n_squeaks):
         "stop": start + 0.2,
         "usv": [(i % 2 == 0) if i < n_squeaks else True for i in range(n)],
         "squeak": [i < n_squeaks for i in range(n)],
-        "p_squeak": [0.5 if i < n_squeaks else 0.0 for i in range(n)],
-        "p_both": [0.4 if i < n_squeaks else 0.0 for i in range(n)],
+        "squeak_probability": [0.5 if i < n_squeaks else 0.0 for i in range(n)],
+        "overlap_probability": [0.4 if i < n_squeaks else 0.0 for i in range(n)],
         "squeak_start": [start[i] + 5 * FRAME_DT_S if i < n_squeaks else None for i in range(n)],
         "squeak_end": [start[i] + (10 + 4 * (i % 6)) * FRAME_DT_S if i < n_squeaks else None for i in range(n)],
     }).write_csv(root / "audio" / f"{session_id}_usv_summary.csv")

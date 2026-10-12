@@ -40,7 +40,9 @@ summaries embedded by the retired single-model run still carry is dropped.
 ``tidy-usv-summary-columns`` (:func:`tidy_usv_summary_columns_cli`) migrates an
 existing summary to the canonical layout: it drops the obsolete columns
 (``os_utils.USV_SUMMARY_OBSOLETE_COLUMNS`` and every category agreement /
-uncertain column) and reorders the rest, with a dry-run mode that only reports.
+uncertain column), renames the columns written under an earlier name
+(``os_utils.USV_SUMMARY_RENAMED_COLUMNS``) and reorders the rest, with a dry-run
+mode that only reports.
 
 Fidelity: the session spectrograms are preprocessed with the SAME resize /
 time-stretch used to build the training set (:func:`stretch_specs`), so they are
@@ -1744,11 +1746,15 @@ def tidy_session_usv_summary(
     (``os_utils.USV_SUMMARY_OBSOLETE_COLUMNS`` -- ``qlvm_supercategory``, the
     duration map's labels, the retired ``qlvm_mf`` / ``qlvm_bw`` / ``qlvm_loud``
     maps, the legacy ``qlvm_model``, the retired squeak-detector columns
-    ``squeak_probability`` / ``squeak_frame_runs`` / ``call_class`` /
-    ``squeak_spans`` / ``n_squeaks`` -- and every ``*_category_agreement`` /
-    ``*_category_uncertain`` column) and puts the rest in
+    ``squeak_frame_runs`` / ``call_class`` / ``squeak_spans`` / ``n_squeaks``
+    -- and every ``*_category_agreement`` / ``*_category_uncertain`` column),
+    renames the columns written under an earlier name
+    (``os_utils.USV_SUMMARY_RENAMED_COLUMNS``: the class probabilities ``p_usv`` /
+    ``p_squeak`` / ``p_both`` become ``usv_probability`` / ``squeak_probability``
+    / ``overlap_probability``) and puts the rest in
     ``os_utils.USV_SUMMARY_COLUMN_ORDER``, any column that order does not list
-    kept last in its existing order. No column is created and no row is touched.
+    kept last in its existing order. No column is created (except by renaming) and
+    no row is touched.
 
     Every column is read and written as text, so the value of every kept cell is
     written back exactly as it was read (no float re-formatting, no type
@@ -1775,7 +1781,7 @@ def tidy_session_usv_summary(
     Returns
     -------
     report (dict)
-        :func:`os_utils.tidy_usv_summary_columns`'s report (``dropped``,
+        :func:`os_utils.tidy_usv_summary_columns`'s report (``renamed``, ``dropped``,
         ``unknown``, ``columns_before``, ``columns_after``, ``changed``) plus
         ``summary_path`` (str), ``n_rows`` (int), ``written`` (bool, True when the
         file was rewritten) and ``backup_path`` (str, or None when no backup was
@@ -1800,12 +1806,15 @@ def tidy_session_usv_summary(
     if not report['changed']:
         message_output(f"{root.name}: {mode}{usv_summary_loc.name} is already in the canonical layout; left untouched.")
         return report
-    moved = report['columns_after'] != [column for column in report['columns_before'] if column not in report['dropped']]
+    kept_before = [column for column in report['columns_before'] if column not in report['dropped']]
+    moved = report['columns_after'] != [report['renamed'][column] if column in report['renamed'] else column for column in kept_before]
     dropped_note = str(report['dropped']) if report['dropped'] else "no column"
+    renamed_note = ", ".join(f"{old} -> {new}" for old, new in report['renamed'].items()) if report['renamed'] else "no column"
     unknown_note = f"; not in the canonical order, kept last: {report['unknown']}" if report['unknown'] else ""
     message_output(
         f"{root.name}: {mode}{usv_summary_loc.name} ({usv_df.height} rows): "
         f"{'would drop' if dry_run else 'dropping'} {dropped_note}; "
+        f"{'would rename' if dry_run else 'renaming'} {renamed_note}; "
         f"column order {'changes' if moved else 'unchanged'}{unknown_note}."
     )
     message_output(f"    {'would be' if dry_run else 'now'}: {', '.join(report['columns_after'])}")
@@ -1883,7 +1892,7 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
 @click.command(name="tidy-usv-summary-columns")
 @click.option('--root-directory', 'root_directories', type=click.Path(exists=True, file_okay=False, dir_okay=True), multiple=True, required=False, help='Session root directory path; repeat once per session.')
 @click.option('--sessions-file', 'sessions_file', type=click.Path(exists=True, file_okay=True, dir_okay=False), default=None, required=False, help='Text file with one session root directory per line (blank lines and lines starting with # are skipped); added to the --root-directory sessions.')
-@click.option('--dry-run', 'dry_run', is_flag=True, default=False, help='Only report, per session, which columns would be dropped and the resulting column order; nothing is written.')
+@click.option('--dry-run', 'dry_run', is_flag=True, default=False, help='Only report, per session, which columns would be dropped or renamed and the resulting column order; nothing is written.')
 @click.option('--backup-directory', 'backup_directory', type=click.Path(file_okay=False, dir_okay=True), default=None, required=False, help='Copy each original summary to <backup-directory>/<session>/<file name> before rewriting it (an existing backup is never overwritten; that session fails instead).')
 def tidy_usv_summary_columns_cli(root_directories, sessions_file, dry_run, backup_directory) -> None:
     """
@@ -1892,8 +1901,9 @@ def tidy_usv_summary_columns_cli(root_directories, sessions_file, dry_run, backu
     A command-line tool to migrate existing USV summary CSVs to the canonical
     column layout (``os_utils.USV_SUMMARY_COLUMN_ORDER``): drops the obsolete
     columns (``os_utils.USV_SUMMARY_OBSOLETE_COLUMNS`` and every
-    ``*_category_agreement`` / ``*_category_uncertain`` column) and reorders the
-    rest (:func:`tidy_session_usv_summary`). Every session is attempted; the
+    ``*_category_agreement`` / ``*_category_uncertain`` column), renames the
+    columns written under an earlier name (``os_utils.USV_SUMMARY_RENAMED_COLUMNS``)
+    and reorders the rest (:func:`tidy_session_usv_summary`). Every session is attempted; the
     sessions that failed are listed at the end and make the command exit with an
     error.
 
