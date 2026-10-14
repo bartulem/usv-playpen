@@ -51,6 +51,7 @@ from ..analyses._usv_io import (
 from ..os_utils import (
     QLVM_CATEGORY_MAP,
     QLVM_MAPS,
+    configure_path,
     drop_noise_usvs,
     load_qlvm_category_bundle,
     squeak_class_selection,
@@ -3344,6 +3345,8 @@ def plot_session_squeak_time_heatmap(
                     root = line.strip()
                     if not root:
                         continue
+                    # the lists are written with /mnt paths; remap them for the current OS
+                    root = configure_path(root)
                     session_id = Path(root).name
                     if session_id in session_condition and session_condition[session_id] != condition:
                         msg = (f"Session {session_id} is listed under both '{session_condition[session_id]}' "
@@ -3458,7 +3461,8 @@ def plot_session_squeak_time_heatmap(
     # The overflow arrow only when the scale is capped below 100 %, where a value can exceed it.
     ax_colorbar_column.set_axis_off()
     ax_colorbar = ax_colorbar_column.inset_axes((0.2, 0.68, 0.6, 0.32))
-    colorbar = fig.colorbar(key, cax=ax_colorbar, label=f"% of nearby vocalizations that are {squeak_class_label}",
+    # Two lines: on one line the label outruns the short colour bar and is clipped at the figure edge.
+    colorbar = fig.colorbar(key, cax=ax_colorbar, label=f"% of nearby vocalizations\nthat are {squeak_class_label}",
                             extend='max' if vmax_percent < 100.0 else 'neither')
     colorbar.ax.yaxis.set_ticks_position('left')
     colorbar.ax.yaxis.set_label_position('left')
