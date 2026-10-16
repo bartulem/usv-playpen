@@ -2284,6 +2284,12 @@ def detect_usv_squeaks_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -2332,6 +2338,16 @@ def train_usv_squeak_model_cli(ctx, bundle_path, label_set, label_override, **kw
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    bundle_path (str)
+        Output bundle (.pt); must not exist yet.
+    label_set (tuple[str, ...])
+        NAME LABELS_CSV SAMPLE_CSV of one label set (labelling-tool labels and their sample); repeat per set (replaces the label_sets setting).
+    label_override (tuple[str, ...])
+        NAME OVERRIDE_CSV: a review CSV (labels format) whose panels replace those of label set NAME; repeat per file (replaces the label_overrides setting).
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -2379,6 +2395,12 @@ def infer_qlvm_squeak_latents_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------

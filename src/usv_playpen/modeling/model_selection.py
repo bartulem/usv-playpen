@@ -815,6 +815,28 @@ def vocal_onset_model_selection(univariate_results_path: str,
     - Crash reporting: Logs detailed error messages for failed fits.
     - Resource management: Explicit garbage collection triggers to prevent
       memory fragmentation.
+
+    Parameters
+    ----------
+    univariate_results_path : str
+        Path to the univariate regression results pickle file.
+    input_data_path : str
+        Path to the raw extracted feature data .pkl file.
+    output_directory : str
+        Directory to save the step-wise state dictionaries.
+    settings_path : str, optional
+        Path to the JSON settings file.
+    use_top_rank_as_anchor : bool, default False
+        If True, initializes the search by forcing the highest-ranked univariate
+        feature as the baseline model.
+    p_val : float, default the ``model_params.selection_p_val`` setting
+        The alpha level used for significance screening against shuffled controls.
+
+    Returns
+    -------
+    None
+        Writes one pickle per selection step and the final consolidated
+        selection pickle into ``output_directory``.
     """
 
     chance_ll = np.log(2)  # mean log-loss of a balanced 50/50 coin: the binary chance floor
@@ -3697,6 +3719,12 @@ def multinomial_vocal_category_model_selection(
         feature as the baseline model.
     p_val : float, default 0.01
         The alpha level used for significance screening against shuffled controls.
+
+    Returns
+    -------
+    None
+        Writes one pickle per selection step and the final consolidated
+        selection pickle into ``output_directory``.
     """
 
     if settings_path is None:
@@ -3959,6 +3987,25 @@ def multinomial_vocal_category_model_selection(
         rescale on l2 so larger trial models don't silently
         over-regularise. When tuning is on the inner-CV search rescales
         the l2 grid the same way.
+
+        Parameters
+        ----------
+        X_tr_ (np.ndarray)
+            The outer fold's training design, ``(n_rows, n_features * n_time_bins)``.
+        y_tr_ (np.ndarray)
+            The training rows' category labels.
+        groups_tr_ (np.ndarray)
+            The training rows' session labels, so the inner CV splits by session.
+        n_feats_ (int)
+            Number of features in the trial model (sets the l2 rescale).
+        fold_idx_ (int)
+            The outer fold's index, for the log.
+
+        Returns
+        -------
+        lambda_smooth, l2_reg, grid_audit, tuned (tuple[float, float, dict, bool])
+            The smoothness and l2 penalties used, the inner-CV grid record (empty
+            when not tuned) and whether the inner-CV search ran.
         """
         if not tune_regularization_bool:
             lam_sm = float(hp['lambda_smooth_fixed'])
@@ -5050,6 +5097,12 @@ def continuous_vocal_manifold_model_selection(
     p_val : float, default 0.01
         The Benjamini-Hochberg false-discovery rate `q` of the screen's
         one-sided bootstrap p-values.
+
+    Returns
+    -------
+    None
+        Writes one pickle per selection step and the final consolidated
+        selection pickle into ``output_directory``.
     """
 
     if settings_path is None:
@@ -5941,7 +5994,24 @@ def continuous_vocal_manifold_model_selection(
         }
 
     def _append_failed_fold(cand_data_):
-        """Append shape-preserving placeholders so per-fold lists stay aligned."""
+        """
+        Description
+        -----------
+        Appends a shape-preserving placeholder for a fold whose fit failed to every
+        per-fold list of a candidate (NaN metrics, None weights / basis coefficients /
+        intercepts, empty test arrays, unconverged, NaN hyperparameters and an empty
+        grid audit), so the lists stay aligned fold by fold and the filter
+        reconstruction never pairs one fold's coefficients with another fold's index.
+
+        Parameters
+        ----------
+        cand_data_ (dict)
+            The candidate's results entry; its ``folds`` lists are appended to in place.
+
+        Returns
+        -------
+        None
+        """
         for _mk in cand_data_['folds']['metrics']:
             cand_data_['folds']['metrics'][_mk].append(np.nan)
         cand_data_['folds']['weights'].append(None)

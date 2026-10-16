@@ -1872,6 +1872,12 @@ def infer_qlvm_latents_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -1918,6 +1924,14 @@ def tidy_usv_summary_columns_cli(root_directories, sessions_file, dry_run, backu
 
     Parameters
     ----------
+    root_directories (tuple[str, ...])
+        Session root directory path; repeat once per session.
+    sessions_file (str)
+        Text file with one session root directory per line (blank lines and lines starting with # are skipped); added to the --root-directory sessions.
+    dry_run (bool)
+        Only report, per session, which columns would be dropped or renamed and the resulting column order; nothing is written.
+    backup_directory (str)
+        Copy each original summary to <backup-directory>/<session>/<file name> before rewriting it (an existing backup is never overwritten; that session fails instead).
 
     Returns
     -------

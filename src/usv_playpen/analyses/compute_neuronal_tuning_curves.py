@@ -1868,6 +1868,22 @@ class NeuronalTuning(FeatureZoo):
         with pkl_path.open("rb") as fh:
             existing = pickle.load(fh)
         def key_count(payload):
+            """
+            Description
+            -----------
+            Counts a pkl payload's top-level keys plus its ``triage_stats`` blocks, so a
+            drop of either kind is detected by comparing the counts before and after.
+
+            Parameters
+            ----------
+            payload (dict)
+                The loaded per-cluster pkl payload.
+
+            Returns
+            -------
+            n_keys (int)
+                Number of top-level keys plus number of ``triage_stats`` blocks.
+            """
             triage = payload["triage_stats"] if isinstance(payload.get("triage_stats"), dict) else {}
             return len(payload) + len(triage)
 

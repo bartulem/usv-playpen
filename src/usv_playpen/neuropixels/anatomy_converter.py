@@ -564,6 +564,10 @@ def _cli() -> None:
     Either action writes to disk unless ``--dry-run`` is passed, which prints
     the summary without writing.
 
+    Parameters
+    ----------
+    None
+
     Returns
     -------
     None

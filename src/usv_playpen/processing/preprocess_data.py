@@ -462,6 +462,12 @@ def concatenate_video_files_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -504,6 +510,14 @@ def rectify_video_fps_cli(ctx, root_directory, conduct_concat, **kwargs) -> None
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    conduct_concat (bool)
+        Indicate if prior concatenation was performed
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -538,6 +552,8 @@ def multichannel_to_channel_audio_cli(root_directory) -> None:
 
     Parameters
     ----------
+    root_directory (str)
+        Session root directory path.
 
     Returns
     -------
@@ -561,6 +577,12 @@ def crop_wav_files_to_video_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -606,6 +628,12 @@ def av_sync_check_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -656,6 +684,12 @@ def ev_sync_check_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -692,6 +726,12 @@ def hpss_audio_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -730,6 +770,12 @@ def bp_filter_audio_files_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -769,6 +815,12 @@ def concatenate_audio_files_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -814,6 +866,12 @@ def broadband_filter_audio_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -858,6 +916,22 @@ def add_broadband_low_band_variance_cli(ctx, root_directories, sessions_file, us
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directories (str)
+        Comma-separated string of session root directory paths.
+    sessions_file (str)
+        Text file with one session root per line.
+    usv_counts_csv (str)
+        Session table with 'dir' and 'tag' columns (e.g. session_usv_counts.csv).
+    tag (str)
+        Tag of the --usv-counts-csv rows to process.
+    n_workers (int)
+        Sessions processed in parallel (threads).
+    force (bool)
+        Recompute a field that is already present.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -912,6 +986,22 @@ def broadband_filter_audio_batch_cli(ctx, sessions_file, usv_counts_csv, tag, n_
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    sessions_file (str)
+        Text file with one session root per line.
+    usv_counts_csv (str)
+        Session table with 'dir' and 'tag' columns (e.g. session_usv_counts.csv).
+    tag (str)
+        Tag of the --usv-counts-csv rows to process.
+    n_workers (int)
+        Sessions processed in parallel (separate processes).
+    log_file (str)
+        Batch log file (appended to).
+    report_csv (str)
+        Per-session report CSV (appended to).
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -945,6 +1035,12 @@ def sleap_file_conversion_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -983,6 +1079,12 @@ def conduct_anipose_calibration_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -1032,6 +1134,12 @@ def conduct_anipose_triangulation_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -1072,6 +1180,12 @@ def translate_rotate_metric_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -1114,6 +1228,12 @@ def das_command_line_inference_cli(ctx, root_directory, **kwargs):
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -1171,6 +1291,12 @@ def summarize_das_findings_cli(ctx, root_directory, **kwargs):
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -1202,6 +1328,8 @@ def concatenate_binary_files_cli(root_directories):
 
     Parameters
     ----------
+    root_directories (str)
+        Comma-separated string of session root directory paths.
 
     Returns
     -------
@@ -1235,6 +1363,12 @@ def split_clusters_to_sessions_cli(ctx, root_directories, **kwargs):
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directories (str)
+        A comma-separated string of session root directory paths.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -1272,6 +1406,10 @@ def prepare_vcl_assign_cli(root_directory, arena_directory) -> None:
 
     Parameters
     ----------
+    root_directory (str)
+        Session root directory path.
+    arena_directory (str)
+        Arena session root directory path.
 
     Returns
     -------
@@ -1312,6 +1450,12 @@ def vcl_assign_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------

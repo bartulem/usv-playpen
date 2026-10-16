@@ -1304,6 +1304,20 @@ def consolidate_spectrogram_store_cli(ctx, root_directories, session_lists, pack
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directories (str)
+        Comma-separated string of session root directory paths, in store order. Give this and/or --session-lists, or --package-corpus.
+    session_lists (str)
+        Comma-separated string of session-list .txt files (one session root per line, # comments and blank lines skipped), appended after --root-directories in file order. Give this and/or --root-directories, or --package-corpus.
+    package_corpus (bool)
+        Consolidate exactly the QLVM model package's corpus sessions, in the order of its SESSION_H5_BASELINE.tsv (in production mode only the session list is taken from it). Give this or --root-directories.
+    package_root (str)
+        QLVM model package root whose models' columns and tables a v3 store carries, and whose corpus --package-corpus lists; defaults to the v3 package (qlvm_models_latest/v3).
+    spectrograms_root (str)
+        Output directory the consolidated store is written to (the spectrograms_root setting when not given).
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------

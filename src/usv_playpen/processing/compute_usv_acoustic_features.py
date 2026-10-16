@@ -520,6 +520,12 @@ def compute_usv_acoustic_features_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------

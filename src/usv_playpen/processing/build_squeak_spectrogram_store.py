@@ -844,6 +844,16 @@ def build_squeak_spectrogram_store_cli(ctx, root_directories, session_lists, spe
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directories (str)
+        Comma-separated string of session root directory paths. Give this and/or --session-lists.
+    session_lists (str)
+        Comma-separated string of session-list .txt files (one session root per line). Give this and/or --root-directories.
+    spectrograms_root (str)
+        Output directory the store is written to (the spectrograms_root setting when not given).
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------

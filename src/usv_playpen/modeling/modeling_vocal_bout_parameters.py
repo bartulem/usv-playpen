@@ -149,6 +149,11 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
                components (masks) per syllable within the bout.
              * 'total_mask_complexity': The cumulative sum of all syllable masks across
                the bout (representing total information content).
+
+        Returns
+        -------
+        None
+            Writes the modeling input pickle: the (X, y, groups) triples of every feature.
         """
 
         target_variable = self.modeling_settings['model_params']['model_target_variable']
@@ -742,6 +747,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         basis_matrix : np.ndarray | None
             Required for API parity with the Sklearn engine; however, PyGAM
             generates its own internal tensor product splines (te).
+        held_out_session_ids : list | None
+            Sessions reserved as the held-out test set; their rows are kept out of
+            every fit, permutation null and fitted statistic of the cross-validation
+            and are scored once at the end. None reserves no sessions.
 
         Returns
         -------
@@ -1130,6 +1139,10 @@ class BoutParameterPipeline(VocalOnsetModelingPipeline):
         basis_matrix : np.ndarray
             The [lags x bases] matrix used to transform the raw history into the
             reduced feature space.
+        held_out_session_ids : list | None
+            Sessions reserved as the held-out test set; their rows are kept out of
+            every fit, permutation null and fitted statistic of the cross-validation
+            and are scored once at the end. None reserves no sessions.
 
         Returns
         -------

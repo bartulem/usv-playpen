@@ -212,6 +212,11 @@ class VocalOnsetModelingPipeline(FeatureZoo):
             `{'generic_feature_name': {'session_id1': {'usv_feature_arr': ..., 'no_usv_feature_arr': ...},
                                       'session_id2': {...}, ...},
              'another_feature': {...}, ...}`
+
+        Returns
+        -------
+        None
+            Writes the modeling input pickle described under Outputs.
         """
 
         # Label-dependent vocal predictors and malformed vocal-class lists fail here,

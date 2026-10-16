@@ -186,6 +186,14 @@ def train_masks_cli(ctx, dataset_directory, output_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    dataset_directory (str)
+        YOLO dataset directory (export-yolo-dataset output, with data.yaml).
+    output_directory (str)
+        Directory for the Ultralytics run + copied best.pt.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------

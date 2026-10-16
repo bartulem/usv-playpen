@@ -1522,6 +1522,12 @@ def detect_usv_noise_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -1566,6 +1572,14 @@ def train_noise_model_cli(ctx, labels_csv_path, bundle_path, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    labels_csv_path (str)
+        Labels CSV: sample_id, session_dir, start, stop, chs_count, noise (1 = no vocalization, 0 = vocalization).
+    bundle_path (str)
+        Output bundle (.pt); must not exist yet.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------

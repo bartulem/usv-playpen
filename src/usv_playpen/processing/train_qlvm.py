@@ -1569,6 +1569,14 @@ def train_qlvm_cli(ctx, dataset_directory, output_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    dataset_directory (str)
+        Directory holding the .npz training set (train_data.npz or full_data.npz, val_data.npz, metadata.npz).
+    output_directory (str)
+        Directory the model package cell (checkpoint.tar, config/, metrics/) is written to.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------

@@ -447,6 +447,52 @@ def _tune_multinomial_regularization(X_train: np.ndarray,
     smaller than the outer-fit iteration budget so the tuner produces
     usable ranking scores without paying full-convergence wall time per pair.
 
+    Parameters
+    ----------
+    X_train : np.ndarray
+        The outer fold's training design, ``(n_rows, n_features * n_time_bins)``.
+    y_train : np.ndarray
+        The training rows' category labels.
+    groups_train : np.ndarray
+        The training rows' session labels; the inner folds hold out whole sessions.
+    lambda_smooth_grid : np.ndarray
+        Candidate temporal-smoothness penalties.
+    l2_reg_grid : np.ndarray
+        Candidate l2 penalties (already rescaled by the caller for the trial model size).
+    inner_cv_folds : int
+        Number of inner folds, capped at the number of training sessions.
+    inner_cv_scoring_metric : str
+        The metric that ranks the pairs (see "Supported scoring metrics").
+    inner_cv_use_one_se_rule : bool
+        Whether to take the smoothest pair within one SE of the best instead of the best.
+    n_features : int
+        Number of features in the design.
+    n_time_bins : int
+        Number of history bins per feature.
+    smoothness_derivative_order : int
+        Order of the finite-difference smoothness penalty.
+    smoothness_reflective_edges : bool, default True
+        Whether the smoothness penalty reflects at the window edges (False for a
+        B-spline temporal basis).
+    focal_gamma : float
+        Focal-loss exponent, passed to every inner fit unchanged.
+    uniform_class_weights : bool
+        Whether classes are weighted equally, passed to every inner fit unchanged.
+    learning_rate : float
+        Optimiser step size of the inner fits.
+    inner_max_iter : int
+        Iteration cap of each inner fit.
+    tol : float
+        Convergence tolerance of the inner fits.
+    random_state : int
+        Seed of the inner fold split and the inner fits.
+    verbose : bool
+        Whether to print per-pair progress.
+    use_lax_loop : bool
+        Whether the inner fits run their optimiser as one compiled loop.
+    regressor_cls : type
+        The multinomial regressor class to fit (injected for testing).
+
     Returns
     -------
     best_lambda_smooth : float

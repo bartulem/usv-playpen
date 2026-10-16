@@ -1005,6 +1005,12 @@ def qlvm_torus_traversal_video_cli(ctx, output_path, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    output_path (str)
+        Output .mp4 / .gif path (default: figures.save_directory + timestamp).
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------

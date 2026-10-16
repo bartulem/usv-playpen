@@ -276,6 +276,18 @@ def visualize_3D_data_cli(ctx, root_directory, arena_directory, exp_id, speaker_
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    arena_directory (str)
+        Arena session path.
+    exp_id (str)
+        Experimenter ID.
+    speaker_audio_file (str)
+        Speaker audio file path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -324,6 +336,12 @@ def generate_rm_figures_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------

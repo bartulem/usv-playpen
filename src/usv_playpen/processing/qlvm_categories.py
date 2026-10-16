@@ -1234,6 +1234,16 @@ def build_qlvm_categories_cli(ctx, positions_file, properties_file, output_direc
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    positions_file (str)
+        Per-call torus positions (.npz / .parquet / .csv with spec_id, x, y in [0, 1)), e.g. the embedding of the training set the map was trained on.
+    properties_file (str)
+        Per-call properties (.npz / .parquet / .csv with spec_id, session_id and every property column), e.g. a build-qlvm-training-set split; its rows are the corpus.
+    output_directory (str)
+        Directory to write category_grids.npz, category_nomenclature.json, category_call_labels.csv and build_config.json into.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------
@@ -1279,6 +1289,12 @@ def assign_qlvm_categories_cli(ctx, root_directory, **kwargs) -> None:
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directory (str)
+        Session root directory path.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------

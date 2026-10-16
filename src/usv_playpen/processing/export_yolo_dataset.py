@@ -338,6 +338,14 @@ def export_yolo_dataset_cli(ctx, root_directories, output_directory, **kwargs) -
 
     Parameters
     ----------
+    ctx (click.Context)
+        The click context; its parameter sources tell which options were given on the command line.
+    root_directories (str)
+        Comma-separated string of session root directory paths.
+    output_directory (str)
+        Directory to write the YOLO dataset.
+    **kwargs
+        The remaining command-line options; each one given on the command line overrides its settings key for this run.
 
     Returns
     -------

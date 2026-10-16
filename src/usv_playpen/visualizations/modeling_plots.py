@@ -5641,6 +5641,11 @@ class DeepResultsVisualizer:
             Path to save the figure.
         file_format : str, default: the figures.fig_format setting
             Format for the saved file.
+
+        Returns
+        -------
+        None
+            Shows the figure, and writes it to ``output_dir`` when ``save_plot`` is True.
         """
 
         # 1. Data Preparation (Aggregating Across CNN Folds)

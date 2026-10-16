@@ -1604,6 +1604,8 @@ def conduct_calibration_cli( overrides):
 
     Parameters
     ----------
+    overrides (tuple[str, ...])
+        Override a setting, e.g., --set calibration_duration=10
 
     Returns
     -------
@@ -1628,6 +1630,8 @@ def conduct_recording_cli(overrides):
 
     Parameters
     ----------
+    overrides (tuple[str, ...])
+        Override a setting, e.g., --set video_session_duration=20
 
     Returns
     -------
