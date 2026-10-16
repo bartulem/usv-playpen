@@ -1530,3 +1530,86 @@ def test_get_unrolled_X_validation_raises():
     bad = [np.zeros((5, HISTORY_FRAMES + 1))]
     with pytest.raises(ValueError, match="Frame mismatch"):
         get_unrolled_X_for_multivariate(feature_data_dict_list=bad, history_frames=HISTORY_FRAMES)
+
+
+class TestResumeEqualsFresh:
+    """Resume property for the pooled-row selectors: re-running a finished selection, or
+    resuming it after its last step file is deleted, ends on the fresh run's final model."""
+
+    @staticmethod
+    def _final_features(ms_dir: Path) -> list:
+        """The final feature list recorded in the run's step files."""
+        steps = sorted(ms_dir.glob('*_step_*.pkl'), key=lambda path: int(path.stem.rsplit('_', 1)[-1]))
+        for path in reversed(steps):
+            with path.open('rb') as fh:
+                step = pickle.load(fh)
+            if 'final_model_features' in step:
+                return list(step['final_model_features'])
+        msg = f"no step file in {ms_dir} records final_model_features"
+        raise AssertionError(msg)
+
+    @staticmethod
+    def _assert_resume_equals_fresh(run, ms_dir: Path, capsys) -> None:
+        """Fresh run, converged re-run, then a resume with the last step file deleted."""
+        run()
+        fresh = TestResumeEqualsFresh._final_features(ms_dir)
+        capsys.readouterr()
+        run()
+        out = capsys.readouterr().out
+        assert "already converged" in out
+        assert "Resume failed" not in out
+        assert TestResumeEqualsFresh._final_features(ms_dir) == fresh
+        steps = sorted(ms_dir.glob('*_step_*.pkl'), key=lambda path: int(path.stem.rsplit('_', 1)[-1]))
+        if len(steps) > 1:
+            steps[-1].unlink()
+            run()
+            out = capsys.readouterr().out
+            assert "Continuing from Step" in out or "already converged" in out
+            assert "Resume failed" not in out
+            assert TestResumeEqualsFresh._final_features(ms_dir) == fresh
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    def test_onset_selection_resume_equals_fresh(self, tmp_path, capsys):
+        """Bout-onset selection resumes to the fresh run's final model."""
+        settings, _ = _build_settings(tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2)
+        input_pkl, ranking_pkl, _ = _make_onset_inputs(tmp_path, ['self.speed', 'other.speed', 'self.neck_elevation'])
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        settings_path = _settings_json(tmp_path, settings)
+        self._assert_resume_equals_fresh(lambda: vocal_onset_model_selection(
+            univariate_results_path=ranking_pkl, input_data_path=input_pkl, settings_path=settings_path,
+            output_directory=str(ms_dir), use_top_rank_as_anchor=True, p_val=0.5), ms_dir, capsys)
+
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.ConvergenceWarning")
+    @pytest.mark.filterwarnings("ignore::sklearn.exceptions.UndefinedMetricWarning")
+    def test_category_selection_resume_equals_fresh(self, tmp_path, capsys):
+        """Binomial category selection resumes to the fresh run's final model."""
+        settings, _ = _build_settings(tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2)
+        settings['model_params']['model_type'] = 'sklearn'
+        feature_names = ['self.speed', 'other.speed', 'self.neck_elevation']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        input_pkl = str(_write_category_input_pickle(tmp_path / 'modeling_input.pkl', feature_names, session_ids))
+        ranking_pkl = str(_write_category_ranking(tmp_path / 'univariate_combined.pkl', feature_names))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        settings_path = _settings_json(tmp_path, settings)
+        self._assert_resume_equals_fresh(lambda: vocal_category_model_selection(
+            univariate_results_path=ranking_pkl, input_data_path=input_pkl, settings_path=settings_path,
+            output_directory=str(ms_dir), use_top_rank_as_anchor=True, p_val=0.5), ms_dir, capsys)
+
+    @pytest.mark.filterwarnings("ignore:Bitwise inversion:DeprecationWarning")
+    def test_bout_parameter_selection_resume_equals_fresh(self, tmp_path, capsys):
+        """Bout-parameter selection resumes to the fresh run's final model."""
+        settings = _params_settings(tmp_path, model_engine='sklearn', split_strategy='mixed', split_num=2)
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(N_SESSIONS)]
+        input_pkl = str(_build_params_input_pickle(tmp_path / 'modeling_input.pkl', feature_names, session_ids))
+        ranking_pkl = str(_write_params_ranking(tmp_path / 'univariate_combined.pkl', feature_names))
+        ms_dir = tmp_path / 'model_selection'
+        ms_dir.mkdir()
+        settings_path = _settings_json(tmp_path, settings)
+        self._assert_resume_equals_fresh(lambda: bout_parameter_model_selection(
+            univariate_results_path=ranking_pkl, input_data_path=input_pkl, settings_path=settings_path,
+            output_directory=str(ms_dir), target_variable='bout_durations', use_top_rank_as_anchor=True,
+            p_val=0.5), ms_dir, capsys)

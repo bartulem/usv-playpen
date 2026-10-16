@@ -1448,3 +1448,38 @@ class TestSessionGroupedInnerCv:
         for train_rows, val_rows in cv.split(np.zeros(groups.size), groups=groups):
             assert not set(groups[train_rows]) & set(groups[val_rows])
         assert mu.session_grouped_inner_cv(np.repeat('a', 6), 5) == 5
+
+
+class TestHeldOutSessionsNeverShapeTheScale:
+    """Leakage property: the pooled z-score statistics come from the reference (development)
+    sessions only, so arbitrary changes to a held-out session never move a development value."""
+
+    @staticmethod
+    def _sessions(held_out_values: np.ndarray) -> dict:
+        """Three development sessions and one held-out session of two features."""
+        rng = np.random.default_rng(3)
+        sessions = {
+            f"dev_{i}": pls.DataFrame({"self.speed": rng.normal(5.0, 2.0, 50), "other.speed": rng.normal(1.0, 0.5, 50)})
+            for i in range(3)
+        }
+        sessions["held"] = pls.DataFrame({"self.speed": held_out_values, "other.speed": held_out_values[::-1]})
+        return sessions
+
+    @pytest.mark.parametrize("seed", range(5))
+    def test_development_values_ignore_the_held_out_session(self, seed):
+        """Any held-out session content gives bit-identical development z-scores, and the
+        statistics equal those of the development frames alone."""
+
+        rng = np.random.default_rng(seed)
+        reference = ["dev_0", "dev_1", "dev_2"]
+        stats_a, stats_b = {}, {}
+        a = zscore_features_across_sessions(self._sessions(rng.normal(0.0, 1.0, 40)), ["speed"], {"speed": (-1e9, 1e9)},
+                                            stats_out=stats_a, reference_sessions=reference)
+        b = zscore_features_across_sessions(self._sessions(rng.normal(1e3, 1e2, 40)), ["speed"], {"speed": (-1e9, 1e9)},
+                                            stats_out=stats_b, reference_sessions=reference)
+        for session in reference:
+            assert a[session].equals(b[session])
+        assert stats_a == stats_b
+        pooled = np.concatenate([np.concatenate([self._sessions(np.zeros(1))[s][c].to_numpy()
+                                                 for c in ("self.speed", "other.speed")]) for s in reference])
+        assert stats_a["speed"]["mean"] == pytest.approx(float(pooled.mean()), rel=1e-5)

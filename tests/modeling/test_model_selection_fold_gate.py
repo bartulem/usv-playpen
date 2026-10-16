@@ -223,3 +223,29 @@ def test_frozen_kappa_scores_worse_than_marginal_below_the_flat_floor():
     frozen = macro_von_mises_logscore(y_bad, y_true, None, metric='torus', period=1.0, kappa=kappa)
     assert abs(self_fit - floor) < 1e-9
     assert frozen < floor - 0.1
+
+
+def test_fold_bootstrap_no_signal_acceptance_stays_at_its_measured_rate():
+    """Calibration guard: with no true effect (candidate and incumbent both independent of the
+    truth) the gate at the shipped CI level rarely accepts a single candidate (0.5% of 200
+    replicates at K = 10 folds, measured 2026-10-16; bound 6%, while a 50% CI accepts 22.5%), the
+    paired margin is unbiased, and the bootstrap p-value is not concentrated near 0. A change that
+    loosens the gate (a sign flip, a one-sided CI on the wrong side, unpaired folds) fails here."""
+
+    n_replicates = 200
+    accepted, margins, p_values = 0, [], []
+    for replicate in range(n_replicates):
+        actual = _folds_from_predictions(
+            n_folds=10, n_per_fold=60, prediction_fn=lambda y, rng: rng.random(y.shape), seed=10_000 + replicate)
+        null = _paired_null(actual, seed=20_000 + 10 * replicate)
+        result = _fold_paired_margin_bootstrap(
+            actual, null, metric='torus', period=1.0, n_bootstrap=500,
+            ci_level=_SELECTION_CI_LEVEL, random_state=replicate, kappa=1.0,
+        )
+        accepted += int(result['ci_low'] > 0.0)
+        margins.append(result['mean_margin'])
+        p_values.append(result['p_value'])
+    margins = np.asarray(margins)
+    assert accepted / n_replicates <= 0.06
+    assert abs(margins.mean()) < 3.0 * margins.std(ddof=1) / np.sqrt(n_replicates)
+    assert np.mean(np.asarray(p_values) < 0.05) < 0.15

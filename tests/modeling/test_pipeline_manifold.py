@@ -642,6 +642,64 @@ class TestContinuousModelRunner:
         assert all(it == 0 for it in results['null_model_free']['folds']['n_iter'])
 
     @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    @pytest.mark.parametrize("metric", ["euclidean", "torus"])
+    def test_held_out_sessions_never_change_development_results(self, tmp_path, metric):
+        """Leakage property: scrambling the held-out sessions' features and targets leaves every
+        development fold of every strategy bit-identical (metrics, predictions, filters); only
+        the held-out score may change."""
+
+        settings, _ = _build_manifold_settings(
+            tmp_path, split_strategy='session', split_num=3, test_proportion=0.3,
+        )
+        settings['vocal_features']['usv_manifold_metric'] = metric
+        settings['hyperparameters']['linear_models']['manifold_regression']['bin_resizing_factor'] = 1
+        # The geodesic reference map is one of the fitted statistics under test; a small grid and
+        # no decoder keep it fast (the density-ratio geodesic is still computed on the torus).
+        settings['vocal_features']['usv_manifold_geodesic_metrics'] = {
+            'compute': True, 'grid_n_per_dim': 12, 'graph_k': 6,
+            'density_exponent': 1.0, 'pullback_metric': False,
+        }
+        feature_names = ['self.speed', 'other.speed']
+        session_ids = [f'session_{i}' for i in range(12)]
+        held_out = session_ids[:3]
+        input_md = {
+            'analysis_type': 'continuous', 'analysis_tag': 'manifold_qlvm_category',
+            'session_ids': session_ids, 'held_out_session_ids': held_out,
+            'n_events_per_session': {sess_id: 60 for sess_id in session_ids},
+            'analysis_specific': {'usv_category_column_name': 'qlvm_category',
+                                  'manifold_metric': metric, 'manifold_period': 1.0},
+        }
+        clean_pkl = _build_signal_continuous_pickle(
+            save_path=tmp_path / 'clean.pkl', feature_names=feature_names, session_ids=session_ids,
+            history_frames=HISTORY_FRAMES, input_metadata=input_md,
+            target_kind='wound_torus' if metric == 'torus' else 'linear',
+        )
+        with clean_pkl.open('rb') as fh:
+            scrambled = pickle.load(fh)
+        rng = np.random.default_rng(7)
+        for feature in feature_names:
+            for sess in held_out:
+                packet = scrambled[feature][sess]
+                packet['X'] = (100.0 * rng.standard_normal(packet['X'].shape)).astype(np.float32)
+                packet['Y'] = rng.uniform(0.0, 1.0, packet['Y'].shape).astype(np.float32)
+        scrambled_pkl = tmp_path / 'scrambled.pkl'
+        with scrambled_pkl.open('wb') as fh:
+            pickle.dump(scrambled, fh)
+
+        clean = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings)
+                                      ).run_univariate_training(str(clean_pkl), 'self.speed')
+        moved = ContinuousModelRunner(ContinuousModelingPipeline(modeling_settings_dict=settings)
+                                      ).run_univariate_training(str(scrambled_pkl), 'self.speed')
+        for strategy in ('actual', 'null', 'null_model_free'):
+            for key, clean_values in clean[strategy]['folds']['metrics'].items():
+                np.testing.assert_array_equal(np.asarray(clean_values, dtype=float),
+                                              np.asarray(moved[strategy]['folds']['metrics'][key], dtype=float),
+                                              err_msg=f"{strategy} {key}")
+            for clean_pred, moved_pred in zip(clean[strategy]['folds']['y_pred_xy'],
+                                              moved[strategy]['folds']['y_pred_xy'], strict=True):
+                np.testing.assert_array_equal(clean_pred, moved_pred)
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     def test_run_univariate_training_torus_emits_geodesic_columns(self, tmp_path):
         """
         On a ``'torus'`` run with ``usv_manifold_geodesic_metrics.compute`` True
@@ -2207,6 +2265,23 @@ class TestInverseDensityWeights:
             assert np.isfinite(w).all()
             assert (w > 0).all()
             assert pytest.approx(1.0, abs=1e-6) == float(np.mean(w))
+
+
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+    @pytest.mark.parametrize("metric", ["euclidean", "torus"])
+    def test_held_out_rows_never_shape_development_weights(self, metric):
+        """Leakage property: with a fit mask, any change to the held-out targets leaves every
+        development weight bit-identical, and the development weights keep unit mean."""
+
+        rng = np.random.default_rng(1)
+        Y = rng.uniform(0.0, 1.0, (80, 2))
+        fit_mask = np.arange(80) < 60
+        moved = Y.copy()
+        moved[~fit_mask] = rng.uniform(0.0, 1.0, (20, 2)) * 0.01
+        w_a = compute_inverse_density_weights(Y, metric=metric, period=1.0, fit_mask=fit_mask)
+        w_b = compute_inverse_density_weights(moved, metric=metric, period=1.0, fit_mask=fit_mask)
+        np.testing.assert_array_equal(w_a[fit_mask], w_b[fit_mask])
+        assert float(np.mean(w_a[fit_mask])) == pytest.approx(1.0, abs=1e-9)
 
 
 class TestContinuousPipelineInit:

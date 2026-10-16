@@ -1308,3 +1308,52 @@ def test_noise_mask_and_drop_noise_usvs_take_any_csv_encoding(tmp_path):
     assert (kept.height, n_dropped) == (2, 1)
     with pytest.raises(KeyError, match="detect-usv-noise"):
         os_utils.noise_mask(pls.DataFrame({"start": [0.1]}), "old_summary.csv")
+
+
+def _random_timed_summary(rng: np.random.Generator, n_rows: int) -> pls.DataFrame:
+    """A random summary: segments with random classes (pure USV, pure squeak, overlap, noise) and, on
+    every squeak-bearing row, a squeak extent that may start before, inside or after its segment."""
+
+    start = np.sort(rng.uniform(0.0, 100.0, n_rows))
+    stop = start + rng.uniform(0.005, 0.3, n_rows)
+    kind = rng.integers(0, 4, n_rows)  # 0 pure USV, 1 pure squeak, 2 overlap, 3 noise
+    usv = [True if k in (0, 2) else (False if k == 1 else None) for k in kind]
+    squeak = [True if k in (1, 2) else (False if k == 0 else None) for k in kind]
+    bearing = np.isin(kind, (1, 2))
+    squeak_start = np.where(bearing, start + rng.uniform(-0.01, 0.2, n_rows), np.nan)
+    squeak_end = np.where(bearing, squeak_start + rng.uniform(0.002, 0.2, n_rows), np.nan)
+    return pls.DataFrame({
+        "start": start, "stop": stop, "duration": stop - start,
+        "usv": pls.Series(usv, dtype=pls.Boolean), "squeak": pls.Series(squeak, dtype=pls.Boolean),
+        "squeak_start": pls.Series(squeak_start).fill_nan(None),
+        "squeak_end": pls.Series(squeak_end).fill_nan(None),
+        "row": np.arange(n_rows),
+    })
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_event_and_occupancy_times_are_self_consistent_on_random_summaries(seed):
+    """Property check over random summaries and every class group: re-timing keeps every row
+    exactly once, sorts by onset, never ends an event before it starts, keeps `duration` equal
+    to `stop - start` on re-timed rows, leaves pure USVs and noise rows untouched, and the
+    occupancy span of every row contains both its segment and its event times."""
+
+    rng = np.random.default_rng(seed)
+    table = _random_timed_summary(rng, 200)
+    by_row = {row: (start, stop) for row, start, stop in zip(table["row"], table["start"], table["stop"], strict=True)}
+    occupancy = os_utils.vocal_occupancy_times(table, "s")
+    occupancy_by_row = {row: (start, stop) for row, start, stop in
+                        zip(occupancy["row"], occupancy["start"], occupancy["stop"], strict=True)}
+    for classes in (("usv",), ("squeak",), ("overlap",), ("usv", "overlap"), ("squeak", "overlap"),
+                    ("usv", "squeak"), ("usv", "squeak", "overlap")):
+        timed = os_utils.vocal_event_times(table, classes, "s")
+        assert sorted(timed["row"].to_list()) == list(range(table.height))
+        assert timed["start"].to_list() == sorted(timed["start"].to_list())
+        assert (timed["stop"] >= timed["start"]).all()
+        np.testing.assert_allclose(timed["duration"], timed["stop"] - timed["start"], atol=1e-12)
+        for row, squeak, start, stop in zip(timed["row"], timed["squeak"], timed["start"], timed["stop"], strict=True):
+            if not squeak:
+                assert (start, stop) == by_row[row]
+            occupancy_start, occupancy_stop = occupancy_by_row[row]
+            assert occupancy_start <= min(start, by_row[row][0]) + 1e-12
+            assert occupancy_stop >= max(stop, by_row[row][1]) - 1e-12
