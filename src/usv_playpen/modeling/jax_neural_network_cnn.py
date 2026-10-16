@@ -1754,13 +1754,16 @@ class NeuralContinuousCNNRunner:
                         Y_tr[g_idx] = Y_tr[rng.permutation(g_idx)]
 
                 # 3. JAX Network Initialization using the full hyperparameter dictionary
-                params, state = init_cnn_params_and_state(
-                    jax.random.PRNGKey(fold + (100 if strategy == 'null' else 0)),
-                    n_feats, n_bins, self.hp
+                # Every random stream derives from `random_seed`: one key per (fold,
+                # strategy), split into the weight-initialization key and a dedicated
+                # dropout key, so changing the seed changes the run and the actual and
+                # null fits of a fold never share an initialization or a dropout stream.
+                strategy_key = jax.random.fold_in(
+                    jax.random.fold_in(jax.random.PRNGKey(self.random_seed), fold),
+                    strategies.index(strategy),
                 )
-
-                # Initialize a dedicated PRNG key just for Dropout
-                dropout_rng = jax.random.PRNGKey(self.random_seed + fold)
+                init_key, dropout_rng = jax.random.split(strategy_key)
+                params, state = init_cnn_params_and_state(init_key, n_feats, n_bins, self.hp)
 
                 if self.hp['use_kde_weights']:
                     steps_per_epoch = len(Y_tr) // self.hp['batch_size']
