@@ -1298,12 +1298,22 @@ class Operator:
                     if file_key not in changepoint_info_data:
                         changepoint_info_data[file_key] = binary_files_info[file_key]
                     else:
+                        # The tracking samples' reference, read BEFORE session_start_end is
+                        # updated below: with no stored session start (no concatenation has run
+                        # yet) the sync step wrote them relative to this file, and the file's
+                        # offset in the concatenation is added; otherwise they are already
+                        # relative to the earlier concatenation, so that run's offset is replaced
+                        # by this one's. Adding the offset on every run would shift them again on
+                        # each re-run.
+                        previous_session_start = changepoint_info_data[file_key]['session_start_end'][0]
+                        new_session_start = binary_files_info[file_key]['session_start_end'][0]
+                        previous_offset = 0 if (previous_session_start is None or np.isnan(previous_session_start)) else previous_session_start
                         for component_key in changepoint_info_data[file_key].keys():
                             if component_key != 'tracking_start_end' and component_key != 'largest_camera_break_duration' and component_key != 'root_directory' and changepoint_info_data[file_key][component_key] != binary_files_info[file_key][component_key]:
                                 changepoint_info_data[file_key][component_key] = binary_files_info[file_key][component_key]
-                            elif component_key == 'tracking_start_end' and changepoint_info_data[file_key][component_key] != [np.nan, np.nan]:
-                                changepoint_info_data[file_key][component_key][0] = changepoint_info_data[file_key][component_key][0] + binary_files_info[file_key]['session_start_end'][0]
-                                changepoint_info_data[file_key][component_key][1] = changepoint_info_data[file_key][component_key][1] + binary_files_info[file_key]['session_start_end'][0]
+                            elif component_key == 'tracking_start_end' and not any(value is None or np.isnan(value) for value in changepoint_info_data[file_key][component_key]):
+                                changepoint_info_data[file_key][component_key][0] = changepoint_info_data[file_key][component_key][0] - previous_offset + new_session_start
+                                changepoint_info_data[file_key][component_key][1] = changepoint_info_data[file_key][component_key][1] - previous_offset + new_session_start
 
                 with open(changepoints_json, 'w') as binary_info_output_file:
                     json.dump(changepoint_info_data, binary_info_output_file, indent=4)

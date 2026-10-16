@@ -538,6 +538,38 @@ def test_detect_and_merge_replaces_the_retired_columns(tmp_path, mocker):
     assert written["squeak_start"].is_null().to_list() == [False, False, True, True, True]
 
 
+def test_detect_and_merge_drops_the_squeak_map_and_clears_usv_maps_on_new_pure_squeaks(tmp_path, mocker):
+    """
+    A re-classification replaces the squeak rows and extents the squeak map was embedded from, so the
+    squeak-map columns (coordinates and category) are dropped; the USV maps skip pure squeaks, so the row
+    this run makes a pure squeak (row 1: usv false, squeak true) loses its USV-map coordinates and
+    category, while every other row keeps them.
+    """
+    root = _build_session(tmp_path)
+    summary_path = root / "audio" / f"{SESSION_ID}_usv_summary.csv"
+    original = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+    original.with_columns(
+        pls.lit(0.25).alias("qlvm1"), pls.lit(0.5).alias("qlvm2"), pls.lit(3).alias("qlvm_category"),
+        pls.lit(0.1).alias("qlvm_duration1"), pls.lit(0.2).alias("qlvm_duration2"),
+        pls.lit(0.7).alias("qlvm_squeak1"), pls.lit(0.8).alias("qlvm_squeak2"),
+    ).write_csv(summary_path)
+
+    mocker.patch("usv_playpen.processing.detect_usv_squeaks.smart_wait")
+    mocker.patch("usv_playpen.processing.detect_usv_squeaks.torch.cuda.is_available", return_value=False)
+    mocker.patch("usv_playpen.processing.detect_usv_squeaks.load_usv_squeak_model", return_value=_stub_bundle())
+    squeaks.USVSqueakDetector(
+        root_directory=str(root),
+        input_parameter_dict={"detect_usv_squeaks": {"squeak_model_path": "unused.pt", "exclude_metadata_audio_channels": True, "batch_size": 64}},
+        message_output=lambda *_a, **_kw: None,
+    ).detect_and_merge()
+
+    written = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
+    assert "qlvm_squeak1" not in written.columns
+    assert "qlvm_squeak2" not in written.columns
+    for column, value in (("qlvm1", 0.25), ("qlvm2", 0.5), ("qlvm_category", 3), ("qlvm_duration1", 0.1)):
+        assert written[column].to_list() == [value, None, value, value, value]
+
+
 def test_detect_usv_squeaks_cli_routes(mocker, tmp_path):
     """detect-usv-squeaks resolves settings and calls USVSqueakDetector.detect_and_merge once."""
     mock_cls = mocker.patch("usv_playpen.processing.detect_usv_squeaks.USVSqueakDetector")

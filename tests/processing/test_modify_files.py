@@ -500,6 +500,62 @@ def test_concatenate_binary_files_merges_existing_changepoints(tmp_path, process
     assert rec["tracking_start_end"] == [10, 20]
 
 
+@pytest.mark.parametrize(("stored_start", "stored_tracking"), [(None, [10, 20]), (64, [74, 84])])
+def test_concatenate_binary_files_rerun_keeps_tracking_on_the_concatenated_clock(
+        tmp_path, processing_settings, mocker, stored_start, stored_tracking):
+    """
+    Description
+    -----------
+    The second of two recordings starts at sample 64 of the concatenation and was
+    tracked over samples 10-20 of its own file. Whether the stored tracking window is
+    file-relative (no concatenation ran yet: session start null) or already on the
+    concatenated clock (an earlier concatenation), concatenating, and concatenating
+    again, leaves it at 74-84: the file's offset is applied once, never per run.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test temp dir; sessions rooted at ``<tmp>/Data/<id>``.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        No-ops the interactive ``smart_wait``.
+    stored_start (int | None)
+        The second recording's stored session start before the run (None = NaN).
+    stored_tracking (list[int])
+        Its stored tracking window before the run.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.modify_files.smart_wait")
+    headstage_sn = _headstage_sn()
+    roots = []
+    for session_id in ("20250101_120000", "20250101_130000"):
+        root = tmp_path / "Data" / session_id
+        imec_dir = root / "ephys" / "imec0"
+        imec_dir.mkdir(parents=True)
+        _write_synthetic_binary(imec_dir, f"{session_id}.imec0", headstage_sn, n_samples_per_channel=64)
+        roots.append(str(root))
+    ephys_base = tmp_path / "EPHYS" / "20250101_imec0"
+    ephys_base.mkdir(parents=True)
+    changepoints_json = ephys_base / "changepoints_info_20250101_imec0.json"
+    second = {"session_start_end": [stored_start if stored_start is not None else float("nan"),
+                                    stored_start + 64 if stored_start is not None else float("nan")],
+              "tracking_start_end": stored_tracking, "largest_camera_break_duration": 1.0,
+              "file_duration_samples": 64, "root_directory": roots[1], "total_num_channels": 5,
+              "headstage_sn": headstage_sn, "imec_probe_sn": "P"}
+    changepoints_json.write_text(json.dumps({"20250101_130000.imec0": second}, indent=4))
+
+    for _ in range(2):
+        _make_operator(roots, processing_settings, []).concatenate_binary_files()
+        rec = json.loads(changepoints_json.read_text())["20250101_130000.imec0"]
+        assert rec["session_start_end"] == [64, 128]
+        assert rec["tracking_start_end"] == [74, 84]
+
+
 def test_concatenate_binary_files_adds_new_file_key_to_existing_json(tmp_path, processing_settings, mocker):
     """
     Description

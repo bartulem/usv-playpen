@@ -71,6 +71,8 @@ from torch import nn
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
+    USV_SUMMARY_COLUMN_ORDER,
+    atomic_output_path,
     configure_path,
     derive_spectrogram_model_paths,
     find_audio_mmap,
@@ -1336,8 +1338,29 @@ class USVNoiseDetector:
             batch_size=cfg['batch_size'],
             message_output=self.message_output,
         )
-        merged = order_usv_summary_columns(pls.concat([usv_df, scores], how="horizontal"))
-        merged.write_csv(file=str(usv_summary_loc))
+        merged = pls.concat([usv_df, scores], how="horizontal")
+        # The vocal-class block (usv / squeak and their probabilities and extent, written by
+        # detect-usv-squeaks) is null on noise rows, and the class masks rely on it: a row this
+        # run marks as noise must not keep the class an earlier classification gave it, or it
+        # would pass as a USV / squeak. A row that stops being noise has no class until
+        # detect-usv-squeaks runs again.
+        class_block = USV_SUMMARY_COLUMN_ORDER[USV_SUMMARY_COLUMN_ORDER.index("usv"):
+                                               USV_SUMMARY_COLUMN_ORDER.index("squeak_end") + 1]
+        class_columns = [column for column in class_block if column not in NOISE_COLUMNS and column in merged.columns]
+        if class_columns:
+            is_noise = merged["noise"].fill_null(False)
+            n_cleared = int((is_noise & merged[class_columns[0]].is_not_null()).sum())
+            merged = merged.with_columns([
+                pls.when(is_noise).then(None).otherwise(pls.col(column)).alias(column) for column in class_columns
+            ])
+            if n_cleared:
+                self.message_output(
+                    f"Cleared the vocal-class columns of {n_cleared} row(s) now marked as noise; rows no longer noise "
+                    f"have no vocal class until detect-usv-squeaks runs again."
+                )
+        merged = order_usv_summary_columns(merged)
+        with atomic_output_path(usv_summary_loc) as tmp_summary_path:
+            merged.write_csv(file=str(tmp_summary_path))
 
         self.message_output(
             f"Merged noise calls into {usv_summary_loc.name}: {int(scores['noise'].sum())} noise segment(s) among {usv_df.height} USVs."

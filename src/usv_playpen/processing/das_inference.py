@@ -619,10 +619,9 @@ class FindMouseVocalizations:
         annot_dir = pathlib.Path(self.root_directory) / "audio" / "das_annotations"
         das_annotation_files = sorted(annot_dir.glob("*.csv")) if annot_dir.is_dir() else []
         if not das_annotation_files:
-            self.message_output(
-                f"No DAS annotations found in directory: {self.root_directory}. Skipping summary generation."
-            )
-            return
+            msg = (f"No DAS annotations in {annot_dir}: run DAS inference before summarizing; "
+                   f"no usv_summary.csv was written for {self.root_directory}.")
+            raise FileNotFoundError(msg)
 
         try:
             # Phase 1: load all channel CSVs, filter noise, collect flat segment list
@@ -1046,10 +1045,8 @@ class FindMouseVocalizations:
                 save_session_metadata(data=metadata, filepath=metadata_path, logger=self.message_output)
 
         except (IndexError, FileNotFoundError) as exc:
-            self.message_output(
-                f"DAS summary skipped for '{self.root_directory}': {type(exc).__name__}: {exc}"
-            )
-            return
+            msg = f"DAS summary failed for '{self.root_directory}': {type(exc).__name__}: {exc}"
+            raise RuntimeError(msg) from exc
 
         # Post-summary seam check-and-correct (no-op by construction on
         # sessions inferred with the overlap-tiled model, whose annotations

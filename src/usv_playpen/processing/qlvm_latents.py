@@ -1440,6 +1440,17 @@ class QLVMLatentInference:
             f"model and get null coordinates."
         )
         h5_durations, h5_mask_counts = session_h5_call_table(h5_loc, root.name)
+        # The coordinates are written to the summary by row position (H5 row i -> summary
+        # row i), so a summary and an H5 of different lengths (one rebuilt without the
+        # other) would put coordinates on the wrong USVs. Refused before anything is
+        # embedded.
+        if h5_durations.size != usv_df.height:
+            error_message = (
+                f"{usv_summary_loc.name} has {usv_df.height} rows but the spectrogram H5 {h5_loc.name} has "
+                f"{h5_durations.size}; their rows must match one to one. Regenerate the spectrograms for this "
+                f"session (generate-spectrograms) before embedding."
+            )
+            raise ValueError(error_message)
         # Hashed on first use and reused for every cell: one read of the H5 per session.
         h5_sha256 = functools.cache(functools.partial(file_sha256, h5_loc))
         baselines = {}
@@ -1571,11 +1582,9 @@ class QLVMLatentInference:
             # (duration > 0) USVs inside the training duration window (the
             # 0 < duration < length_threshold rule build_qlvm_training_set applies)
             # and remember their row positions for the merge.
-            # skip_rows follows the summary, which a stale session may hold more or
-            # fewer rows of than the H5; only the rows both share can be skipped.
-            skipped = np.zeros(durations.size, dtype=bool)
-            n_shared = min(durations.size, len(skip_rows))
-            skipped[:n_shared] = np.asarray(skip_rows, dtype=bool)[:n_shared]
+            # skip_rows follows the summary, whose rows the caller has checked are one
+            # to one with the H5's.
+            skipped = np.asarray(skip_rows, dtype=bool)
             in_window = (durations > 0) & ~skipped
             if length_threshold is not None:
                 in_window &= durations < length_threshold

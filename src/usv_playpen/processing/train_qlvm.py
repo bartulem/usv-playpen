@@ -1113,9 +1113,9 @@ class QLVMTrainer:
         Finds the training split (``train_data.npz``, else ``full_data.npz``), the
         validation split (``val_data.npz``, when present) and reads the set's
         ``metadata.npz``. Refuses a set without ``metadata.npz`` (the training
-        contract is built from it) and a ``train_data.npz`` / ``val_data.npz`` older
-        than a ``full_data.npz`` in the same directory (a split left over from an
-        earlier build, which would otherwise win the lookup).
+        contract is built from it) and any split whose row count differs from the
+        count ``metadata.npz`` records for it (``n_train`` / ``n_val`` / ``n_full``):
+        a split left over from an earlier build, which would otherwise win the lookup.
 
         Parameters
         ----------
@@ -1144,18 +1144,6 @@ class QLVMTrainer:
             error_message = f"No training set found in {dataset_dir} (expected train_data.npz or full_data.npz)."
             raise FileNotFoundError(error_message)
 
-        if full_npz.is_file():
-            stale_splits = [
-                split.name for split in (train_npz, val_npz)
-                if split.is_file() and split.stat().st_mtime < full_npz.stat().st_mtime
-            ]
-            if stale_splits:
-                error_message = (
-                    f"{', '.join(stale_splits)} in {dataset_dir} predate full_data.npz, so they are left over "
-                    f"from an earlier build. Delete them to train on full_data.npz, or rebuild the split set."
-                )
-                raise ValueError(error_message)
-
         metadata_path = dataset_dir / "metadata.npz"
         if not metadata_path.is_file():
             error_message = (
@@ -1163,6 +1151,33 @@ class QLVMTrainer:
                 f"duration window and loudness floor from it."
             )
             raise FileNotFoundError(error_message)
+
+        # A split left over from an earlier build is recognised by its row count, which no
+        # longer matches the count metadata.npz records for it (n_train / n_val / n_full).
+        # File times cannot tell it: one build writes train_data.npz and val_data.npz
+        # before full_data.npz, so the pair is always older than a full_data.npz of the
+        # same build. Sets built before the counts were recorded are not checked.
+        with np.load(metadata_path, allow_pickle=False) as metadata_file:
+            recorded_rows = {
+                split_name: int(metadata_file[count_key])
+                for split_name, count_key in (("train_data.npz", "n_train"), ("val_data.npz", "n_val"),
+                                              ("full_data.npz", "n_full"))
+                if count_key in metadata_file.files
+            }
+        mismatched = []
+        for split in (train_npz, val_npz, full_npz):
+            if split.is_file() and split.name in recorded_rows:
+                with np.load(split, allow_pickle=False) as split_file:
+                    n_rows = int(split_file["durations"].shape[0])
+                if n_rows != recorded_rows[split.name]:
+                    mismatched.append(f"{split.name} ({n_rows} rows, metadata.npz records {recorded_rows[split.name]})")
+        if mismatched:
+            error_message = (
+                f"{'; '.join(mismatched)} in {dataset_dir}: these splits do not belong to the build metadata.npz "
+                f"describes (left over from an earlier build). Delete them or rebuild the set."
+            )
+            raise ValueError(error_message)
+
         with np.load(metadata_path, allow_pickle=False) as metadata_file:
             length_threshold = float(metadata_file["length_threshold"])
             metadata = {
@@ -1365,7 +1380,7 @@ class QLVMTrainer:
 
         # A conditional run pads every short batch to batch_size with zero-weight rows,
         # so one compiled step serves every batch of the run.
-        padded_batch = None if conditional is None else np.zeros((batch_size, 1, *train_inputs.shape[1:]), dtype=np.float32)
+        padded_shape = (batch_size, 1, *train_inputs.shape[1:])
         batch_losses: list[float] = []
         epoch_train_losses: list[float] = []
         val_epochs: list[int] = []
@@ -1387,8 +1402,13 @@ class QLVMTrainer:
                     batch = jnp.asarray(train_inputs[rows][:, None])
                     row_weights, batch_condition, step_scale = None, None, 1.0
                 else:
+                    # A fresh buffer per batch, never one reused across batches: on CPU
+                    # jnp.asarray (and, measured, even jnp.array(copy=True) on some
+                    # alignments) can alias the NumPy memory, and the asynchronously
+                    # dispatched step would then read whatever the loop wrote into a
+                    # reused buffer for the NEXT batch.
+                    padded_batch = np.zeros(padded_shape, dtype=np.float32)
                     padded_batch[:rows.size, 0] = train_inputs[rows]
-                    padded_batch[rows.size:] = 0.0
                     batch = jnp.asarray(padded_batch)
                     row_weights = jnp.asarray((np.arange(batch_size) < rows.size).astype(np.float32))
                     batch_condition = jnp.full((1, c_dim), train_c[rows].mean(), dtype=jnp.float32)

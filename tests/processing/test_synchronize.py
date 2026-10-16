@@ -979,6 +979,53 @@ def test_find_audio_sync_trains_two_devices_start_sample_difference(tmp_path, pr
     assert "s_240101_ch02_cropped_to_video" in result
 
 
+@pytest.mark.parametrize(("slave_shift_ms", "original_kept"), [(0.0, False), (50.0, True)])
+def test_find_audio_sync_trains_keeps_original_audio_unless_every_device_passes(
+        tmp_path, processing_settings, mocker, slave_shift_ms, original_kept):
+    """
+    Description
+    -----------
+    audio/original is deleted only when every audio device passes the divergence
+    tolerance: with the master in sync and the slave's IPI starts 50 ms late (same
+    pulse durations, so the sequence match succeeds but the discrepancy exceeds the
+    tolerance) the directory is kept, while two in-sync devices delete it. The
+    master is checked first, so deleting on the first pass would lose the original
+    audio of a session whose slave failed.
+
+    Parameters
+    ----------
+    tmp_path (pathlib.Path)
+        Per-test session root.
+    processing_settings (dict)
+        Package processing-settings fixture.
+    mocker (pytest_mock.MockerFixture)
+        Patch factory; no-ops ``smart_wait``.
+    slave_shift_ms (float)
+        Delay of the slave device's IPI starts.
+    original_kept (bool)
+        Whether audio/original must survive.
+
+    Returns
+    -------
+    None
+    """
+
+    mocker.patch("usv_playpen.processing.synchronize_files.smart_wait")
+    sync = _make_sync(tmp_path, processing_settings)
+    video_frames = np.array([10, 20, 30, 40])
+    audio_starts = (video_frames / 150.0 * 250000).astype(np.int64)
+    durations = np.array([300.0, 300.0, 300.0, 300.0])
+    _wire_audio_sync(sync, mocker, audio_durations_ms=durations, audio_starts=audio_starts,
+                     video_seq=np.array([300, 300, 300, 300]), video_frames=video_frames, root=tmp_path,
+                     wave_keys=("m_240101_ch02_cropped_to_video.wav", "s_240101_ch02_cropped_to_video.wav"))
+    slave_starts = audio_starts + int(slave_shift_ms / 1000 * 250000)
+    mocker.patch.object(sync, "find_ipi_intervals", side_effect=[(durations, audio_starts), (durations, slave_starts)])
+    (tmp_path / "audio" / "original").mkdir(parents=True, exist_ok=True)
+
+    sync.find_audio_sync_trains()
+    assert (tmp_path / "audio" / "original").exists() is original_kept
+
+
 def test_find_audio_sync_trains_audio_start_precedes_all_frames_nan(tmp_path, processing_settings, mocker):
     """
     Description

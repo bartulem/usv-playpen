@@ -1228,13 +1228,13 @@ def test_model_cells_take_package_values_when_the_session_is_verified(tmp_path, 
         ("sha256", "inference (spectrogram H5 changed since the package: sha256 mismatch)"),
         ("durations", "inference (the package's durations or mask counts disagree with the spectrogram H5 on 1 of 2 rows)"),
         ("mask_counts", "inference (the package's durations or mask counts disagree with the spectrogram H5 on 1 of 2 rows)"),
-        ("summary_rows", "inference (usv_summary.csv has 4 rows, the spectrogram H5 3)"),
     ],
 )
 def test_model_cells_fall_back_to_inference_when_the_gate_fails(tmp_path, mocker, failure, reason):
     """Package rows name calls only by H5 position, so any doubt that the session's
-    rows are the package's -- not in its corpus, H5 rehashed, a call's duration or
-    mask count changed, or a summary out of step with the H5 -- embeds the session."""
+    rows are the package's -- not in its corpus, H5 rehashed, or a call's duration or
+    mask count changed -- embeds the session. (A summary out of step with the H5 is
+    refused outright: test_infer_and_merge_refuses_a_summary_and_h5_of_different_lengths.)"""
     rng = np.random.default_rng(32)
     root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm_duration",))
     package = {
@@ -1242,13 +1242,8 @@ def test_model_cells_fall_back_to_inference_when_the_gate_fails(tmp_path, mocker
         "sha256": {"sha256": "0" * 64},
         "durations": {"durations": (64.0, 65.0)},
         "mask_counts": {"mask_counts": (1.0, 3.0)},
-        "summary_rows": {},
     }[failure]
     _write_fake_package(tmp_path, root, session_id, cfg, rng, **package)
-    if failure == "summary_rows":
-        summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
-        summary = pls.read_csv(summary_path, schema_overrides={"usv_id": pls.String})
-        pls.concat([summary, pls.DataFrame({"usv_id": ["0003"], "start": [0.7], "stop": [0.75], "usv": [True], "squeak": [False]})]).write_csv(summary_path)
 
     embedded, messages = _run_model_cells(root, cfg, mocker)
 
@@ -1577,5 +1572,21 @@ def test_infer_and_merge_refuses_a_summary_without_vocal_flags(tmp_path, mocker)
     before = summary_path.read_bytes()
 
     with pytest.raises(KeyError, match="detect-usv-squeaks"):
+        _run_model_cells(root, cfg, mocker)
+    assert summary_path.read_bytes() == before
+
+
+def test_infer_and_merge_refuses_a_summary_and_h5_of_different_lengths(tmp_path, mocker):
+    """The coordinates are written by row position, so a summary holding one row fewer than the
+    spectrogram H5 (one rebuilt without the other) is refused before anything is embedded and
+    the summary is left untouched."""
+    rng = np.random.default_rng(37)
+    root, session_id, cfg = _model_cells_session(tmp_path, rng, prefixes=("qlvm",))
+    summary_path = root / "audio" / f"{session_id}_usv_summary.csv"
+    summary = pls.read_csv(summary_path)
+    summary.head(summary.height - 1).write_csv(summary_path)
+    before = summary_path.read_bytes()
+
+    with pytest.raises(ValueError, match="rows must match one to one"):
         _run_model_cells(root, cfg, mocker)
     assert summary_path.read_bytes() == before

@@ -1033,8 +1033,9 @@ class Synchronizer:
 
         NB: This method also has consequential side effects. It caches the NIDQ IPI
         data to disk (sync/nidq_ipi_data.npy), and, when the audio/video sync passes
-        the divergence tolerance, it irreversibly deletes the original (uncropped)
-        audio directory (audio/original) via shutil.rmtree.
+        the divergence tolerance for EVERY audio device and camera, it irreversibly
+        deletes the original (uncropped) audio directory (audio/original) via
+        shutil.rmtree; if any comparison fails or is not made, the directory is kept.
 
         Parameters
         ----------
@@ -1144,6 +1145,10 @@ class Synchronizer:
         ipi_discrepancy_dict = {}
         audio_devices_start_sample_differences = 0
         audio_device_prefixes = ['m', 's']
+        # One verdict per (audio device, camera) comparison that reached the divergence check;
+        # audio/original is deleted only after the loop, when every comparison was made and
+        # passed, never as soon as the first device passes.
+        sync_comparisons_passed: list[bool] = []
         for af_idx, audio_file in enumerate(sorted(wave_data_dict.keys())):
             ipi_discrepancy_dict[audio_file[:-4]] = {}
             self.message_output(f"Working on sync data in audio file: {audio_file[:-4]}")
@@ -1267,11 +1272,12 @@ class Synchronizer:
                                     self.message_output(f"On device {audio_device_prefixes[af_idx]}, the first IPI event had a {discrepancy_arr[0]} fr discrepancy, and the last one had a {discrepancy_arr[-1]} fr discrepancy.")
                                     self.message_output(f"Overall, the min discrepancy is {np.min(discrepancy_arr)} fr and the max discrepancy is {np.max(discrepancy_arr)} fr.")
 
-                            # if the SYNC is acceptable, delete the original audio files
-                            if np.max(np.abs(audio_video_ipi_discrepancy_ms)) < self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance']:
-                                original_audio_dir = pathlib.Path(self.root_directory) / 'audio' / 'original'
-                                if original_audio_dir.exists():
-                                    shutil.rmtree(original_audio_dir)
+                            # record whether this device's SYNC is acceptable (audio/original is
+                            # deleted after the loop, once every device has passed)
+                            sync_comparisons_passed.append(bool(
+                                np.max(np.abs(audio_video_ipi_discrepancy_ms))
+                                < self.input_parameter_dict['find_video_sync_trains']['millisecond_divergence_tolerance']
+                            ))
 
                             ipi_discrepancy_dict[audio_file[:-4]]['ipi_discrepancy_ms'] = audio_video_ipi_discrepancy_ms
                             ipi_discrepancy_dict[audio_file[:-4]]['video_ipi_start_frames'] = _video_frames
@@ -1284,6 +1290,17 @@ class Synchronizer:
 
             else:
                 self.message_output("The IPI sequences on different videos do not match.")
+
+        # every (audio device, camera) comparison was made and every one passed -> the original
+        # (uncropped) audio is no longer needed
+        n_comparisons = len(wave_data_dict) * len(video_sync_sequence_dict)
+        if sync_comparisons_passed and len(sync_comparisons_passed) == n_comparisons and all(sync_comparisons_passed):
+            original_audio_dir = pathlib.Path(self.root_directory) / 'audio' / 'original'
+            if original_audio_dir.exists():
+                shutil.rmtree(original_audio_dir)
+        elif (pathlib.Path(self.root_directory) / 'audio' / 'original').exists():
+            self.message_output(f"audio/original kept: {sum(sync_comparisons_passed)} of {n_comparisons} "
+                                f"audio-device x camera comparisons passed the divergence tolerance.")
 
         # check if the audio devices match on IPI start samples
         audio_devices_start_sample_differences = np.abs(audio_devices_start_sample_differences)

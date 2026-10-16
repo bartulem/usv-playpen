@@ -209,7 +209,8 @@ def test_detect_and_merge_places_the_noise_columns_in_the_class_block(tmp_path, 
     The merge replaces stale noise columns, keeps every other column and the usv_id zero-padding, and
     leaves the summary in the canonical order: the DAS event, the class booleans (noise, usv,
     squeak), then the probabilities behind them (noise_probability first), then emitter and the DAS
-    channel statistics.
+    channel statistics. Rows the run marks as noise lose the vocal class an earlier classification
+    gave them (usv / squeak become null), so they never pass the class masks as USVs.
     """
     root = _build_session(tmp_path)
     summary_path = root / "audio" / f"{SESSION_ID}_usv_summary.csv"
@@ -242,6 +243,9 @@ def test_detect_and_merge_places_the_noise_columns_in_the_class_block(tmp_path, 
     assert written["usv_id"].to_list() == ["0000", "0001", "0002"]
     assert written["noise"].to_list() == [True, True, True]
     assert written["noise_probability"].null_count() == 0
+    assert written["usv"].to_list() == [None, None, None]
+    assert written["squeak"].to_list() == [None, None, None]
+    assert any("Cleared the vocal-class columns of 3 row(s)" in message for message in messages)
     assert written["mean_freq_hz"].to_list() == [40000.0, 40000.0, 40000.0]
     assert any("noise = p >= 0.14" in message and "precision 0.944" in message for message in messages)
 

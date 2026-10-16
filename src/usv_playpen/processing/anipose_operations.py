@@ -521,9 +521,10 @@ class ConvertTo3D:
 
         calibration_dir_search = sorted(pathlib.Path(configure_path(self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc'])).rglob('*_calibration.toml*'))
         if len(calibration_dir_search) == 0:
-            self.message_output(
-                "Calibration directory not found. Please run calibration first and provide a correct path."
-            )
+            msg = (f"No *_calibration.toml under "
+                   f"{self.input_parameter_dict['conduct_anipose_triangulation']['calibration_file_loc']}: "
+                   f"run the calibration first and give its path; nothing was triangulated.")
+            raise FileNotFoundError(msg)
         else:
             calibration_toml_file = calibration_dir_search[0]
 

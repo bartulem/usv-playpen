@@ -227,11 +227,11 @@ def test_conduct_anipose_calibration_skips_draw_when_board_provided(
 # ---------------------------------------------------------------------------
 
 
-def test_conduct_anipose_triangulation_logs_when_no_calibration(
+def test_conduct_anipose_triangulation_raises_when_no_calibration(
     processing_settings, session_with_video_dir, mocker, tmp_path
 ):
-    """No *_calibration.toml under calibration_file_loc → log skip + no
-    triangulate call."""
+    """No *_calibration.toml under calibration_file_loc → FileNotFoundError and
+    no triangulate call (the step fails instead of returning as if done)."""
     root, _ = session_with_video_dir
     # Point calibration_file_loc at an empty dir so the rglob finds nothing
     empty_calib_dir = tmp_path / "no_calib"
@@ -250,10 +250,10 @@ def test_conduct_anipose_triangulation_logs_when_no_calibration(
         input_parameter_dict=processing_settings,
         message_output=msgs.append,
     )
-    converter.conduct_anipose_triangulation()
+    with pytest.raises(FileNotFoundError, match=r"calibration\.toml"):
+        converter.conduct_anipose_triangulation()
 
     assert triangulate_mock.call_count == 0
-    assert any("Calibration directory not found" in m for m in msgs)
 
 
 def test_conduct_anipose_triangulation_arena_branch_uses_one_frame(

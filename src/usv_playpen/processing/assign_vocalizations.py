@@ -408,7 +408,9 @@ class Vocalocator:
         )
 
         try:
-            # Locate the calibration NPZ file; if none is found the resulting StopIteration is caught below and the method logs a warning and returns (no error propagates to the caller)
+            # Locate the calibration NPZ file; a missing file (StopIteration) or a failed
+            # subprocess is raised below as a RuntimeError, so the step fails rather
+            # than returning as if the session had been assigned
             cal_file = next(f.name for f in sorted(pathlib.Path(model_directory).glob("*cal*.npz")))
 
             conda_exe = os.environ.get('CONDA_EXE', 'conda')
@@ -432,10 +434,12 @@ class Vocalocator:
                 shell=False,
                 check=True
             )
-        except (StopIteration, subprocess.CalledProcessError):
-            # This catches both the missing file (StopIteration) and shell command failures
-            self.message_output("No calibration NPZ file found in model directory or the subprocess failed.")
-            return
+        except StopIteration as error:
+            msg = f"No calibration NPZ file (*cal*.npz) in the vocalocator model directory {model_directory}."
+            raise RuntimeError(msg) from error
+        except subprocess.CalledProcessError as error:
+            msg = f"The vocalocator-ssl subprocess failed (exit code {error.returncode}): {' '.join(map(str, error.cmd))}."
+            raise RuntimeError(msg) from error
 
         smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 

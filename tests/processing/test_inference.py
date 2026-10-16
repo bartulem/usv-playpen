@@ -162,10 +162,10 @@ def test_das_command_line_inference_creates_save_dir_even_if_no_annotations(
 
 def test_summarize_das_findings_handles_no_annotations(processing_settings,
                                                         tmp_path, mocker):
-    """When the das_annotations directory is missing entirely, the method
-    short-circuits via its up-front `is_dir()` guard and emits the
-    "No DAS annotations found" skip message rather than crashing or falling
-    through to the audio-loading phase."""
+    """When the das_annotations directory is missing entirely, the method stops at
+    its up-front `is_dir()` guard with a FileNotFoundError naming the missing
+    annotations, before the audio-loading phase, and writes no summary (the
+    preprocessing run records it as a failed session)."""
     msgs: list[str] = []
     mocker.patch("usv_playpen.processing.das_inference.smart_wait")
 
@@ -174,10 +174,11 @@ def test_summarize_das_findings_handles_no_annotations(processing_settings,
         input_parameter_dict=processing_settings,
         message_output=msgs.append,
     )
-    # No audio/das_annotations dir exists → the guard returns before any glob
-    # of the audio tree, emitting the deterministic skip message.
-    fmv.summarize_das_findings()
-    assert any("No DAS annotations found" in m for m in msgs)
+    # No audio/das_annotations dir exists → the guard raises before any glob
+    # of the audio tree.
+    with pytest.raises(FileNotFoundError, match="No DAS annotations"):
+        fmv.summarize_das_findings()
+    assert not list(tmp_path.glob("audio/*_usv_summary.csv"))
 
 
 def test_summarize_das_findings_skips_unrecognised_filename(processing_settings,
@@ -406,8 +407,8 @@ def test_vocalocator_run_vocalocator_subprocess_invocation(tmp_path, processing_
 def test_vocalocator_run_vocalocator_ssl_handles_missing_calibration(tmp_path,
                                                                      processing_settings,
                                                                      mocker, monkeypatch):
-    """When no *cal*.npz file is in model_directory, run_vocalocator_ssl logs
-    a "no calibration NPZ" message and returns (no further IO)."""
+    """When no *cal*.npz file is in model_directory, run_vocalocator_ssl raises a
+    RuntimeError naming the missing calibration NPZ before any subprocess runs."""
     # Set up the minimum disk layout to reach the calibration check.
     audio_dir = tmp_path / "audio"
     audio_dir.mkdir()
@@ -432,11 +433,11 @@ def test_vocalocator_run_vocalocator_ssl_handles_missing_calibration(tmp_path,
         input_parameter_dict=processing_settings,
         message_output=msgs.append,
     )
-    voc.run_vocalocator_ssl()
+    with pytest.raises(RuntimeError, match="calibration NPZ"):
+        voc.run_vocalocator_ssl()
 
     # No subprocess call was issued because the calibration file wasn't found.
     assert sub_run.call_count == 0
-    assert any("calibration NPZ" in m for m in msgs)
 
 
 def test_vocalocator_run_vocalocator_ssl_empty_assignments_no_crash(tmp_path,
@@ -713,7 +714,7 @@ def test_summarize_das_findings_missing_mmap_reports_real_cause(
     processing_settings, tmp_path, mocker
 ):
     """Regression: when annotations exist and merge to >1 USV but the
-    concatenated audio mmap is absent, the skip message must name the real
+    concatenated audio mmap is absent, the raised error must name the real
     failure (a missing file) rather than falsely claiming "no annotations".
 
     Before the fix, the bare `sorted(...glob('*.mmap'))[0]` raised an
@@ -740,13 +741,14 @@ def test_summarize_das_findings_missing_mmap_reports_real_cause(
         input_parameter_dict=processing_settings,
         message_output=msgs.append,
     )
-    fmv.summarize_das_findings()  # must not raise
+    with pytest.raises(RuntimeError) as raised:
+        fmv.summarize_das_findings()
 
-    joined = " ".join(msgs).lower()
+    reported = str(raised.value).lower()
     # The real cause is reported (a missing file), not the misleading
-    # "no annotations" wording.
-    assert "filenotfounderror" in joined
-    assert "no das annotations found" not in joined
+    # "no annotations" wording, and the step fails instead of returning.
+    assert "filenotfounderror" in reported
+    assert "no das annotations" not in reported
 
 
 # ===========================================================================
@@ -1253,8 +1255,8 @@ def test_run_vocalocator_ssl_no_calibration_file_returns_early(
     Description
     -----------
     With no ``*cal*.npz`` in the model directory, the ``StopIteration`` from
-    ``next(...)`` must be caught and the method must log + return without
-    attempting to read model predictions or launch the inference subprocess.
+    ``next(...)`` must become a RuntimeError raised before any attempt to read
+    model predictions or launch the inference subprocess.
 
     Parameters
     ----------
@@ -1283,10 +1285,10 @@ def test_run_vocalocator_ssl_no_calibration_file_returns_early(
     messages: list[str] = []
     voc = _make_vocalocator(tmp_path, processing_settings)
     voc.message_output = messages.append
-    voc.run_vocalocator_ssl()
+    with pytest.raises(RuntimeError, match="No calibration NPZ"):
+        voc.run_vocalocator_ssl()
 
     assert run_mock.call_count == 0, "subprocess should not run without a cal file"
-    assert any("No calibration NPZ" in m for m in messages)
 
 
 def test_run_vocalocator_ssl_full_path_writes_emitter_column(

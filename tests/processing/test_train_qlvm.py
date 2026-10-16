@@ -161,8 +161,10 @@ def _write_split(path, n_samples, *, seed, apply_mask=None, masks=None, masks_le
     np.savez(path, **arrays)
 
 
-def _write_metadata(dataset_dir, *, masking_type="sam", require_mask=True, floor=0.2, length_threshold=128.0):
-    """Write metadata.npz; ``require_mask`` / ``floor`` None leave those keys out."""
+def _write_metadata(dataset_dir, *, masking_type="sam", require_mask=True, floor=0.2, length_threshold=128.0,
+                    n_rows=None):
+    """Write metadata.npz; ``require_mask`` / ``floor`` None leave those keys out, and
+    ``n_rows`` (``n_train`` / ``n_val`` / ``n_full`` -> count) adds the split row counts."""
     metadata = {
         "length_threshold": length_threshold,
         "target_shape": np.array([128, 128]),
@@ -173,6 +175,8 @@ def _write_metadata(dataset_dir, *, masking_type="sam", require_mask=True, floor
         metadata["require_mask"] = require_mask
     if floor is not None:
         metadata["floor"] = floor
+    if n_rows is not None:
+        metadata.update(n_rows)
     np.savez(dataset_dir / "metadata.npz", **metadata)
 
 
@@ -476,19 +480,32 @@ def test_train_missing_dataset_raises(tmp_path, mocker):
         _train(tmp_path / "empty", tmp_path / "out", _TINY_CFG, mocker)
 
 
-def test_train_refuses_splits_older_than_full_data(tmp_path, mocker):
-    """A set rebuilt with full_dataset keeps its old splits, and train_data.npz would
-    win the lookup: a split older than full_data.npz is refused before training."""
+def test_train_accepts_a_full_dataset_build_whose_splits_are_older_than_full_data(tmp_path, mocker):
+    """One full_dataset build writes train_data.npz and val_data.npz before full_data.npz, so
+    the pair is always older; with row counts matching metadata.npz the set trains."""
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
     _write_split(dataset_dir / "train_data.npz", 4, seed=0)
     _write_split(dataset_dir / "val_data.npz", 4, seed=1)
     _write_split(dataset_dir / "full_data.npz", 8, seed=2)
-    _write_metadata(dataset_dir)
+    _write_metadata(dataset_dir, n_rows={"n_train": 4, "n_val": 4, "n_full": 8})
     newest = (dataset_dir / "full_data.npz").stat().st_mtime
     for split in ("train_data.npz", "val_data.npz"):
         os.utime(dataset_dir / split, (newest - 60, newest - 60))
-    with pytest.raises(ValueError, match=r"predate full_data\.npz"):
+    _train(dataset_dir, tmp_path / "out", _TINY_CFG, mocker)
+    assert (tmp_path / "out" / "checkpoint.tar").is_file()
+
+
+def test_train_refuses_a_split_left_over_from_an_earlier_build(tmp_path, mocker):
+    """A split whose row count differs from the count metadata.npz records for it belongs to
+    an earlier build and is refused before training, whatever its file time."""
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    _write_split(dataset_dir / "train_data.npz", 6, seed=0)
+    _write_split(dataset_dir / "val_data.npz", 4, seed=1)
+    _write_split(dataset_dir / "full_data.npz", 8, seed=2)
+    _write_metadata(dataset_dir, n_rows={"n_train": 4, "n_val": 4, "n_full": 8})
+    with pytest.raises(ValueError, match=r"train_data\.npz \(6 rows, metadata\.npz records 4\)"):
         _train(dataset_dir, tmp_path / "out", _TINY_CFG, mocker)
     assert not (tmp_path / "out").exists()
 

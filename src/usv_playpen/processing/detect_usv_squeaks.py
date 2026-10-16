@@ -144,6 +144,8 @@ from torch import nn
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import (
+    QLVM_MAPS,
+    QLVM_SQUEAK_MAP,
     SQUEAK_FLAG_COLUMN,
     USV_FLAG_COLUMN,
     VOCAL_CLASSES,
@@ -179,7 +181,12 @@ from .detect_usv_noise import (
     squeak_audio_channels,
 )
 from .generate_spectrograms import compute_usv_spectrogram
-from .qlvm_latents import cell_file, load_decoder_params, normalize_model_inputs
+from .qlvm_latents import (
+    cell_file,
+    load_decoder_params,
+    model_cell_stale_columns,
+    normalize_model_inputs,
+)
 from .qlvm_model import decoder_head, embed_data, gen_fib_basis_float32
 
 # Columns written into the USV summary CSV, in canonical order.
@@ -861,6 +868,17 @@ class USVSqueakDetector:
         )
         usv_df = pls.read_csv(source=str(usv_summary_loc), schema_overrides={"usv_id": pls.String})
         usv_df = usv_df.drop([column for column in (*VOCAL_CLASS_COLUMNS, *RETIRED_SQUEAK_COLUMNS) if column in usv_df.columns])
+        # The squeak map's coordinates (and any category read off them) were embedded from
+        # the previous classification's squeak rows and extents, which this run replaces;
+        # they are dropped rather than kept beside classes they no longer describe, and
+        # infer-qlvm-squeak-latents must run again.
+        stale_squeak_map = [column for column in model_cell_stale_columns(QLVM_SQUEAK_MAP) if column in usv_df.columns]
+        if stale_squeak_map:
+            usv_df = usv_df.drop(stale_squeak_map)
+            self.message_output(
+                f"Dropped the squeak-map columns {', '.join(stale_squeak_map)}: they were embedded from the previous "
+                f"classification; run infer-qlvm-squeak-latents again."
+            )
 
         scores = classify_usv_squeak_rows(
             session_root=root,
@@ -871,7 +889,25 @@ class USVSqueakDetector:
             batch_size=cfg['batch_size'],
             message_output=self.message_output,
         )
-        merged = order_usv_summary_columns(pls.concat([usv_df, scores], how="horizontal"))
+        merged = pls.concat([usv_df, scores], how="horizontal")
+        # Every USV map skips pure squeaks (null coordinates), so a row this run makes a pure
+        # squeak loses any USV-map placement and category an earlier embedding gave it. A row
+        # that stops being a pure squeak has no placement until infer-qlvm-latents runs again.
+        now_pure_squeak = (merged[SQUEAK_FLAG_COLUMN].fill_null(False) & ~merged[USV_FLAG_COLUMN].fill_null(False))
+        usv_map_columns = [column for qlvm_map in QLVM_MAPS for column in model_cell_stale_columns(qlvm_map)
+                           if column in merged.columns]
+        if usv_map_columns:
+            n_cleared = int((now_pure_squeak & merged[usv_map_columns[0]].is_not_null()).sum())
+            merged = merged.with_columns([
+                pls.when(now_pure_squeak).then(None).otherwise(pls.col(column)).alias(column)
+                for column in usv_map_columns
+            ])
+            if n_cleared:
+                self.message_output(
+                    f"Cleared the USV-map columns of {n_cleared} row(s) that are now pure squeaks; rows that stopped "
+                    f"being pure squeaks have no USV-map placement until infer-qlvm-latents runs again."
+                )
+        merged = order_usv_summary_columns(merged)
         with atomic_output_path(usv_summary_loc) as tmp_summary_path:
             merged.write_csv(file=str(tmp_summary_path))
 
