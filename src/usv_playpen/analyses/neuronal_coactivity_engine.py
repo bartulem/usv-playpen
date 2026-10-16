@@ -896,7 +896,7 @@ def filter_units_by_catalog(
 
     kept: set[str] = set()
     for stem in file_stems:
-        row = catalog.get((mouse_id, rec_date, stem))
+        row = (catalog[(mouse_id, rec_date, stem)] if (mouse_id, rec_date, stem) in catalog else None)
         if row is None:
             continue
         if row["cluster_group"] != cluster_group:

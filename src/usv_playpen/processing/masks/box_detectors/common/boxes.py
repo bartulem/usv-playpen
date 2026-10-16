@@ -47,6 +47,7 @@ from __future__ import annotations
 from typing import Tuple
 
 import numpy as np
+from matplotlib import colormaps
 
 # Inclusive (top, left, bottom, right) = (y0, x0, y1, x1). Rows=freq, cols=time.
 Box = Tuple[int, int, int, int]
@@ -149,9 +150,7 @@ def render_spec_image(spec: np.ndarray, colormap: str = "viridis") -> np.ndarray
             (channel-replicated grayscale). The viridis path reproduces spec_gen's
             EXACT box-prompt rendering — ``matplotlib.get_cmap('viridis')(norm)`` —
             so the pixels a detector sees at inference match the pre-rendered
-            training images and the SAM image. (Falls back to cv2's COLORMAP_VIRIDIS,
-            then grayscale, if matplotlib is unavailable; the two viridis LUTs differ
-            by < JPEG noise.)
+            training images and the SAM image.
 
     Returns:
         ``uint8`` array of shape ``[F, T, 3]`` in RGB channel order.
@@ -182,23 +181,6 @@ def render_spec_image(spec: np.ndarray, colormap: str = "viridis") -> np.ndarray
         #   image = (plt.get_cmap('viridis')(spec_norm)[:, :, :3] * 255).astype(uint8)
         # (boxprompt_utils.process_single_spec_boxprompt). This is what the SAM image
         # and the pre-rendered training set use, so train/inference pixels match.
-        try:
-            try:
-                from matplotlib import colormaps as _mpl_colormaps  # mpl >= 3.6
-                _cmap = _mpl_colormaps["viridis"]
-            except Exception:
-                from matplotlib.cm import get_cmap as _get_cmap  # older mpl
-                _cmap = _get_cmap("viridis")
-            return (np.asarray(_cmap(norm))[:, :, :3] * 255).astype(np.uint8)
-        except Exception:
-            pass
-        # Fallback: cv2's COLORMAP_VIRIDIS (differs from mpl by < JPEG noise).
-        try:
-            import cv2  # lazy: keep this module importable without cv2
-            bgr = cv2.applyColorMap(u8, cv2.COLORMAP_VIRIDIS)  # uint8 HxWx3, BGR
-            return bgr[:, :, ::-1].copy()  # -> RGB
-        except Exception:
-            # Last resort: grayscale if neither matplotlib nor cv2 is available.
-            return np.repeat(u8[:, :, None], 3, axis=2)
+        return (np.asarray(colormaps["viridis"](norm))[:, :, :3] * 255).astype(np.uint8)
 
     raise ValueError(f"Unknown colormap {colormap!r}; use 'viridis' or 'gray'.")

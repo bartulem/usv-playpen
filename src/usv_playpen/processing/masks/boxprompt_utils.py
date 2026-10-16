@@ -125,8 +125,8 @@ def merge_overlapping_instances(masks: List[Dict], iou_thresh: float = 0.5,
         return masks
 
     items = [{"seg": np.asarray(m["segmentation"], dtype=bool),
-              "iou_pred": float(m.get("iou_pred", 0.0)),
-              "boxes": ([m["box"]] if m.get("box") is not None else [])}
+              "iou_pred": float(m["iou_pred"] if "iou_pred" in m else 0.0),
+              "boxes": ([m["box"]] if (m["box"] if "box" in m else None) is not None else [])}
              for m in masks]
 
     changed = True

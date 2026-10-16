@@ -4,8 +4,9 @@ Centralised figure save-path / format / dpi resolution.
 
 The project's visualisations historically hard-coded one or more of
 ``(save directory, file format, dpi, timestamp-in-filename)`` at every
-``fig.savefig(...)`` callsite. The defaults are now collected in
-``visualizations_settings.json`` under the ``figures`` block:
+``fig.savefig(...)`` callsite. They are now read from
+``visualizations_settings.json`` under the ``figures`` block (a value a caller does
+not override must be there; nothing falls back to a hard-coded default):
 
     "figures": {
       "save_directory": "/mnt/falkner/Bartul/figures",
@@ -50,34 +51,39 @@ from typing import Any
 from ..os_utils import configure_path
 
 
-_DEFAULT_FIG_FORMAT = "png"
-_DEFAULT_DPI = 300
-_DEFAULT_TIMESTAMP_IN_NAME = True
-
-
-def _figures_block(viz_settings: dict | None) -> dict:
+def _figures_setting(viz_settings: dict | None, key: str, override_name: str) -> Any:
     """
     Description
     -----------
-    Return the ``figures`` block from ``viz_settings`` if present, an
-    empty dict otherwise. Tolerates either ``None`` or a settings
-    dict with no ``figures`` key (older configurations).
+    One key of the ``figures`` block of ``viz_settings``, read directly: a value a
+    caller did not override must come from the shipped settings, never from a
+    hard-coded default, so a missing block or key raises and names both.
 
     Parameters
     ----------
     viz_settings (dict | None)
         Visualisation-settings dict (typically loaded from
         ``visualizations_settings.json``).
+    key (str)
+        The key of the ``figures`` block.
+    override_name (str)
+        The argument that would have overridden it, named in the error.
 
     Returns
     -------
-    figures (dict)
-        The ``figures`` block, or ``{}``.
+    value (Any)
+        ``viz_settings['figures'][key]``.
+
+    Raises
+    ------
+    KeyError
+        ``viz_settings`` is None or lacks ``figures`` / ``key``.
     """
 
-    if not viz_settings:
-        return {}
-    return viz_settings.get("figures", {}) or {}
+    if viz_settings is None or "figures" not in viz_settings or key not in viz_settings["figures"]:
+        msg = f"viz_settings['figures']['{key}'] is not set and `{override_name}` was not given."
+        raise KeyError(msg)
+    return viz_settings["figures"][key]
 
 
 def _append_timestamp(stem: str) -> str:
@@ -111,8 +117,8 @@ def resolve_save_path(
         The resolver appends ``_<YYYYMMDD>_<HHMMSS>`` and the format
         extension as configured.
     viz_settings (dict | None)
-        Visualisation-settings dict; the ``figures`` block is read for
-        defaults.
+        Visualisation-settings dict; the ``figures`` block supplies every value not
+        overridden (a missing key raises a KeyError).
     override_dir (str | pathlib.Path | None)
         Per-call directory override. The "save next to data" callsites
         (per-unit ratemaps, per-session yield figures) pass an explicit
@@ -141,10 +147,8 @@ def resolve_save_path(
         Resolved dpi.
     """
 
-    figures = _figures_block(viz_settings)
-
     if override_dir is None:
-        save_dir = figures.get("save_directory")
+        save_dir = _figures_setting(viz_settings, "save_directory", "override_dir")
         if not save_dir:
             raise ValueError(
                 "No save directory: neither `override_dir` nor "
@@ -169,20 +173,20 @@ def resolve_save_path(
     fig_format = (
         override_format
         if override_format is not None
-        else figures.get("fig_format", _DEFAULT_FIG_FORMAT)
+        else _figures_setting(viz_settings, "fig_format", "override_format")
     )
     fig_format = str(fig_format).lower().lstrip(".")
 
     dpi = (
         override_dpi
         if override_dpi is not None
-        else int(figures.get("dpi", _DEFAULT_DPI))
+        else int(_figures_setting(viz_settings, "dpi", "override_dpi"))
     )
 
     use_timestamp = (
         timestamp_in_name
         if timestamp_in_name is not None
-        else bool(figures.get("timestamp_in_name", _DEFAULT_TIMESTAMP_IN_NAME))
+        else bool(_figures_setting(viz_settings, "timestamp_in_name", "timestamp_in_name"))
     )
 
     final_stem = _append_timestamp(stem) if use_timestamp else stem
@@ -215,8 +219,8 @@ def save_figure(
     stem (str)
         Filename stem (see ``resolve_save_path``).
     viz_settings (dict | None)
-        Visualisation-settings dict; ``figures`` block supplies the
-        defaults.
+        Visualisation-settings dict; the ``figures`` block supplies every
+        value not overridden (a missing key raises a KeyError).
     override_dir, override_format, override_dpi, timestamp_in_name
         Per-call overrides; same semantics as ``resolve_save_path``.
     bbox_inches (str | None)
@@ -271,8 +275,8 @@ def resolve_pdf_path(
     stem (str)
         Filename stem (no extension).
     viz_settings (dict | None)
-        Visualisation-settings dict; ``figures`` block supplies the
-        defaults.
+        Visualisation-settings dict; the ``figures`` block supplies every
+        value not overridden (a missing key raises a KeyError).
     override_dir, override_dpi, timestamp_in_name
         Per-call overrides; same semantics as ``resolve_save_path``.
 

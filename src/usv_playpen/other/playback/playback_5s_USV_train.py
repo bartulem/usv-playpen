@@ -58,7 +58,8 @@ def run_playback_files(num_seq,
     # get a pseudo-random sequence of audio files — keep the modulo so the
     # random index actually maps onto the discovered file list regardless of
     # how many .wav files are present.
-    random_int_lst = np.random.randint(low=0, high=100, size=num_seq, dtype=int)
+    # a fresh (unseeded) generator: every playback session gets a new sequence
+    random_int_lst = np.random.default_rng().integers(low=0, high=100, size=num_seq, dtype=int)
 
     play_env = os.environ.copy()
     play_env["AUDIODEV"] = "hw:3,0"

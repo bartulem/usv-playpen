@@ -24,6 +24,7 @@ from datetime import datetime
 
 import click
 from click.core import ParameterSource
+from ultralytics import YOLO
 
 from ..cli_utils import modify_settings_json_for_cli
 from ..time_utils import is_gui_context, smart_wait
@@ -130,10 +131,6 @@ class MaskDetectorTrainer:
 
         output_dir = pathlib.Path(self.output_directory)
         output_dir.mkdir(parents=True, exist_ok=True)
-
-        # Heavy, GPU-only library: import lazily so `import train_masks` and the CLI
-        # plumbing stay torch/ultralytics-free until an actual training run starts.
-        from ultralytics import YOLO  # noqa: PLC0415 (lazy: pulls torch + ultralytics)
 
         model = YOLO(base_weights)
         results = model.train(

@@ -128,7 +128,7 @@ def _remerge_from_consensus(merged: list, min_duration_s: float, span_factor: fl
         longest_per_channel = {}
         for seg_start, seg_stop, seg_channel in segments:
             span = seg_stop - seg_start
-            if span > longest_per_channel.get(seg_channel, 0.0):
+            if span > (longest_per_channel[seg_channel] if seg_channel in longest_per_channel else 0.0):
                 longest_per_channel[seg_channel] = span
         median_longest = statistics.median(longest_per_channel.values())
         dissenting = {channel for channel, span in longest_per_channel.items()
@@ -510,7 +510,7 @@ class FindMouseVocalizations:
             )
             smart_wait(app_context_bool=self.app_context_bool, seconds=1)
 
-            conda_exe = os.environ.get('CONDA_EXE', 'conda')
+            conda_exe = (os.environ['CONDA_EXE'] if 'CONDA_EXE' in os.environ else 'conda')
             clean_env = os.environ.copy()
             clean_env.pop('PYTHONHOME', None)
             inference_subp = subprocess.Popen(
@@ -999,10 +999,18 @@ class FindMouseVocalizations:
                     ax[1].set_xlabel(f"Spatial coherence (top-{coherence_channel_count} channels)")
                     ax[1].set_ylabel("Number of putative USVs")
                     ax[1].axvline(x=coherence_cutoff, ls="-.", lw=1.2, c="#202020")
+                    # The figure's format and dpi come from the visualization settings: the
+                    # step's own when it was given them, else the shipped file.
+                    if hasattr(self, "visualizations_parameter_dict"):
+                        viz_settings = self.visualizations_parameter_dict
+                    else:
+                        shipped_viz_settings = pathlib.Path(__file__).parent.parent / "_parameter_settings" / "visualizations_settings.json"
+                        with shipped_viz_settings.open("r", encoding="utf-8") as viz_settings_file:
+                            viz_settings = json.load(viz_settings_file)
                     save_figure(
                         fig,
                         stem=f"{session_id}_usv_signal_correlation_histogram",
-                        viz_settings=getattr(self, "visualizations_parameter_dict", None),
+                        viz_settings=viz_settings,
                         override_dir=pathlib.Path(self.root_directory) / "audio",
                         timestamp_in_name=False,
                     )
@@ -1275,7 +1283,7 @@ class FindMouseVocalizations:
         model_base = str(
             pathlib.Path(configure_path(das_params["das_model_directory"])) / das_params["model_name_base"]
         )
-        conda_exe = os.environ.get("CONDA_EXE", "conda")
+        conda_exe = (os.environ["CONDA_EXE"] if "CONDA_EXE" in os.environ else "conda")
         clean_env = os.environ.copy()
         clean_env.pop("PYTHONHOME", None)
         snippet_subp = subprocess.Popen(

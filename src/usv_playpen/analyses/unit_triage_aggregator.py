@@ -134,7 +134,7 @@ def _extract_vmi_metrics(payload: dict) -> dict:
         before the field existed; gating falls back to `n_bouts` in that case.
     """
 
-    _n_valid = payload.get("n_valid_pairs")
+    _n_valid = (payload["n_valid_pairs"] if "n_valid_pairs" in payload else None)
     # Coerce n_bouts via _safe_float first so a NaN stored on a bad block
     # (int(float("nan")) raises ValueError) becomes 0 rather than aborting the
     # whole aggregation, matching the None-guarded treatment of n_valid_pairs.
@@ -529,7 +529,7 @@ def _emitter_role_map(cluster_data: dict) -> dict:
             out[emitter] = str(payload["role"])
 
     for block_name in ("usv_peth", "usv_category_tuning", "usv_category_peth"):
-        block = cluster_data.get(block_name)
+        block = (cluster_data[block_name] if block_name in cluster_data else None)
         if not isinstance(block, dict):
             continue
         for emitter, payload in block.items():
@@ -543,7 +543,7 @@ def _emitter_role_map(cluster_data: dict) -> dict:
                         if emitter in out:
                             break
     # usv_property_tuning has an extra layer (per property)
-    block = cluster_data.get("usv_property_tuning")
+    block = (cluster_data["usv_property_tuning"] if "usv_property_tuning" in cluster_data else None)
     if isinstance(block, dict):
         for emitter, props in block.items():
             if emitter in out:
@@ -628,7 +628,7 @@ def flag_one_cluster(
         or not a dict the function returns an empty dict.
     """
 
-    ts = cluster_data.get("triage_stats")
+    ts = (cluster_data["triage_stats"] if "triage_stats" in cluster_data else None)
     if not isinstance(ts, dict):
         return {}
 
@@ -636,12 +636,12 @@ def flag_one_cluster(
     records: dict[str, dict] = {}
 
     # VMI: triage_stats["vmi"][emitter] -> payload (one per emitter).
-    for emitter, payload in (ts.get("vmi") or {}).items():
+    for emitter, payload in ((ts["vmi"] if "vmi" in ts else None) or {}).items():
         if not isinstance(payload, dict):
             continue
         role = (
-            payload.get("role")
-            or emitter_roles.get(emitter)
+            (payload["role"] if "role" in payload else None)
+            or (emitter_roles[emitter] if emitter in emitter_roles else None)
             or emitter
         )
         metrics = _extract_vmi_metrics(payload)
@@ -695,13 +695,13 @@ def flag_one_cluster(
             }
 
     # usv_peth: per emitter, per direction (`excit` / `suppress`).
-    for emitter, payload in (ts.get("usv_peth") or {}).items():
+    for emitter, payload in ((ts["usv_peth"] if "usv_peth" in ts else None) or {}).items():
         if not isinstance(payload, dict):
             continue
-        role = emitter_roles.get(emitter, emitter)
-        ramp_index = _safe_float(payload.get("ramp_index"))
+        role = (emitter_roles[emitter] if emitter in emitter_roles else emitter)
+        ramp_index = _safe_float(payload["ramp_index"] if "ramp_index" in payload else None)
         for direction in ("excit", "suppress"):
-            block = payload.get(direction)
+            block = (payload[direction] if direction in payload else None)
             if not isinstance(block, dict):
                 continue
             metrics = _extract_run_metrics(block)
@@ -718,17 +718,17 @@ def flag_one_cluster(
             }
 
     # usv_property_tuning: per emitter, per property, per direction.
-    for emitter, props in (ts.get("usv_property_tuning") or {}).items():
+    for emitter, props in ((ts["usv_property_tuning"] if "usv_property_tuning" in ts else None) or {}).items():
         if not isinstance(props, dict):
             continue
-        role = emitter_roles.get(emitter, emitter)
+        role = (emitter_roles[emitter] if emitter in emitter_roles else emitter)
         for prop, payload in props.items():
             if not isinstance(payload, dict):
                 continue
-            selectivity = _safe_float(payload.get("selectivity"))
-            monotonicity = _safe_float(payload.get("monotonicity"))
+            selectivity = _safe_float(payload["selectivity"] if "selectivity" in payload else None)
+            monotonicity = _safe_float(payload["monotonicity"] if "monotonicity" in payload else None)
             for direction in ("excit", "suppress"):
-                block = payload.get(direction)
+                block = (payload[direction] if direction in payload else None)
                 if not isinstance(block, dict):
                     continue
                 metrics = _extract_run_metrics(block)
@@ -747,10 +747,10 @@ def flag_one_cluster(
                 }
 
     # usv_category_tuning: per emitter, per cat_feat (categorical axis).
-    for emitter, cats in (ts.get("usv_category_tuning") or {}).items():
+    for emitter, cats in ((ts["usv_category_tuning"] if "usv_category_tuning" in ts else None) or {}).items():
         if not isinstance(cats, dict):
             continue
-        role = emitter_roles.get(emitter, emitter)
+        role = (emitter_roles[emitter] if emitter in emitter_roles else emitter)
         for cat_feat, payload in cats.items():
             if not isinstance(payload, dict):
                 continue
@@ -766,21 +766,21 @@ def flag_one_cluster(
             }
 
     # usv_category_peth: per emitter, per cat_feat, best_{excit,suppress}.
-    for emitter, cats in (ts.get("usv_category_peth") or {}).items():
+    for emitter, cats in ((ts["usv_category_peth"] if "usv_category_peth" in ts else None) or {}).items():
         if not isinstance(cats, dict):
             continue
-        role = emitter_roles.get(emitter, emitter)
+        role = (emitter_roles[emitter] if emitter in emitter_roles else emitter)
         for cat_feat, payload in cats.items():
             if not isinstance(payload, dict):
                 continue
-            _best_cat = payload.get("best_cat")
+            _best_cat = (payload["best_cat"] if "best_cat" in payload else None)
             best_cat = int(_best_cat) if _best_cat is not None else -1
-            best_t = _safe_float(payload.get("best_t"))
+            best_t = _safe_float(payload["best_t"] if "best_t" in payload else None)
             for direction_name, key_tag in (
                 ("best_excit", "excit"),
                 ("best_suppress", "suppress"),
             ):
-                block = payload.get(direction_name)
+                block = (payload[direction_name] if direction_name in payload else None)
                 if not isinstance(block, dict):
                     continue
                 metrics = _extract_run_metrics(block)
@@ -799,17 +799,17 @@ def flag_one_cluster(
                 }
 
     # behavioral: per offset, per feature, per direction.
-    for offset_key, feats in (ts.get("behavioral") or {}).items():
+    for offset_key, feats in ((ts["behavioral"] if "behavioral" in ts else None) or {}).items():
         if not isinstance(feats, dict):
             continue
         for feat_key, payload in feats.items():
             if not isinstance(payload, dict):
                 continue
-            selectivity = _safe_float(payload.get("selectivity"))
-            monotonicity = _safe_float(payload.get("monotonicity"))
-            is_circular = bool(payload.get("is_circular", False))
+            selectivity = _safe_float(payload["selectivity"] if "selectivity" in payload else None)
+            monotonicity = _safe_float(payload["monotonicity"] if "monotonicity" in payload else None)
+            is_circular = bool(payload["is_circular"])
             for direction in ("excit", "suppress"):
-                block = payload.get(direction)
+                block = (payload[direction] if direction in payload else None)
                 if not isinstance(block, dict):
                     continue
                 metrics = _extract_run_metrics(block)
@@ -829,7 +829,7 @@ def flag_one_cluster(
                 }
 
     # spatial: per offset, per feature.
-    for offset_key, feats in (ts.get("spatial") or {}).items():
+    for offset_key, feats in ((ts["spatial"] if "spatial" in ts else None) or {}).items():
         if not isinstance(feats, dict):
             continue
         for feat_key, payload in feats.items():
@@ -970,7 +970,7 @@ def _aggregate_modality_stats(mod_key: str, per_session: list[dict]) -> dict:
         """Pull finite floats for one metric across per_session."""
         out = []
         for e in per_session:
-            v = e.get(field)
+            v = (e[field] if field in e else None)
             if v is None:
                 continue
             try:
@@ -1275,7 +1275,7 @@ def aggregate_units_across_conditions(
                 )
                 sessions_skipped[cond].append(sess)
                 continue
-            mouse_id = date_to_mouse.get(rec_date)
+            mouse_id = (date_to_mouse[rec_date] if rec_date in date_to_mouse else None)
             if mouse_id is None:
                 message_output(
                     f"  aggregator: skipping {sess} — rec_date {rec_date} "
@@ -1311,7 +1311,7 @@ def aggregate_units_across_conditions(
 
                 with pkl.open("rb") as fh:
                     cluster_data = pickle.load(fh)
-                if not isinstance(cluster_data.get("triage_stats"), dict):
+                if not isinstance((cluster_data["triage_stats"] if "triage_stats" in cluster_data else None), dict):
                     # No triage to draw on; treat as not-tested for any modality.
                     # The unit slot is still created so its presence is recorded.
                     records = {}

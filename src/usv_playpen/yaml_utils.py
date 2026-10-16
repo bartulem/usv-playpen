@@ -388,7 +388,7 @@ def sync_equipment_dynamic_fields(metadata_settings: dict, exp_settings_dict: di
 
     if not isinstance(metadata_settings, dict):
         return False
-    equipment = metadata_settings.get('Equipment')
+    equipment = (metadata_settings['Equipment'] if 'Equipment' in metadata_settings else None)
     if not isinstance(equipment, dict):
         return False
 
@@ -419,31 +419,32 @@ def sync_equipment_dynamic_fields(metadata_settings: dict, exp_settings_dict: di
         """
 
         nonlocal any_changed
-        block = equipment.get(block_name)
+        block = (equipment[block_name] if block_name in equipment else None)
         if not isinstance(block, dict):
             return
-        after_key = _DYNAMIC_FIELD_AFTER_KEY.get(block_name, {}).get(field, '')
+        block_after_keys = _DYNAMIC_FIELD_AFTER_KEY[block_name] if block_name in _DYNAMIC_FIELD_AFTER_KEY else {}
+        after_key = block_after_keys[field] if field in block_after_keys else ''
         if _set_block_field_in_position(block, field, new_value, after_key):
             any_changed = True
 
     # sync_LEDs.device_port is the canonical Arduino sync port from the toml
-    arduino_port = exp_settings_dict.get('arduino_sync_port')
+    arduino_port = (exp_settings_dict['arduino_sync_port'] if 'arduino_sync_port' in exp_settings_dict else None)
     if isinstance(arduino_port, str):
         maybe_set('sync_LEDs', 'device_port', arduino_port)
 
     # audio_Avisoft.device_sync <- audio.usgh_devices_sync
     # audio_Avisoft.device_sr   <- audio.devices.fabtast
-    audio_section = exp_settings_dict.get('audio') or {}
+    audio_section = (exp_settings_dict['audio'] if 'audio' in exp_settings_dict else None) or {}
     if 'usgh_devices_sync' in audio_section:
         maybe_set('audio_Avisoft', 'device_sync', bool(audio_section['usgh_devices_sync']))
-    audio_devices = audio_section.get('devices') or {}
+    audio_devices = (audio_section['devices'] if 'devices' in audio_section else None) or {}
     if 'fabtast' in audio_devices:
         maybe_set('audio_Avisoft', 'device_sr', audio_devices['fabtast'])
 
     # video_Loopbio.* <- video.general.* and per-camera entries in cameras_config
-    video_section = exp_settings_dict.get('video') or {}
-    video_general = video_section.get('general') or {}
-    cameras_config = video_section.get('cameras_config') or {}
+    video_section = (exp_settings_dict['video'] if 'video' in exp_settings_dict else None) or {}
+    video_general = (video_section['general'] if 'general' in video_section else None) or {}
+    cameras_config = (video_section['cameras_config'] if 'cameras_config' in video_section else None) or {}
 
     if 'recording_frame_rate' in video_general:
         maybe_set('video_Loopbio', 'device_sr', video_general['recording_frame_rate'])
@@ -451,7 +452,7 @@ def sync_equipment_dynamic_fields(metadata_settings: dict, exp_settings_dict: di
         maybe_set('video_Loopbio', 'device_sr_calibration', video_general['calibration_frame_rate'])
     if 'recording_codec' in video_general:
         codec_short = video_general['recording_codec']
-        codec_long = _RECORDING_CODEC_LONG_NAME.get(codec_short, codec_short)
+        codec_long = (_RECORDING_CODEC_LONG_NAME[codec_short] if codec_short in _RECORDING_CODEC_LONG_NAME else codec_short)
         maybe_set('video_Loopbio', 'output_file_codec', codec_long)
     if 'expected_cameras' in video_general:
         # Sort serials numerically when they are all integer strings (camera
@@ -468,7 +469,7 @@ def sync_equipment_dynamic_fields(metadata_settings: dict, exp_settings_dict: di
             exposures: list = []
             gains: list = []
             for cam in sorted_cams:
-                cam_block = cameras_config.get(cam)
+                cam_block = (cameras_config[cam] if cam in cameras_config else None)
                 if not isinstance(cam_block, dict):
                     exposures = []
                     gains = []
@@ -516,10 +517,10 @@ def set_sync_LEDs_device_port(metadata_settings: dict, port: str) -> None:
 
     if not isinstance(metadata_settings, dict):
         return
-    equipment = metadata_settings.get('Equipment')
+    equipment = (metadata_settings['Equipment'] if 'Equipment' in metadata_settings else None)
     if not isinstance(equipment, dict):
         return
-    sync_block = equipment.get('sync_LEDs')
+    sync_block = (equipment['sync_LEDs'] if 'sync_LEDs' in equipment else None)
     if not isinstance(sync_block, dict):
         return
 

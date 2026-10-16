@@ -266,7 +266,7 @@ class Vocalocator:
             label="USV summary CSV",
         )
 
-        conda_exe = os.environ.get('CONDA_EXE', 'conda')
+        conda_exe = (os.environ['CONDA_EXE'] if 'CONDA_EXE' in os.environ else 'conda')
         clean_env = os.environ.copy()
         clean_env.pop('PYTHONHOME', None)
         subprocess.run(
@@ -413,7 +413,7 @@ class Vocalocator:
             # than returning as if the session had been assigned
             cal_file = next(f.name for f in sorted(pathlib.Path(model_directory).glob("*cal*.npz")))
 
-            conda_exe = os.environ.get('CONDA_EXE', 'conda')
+            conda_exe = (os.environ['CONDA_EXE'] if 'CONDA_EXE' in os.environ else 'conda')
             clean_env = os.environ.copy()
             clean_env.pop('PYTHONHOME', None)
             subprocess.run(
@@ -465,7 +465,7 @@ class Vocalocator:
         unique_values, counts = np.unique(assignments, return_counts=True)
         value_to_count = dict(zip(unique_values, counts))
         total = len(assignments)
-        unassigned = value_to_count.get(-1, 0)
+        unassigned = (value_to_count[-1] if -1 in value_to_count else 0)
         assigned = total - unassigned
 
         # Guard the percentage reporting against an empty predictions array
@@ -479,7 +479,7 @@ class Vocalocator:
             self.message_output(f"Out of {total} vocalizations, {assigned} have been assigned, or {round(assigned*100/total, 2)}%.")
             self.message_output(f"{unassigned} vocalizations have not been assigned, or {round(unassigned*100/total, 2)}%.")
             for animal_id, track_id in enumerate(track_names):
-                count = value_to_count.get(animal_id, 0)
+                count = (value_to_count[animal_id] if animal_id in value_to_count else 0)
                 self.message_output(f"Mouse {track_id} has been assigned {count} vocalizations, or {round(count*100/total, 2)}%.")
 
         # assign None to all unassigned vocalizations

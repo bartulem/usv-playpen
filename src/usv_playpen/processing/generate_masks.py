@@ -51,6 +51,9 @@ from click.core import ParameterSource
 from ..cli_utils import modify_settings_json_for_cli
 from ..os_utils import configure_path, derive_spectrogram_model_paths, first_match_or_raise
 from ..time_utils import is_gui_context, smart_wait
+from .masks._common_memory import setup_device
+from .masks.box_detectors.detect import get_detector
+from .masks.boxprompt_utils import build_predictor, process_session_batch_boxprompt
 
 
 def flatten_session_masks(
@@ -406,18 +409,6 @@ class MaskGenerator:
             f"Segmenting {valid_count} valid USVs (of {len(kernel_durations)}) for session {session_id}."
         )
 
-        # Heavy, GPU-only kernels: import lazily so `import generate_masks` and the
-        # CLI plumbing stay torch-free until an actual run is requested.
-        from .masks._common_memory import (  # noqa: PLC0415 (lazy: keeps torch out of import)
-            setup_device,
-        )
-        from .masks.box_detectors.detect import (  # noqa: PLC0415 (lazy: pulls ultralytics)
-            get_detector,
-        )
-        from .masks.boxprompt_utils import (  # noqa: PLC0415 (lazy: pulls torch + sam2)
-            build_predictor,
-            process_session_batch_boxprompt,
-        )
 
         logger = logging.getLogger("usv_playpen.generate_masks")
 

@@ -311,7 +311,7 @@ class ChemoDialog(QDialog):
             self.subject_combo.setEnabled(False)
         else:
             self.subject_combo.addItem("--- Select Subject ---")
-            subject_ids = [s['subject_id'] for s in self.parent_window.metadata_settings.get('Subjects', [])]
+            subject_ids = [s['subject_id'] for s in (self.parent_window.metadata_settings['Subjects'] if 'Subjects' in self.parent_window.metadata_settings else [])]
             self.subject_combo.addItems(subject_ids)
         self.form_layout.addRow("Subject:", self.subject_combo)
 
@@ -326,7 +326,7 @@ class ChemoDialog(QDialog):
         ]
         for key in line_edit_fields_part1:
             widget = QLineEdit()
-            widget.setPlaceholderText(placeholders.get(key, ""))
+            widget.setPlaceholderText(placeholders[key] if key in placeholders else "")
             self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
             self.fields[key] = widget
 
@@ -341,7 +341,7 @@ class ChemoDialog(QDialog):
         ]
         for key in line_edit_fields_part2:
             widget = QLineEdit()
-            widget.setPlaceholderText(placeholders.get(key, ""))
+            widget.setPlaceholderText(placeholders[key] if key in placeholders else "")
             self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
             self.fields[key] = widget
 
@@ -393,9 +393,10 @@ class ChemoDialog(QDialog):
         None
         """
 
-        interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
+        interventions = self.subject['interventions'] if 'interventions' in self.subject else {}
+        interv_data = interventions[self.intervention_key] if self.intervention_key in interventions else {}
         for key, widget in self.fields.items():
-            value = interv_data.get(key, "")
+            value = (interv_data[key] if key in interv_data else "")
             if isinstance(widget, QComboBox):
                 widget.setCurrentText(str(value))
             else:
@@ -453,7 +454,7 @@ class ChemoDialog(QDialog):
             else:  # It's a QLineEdit
                 intervention_data[key] = widget.text()
 
-        if 'interventions' not in target_subject or not isinstance(target_subject.get('interventions'), dict):
+        if 'interventions' not in target_subject or not isinstance((target_subject['interventions'] if 'interventions' in target_subject else None), dict):
             target_subject['interventions'] = {}
         target_subject['interventions']['chemogenetics'] = intervention_data
 
@@ -517,11 +518,11 @@ class EphysDialog(QDialog):
             self.subject_combo.setEnabled(False)
         else:
             self.subject_combo.addItem("--- Select Subject ---")
-            subject_ids = [s['subject_id'] for s in self.parent_window.metadata_settings.get('Subjects', [])]
+            subject_ids = [s['subject_id'] for s in (self.parent_window.metadata_settings['Subjects'] if 'Subjects' in self.parent_window.metadata_settings else [])]
             self.subject_combo.addItems(subject_ids)
         self.form_layout.addRow("Subject:", self.subject_combo)
 
-        ephys_setups = self.parent_window.equipment_settings_dict.get('ephys', {})
+        ephys_setups = (self.parent_window.equipment_settings_dict['ephys'] if 'ephys' in self.parent_window.equipment_settings_dict else {})
         self.setup_combo = QComboBox()
         self.setup_combo.addItems(ephys_setups.keys())
         self.form_layout.addRow("Setup:", self.setup_combo)
@@ -531,7 +532,7 @@ class EphysDialog(QDialog):
                                   'hs_sr': 'Headstage SR:', 'probe_model': 'Probe Model:', 'probe_sn': 'Probe SN:'}
         for key, label_text in line_edit_fields_part1.items():
             widget = QLineEdit()
-            widget.setPlaceholderText(placeholders.get(key, ""))
+            widget.setPlaceholderText(placeholders[key] if key in placeholders else "")
             self.form_layout.addRow(label_text, widget)
             self.fields[key] = widget
 
@@ -595,9 +596,10 @@ class EphysDialog(QDialog):
         (None)
         """
 
-        interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
+        interventions = self.subject['interventions'] if 'interventions' in self.subject else {}
+        interv_data = interventions[self.intervention_key] if self.intervention_key in interventions else {}
         for key, widget in self.fields.items():
-            value = interv_data.get(key, "")
+            value = (interv_data[key] if key in interv_data else "")
             if key == 'probe_reused':
                 widget.setCurrentText('Yes' if value else 'No')
             elif key == 'probe_sn' and isinstance(value, list):
@@ -662,7 +664,7 @@ class EphysDialog(QDialog):
             intervention_data[key] = widget.currentText() if isinstance(widget, QComboBox) else widget.text()
 
         intervention_data['probe_reused'] = (intervention_data['probe_reused'] == 'Yes')
-        probe_sn_str = intervention_data.get('probe_sn', '')
+        probe_sn_str = (intervention_data['probe_sn'] if 'probe_sn' in intervention_data else '')
         if probe_sn_str:
             final_sn_list = [item.strip() for item in probe_sn_str.split(',') if item.strip()]
             intervention_data['probe_sn'] = [int(sn) if sn.isdigit() else sn for sn in final_sn_list]
@@ -730,14 +732,14 @@ class LesionDialog(QDialog):
             self.subject_combo.setEnabled(False)
         else:
             self.subject_combo.addItem("--- Select Subject ---")
-            subject_ids = [s['subject_id'] for s in self.parent_window.metadata_settings.get('Subjects', [])]
+            subject_ids = [s['subject_id'] for s in (self.parent_window.metadata_settings['Subjects'] if 'Subjects' in self.parent_window.metadata_settings else [])]
             self.subject_combo.addItems(subject_ids)
         self.form_layout.addRow("Subject:", self.subject_combo)
 
         line_edit_fields = ['name', 'virus_vendor', 'virus_name', 'virus_lot', 'virus_concentration', 'virus_volume', 'virus_injection_date', 'target_area']
         for key in line_edit_fields:
             widget = QLineEdit()
-            widget.setPlaceholderText(placeholders.get(key, ""))
+            widget.setPlaceholderText(placeholders[key] if key in placeholders else "")
             self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
             self.fields[key] = widget
 
@@ -787,9 +789,10 @@ class LesionDialog(QDialog):
         (None)
         """
 
-        interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
+        interventions = self.subject['interventions'] if 'interventions' in self.subject else {}
+        interv_data = interventions[self.intervention_key] if self.intervention_key in interventions else {}
         for key, widget in self.fields.items():
-            value = interv_data.get(key, "")
+            value = (interv_data[key] if key in interv_data else "")
             if isinstance(widget, QComboBox):
                 widget.setCurrentText(str(value))
             else:
@@ -913,11 +916,11 @@ class OptoDialog(QDialog):
             self.subject_combo.setEnabled(False)
         else:
             self.subject_combo.addItem("--- Select Subject ---")
-            subject_ids = [s['subject_id'] for s in self.parent_window.metadata_settings.get('Subjects', [])]
+            subject_ids = [s['subject_id'] for s in (self.parent_window.metadata_settings['Subjects'] if 'Subjects' in self.parent_window.metadata_settings else [])]
             self.subject_combo.addItems(subject_ids)
         self.form_layout.addRow("Subject:", self.subject_combo)
 
-        opto_setups = self.parent_window.equipment_settings_dict.get('opto', {})
+        opto_setups = (self.parent_window.equipment_settings_dict['opto'] if 'opto' in self.parent_window.equipment_settings_dict else {})
         self.setup_combo = QComboBox()
         self.setup_combo.addItems(opto_setups.keys())
         self.form_layout.addRow("Setup:", self.setup_combo)
@@ -930,7 +933,7 @@ class OptoDialog(QDialog):
 
         for key in ['virus_vendor', 'virus_name', 'virus_lot', 'virus_concentration', 'virus_volume', 'virus_injection_date', 'virus_target_area']:
             widget = QLineEdit()
-            widget.setPlaceholderText(placeholders.get(key, ""))
+            widget.setPlaceholderText(placeholders[key] if key in placeholders else "")
             self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
             self.fields[key] = widget
 
@@ -941,7 +944,7 @@ class OptoDialog(QDialog):
 
         for key in ['fiber_implantation_date', 'fiber_target_area']:
             widget = QLineEdit()
-            widget.setPlaceholderText(placeholders.get(key, ""))
+            widget.setPlaceholderText(placeholders[key] if key in placeholders else "")
             self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
             self.fields[key] = widget
 
@@ -952,7 +955,7 @@ class OptoDialog(QDialog):
 
         for key in ['stimulation_power', 'stimulation_frequency', 'stimulation_duty_cycle']:
             widget = QLineEdit()
-            widget.setPlaceholderText(placeholders.get(key, ""))
+            widget.setPlaceholderText(placeholders[key] if key in placeholders else "")
             self.form_layout.addRow(f"{key.replace('_', ' ').title()}:", widget)
             self.fields[key] = widget
 
@@ -997,9 +1000,10 @@ class OptoDialog(QDialog):
         (None)
         """
 
-        interv_data = self.subject.get('interventions', {}).get(self.intervention_key, {})
+        interventions = self.subject['interventions'] if 'interventions' in self.subject else {}
+        interv_data = interventions[self.intervention_key] if self.intervention_key in interventions else {}
         for key, widget in self.fields.items():
-            value = interv_data.get(key, "")
+            value = (interv_data[key] if key in interv_data else "")
             if isinstance(widget, QComboBox):
                 widget.setCurrentText(str(value))
             else:
@@ -1624,7 +1628,7 @@ class USVPlaypenWindow(QMainWindow):
         if not self.active_subject_id:
             return
 
-        target_subject = next((s for s in self.metadata_settings.get('Subjects', []) if s['subject_id'] == self.active_subject_id), None)
+        target_subject = next((s for s in (self.metadata_settings['Subjects'] if 'Subjects' in self.metadata_settings else []) if s['subject_id'] == self.active_subject_id), None)
         if not target_subject:
             return
 
@@ -1663,7 +1667,7 @@ class USVPlaypenWindow(QMainWindow):
             # During mid-typing the new id will routinely pass through values
             # that collide; in those keystrokes we simply skip persistence
             # and let the user keep typing until the id is unique again.
-            session_subjects = self.metadata_settings.get('Subjects', []) or []
+            session_subjects = (self.metadata_settings['Subjects'] if 'Subjects' in self.metadata_settings else []) or []
             colliding = (
                 any(s['subject_id'] == new_subject_id for s in self.subject_repository)
                 or any(s['subject_id'] == new_subject_id and s is not target_subject for s in session_subjects)
@@ -1734,7 +1738,7 @@ class USVPlaypenWindow(QMainWindow):
 
         self.active_subject_id = subject_id
 
-        current_session_ids = {s['subject_id'] for s in self.metadata_settings.get('Subjects', []) if s}
+        current_session_ids = {s['subject_id'] for s in (self.metadata_settings['Subjects'] if 'Subjects' in self.metadata_settings else []) if s}
         if subject_id in current_session_ids:
             QMessageBox.information(
                 self,
@@ -2142,7 +2146,7 @@ class USVPlaypenWindow(QMainWindow):
             widget.deleteLater()
         self.edit_intervention_widgets.clear()
 
-        subjects = self.metadata_settings.get('Subjects', [])
+        subjects = (self.metadata_settings['Subjects'] if 'Subjects' in self.metadata_settings else [])
         if subjects is None:
             subjects = []
 
@@ -2153,7 +2157,7 @@ class USVPlaypenWindow(QMainWindow):
         vertical_spacing_remove = 30
 
         for i, subject in enumerate(subjects):
-            subject_id = subject.get('subject_id', f'Index {i}')
+            subject_id = (subject['subject_id'] if 'subject_id' in subject else f'Index {i}')
             row, col = divmod(i, items_per_row_remove)
             button_x = start_x_remove + (col * horizontal_spacing_remove)
             button_y = start_y_remove + (row * vertical_spacing_remove)
@@ -2181,7 +2185,7 @@ class USVPlaypenWindow(QMainWindow):
                 # `'Unknown'` fallback produced dead buttons. Skip those
                 # subjects entirely rather than rendering buttons that
                 # silently no-op when clicked.
-                subject_id = subject.get('subject_id')
+                subject_id = (subject['subject_id'] if 'subject_id' in subject else None)
                 if not subject_id:
                     continue
                 if 'interventions' in subject and isinstance(subject['interventions'], dict):
@@ -2190,7 +2194,7 @@ class USVPlaypenWindow(QMainWindow):
                         button_x = x_pos_interv_buttons + (col * 130)
                         button_y = y_pos_interv_buttons + (row * 30)
 
-                        short_name = abbreviation_map.get(interv_key, interv_key)
+                        short_name = (abbreviation_map[interv_key] if interv_key in abbreviation_map else interv_key)
                         btn_text = f"{short_name} ({subject_id})"
 
                         button = QPushButton(btn_text, self.VideoSettings)
@@ -2277,13 +2281,13 @@ class USVPlaypenWindow(QMainWindow):
         # therefore a recording metadata file, with none of its interventions.
         seed_subject = next((s for s in self.subject_repository if s['subject_id'] == new_subject_id), None)
         if seed_subject is None:
-            seed_subject = next((s for s in (self.metadata_settings.get('Subjects') or []) if s and s['subject_id'] == new_subject_id), None)
+            seed_subject = next((s for s in ((self.metadata_settings['Subjects'] if 'Subjects' in self.metadata_settings else None) or []) if s and s['subject_id'] == new_subject_id), None)
         if seed_subject is not None:
             seeded_data = copy.deepcopy(seed_subject)
             seeded_data.update(subject_data)
             subject_data = seeded_data
 
-        target_subject_in_session = next((s for s in self.metadata_settings.get('Subjects', []) if s['subject_id'] == new_subject_id), None)
+        target_subject_in_session = next((s for s in (self.metadata_settings['Subjects'] if 'Subjects' in self.metadata_settings else []) if s['subject_id'] == new_subject_id), None)
         if target_subject_in_session:
             target_subject_in_session.update(subject_data)
         else:
@@ -2312,7 +2316,7 @@ class USVPlaypenWindow(QMainWindow):
         None
         """
 
-        subjects = self.metadata_settings.get('Subjects', [])
+        subjects = (self.metadata_settings['Subjects'] if 'Subjects' in self.metadata_settings else [])
         if subjects and 0 <= index_to_remove < len(subjects):
             subjects.pop(index_to_remove)
             self._save_metadata_to_yaml()
@@ -2452,8 +2456,8 @@ class USVPlaypenWindow(QMainWindow):
 
         self.exp_settings_dict['arduino_sync_port'] = text
 
-        equipment = self.metadata_settings.get('Equipment') if isinstance(self.metadata_settings, dict) else None
-        if isinstance(equipment, dict) and isinstance(equipment.get('sync_LEDs'), dict):
+        equipment = (self.metadata_settings['Equipment'] if 'Equipment' in self.metadata_settings else None) if isinstance(self.metadata_settings, dict) else None
+        if isinstance(equipment, dict) and isinstance((equipment['sync_LEDs'] if 'sync_LEDs' in equipment else None), dict):
             set_sync_LEDs_device_port(self.metadata_settings, text)
             metadata_path = Path(__file__).parent / '_config/_metadata.yaml'
             with open(metadata_path, 'w') as metadata_file:
@@ -2989,7 +2993,7 @@ class USVPlaypenWindow(QMainWindow):
         ambient_light_label.setFont(QFont(self.font_id, 11 + self.font_size_increase))
         ambient_light_label.move(x_label, y_pos)
 
-        self.ambient_light_bool = self.metadata_settings['Session'].get('ambient_light', False)
+        self.ambient_light_bool = (self.metadata_settings['Session']['ambient_light'] if 'ambient_light' in self.metadata_settings['Session'] else False)
         on_off_list = ['on', 'off'] if self.ambient_light_bool else ['off', 'on']
 
         self.ambient_light_cb = QComboBox(self.VideoSettings)
@@ -3114,7 +3118,7 @@ class USVPlaypenWindow(QMainWindow):
             category, device_name = equipment_key.split('.')
             label_text = f"{category} [{device_name}]"
             yaml_key = equipment_key.replace('.', '_')
-            equipment_dict = self.metadata_settings.get('Equipment')
+            equipment_dict = (self.metadata_settings['Equipment'] if 'Equipment' in self.metadata_settings else None)
             is_checked = bool(equipment_dict and yaml_key in equipment_dict)
 
             checkbox = QCheckBox(label_text, self.VideoSettings)
@@ -7586,7 +7590,7 @@ def initialize_main_window(no_splash: bool = False) -> tuple[QApplication, QMain
     if platform.system() == 'Linux':
         os.environ.setdefault('NO_AT_BRIDGE', '1')
         atspi_rule = 'qt.accessibility.atspi=false'
-        existing_rules = os.environ.get('QT_LOGGING_RULES', '')
+        existing_rules = (os.environ['QT_LOGGING_RULES'] if 'QT_LOGGING_RULES' in os.environ else '')
         if atspi_rule not in existing_rules:
             os.environ['QT_LOGGING_RULES'] = (
                 f'{existing_rules};{atspi_rule}' if existing_rules else atspi_rule

@@ -1610,8 +1610,9 @@ def _make_aggregate_visualizations_parameters() -> dict:
     settings key the aggregate figures read: `brain_area_colors` (with
     the lowercase `other` entry `_resolve_region_colors` maps to),
     `unassigned_colors`, `male_colors`, `female_colors`, `social_colors`,
-    and a `figures` block with a `cmap` (read by the category-peak
-    figure). Values mirror the project's `visualizations_settings.json`.
+    and a `figures` block (colormaps, format, dpi and timestamp rule, read
+    by the figures and by `figure_io`). Values mirror the project's
+    `visualizations_settings.json`.
 
     Parameters
     ----------
@@ -1636,7 +1637,8 @@ def _make_aggregate_visualizations_parameters() -> dict:
         "male_colors":       ["#9AC0CD", "#8CA252"],
         "female_colors":     ["#FF6347", "#B851B4"],
         "social_colors":     ["#5A6470"],
-        "figures":           {"sequential_cmap": "inferno"},
+        "figures":           {"sequential_cmap": "inferno", "diverging_cmap": "BrBG_r",
+                              "fig_format": "png", "dpi": 80, "timestamp_in_name": False},
     }
 
 
@@ -2542,7 +2544,8 @@ def test_per_cluster_pipeline_png_writes_per_page_files(tmp_path, qlvm_category_
     nt.calculate_neuronal_tuning_curves()
 
     viz = _make_visualizations_parameters()
-    viz["figures"] = {"fig_format": "png", "dpi": 80}
+    viz["figures"] = {"fig_format": "png", "dpi": 80, "timestamp_in_name": False,
+                      "sequential_cmap": "inferno", "diverging_cmap": "BrBG_r"}
     figure_maker = NeuronalTuningFigureMaker(
         root_directory=str(root),
         visualizations_parameter_dict=viz,

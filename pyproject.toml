@@ -50,6 +50,7 @@ dependencies = [
     "pillow",
     "platformdirs",
     "polars",
+    "psutil",
     "pyarrow",
     "pygam",
     "PyQt6",
@@ -275,6 +276,8 @@ extend-select = [
 ignore = [
   "PLR09",    # Too many <...>
   "PLR2004",  # Magic value used in comparison
+  "SIM401",   # "use dict.get(key, default)": the project reads keys directly and writes an
+              # optional key as `x[k] if k in x else default`, never .get with a default
 ]
 isort.required-imports = ["from __future__ import annotations"]
 # Uncomment if using a _compat.typing backport

@@ -239,12 +239,17 @@ def plot_ic_curves(
                     linewidths=1.5, zorder=6,
                 )
 
-        ic_display = {
+        ic_display = ({
             "bic": "BIC",
             "aic": "AIC",
             "icl": "ICL",
             "cv_neg_loglik": "CV-LL (deviance)",
-        }.get(ic_col, ic_col.upper())
+        }[ic_col] if ic_col in {
+            "bic": "BIC",
+            "aic": "AIC",
+            "icl": "ICL",
+            "cv_neg_loglik": "CV-LL (deviance)",
+        } else ic_col.upper())
         ax.set_ylabel(f"{sex}: min {ic_display} across reps", color=col)
         ax.tick_params(axis="y", labelcolor=col)
         for spine_pos in ("left",) if sex == "male" else ("right",):
@@ -968,7 +973,7 @@ def plot_bootstrap_lrt_panel(
             # test had not called it so.
             null_p99 = (float(np.quantile(lr_null, 1.0 - alpha))
                         if lr_null.size else float("nan"))
-            null_max = float(res.get("null_max", np.nan)) if res.get("null_max") is not None else (
+            null_max = float(res["null_max"] if "null_max" in res else np.nan) if (res["null_max"] if "null_max" in res else None) is not None else (
                 float(lr_null.max()) if lr_null.size else float("nan")
             )
             lr_obs = float(res["lr_obs"])
@@ -1245,7 +1250,7 @@ def load_lrt_sweep_from_h5(
     """
 
     archive = read_usv_interval_h5(h5_path)
-    mode = archive["modes"].get(interval_type)
+    mode = (archive["modes"][interval_type] if interval_type in archive["modes"] else None)
     if mode is None:
         msg = (
             f"load_lrt_sweep_from_h5: interval_type={interval_type!r} "
@@ -1254,8 +1259,8 @@ def load_lrt_sweep_from_h5(
         raise ValueError(
             msg
         )
-    summary_df = mode.get("bootstrap_lrt")
-    null_df = mode.get("bootstrap_lrt_null")
+    summary_df = (mode["bootstrap_lrt"] if "bootstrap_lrt" in mode else None)
+    null_df = (mode["bootstrap_lrt_null"] if "bootstrap_lrt_null" in mode else None)
     if summary_df is None or null_df is None:
         msg = (
             f"load_lrt_sweep_from_h5: archive {h5_path} is missing the "
@@ -1334,7 +1339,7 @@ def selected_K_from_h5(
     """
 
     archive = read_usv_interval_h5(h5_path)
-    mode = archive["modes"].get(interval_type)
+    mode = (archive["modes"][interval_type] if interval_type in archive["modes"] else None)
     if mode is None:
         msg = (
             f"selected_K_from_h5: interval_type={interval_type!r} "
@@ -1347,7 +1352,7 @@ def selected_K_from_h5(
     attrs = mode["attrs"]
     selected: dict = {}
     for sex_key, attr_key in (("male", "K_selected_male"), ("female", "K_selected_female")):
-        val = attrs.get(attr_key)
+        val = (attrs[attr_key] if attr_key in attrs else None)
         if val is not None and int(val) > 0:
             selected[sex_key] = int(val)
 
@@ -1355,7 +1360,7 @@ def selected_K_from_h5(
         return selected
 
     # Fallback: derive from the bootstrap_lrt table itself.
-    df = mode.get("bootstrap_lrt")
+    df = (mode["bootstrap_lrt"] if "bootstrap_lrt" in mode else None)
     if df is None or df.height == 0:
         return {}
     for sex in df["sex"].unique().to_list():
@@ -1391,7 +1396,7 @@ def load_intervals_from_h5(
     """
 
     archive = read_usv_interval_h5(h5_path)
-    mode = archive["modes"].get(interval_type)
+    mode = (archive["modes"][interval_type] if interval_type in archive["modes"] else None)
     if mode is None:
         msg = (
             f"load_intervals_from_h5: interval_type={interval_type!r} "
@@ -1431,7 +1436,7 @@ def load_mixture_model_fits_from_h5(
     """
 
     archive = read_usv_interval_h5(h5_path)
-    mode = archive["modes"].get(interval_type)
+    mode = (archive["modes"][interval_type] if interval_type in archive["modes"] else None)
     if mode is None:
         msg = (
             f"load_mixture_model_fits_from_h5: interval_type={interval_type!r} "
@@ -1440,7 +1445,7 @@ def load_mixture_model_fits_from_h5(
         raise ValueError(
             msg
         )
-    df = mode.get("mixture_model_fits")
+    df = (mode["mixture_model_fits"] if "mixture_model_fits" in mode else None)
     if df is None:
         msg = (
             f"load_mixture_model_fits_from_h5: archive {h5_path} contains no "

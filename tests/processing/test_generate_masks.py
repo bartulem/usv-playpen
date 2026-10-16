@@ -5,9 +5,9 @@ Tests for processing/generate_masks.MaskGenerator + flatten_session_masks.
 The live SAM2/YOLO segmentation needs a GPU plus model checkpoints, so it is not
 exercised here. Instead the heavy leaf kernels (``_common_memory.setup_device``,
 ``boxprompt_utils.build_predictor`` / ``process_session_batch_boxprompt`` and
-``box_detectors.detect.get_detector``) are replaced with light fakes injected into
-``sys.modules`` -- importing ``torch`` / ``sam2`` / ``ultralytics`` is therefore
-avoided -- and the test verifies the usv-playpen-native orchestration around them:
+``box_detectors.detect.get_detector``) are replaced with light fakes patched onto
+``generate_masks`` (which imports them at the top) -- no GPU kernel runs -- and the
+test verifies the usv-playpen-native orchestration around them:
 the ``mask/<session>`` group is written into the per-session spectrogram H5 with the
 right dataset shapes/dtypes and a ``spectrogram_index`` that maps every mask back to
 the usv_summary row it belongs to (placeholder ``duration == 0`` rows getting none).
@@ -15,13 +15,11 @@ the usv_summary row it belongs to (placeholder ``duration == 0`` rows getting no
 
 from __future__ import annotations
 
-import sys
-import types
-
 import h5py
 import numpy as np
 import pytest
 
+from usv_playpen.processing import generate_masks as generate_masks_module
 from usv_playpen.processing.generate_masks import MaskGenerator, flatten_session_masks
 
 _SESSION_ID = "20230119_155302"
@@ -102,25 +100,17 @@ def _seg(width, *, rows=(10, 20)):
 
 
 def _install_fake_kernels(monkeypatch, canned_masks):
-    """Replace the heavy mask leaf modules with light fakes so no GPU library is
-    imported. ``process_session_batch_boxprompt`` returns ``canned_masks`` verbatim."""
-    common = types.ModuleType("usv_playpen.processing.masks._common_memory")
-    common.setup_device = lambda **_kwargs: "cpu"
-
-    boxprompt = types.ModuleType("usv_playpen.processing.masks.boxprompt_utils")
-    boxprompt.build_predictor = lambda **_kwargs: object()
+    """Replace the heavy mask leaf functions ``generate_masks`` imports with light
+    fakes, so no GPU kernel runs. ``process_session_batch_boxprompt`` returns
+    ``canned_masks`` verbatim."""
 
     def _fake_process(session_name, *_args, **_kwargs):
         return session_name, canned_masks
 
-    boxprompt.process_session_batch_boxprompt = _fake_process
-
-    detect = types.ModuleType("usv_playpen.processing.masks.box_detectors.detect")
-    detect.get_detector = lambda *_args, **_kwargs: (lambda *_a, **_k: [])
-
-    monkeypatch.setitem(sys.modules, "usv_playpen.processing.masks._common_memory", common)
-    monkeypatch.setitem(sys.modules, "usv_playpen.processing.masks.boxprompt_utils", boxprompt)
-    monkeypatch.setitem(sys.modules, "usv_playpen.processing.masks.box_detectors.detect", detect)
+    monkeypatch.setattr(generate_masks_module, "setup_device", lambda **_kwargs: "cpu")
+    monkeypatch.setattr(generate_masks_module, "build_predictor", lambda **_kwargs: object())
+    monkeypatch.setattr(generate_masks_module, "process_session_batch_boxprompt", _fake_process)
+    monkeypatch.setattr(generate_masks_module, "get_detector", lambda *_args, **_kwargs: (lambda *_a, **_k: []))
 
 
 def test_flatten_session_masks_packs_and_indexes():

@@ -4,7 +4,7 @@
 
 Public surface
 --------------
-* :func:`load_model` — load an ultralytics YOLO ``best.pt`` once (lazy import).
+* :func:`load_model` — load an ultralytics YOLO ``best.pt`` once.
 * :func:`detect_boxes_yolo` — the detector function matching the box_detectors
   contract::
 
@@ -42,71 +42,28 @@ kept separate). To mitigate, this adapter exposes:
 per-spec box counts and stacked-call recall against the CC baseline. If YOLO
 drops stacked calls, raise ``iou`` further or fall back to ``cc`` for those specs.
 
-Lazy imports
-------------
-``ultralytics`` and ``cv2`` (via ``render_spec_image``) are imported lazily so this
-module ``py_compile``s and imports in ``samv2_env`` (no ultralytics). ``numpy`` is
-top-level.
+Imports
+-------
+``ultralytics`` (a declared dependency) and the shared box helpers are imported
+at the top, as every module imports its dependencies.
 """
 
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 import numpy as np
+from ultralytics import YOLO
+
+from ..common.boxes import clamp_box, render_spec_image
 
 # Inclusive (top, left, bottom, right) = (y0, x0, y1, x1). Rows=freq, cols=time.
 Box = Tuple[int, int, int, int]
 
 
-# ---------------------------------------------------------------------------
-# Robust import of the shared box helpers (common.boxes)
-# ---------------------------------------------------------------------------
-def _load_box_helpers():
-    """Import ``render_spec_image``, ``tlbr_to_xyxy``, ``clamp_box`` from common.boxes.
-
-    Works both as a package (``box_detectors.common.boxes``) and when this file is
-    run from an odd cwd: falls back to putting the box_detectors PARENT dir on
-    ``sys.path`` and importing ``box_detectors.common.boxes``.
-    """
-    try:
-        from box_detectors.common.boxes import (  # type: ignore
-            render_spec_image,
-            tlbr_to_xyxy,
-            clamp_box,
-        )
-        return render_spec_image, tlbr_to_xyxy, clamp_box
-    except Exception:
-        pass
-    try:
-        # Relative import when imported as box_detectors.yolo.infer.
-        from ..common.boxes import (  # type: ignore
-            render_spec_image,
-            tlbr_to_xyxy,
-            clamp_box,
-        )
-        return render_spec_image, tlbr_to_xyxy, clamp_box
-    except Exception:
-        pass
-    # Last resort: add the parent of box_detectors/ to sys.path.
-    here = os.path.dirname(os.path.abspath(__file__))          # .../box_detectors/yolo
-    pkg_parent = os.path.dirname(os.path.dirname(here))        # parent of box_detectors
-    if pkg_parent not in sys.path:
-        sys.path.insert(0, pkg_parent)
-    from box_detectors.common.boxes import (  # type: ignore
-        render_spec_image,
-        tlbr_to_xyxy,
-        clamp_box,
-    )
-    return render_spec_image, tlbr_to_xyxy, clamp_box
-
-
-# ---------------------------------------------------------------------------
 # Inference config
-# ---------------------------------------------------------------------------
 @dataclass
 class YoloDetectorConfig:
     """Knobs for :func:`detect_boxes_yolo` (mirrors ultralytics ``predict`` args).
@@ -128,9 +85,7 @@ class YoloDetectorConfig:
     extra_predict_kwargs: dict = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
 # Model loading
-# ---------------------------------------------------------------------------
 def load_model(weights: str, device: Optional[str] = None):
     """Load a fine-tuned ultralytics YOLO model from a ``best.pt`` checkpoint.
 
@@ -144,17 +99,8 @@ def load_model(weights: str, device: Optional[str] = None):
         An ``ultralytics.YOLO`` model ready for ``predict``.
 
     Raises:
-        ImportError: if ultralytics is not installed (lazy import; off-cluster).
         FileNotFoundError: if ``weights`` does not exist.
     """
-    try:
-        from ultralytics import YOLO
-    except Exception as exc:  # pragma: no cover - exercised only off-cluster
-        raise ImportError(
-            "ultralytics is required for YOLO inference but is not installed in "
-            "this environment. Install it on the cluster GPU env "
-            "(`pip install ultralytics`); samv2_env does NOT have it."
-        ) from exc
     if not os.path.exists(weights):
         raise FileNotFoundError(
             f"YOLO weights not found: {weights!r}. Train first "
@@ -170,9 +116,7 @@ def load_model(weights: str, device: Optional[str] = None):
     return model
 
 
-# ---------------------------------------------------------------------------
 # The detector function (box_detectors contract)
-# ---------------------------------------------------------------------------
 def detect_boxes_yolo(
     spec: np.ndarray,
     duration: int,
@@ -212,8 +156,6 @@ def detect_boxes_yolo(
     if cfg is None:
         cfg = YoloDetectorConfig()
 
-    render_spec_image, _tlbr_to_xyxy, clamp_box = _load_box_helpers()
-
     spec = np.asarray(spec, dtype=np.float64)
     if spec.ndim != 2:
         raise ValueError(f"detect_boxes_yolo expects a 2D [F, T] spec; got {spec.shape}")
@@ -227,7 +169,7 @@ def detect_boxes_yolo(
 
     if model is None:
         # Allow a weights path passed via cfg for convenience, else demand a model.
-        weights = cfg.extra_predict_kwargs.get("weights")
+        weights = (cfg.extra_predict_kwargs["weights"] if "weights" in cfg.extra_predict_kwargs else None)
         if weights is None:
             raise ValueError(
                 "detect_boxes_yolo requires a loaded `model` (from load_model). "

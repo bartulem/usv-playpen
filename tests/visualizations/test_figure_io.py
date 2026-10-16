@@ -103,25 +103,32 @@ def test_resolve_save_path_timestamp_per_call_overrides_setting(tmp_path):
 
 
 def test_resolve_save_path_no_settings_raises_without_override_dir():
-    """`viz_settings=None` and no `override_dir` → explicit error."""
-    with pytest.raises(ValueError, match="No save directory"):
+    """`viz_settings=None` and no `override_dir` → a KeyError naming the missing
+    setting and the override that would have replaced it."""
+    with pytest.raises(KeyError, match=r"save_directory.*override_dir"):
         resolve_save_path("x", None)
 
 
-def test_resolve_save_path_no_settings_with_override_dir_ok(tmp_path):
-    """`viz_settings=None` + `override_dir` works with hard-coded
-    fallbacks for the other parameters."""
-    path, fmt, dpi = resolve_save_path("x", None, override_dir=tmp_path)
-    assert path.parent == tmp_path
-    assert fmt == "png"
-    assert dpi == 300
+def test_resolve_save_path_without_settings_needs_every_override(tmp_path):
+    """Without settings every value must be overridden: with all four given it
+    resolves; leaving one out raises naming that setting instead of falling back to
+    a hard-coded default."""
+    path, fmt, dpi = resolve_save_path("x", None, override_dir=tmp_path, override_format="svg",
+                                       override_dpi=150, timestamp_in_name=False)
+    assert path == tmp_path / "x.svg"
+    assert (fmt, dpi) == ("svg", 150)
+    with pytest.raises(KeyError, match="dpi"):
+        resolve_save_path("x", None, override_dir=tmp_path, override_format="svg", timestamp_in_name=False)
+    with pytest.raises(KeyError, match="fig_format"):
+        resolve_save_path("x", {"figures": {"dpi": 300}}, override_dir=tmp_path)
 
 
 def test_resolve_save_path_creates_missing_parent(tmp_path):
     """Save dir is created if it doesn't exist yet."""
     new_dir = tmp_path / "nested" / "deeper"
     assert not new_dir.exists()
-    resolve_save_path("x", None, override_dir=new_dir)
+    resolve_save_path("x", None, override_dir=new_dir, override_format="png", override_dpi=100,
+                      timestamp_in_name=False)
     assert new_dir.is_dir()
 
 

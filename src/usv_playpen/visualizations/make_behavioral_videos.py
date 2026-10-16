@@ -2032,7 +2032,7 @@ class Create3DVideo:
                                          for usv_start, usv_stop in zip(frame_usv_summary_df['start'], frame_usv_summary_df['stop'], strict=True)]
 
                     _unassigned = self.visualizations_parameter_dict["unassigned_colors"][0]
-                    usv_segments_colors = [animal_colors_dict.get(emitter_id, _unassigned) for emitter_id in frame_usv_summary_df['emitter']]
+                    usv_segments_colors = [(animal_colors_dict[emitter_id] if emitter_id in animal_colors_dict else _unassigned) for emitter_id in frame_usv_summary_df['emitter']]
                 else:
                     usv_segments_list = []
                     usv_segments_colors = []
@@ -2298,7 +2298,7 @@ class Create3DVideo:
                                                   for usv_start, usv_stop in zip(frame_usv_summary_df_temp['start'], frame_usv_summary_df_temp['stop'], strict=True)]
 
                         _unassigned = self.visualizations_parameter_dict["unassigned_colors"][0]
-                        usv_segments_colors_temp = [animal_colors_dict.get(emitter_id, _unassigned) for emitter_id in frame_usv_summary_df_temp['emitter']]
+                        usv_segments_colors_temp = [(animal_colors_dict[emitter_id] if emitter_id in animal_colors_dict else _unassigned) for emitter_id in frame_usv_summary_df_temp['emitter']]
                     else:
                         usv_segments_list_temp = []
                         usv_segments_colors_temp = []

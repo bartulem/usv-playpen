@@ -1835,7 +1835,7 @@ class NeuronalTuning(FeatureZoo):
             raise ValueError(msg)
         for key in top_keys:
             existing.pop(key, None)
-        if isinstance(existing.get("triage_stats"), dict):
+        if isinstance((existing["triage_stats"] if "triage_stats" in existing else None), dict):
             for key in triage_keys:
                 existing["triage_stats"].pop(key, None)
 
@@ -1884,7 +1884,7 @@ class NeuronalTuning(FeatureZoo):
             n_keys (int)
                 Number of top-level keys plus number of ``triage_stats`` blocks.
             """
-            triage = payload["triage_stats"] if isinstance(payload.get("triage_stats"), dict) else {}
+            triage = payload["triage_stats"] if isinstance((payload["triage_stats"] if "triage_stats" in payload else None), dict) else {}
             return len(payload) + len(triage)
 
         n_keys_before = key_count(existing)
@@ -1944,7 +1944,7 @@ class NeuronalTuning(FeatureZoo):
             if (
                 top_key == "triage_stats"
                 and isinstance(new_value, dict)
-                and isinstance(existing.get(top_key), dict)
+                and isinstance((existing[top_key] if top_key in existing else None), dict)
             ):
                 existing[top_key] = {**existing[top_key], **new_value}
             else:
@@ -2665,7 +2665,7 @@ class NeuronalTuning(FeatureZoo):
                     if c is None:
                         return -1
                     try:
-                        return mapping.get(int(c), -1)
+                        return (mapping[int(c)] if int(c) in mapping else -1)
                     except (ValueError, TypeError):
                         return -1
 
@@ -2775,7 +2775,7 @@ class NeuronalTuning(FeatureZoo):
             spatial_block: dict = {}
             for feature_key, payload in partial[offset_key].items():
                 feat_name = feature_key.split(".")[-1]
-                rate = payload.get("rate_smoothed", payload["rate"])
+                rate = (payload["rate_smoothed"] if "rate_smoothed" in payload else payload["rate"])
                 occ = payload["occupancy_seconds"]
 
                 if "space" in feat_name:
@@ -2810,18 +2810,10 @@ class NeuronalTuning(FeatureZoo):
 
                 # 1D feature
                 bin_centers = payload["bin_centers"]
-                null_mean = payload.get(
-                    "null_mean_smoothed", payload["null_mean"]
-                )
-                null_std = payload.get(
-                    "null_std_smoothed", payload["null_std"]
-                )
-                null_lo = payload.get(
-                    "null_p0_5_smoothed", payload["null_p0_5"]
-                )
-                null_hi = payload.get(
-                    "null_p99_5_smoothed", payload["null_p99_5"]
-                )
+                null_mean = (payload["null_mean_smoothed"] if "null_mean_smoothed" in payload else payload["null_mean"])
+                null_std = (payload["null_std_smoothed"] if "null_std_smoothed" in payload else payload["null_std"])
+                null_lo = (payload["null_p0_5_smoothed"] if "null_p0_5_smoothed" in payload else payload["null_p0_5"])
+                null_hi = (payload["null_p99_5_smoothed"] if "null_p99_5_smoothed" in payload else payload["null_p99_5"])
                 is_circular = feat_name in circular_set
                 runs = _run_analysis(
                     rate, null_lo, null_hi, null_mean, null_std,
@@ -2897,12 +2889,12 @@ class NeuronalTuning(FeatureZoo):
         ts.setdefault("usv_category_peth", {})
 
         # usv_peth: 1D PETH per emitter
-        for emitter, payload in partial.get("usv_peth", {}).items():
-            rate = payload.get("rate_smoothed", payload["rate"])
-            null_mean = payload.get("null_mean_smoothed", payload["null_mean"])
-            null_std = payload.get("null_std_smoothed", payload["null_std"])
-            null_lo = payload.get("null_p0_5_smoothed", payload["null_p0_5"])
-            null_hi = payload.get("null_p99_5_smoothed", payload["null_p99_5"])
+        for emitter, payload in partial["usv_peth"].items():
+            rate = (payload["rate_smoothed"] if "rate_smoothed" in payload else payload["rate"])
+            null_mean = (payload["null_mean_smoothed"] if "null_mean_smoothed" in payload else payload["null_mean"])
+            null_std = (payload["null_std_smoothed"] if "null_std_smoothed" in payload else payload["null_std"])
+            null_lo = (payload["null_p0_5_smoothed"] if "null_p0_5_smoothed" in payload else payload["null_p0_5"])
+            null_hi = (payload["null_p99_5_smoothed"] if "null_p99_5_smoothed" in payload else payload["null_p99_5"])
             bin_centers_s = payload["bin_centers_s"]
 
             runs = _run_analysis(
@@ -2938,14 +2930,14 @@ class NeuronalTuning(FeatureZoo):
             }
 
         # usv_property_tuning: 1D feature per (emitter, property)
-        for emitter, props in partial.get("usv_property_tuning", {}).items():
+        for emitter, props in partial["usv_property_tuning"].items():
             ts["usv_property_tuning"][emitter] = {}
             for prop, payload in props.items():
-                rate = payload.get("rate_smoothed", payload["rate"])
-                null_mean = payload.get("null_mean_smoothed", payload["null_mean"])
-                null_std = payload.get("null_std_smoothed", payload["null_std"])
-                null_lo = payload.get("null_p0_5_smoothed", payload["null_p0_5"])
-                null_hi = payload.get("null_p99_5_smoothed", payload["null_p99_5"])
+                rate = (payload["rate_smoothed"] if "rate_smoothed" in payload else payload["rate"])
+                null_mean = (payload["null_mean_smoothed"] if "null_mean_smoothed" in payload else payload["null_mean"])
+                null_std = (payload["null_std_smoothed"] if "null_std_smoothed" in payload else payload["null_std"])
+                null_lo = (payload["null_p0_5_smoothed"] if "null_p0_5_smoothed" in payload else payload["null_p0_5"])
+                null_hi = (payload["null_p99_5_smoothed"] if "null_p99_5_smoothed" in payload else payload["null_p99_5"])
                 bin_centers = payload["bin_centers"]
 
                 runs = _run_analysis(
@@ -2982,7 +2974,7 @@ class NeuronalTuning(FeatureZoo):
                 }
 
         # usv_category_tuning: 1D over unordered categories — no run analysis.
-        for emitter, cat_feats in partial.get("usv_category_tuning", {}).items():
+        for emitter, cat_feats in partial["usv_category_tuning"].items():
             ts["usv_category_tuning"][emitter] = {}
             for cat_feat, payload in cat_feats.items():
                 rate = np.asarray(payload["rate"], dtype=float)
@@ -3013,22 +3005,14 @@ class NeuronalTuning(FeatureZoo):
                 }
 
         # usv_category_peth: 2D (n_categories x n_time_bins) per (emitter, cat_feat)
-        for emitter, cat_feats in partial.get("usv_category_peth", {}).items():
+        for emitter, cat_feats in partial["usv_category_peth"].items():
             ts["usv_category_peth"][emitter] = {}
             for cat_feat, payload in cat_feats.items():
-                rate_2d = payload.get("rate_smoothed", payload["rate"])
-                null_mean_2d = payload.get(
-                    "null_mean_smoothed", payload["null_mean"]
-                )
-                null_std_2d = payload.get(
-                    "null_std_smoothed", payload["null_std"]
-                )
-                null_lo_2d = payload.get(
-                    "null_p0_5_smoothed", payload["null_p0_5"]
-                )
-                null_hi_2d = payload.get(
-                    "null_p99_5_smoothed", payload["null_p99_5"]
-                )
+                rate_2d = (payload["rate_smoothed"] if "rate_smoothed" in payload else payload["rate"])
+                null_mean_2d = (payload["null_mean_smoothed"] if "null_mean_smoothed" in payload else payload["null_mean"])
+                null_std_2d = (payload["null_std_smoothed"] if "null_std_smoothed" in payload else payload["null_std"])
+                null_lo_2d = (payload["null_p0_5_smoothed"] if "null_p0_5_smoothed" in payload else payload["null_p0_5"])
+                null_hi_2d = (payload["null_p99_5_smoothed"] if "null_p99_5_smoothed" in payload else payload["null_p99_5"])
                 bin_centers_s = payload["bin_centers_s"]
                 cats = np.asarray(payload["categories"])
 

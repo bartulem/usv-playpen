@@ -360,4 +360,4 @@ def test_three_figures_render_on_synthetic_sessions(tmp_path, monkeypatch):
     assert scores["content ridges\n(2)"] > scores["rows"]
     assert similarity["matrix"][0, 0] > similarity["matrix"][0, 1]
     assert np.allclose(similarity["neighbor_shares"].sum(axis=1), 1.0)
-    assert isinstance(qf.plot_category_boundaries(fields, similarity, bundle, cfg, "inferno"), Figure)
+    assert isinstance(qf.plot_category_boundaries(fields, similarity, bundle, cfg, "inferno", "BrBG_r"), Figure)

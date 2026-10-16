@@ -3,20 +3,19 @@
 Tests for processing/train_masks.MaskDetectorTrainer.
 
 The real Ultralytics fine-tune needs a GPU + network (to fetch the base weights)
-and is not exercised here. ``ultralytics`` is replaced with a light fake injected
-into ``sys.modules`` (its lazy ``from ultralytics import YOLO`` then picks it up),
-and the test checks that the trainer copies the run's ``best.pt`` to the stable
-output path and that a missing ``data.yaml`` is rejected before any import.
+and is not exercised here. The ``YOLO`` class ``train_masks`` imports is replaced
+with a light fake, and the test checks that the trainer copies the run's ``best.pt`` to the stable
+output path and that a missing ``data.yaml`` is rejected before any training starts.
 """
 
 from __future__ import annotations
 
 import pathlib
-import sys
 import types
 
 import pytest
 
+from usv_playpen.processing import train_masks as train_masks_module
 from usv_playpen.processing.train_masks import MaskDetectorTrainer
 
 _CFG = {
@@ -32,9 +31,8 @@ _CFG = {
 
 
 def _install_fake_ultralytics(monkeypatch):
-    """Replace ultralytics with a fake YOLO whose train() drops a best.pt under
-    project/name/weights and returns a save_dir, like the real trainer."""
-    module = types.ModuleType("ultralytics")
+    """Replace the YOLO class train_masks imports with a fake whose train() drops a
+    best.pt under project/name/weights and returns a save_dir, like the real trainer."""
 
     class _FakeYOLO:
         def __init__(self, weights):
@@ -46,8 +44,7 @@ def _install_fake_ultralytics(monkeypatch):
             (save_dir / "weights" / "best.pt").write_bytes(b"fake-weights")
             return types.SimpleNamespace(save_dir=str(save_dir))
 
-    module.YOLO = _FakeYOLO
-    monkeypatch.setitem(sys.modules, "ultralytics", module)
+    monkeypatch.setattr(train_masks_module, "YOLO", _FakeYOLO)
 
 
 def _write_dataset(tmp_path):
@@ -82,8 +79,6 @@ def test_train_raises_when_best_weights_missing(tmp_path, monkeypatch, mocker):
     silently leaving a stale/absent weights file."""
     dataset_dir = _write_dataset(tmp_path)
 
-    module = types.ModuleType("ultralytics")
-
     class _NoWeightsYOLO:
         def __init__(self, weights):
             self.weights = weights
@@ -93,8 +88,7 @@ def test_train_raises_when_best_weights_missing(tmp_path, monkeypatch, mocker):
             save_dir.mkdir(parents=True, exist_ok=True)  # deliberately writes no weights/best.pt
             return types.SimpleNamespace(save_dir=str(save_dir))
 
-    module.YOLO = _NoWeightsYOLO
-    monkeypatch.setitem(sys.modules, "ultralytics", module)
+    monkeypatch.setattr(train_masks_module, "YOLO", _NoWeightsYOLO)
     mocker.patch("usv_playpen.processing.train_masks.smart_wait")
 
     with pytest.raises(FileNotFoundError, match="best.pt"):

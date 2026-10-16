@@ -213,7 +213,7 @@ def modify_settings_json_for_cli(
         if block is not None:
             block_dict = settings_parameter_dict
             for block_key in block.split("."):
-                block_dict = block_dict.get(block_key) if isinstance(block_dict, dict) else None
+                block_dict = (block_dict[block_key] if block_key in block_dict else None) if isinstance(block_dict, dict) else None
             sub_paths = (
                 find_nested_key_paths(block_dict, param_name)
                 if isinstance(block_dict, dict)

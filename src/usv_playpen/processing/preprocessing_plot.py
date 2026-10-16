@@ -867,10 +867,18 @@ class SummaryPlotter:
                 axin6.set_yticks([])
                 axin6.set_xlabel("time (s)")
 
+        # The figure's format and dpi come from the visualization settings: the step's
+        # own when it was given them, else the shipped file.
+        if hasattr(self, "visualizations_parameter_dict"):
+            viz_settings = self.visualizations_parameter_dict
+        else:
+            shipped_viz_settings = pathlib.Path(__file__).parent.parent / "_parameter_settings" / "visualizations_settings.json"
+            with shipped_viz_settings.open("r", encoding="utf-8") as viz_settings_file:
+                viz_settings = json.load(viz_settings_file)
         save_figure(
             fig,
             stem=f"{pathlib.Path(self.root_directory).name}_summary",
-            viz_settings=getattr(self, "visualizations_parameter_dict", None),
+            viz_settings=viz_settings,
             override_dir=pathlib.Path(self.root_directory) / 'sync',
             timestamp_in_name=False,
         )

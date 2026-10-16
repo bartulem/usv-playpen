@@ -3908,7 +3908,7 @@ def plot_embedding_with_category_thumbnails(
         if unstretched_specs:
             max_dur = 1
             for cat in categories:
-                picks = picks_per_category.get(cat)
+                picks = (picks_per_category[cat] if cat in picks_per_category else None)
                 if picks is None:
                     continue
                 for row in picks.iter_rows(named=True):
@@ -3928,7 +3928,7 @@ def plot_embedding_with_category_thumbnails(
             unstretched_x_max = float(max_dur)
 
         for cat_idx, cat in enumerate(categories):
-            picks = picks_per_category.get(cat)
+            picks = (picks_per_category[cat] if cat in picks_per_category else None)
             if picks is None:
                 for sample_idx in range(n_samples_per_category):
                     g_row, g_col = _grid_pos(cat_idx, sample_idx)

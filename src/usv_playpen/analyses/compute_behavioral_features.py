@@ -1464,13 +1464,13 @@ class FeatureZoo:
                 break
 
         if key.startswith('self.'):
-            template = cls.feature_display_names.get(key[len('self.'):])
+            template = (cls.feature_display_names[key[len('self.'):]] if key[len('self.'):] in cls.feature_display_names else None)
             label = f"{self_word} {template}" if template is not None else None
         elif key.startswith('other.'):
-            template = cls.feature_display_names.get(key[len('other.'):])
+            template = (cls.feature_display_names[key[len('other.'):]] if key[len('other.'):] in cls.feature_display_names else None)
             label = f"{other_word} {template}" if template is not None else None
         else:
-            label = cls.feature_display_names.get(key)
+            label = (cls.feature_display_names[key] if key in cls.feature_display_names else None)
 
         if label is None:
             return generic_key

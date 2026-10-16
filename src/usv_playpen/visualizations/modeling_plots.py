@@ -39,7 +39,6 @@ a ``manifold_metric`` are drawn on a flat UMAP plane).
     specific motifs.
 """
 
-import cmasher as cmr
 import h5py
 import json
 import math
@@ -362,7 +361,8 @@ def plot_feature_ranking(
 
             mean_pos = 0.25 + (0.25 * i)
 
-            x_positions = np.random.normal(loc=mean_pos, scale=0.005, size=len(raw_values))
+            # display jitter, seeded with figures.seed so a figure redraws identically
+            x_positions = np.random.default_rng(_FIGURE_SEED + i).normal(loc=mean_pos, scale=0.005, size=len(raw_values))
 
             ax.scatter(x_positions, raw_values, color=feat_color, s=10, alpha=0.15, edgecolors='none')
 
@@ -955,7 +955,7 @@ def plot_raw_feature_difference(
 
     print(f"Total Epochs -> {label_target}: {all_target_epochs.shape[0]}, {label_other}: {all_other_epochs.shape[0]}")
     # A condition with zero epochs leaves an empty (0, 650) array; np.nanmin below
-    # would warn and return nan, and np.random.choice(0, size>=1, replace=False)
+    # would warn and return nan, and rng.choice(0, size>=1, replace=False)
     # would raise. Skip the plot for this degenerate feature instead.
     if all_target_epochs.shape[0] == 0 or all_other_epochs.shape[0] == 0:
         print(f"  Skipping raw feature difference plot: no epochs for {label_target} or {label_other}.")
@@ -965,8 +965,10 @@ def plot_raw_feature_difference(
     target_subset_size = max(1, int(all_target_epochs.shape[0] * subset_fraction))
     other_subset_size = max(1, int(all_other_epochs.shape[0] * subset_fraction))
 
-    target_idx = np.random.choice(all_target_epochs.shape[0], size=target_subset_size, replace=False)
-    other_idx = np.random.choice(all_other_epochs.shape[0], size=other_subset_size, replace=False)
+    # the subset and the bootstrap draw from one generator seeded with figures.seed
+    rng = np.random.default_rng(_FIGURE_SEED)
+    target_idx = rng.choice(all_target_epochs.shape[0], size=target_subset_size, replace=False)
+    other_idx = rng.choice(all_other_epochs.shape[0], size=other_subset_size, replace=False)
 
     target_subset = all_target_epochs[target_idx, :]
     other_subset = all_other_epochs[other_idx, :]
@@ -987,8 +989,8 @@ def plot_raw_feature_difference(
     boot_other_means = np.zeros((n_bootstraps, n_time_points))
 
     for i in range(n_bootstraps):
-        resample_target = np.random.choice(target_subset.shape[0], size=target_subset.shape[0], replace=True)
-        resample_other = np.random.choice(other_subset.shape[0], size=other_subset.shape[0], replace=True)
+        resample_target = rng.choice(target_subset.shape[0], size=target_subset.shape[0], replace=True)
+        resample_other = rng.choice(other_subset.shape[0], size=other_subset.shape[0], replace=True)
 
         boot_target_means[i, :] = np.nanmean(target_subset[resample_target, :], axis=0)
         boot_other_means[i, :] = np.nanmean(other_subset[resample_other, :], axis=0)
@@ -1117,8 +1119,9 @@ def _resolve_cohort_sexes(selection_metadata: dict | None) -> tuple:
         ``(self_sex, other_sex)``; either element may be ``None``.
     """
 
-    input_metadata = (selection_metadata or {}).get('_input_metadata') or {}
-    return input_metadata.get('target_mouse_sex'), input_metadata.get('predictor_mouse_sex')
+    _selection_metadata = selection_metadata if selection_metadata is not None else {}
+    input_metadata = _selection_metadata['_input_metadata'] if '_input_metadata' in _selection_metadata else {}
+    return (input_metadata['target_mouse_sex'] if 'target_mouse_sex' in input_metadata else None), (input_metadata['predictor_mouse_sex'] if 'predictor_mouse_sex' in input_metadata else None)
 
 
 def _make_feature_pretty(feature_label_overrides: dict | None,
@@ -1261,7 +1264,9 @@ def plot_model_selection_results(
     print(f"Processing {len(valid_steps_for_plot)} steps for trajectory...")
 
     first_data = valid_steps_for_plot[0]
-    first_cands = first_data.get('candidates', first_data.get('candidates_summary', {}))
+    # step pickles name the candidate block 'candidates' or (newer) 'candidates_summary'
+    first_cands = (first_data['candidates'] if 'candidates' in first_data
+                   else first_data['candidates_summary'] if 'candidates_summary' in first_data else {})
 
     primary_metric = 'll'
     is_minimization = True
@@ -1291,22 +1296,24 @@ def plot_model_selection_results(
                        'score': (0.5, 'Balanced accuracy'),
                        'spearman_r': (0.0, 'Spearman ρ'),
                        'pearson_r': (0.0, 'Pearson r')}
-    _analysis_type = ((selection_metadata or {}).get('_input_metadata') or {}).get('analysis_type')
+    _selection_metadata = selection_metadata if selection_metadata is not None else {}
+    _input_meta = _selection_metadata['_input_metadata'] if '_input_metadata' in _selection_metadata else {}
+    _analysis_type = _input_meta['analysis_type'] if 'analysis_type' in _input_meta else None
     _default_by_type = {'onset': 'score', 'category': 'auc', 'params': 'spearman_r'}
     if metric_secondary is None:
-        metric_secondary = _default_by_type.get(_analysis_type, 'auc')
+        metric_secondary = (_default_by_type[_analysis_type] if _analysis_type in _default_by_type else 'auc')
     _first_metrics = first_cands[next(iter(first_cands))] if first_cands else {}
     if metric_secondary not in _first_metrics:
         for _candidate_metric in ('score', 'auc', 'spearman_r', 'pearson_r', 'accuracy'):
             if _candidate_metric in _first_metrics:
                 metric_secondary = _candidate_metric
                 break
-    chance_secondary, secondary_label = _secondary_spec.get(
-        metric_secondary, (0.0, metric_secondary))
+    chance_secondary, secondary_label = (_secondary_spec[metric_secondary] if metric_secondary in _secondary_spec else (0.0, metric_secondary))
     print(f"Secondary Metric: {secondary_label}")
 
     for i, data in enumerate(valid_steps_for_plot):
-        candidates = data.get('candidates', data.get('candidates_summary', {}))
+        candidates = (data['candidates'] if 'candidates' in data
+                      else data['candidates_summary'] if 'candidates_summary' in data else {})
         if not candidates: continue
 
         best_feat = None
@@ -1334,7 +1341,7 @@ def plot_model_selection_results(
 
         winner_data = candidates[best_feat]
 
-        _sec_raw = np.array(winner_data.get(metric_secondary, [np.nan]), dtype=float)
+        _sec_raw = np.array((winner_data[metric_secondary] if metric_secondary in winner_data else [np.nan]), dtype=float)
         _sec_finite = _sec_raw[np.isfinite(_sec_raw)]
         steps_data.append({
             'step_idx': i,
@@ -1697,7 +1704,7 @@ def plot_model_selection_results(
     # find filter shapes; fall back to the second-to-last step when the
     # rejection step lacks a fitted final model.
     final_data = selection_steps[-1]
-    raw_filter_data = final_data.get('filter_shapes', None)
+    raw_filter_data = (final_data['filter_shapes'] if 'filter_shapes' in final_data else None)
 
     if not raw_filter_data:
         print(f"DEBUG: 'filter_shapes' not found in last step (idx {len(selection_steps) - 1})")
@@ -2021,7 +2028,8 @@ def plot_univariate_multinomial_performance(
 
         for idx, stat in enumerate(current_order):
             vals = stat[key]
-            x_pos = np.random.normal(idx, 0.005, size=len(vals))
+            # display jitter, seeded with figures.seed so a figure redraws identically
+            x_pos = np.random.default_rng(_FIGURE_SEED + idx).normal(idx, 0.005, size=len(vals))
             ax.scatter(x_pos, vals, color=stat['color'], alpha=0.4, s=20, edgecolors='none')
             ax.hlines(np.mean(vals), idx - 0.3, idx + 0.3, color=MEAN_LINE_COLOR, lw=2)
 
@@ -2462,7 +2470,7 @@ def plot_multinomial_selection_trajectory(
     for _s in selection_steps:
         _cs = _s['candidates_summary']
         for _c in _cs.values():
-            _cl = _c.get('classes') if isinstance(_c, dict) else None
+            _cl = (_c['classes'] if 'classes' in _c else None) if isinstance(_c, dict) else None
             if _cl is not None and len(_cl) > 0:
                 n_classes = len(_cl)
                 break
@@ -2513,7 +2521,7 @@ def plot_multinomial_selection_trajectory(
         winner = s['selected_feature']
         wd = s['candidates_summary'][winner]
         fm = wd['folds']['metrics']
-        sec_vals = np.array(fm.get(metric_secondary, []), dtype=float)
+        sec_vals = np.array((fm[metric_secondary] if metric_secondary in fm else []), dtype=float)
         sec_vals = sec_vals[np.isfinite(sec_vals)]
         steps_data.append({
             'feature_name': winner,
@@ -2531,7 +2539,7 @@ def plot_multinomial_selection_trajectory(
     best_univariate_feat = None
     for f, cdata in anchor_step['candidates_summary'].items():
         fm = cdata['folds']['metrics']
-        v = np.array(fm.get(metric_secondary, []), dtype=float)
+        v = np.array((fm[metric_secondary] if metric_secondary in fm else []), dtype=float)
         v = v[np.isfinite(v)]
         if v.size == 0:
             continue
@@ -2558,7 +2566,7 @@ def plot_multinomial_selection_trajectory(
             best_rej_pri = float('nan')
             for f, cdata in rej_cs.items():
                 fm = cdata['folds']['metrics']
-                v = np.array(fm.get(metric_secondary, []), dtype=float)
+                v = np.array((fm[metric_secondary] if metric_secondary in fm else []), dtype=float)
                 v = v[np.isfinite(v)]
                 if v.size == 0:
                     continue
@@ -2566,7 +2574,7 @@ def plot_multinomial_selection_trajectory(
                 if mu > best_rej_sec:
                     best_rej_sec = mu
                     best_rej_feat = f
-                    pv = np.array(fm.get(metric_primary, []), dtype=float)
+                    pv = np.array((fm[metric_primary] if metric_primary in fm else []), dtype=float)
                     pv = pv[np.isfinite(pv)]
                     best_rej_pri = float(np.mean(pv)) if pv.size else float('nan')
             if best_rej_feat is not None:
@@ -3223,9 +3231,9 @@ def plot_multinomial_selection_diagnosis(
     winner = final_step['selected_feature']
     cdata = final_step['candidates_summary'][winner]
     folds = cdata['folds']
-    classes_raw = cdata.get('canonical_classes')
+    classes_raw = (cdata['canonical_classes'] if 'canonical_classes' in cdata else None)
     if classes_raw is None:
-        classes_raw = cdata.get('classes')
+        classes_raw = (cdata['classes'] if 'classes' in cdata else None)
     classes = np.asarray(classes_raw).ravel()
     K = len(classes)
     final_features = list(final_step['final_model_features'] or [])
@@ -4313,7 +4321,8 @@ def plot_manifold_filter_atlas(
     * **Colour scale (top-right).** A small colourbar for the affinity fields,
       ticked only at ``-vmax / 0 / +vmax`` and labelled "vocal region affinity
       (per SD)" -- the change in the model's alignment for a torus location per
-      +1 SD of the feature (red = toward that vocal region, blue = away).
+      +1 SD of the feature (the positive end of ``figures.diverging_cmap``, brown
+      with ``BrBG_r`` = toward that vocal region; the negative end, teal = away).
 
     Parameters
     ----------
@@ -4704,7 +4713,7 @@ class DeepResultsVisualizer:
         self.metadata = self.data['metadata']
         self.features = self.metadata['features_list']
         self.n_bins = self.metadata['n_time_bins']
-        self.save_dir = self.metadata.get('save_dir', './plots')
+        self.save_dir = (self.metadata['save_dir'] if 'save_dir' in self.metadata else './plots')
 
         # Manifold-metric provenance. Recent CNN runs save the
         # `(metric, period)` pair into `data['metadata']`; legacy
@@ -4715,8 +4724,8 @@ class DeepResultsVisualizer:
         # `error_landscape`, `regional_saliency_inset`) read these
         # via `signed_diff` so torus pickles render with wrap-aware
         # error magnitudes.
-        self.manifold_metric = self.metadata.get('manifold_metric', 'euclidean')
-        self.manifold_period = float(self.metadata.get('manifold_period', 1.0))
+        self.manifold_metric = (self.metadata['manifold_metric'] if 'manifold_metric' in self.metadata else 'euclidean')
+        self.manifold_period = float(self.metadata['manifold_period'] if 'manifold_period' in self.metadata else 1.0)
 
         if modeling_settings is None:
             settings_path = pathlib.Path(__file__).resolve().parent.parent / '_parameter_settings/modeling_settings.json'
@@ -4838,23 +4847,21 @@ class DeepResultsVisualizer:
         # `restrict_to_fold_indices` recovery path — they carry only
         # `Y_true` / `test_indices` and would `KeyError` on
         # `Y_pred_actual` / `error_*` lookups below.
-        cv_folds = [f for f in self.data['cross_validation'] if not f.get('skipped')]
+        cv_folds = [f for f in self.data['cross_validation'] if not (f['skipped'] if 'skipped' in f else None)]
         actual_errors = np.array([fold['error_actual'] for fold in cv_folds])
         null_free_errors = np.array([fold['error_null_model_free'] for fold in cv_folds])
 
         # Compute Actual Skill Score: 1 - (Actual / Null)
         actual_skill = 1.0 - (actual_errors / null_free_errors)
 
-        # Seed the global RNG BEFORE the first stochastic draw so the
-        # null permutation below is reproducible too (it previously ran
-        # ahead of the seed and so varied run-to-run). The seed value is
-        # read from the modeling settings rather than hard-coded so it
-        # tracks the same `random_seed` every other modeling routine uses.
-        np.random.seed(self.modeling_settings['model_validation']['random_seed'])
+        # Every stochastic draw below comes from one generator seeded with the
+        # modeling `random_seed` (never NumPy's global state), so the null
+        # permutation and the bootstraps reproduce from that seed alone.
+        rng = np.random.default_rng(self.modeling_settings['model_validation']['random_seed'])
 
         # COMPUTE PERMUTED NULL SKILL: 1 - (Null_shuffled / Null)
         # This gives the Null "width" so it doesn't break the Y-axis scaling
-        shuffled_null_errors = np.random.permutation(null_free_errors)
+        shuffled_null_errors = rng.permutation(null_free_errors)
         null_skill_dist = 1.0 - (shuffled_null_errors / null_free_errors)
 
         actual_mean = np.mean(actual_errors)
@@ -4863,16 +4870,16 @@ class DeepResultsVisualizer:
         # 2. Bootstrap the distributions
 
         # Euclidean Error Bootstrapping (Panel A)
-        null_dist = [np.mean(np.random.choice(null_free_errors, size=len(null_free_errors), replace=True))
+        null_dist = [np.mean(rng.choice(null_free_errors, size=len(null_free_errors), replace=True))
                      for _ in range(n_bootstraps)]
-        actual_dist = [np.mean(np.random.choice(actual_errors, size=len(actual_errors), replace=True))
+        actual_dist = [np.mean(rng.choice(actual_errors, size=len(actual_errors), replace=True))
                        for _ in range(n_bootstraps)]
         threshold = np.percentile(null_dist, 0.5)
 
         # Skill Score Bootstrapping (Panel B)
-        actual_dist_skill = [np.mean(np.random.choice(actual_skill, size=len(actual_skill), replace=True))
+        actual_dist_skill = [np.mean(rng.choice(actual_skill, size=len(actual_skill), replace=True))
                              for _ in range(n_bootstraps)]
-        null_dist_skill = [np.mean(np.random.choice(null_skill_dist, size=len(null_skill_dist), replace=True))
+        null_dist_skill = [np.mean(rng.choice(null_skill_dist, size=len(null_skill_dist), replace=True))
                            for _ in range(n_bootstraps)]
 
         # 3. Plotting Physics: GridSpec for 4 subplots (2 rows of broken axes)
@@ -5221,7 +5228,7 @@ class DeepResultsVisualizer:
         # `restrict_to_fold_indices` recovery path — they carry only
         # `Y_true` / `test_indices` and would `KeyError` on
         # `Y_pred_actual` / `error_*` lookups below.
-        cv_folds = [f for f in self.data['cross_validation'] if not f.get('skipped')]
+        cv_folds = [f for f in self.data['cross_validation'] if not (f['skipped'] if 'skipped' in f else None)]
         # Explicitly wrapping in np.array to handle potential JAX DeviceArrays
         Y_true = np.vstack([np.array(f['Y_true']) for f in cv_folds])
         Y_pred = np.vstack([np.array(f['Y_pred_actual']) for f in cv_folds])
@@ -5432,7 +5439,7 @@ class DeepResultsVisualizer:
 
         # pool predictions across successfully-fit folds
         cv_folds = [f for f in self.data['cross_validation']
-                    if not f.get('skipped')]
+                    if not (f['skipped'] if 'skipped' in f else None)]
         Y_true = np.vstack([np.asarray(f['Y_true']) for f in cv_folds])
         Y_pred = np.vstack([np.asarray(f['Y_pred_actual']) for f in cv_folds])
 
@@ -5653,7 +5660,7 @@ class DeepResultsVisualizer:
         # `restrict_to_fold_indices` recovery path — they carry only
         # `Y_true` / `test_indices` and would `KeyError` on
         # `Y_pred_actual` / `error_*` lookups below.
-        cv_folds = [f for f in self.data['cross_validation'] if not f.get('skipped')]
+        cv_folds = [f for f in self.data['cross_validation'] if not (f['skipped'] if 'skipped' in f else None)]
 
         # Pull true coordinates and predictions from both Actual and Model-Free Null
         Y_true = np.vstack([np.array(f['Y_true']) for f in cv_folds])
@@ -5746,7 +5753,7 @@ class DeepResultsVisualizer:
                                      prediction_plot_type: str = 'contour',
                                      highlight_color: Optional[str] = None,
                                      null_color: str = '#D3D3D3',
-                                     cmap: str = cmr.fusion_r,
+                                     cmap: str = _DIVERGING_CMAP,
                                      figsize: tuple = (18, 9),
                                      radius: Optional[float] = None,
                                      smoothing_sigma: float = 60.0,
@@ -5792,7 +5799,7 @@ class DeepResultsVisualizer:
         null_color : str, default '#D3D3D3'
             Color for the model-free null distribution in the error
             inset.
-        cmap : str, default ``cmr.fusion_r``
+        cmap : str, default the ``figures.diverging_cmap`` setting
             Diverging colormap for the contrastive saliency heatmap.
         figsize : tuple, default (18, 9)
             Figure dimensions in inches.
@@ -5859,7 +5866,7 @@ class DeepResultsVisualizer:
                 f"No pre-computed saliency map stored for region '{region_key}'. "
                 f"Re-compute saliency during training and rerun, or pass a "
                 f"region_key already present in self.data['saliency_maps'] "
-                f"(available: {list(self.data.get('saliency_maps', {}).keys())})."
+                f"(available: {list((self.data['saliency_maps'] if 'saliency_maps' in self.data else {}).keys())})."
             )
         sal_entry = self.data['saliency_maps'][region_key]
         centroid = np.asarray(sal_entry['centroid'], dtype=float).reshape(2)

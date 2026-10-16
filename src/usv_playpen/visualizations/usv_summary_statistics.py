@@ -1880,7 +1880,7 @@ def plot_estrous_ratio_scatter(
 
     for idx, category in enumerate(category_order):
         # Extract and filter NaNs
-        raw_values = np.array(ratio_dict.get(category, []))
+        raw_values = np.array(ratio_dict[category] if category in ratio_dict else [])
         values = raw_values[~np.isnan(raw_values)]
 
         n = len(values)
@@ -2060,10 +2060,10 @@ def plot_estrous_usv_rates(
     stats_dict: dict[str, dict[str, float]] = {}
 
     for stage in category_order:
-        s_count = session_counts.get(stage, 0)
+        s_count = (session_counts[stage] if stage in session_counts else 0)
         if s_count > 0:
-            m_rate = male_usv_counts.get(stage, 0) / s_count
-            f_rate = female_usv_counts.get(stage, 0) / s_count
+            m_rate = (male_usv_counts[stage] if stage in male_usv_counts else 0) / s_count
+            f_rate = (female_usv_counts[stage] if stage in female_usv_counts else 0) / s_count
         else:
             m_rate, f_rate = 0.0, 0.0
 
@@ -2138,7 +2138,7 @@ def plot_estrous_stage_pie_chart(
     # Filter for stages that actually have data to avoid empty slices
     plot_stages = [s for s in category_order if s in session_counts and session_counts[s] > 0]
     counts = [session_counts[s] for s in plot_stages]
-    labels_full = [label_map.get(s, s) for s in plot_stages]
+    labels_full = [(label_map[s] if s in label_map else s) for s in plot_stages]
 
     # Map colors to the specific stages present in the plot
     # (Matches the color to the stage regardless of if some stages are missing)
@@ -2147,7 +2147,7 @@ def plot_estrous_stage_pie_chart(
 
     total_sessions = sum(counts)
     stats_dict = {
-        label_map.get(k, k): float((v / total_sessions) * 100) if total_sessions > 0 else 0.0
+        (label_map[k] if k in label_map else k): float((v / total_sessions) * 100) if total_sessions > 0 else 0.0
         for k, v in session_counts.items()
     }
 
@@ -2601,7 +2601,7 @@ def plot_category_estrous_rates_grid(
     rows = int(np.ceil(n_cats / cols))
 
     # Label configuration
-    full_stage_names = [stage_label_map.get(s.lower(), s) for s in valid_stages]
+    full_stage_names = [(stage_label_map[s.lower()] if s.lower() in stage_label_map else s) for s in valid_stages]
     x_indices = np.arange(len(full_stage_names))
     bar_width = 0.35
 
@@ -2618,9 +2618,9 @@ def plot_category_estrous_rates_grid(
         f_rates = []
 
         for stage in valid_stages:
-            s_count = estrous_data[cat]['session_counts'].get(stage, 0)
-            m_r = (estrous_data[cat]['male_usv_counts'].get(stage, 0) / s_count) if s_count > 0 else 0.0
-            f_r = (estrous_data[cat]['female_usv_counts'].get(stage, 0) / s_count) if s_count > 0 else 0.0
+            s_count = (estrous_data[cat]['session_counts'][stage] if stage in estrous_data[cat]['session_counts'] else 0)
+            m_r = ((estrous_data[cat]['male_usv_counts'][stage] if stage in estrous_data[cat]['male_usv_counts'] else 0) / s_count) if s_count > 0 else 0.0
+            f_r = ((estrous_data[cat]['female_usv_counts'][stage] if stage in estrous_data[cat]['female_usv_counts'] else 0) / s_count) if s_count > 0 else 0.0
             m_rates.append(m_r)
             f_rates.append(f_r)
 
@@ -2717,7 +2717,7 @@ def plot_category_estrous_ratio_grid(
     }
 
     categories = sorted(estrous_data.keys())
-    full_stage_names = [stage_label_map.get(s.lower(), s) for s in valid_stages]
+    full_stage_names = [(stage_label_map[s.lower()] if s.lower() in stage_label_map else s) for s in valid_stages]
     mean_line_width = 0.2
     stats_dict = {}
 
@@ -2739,7 +2739,7 @@ def plot_category_estrous_ratio_grid(
         cat_stats = {}
 
         for idx, stage in enumerate(valid_stages):
-            ratios = np.array(estrous_data[cat]['male_female_ratios'].get(stage, []))
+            ratios = np.array(estrous_data[cat]['male_female_ratios'][stage] if stage in estrous_data[cat]['male_female_ratios'] else [])
             ratios = ratios[np.isfinite(ratios) & (ratios > 0)]
             n = len(ratios)
 
@@ -2797,10 +2797,10 @@ def plot_category_estrous_ratio_grid(
 
     for idx, stage_char in enumerate(valid_stages):
         ax = axes_stages_flat[idx]
-        stage_name = stage_label_map.get(stage_char.lower(), stage_char)
+        stage_name = (stage_label_map[stage_char.lower()] if stage_char.lower() in stage_label_map else stage_char)
 
         for cat_idx, cat_id in enumerate(categories):
-            ratios = np.array(estrous_data[cat_id]['male_female_ratios'].get(stage_char, []))
+            ratios = np.array(estrous_data[cat_id]['male_female_ratios'][stage_char] if stage_char in estrous_data[cat_id]['male_female_ratios'] else [])
             ratios = ratios[np.isfinite(ratios) & (ratios > 0)]
             n = len(ratios)
 
@@ -3133,7 +3133,7 @@ def plot_estrous_category_kde_grid(
 
     for cat in categories:
         for stage in valid_stages:
-            part = partitions.get((cat, stage))
+            part = (partitions[(cat, stage)] if (cat, stage) in partitions else None)
             if part is None:
                 # No rows for this (category, stage) -- identical to the old
                 # empty-subset path (n_valid == 0, density skipped).

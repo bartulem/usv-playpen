@@ -2645,7 +2645,7 @@ class NeuronalTuningFigureMaker(FeatureZoo):
             "change_saturation":   1.0,
             "cm_opacity":          1,
         })
-        diff_cmap = plt.get_cmap("RdBu_r").copy()
+        diff_cmap = plt.get_cmap(self.visualizations_parameter_dict["figures"]["diverging_cmap"]).copy()
         diff_cmap.set_bad(color=COLOR_BLACK)
 
         loc_ap = np.array([u["loc_ap"] for u in per_unit])

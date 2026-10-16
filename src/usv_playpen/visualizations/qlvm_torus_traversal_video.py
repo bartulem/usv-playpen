@@ -884,7 +884,7 @@ class QLVMTorusTraversalVideo:
                     # Pulsate the active cluster's (thick) accent-colored outline
                     # so it is clearly visible: width + opacity oscillate over ~24 frames.
                     pulse = 0.5 + 0.5 * np.sin(2 * np.pi * fi / 24.0)
-                    cs = cluster_contours.get(ph['active_ci'])
+                    cs = (cluster_contours[ph['active_ci']] if ph['active_ci'] in cluster_contours else None)
                     if cs is not None:
                         _set_contour_style(cs, lw=4.0 + 5.0 * pulse, alpha=0.45 + 0.55 * pulse)
                     cluster_center_marker.set_sizes([120.0 + 160.0 * pulse])

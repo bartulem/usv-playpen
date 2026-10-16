@@ -1469,7 +1469,7 @@ class QLVMTrainingSetBuilder:
             ))
             session_type = session_type_from_metadata(root_directory, self.message_output)
             if session_type not in session_type_targets:
-                skipped_by_type[session_type] = skipped_by_type.get(session_type, 0) + 1
+                skipped_by_type[session_type] = (skipped_by_type[session_type] if session_type in skipped_by_type else 0) + 1
                 continue
             with h5py.File(h5_path, "r") as h5_file:
                 session_id = next(iter(h5_file["spectrogram"].keys()))
@@ -1499,7 +1499,7 @@ class QLVMTrainingSetBuilder:
                 excluded[table_rows] = True
             rows = eligible_rows(durations, mask_counts, excluded, length_threshold, require_mask)
             without_exclusion = eligible_rows(durations, mask_counts, np.zeros_like(excluded), length_threshold, require_mask)
-            excluded_by_type[session_type] = excluded_by_type.get(session_type, 0) + int(without_exclusion.size - rows.size)
+            excluded_by_type[session_type] = (excluded_by_type[session_type] if session_type in excluded_by_type else 0) + int(without_exclusion.size - rows.size)
             sessions[session_id] = {
                 "root": root_directory,
                 "h5_path": h5_path,

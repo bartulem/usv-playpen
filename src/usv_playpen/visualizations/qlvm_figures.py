@@ -67,7 +67,6 @@ import numpy as np
 import polars as pls
 import umap
 from matplotlib.backends.backend_agg import FigureCanvasAgg
-from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -126,7 +125,6 @@ CHANGE_COLOR = "#E15759"
 BAR_COLOR = "#59595B"
 WATERSHED_COLOR = "#BDBDBD"
 GROUP_DOT_COLOR = "#FFFFFF"
-CHANCE_COLORS = ("#2166AC", "#92C5DE", "#FFFFFF", "#F4A582", "#B2182B")
 TITLE_SIZE = 14
 LABEL_SIZE = 14
 TICK_SIZE = 12
@@ -1237,7 +1235,8 @@ def draw_category_field(axis, field: np.ndarray, title: str, bundle: dict, color
     style_torus(axis, title, TITLE_SIZE)
 
 
-def plot_category_boundaries(fields: dict, similarity: dict, bundle: dict, cfg: dict, cmap_name: str) -> Figure:
+def plot_category_boundaries(fields: dict, similarity: dict, bundle: dict, cfg: dict, cmap_name: str,
+                             diverging_cmap_name: str) -> Figure:
     """
     Description
     -----------
@@ -1266,6 +1265,9 @@ def plot_category_boundaries(fields: dict, similarity: dict, bundle: dict, cfg: 
         The ``qlvm_figures`` settings block.
     cmap_name (str)
         Sequential colormap of the maps and spectrograms.
+    diverging_cmap_name (str)
+        Diverging colormap of the above / below chance tables (the project's
+        ``figures.diverging_cmap``), centred on chance.
 
     Returns
     -------
@@ -1277,7 +1279,7 @@ def plot_category_boundaries(fields: dict, similarity: dict, bundle: dict, cfg: 
     categories_cfg = cfg["categories"]
     colors = cfg["category_colors"]
     n_categories = similarity["matrix"].shape[0]
-    chance_cmap = LinearSegmentedColormap.from_list("chance", CHANCE_COLORS)
+    chance_cmap = diverging_cmap_name
     fig = Figure(figsize=(32.5, 16.6), facecolor=FIGURE_FACE)
     outer = fig.add_gridspec(3, 1, height_ratios=[0.9, 0.75, 0.95], hspace=0.24)
     top = outer[0].subgridspec(1, 5, width_ratios=[0.95, 1, 1, 0.8, 0.8], wspace=0.5)

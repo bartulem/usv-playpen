@@ -610,7 +610,8 @@ def fit_mixture_model_sweep(
 
                 bic = float(model.bic(log_iui))
                 aic = float(model.aic(log_iui))
-                cv_nll = float(cv_per_key_n.get(key, {}).get(n_components, np.nan))
+                cv_by_k = cv_per_key_n[key] if key in cv_per_key_n else {}
+                cv_nll = float(cv_by_k[n_components] if n_components in cv_by_k else np.nan)
 
                 results["sex"].append(key)
                 results["n_comp"].append(n_components)
@@ -1558,7 +1559,7 @@ class InterUSVIntervalCalculator:
                     chain_ids.append(usv_interval[f"chain_{sex}"])
                     rows.append({
                         "session_id": [session_id] * arr.size,
-                        "source_list": [source_map.get(session_root, "")] * arr.size,
+                        "source_list": [(source_map[session_root] if session_root in source_map else "")] * arr.size,
                         "interval_type": [interval_type] * arr.size,
                         "sex": [sex] * arr.size,
                         "call_type": [call_type] * arr.size,

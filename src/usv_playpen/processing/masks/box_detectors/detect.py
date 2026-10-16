@@ -31,13 +31,11 @@ Box / orientation contract (shared by all three)
   the working spec UNFLIPPED — see the wrapper note below, which mirrors
   ``cc_box_detector`` exactly.
 
-Lazy / light imports
---------------------
-Nothing heavy is imported at module load: ``cc`` pulls in
-``specgen.masks.cc_box_detector`` (pure numpy/scipy/skimage) only when built;
-``unet`` pulls in torch + smp only when built; ``yolo`` pulls in ultralytics only
-when built. So ``import box_detectors.detect`` and ``py_compile`` succeed in
-``samv2_env`` (no smp / no ultralytics) and on the GPU-less dev host.
+Imports
+-------
+Both backends' modules are imported at module load, as every module imports its
+dependencies at the top: ``cc`` (``masks.cc_box_detector``, numpy/scipy/skimage)
+and ``yolo`` (``yolo.infer``, which imports ultralytics, a declared dependency).
 """
 
 from __future__ import annotations
@@ -45,6 +43,9 @@ from __future__ import annotations
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
+
+from ..cc_box_detector import BoxDetectorConfig, detect_boxes
+from .yolo.infer import YoloDetectorConfig, detect_boxes_yolo, load_model
 
 # Inclusive (top, left, bottom, right) = (y0, x0, y1, x1). Rows=freq, cols=time.
 Box = Tuple[int, int, int, int]
@@ -91,8 +92,6 @@ def _build_cc(
     Returns:
         ``detect(spec, duration) -> list[(t,l,b,r)]``.
     """
-    from ..cc_box_detector import BoxDetectorConfig, detect_boxes  # type: ignore
-
     if cfg is None:
         kwargs = dict(detector_kwargs)
         kwargs.update(detector_extra or {})
@@ -173,11 +172,6 @@ def _build_yolo(
             "get_detector('yolo', ...) requires weights=<path to trained best.pt> "
             "(train via box_detectors.yolo.train first)."
         )
-    from .yolo.infer import (  # type: ignore
-        YoloDetectorConfig,
-        detect_boxes_yolo,
-        load_model,
-    )
 
     if cfg is None:
         cfg = YoloDetectorConfig()

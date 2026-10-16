@@ -199,7 +199,7 @@ def _h5_to_polars(ds: h5py.Dataset) -> pls.DataFrame:
         Reconstructed DataFrame; empty if the original was empty.
     """
 
-    schema_json = ds.attrs.get("schema_json", "{}")
+    schema_json = ds.attrs["schema_json"]
     schema_raw = json.loads(schema_json) if isinstance(schema_json, str) else json.loads(schema_json.decode("utf-8"))
 
     # Map polars dtype string back to a polars dtype object so the
@@ -211,9 +211,9 @@ def _h5_to_polars(ds: h5py.Dataset) -> pls.DataFrame:
         "Float32": pls.Float32, "Float64": pls.Float64,
         "Boolean": pls.Boolean,
     }
-    schema = {col: dtype_lookup.get(dtype_str, pls.Utf8) for col, dtype_str in schema_raw.items()}
+    schema = {col: (dtype_lookup[dtype_str] if dtype_str in dtype_lookup else pls.Utf8) for col, dtype_str in schema_raw.items()}
 
-    is_empty = bool(ds.attrs.get("empty", False))
+    is_empty = bool(ds.attrs["empty"])
     if is_empty:
         return pls.DataFrame(schema=schema)
 
@@ -333,12 +333,12 @@ def write_ivi_h5(
 
         for mode, payload in per_mode.items():
             grp = f.create_group(mode)
-            for k, v in payload.get("attrs", {}).items():
+            for k, v in (payload["attrs"] if "attrs" in payload else {}).items():
                 grp.attrs[k] = _attr_value(v)
 
             tables = ARCHIVE_TABLES
             for table_name in tables:
-                df = payload.get(table_name)
+                df = (payload[table_name] if table_name in payload else None)
                 if df is None:
                     continue
                 _polars_to_h5(grp, table_name, df)
