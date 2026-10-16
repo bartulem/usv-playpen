@@ -131,6 +131,26 @@ def test_apply_circular_shift_matches_sort_reference():
         np.testing.assert_allclose(got, ref, atol=1e-6)
 
 
+def test_apply_circular_shift_sorts_spikes_outside_the_session():
+    """Spikes a few ms past the session end (or before its start) are wrapped into
+    [0, duration) and the output stays sorted: with duration 10 and shift 2, a spike
+    at 10.5 wraps to 2.5, which a split-and-swap rotation would leave ahead of
+    1.0 (from 9.0) -- the unsorted array that miscounts every searchsorted window."""
+
+    spikes = np.array([-0.2, 1.0, 5.0, 9.0, 10.5])
+    got = engine.apply_circular_shift({"a": spikes}, 2.0, 10.0)["a"]
+    np.testing.assert_allclose(got, [1.0, 1.8, 2.5, 3.0, 7.0])
+    rng = np.random.default_rng(3)
+    dur = 100.0
+    spikes = np.sort(np.concatenate([rng.uniform(0.0, dur, 300), dur + rng.uniform(0.0, 0.006, 5)]))
+    for shift in (0.004, 7.3, 50.0, 99.999):
+        got = engine.apply_circular_shift({"a": spikes}, shift, dur)["a"]
+        assert np.all(np.diff(got) >= 0.0)
+        np.testing.assert_allclose(got, np.sort(np.mod(spikes + shift, dur)))
+        assert got.min() >= 0.0
+        assert got.max() < dur
+
+
 @pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
 @pytest.mark.filterwarnings("ignore:invalid value encountered:RuntimeWarning")
 def test_compute_sliding_coactivity_shapes_and_time_bins():
@@ -488,6 +508,47 @@ def test_bootstrap_vs_null_stats():
     assert z == pytest.approx(1.0 / np.sqrt(2.0))
     _, _, _, z_flat = engine.bootstrap_vs_null_stats(boot, np.array([2.0, 2.0, 2.0]))
     assert z_flat == 0.0
+
+
+@pytest.mark.filterwarnings("ignore:Mean of empty slice:RuntimeWarning")
+@pytest.mark.filterwarnings("ignore:Degrees of freedom <= 0:RuntimeWarning")
+def test_bootstrap_vs_null_stats_counts_only_finite_null_draws():
+    """NaN null draws are left out of the count and the total: the p-value with two
+    NaN draws added equals the p-value without them, and an all-NaN null gives NaN."""
+
+    boot = np.array([3.0, 3.0, 3.0])
+    null = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+    _, _, p_clean, _ = engine.bootstrap_vs_null_stats(boot, null)
+    _, _, p_nan, _ = engine.bootstrap_vs_null_stats(boot, np.concatenate([null, [np.nan, np.nan]]))
+    assert p_nan == pytest.approx(p_clean) == pytest.approx(3 / 6)
+    _, _, p_all_nan, _ = engine.bootstrap_vs_null_stats(boot, np.full(4, np.nan))
+    assert np.isnan(p_all_nan)
+
+
+def test_label_permutation_test_counts_only_finite_null_draws(monkeypatch):
+    """A permuted split whose metric is NaN is left out of both p-values: with the
+    metric NaN on every other permutation, n finite draws decide p over n + 1."""
+
+    calls = {"n": 0}
+
+    def fake_metrics(count_matrix):
+        calls["n"] += 1
+        # calls 1-2 are the observed groups; then two per permutation (a, b)
+        permutation = (calls["n"] - 3) // 2
+        if calls["n"] > 2 and permutation % 2 == 1:
+            return {"r_sc": np.nan}
+        return {"r_sc": float(count_matrix.sum())}
+
+    monkeypatch.setattr(engine, "compute_coactivity_metrics", fake_metrics)
+    counts_a = np.array([[5.0, 5.0]])
+    counts_b = np.array([[0.0, 0.0]])
+    result = engine.perform_label_permutation_test(counts_a, counts_b, n_permutations=10, seed=0)["r_sc"]
+    null = result["null"]
+    finite = null[np.isfinite(null)]
+    assert finite.size == 5
+    assert np.isnan(null).sum() == 5
+    assert result["p_a_gt_b"] == pytest.approx((np.sum(finite >= 10.0) + 1) / 6)
+    assert result["p_two_tailed"] == pytest.approx((np.sum(np.abs(finite) >= 10.0) + 1) / 6)
 
 
 def test_filter_units_by_catalog():

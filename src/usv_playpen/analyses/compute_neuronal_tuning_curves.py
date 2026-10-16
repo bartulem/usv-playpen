@@ -1058,7 +1058,8 @@ def ibi_bout_onset_block(spike_times: np.ndarray, usv_starts: np.ndarray, runs: 
 
 
 def _gaussian_smooth_1d(
-    data: np.ndarray, sigma: float, axis: int = -1, preserve_nan: bool = True
+    data: np.ndarray, sigma: float, axis: int = -1, preserve_nan: bool = True,
+    circular: bool = False,
 ) -> np.ndarray:
     """
     Description
@@ -1070,7 +1071,10 @@ def _gaussian_smooth_1d(
     `preserve_nan=True`) restored to NaN at their original positions
     after smoothing. Vectorized across all leading axes via
     `scipy.ndimage.gaussian_filter1d`, so a 2D `(n_shuffles, n_bins)`
-    array is smoothed in one call.
+    array is smoothed in one call. The edges are extended (``mode="nearest"``)
+    for a linear axis and wrapped (``mode="wrap"``) for a circular one, so an
+    angle's first and last bins (-180 and +180 degrees, the same direction)
+    smooth into each other instead of each into a copy of itself.
 
     Parameters
     ----------
@@ -1087,6 +1091,9 @@ def _gaussian_smooth_1d(
         only valid samples participate in the weighted convolution.
         If False (used for the 2D spatial map historically), NaN
         positions are filled in by the weighted Gaussian.
+    circular (bool)
+        If True, `axis` is periodic (its bins tile one full turn, as for
+        `circular_features`) and the kernel wraps around its ends.
 
     Returns
     -------
@@ -1096,16 +1103,17 @@ def _gaussian_smooth_1d(
 
     if sigma <= 0:
         return data
+    mode = "wrap" if circular else "nearest"
     nan_mask = np.isnan(data)
     if not nan_mask.any():
-        return ndimage.gaussian_filter1d(data, sigma=sigma, axis=axis, mode="nearest")
+        return ndimage.gaussian_filter1d(data, sigma=sigma, axis=axis, mode=mode)
     weights = (~nan_mask).astype(float)
     data_filled = np.where(nan_mask, 0.0, data)
     smoothed_data = ndimage.gaussian_filter1d(
-        data_filled, sigma=sigma, axis=axis, mode="nearest"
+        data_filled, sigma=sigma, axis=axis, mode=mode
     )
     smoothed_weights = ndimage.gaussian_filter1d(
-        weights, sigma=sigma, axis=axis, mode="nearest"
+        weights, sigma=sigma, axis=axis, mode=mode
     )
     out = np.full_like(data, np.nan, dtype=float)
     valid = smoothed_weights > 0
@@ -1785,19 +1793,107 @@ class NeuronalTuning(FeatureZoo):
 
     # pkl merge helper (used by both paths)
 
+    @staticmethod
+    def _drop_side_keys(existing: dict, side: str) -> None:
+        """
+        Description
+        -----------
+        Removes, in place, every key one compute path owns from a loaded
+        per-cluster pkl payload, so a re-run replaces that path's results
+        whole instead of layering them over the previous run's. The
+        behavioral path owns the `beh_offset=*s` keys, `behavioral_metadata`
+        and `triage_stats["behavioral"]` / `triage_stats["spatial"]`; the
+        vocal path owns `usv_peth`, `usv_property_tuning`,
+        `usv_category_tuning`, `usv_category_peth`, `usv_ibi_bout_onset`,
+        `usv_metadata` and the same-named `triage_stats` blocks plus
+        `triage_stats["vmi"]`. Without this a temporal offset, an emitter
+        side or a category that the new run no longer produces would keep
+        the old run's numbers in the pkl, unmarked.
+
+        Parameters
+        ----------
+        existing (dict)
+            The loaded pkl payload; modified in place.
+        side (str)
+            ``"behavioral"`` or ``"vocal"``.
+
+        Returns
+        -------
+        None
+        """
+
+        if side == "behavioral":
+            top_keys = [key for key in existing if key.startswith("beh_offset=")] + ["behavioral_metadata"]
+            triage_keys = ["behavioral", "spatial"]
+        elif side == "vocal":
+            vocal_blocks = ["usv_peth", "usv_property_tuning", "usv_category_tuning", "usv_category_peth",
+                            "usv_ibi_bout_onset"]
+            top_keys = [*vocal_blocks, "usv_metadata"]
+            triage_keys = [*vocal_blocks, "vmi"]
+        else:
+            msg = f"side must be 'behavioral' or 'vocal', got {side!r}."
+            raise ValueError(msg)
+        for key in top_keys:
+            existing.pop(key, None)
+        if isinstance(existing.get("triage_stats"), dict):
+            for key in triage_keys:
+                existing["triage_stats"].pop(key, None)
+
+    def _clear_side_from_cluster_pkl(self, cluster_id: str, side: str) -> bool:
+        """
+        Description
+        -----------
+        Removes one compute path's keys (:meth:`_drop_side_keys`) from an
+        existing `<cluster_id>_tuning_curves_data.pkl`, for a path that was
+        skipped or failed on this run, so the pkl never pairs this run's
+        results of one path with a previous run's results of the other. A
+        missing pkl, or one without that path's keys, is left as it is.
+
+        Parameters
+        ----------
+        cluster_id (str)
+            Cluster identifier (file stem of the spike .npy).
+        side (str)
+            ``"behavioral"`` or ``"vocal"``.
+
+        Returns
+        -------
+        cleared (bool)
+            True if keys were removed and the pkl rewritten.
+        """
+
+        pkl_path = pathlib.Path(self.root_directory) / "ephys" / "tuning_curves" / f"{cluster_id}_tuning_curves_data.pkl"
+        if not pkl_path.exists():
+            return False
+        with pkl_path.open("rb") as fh:
+            existing = pickle.load(fh)
+        def key_count(payload):
+            triage = payload["triage_stats"] if isinstance(payload.get("triage_stats"), dict) else {}
+            return len(payload) + len(triage)
+
+        n_keys_before = key_count(existing)
+        self._drop_side_keys(existing, side)
+        if key_count(existing) == n_keys_before:
+            return False
+        with atomic_output_path(pkl_path) as tmp_path, tmp_path.open("wb") as fh:
+            pickle.dump(existing, fh)
+        return True
+
     def _save_partial_to_cluster_pkl(
-        self, cluster_id: str, partial_payload: dict
+        self, cluster_id: str, partial_payload: dict, side: str
     ) -> None:
         """
         Description
         -----------
-        Load `<cluster_id>_tuning_curves_data.pkl` if it exists, merge
-        the supplied partial payload into it (top-level keys only), and
+        Load `<cluster_id>_tuning_curves_data.pkl` if it exists, drop the
+        keys the writing path (`side`) owns from it (:meth:`_drop_side_keys`),
+        merge the supplied partial payload into it (top-level keys only), and
         write back. Creates the file if absent. The behavioral path
         contributes flat `beh_offset=*s` keys; the vocal path contributes
-        `usv_peth`, `usv_property_tuning`, `usv_category_tuning`, `usv_category_peth`, and
-        `usv_metadata`. Order of the two paths therefore does not
-        matter.
+        `usv_peth`, `usv_property_tuning`, `usv_category_tuning`, `usv_category_peth`,
+        `usv_ibi_bout_onset` and `usv_metadata`. Order of the two paths
+        therefore does not matter, and a re-run of one path replaces its
+        previous results whole while keeping the other path's.
 
         Parameters
         ----------
@@ -1805,6 +1901,8 @@ class NeuronalTuning(FeatureZoo):
             Cluster identifier (file stem of the spike .npy).
         partial_payload (dict)
             Top-level keys to merge into the per-cluster pkl.
+        side (str)
+            ``"behavioral"`` or ``"vocal"``: the path that computed `partial_payload`.
 
         Returns
         -------
@@ -1819,6 +1917,7 @@ class NeuronalTuning(FeatureZoo):
                 existing = pickle.load(fh)
         else:
             existing = {}
+        self._drop_side_keys(existing, side)
         # `triage_stats` is the one top-level key that *both* compute
         # paths write into (behavioral writes its modality, vocal writes
         # vmi + its modalities). A naive wholesale `update` would
@@ -1976,6 +2075,7 @@ class NeuronalTuning(FeatureZoo):
                 "  behavioral skipped: missing *_behavioral_features.csv "
                 "or tracking .h5 in this session."
             )
+            self._report_cleared_side(cluster_files, "behavioral", message_output)
         else:
             message_output("  computing behavioral tuning curves ...")
             for cluster_file in tqdm(
@@ -1985,7 +2085,7 @@ class NeuronalTuning(FeatureZoo):
                     cluster_file=cluster_file,
                     beh_inputs=beh_inputs,
                 )
-                self._save_partial_to_cluster_pkl(cluster_file.stem, beh_partial)
+                self._save_partial_to_cluster_pkl(cluster_file.stem, beh_partial, "behavioral")
 
         # vocal side
         voc_inputs = self._load_vocal_inputs()
@@ -1994,6 +2094,7 @@ class NeuronalTuning(FeatureZoo):
                 "  vocal skipped: missing *_usv_summary.csv or tracking .h5 "
                 "in this session."
             )
+            self._report_cleared_side(cluster_files, "vocal", message_output)
             return
 
         side_precompute = self._build_vocal_side_precompute(voc_inputs)
@@ -2002,6 +2103,7 @@ class NeuronalTuning(FeatureZoo):
                 "  vocal skipped: no emitter side passes n_usv_min_self "
                 f"({int(self.tuning_parameters_dict['n_usv_min_self'])})."
             )
+            self._report_cleared_side(cluster_files, "vocal", message_output)
             return
 
         message_output("  computing vocal tuning curves ...")
@@ -2013,11 +2115,40 @@ class NeuronalTuning(FeatureZoo):
                     side_precompute=side_precompute,
                 )
             except Exception as exc:
+                cleared = self._clear_side_from_cluster_pkl(cluster_file.stem, "vocal")
                 message_output(
                     f"    vocal: cluster {cluster_file.name} failed: {exc}"
+                    + ("; its previous vocal results were removed from the pkl." if cleared else "")
                 )
                 continue
-            self._save_partial_to_cluster_pkl(cluster_file.stem, voc_partial)
+            self._save_partial_to_cluster_pkl(cluster_file.stem, voc_partial, "vocal")
+
+    def _report_cleared_side(self, cluster_files: list, side: str, message_output) -> None:
+        """
+        Description
+        -----------
+        Clears one skipped compute path's previous results from every
+        cluster's pkl (:meth:`_clear_side_from_cluster_pkl`) and says how many
+        pkls held them, so a skipped path never leaves an earlier run's
+        numbers next to this run's results of the other path.
+
+        Parameters
+        ----------
+        cluster_files (list)
+            The session's spike .npy paths (their stems name the pkls).
+        side (str)
+            ``"behavioral"`` or ``"vocal"``.
+        message_output (Callable)
+            The run's message sink.
+
+        Returns
+        -------
+        None
+        """
+
+        n_cleared = sum(self._clear_side_from_cluster_pkl(cluster_file.stem, side) for cluster_file in cluster_files)
+        if n_cleared:
+            message_output(f"  removed the previous {side} results from {n_cleared} existing pkl(s).")
 
     # behavioral per-cluster compute
 
@@ -2071,6 +2202,7 @@ class NeuronalTuning(FeatureZoo):
         animal_ids = beh_inputs["animal_ids"]
         empirical_camera_sr = beh_inputs["empirical_camera_sr"]
         smoothing_sd = float(params["smoothing_sd"])
+        circular_set = set(params["circular_features"])
 
         cluster_data_frames_original = np.load(file=cluster_file)[1, :]
         partial: dict = {}
@@ -2179,11 +2311,14 @@ class NeuronalTuning(FeatureZoo):
                     # arrays still record NaN at sparse bins for any
                     # downstream analysis that needs the explicit
                     # sparsity signal.
+                    # A circular feature (`circular_features`, e.g. allo_yaw over
+                    # [-180, 180]) wraps at its ends; its derivatives are linear.
+                    is_circular = column.split(".")[-1] in circular_set
                     rate_smoothed = _gaussian_smooth_1d(
-                        rate, smoothing_sd, axis=-1, preserve_nan=False
+                        rate, smoothing_sd, axis=-1, preserve_nan=False, circular=is_circular
                     )
                     sh_rates_smoothed = _gaussian_smooth_1d(
-                        sh_rates, smoothing_sd, axis=-1, preserve_nan=False
+                        sh_rates, smoothing_sd, axis=-1, preserve_nan=False, circular=is_circular
                     )
                     stats_smoothed = _percentiles_block(sh_rates_smoothed)
                     feature_payload["rate_smoothed"] = rate_smoothed
@@ -3407,7 +3542,6 @@ class NeuronalTuning(FeatureZoo):
         # the-bout is guaranteed to be at least bout_quiet_s by
         # construction. VMI is independent of the n_shuffles loop above —
         # it uses the observed spike train only.
-        all_emitters = voc_inputs["emitters"]
         all_starts = voc_inputs["starts"]
         all_stops = voc_inputs["stops"]
         # The rows are timed as their vocalizations (load_vocal_inputs re-times a squeak to its
@@ -3419,7 +3553,11 @@ class NeuronalTuning(FeatureZoo):
                 continue
             emitter_str = ps["side"]["emitter"]
             sex_label = ps["side"]["sex"]
-            em_mask = all_emitters == emitter_str
+            # The side's own anchor set (`side["mask"]`): its vocalizations, restricted to
+            # pure USVs when the role excludes squeaks (exclude_squeaks_self /
+            # exclude_squeaks_partner), so the VMI and IBI bouts are grouped from the same
+            # rows the PETH and tuning anchors are, not from every class the emitter made.
+            em_mask = ps["side"]["mask"]
             em_starts = all_starts[em_mask]
             em_stops = all_stops[em_mask]
             em_durations = usv_durations_full[em_mask]

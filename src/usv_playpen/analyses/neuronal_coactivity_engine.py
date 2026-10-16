@@ -422,20 +422,19 @@ def apply_circular_shift(
     """
 
     shifted_data = {}
-    # The input spike arrays are already sorted (Kilosort output, see the binary-
-    # search helpers above), so a circular shift is a ROTATION: the spikes that
-    # wrap past the session end (>= total_duration_s - shift_s) move to the front
-    # in [0, shift_s), and the rest move to [shift_s, total_duration_s). Splitting
-    # at the wrap point and concatenating the two already-sorted halves is O(log N)
-    # per neuron instead of an O(N log N) np.sort -- and this runs n_shuffles
-    # (default 1000) times per session.
+    # Every shifted time is wrapped into [0, total_duration_s) with a modulo and
+    # then sorted. A plain rotation (split at the wrap point, swap the halves) is
+    # only sorted when every spike lies inside [0, total_duration_s); spike times
+    # are referenced to the tracking start and the duration to the tracking span,
+    # so a unit can fire a few ms past the end (or before the start), and such a
+    # spike lands inside the wrong half, leaving the array unsorted for the
+    # searchsorted window counts. The input arrays are sorted, so the wrapped array
+    # is two sorted runs (plus any out-of-range spikes), which the stable sort
+    # (timsort) merges in linear time -- this runs n_shuffles (default 1000) times
+    # per session.
     shift_s = shift_s % total_duration_s
     for n_id, spikes in neural_data.items():
-        split = np.searchsorted(spikes, total_duration_s - shift_s, side='left')
-        shifted_data[n_id] = np.concatenate([
-            (spikes[split:] + shift_s) - total_duration_s,
-            spikes[:split] + shift_s,
-        ])
+        shifted_data[n_id] = np.sort(np.mod(spikes + shift_s, total_duration_s), kind='stable')
     return shifted_data
 
 def perform_circular_shuffle(
@@ -684,10 +683,17 @@ def perform_label_permutation_test(
         # correction: the observed statistic is itself one valid arrangement
         # of the labels, so the count and total each gain 1. This keeps the
         # p-value from ever being exactly 0 for a finite permutation count
-        # (which would be anticonservative).
-        n_perm = int(null.size)
-        p_a_gt_b = float((np.sum(null >= obs) + 1) / (n_perm + 1))   # right-tailed: a > b
-        p_two = float((np.sum(np.abs(null) >= abs(obs)) + 1) / (n_perm + 1))
+        # (which would be anticonservative). Only finite draws count: a NaN draw
+        # (an all-constant permuted group) can never reach the observed value, so
+        # counting it in the total would shrink p for no reason.
+        finite_null = null[np.isfinite(null)]
+        n_perm = int(finite_null.size)
+        if n_perm == 0:
+            p_a_gt_b = float('nan')
+            p_two = float('nan')
+        else:
+            p_a_gt_b = float((np.sum(finite_null >= obs) + 1) / (n_perm + 1))   # right-tailed: a > b
+            p_two = float((np.sum(np.abs(finite_null) >= abs(obs)) + 1) / (n_perm + 1))
         z = (obs - null_mean) / null_std if null_std > 0 else 0.0
         results[k] = {
             "observed_delta": float(obs),
@@ -1183,7 +1189,8 @@ def bootstrap_vs_null_stats(
     Returns
     -------
     boot_mean, null_mean, p_val, z (tuple[float, float, float, float])
-        Bootstrap mean, null mean, ``(#{null >= boot_mean} + 1) / (n_null + 1)``, and
+        Bootstrap mean, null mean, ``(#{null >= boot_mean} + 1) / (n_null + 1)`` over the
+        finite null draws (NaN when there are none), and
         ``(boot_mean - null_mean) / null_std`` (0.0 when the null has zero spread).
     """
 
@@ -1193,8 +1200,11 @@ def bootstrap_vs_null_stats(
     boot_mean = float(np.nanmean(boot_data))
     null_mean = float(np.nanmean(null_data))
     null_std = float(np.nanstd(null_data))
-    n_null = int(np.size(null_data))
-    p_val = float((np.sum(null_data >= boot_mean) + 1) / (n_null + 1))
+    # Only finite null draws count, for the same reason: a NaN draw never reaches
+    # boot_mean, so counting it in the total would shrink p.
+    finite_null = np.asarray(null_data)[np.isfinite(null_data)]
+    n_null = int(finite_null.size)
+    p_val = float((np.sum(finite_null >= boot_mean) + 1) / (n_null + 1)) if n_null > 0 else float('nan')
     z = (boot_mean - null_mean) / null_std if null_std > 0 else 0.0
     return boot_mean, null_mean, p_val, z
 

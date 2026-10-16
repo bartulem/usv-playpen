@@ -6,6 +6,7 @@ Test analyses module.
 import json
 import math
 import pathlib
+import pickle
 import subprocess as _subprocess
 from unittest.mock import MagicMock
 
@@ -40,6 +41,7 @@ from usv_playpen.analyses.compute_inter_usv_interval_distributions import (
     _session_source_map,
     compute_session_usv_intervals,
 )
+from usv_playpen.analyses import compute_neuronal_tuning_curves as tuning_module
 from usv_playpen.analyses.compute_neuronal_tuning_curves import (
     generate_ratemaps,
     shuffle_spikes,
@@ -1862,6 +1864,17 @@ def test_compute_one_cluster_behavioral_with_smoothing(synthetic_compute_session
     speed = partial["beh_offset=0s"]["m1.speed"]
     assert "rate_smoothed" in speed
     assert "null_p99_5_smoothed" in speed
+    # a circular feature is smoothed with its ends wrapped, a linear one is not
+    yaw = partial["beh_offset=0s"]["m1.allo_yaw"]
+    np.testing.assert_allclose(
+        yaw["rate_smoothed"], _gaussian_smooth_1d(yaw["rate"], 1.0, preserve_nan=False, circular=True)
+    )
+    np.testing.assert_allclose(
+        speed["rate_smoothed"], _gaussian_smooth_1d(speed["rate"], 1.0, preserve_nan=False)
+    )
+    assert not np.allclose(
+        yaw["rate_smoothed"], _gaussian_smooth_1d(yaw["rate"], 1.0, preserve_nan=False)
+    )
 
 
 # _load_vocal_inputs --------------------------------------------------------
@@ -2135,6 +2148,97 @@ def test_compute_one_cluster_vocal_smoke(synthetic_compute_session):
                  "freq_bandwidth_hz", "mean_amplitude",
                  "max_amplitude", "spectral_entropy", "mask_number"):
         assert prop in props
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_vmi_and_ibi_bouts_are_grouped_from_the_side_anchor_rows(synthetic_compute_session, mocker):
+    """The VMI bouts and the IBI bouts are grouped from the same rows as the side's anchors:
+    with exclude_squeaks_self the squeak and overlap segments are left out of both, and with
+    it off every one of the emitter's vocalizations is in."""
+    root, cluster_path = synthetic_compute_session
+    usv_csv = next(root.rglob("*_usv_summary.csv"))
+    df = pls.read_csv(usv_csv)
+    usv = np.ones(df.height, dtype=bool)
+    squeak = np.zeros(df.height, dtype=bool)
+    usv[:5] = False
+    squeak[:10] = True
+    df.with_columns(
+        pls.Series("usv", usv.tolist(), dtype=pls.Boolean),
+        pls.Series("squeak", squeak.tolist(), dtype=pls.Boolean),
+        pls.when(pls.Series(squeak)).then(pls.col("start")).otherwise(None).alias("squeak_start"),
+        pls.when(pls.Series(squeak)).then(pls.col("stop")).otherwise(None).alias("squeak_end"),
+    ).write_csv(usv_csv)
+
+    for exclude in (True, False):
+        nt = _make_neuronal_tuning(root)
+        nt.tuning_parameters_dict["exclude_squeaks_self"] = exclude
+        voc_inputs = nt._load_vocal_inputs()
+        precompute = nt._build_vocal_side_precompute(voc_inputs)
+        side_mask = precompute["self"]["side"]["mask"]
+        assert int(side_mask.sum()) == (df.height - 10 if exclude else df.height)
+        vmi_spy = mocker.spy(tuning_module.NeuronalTuning, "_compute_vmi_for_emitter")
+        runs_spy = mocker.spy(tuning_module, "ibi_bout_runs")
+        nt._compute_one_cluster_vocal(cluster_file=cluster_path, voc_inputs=voc_inputs, side_precompute=precompute)
+        np.testing.assert_array_equal(vmi_spy.call_args.kwargs["em_starts"], voc_inputs["starts"][side_mask])
+        np.testing.assert_array_equal(vmi_spy.call_args.kwargs["em_stops"], voc_inputs["stops"][side_mask])
+        np.testing.assert_array_equal(runs_spy.call_args.args[0], voc_inputs["starts"][side_mask])
+        np.testing.assert_array_equal(runs_spy.call_args.args[1], voc_inputs["stops"][side_mask])
+        mocker.stopall()
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+def test_rerun_replaces_each_side_and_clears_a_skipped_or_failed_side(synthetic_compute_session, mocker):
+    """A re-run replaces each path's keys whole (a key the new run does not produce is gone),
+    a vocal path that fails for a cluster removes that cluster's previous vocal results, and a
+    skipped vocal path removes them from every pkl, while the behavioral results stay."""
+    root, cluster_path = synthetic_compute_session
+    pkl_path = root / "ephys" / "tuning_curves" / f"{cluster_path.stem}_tuning_curves_data.pkl"
+
+    def read_pkl():
+        with pkl_path.open("rb") as handle:
+            return pickle.load(handle)
+
+    _make_neuronal_tuning(root).calculate_neuronal_tuning_curves()
+    first = read_pkl()
+    assert "beh_offset=0s" in first
+    assert "usv_peth" in first
+    assert "vmi" in first["triage_stats"]
+
+    stale = read_pkl()
+    stale["beh_offset=9s"] = {"stale": True}
+    stale["usv_peth"]["f9"] = {"stale": True}
+    stale["triage_stats"]["vmi"]["f9"] = {"stale": True}
+    stale["triage_stats"]["behavioral"]["beh_offset=9s"] = {"stale": True}
+    stale["unrelated"] = 1
+    with pkl_path.open("wb") as handle:
+        pickle.dump(stale, handle)
+    _make_neuronal_tuning(root).calculate_neuronal_tuning_curves()
+    rerun = read_pkl()
+    assert "beh_offset=9s" not in rerun
+    assert "beh_offset=9s" not in rerun["triage_stats"]["behavioral"]
+    assert "f9" not in rerun["usv_peth"]
+    assert "f9" not in rerun["triage_stats"]["vmi"]
+    assert rerun["unrelated"] == 1
+
+    mocker.patch.object(NeuronalTuning, "_compute_one_cluster_vocal", side_effect=RuntimeError("boom"))
+    _make_neuronal_tuning(root).calculate_neuronal_tuning_curves()
+    failed = read_pkl()
+    for key in ("usv_peth", "usv_property_tuning", "usv_category_tuning", "usv_category_peth",
+                "usv_ibi_bout_onset", "usv_metadata"):
+        assert key not in failed
+    assert not {"vmi", "usv_peth", "usv_ibi_bout_onset"} & set(failed["triage_stats"])
+    assert "beh_offset=0s" in failed
+    assert "behavioral" in failed["triage_stats"]
+    mocker.stopall()
+
+    _make_neuronal_tuning(root).calculate_neuronal_tuning_curves()
+    assert "usv_peth" in read_pkl()
+    next(root.rglob("*_usv_summary.csv")).unlink()
+    _make_neuronal_tuning(root).calculate_neuronal_tuning_curves()
+    skipped = read_pkl()
+    assert "usv_peth" not in skipped
+    assert "vmi" not in skipped["triage_stats"]
+    assert "beh_offset=0s" in skipped
 
 
 @pytest.mark.filterwarnings("ignore::RuntimeWarning")
@@ -3368,6 +3472,32 @@ def test_bin_property_indices_nan_and_degenerate_range():
 def test_bin_count_for_property_mask_vs_default():
     assert _bin_count_for_property("duration", 36) == 36
     assert _bin_count_for_property("mask_number", 36) != 36
+
+
+def test_gaussian_smooth_1d_wraps_a_circular_axis():
+    """A circular axis wraps: a spike of rate in the last bin spreads into the first
+    bin as much as into the second-to-last (the two ends are one direction), with or
+    without NaN bins, while a linear axis leaves the first bin at the edge-extended
+    value. A shift of a circular array commutes with its smoothing."""
+
+    data = np.zeros(12)
+    data[-1] = 1.0
+    wrapped = _gaussian_smooth_1d(data, 1.0, circular=True)
+    linear = _gaussian_smooth_1d(data, 1.0)
+    assert wrapped[0] == pytest.approx(wrapped[-2])
+    assert wrapped[0] > 0.2
+    assert linear[0] < 1e-3
+    assert wrapped.sum() == pytest.approx(1.0)
+    with_nan = data.copy()
+    with_nan[5] = np.nan
+    wrapped_nan = _gaussian_smooth_1d(with_nan, 1.0, preserve_nan=False, circular=True)
+    assert wrapped_nan[0] == pytest.approx(wrapped_nan[-2])
+    rng = np.random.default_rng(0)
+    values = rng.uniform(0.0, 5.0, 12)
+    np.testing.assert_allclose(
+        np.roll(_gaussian_smooth_1d(values, 1.5, circular=True), 4),
+        _gaussian_smooth_1d(np.roll(values, 4), 1.5, circular=True),
+    )
 
 
 def test_gaussian_smooth_1d_sigma_nonpositive_returns_input():
