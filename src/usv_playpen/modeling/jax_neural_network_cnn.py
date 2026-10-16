@@ -1359,8 +1359,9 @@ class NeuralContinuousCNNRunner:
         # Held-out reserve carved once at extraction time and surfaced by the
         # loader in `data_blocks['held_out_session_ids']`. Every CV fold below is
         # generated on the DEVELOPMENT sessions only (dev-relative indices remapped
-        # to full-array space), and the accepted model is refit on all development
-        # data and scored once on this block after Phase 1 (the honest,
+        # to full-array space), and after Phase 1 the selected model (the CV fold
+        # whose `actual` weights reached the lowest VALIDATION error, applied with
+        # those weights, not refit) is scored once on this block (the honest,
         # selection-leakage-free number). An empty list -- holdout disabled or a
         # pre-v2 pickle -- makes `_dev_mask` all-True and `_held_positions` empty,
         # so the whole path is an exact no-op.
@@ -1689,7 +1690,10 @@ class NeuralContinuousCNNRunner:
         best_actual_params_list = []
         best_actual_states_list = []
         best_actual_scale_list = []
+        # Per fold, the `actual` model's VALIDATION error (which picks the best fold)
+        # and its TEST error (the permutation-importance baseline on that fold's test set).
         actual_errors = []
+        actual_test_errors = []
 
         for fold, (train_idx, test_idx) in enumerate(folds):
             # Skip non-target folds when the runner has been configured
@@ -1708,6 +1712,7 @@ class NeuralContinuousCNNRunner:
                 }
                 deep_storage['cross_validation'].append(fold_results)
                 actual_errors.append(float('inf'))
+                actual_test_errors.append(float('inf'))
                 best_actual_params_list.append(None)
                 best_actual_states_list.append(None)
                 best_actual_scale_list.append(None)
@@ -1716,8 +1721,26 @@ class NeuralContinuousCNNRunner:
 
             print(f"\n--- FOLD {fold + 1}/{n_folds} ---")
 
-            X_tr, X_te = X_seq[train_idx], X_seq[test_idx]
-            Y_tr_base, Y_te = Y[train_idx], Y[test_idx]
+            # Inner validation split: a seeded draw of whole TRAINING sessions
+            # (`validation_session_fraction` of them, at least one) chooses the
+            # early-stopping epoch and the best weights, so the test fold is scored
+            # exactly once, by weights it never helped pick. The network is fit on the
+            # remaining training sessions.
+            train_sessions = np.unique(groups[train_idx])
+            if train_sessions.size < 2:
+                msg = (f"Fold {fold + 1} has {train_sessions.size} training session(s); the CNN needs at "
+                       f"least two to hold one out for early stopping.")
+                raise ValueError(msg)
+            n_validation_sessions = int(min(max(1, round(self.hp['validation_session_fraction'] * train_sessions.size)),
+                                            train_sessions.size - 1))
+            validation_sessions = np.random.default_rng(self.random_seed + fold + 1).choice(
+                train_sessions, size=n_validation_sessions, replace=False)
+            is_validation = np.isin(groups[train_idx], validation_sessions)
+            val_idx = train_idx[is_validation]
+            train_idx = train_idx[~is_validation]
+
+            X_tr, X_te, X_val = X_seq[train_idx], X_seq[test_idx], X_seq[val_idx]
+            Y_tr_base, Y_te, Y_val = Y[train_idx], Y[test_idx], Y[val_idx]
             w_tr = w[train_idx]
 
             # Center/Scale boundaries that bind the tanh prediction head, derived
@@ -1868,9 +1891,10 @@ class NeuralContinuousCNNRunner:
                         params, opt_state = _apply_update(params, opt_state, grads)
 
                     if epoch % 5 == 0:
-                        Y_pred_te = evaluate_batched(params, state, jnp.array(X_te), Y_center, Y_scale)
+                        # Early stopping watches the inner VALIDATION sessions only.
+                        Y_pred_val = evaluate_batched(params, state, jnp.array(X_val), Y_center, Y_scale)
                         err = float(jnp.mean(jnp.sqrt(jnp.sum(signed_diff_jax(
-                            jnp.array(Y_te), Y_pred_te,
+                            jnp.array(Y_val), Y_pred_val,
                             metric=self.manifold_metric, period=self.manifold_period,
                         ) ** 2, axis=-1))))
 
@@ -1888,14 +1912,28 @@ class NeuralContinuousCNNRunner:
                         if patience_counter >= patience_limit:
                             break
 
+                if best_params is None:
+                    msg = (f"Fold {fold + 1} [{strategy}]: no finite validation error in any evaluation epoch; "
+                           f"the network diverged.")
+                    raise RuntimeError(msg)
+                # The test fold is scored once, with the weights the validation sessions chose.
                 Y_pred_final = evaluate_batched(best_params, best_state, jnp.array(X_te), Y_center, Y_scale)
+                test_err = float(jnp.mean(jnp.sqrt(jnp.sum(signed_diff_jax(
+                    jnp.array(Y_te), Y_pred_final,
+                    metric=self.manifold_metric, period=self.manifold_period,
+                ) ** 2, axis=-1))))
                 fold_results[f'Y_pred_{strategy}'] = Y_pred_final
-                fold_results[f'error_{strategy}'] = best_err
+                fold_results[f'error_{strategy}'] = test_err
+                fold_results[f'validation_error_{strategy}'] = best_err
+                fold_results['validation_sessions'] = validation_sessions
+                fold_results['validation_indices'] = val_idx
 
-                print(f"  > [{strategy.capitalize():<6}] {self.manifold_metric.capitalize()} Err: {best_err:.4f}")
+                print(f"  > [{strategy.capitalize():<6}] {self.manifold_metric.capitalize()} Err: {test_err:.4f} "
+                      f"(validation {best_err:.4f})")
 
                 if strategy == 'actual':
                     actual_errors.append(best_err)
+                    actual_test_errors.append(test_err)
                     best_actual_params_list.append(best_params)
                     best_actual_states_list.append(best_state)
                     best_actual_scale_list.append((Y_center, Y_scale))
@@ -1985,7 +2023,7 @@ class NeuralContinuousCNNRunner:
 
         X_te_base = np.array(X_seq[test_idx_final])
         Y_te_final = np.array(Y[test_idx_final])
-        base_err = actual_errors[best_fold_idx]
+        base_err = actual_test_errors[best_fold_idx]
 
         importance_means, importance_stds, raw_importance = {}, {}, {}
         feature_snrs = {}

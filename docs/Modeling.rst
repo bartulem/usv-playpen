@@ -302,6 +302,7 @@ continuous manifold target, consumed by ``NeuralContinuousCNNRunner`` (see
         "use_scheduler": true,
         "patience": 12,
         "null_patience": 3,
+        "validation_session_fraction": 0.15,
         "warp_range": 0.1,
         "n_folds": 10,
         "permutation_iterations": 10,
@@ -330,7 +331,8 @@ continuous manifold target, consumed by ``NeuralContinuousCNNRunner`` (see
 * **hidden_dim** / **act_func** — the dense head's width and activation (``'relu'``, anything else GELU).
 * **bn_momentum** / **bn_eps** — the batch-normalisation running-statistics momentum and numerical floor.
 * **grid_size** / **samples_per_cell** — the grid-balanced sampler used when ``use_kde_weights`` is ``false`` (it then also sizes the steps per epoch): the manifold is tiled ``grid_size × grid_size`` and every populated cell contributes a density-scaled draw around ``samples_per_cell`` rows, so the dense core cannot monopolise the batches.
-* **patience** / **null_patience** — early-stopping patience in epochs on the held-out error, for the ``actual`` model and for the label-shuffled ``null`` model (which converges to nothing and is stopped sooner).
+* **patience** / **null_patience** — early-stopping patience in epochs on the validation error, for the ``actual`` model and for the label-shuffled ``null`` model (which converges to nothing and is stopped sooner).
+* **validation_session_fraction** — the share of each fold's training sessions (at least one, drawn with a seed derived from ``random_seed``) whose training events are held back to choose the early-stopping epoch and the best weights; the network is fit on the rest, and the test fold is scored exactly once with the chosen weights, so its error is not optimistic. The best CV fold (whose weights are applied to the held-out block) is likewise chosen on the validation error. A fold with fewer than two training sessions raises.
 * **warp_range** — temporal-warping augmentation: every sequence in a batch is stretched by a factor drawn uniformly from ``[1 - warp_range, 1 + warp_range]`` (centre-anchored).
 * **n_folds** / **permutation_iterations** — the number of spatial-CV folds, and the permutation repeats per feature in the permutation-importance phase.
 * **use_kinematic_masking** / **masking_prob** / **masking_length_frames** — 1-D cutout augmentation: with probability ``masking_prob`` each feature channel of a sequence has a contiguous ``masking_length_frames`` chunk zeroed (the z-score mean), so the network cannot lean on a single dominant feature.

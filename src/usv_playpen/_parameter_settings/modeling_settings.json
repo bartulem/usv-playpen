@@ -153,6 +153,7 @@
         "use_scheduler": true,
         "patience": 12,
         "null_patience": 3,
+        "validation_session_fraction": 0.15,
         "warp_range": 0.1,
         "n_folds": 10,
         "permutation_iterations": 10,

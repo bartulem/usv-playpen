@@ -451,6 +451,14 @@ class TestRunCnnTrainingFull:
             assert np.isfinite(fold_res['error_null_model_free'])
             assert 'params_actual' in fold_res
             assert 'state_actual' in fold_res
+            # Early stopping watched the training events of whole validation sessions,
+            # never a test event; the test fold is scored once with the chosen weights.
+            validation_indices = np.asarray(fold_res['validation_indices'])
+            assert validation_indices.size > 0
+            assert not set(validation_indices.tolist()) & set(np.asarray(fold_res['test_indices']).tolist())
+            assert set(data_blocks['groups'][validation_indices].tolist()) == set(fold_res['validation_sessions'].tolist())
+            assert np.isfinite(fold_res['validation_error_actual'])
+            assert np.isfinite(fold_res['error_actual'])
 
         # Phase-2 permutation importance bundle.
         fi = deep['feature_importance']
