@@ -39,9 +39,13 @@ from usv_playpen.modeling.manifold_metric import (
     macro_von_mises_logscore,
     macro_region_mean,
     inverse_region_frequency_weights,
+    von_mises_logpdf_per_point,
     warn_if_no_region_labels,
 )
 from usv_playpen.modeling import manifold_metric
+from scipy.optimize import brentq
+from scipy.special import i0e, i1e
+from scipy.stats import vonmises
 
 
 # Validation
@@ -849,3 +853,113 @@ class TestMacroRegionMean:
         assert labelled['euclidean_mae_macro'] > labelled['euclidean_mae']
         unlabelled = manifold_prediction_metrics(Y, Yp, metric='torus', period=1.0)
         assert unlabelled['euclidean_mae_macro'] == pytest.approx(unlabelled['euclidean_mae'])
+
+
+
+class TestKnownAnswers:
+    """Known-answer checks against independent references (scipy's von Mises density, a numeric
+    maximum-likelihood fit, hand-computed region means). Added after mutation testing showed that
+    sign, constant, period-scaling, region-mask and weighting changes to these functions passed
+    every existing test."""
+
+    @pytest.mark.parametrize("period", [1.0, 2.5])
+    def test_logpdf_per_point_matches_scipy_product_density(self, period):
+        """The per-point score is the sum over both axes of scipy's von Mises log-density of the
+        wrapped residual in radians, for any period (the residual is scaled by 2*pi/period)."""
+        rng = np.random.default_rng(0)
+        truth = rng.uniform(0.0, period, (50, 2))
+        pred = np.mod(truth + rng.normal(0.0, 0.1 * period, (50, 2)), period)
+        kappa = 1.7
+        residual = np.angle(np.exp(1j * (truth - pred) * 2.0 * np.pi / period))
+        expected = vonmises.logpdf(residual, kappa).sum(axis=1)
+        got = von_mises_logpdf_per_point(pred, truth, kappa=kappa, metric='torus', period=period)
+        np.testing.assert_allclose(got, expected, rtol=1e-10, atol=1e-10)
+        pooled = macro_von_mises_logscore(pred, truth, None, metric='torus', period=period, kappa=kappa)
+        assert pooled == pytest.approx(float(expected.mean()), rel=1e-12)
+
+    def test_macro_score_is_the_mean_of_qualifying_region_means(self):
+        """Macro score = unweighted mean over regions of each region's mean per-point score;
+        regions below `min_region_events` are skipped (not a stop: later regions still count),
+        unlabelled rows are ignored, and the result differs from the pooled mean when regions
+        differ in size and fit."""
+        rng = np.random.default_rng(1)
+        truth = rng.uniform(0.0, 1.0, (90, 2))
+        noise = np.concatenate([np.full(60, 0.02), np.full(3, 0.3), np.full(20, 0.2), np.full(7, 0.05)])
+        pred = np.mod(truth + rng.normal(0.0, 1.0, (90, 2)) * noise[:, None], 1.0)
+        regions = np.concatenate([np.full(60, 1.0), np.full(3, 2.0), np.full(20, 3.0), np.full(7, np.nan)])
+        kappa = 2.0
+        per_point = von_mises_logpdf_per_point(pred, truth, kappa=kappa, metric='torus', period=1.0)
+        expected = float(np.mean([per_point[regions == 1.0].mean(), per_point[regions == 3.0].mean()]))
+        got = macro_von_mises_logscore(pred, truth, regions, metric='torus', period=1.0,
+                                       kappa=kappa, min_region_events=5)
+        assert got == pytest.approx(expected, rel=1e-12)
+        # region 2 (3 rows) counts once its size reaches the threshold exactly
+        with_two = float(np.mean([per_point[regions == r].mean() for r in (1.0, 2.0, 3.0)]))
+        assert macro_von_mises_logscore(pred, truth, regions, metric='torus', period=1.0,
+                                        kappa=kappa, min_region_events=3) == pytest.approx(with_two, rel=1e-12)
+        assert got != pytest.approx(float(per_point[~np.isnan(regions)].mean()), rel=1e-3)
+
+    def test_weighted_kappa_is_the_weighted_mle(self):
+        """The weighted fit solves A(kappa) = sum(w cos r) / sum(w) (scale-invariant in w), equals the
+        unweighted fit with integer weights expanded into repeated rows, and returns 0 for zero total
+        weight or no concentration."""
+        rng = np.random.default_rng(2)
+        r = vonmises.rvs(3.0, size=400, random_state=rng)
+        w = rng.uniform(0.2, 3.0, 400)
+        r_bar = float(np.sum(w * np.cos(r)) / np.sum(w))
+        expected = brentq(lambda k: i1e(k) / i0e(k) - r_bar, 1e-6, 1e6)
+        assert _fit_von_mises_kappa(r, w) == pytest.approx(expected, rel=1e-6)
+        assert _fit_von_mises_kappa(r, 7.5 * w) == pytest.approx(expected, rel=1e-9)
+        counts = rng.integers(1, 4, 400)
+        assert _fit_von_mises_kappa(r, counts.astype(float)) == pytest.approx(
+            _fit_von_mises_kappa(np.repeat(r, counts)), rel=1e-9)
+        assert _fit_von_mises_kappa(r, np.zeros(400)) == 0.0
+        assert _fit_von_mises_kappa(np.full(100, np.pi / 2)) == 0.0
+
+    def test_region_mean_and_reweighting_known_values(self):
+        """macro_region_mean averages per-region means of finite values (small regions skipped, not
+        stopping later ones); inverse_region_frequency_weights gives 1/count per labelled row and the
+        median labelled factor to unlabelled rows."""
+        values = np.array([1.0, 3.0, np.nan, 10.0, 20.0, 100.0, 5.0])
+        regions = np.array([1, 1, 1, 2, 2, 3, np.nan])
+        assert macro_region_mean(values, regions, min_region_events=2) == pytest.approx(np.mean([2.0, 15.0]))
+        assert macro_region_mean(values, regions, min_region_events=1) == pytest.approx(np.mean([2.0, 15.0, 100.0]))
+        small_first = np.array([100.0, 1.0, 3.0, 10.0, 20.0])
+        assert macro_region_mean(small_first, np.array([0, 1, 1, 2, 2]), min_region_events=2) == pytest.approx(8.5)
+        factors = inverse_region_frequency_weights(np.array([1, 1, 1, 2, 2, 3, np.nan, np.nan]))
+        np.testing.assert_allclose(factors[:6], [1 / 3, 1 / 3, 1 / 3, 1 / 2, 1 / 2, 1.0])
+        np.testing.assert_allclose(factors[6:], np.median([1 / 3, 1 / 3, 1 / 3, 1 / 2, 1 / 2, 1.0]))
+
+    @pytest.mark.filterwarnings("ignore:An input array is constant:scipy.stats.ConstantInputWarning")
+    def test_mahalanobis_and_degenerate_r2(self):
+        """mahalanobis_mae is the mean of sqrt(r' S r) for the supplied inverse covariance; r2 is 0
+        (not NaN) when the truth has no spread."""
+        rng = np.random.default_rng(3)
+        truth = rng.normal(0.0, 1.0, (40, 2))
+        pred = truth + rng.normal(0.0, 0.3, (40, 2))
+        cov_inv = np.array([[2.0, 0.3], [0.3, 0.5]])
+        residual = pred - truth
+        expected = float(np.mean(np.sqrt(np.einsum('ij,jk,ik->i', residual, cov_inv, residual))))
+        bundle = manifold_prediction_metrics(truth, pred, None, metric='euclidean', period=1.0, train_cov_inv=cov_inv)
+        assert bundle['mahalanobis_mae'] == pytest.approx(expected, rel=1e-10)
+        flat = manifold_prediction_metrics(np.ones((10, 2)), np.ones((10, 2)) + 0.1, None,
+                                           metric='euclidean', period=1.0)
+        assert flat['r2_spatial'] == 0.0
+
+    def test_distance_correlation_known_values(self):
+        """dcor of a variable with itself is 1, of a constant 0, and matches a brute-force
+        double-centred computation on random data."""
+        rng = np.random.default_rng(4)
+        a = rng.normal(size=(30, 2))
+        b = a[:, :1] ** 2 + 0.1 * rng.normal(size=(30, 1))
+        dist_a = np.sqrt(((a[:, None, :] - a[None, :, :]) ** 2).sum(-1))
+        dist_b = np.abs(b[:, None, 0] - b[None, :, 0])
+        assert distance_correlation(dist_a, dist_a) == pytest.approx(1.0)
+        assert distance_correlation(dist_a, np.zeros_like(dist_a)) == 0.0
+
+        def centre(m):
+            return m - m.mean(0, keepdims=True) - m.mean(1, keepdims=True) + m.mean()
+
+        ca, cb = centre(dist_a), centre(dist_b)
+        expected = np.sqrt((ca * cb).mean() / np.sqrt((ca * ca).mean() * (cb * cb).mean()))
+        assert distance_correlation(dist_a, dist_b) == pytest.approx(expected, rel=1e-10)

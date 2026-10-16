@@ -1146,7 +1146,10 @@ class SmoothBivariateRegression(BaseEstimator, RegressorMixin):
         # nonsense near the boundary.
         ss_res = float(np.sum(dx ** 2 + dy ** 2))
         denom = total_dispersion(Y_true, metric=self.metric, period=self.period)
-        r2_spatial = float(1.0 - (ss_res / denom)) if denom > 0 else 0.0
+        # Zero spread judged against float precision (a constant target's dispersion is a
+        # rounding residue, not exactly 0), as in `manifold_prediction_metrics`.
+        no_spread_floor = np.finfo(np.float64).eps * float(np.sum(np.asarray(Y_true, dtype=np.float64) ** 2))
+        r2_spatial = float(1.0 - (ss_res / denom)) if denom > no_spread_floor else 0.0
 
         return {
             'r2_spatial': r2_spatial,

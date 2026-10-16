@@ -269,7 +269,9 @@ def _vif_from_design(X: np.ndarray) -> np.ndarray:
             y_pred = Xj_aug @ beta
             ss_res = float(np.sum((y - y_pred) ** 2))
             ss_tot = float(np.sum((y - y.mean()) ** 2))
-            r2 = 0.0 if ss_tot <= 0 else 1.0 - ss_res / ss_tot
+            # A constant feature's ss_tot is a rounding residue rather than exactly 0; judge
+            # zero spread against float precision so it reads as "no variance" (r2 = 0).
+            r2 = 0.0 if ss_tot <= np.finfo(np.float64).eps * float(np.sum(y ** 2)) else 1.0 - ss_res / ss_tot
             r2 = min(r2, 1.0 - 1e-12)
             vif[j] = 1.0 / (1.0 - r2)
         except np.linalg.LinAlgError:

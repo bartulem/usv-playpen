@@ -912,7 +912,11 @@ def manifold_prediction_metrics(Y_true: np.ndarray, Y_pred: np.ndarray,
     # sqrt introduces only sub-epsilon fp noise (~1e-16).
     ss_res = float(np.sum(euclidean_dist ** 2))
     denom = total_dispersion(Y_true, metric=metric, period=period)
-    r2_spatial = float(1.0 - (ss_res / denom)) if denom > 0 else 0.0
+    # Zero spread is judged against float precision, not exact zero: the dispersion of a
+    # constant target is a rounding residue (~1e-31), and dividing by it gave r2 ~ -1e29.
+    # Below `eps * sum(Y_true**2)` the target carries no spread and r2 is reported as 0.
+    no_spread_floor = np.finfo(np.float64).eps * float(np.sum(Y_true ** 2))
+    r2_spatial = float(1.0 - (ss_res / denom)) if denom > no_spread_floor else 0.0
 
     return {
         'r2_spatial': r2_spatial,
