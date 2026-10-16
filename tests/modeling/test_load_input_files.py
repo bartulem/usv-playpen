@@ -21,9 +21,12 @@ import h5py
 import numpy as np
 import polars as pls
 import pytest
+from scipy import integrate
+from scipy.stats import norm
 
 from usv_playpen.modeling.load_input_files import (
     _calculate_ibi_threshold,
+    _calculate_ibi_threshold_ig,
     _generate_vocal_trace,
     _get_clean_tiled_epochs,
     build_vocal_predictor_signals,
@@ -181,6 +184,35 @@ class TestCalculateIbiThreshold:
         lo = _calculate_ibi_threshold(0.0, 0.5, 1.0)
         hi = _calculate_ibi_threshold(0.0, 0.5, 3.0)
         assert hi > lo
+
+
+class TestCalculateIbiThresholdIg:
+
+    @staticmethod
+    def _ig_cdf(x: float, mu: float, lam: float) -> float:
+        """The inverse-Gaussian CDF at ``x``, integrated from the density
+        ``sqrt(lam / (2 pi t^3)) exp(-lam (t - mu)^2 / (2 mu^2 t))`` written out
+        here, independent of scipy's parametrization."""
+
+        def density(t):
+            return np.sqrt(lam / (2.0 * np.pi * t ** 3)) * np.exp(-lam * (t - mu) ** 2 / (2.0 * mu ** 2 * t))
+
+        return integrate.quad(density, 0.0, x, limit=200)[0]
+
+    @pytest.mark.parametrize(("mu", "lam", "z"), [(0.08, 0.3, 2.58), (0.5, 2.0, 1.0), (0.02, 0.01, 1.96)])
+    def test_threshold_is_the_ig_quantile_of_the_z_tail(self, mu, lam, z):
+        """The threshold is the quantile ``Phi(z)`` of IG(mean ``mu``, shape ``lam``):
+        the IG CDF at the threshold equals ``Phi(z)`` (so mean and shape are not
+        swapped and the quantile level is the upper-tail mapping of ``z``)."""
+
+        threshold = _calculate_ibi_threshold_ig(mu, lam, z)
+        assert self._ig_cdf(threshold, mu, lam) == pytest.approx(norm.cdf(z), abs=1e-6)
+
+    def test_monotone_in_z_and_mean(self):
+        """A larger z-score or a larger component mean gives a longer cutoff."""
+
+        assert _calculate_ibi_threshold_ig(0.1, 0.5, 3.0) > _calculate_ibi_threshold_ig(0.1, 0.5, 1.0)
+        assert _calculate_ibi_threshold_ig(0.2, 0.5, 2.58) > _calculate_ibi_threshold_ig(0.1, 0.5, 2.58)
 
 
 # _generate_vocal_trace

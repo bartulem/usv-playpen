@@ -12,6 +12,7 @@ mount-mapping table was introduced to fix (all-occurrence substring corruption,
 and the previously-unhandled `murthy` share).
 """
 
+import json
 import os
 import pathlib
 import re
@@ -627,6 +628,23 @@ def test_newest_match_raises_when_empty(tmp_path):
         os_utils.newest_match_or_raise(tmp_path, "*.bin", label="newest")
 
 
+def test_newest_match_searches_subfolders_only_when_recursive(tmp_path):
+    """The default glob sees the top level only, so a newer file in a subfolder is
+    not picked; recursive=True walks the tree and picks it; a missing root raises
+    naming the pattern."""
+    top = tmp_path / "top.bin"
+    nested = tmp_path / "sub" / "zz_nested.bin"
+    nested.parent.mkdir()
+    top.touch()
+    nested.touch()
+    assert os_utils.newest_match_or_raise(tmp_path, "*.bin", key=lambda p: p.name) == top
+    assert os_utils.newest_match_or_raise(tmp_path, "*.bin", key=lambda p: p.name, recursive=True) == nested
+    with pytest.raises(FileNotFoundError, match="no match for glob"):
+        os_utils.newest_match_or_raise(tmp_path / "sub", "top.bin")
+    with pytest.raises(FileNotFoundError, match=r"\*\.bin: search root"):
+        os_utils.newest_match_or_raise(tmp_path / "absent", "*.bin")
+
+
 # QLVM category bundle / production cells / resolve_consolidated_h5_path
 
 def test_qlvm_map_display_names_cover_every_map():
@@ -710,6 +728,36 @@ def test_read_qlvm_category_bundle_refuses_a_malformed_bundle(tmp_path):
     np.savez_compressed(directory / "category_grids.npz", **arrays)
     with pytest.raises(ValueError, match="must have the label grid's"):
         os_utils.read_qlvm_category_bundle(str(directory))
+    directory = write_qlvm_category_bundle(tmp_path / "not_square")
+    with np.load(directory / "category_grids.npz") as grids:
+        arrays = {key: grids[key] for key in grids.files}
+    for key in ("label_grid", "agreement", "density"):
+        arrays[key] = arrays[key][:, :-2]
+    np.savez_compressed(directory / "category_grids.npz", **arrays)
+    with pytest.raises(ValueError, match="must be a square grid"):
+        os_utils.read_qlvm_category_bundle(str(directory))
+
+
+def test_read_qlvm_category_bundle_returns_every_file_it_reads(tmp_path):
+    """The agreement grid, the descriptions and both JSON files come back as read,
+    and the provenance line carries the positions hash cut at 12 characters and the
+    call and category counts."""
+    directory = write_qlvm_category_bundle(tmp_path / "bundle")
+    with np.load(directory / "category_grids.npz") as grids:
+        agreement = grids["agreement"]
+    with (directory / "category_nomenclature.json").open() as handle:
+        nomenclature = json.load(handle)
+    with (directory / "build_config.json").open() as handle:
+        build_config = json.load(handle)
+    bundle = os_utils.read_qlvm_category_bundle(str(directory))
+    np.testing.assert_array_equal(bundle["agreement"], agreement)
+    assert bundle["agreement"].dtype == np.float64
+    assert bundle["descriptions"] == [str(category["description"]) for category in nomenclature["categories"]]
+    assert bundle["nomenclature"] == nomenclature
+    assert bundle["build_config"] == build_config
+    sha = build_config["positions_file_sha256"]
+    assert f"positions sha256 {sha[:12]}," in bundle["identity"]
+    assert f"{int(build_config['n_calls'])} calls, 4 categories)" in bundle["identity"]
 
 
 def test_resolve_consolidated_h5_picks_newest_and_skips_other_h5(tmp_path):
@@ -721,6 +769,40 @@ def test_resolve_consolidated_h5_picks_newest_and_skips_other_h5(tmp_path):
     os.utime(old, (1, 1))
     os.utime(new, (10 ** 9, 10 ** 9))  # strictly newer mtime
     assert os_utils.resolve_consolidated_h5_path(str(tmp_path)) == str(new)
+
+
+def test_resolve_squeak_spectrogram_store_picks_newest_squeak_store_only(tmp_path):
+    """The squeak store resolver takes the newest squeak_spectrograms_*.h5 by mtime and
+    never the consolidated USV store beside it, even when that one is newer; with no
+    squeak store it raises naming the store."""
+    usv_store = tmp_path / "spectrograms_production.h5"
+    old = tmp_path / "squeak_spectrograms_old.h5"
+    new = tmp_path / "squeak_spectrograms_new.h5"
+    for path, stamp in ((old, 10 ** 8), (new, 10 ** 9), (usv_store, 2 * 10 ** 9)):
+        path.write_bytes(b"x")
+        os.utime(path, (stamp, stamp))
+    assert os_utils.resolve_squeak_spectrogram_store_path(str(tmp_path)) == str(new)
+    os.utime(old, (3 * 10 ** 9, 3 * 10 ** 9))
+    assert os_utils.resolve_squeak_spectrogram_store_path(str(tmp_path)) == str(old)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with pytest.raises(FileNotFoundError, match="squeak spectrogram store"):
+        os_utils.resolve_squeak_spectrogram_store_path(str(empty))
+
+
+def test_cell_cluster_directory_finds_either_layout(tmp_path):
+    """A v3 cell's inference/clusters_<level> is found, and preferred over a v2
+    cluster/<level> in the same cell; a v2-only cell gives cluster/<level>; a cell
+    with neither raises naming the level and both candidates."""
+    v3 = tmp_path / "v3"
+    (v3 / "inference" / "clusters_fine").mkdir(parents=True)
+    (v3 / "cluster" / "fine").mkdir(parents=True)
+    assert os_utils.cell_cluster_directory(v3, "fine") == v3 / "inference" / "clusters_fine"
+    v2 = tmp_path / "v2"
+    (v2 / "cluster" / "coarse").mkdir(parents=True)
+    assert os_utils.cell_cluster_directory(v2, "coarse") == v2 / "cluster" / "coarse"
+    with pytest.raises(FileNotFoundError, match=r"no fine cluster folder \(.*clusters_fine or .*cluster/fine\)"):
+        os_utils.cell_cluster_directory(v2, "fine")
 
 
 # order_usv_summary_columns
@@ -1157,6 +1239,26 @@ def test_rebase_experimenter_in_paths_rewrites_bounded_components_only():
     assert out["lookalike"] == "/mnt/Bartuli/data"
     assert out["label"] == "A84I Linux"
     assert out["roots"] == ["/mnt/falkner/Annegret/Data", 42]
+
+
+def test_rebase_experimenter_in_paths_rewrites_every_bounded_occurrence():
+    """Every bounded occurrence is rewritten, not only the first: an unbounded
+    occurrence earlier in the path does not hide a later component, a name in
+    two components is rewritten in both, backslash separators bound a name like
+    slashes, a name at the start of a path is bounded by the string start, and
+    every listed name is handled (one that does not occur does not stop the
+    others)."""
+
+    names = ["Charlie", "Bartul", "Dexter"]
+    rebase = os_utils.rebase_experimenter_in_paths
+    assert rebase("/mnt/Bartul_old/Bartul/data", names, "Ivan") == "/mnt/Bartul_old/Ivan/data"
+    assert rebase("/mnt/Bartul/x/Bartul", names, "Ivan") == "/mnt/Ivan/x/Ivan"
+    assert rebase("F:\\Bartul\\EPHYS", names, "Ivan") == "F:\\Ivan\\EPHYS"
+    assert rebase("F:\\xBartul\\EPHYS", names, "Ivan") == "F:\\xBartul\\EPHYS"
+    assert rebase("Bartul/EPHYS", names, "Ivan") == "Ivan/EPHYS"
+    assert rebase("/mnt/Dexter/a/Bartul", names, "Ivan") == "/mnt/Ivan/a/Ivan"
+    assert rebase("/mnt/Bartul/a", names, "Bartul") == "/mnt/Bartul/a"
+    assert rebase("/mnt/Bart/a", ["Bart"], "Bartul") == "/mnt/Bartul/a"
 
 
 def test_rebase_experimenter_in_paths_is_idempotent():

@@ -360,12 +360,19 @@ def rebase_experimenter_in_paths(obj: object = None,
             if rebased_string == name:
                 return exp_id
             if is_pathlike:
+                # Every occurrence is checked, not only the first: an unbounded
+                # occurrence (e.g. '/mnt/Bartul_old/Bartul') must not hide a later
+                # bounded one, and a path may hold the name in several components.
                 name_start = rebased_string.find(name)
-                boundary_before_ok = name_start == 0 or rebased_string[name_start - 1] in ('/', '\\')
-                name_end = name_start + len(name)
-                boundary_after_ok = name_end == len(rebased_string) or rebased_string[name_end] in ('/', '\\')
-                if boundary_before_ok and boundary_after_ok:
-                    rebased_string = rebased_string[:name_start] + exp_id + rebased_string[name_end:]
+                while name_start != -1:
+                    boundary_before_ok = name_start == 0 or rebased_string[name_start - 1] in ('/', '\\')
+                    name_end = name_start + len(name)
+                    boundary_after_ok = name_end == len(rebased_string) or rebased_string[name_end] in ('/', '\\')
+                    if boundary_before_ok and boundary_after_ok:
+                        rebased_string = rebased_string[:name_start] + exp_id + rebased_string[name_end:]
+                        name_start = rebased_string.find(name, name_start + len(exp_id))
+                    else:
+                        name_start = rebased_string.find(name, name_start + 1)
         return rebased_string
     return obj
 
